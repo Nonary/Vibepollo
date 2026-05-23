@@ -282,8 +282,7 @@ namespace nvhttp {
         app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
       }
 
-      if (app_output_override &&
-          boost::iequals(*app_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      if (app_output_override && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
         launch_session->virtual_display = true;
         app_output_override.reset();
       }
@@ -419,20 +418,6 @@ namespace nvhttp {
             (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
           }
 
-          if (auto existing_device =
-                VDISPLAY::resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name)) {
-
-            launch_session->virtual_display = true;
-            launch_session->virtual_display_failed = false;
-            launch_session->virtual_display_device_id = *existing_device;
-            launch_session->virtual_display_ready_since = std::chrono::steady_clock::now();
-            config::set_runtime_output_name_override(*existing_device);
-            pending_output_override = *existing_device;
-            BOOST_LOG(info) << "Reusing active virtual display (device_id=" << *existing_device << ").";
-            return;
-          }
-
-
           auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
             if (value.empty()) {
               return std::nullopt;
@@ -511,6 +496,9 @@ namespace nvhttp {
             vd_fps *= 1000u;
           }
           const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+          if (base_vd_fps_millihz > 0 && (config::video.double_refreshrate || framegen_refresh_active)) {
+            vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
+          }
 
           std::string client_label;
           if (shared_mode) {

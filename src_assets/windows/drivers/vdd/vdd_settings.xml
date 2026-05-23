@@ -10,7 +10,7 @@
 
     <!-- === BASIC DRIVER CONFIGURATION === -->
     <monitors>
-        <count>1</count>
+        <count>0</count>
     </monitors>
 
     <gpu>

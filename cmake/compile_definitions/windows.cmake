@@ -40,6 +40,18 @@ file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
 # vigem
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/sudovda")
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/vdd")
+
+set(SUNSHINE_WINDOWS_VDISPLAY_BACKEND "vdd" CACHE STRING "Windows virtual display backend: vdd or sudovda")
+set_property(CACHE SUNSHINE_WINDOWS_VDISPLAY_BACKEND PROPERTY STRINGS vdd sudovda)
+string(TOLOWER "${SUNSHINE_WINDOWS_VDISPLAY_BACKEND}" SUNSHINE_WINDOWS_VDISPLAY_BACKEND_NORMALIZED)
+if(SUNSHINE_WINDOWS_VDISPLAY_BACKEND_NORMALIZED STREQUAL "vdd")
+    set(SUNSHINE_WINDOWS_VDISPLAY_SOURCE "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_vdd.cpp")
+elseif(SUNSHINE_WINDOWS_VDISPLAY_BACKEND_NORMALIZED STREQUAL "sudovda")
+    set(SUNSHINE_WINDOWS_VDISPLAY_SOURCE "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sudovda.cpp")
+else()
+    message(FATAL_ERROR "Unsupported SUNSHINE_WINDOWS_VDISPLAY_BACKEND='${SUNSHINE_WINDOWS_VDISPLAY_BACKEND}'. Expected 'vdd' or 'sudovda'.")
+endif()
 
 # apollo icon
 if(NOT DEFINED PROJECT_ICON_PATH)
@@ -188,13 +200,14 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
+        "${SUNSHINE_WINDOWS_VDISPLAY_SOURCE}"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_legacy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_legacy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda-ioctl.h"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda.h"
+        "${CMAKE_SOURCE_DIR}/third-party/vdd/vdd-control.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.h"

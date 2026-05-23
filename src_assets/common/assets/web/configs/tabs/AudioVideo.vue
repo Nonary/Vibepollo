@@ -290,6 +290,11 @@ function selectVirtualDisplayLayout(v: unknown) {
                     :default="true"
                     :disabled="virtualDisplayMode === 'disabled'"
                   />
+                  <ConfigFieldRenderer
+                    setting-key="dd_vdd_static_monitor_count"
+                    v-model="config.dd_vdd_static_monitor_count"
+                    class="mt-4"
+                  />
                 </div>
               </template>
             </PlatformLayout>

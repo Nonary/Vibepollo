@@ -216,8 +216,7 @@ namespace webrtc_stream {
         app_output_override = boost::algorithm::trim_copy(*session->output_name_override);
       }
 
-      if (app_output_override &&
-          boost::iequals(*app_output_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+      if (app_output_override && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
         session->virtual_display = true;
         app_output_override.reset();
         session->output_name_override.reset();
@@ -289,16 +288,6 @@ namespace webrtc_stream {
         (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
       } else {
         (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
-      }
-
-      if (auto existing_device =
-            VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name)) {
-        session->virtual_display = true;
-        session->virtual_display_failed = false;
-        session->virtual_display_device_id = *existing_device;
-        session->virtual_display_ready_since = std::chrono::steady_clock::now();
-        config::set_runtime_output_name_override(session->virtual_display_device_id);
-        return;
       }
 
       auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
@@ -396,6 +385,9 @@ namespace webrtc_stream {
       }
       const bool framegen_refresh_active =
         session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
+      if (base_vd_fps_millihz > 0 && (config::video.dd.wa.virtual_double_refresh || framegen_refresh_active)) {
+        vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
+      }
 
       std::string client_label = session->client_name;
       if (client_label.empty()) {
@@ -2507,7 +2499,7 @@ namespace webrtc_stream {
       const bool allow_display_changes = !rtsp_active && !resume_only;
       if (allow_display_changes && launch_session->output_name_override && !launch_session->output_name_override->empty()) {
 #ifdef _WIN32
-        if (!boost::iequals(*launch_session->output_name_override, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION)) {
+        if (!VDISPLAY::is_virtual_display_selection(*launch_session->output_name_override)) {
           config::set_runtime_output_name_override(*launch_session->output_name_override);
         }
 #else

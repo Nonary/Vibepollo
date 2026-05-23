@@ -4,6 +4,7 @@
 #include "src/uuid.h"
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -20,6 +21,7 @@
 #include <sudovda/sudovda.h>
 
 namespace VDISPLAY {
+  inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
   inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
   enum class DRIVER_STATUS {
@@ -104,6 +106,16 @@ namespace VDISPLAY {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  bool is_virtual_display_selection(const std::string &output_identifier);
+
+  uint64_t client_uuid_to_vdd_display_id(const GUID &client_guid);
+  GUID sharedVirtualDisplayGuid();
+  bool is_vdd_virtual_display_identity(
+    const std::string &device_path,
+    const std::string &friendly_name,
+    const std::string &edid_manufacturer_id,
+    const std::string &edid_product_code
+  );
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch);
 
@@ -115,8 +127,16 @@ namespace VDISPLAY {
     int height;
   };
 
+  using VirtualDisplayInfo = SudaVDADisplayInfo;
+
   bool isSudaVDADriverInstalled();
   std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
+  inline bool isVirtualDisplayDriverInstalled() {
+    return isSudaVDADriverInstalled();
+  }
+  inline std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {
+    return enumerateSudaVDADisplays();
+  }
 
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();

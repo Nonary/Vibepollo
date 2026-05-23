@@ -186,6 +186,8 @@ namespace config {
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
+      int vdd_static_monitor_count;  ///< Number of always-present VDD monitors to request when explicitly configured.
+      bool vdd_static_monitor_count_configured;  ///< False preserves existing VDD installs that predate this setting.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
       mode_remapping_t mode_remapping;
       workarounds_t wa;
