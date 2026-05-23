@@ -124,7 +124,7 @@
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
@@ -155,12 +155,12 @@
     <CustomAction Id="SetRunInstallerMigrations"
                  Property="RunInstallerMigrations"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\installer-migrations.ps1&quot;"/>
-    <!-- SudoVDA is a 64-bit display driver path. Keep its PowerShell host in System64Folder;
+    <!-- VDD is a 64-bit display driver path. Keep its PowerShell host in System64Folder;
          the 32-bit host from SystemFolder/SysWOW64 can wedge the elevated MSI custom-action
          server while probing or installing the driver. -->
     <CustomAction Id="SetInstallSudovda"
                  Property="InstallSudovda"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vdd\install.ps1&quot;"/>
 
     <CustomAction Id="SetUpdatePathAdd"
                  Property="UpdatePathAdd"
@@ -174,7 +174,7 @@
 
     <CustomAction Id="SetUninstallSudovda"
                  Property="UninstallSudovda"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot; -Uninstall"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vdd\install.ps1&quot; -Uninstall"/>
 
     <CustomAction Id="SetFactoryResetAppData"
                  Property="FactoryResetAppData"

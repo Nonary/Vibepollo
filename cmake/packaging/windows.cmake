@@ -43,31 +43,31 @@ if (TARGET sunshine_display_helper)
 endif()
 install(FILES "${CMAKE_BINARY_DIR}/uninstall.exe" DESTINATION "." COMPONENT application)
 
-# Drivers (SudoVDA virtual display)
-set(SUDOVDA_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda")
-set(SUDOVDA_DRIVER_FILES
-    "${SUDOVDA_SOURCE_DIR}/install.ps1"
-    "${SUDOVDA_SOURCE_DIR}/uninstall.bat"
-    "${SUDOVDA_SOURCE_DIR}/SudoVDA.inf"
-    "${SUDOVDA_SOURCE_DIR}/SudoVDA.dll"
-    "${SUDOVDA_SOURCE_DIR}/sudovda.cat"
-    "${SUDOVDA_SOURCE_DIR}/sudovda.cer"
-    "${SUDOVDA_SOURCE_DIR}/nefconc.exe"
+# Drivers (VDD virtual display)
+set(VDD_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vdd")
+set(VDD_DRIVER_FILES
+    "${VDD_SOURCE_DIR}/install.ps1"
+    "${VDD_SOURCE_DIR}/MttVDD.inf"
+    "${VDD_SOURCE_DIR}/MttVDD.dll"
+    "${VDD_SOURCE_DIR}/mttvdd.cat"
+    "${VDD_SOURCE_DIR}/MttVDD.cer"
+    "${VDD_SOURCE_DIR}/vdd_settings.xml"
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda/nefconc.exe"
 )
 
-foreach(_sudovda_file IN LISTS SUDOVDA_DRIVER_FILES)
-    if (NOT EXISTS "${_sudovda_file}")
-        message(FATAL_ERROR "Required SudoVDA driver artifact missing: ${_sudovda_file}")
+foreach(_vdd_file IN LISTS VDD_DRIVER_FILES)
+    if (NOT EXISTS "${_vdd_file}")
+        message(FATAL_ERROR "Required VDD driver artifact missing: ${_vdd_file}")
     endif()
-    file(SIZE "${_sudovda_file}" _sudovda_file_size)
-    if (_sudovda_file_size EQUAL 0)
-        message(FATAL_ERROR "Required SudoVDA driver artifact is empty (0 bytes): ${_sudovda_file}")
+    file(SIZE "${_vdd_file}" _vdd_file_size)
+    if (_vdd_file_size EQUAL 0)
+        message(FATAL_ERROR "Required VDD driver artifact is empty (0 bytes): ${_vdd_file}")
     endif()
 endforeach()
-unset(_sudovda_file_size)
+unset(_vdd_file_size)
 
-install(FILES ${SUDOVDA_DRIVER_FILES}
-        DESTINATION "drivers/sudovda"
+install(FILES ${VDD_DRIVER_FILES}
+        DESTINATION "drivers/vdd"
         COMPONENT sudovda)
 
 # Mandatory scripts
@@ -154,7 +154,7 @@ set(CPACK_COMPONENT_ASSETS_GROUP "Core")
 set(CPACK_COMPONENT_ASSETS_REQUIRED true)
 
 # drivers
-set(CPACK_COMPONENT_SUDOVDA_DISPLAY_NAME "SudoVDA")
+set(CPACK_COMPONENT_SUDOVDA_DISPLAY_NAME "VDD")
 set(CPACK_COMPONENT_SUDOVDA_DESCRIPTION "Driver required for Virtual Display to function.")
 set(CPACK_COMPONENT_SUDOVDA_GROUP "Drivers")
 set(CPACK_COMPONENT_SUDOVDA_REQUIRED true)
