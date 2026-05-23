@@ -181,6 +181,30 @@ namespace VDISPLAY {
       g_watchdog_fail_cb = fail_cb;
     }
 
+    bool watchdog_thread_running() {
+      std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
+      return g_watchdog_thread.joinable();
+    }
+
+    bool ensure_watchdog_thread_active_for_lease() {
+      if (watchdog_thread_running()) {
+        return true;
+      }
+
+      auto fail_cb = copy_watchdog_fail_cb();
+      if (!fail_cb) {
+        BOOST_LOG(warning) << "VDD lease-feed thread is not running and no failure callback is registered.";
+        return false;
+      }
+
+      if (!startPingThread(std::move(fail_cb))) {
+        BOOST_LOG(warning) << "VDD lease-feed thread could not be started for an active temporary display.";
+        return false;
+      }
+
+      return true;
+    }
+
     void dispatch_watchdog_fail_cb(std::shared_ptr<const std::function<void()>> fail_cb) {
       if (!fail_cb || !*fail_cb) {
         return;
@@ -1858,6 +1882,245 @@ namespace VDISPLAY {
       UINT TargetId;
     };
 
+    struct AdvancedColorInfo {
+      bool supported = false;
+      bool active = false;
+      bool limited_by_policy = false;
+      bool hdr_supported = false;
+      bool hdr_enabled = false;
+      DISPLAYCONFIG_COLOR_ENCODING color_encoding = DISPLAYCONFIG_COLOR_ENCODING_RGB;
+      UINT32 bits_per_color_channel = 0;
+      UINT32 active_color_mode = 0;
+    };
+
+    struct DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2_LOCAL {
+      DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+      union {
+        struct {
+          UINT32 advancedColorSupported : 1;
+          UINT32 advancedColorActive : 1;
+          UINT32 reserved1 : 1;
+          UINT32 advancedColorLimitedByPolicy : 1;
+          UINT32 highDynamicRangeSupported : 1;
+          UINT32 highDynamicRangeUserEnabled : 1;
+          UINT32 wideColorSupported : 1;
+          UINT32 wideColorUserEnabled : 1;
+          UINT32 reserved : 24;
+        };
+        UINT32 value;
+      };
+      DISPLAYCONFIG_COLOR_ENCODING colorEncoding;
+      UINT32 bitsPerColorChannel;
+      UINT32 activeColorMode;
+    };
+
+    struct DISPLAYCONFIG_SET_HDR_STATE_LOCAL {
+      DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+      union {
+        struct {
+          UINT32 enableHdr : 1;
+          UINT32 reserved : 31;
+        };
+        UINT32 value;
+      };
+    };
+
+    std::optional<AdvancedColorInfo> query_advanced_color_inner(const DisplayConfigTarget &output) {
+      DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2_LOCAL info {};
+      info.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+      info.header.size = sizeof(info);
+      info.header.adapterId = output.AdapterLuid;
+      info.header.id = output.TargetId;
+      const LONG result = DisplayConfigGetDeviceInfo(&info.header);
+      if (result == ERROR_SUCCESS) {
+        return AdvancedColorInfo {
+          info.advancedColorSupported != 0,
+          info.advancedColorActive != 0,
+          info.advancedColorLimitedByPolicy != 0,
+          info.highDynamicRangeSupported != 0,
+          info.highDynamicRangeUserEnabled != 0,
+          info.colorEncoding,
+          info.bitsPerColorChannel,
+          info.activeColorMode
+        };
+      }
+
+      BOOST_LOG(debug) << "Advanced color v2 query failed for VDD target " << output.TargetId
+                       << " (error=" << result << "); falling back to legacy query.";
+
+      DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO fallback {};
+      fallback.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+      fallback.header.size = sizeof(fallback);
+      fallback.header.adapterId = output.AdapterLuid;
+      fallback.header.id = output.TargetId;
+      const LONG fallback_result = DisplayConfigGetDeviceInfo(&fallback.header);
+      if (fallback_result != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "Advanced color query failed for VDD target " << output.TargetId
+                         << " (error=" << fallback_result << ").";
+        return std::nullopt;
+      }
+      return AdvancedColorInfo {
+        fallback.advancedColorSupported != 0,
+        fallback.advancedColorEnabled != 0,
+        fallback.advancedColorForceDisabled != 0,
+        false,
+        false,
+        fallback.colorEncoding,
+        fallback.bitsPerColorChannel,
+        0
+      };
+    }
+
+    bool set_hdr_state_inner(const DisplayConfigTarget &output, bool enabled) {
+      DISPLAYCONFIG_SET_HDR_STATE_LOCAL state {};
+      state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE;
+      state.header.size = sizeof(state);
+      state.header.adapterId = output.AdapterLuid;
+      state.header.id = output.TargetId;
+      state.enableHdr = enabled ? 1u : 0u;
+      const LONG result = DisplayConfigSetDeviceInfo(&state.header);
+      if (result != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "HDR set failed for VDD target " << output.TargetId
+                         << " enabled=" << enabled << " (error=" << result << ").";
+        return false;
+      }
+      return true;
+    }
+
+    bool set_advanced_color_inner(const DisplayConfigTarget &output, bool enabled) {
+      DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE state {};
+      state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
+      state.header.size = sizeof(state);
+      state.header.adapterId = output.AdapterLuid;
+      state.header.id = output.TargetId;
+      state.enableAdvancedColor = enabled ? 1u : 0u;
+      const LONG result = DisplayConfigSetDeviceInfo(&state.header);
+      if (result != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "Advanced color set failed for VDD target " << output.TargetId
+                         << " enabled=" << enabled << " (error=" << result << ").";
+        return false;
+      }
+      return true;
+    }
+
+    std::optional<AdvancedColorInfo> query_advanced_color(const DisplayConfigTarget &output) {
+      if (auto result = query_advanced_color_inner(output)) {
+        return result;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        BOOST_LOG(debug) << "Advanced color query: unable to retrieve user token.";
+        return std::nullopt;
+      }
+
+      std::optional<AdvancedColorInfo> result;
+      const auto impersonation_ec = platf::impersonate_current_user(user_token, [&]() {
+        result = query_advanced_color_inner(output);
+      });
+
+      CloseHandle(user_token);
+
+      if (impersonation_ec) {
+        BOOST_LOG(debug) << "Advanced color query: impersonation failed.";
+      }
+
+      return result;
+    }
+
+    bool set_advanced_color(const DisplayConfigTarget &output, bool enabled) {
+      if (set_advanced_color_inner(output, enabled)) {
+        return true;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        BOOST_LOG(debug) << "Advanced color set: unable to retrieve user token.";
+        return false;
+      }
+
+      bool result = false;
+      const auto impersonation_ec = platf::impersonate_current_user(user_token, [&]() {
+        result = set_advanced_color_inner(output, enabled);
+      });
+
+      CloseHandle(user_token);
+
+      if (impersonation_ec) {
+        BOOST_LOG(debug) << "Advanced color set: impersonation failed.";
+      }
+
+      return result;
+    }
+
+    bool set_hdr_state(const DisplayConfigTarget &output, bool enabled) {
+      if (set_hdr_state_inner(output, enabled)) {
+        return true;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        BOOST_LOG(debug) << "HDR set: unable to retrieve user token.";
+        return false;
+      }
+
+      bool result = false;
+      const auto impersonation_ec = platf::impersonate_current_user(user_token, [&]() {
+        result = set_hdr_state_inner(output, enabled);
+      });
+
+      CloseHandle(user_token);
+
+      if (impersonation_ec) {
+        BOOST_LOG(debug) << "HDR set: impersonation failed.";
+      }
+
+      return result;
+    }
+
+    bool ensure_hdr10_advanced_color(const DisplayConfigTarget &output) {
+      const bool hdr_state_set = set_hdr_state(output, true);
+      if (!hdr_state_set) {
+        BOOST_LOG(debug) << "VDD HDR: SET_HDR_STATE was not accepted for target " << output.TargetId
+                         << "; trying Advanced Color state.";
+      }
+
+      const bool advanced_color_set = set_advanced_color(output, true);
+      if (!advanced_color_set) {
+        BOOST_LOG(debug) << "VDD HDR: SET_ADVANCED_COLOR_STATE was not accepted for target " << output.TargetId << ".";
+      }
+
+      if (!hdr_state_set && !advanced_color_set) {
+        BOOST_LOG(warning) << "VDD HDR: failed to request HDR/Advanced Color for target " << output.TargetId << ".";
+        return false;
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      do {
+        if (auto info = query_advanced_color(output)) {
+          BOOST_LOG(debug) << "VDD HDR: target=" << output.TargetId
+                           << " supported=" << info->supported
+                           << " active=" << info->active
+                           << " limited_by_policy=" << info->limited_by_policy
+                           << " hdr_supported=" << info->hdr_supported
+                           << " hdr_enabled=" << info->hdr_enabled
+                           << " active_color_mode=" << info->active_color_mode
+                           << " color_encoding=" << static_cast<unsigned int>(info->color_encoding)
+                           << " bits_per_color_channel=" << info->bits_per_color_channel;
+          const bool hdr_enabled = info->hdr_supported ? info->hdr_enabled : info->active;
+          const bool ten_bit_or_better = info->bits_per_color_channel >= 10;
+          if (info->supported && hdr_enabled && !info->limited_by_policy && ten_bit_or_better) {
+            return true;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      } while (std::chrono::steady_clock::now() < deadline);
+
+      BOOST_LOG(warning) << "VDD HDR: HDR mode did not become active at 10-bit for target "
+                         << output.TargetId << ".";
+      return false;
+    }
+
     std::optional<DisplayConfigIdentity> query_display_config_identity_inner(const DisplayConfigTarget &output) {
       const UINT flags = QDC_VIRTUAL_MODE_AWARE | QDC_DATABASE_CURRENT;
       UINT path_count = 0;
@@ -1943,7 +2206,7 @@ namespace VDISPLAY {
 
     std::optional<DisplayConfigIdentity> wait_for_display_config_identity(
       const DisplayConfigTarget &output,
-      std::chrono::steady_clock::duration timeout = std::chrono::seconds(2)
+      std::chrono::steady_clock::duration timeout = std::chrono::milliseconds(250)
     ) {
       const auto deadline = std::chrono::steady_clock::now() + timeout;
       do {
@@ -2618,7 +2881,8 @@ namespace VDISPLAY {
         state.params.fps,
         state.params.guid,
         state.params.base_fps_millihz,
-        state.params.framegen_refresh_active
+        state.params.framegen_refresh_active,
+        state.params.hdr_requested
       );
       if (!recreation) {
         BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
@@ -3116,9 +3380,10 @@ namespace VDISPLAY {
 
     const auto now = std::chrono::steady_clock::now();
     const auto deadline = now + WATCHDOG_INIT_GRACE;
+    const bool feed_was_requested = g_watchdog_feed_requested.load(std::memory_order_acquire);
     g_watchdog_stop_requested.store(false, std::memory_order_release);
     g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
-    g_watchdog_feed_requested.store(false, std::memory_order_release);
+    g_watchdog_feed_requested.store(feed_was_requested, std::memory_order_release);
 
     const auto sleep_duration = std::chrono::milliseconds(VDD_LEASE_TIMEOUT_MS / 3);
 
@@ -3135,8 +3400,9 @@ namespace VDISPLAY {
           return;
         }
 
+        const auto leases = vdd_lease_tracker().all();
         const auto now_tp = std::chrono::steady_clock::now();
-        bool should_feed = g_watchdog_feed_requested.load(std::memory_order_acquire);
+        bool should_feed = !leases.empty() || g_watchdog_feed_requested.load(std::memory_order_acquire);
         if (!should_feed && within_grace_period(now_tp)) {
           should_feed = true;
         }
@@ -3147,7 +3413,6 @@ namespace VDISPLAY {
         }
 
         bool feed_ok = true;
-        const auto leases = vdd_lease_tracker().all();
         for (const auto &lease : leases) {
           VDD_LEASE_REQUEST feed {};
           feed.ApiNamespace = GUID_VDD_CONTROL_API_NAMESPACE;
@@ -3189,6 +3454,10 @@ namespace VDISPLAY {
       g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
     }
     g_watchdog_feed_requested.store(enable, std::memory_order_release);
+    if (enable && SUDOVDA_DRIVER_HANDLE != INVALID_HANDLE_VALUE) {
+      (void) ensure_watchdog_thread_active_for_lease();
+      g_watchdog_feed_requested.store(true, std::memory_order_release);
+    }
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {
@@ -3498,7 +3767,8 @@ namespace VDISPLAY {
       uint32_t fps,
       const GUID &guid,
       uint32_t base_fps_millihz,
-      bool framegen_refresh_active
+      bool framegen_refresh_active,
+      bool hdr_requested
     ) {
       if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
         return std::nullopt;
@@ -3512,6 +3782,7 @@ namespace VDISPLAY {
                        << "' client_name='" << (s_client_name ? s_client_name : "(null)")
                        << "' hdr_profile='" << (s_hdr_profile ? s_hdr_profile : "(null)")
                        << "' width=" << width << " height=" << height << " fps=" << fps
+                       << " hdr_requested=" << hdr_requested
                        << " guid=" << requested_uuid.string();
 
       teardown_conflicting_virtual_displays(requested_uuid);
@@ -3648,6 +3919,7 @@ namespace VDISPLAY {
           std::nullopt
         }
       );
+      (void) ensure_watchdog_thread_active_for_lease();
 
       auto display_config_identity = wait_for_display_config_identity(output);
 
@@ -3658,6 +3930,9 @@ namespace VDISPLAY {
 
       if (!resolved_display_name) {
         resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+        if (!resolved_display_name) {
+          resolved_display_name = resolve_virtual_display_name_from_devices();
+        }
       }
 
       std::optional<std::string> device_id;
@@ -3670,15 +3945,15 @@ namespace VDISPLAY {
         if (s_client_name && std::strlen(s_client_name) > 0) {
           device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
         }
+        if (!device_id) {
+          device_id = resolveAnyVirtualDisplayDeviceId();
+        }
       }
 
       const auto has_target_identity = display_config_identity && display_config_identity_has_display_name(*display_config_identity);
       const auto display_config_ptr = has_target_identity ? &*display_config_identity : nullptr;
       if (!resolved_display_name && !device_id && !has_target_identity) {
-        BOOST_LOG(warning) << "VDD temporary display created but Windows did not expose a target-specific display identity; refusing to switch to an arbitrary VDD.";
-        printf("[VDD] Timed out waiting for Windows to expose the new virtual display identity; reverting creation.\n");
-        (void) removeVirtualDisplay(guid);
-        return std::nullopt;
+        BOOST_LOG(debug) << "VDD temporary display created before Windows exposed a target-specific display identity; waiting for virtual display enumeration.";
       }
 
       if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
@@ -3687,10 +3962,14 @@ namespace VDISPLAY {
         return std::nullopt;
       }
 
+      if (hdr_requested && !ensure_hdr10_advanced_color(output)) {
+        BOOST_LOG(warning) << "VDD HDR: immediate HDR activation did not complete; display helper will retry with the session configuration.";
+      }
+
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
       if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
         std::optional<std::wstring> gdi_name;
-        if (auto identity = wait_for_display_config_identity(output, std::chrono::seconds(1))) {
+        if (auto identity = wait_for_display_config_identity(output, std::chrono::milliseconds(250))) {
           if (identity->source_gdi_device_name && !identity->source_gdi_device_name->empty()) {
             gdi_name = identity->source_gdi_device_name;
             display_config_identity = identity;
@@ -3752,7 +4031,8 @@ namespace VDISPLAY {
     uint32_t fps,
     const GUID &guid,
     uint32_t base_fps_millihz,
-    bool framegen_refresh_active
+    bool framegen_refresh_active,
+    bool hdr_requested
   ) {
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
@@ -3774,7 +4054,8 @@ namespace VDISPLAY {
         fps,
         guid,
         base_fps_millihz,
-        framegen_refresh_active
+        framegen_refresh_active,
+        hdr_requested
       );
       if (!result) {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
@@ -4387,7 +4668,8 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     60000u,
     result.temporary_guid,
     60000u,
-    false
+    false,
+    true
   );
   if (!display_info) {
     BOOST_LOG(warning) << "Failed to create temporary virtual display.";

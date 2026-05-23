@@ -55,6 +55,15 @@ namespace {
     return out.str();
   }
 
+  std::wstring widen_ascii(const std::string &value) {
+    std::wstring result;
+    result.reserve(value.size());
+    for (const char ch : value) {
+      result.push_back(static_cast<unsigned char>(ch));
+    }
+    return result;
+  }
+
   HANDLE open_vdd_control_device() {
     const HDEVINFO device_info_set = SetupDiGetClassDevsW(
       &GUID_DEVINTERFACE_VDD_CONTROL,
@@ -173,9 +182,162 @@ namespace {
   struct ActivePathResult {
     bool matched = false;
     bool matched_requested_mode = false;
+    bool matched_hdr = false;
+    bool matched_10bit = false;
   };
 
-  ActivePathResult print_active_paths(const LUID *target_adapter, UINT32 target_id, UINT32 requested_width, UINT32 requested_height, UINT32 requested_hz) {
+  struct AdvancedColorState {
+    bool queried = false;
+    bool supported = false;
+    bool active = false;
+    bool limited_by_policy = false;
+    bool hdr_supported = false;
+    bool hdr_enabled = false;
+    bool wcg_supported = false;
+    bool wcg_enabled = false;
+    DISPLAYCONFIG_COLOR_ENCODING color_encoding = DISPLAYCONFIG_COLOR_ENCODING_RGB;
+    UINT32 bits_per_color_channel = 0;
+    UINT32 active_color_mode = 0;
+  };
+
+  struct DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2_LOCAL {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    union {
+      struct {
+        UINT32 advancedColorSupported : 1;
+        UINT32 advancedColorActive : 1;
+        UINT32 reserved1 : 1;
+        UINT32 advancedColorLimitedByPolicy : 1;
+        UINT32 highDynamicRangeSupported : 1;
+        UINT32 highDynamicRangeUserEnabled : 1;
+        UINT32 wideColorSupported : 1;
+        UINT32 wideColorUserEnabled : 1;
+        UINT32 reserved : 24;
+      };
+      UINT32 value;
+    };
+    DISPLAYCONFIG_COLOR_ENCODING colorEncoding;
+    UINT32 bitsPerColorChannel;
+    UINT32 activeColorMode;
+  };
+
+  struct DISPLAYCONFIG_SET_HDR_STATE_LOCAL {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    union {
+      struct {
+        UINT32 enableHdr : 1;
+        UINT32 reserved : 31;
+      };
+      UINT32 value;
+    };
+  };
+
+  const char *active_color_mode_name(UINT32 mode) {
+    switch (mode) {
+      case 0:
+        return "SDR";
+      case 1:
+        return "WCG";
+      case 2:
+        return "HDR";
+      default:
+        return "unknown";
+    }
+  }
+
+  std::optional<AdvancedColorState> query_advanced_color(const LUID &adapter_id, UINT32 target_id) {
+    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2_LOCAL info {};
+    info.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2;
+    info.header.size = sizeof(info);
+    info.header.adapterId = adapter_id;
+    info.header.id = target_id;
+    const auto error = DisplayConfigGetDeviceInfo(&info.header);
+    if (error == ERROR_SUCCESS) {
+      AdvancedColorState state {};
+      state.queried = true;
+      state.supported = info.advancedColorSupported != 0;
+      state.active = info.advancedColorActive != 0;
+      state.limited_by_policy = info.advancedColorLimitedByPolicy != 0;
+      state.hdr_supported = info.highDynamicRangeSupported != 0;
+      state.hdr_enabled = info.highDynamicRangeUserEnabled != 0;
+      state.wcg_supported = info.wideColorSupported != 0;
+      state.wcg_enabled = info.wideColorUserEnabled != 0;
+      state.color_encoding = info.colorEncoding;
+      state.bits_per_color_channel = info.bitsPerColorChannel;
+      state.active_color_mode = info.activeColorMode;
+      return state;
+    }
+
+    std::cerr << "DisplayConfigGetDeviceInfo(GET_ADVANCED_COLOR_INFO_2) failed for target "
+              << luid_string(adapter_id) << '/' << target_id << ": " << winerr(error) << '\n';
+
+    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO fallback {};
+    fallback.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO;
+    fallback.header.size = sizeof(fallback);
+    fallback.header.adapterId = adapter_id;
+    fallback.header.id = target_id;
+    const auto fallback_error = DisplayConfigGetDeviceInfo(&fallback.header);
+    if (fallback_error != ERROR_SUCCESS) {
+      std::cerr << "DisplayConfigGetDeviceInfo(GET_ADVANCED_COLOR_INFO) failed for target "
+                << luid_string(adapter_id) << '/' << target_id << ": " << winerr(fallback_error) << '\n';
+      return std::nullopt;
+    }
+
+    AdvancedColorState state {};
+    state.queried = true;
+    state.supported = fallback.advancedColorSupported != 0;
+    state.active = fallback.advancedColorEnabled != 0;
+    state.limited_by_policy = fallback.advancedColorForceDisabled != 0;
+    state.color_encoding = fallback.colorEncoding;
+    state.bits_per_color_channel = fallback.bitsPerColorChannel;
+    return state;
+  }
+
+  bool set_hdr_state(const LUID &adapter_id, UINT32 target_id, bool enabled) {
+    DISPLAYCONFIG_SET_HDR_STATE_LOCAL state {};
+    state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE;
+    state.header.size = sizeof(state);
+    state.header.adapterId = adapter_id;
+    state.header.id = target_id;
+    state.enableHdr = enabled ? 1u : 0u;
+    const auto error = DisplayConfigSetDeviceInfo(&state.header);
+    if (error != ERROR_SUCCESS) {
+      std::cerr << "DisplayConfigSetDeviceInfo(SET_HDR_STATE=" << (enabled ? "on" : "off")
+                << ") failed for target " << luid_string(adapter_id) << '/' << target_id
+                << ": " << winerr(error) << '\n';
+      return false;
+    }
+    return true;
+  }
+
+  bool set_advanced_color(const LUID &adapter_id, UINT32 target_id, bool enabled) {
+    DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE state {};
+    state.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE;
+    state.header.size = sizeof(state);
+    state.header.adapterId = adapter_id;
+    state.header.id = target_id;
+    state.enableAdvancedColor = enabled ? 1u : 0u;
+    const auto error = DisplayConfigSetDeviceInfo(&state.header);
+    if (error != ERROR_SUCCESS) {
+      std::cerr << "DisplayConfigSetDeviceInfo(SET_ADVANCED_COLOR_STATE=" << (enabled ? "on" : "off")
+                << ") failed for target " << luid_string(adapter_id) << '/' << target_id
+                << ": " << winerr(error) << '\n';
+      return false;
+    }
+    return true;
+  }
+
+  ActivePathResult print_active_paths(
+    const LUID *target_adapter,
+    UINT32 target_id,
+    UINT32 requested_width,
+    UINT32 requested_height,
+    UINT32 requested_hz,
+    bool enable_hdr,
+    bool require_hdr,
+    bool require_10bit,
+    const std::wstring &required_friendly_name
+  ) {
     ActivePathResult result {};
 
     UINT32 path_count = 0;
@@ -203,6 +365,9 @@ namespace {
       const bool is_match = has_target && same_luid(path.targetInfo.adapterId, *target_adapter) && path.targetInfo.id == target_id;
       bool path_has_requested_size = false;
       bool path_has_requested_refresh = requested_hz == 0;
+      bool path_has_hdr = !require_hdr;
+      bool path_has_10bit = !require_10bit;
+      bool path_has_required_name = required_friendly_name.empty();
       auto tname = target_name(path.targetInfo.adapterId, path.targetInfo.id);
       auto sname = source_name(path.sourceInfo.adapterId, path.sourceInfo.id);
 
@@ -216,6 +381,8 @@ namespace {
       if (tname) {
         std::wcout << L" monitor=" << tname->monitorDevicePath
                    << L" friendly=" << tname->monitorFriendlyDeviceName;
+        path_has_required_name = required_friendly_name.empty() ||
+                                 _wcsicmp(tname->monitorFriendlyDeviceName, required_friendly_name.c_str()) == 0;
       }
 
       if (path.sourceInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID &&
@@ -242,9 +409,40 @@ namespace {
         }
       }
 
+      const bool candidate = (has_target ? is_match : path_has_requested_size) && path_has_required_name;
+      if (candidate) {
+        if (enable_hdr) {
+          (void) set_hdr_state(path.targetInfo.adapterId, path.targetInfo.id, true);
+          (void) set_advanced_color(path.targetInfo.adapterId, path.targetInfo.id, true);
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+
+        if (auto advanced_color = query_advanced_color(path.targetInfo.adapterId, path.targetInfo.id)) {
+          std::cout << " advancedColorSupported=" << (advanced_color->supported ? "yes" : "no")
+                    << " advancedColorActive=" << (advanced_color->active ? "yes" : "no")
+                    << " advancedColorLimitedByPolicy=" << (advanced_color->limited_by_policy ? "yes" : "no")
+                    << " highDynamicRangeSupported=" << (advanced_color->hdr_supported ? "yes" : "no")
+                    << " highDynamicRangeUserEnabled=" << (advanced_color->hdr_enabled ? "yes" : "no")
+                    << " wideColorSupported=" << (advanced_color->wcg_supported ? "yes" : "no")
+                    << " wideColorUserEnabled=" << (advanced_color->wcg_enabled ? "yes" : "no")
+                    << " activeColorMode=" << active_color_mode_name(advanced_color->active_color_mode)
+                    << " colorEncoding=" << static_cast<unsigned int>(advanced_color->color_encoding)
+                    << " bitsPerColorChannel=" << advanced_color->bits_per_color_channel;
+          path_has_hdr = advanced_color->supported &&
+                         advanced_color->active &&
+                         !advanced_color->limited_by_policy &&
+                         advanced_color->hdr_supported &&
+                         advanced_color->hdr_enabled &&
+                         advanced_color->active_color_mode == 2;
+          path_has_10bit = advanced_color->bits_per_color_channel >= 10;
+        }
+      }
+
       std::cout << '\n';
-      result.matched = result.matched || (has_target ? is_match : path_has_requested_size);
-      if ((has_target ? is_match : true) && path_has_requested_size && path_has_requested_refresh) {
+      result.matched = result.matched || candidate;
+      result.matched_hdr = result.matched_hdr || (candidate && path_has_hdr);
+      result.matched_10bit = result.matched_10bit || (candidate && path_has_10bit);
+      if (candidate && path_has_requested_size && path_has_requested_refresh && path_has_hdr && path_has_10bit) {
         result.matched_requested_mode = true;
       }
     }
@@ -259,12 +457,48 @@ int main(int argc, char **argv) {
     const UINT32 width = argc > 2 ? static_cast<UINT32>(std::stoul(argv[2])) : 3840u;
     const UINT32 height = argc > 3 ? static_cast<UINT32>(std::stoul(argv[3])) : 2160u;
     const UINT32 hz = argc > 4 ? static_cast<UINT32>(std::stoul(argv[4])) : 240u;
-    const auto result = print_active_paths(nullptr, 0, width, height, hz);
+    bool enable_hdr = false;
+    bool require_hdr = false;
+    bool require_10bit = false;
+    std::wstring required_friendly_name;
+    for (int i = 5; i < argc; ++i) {
+      const std::string arg = argv[i];
+      if (arg == "--enable-hdr") {
+        enable_hdr = true;
+      } else if (arg == "--require-hdr") {
+        require_hdr = true;
+      } else if (arg == "--require-10bit") {
+        require_10bit = true;
+      } else if (arg == "--require-hdr10") {
+        enable_hdr = true;
+        require_hdr = true;
+        require_10bit = true;
+      } else if (arg == "--match-friendly" && i + 1 < argc) {
+        required_friendly_name = widen_ascii(argv[++i]);
+      }
+    }
+    const auto result = print_active_paths(nullptr, 0, width, height, hz, enable_hdr, require_hdr, require_10bit, required_friendly_name);
     if (!result.matched_requested_mode) {
-      std::cerr << "FAIL: no active CCD path at requested " << width << 'x' << height << '@' << hz << "Hz.\n";
+      std::cerr << "FAIL: no active CCD path at requested " << width << 'x' << height << '@' << hz << "Hz";
+      if (require_hdr) {
+        std::cerr << " with HDR";
+      }
+      if (require_10bit) {
+        std::cerr << " and 10-bit";
+      }
+      std::cerr << ". matched=" << result.matched
+                << " hdr=" << result.matched_hdr
+                << " 10bit=" << result.matched_10bit << '\n';
       return 7;
     }
-    std::cout << "PASS: active CCD path found at requested " << width << 'x' << height << '@' << hz << "Hz.\n";
+    std::cout << "PASS: active CCD path found at requested " << width << 'x' << height << '@' << hz << "Hz";
+    if (require_hdr) {
+      std::cout << " with HDR";
+    }
+    if (require_10bit) {
+      std::cout << " and 10-bit";
+    }
+    std::cout << ".\n";
     return 0;
   }
 
@@ -273,11 +507,27 @@ int main(int argc, char **argv) {
   const UINT32 hz = argc > 3 ? static_cast<UINT32>(std::stoul(argv[3])) : 240u;
   const UINT32 refresh_millihz = hz * 1000u;
   bool skip_ccd = false;
+  bool enable_hdr = false;
+  bool require_hdr = false;
+  bool require_10bit = false;
+  bool feed_lease = false;
   DWORD hold_ms = 0;
   for (int i = 4; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--skip-ccd") {
       skip_ccd = true;
+    } else if (arg == "--enable-hdr") {
+      enable_hdr = true;
+    } else if (arg == "--require-hdr") {
+      require_hdr = true;
+    } else if (arg == "--require-10bit") {
+      require_10bit = true;
+    } else if (arg == "--require-hdr10") {
+      enable_hdr = true;
+      require_hdr = true;
+      require_10bit = true;
+    } else if (arg == "--feed-lease") {
+      feed_lease = true;
     } else if (arg == "--hold-ms" && i + 1 < argc) {
       hold_ms = static_cast<DWORD>(std::stoul(argv[++i]));
     }
@@ -343,7 +593,7 @@ int main(int argc, char **argv) {
   } else {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     do {
-      final_result = print_active_paths(&created.OsAdapterLuid, created.TargetId, width, height, hz);
+      final_result = print_active_paths(&created.OsAdapterLuid, created.TargetId, width, height, hz, enable_hdr, require_hdr, require_10bit, {});
       if (final_result.matched_requested_mode) {
         break;
       }
@@ -353,7 +603,41 @@ int main(int argc, char **argv) {
 
   if (hold_ms > 0) {
     std::cout << "Holding temporary display for " << hold_ms << "ms.\n";
-    std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+    if (feed_lease) {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(hold_ms);
+      unsigned int feed_count = 0;
+      while (std::chrono::steady_clock::now() < deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto sleep_until = std::min(now + std::chrono::seconds(10), deadline);
+        std::this_thread::sleep_until(sleep_until);
+        if (std::chrono::steady_clock::now() >= deadline) {
+          break;
+        }
+
+        VDD_LEASE_REQUEST feed {};
+        feed.ApiNamespace = GUID_VDD_CONTROL_API_NAMESPACE;
+        feed.LeaseId = lease_id;
+        feed.RequestedTimeoutMs = 30000;
+        if (!ioctl(handle, IOCTL_VDD_FEED_LEASE, &feed, sizeof(feed), nullptr, 0)) {
+          std::cerr << "FAIL: lease feed failed after " << feed_count << " successful feeds.\n";
+          CloseHandle(handle);
+          return 8;
+        }
+
+        VDD_QUERY_LEASE_RESULT query {};
+        query.ApiNamespace = GUID_VDD_CONTROL_API_NAMESPACE;
+        if (ioctl(handle, IOCTL_VDD_QUERY_LEASE, &feed, sizeof(feed), &query, sizeof(query))) {
+          std::cout << "Lease feed " << ++feed_count
+                    << ": exists=" << query.LeaseExists
+                    << " remainingMs=" << query.RemainingMs
+                    << " temporaryDisplays=" << query.TemporaryDisplayCount << '\n';
+        } else {
+          std::cout << "Lease feed " << ++feed_count << ": query failed after successful feed.\n";
+        }
+      }
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
+    }
   }
 
   VDD_LEASE_DISPLAY_REQUEST remove {};
@@ -373,10 +657,24 @@ int main(int argc, char **argv) {
     return 5;
   }
   if (!final_result.matched_requested_mode) {
-    std::cerr << "FAIL: created target appeared but not at requested " << width << 'x' << height << ".\n";
+    std::cerr << "FAIL: created target appeared but not at requested " << width << 'x' << height;
+    if (require_hdr) {
+      std::cerr << " with HDR";
+    }
+    if (require_10bit) {
+      std::cerr << " and 10-bit";
+    }
+    std::cerr << ".\n";
     return 6;
   }
 
-  std::cout << "PASS: created target appeared at requested " << width << 'x' << height << ".\n";
+  std::cout << "PASS: created target appeared at requested " << width << 'x' << height;
+  if (require_hdr) {
+    std::cout << " with HDR";
+  }
+  if (require_10bit) {
+    std::cout << " and 10-bit";
+  }
+  std::cout << ".\n";
   return 0;
 }

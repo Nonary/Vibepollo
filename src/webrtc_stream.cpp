@@ -407,7 +407,8 @@ namespace webrtc_stream {
         vd_fps,
         virtual_display_guid,
         base_vd_fps_millihz,
-        framegen_refresh_active
+        framegen_refresh_active,
+        session->enable_hdr
       );
 
       if (display_info) {
@@ -432,6 +433,7 @@ namespace webrtc_stream {
         recovery_params.fps = vd_fps;
         recovery_params.base_fps_millihz = base_vd_fps_millihz;
         recovery_params.framegen_refresh_active = framegen_refresh_active;
+        recovery_params.hdr_requested = session->enable_hdr;
         recovery_params.client_uid = session->unique_id;
         recovery_params.client_name = client_label;
         recovery_params.hdr_profile = session->hdr_profile;

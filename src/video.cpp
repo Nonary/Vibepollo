@@ -8,6 +8,7 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <list>
 #include <mutex>
@@ -1478,6 +1479,7 @@ namespace video {
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
   std::atomic<bool> encoder_probe_attempted {false};
+  std::atomic<std::int64_t> last_negative_hdr_advertisement_probe_ns {0};
   std::mutex encoder_probe_mutex;
 
   bool has_attempted_encoder_probe() {
@@ -1500,6 +1502,21 @@ namespace video {
         BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
       }
       caps = snapshot();
+    }
+
+    if (probe_before_negative && has_attempted_encoder_probe() && caps.hevc_mode < 3 && caps.av1_mode < 3) {
+      const auto now = std::chrono::steady_clock::now();
+      const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+      const auto last_ns = last_negative_hdr_advertisement_probe_ns.load(std::memory_order_acquire);
+      const auto retry_interval = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(10)).count();
+      if (last_ns <= 0 || now_ns - last_ns >= retry_interval) {
+        last_negative_hdr_advertisement_probe_ns.store(now_ns, std::memory_order_release);
+        BOOST_LOG(info) << "Encoder capabilities currently advertise no HDR; re-probing before reporting no HDR.";
+        if (probe_encoders()) {
+          BOOST_LOG(warning) << "Encoder re-probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
+        }
+        caps = snapshot();
+      }
     }
 
     return caps;

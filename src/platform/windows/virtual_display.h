@@ -59,6 +59,7 @@ namespace VDISPLAY {
     uint32_t fps;
     uint32_t base_fps_millihz = 0;
     bool framegen_refresh_active = false;
+    bool hdr_requested = false;
     std::string client_uid;
     std::string client_name;
     std::optional<std::string> hdr_profile;
@@ -79,7 +80,8 @@ namespace VDISPLAY {
     uint32_t fps,
     const GUID &guid,
     uint32_t base_fps_millihz = 0,
-    bool framegen_refresh_active = false
+    bool framegen_refresh_active = false,
+    bool hdr_requested = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).

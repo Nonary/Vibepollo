@@ -560,7 +560,8 @@ namespace nvhttp {
             vd_fps,
             virtual_display_guid,
             base_vd_fps_millihz,
-            framegen_refresh_active
+            framegen_refresh_active,
+            launch_session->enable_hdr
           );
           if (display_info) {
             launch_session->virtual_display = true;
@@ -586,6 +587,7 @@ namespace nvhttp {
             recovery_params.fps = vd_fps;
             recovery_params.base_fps_millihz = base_vd_fps_millihz;
             recovery_params.framegen_refresh_active = framegen_refresh_active;
+            recovery_params.hdr_requested = launch_session->enable_hdr;
             recovery_params.client_uid = display_uuid_source;
             recovery_params.client_name = client_label;
             recovery_params.hdr_profile = launch_session->hdr_profile;

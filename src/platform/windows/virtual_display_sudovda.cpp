@@ -2324,7 +2324,8 @@ namespace VDISPLAY {
         state.params.fps,
         state.params.guid,
         state.params.base_fps_millihz,
-        state.params.framegen_refresh_active
+        state.params.framegen_refresh_active,
+        state.params.hdr_requested
       );
       if (!recreation) {
         BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
@@ -3502,8 +3503,10 @@ namespace VDISPLAY {
     uint32_t fps,
     const GUID &guid,
     uint32_t base_fps_millihz,
-    bool framegen_refresh_active
+    bool framegen_refresh_active,
+    bool hdr_requested
   ) {
+    (void) hdr_requested;
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
 
@@ -4146,6 +4149,7 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     60000u,
     result.temporary_guid,
     60000u,
+    false,
     false
   );
   if (!display_info) {
