@@ -80,8 +80,7 @@ namespace display_helper_integration::helpers {
     }
 
     bool output_name_targets_virtual(const std::string &output_name) {
-      return boost::iequals(output_name, VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION) ||
-             VDISPLAY::is_virtual_display_output(output_name);
+      return VDISPLAY::is_virtual_display_output(output_name);
     }
 
     bool session_has_physical_output_override(const rtsp_stream::launch_session_t &session) {

@@ -477,7 +477,7 @@ namespace VibepolloInstaller {
       pathGrid.Children.Add(_browseButton);
 
       _installVirtualDisplayCheckBox = new CheckBox {
-        Content = "Install virtual display driver (SudoVDA)",
+        Content = "Install virtual display driver",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
         Margin = new Thickness(0, 12, 0, 4),
@@ -1604,7 +1604,7 @@ namespace VibepolloInstaller {
 
     private async Task<UninstallOptions?> ShowOverlayUninstallOptionsAsync() {
       var removeDriverCheckBox = new CheckBox {
-        Content = "Remove virtual display driver (SudoVDA)",
+        Content = "Remove virtual display driver",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
         Margin = new Thickness(0, 0, 0, 8),
@@ -2009,12 +2009,12 @@ namespace VibepolloInstaller {
     private const string InternalElevatedInstallToken = "--internal-elevated-install";
     private const string InternalElevatedUninstallToken = "--internal-elevated-uninstall";
     private const string InternalInstallPathToken = "--internal-install-path";
-    private const string InternalInstallSudoVdaToken = "--internal-install-sudovda";
+    private const string InternalInstallVirtualDisplayDriverToken = "--internal-install-virtual-display-driver";
     private const string InternalInstallSaveLogsToken = "--internal-install-save-logs";
     private const string InternalInstallResultPathToken = "--internal-install-result-path";
     private const string InternalUninstallDeleteInstallDirToken = "--internal-uninstall-delete-install-dir";
     private const string InternalUninstallFactoryResetToken = "--internal-uninstall-factory-reset";
-    private const string InternalUninstallRemoveSudoVdaToken = "--internal-uninstall-remove-sudovda";
+    private const string InternalUninstallRemoveVirtualDisplayDriverToken = "--internal-uninstall-remove-virtual-display-driver";
 
     public bool ShowUi { get; set; }
     public bool UninstallUiRequested { get; set; }
@@ -2069,7 +2069,7 @@ namespace VibepolloInstaller {
           parsed.InternalInstallPath = args[++index];
           continue;
         }
-        if (string.Equals(arg, InternalInstallSudoVdaToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+        if (string.Equals(arg, InternalInstallVirtualDisplayDriverToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
           parsed.InternalInstallVirtualDisplay = ParseBooleanToken(args[++index]);
           continue;
         }
@@ -2087,7 +2087,7 @@ namespace VibepolloInstaller {
           parsed.InternalUninstallFactoryReset = ParseBooleanToken(args[++index]);
           continue;
         }
-        if (string.Equals(arg, InternalUninstallRemoveSudoVdaToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+        if (string.Equals(arg, InternalUninstallRemoveVirtualDisplayDriverToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
           parsed.InternalUninstallRemoveVirtualDisplayDriver = ParseBooleanToken(args[++index]);
           continue;
         }
@@ -2148,13 +2148,13 @@ namespace VibepolloInstaller {
       Console.WriteLine();
       Console.WriteLine("Supported MSI properties:");
       Console.WriteLine("  INSTALL_ROOT=<path>  Install to a custom directory (default: %ProgramFiles%\\Apollo)");
-      Console.WriteLine("  INSTALL_SUDOVDA=0    Skip Virtual Display Driver installation");
+      Console.WriteLine("  INSTALL_VIRTUAL_DISPLAY_DRIVER=0  Skip virtual display driver installation");
       Console.WriteLine();
       Console.WriteLine("Examples:");
       Console.WriteLine("  VibepolloSetup.exe /qn");
       Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_ROOT=\"D:\\Vibepollo\"");
       Console.WriteLine("  VibepolloSetup.exe /x {PRODUCT-CODE} /qn");
-      Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_SUDOVDA=0");
+      Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_VIRTUAL_DISPLAY_DRIVER=0");
       Console.WriteLine("  VibepolloSetup.exe /uninstall");
       Console.WriteLine("  VibepolloSetup.exe /uninstall /quiet");
       Console.WriteLine("  VibepolloSetup.exe --msi C:\\temp\\Vibepollo.msi /passive");
@@ -3060,7 +3060,7 @@ namespace VibepolloInstaller {
         "/l*v",
         logPath,
         CreatePropertyArgument("INSTALL_ROOT", installDirectory),
-        "INSTALL_SUDOVDA=" + (installVirtualDisplayDriver ? "1" : "0"),
+        "INSTALL_VIRTUAL_DISPLAY_DRIVER=" + (installVirtualDisplayDriver ? "1" : "0"),
         "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
@@ -5662,17 +5662,17 @@ namespace VibepolloInstaller {
 
       try {
         var lines = File.ReadAllLines(installLogPath);
-        var sudovdaFailed = lines.Any(line =>
+        var virtualDisplayDriverFailed = lines.Any(line =>
           !string.IsNullOrWhiteSpace(line)
-          && line.IndexOf("CustomAction InstallSudovda returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
-        if (!sudovdaFailed) {
+          && line.IndexOf("CustomAction InstallVirtualDisplayDriver returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (!virtualDisplayDriverFailed) {
           return failures;
         }
 
-        failures.Add("SudoVDA driver setup failed. Virtual display may be unavailable.");
-        var detail = ExtractSudovdaFailureDetail(lines);
+        failures.Add("Virtual display driver setup failed. Virtual display may be unavailable.");
+        var detail = ExtractVirtualDisplayDriverFailureDetail(lines);
         if (!string.IsNullOrWhiteSpace(detail)) {
-          failures.Add("SudoVDA detail: " + detail);
+          failures.Add("Driver detail: " + detail);
         }
       } catch {
         // Keep install success semantics even if warning extraction fails.
@@ -5681,7 +5681,7 @@ namespace VibepolloInstaller {
       return failures;
     }
 
-    private static string ExtractSudovdaFailureDetail(string[] lines) {
+    private static string ExtractVirtualDisplayDriverFailureDetail(string[] lines) {
       if (lines == null || lines.Length == 0) {
         return string.Empty;
       }
@@ -5706,7 +5706,7 @@ namespace VibepolloInstaller {
         }
 
         var looksRelevant =
-          line.IndexOf("[SudoVDA]", StringComparison.OrdinalIgnoreCase) >= 0
+          line.IndexOf("[SunshineVirtualDisplay]", StringComparison.OrdinalIgnoreCase) >= 0
           || line.IndexOf("Failed to", StringComparison.OrdinalIgnoreCase) >= 0
           || line.IndexOf("Unable to", StringComparison.OrdinalIgnoreCase) >= 0
           || line.IndexOf("Required driver artifact", StringComparison.OrdinalIgnoreCase) >= 0
@@ -5750,7 +5750,7 @@ namespace VibepolloInstaller {
         "--internal-elevated-install",
         "--internal-install-path",
         installDirectory,
-        "--internal-install-sudovda",
+        "--internal-install-virtual-display-driver",
         installVirtualDisplayDriver ? "1" : "0",
         "--internal-install-save-logs",
         saveInstallLogs ? "1" : "0",
@@ -5811,7 +5811,7 @@ namespace VibepolloInstaller {
         "--internal-elevated-uninstall",
         "--internal-uninstall-factory-reset",
         factoryResetAppData ? "1" : "0",
-        "--internal-uninstall-remove-sudovda",
+        "--internal-uninstall-remove-virtual-display-driver",
         removeVirtualDisplayDriver ? "1" : "0"
       };
       if (!string.IsNullOrWhiteSpace(arguments.MsiPathOverride)) {

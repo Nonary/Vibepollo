@@ -829,8 +829,8 @@ namespace config {
       0,  // snapshot_restore_hotkey_modifiers
 #endif
       false,  // activate_virtual_display
-      0,  // vdd_static_monitor_count
-      false,  // vdd_static_monitor_count_configured
+      0,  // virtual_display_permanent_count
+      false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
       {false}  // wa
@@ -1647,12 +1647,15 @@ namespace config {
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     {
-      auto it = vars.find("dd_vdd_static_monitor_count");
-      video.dd.vdd_static_monitor_count_configured = it != std::end(vars);
+      auto it = vars.find("dd_virtual_display_permanent_count");
+      if (it == std::end(vars)) {
+        it = vars.find("dd_vdd_static_monitor_count");
+      }
+      video.dd.virtual_display_permanent_count_configured = it != std::end(vars);
       if (it != std::end(vars)) {
         int value = 0;
-        int_between_f(vars, "dd_vdd_static_monitor_count", value, {0, 8});
-        video.dd.vdd_static_monitor_count = std::clamp(value, 0, 8);
+        int_between_f(vars, it->first, value, {0, SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT});
+        video.dd.virtual_display_permanent_count = std::clamp(value, 0, SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT);
       }
     }
     generic_f(vars, "dd_snapshot_exclude_devices", video.dd.snapshot_exclude_devices, dd::snapshot_exclude_devices_from_view);
@@ -2209,7 +2212,7 @@ namespace config {
         "dd_snapshot_restore_hotkey",
         "dd_snapshot_restore_hotkey_modifiers",
         "dd_activate_virtual_display",
-        "dd_vdd_static_monitor_count",
+        "dd_virtual_display_permanent_count",
         "dd_mode_remapping",
         "dd_wa_virtual_double_refresh",
         "dd_wa_dummy_plug_hdr10",
@@ -2443,8 +2446,8 @@ namespace config {
       const auto prev_dd_revert_on_disconnect = video.dd.config_revert_on_disconnect;
       const auto prev_dd_paused_virtual_display_timeout_secs = video.dd.paused_virtual_display_timeout_secs;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
-      const auto prev_dd_vdd_static_monitor_count = video.dd.vdd_static_monitor_count;
-      const auto prev_dd_vdd_static_monitor_count_configured = video.dd.vdd_static_monitor_count_configured;
+      const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
+      const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_double_refreshrate = video.double_refreshrate;
@@ -2500,8 +2503,8 @@ namespace config {
                                      (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                     (prev_dd_vdd_static_monitor_count != video.dd.vdd_static_monitor_count) ||
-                                     (prev_dd_vdd_static_monitor_count_configured != video.dd.vdd_static_monitor_count_configured) ||
+                                     (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
+                                     (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
                                      (prev_dd_double_refreshrate != video.double_refreshrate);

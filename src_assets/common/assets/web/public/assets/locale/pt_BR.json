@@ -193,7 +193,7 @@
     "dd_resolution_option_disabled": "Não alterar a resolução",
     "dd_resolution_option_manual": "Usar resolução inserida manualmente",
     "dd_resolution_option_manual_desc": "Digite a resolução a ser usada",
-    "dd_wa_hdr_toggle_delay_desc_1": "Ao usar o dispositivo de exibição virtual (VDD) para streaming, ele pode exibir a cor HDR incorretamente. O sol pode tentar mitigar este problema, desligando o HDR e ligando-o novamente.",
+    "dd_wa_hdr_toggle_delay_desc_1": "Ao usar o dispositivo de exibição virtual para streaming, ele pode exibir a cor HDR incorretamente. O sol pode tentar mitigar este problema, desligando o HDR e ligando-o novamente.",
     "dd_wa_hdr_toggle_delay_desc_2": "Se o valor for definido para 0, a solução alternativa está desativada (padrão). Se o valor estiver entre 0 e 3000 milissegundos, o sol irá desligar o HDR, espere pelo tempo especificado e ative novamente o HDR. O tempo de atraso recomendado é de cerca de 500 milissegundos na maioria dos casos.",
     "dd_wa_hdr_toggle_delay_desc_3": "NÃO use essa solução se você não tiver problemas com o HDR pois ele impacta o início do stream!",
     "dd_wa_hdr_toggle_delay": "Solução de alto contraste para HDR",

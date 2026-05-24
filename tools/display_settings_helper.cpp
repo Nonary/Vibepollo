@@ -1481,20 +1481,20 @@ namespace {
     }
 
     static bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
-      if (contains_ci(device.m_device_id, "SUDOVDA") ||
-          contains_ci(device.m_device_id, "SUDOMAKER") ||
-          contains_ci(device.m_display_name, "SUDOVDA") ||
-          contains_ci(device.m_display_name, "SUDOMAKER") ||
-          contains_ci(device.m_friendly_name, "SUDOVDA") ||
-          contains_ci(device.m_friendly_name, "SUDOMAKER")) {
+      if (contains_ci(device.m_device_id, "SunshineVirtualDisplay") ||
+          contains_ci(device.m_device_id, "Sunshine Virtual Display") ||
+          contains_ci(device.m_display_name, "SunshineVirtualDisplay") ||
+          contains_ci(device.m_display_name, "Sunshine Virtual Display") ||
+          contains_ci(device.m_friendly_name, "SunshineVirtualDisplay") ||
+          contains_ci(device.m_friendly_name, "Sunshine Virtual Display")) {
         return true;
       }
 
-      if (equals_ci(device.m_friendly_name, "SudoMaker Virtual Display Adapter")) {
+      if (equals_ci(device.m_friendly_name, "Sunshine Virtual Display Driver")) {
         return true;
       }
 
-      return device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SMK");
+      return device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SDD");
     }
 
     static bool is_active_display_device(const display_device::EnumeratedDevice &device) {

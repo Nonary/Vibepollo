@@ -41,37 +41,69 @@ endif()
 if (TARGET sunshine_display_helper)
     install(TARGETS sunshine_display_helper RUNTIME DESTINATION "tools" COMPONENT application)
 endif()
-if (TARGET vdd-temp-display-probe)
-    install(TARGETS vdd-temp-display-probe RUNTIME DESTINATION "tools" COMPONENT application)
-endif()
 install(FILES "${CMAKE_BINARY_DIR}/uninstall.exe" DESTINATION "." COMPONENT application)
 
-# Drivers (VDD virtual display)
-set(VDD_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vdd")
-set(VDD_DRIVER_FILES
-    "${VDD_SOURCE_DIR}/install.ps1"
-    "${VDD_SOURCE_DIR}/MttVDD.inf"
-    "${VDD_SOURCE_DIR}/MttVDD.dll"
-    "${VDD_SOURCE_DIR}/mttvdd.cat"
-    "${VDD_SOURCE_DIR}/MttVDD.cer"
-    "${VDD_SOURCE_DIR}/vdd_settings.xml"
-    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda/nefconc.exe"
+# Drivers (Sunshine virtual display)
+set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sunshine")
+set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT "${CMAKE_SOURCE_DIR}/packaging/windows/virtual_display_driver/refresh_driver_package.ps1")
+set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/install.ps1"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.inf"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.dll"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cat"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/nefconc.exe"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/virtualdisplay_probe.exe"
 )
-
-foreach(_vdd_file IN LISTS VDD_DRIVER_FILES)
-    if (NOT EXISTS "${_vdd_file}")
-        message(FATAL_ERROR "Required VDD driver artifact missing: ${_vdd_file}")
-    endif()
-    file(SIZE "${_vdd_file}" _vdd_file_size)
-    if (_vdd_file_size EQUAL 0)
-        message(FATAL_ERROR "Required VDD driver artifact is empty (0 bytes): ${_vdd_file}")
+foreach(_sunshine_driver_optional_file IN ITEMS
+        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cer")
+    if(EXISTS "${_sunshine_driver_optional_file}")
+        list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES "${_sunshine_driver_optional_file}")
     endif()
 endforeach()
-unset(_vdd_file_size)
+unset(_sunshine_driver_optional_file)
 
-install(FILES ${VDD_DRIVER_FILES}
-        DESTINATION "drivers/vdd"
-        COMPONENT sudovda)
+foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES)
+    if (NOT EXISTS "${_sunshine_driver_file}")
+        message(FATAL_ERROR "Required Sunshine virtual display driver artifact missing: ${_sunshine_driver_file}")
+    endif()
+    file(SIZE "${_sunshine_driver_file}" _sunshine_driver_file_size)
+    if (_sunshine_driver_file_size EQUAL 0)
+        message(FATAL_ERROR "Required Sunshine virtual display driver artifact is empty (0 bytes): ${_sunshine_driver_file}")
+    endif()
+endforeach()
+unset(_sunshine_driver_file_size)
+unset(_sunshine_driver_file)
+
+if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
+    add_custom_target(validate_sunshine_virtual_display_driver_assets
+        COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
+                -ValidateOnly
+                -LibVirtualDisplayDir "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}"
+                -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"
+        DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
+                ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
+        COMMENT "Validating Sunshine virtual display driver package assets"
+        VERBATIM)
+
+    add_custom_target(refresh_sunshine_virtual_display_driver_assets
+        COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
+                -Build
+                -LibVirtualDisplayDir "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}"
+                -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"
+        DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
+        COMMENT "Building and refreshing Sunshine virtual display driver package assets"
+        VERBATIM)
+
+    if(TARGET package_msi)
+        add_dependencies(package_msi refresh_sunshine_virtual_display_driver_assets)
+    endif()
+endif()
+
+install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
+        DESTINATION "drivers/sunshine"
+        COMPONENT virtual_display_driver)
 
 # Mandatory scripts
 install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/sunshine-setup.ps1"
@@ -157,10 +189,10 @@ set(CPACK_COMPONENT_ASSETS_GROUP "Core")
 set(CPACK_COMPONENT_ASSETS_REQUIRED true)
 
 # drivers
-set(CPACK_COMPONENT_SUDOVDA_DISPLAY_NAME "VDD")
-set(CPACK_COMPONENT_SUDOVDA_DESCRIPTION "Driver required for Virtual Display to function.")
-set(CPACK_COMPONENT_SUDOVDA_GROUP "Drivers")
-set(CPACK_COMPONENT_SUDOVDA_REQUIRED true)
+set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DISPLAY_NAME "Sunshine Virtual Display Driver")
+set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DESCRIPTION "Driver required for Virtual Display to function.")
+set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_GROUP "Drivers")
+set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_REQUIRED true)
 
 # audio tool
 set(CPACK_COMPONENT_AUDIO_DISPLAY_NAME "audio-info")

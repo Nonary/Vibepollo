@@ -132,7 +132,7 @@ const defaultGroups = [
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_activate_virtual_display: false,
-      dd_vdd_static_monitor_count: 0,
+      dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
         resolution_only: [] as Array<Record<string, string>>,

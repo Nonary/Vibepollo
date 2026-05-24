@@ -476,11 +476,11 @@ int main(int argc, char *argv[]) {
   // Crash-recovery janitor: if Sunshine starts and finds active virtual displays before
   // any RTSP/WebRTC sessions exist, force cleanup to prevent stuck fallback issues.
   if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
-    const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+    const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
     const bool has_active_virtual_display = std::any_of(
       virtual_displays.begin(),
       virtual_displays.end(),
-      [](const VDISPLAY::SudaVDADisplayInfo &info) {
+      [](const VDISPLAY::VirtualDisplayInfo &info) {
         return info.is_active;
       }
     );
@@ -537,7 +537,7 @@ int main(int argc, char *argv[]) {
     bool encoder_probe_failed = video::probe_encoders();
 
 #ifdef _WIN32
-    // If the probe failed and there's no active display (headless with VDD),
+    // If the probe failed and there's no active display (headless virtual display),
     // wait for the display to become available via DXGI and retry.
     if (encoder_probe_failed && !shutdown_event->peek()) {
       BOOST_LOG(info) << "Startup encoder probe failed; waiting for display activation before retry.";
@@ -546,7 +546,7 @@ int main(int argc, char *argv[]) {
       bool display_activated = false;
       while (std::chrono::steady_clock::now() < deadline && !shutdown_event->peek()) {
         if (VDISPLAY::has_active_physical_display() ||
-            !VDISPLAY::enumerateSudaVDADisplays().empty()) {
+            !VDISPLAY::enumerateVirtualDisplays().empty()) {
           display_activated = true;
           break;
         }
@@ -678,7 +678,7 @@ int main(int argc, char *argv[]) {
   // watchdog thread is still unwinding.
   display_helper_integration::stop_watchdog();
 
-  // The legacy SudoVDA watchdog thread also lives in static storage.
+  // The virtual display watchdog thread also lives in static storage.
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.
   VDISPLAY::closeVDisplayDevice();
 #endif

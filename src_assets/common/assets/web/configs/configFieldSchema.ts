@@ -49,7 +49,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   ping_timeout: { min: 0, step: 100, placeholder: '10000' },
   max_bitrate: { min: 0, placeholder: '0' },
   minimum_fps_target: { min: 0, max: 1000, placeholder: '0' },
-  dd_vdd_static_monitor_count: { min: 0, max: 8, step: 1, precision: 0, placeholder: '0' },
+  dd_virtual_display_permanent_count: { min: 0, max: 4, step: 1, precision: 0, placeholder: '0' },
   nvenc_vbv_increase: { min: 0, max: 400, placeholder: '0' },
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 1, precision: 0, placeholder: '0' },
 };

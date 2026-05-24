@@ -193,7 +193,7 @@
     "dd_resolution_option_disabled": "Ändra inte upplösning",
     "dd_resolution_option_manual": "Använd manuellt inmatad upplösning",
     "dd_resolution_option_manual_desc": "Ange upplösning som ska användas",
-    "dd_wa_hdr_toggle_delay_desc_1": "När man använder en virtuell displayenhet (VDD) för strömning kan den visa HDR-färg på ett felaktigt sätt. Solsken kan försöka mildra detta problem genom att stänga av HDR och sedan på igen.",
+    "dd_wa_hdr_toggle_delay_desc_1": "När man använder en virtuell displayenhet för strömning kan den visa HDR-färg på ett felaktigt sätt. Solsken kan försöka mildra detta problem genom att stänga av HDR och sedan på igen.",
     "dd_wa_hdr_toggle_delay_desc_2": "Om värdet är satt till 0, är lösningen inaktiverad (standard). Om värdet är mellan 0 och 3000 millisekunder, kommer solsken stänga av HDR, vänta på angiven tid och aktivera sedan HDR igen. Den rekommenderade fördröjningstiden är cirka 500 millisekunder i de flesta fall.",
     "dd_wa_hdr_toggle_delay_desc_3": "Använd INTE denna lösning om du inte faktiskt har problem med HDR eftersom det direkt påverkar strömmens starttid!",
     "dd_wa_hdr_toggle_delay": "Hög kontrast för HDR",

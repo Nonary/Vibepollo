@@ -193,6 +193,7 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${SQLITE3_LIBRARIES}
         enet
         libdisplaydevice::display_device
+        libvirtualdisplay::driver
         nlohmann_json::nlohmann_json
         ${Opus_LIBRARY}
         ${FFMPEG_LIBRARIES}

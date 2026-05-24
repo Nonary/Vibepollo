@@ -12,17 +12,8 @@
 #include <winsock2.h>
 #include <windows.h>
 
-#ifndef FILE_DEVICE_UNKNOWN
-  #define FILE_DEVICE_UNKNOWN 0x00000022
-#endif
-
-#include <ddk/d4iface.h>
-#include <ddk/d4drvif.h>
-#include <sudovda/sudovda.h>
-
 namespace VDISPLAY {
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
-  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
   enum class DRIVER_STATUS {
     UNKNOWN = 1,
@@ -32,7 +23,7 @@ namespace VDISPLAY {
     WATCHDOG_FAILED = -3
   };
 
-  extern HANDLE SUDOVDA_DRIVER_HANDLE;
+  extern HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE;
 
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();
@@ -110,9 +101,9 @@ namespace VDISPLAY {
   bool is_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
 
-  uint64_t client_uuid_to_vdd_display_id(const GUID &client_guid);
+  uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
   GUID sharedVirtualDisplayGuid();
-  bool is_vdd_virtual_display_identity(
+  bool is_sunshine_virtual_display_identity(
     const std::string &device_path,
     const std::string &friendly_name,
     const std::string &edid_manufacturer_id,
@@ -121,7 +112,7 @@ namespace VDISPLAY {
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch);
 
-  struct SudaVDADisplayInfo {
+  struct VirtualDisplayInfo {
     std::wstring device_name;
     std::wstring friendly_name;
     bool is_active;
@@ -129,16 +120,8 @@ namespace VDISPLAY {
     int height;
   };
 
-  using VirtualDisplayInfo = SudaVDADisplayInfo;
-
-  bool isSudaVDADriverInstalled();
-  std::vector<SudaVDADisplayInfo> enumerateSudaVDADisplays();
-  inline bool isVirtualDisplayDriverInstalled() {
-    return isSudaVDADriverInstalled();
-  }
-  inline std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {
-    return enumerateSudaVDADisplays();
-  }
+  bool isVirtualDisplayDriverInstalled();
+  std::vector<VirtualDisplayInfo> enumerateVirtualDisplays();
 
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();

@@ -329,11 +329,11 @@ namespace {
   bool wait_for_virtual_display_activation(std::chrono::steady_clock::duration timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
       bool any_active = std::any_of(
         virtual_displays.begin(),
         virtual_displays.end(),
-        [](const VDISPLAY::SudaVDADisplayInfo &info) {
+        [](const VDISPLAY::VirtualDisplayInfo &info) {
           return info.is_active;
         }
       );

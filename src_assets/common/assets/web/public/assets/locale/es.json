@@ -1,10 +1,12 @@
 {
   "_common": {
+    "all": "Todos",
     "apply": "Aplicar",
     "auto": "Automático",
     "autodetect": "Autodetectar (recomendado)",
     "beta": "(beta)",
     "cancel": "Cancelar",
+    "close": "Cerrar",
     "disabled": "Deshabilitado",
     "disabled_def": "Desactivado (por defecto)",
     "disabled_def_cbox": "Por defecto: sin marcar",
@@ -15,19 +17,17 @@
     "enabled_def": "Habilitado (por defecto)",
     "enabled_def_cbox": "Por defecto: marcado",
     "error": "¡Error!",
+    "loading": "Cargando...",
     "note": "Nota:",
     "password": "Contraseña",
     "run_as": "Ejecutar como administrador",
     "save": "Guardar",
+    "search": "Buscar...",
     "see_more": "Ver más",
     "success": "¡Éxito!",
     "undo_cmd": "Deshacer comando",
     "username": "Nombre de usuario",
-    "warning": "¡Advertencia!",
-    "all": "Todos",
-    "close": "Cerrar",
-    "loading": "Cargando...",
-    "search": "Buscar..."
+    "warning": "¡Advertencia!"
   },
   "apps": {
     "actions": "Acciones",
@@ -45,6 +45,7 @@
     "cmd_prep_desc": "Una lista de comandos que se ejecutarán antes/después de esta aplicación. Si alguno de los comandos prep fallan, el inicio de la aplicación es abortado.",
     "cmd_prep_name": "Preparaciones de Comando",
     "covers_found": "Cubiertas encontradas",
+    "cover_search_hint": "Los nombres de búsqueda deben coincidir con las convenciones de nomenclatura del IGDB.",
     "delete": "Eliminar",
     "detached_cmds": "Comandos separados",
     "detached_cmds_add": "Añadir comando separado",
@@ -77,16 +78,15 @@
     "image_desc": "Ruta de la aplicación/dibujo/imagen que se enviará al cliente. La imagen debe ser un archivo PNG. Si no se establece, Vibepollo enviará la imagen predeterminada de la caja.",
     "loading": "Cargando...",
     "name": "Nombre",
+    "no_covers_found": "No se encontraron portadas",
     "output_desc": "El archivo donde se almacena la salida del comando, si no se especifica, se ignora la salida",
     "output_name": "Salida",
     "run_as_desc": "Esto puede ser necesario para que algunas aplicaciones que requieren permisos de administrador, funcionen correctamente.",
+    "searching_covers": "Buscando portadas...",
     "wait_all": "Continuar la transmisión hasta que todos los procesos de la aplicación salgan",
     "wait_all_desc": "Esto continuará transmitiendo hasta que todos los procesos iniciados por la aplicación hayan terminado. Cuando no está marcado, la transmisión se detendrá cuando el proceso inicial de la aplicación se cierre, incluso si otros procesos de aplicación siguen ejecutándose.",
     "working_dir": "Directorio de trabajo",
-    "working_dir_desc": "El directorio de trabajo que debe pasarse al proceso. Por ejemplo, algunas aplicaciones usan el directorio de trabajo para buscar archivos de configuración. Si no se establece, Vibepollo se establecerá por defecto en el directorio padre del comando",
-    "cover_search_hint": "Los nombres de búsqueda deben coincidir con las convenciones de nomenclatura del IGDB.",
-    "no_covers_found": "No se encontraron portadas",
-    "searching_covers": "Buscando portadas..."
+    "working_dir_desc": "El directorio de trabajo que debe pasarse al proceso. Por ejemplo, algunas aplicaciones usan el directorio de trabajo para buscar archivos de configuración. Si no se establece, Vibepollo se establecerá por defecto en el directorio padre del comando"
   },
   "config": {
     "adapter_name": "Nombre del adaptador",
@@ -145,6 +145,8 @@
     "av1_mode_desc": "Permite al cliente solicitar flujos de vídeo AV1 Main de 8-bit o de 10-bits. AV1 es más intensivo en CPU para codificar, por lo que permitir esto puede reducir el rendimiento al usar la codificación de software.",
     "back_button_timeout": "Tiempo de Emulación de Botón de Inicio/Guía",
     "back_button_timeout_desc": "Si se mantiene presionado el botón Atrás/Seleccionar para el número de milisegundos especificado, se emula un botón Inicio/Guía. Si se establece un valor < 0 (por defecto), mantener presionado el botón Volver/Seleccionar no se activará el botón Inicio/Guía.",
+    "bind_address": "Enlazar dirección",
+    "bind_address_desc": "Establecer la dirección IP específica Sunshine se enlazará. Si se deja en blanco, Sunshine se enlazará a todas las direcciones disponibles.",
     "capture": "Forzar un método de captura específico",
     "capture_desc": "En modo automático Vibepollo usará el primero que funcione.",
     "cert": "Certificado",
@@ -193,7 +195,7 @@
     "dd_resolution_option_disabled": "No cambiar resolución",
     "dd_resolution_option_manual": "Usar resolución introducida manualmente",
     "dd_resolution_option_manual_desc": "Introduzca la resolución a usar",
-    "dd_wa_hdr_toggle_delay_desc_1": "Cuando se utiliza un dispositivo de visualización virtual (VDD) para el streaming, podría mostrar incorrectamente el color HDR. Vibepollo puede tratar de mitigar este problema, apagando el HDR y encendiendo de nuevo.",
+    "dd_wa_hdr_toggle_delay_desc_1": "Cuando se utiliza un dispositivo de visualización virtual para el streaming, podría mostrar incorrectamente el color HDR. Vibepollo puede tratar de mitigar este problema, apagando el HDR y encendiendo de nuevo.",
     "dd_wa_hdr_toggle_delay_desc_2": "Si el valor se establece en 0, la solución temporal está deshabilitada (por defecto). Si el valor está entre 0 y 3000 milisegundos, Vibepollo desactivará HDR, espera la cantidad de tiempo especificada y luego enciende HDR de nuevo. El retraso recomendado es de unos 500 milisegundos en la mayoría de los casos.",
     "dd_wa_hdr_toggle_delay_desc_3": "NO use esta solución a menos que realmente tenga problemas con HDR ya que afecta directamente el tiempo de inicio de la secuencia!",
     "dd_wa_hdr_toggle_delay": "Solución de alto contraste para HDR",
@@ -204,6 +206,8 @@
     "encoder_software": "Software",
     "external_ip": "IP externa",
     "external_ip_desc": "Si no se da ninguna dirección IP externa, Vibepollo detectará automáticamente IP externa",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "fec_percentage": "Porcentaje FEC",
     "fec_percentage_desc": "Porcentaje de errores corrigiendo paquetes por paquete de datos en cada fotograma de vídeo. Valores más altos pueden corregir para más pérdida de paquetes de red, pero a costa de aumentar el uso del ancho de banda.",
     "ffmpeg_auto": "auto -- dejar que ffmpeg decida (por defecto)",
@@ -375,10 +379,6 @@
     "wan_encryption_mode_1": "Activado para clientes compatibles (por defecto)",
     "wan_encryption_mode_2": "Requerido para todos los clientes",
     "wan_encryption_mode_desc": "Esto determina cuándo se utilizará el cifrado al transmitir a través de Internet. El cifrado puede reducir el rendimiento de la transmisión, especialmente en hosts y clientes menos poderosos.",
-    "bind_address": "Enlazar dirección",
-    "bind_address_desc": "Establecer la dirección IP específica Vibepollo se enlazará. Si se deja en blanco, Vibepollo se enlazará a todas las direcciones disponibles.",
-    "csrf_allowed_origins": "CSRF Allowed Origins",
-    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "search_options": "Opciones de configuración de búsqueda..."
   },
   "index": {
@@ -401,19 +401,17 @@
   "navbar": {
     "applications": "Aplicaciones",
     "configuration": "Configuración",
+    "featured": "Apps destacadas",
     "home": "Inicio",
     "password": "Cambiar contraseña",
     "pin": "Pin",
     "theme_auto": "Auto",
     "theme_dark": "Oscuro",
-    "theme_light": "Claro",
-    "toggle_theme": "Tema",
-    "troubleshoot": "Resolución de problemas",
-    "featured": "Apps destacadas",
     "theme_ember": "Ember",
     "theme_forest": "Bosque",
     "theme_indigo": "Indigo",
     "theme_lavender": "Lavender",
+    "theme_light": "Claro",
     "theme_midnight": "Medianoche",
     "theme_monochrome": "Monocromo",
     "theme_moonlight": "Luz Lunar",
@@ -421,7 +419,9 @@
     "theme_ocean": "océano",
     "theme_rose": "Rosa",
     "theme_slate": "Pizarra",
-    "theme_sunshine": "Resplandor"
+    "theme_sunshine": "Resplandor",
+    "toggle_theme": "Tema",
+    "troubleshoot": "Resolución de problemas"
   },
   "password": {
     "confirm_password": "Confirmar contraseña",
@@ -484,14 +484,6 @@
     "vigembus_force_reinstall_button": "Forzar reinstalación de ViGEmBus v{version}",
     "vigembus_not_installed": "ViGEmBus no está instalado."
   },
-  "welcome": {
-    "confirm_password": "Confirmar contraseña",
-    "create_creds": "Antes de empezar, necesitamos que crees un nuevo nombre de usuario y contraseña para acceder a la Web UI.",
-    "create_creds_alert": "Las credenciales a continuación son necesarias para acceder a la interfaz web de Vibepollo. Manténgalas seguras, ¡ya que nunca volverá a verlas!",
-    "greeting": "¡Bienvenido a Vibepollo!",
-    "login": "Iniciar sesión",
-    "welcome_success": "Esta página se recargará pronto, su navegador le pedirá las nuevas credenciales"
-  },
   "featured": {
     "categories": {
       "client": "Clientes",
@@ -510,5 +502,13 @@
     "official": "Oficial",
     "title": "Apps destacadas",
     "website": "Sitio web"
+  },
+  "welcome": {
+    "confirm_password": "Confirmar contraseña",
+    "create_creds": "Antes de empezar, necesitamos que crees un nuevo nombre de usuario y contraseña para acceder a la Web UI.",
+    "create_creds_alert": "Las credenciales a continuación son necesarias para acceder a la interfaz web de Vibepollo. Manténgalas seguras, ¡ya que nunca volverá a verlas!",
+    "greeting": "¡Bienvenido a Vibepollo!",
+    "login": "Iniciar sesión",
+    "welcome_success": "Esta página se recargará pronto, su navegador le pedirá las nuevas credenciales"
   }
 }

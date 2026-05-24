@@ -130,12 +130,3 @@ target_link_libraries(sunshine_display_helper
         taskschd
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshine_display_helper PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
-
-add_executable(vdd-temp-display-probe vdd_temp_display_probe.cpp)
-set_target_properties(vdd-temp-display-probe PROPERTIES CXX_STANDARD 23)
-target_include_directories(vdd-temp-display-probe PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(vdd-temp-display-probe
-        setupapi
-        user32
-        ${PLATFORM_LIBRARIES})
-target_compile_options(vdd-temp-display-probe PRIVATE ${SUNSHINE_COMPILE_OPTIONS})

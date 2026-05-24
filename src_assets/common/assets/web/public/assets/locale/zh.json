@@ -193,7 +193,7 @@
     "dd_resolution_option_disabled": "不改变分辨率",
     "dd_resolution_option_manual": "使用手动输入的分辨率",
     "dd_resolution_option_manual_desc": "输入要使用的分辨率",
-    "dd_wa_hdr_toggle_delay_desc_1": "当使用虚拟显示设备 (VDD) 进行串流时，它可能会错误显示 HDR 颜色。 阳光可以尝试通过关闭HDR 然后再次打开来缓解这个问题。",
+    "dd_wa_hdr_toggle_delay_desc_1": "当使用虚拟显示设备 进行串流时，它可能会错误显示 HDR 颜色。 阳光可以尝试通过关闭HDR 然后再次打开来缓解这个问题。",
     "dd_wa_hdr_toggle_delay_desc_2": "如果值设置为 0，工作周围将被禁用 (默认)。 如果值介于 0 到 3000 毫秒之间，阳光将关闭 HDR 等待指定的时间，然后再次打开 HDR 建议的延迟时间在大多数情况下约为500毫秒。",
     "dd_wa_hdr_toggle_delay_desc_3": "不要使用这个工作, 除非你实际上与 HDR 有问题, 因为它直接影响到流的开始时间!",
     "dd_wa_hdr_toggle_delay": "HDR 高对比度工作",

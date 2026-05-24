@@ -1,10 +1,12 @@
 {
   "_common": {
+    "all": "Wszystkie",
     "apply": "Zastosuj",
     "auto": "Automatyczny",
     "autodetect": "Autowykrywanie (zalecane)",
     "beta": "(beta)",
     "cancel": "Anuluj",
+    "close": "Zamknij",
     "disabled": "Wyłączony",
     "disabled_def": "Wyłączone (domyślnie)",
     "disabled_def_cbox": "Domyślnie: odznaczone",
@@ -15,19 +17,17 @@
     "enabled_def": "Włączone (domyślnie)",
     "enabled_def_cbox": "Domyślnie: zaznaczone",
     "error": "Błąd!",
+    "loading": "Ładowanie...",
     "note": "Uwaga:",
     "password": "Hasło",
     "run_as": "Uruchom jako administrator",
     "save": "Zapisz",
+    "search": "Szukaj...",
     "see_more": "Zobacz więcej",
     "success": "Sukces!",
     "undo_cmd": "Polecenie Undo",
     "username": "Nazwa użytkownika",
-    "warning": "Ostrzeżenie!",
-    "all": "Wszystkie",
-    "close": "Zamknij",
-    "loading": "Ładowanie...",
-    "search": "Szukaj..."
+    "warning": "Ostrzeżenie!"
   },
   "apps": {
     "actions": "Działania",
@@ -45,6 +45,7 @@
     "cmd_prep_desc": "Lista poleceń do uruchomienia przed/po tej aplikacji. Jeśli którekolwiek z poleceń wstępnych nie powiedzie się, uruchomienie aplikacji zostanie przerwane.",
     "cmd_prep_name": "Polecenia przygotowujące",
     "covers_found": "Znalezione okładki",
+    "cover_search_hint": "Nazwy wyszukiwań powinny odpowiadać umowom o nazwach IGDB.",
     "delete": "Usuń",
     "detached_cmds": "Polecenia odłączone",
     "detached_cmds_add": "Dodaj odłączone polecenie",
@@ -77,16 +78,15 @@
     "image_desc": "Ścieżka ikony/obrazu/ścieżki aplikacji, która zostanie wysłany do klienta. Obraz musi być plikiem PNG. Jeśli nie zostanie ustawiony, Vibepollo wyśle domyślny obraz pudełka.",
     "loading": "Ładowanie...",
     "name": "Nazwa",
+    "no_covers_found": "Nie znaleziono okładek",
     "output_desc": "Plik, w którym przechowywane są dane wyjściowe polecenia, jeśli nie zostanie określony, dane wyjściowe zostaną zignorowane",
     "output_name": "Wyjście",
     "run_as_desc": "Może to być konieczne w przypadku niektórych aplikacji, które wymagają uprawnień administratora do prawidłowego działania.",
+    "searching_covers": "Wyszukiwanie okładek...",
     "wait_all": "Kontynuuj przesyłanie strumieniowe, aż wszystkie procesy aplikacji zakończą działanie",
     "wait_all_desc": "Spowoduje to kontynuowanie przesyłania strumieniowego do momentu zakończenia wszystkich procesów uruchomionych przez aplikację. Jeśli opcja nie jest zaznaczona, strumień zostanie zatrzymany po zakończeniu początkowego procesu aplikacji, nawet jeśli inne procesy aplikacji są nadal uruchomione.",
     "working_dir": "Katalog roboczy",
-    "working_dir_desc": "Katalog roboczy, który powinien zostać przekazany do procesu. Na przykład, niektóre aplikacje używają katalogu roboczego do wyszukiwania plików konfiguracyjnych. Jeśli nie zostanie ustawiony, Vibepollo domyślnie wybierze katalog nadrzędny polecenia",
-    "cover_search_hint": "Nazwy wyszukiwań powinny odpowiadać umowom o nazwach IGDB.",
-    "no_covers_found": "Nie znaleziono okładek",
-    "searching_covers": "Wyszukiwanie okładek..."
+    "working_dir_desc": "Katalog roboczy, który powinien zostać przekazany do procesu. Na przykład, niektóre aplikacje używają katalogu roboczego do wyszukiwania plików konfiguracyjnych. Jeśli nie zostanie ustawiony, Vibepollo domyślnie wybierze katalog nadrzędny polecenia"
   },
   "config": {
     "adapter_name": "Nazwa adaptera",
@@ -145,6 +145,8 @@
     "av1_mode_desc": "Umożliwia klientowi żądanie 8-bitowych lub 10-bitowych strumieni wideo AV1 Main. Kodowanie AV1 jest bardziej obciążające dla procesora, więc włączenie tej opcji może zmniejszyć wydajność podczas korzystania z kodowania programowego.",
     "back_button_timeout": "Limit czasu emulacji przycisku Home/Guide",
     "back_button_timeout_desc": "Jeśli przycisk Wstecz/Wybierz zostanie przytrzymany przez określoną liczbę milisekund, nastąpi emulacja naciśnięcia przycisku Home/Guide. Jeśli ustawiono wartość < 0 (domyślnie), przytrzymanie przycisku Wstecz/Wybierz nie będzie emulować przycisku Home/Guide.",
+    "bind_address": "Powiąż adres",
+    "bind_address_desc": "Ustaw konkretny adres IP, do którego Sunshine będzie powiązany. Jeśli pozostanie puste, Sunshine będzie powiązany ze wszystkimi dostępnymi adresami.",
     "capture": "Wymuś określoną metodę przechwytywania",
     "capture_desc": "W trybie automatycznym Vibepollo użyje pierwszego działającego sterownika. NvFBC wymaga poprawionych sterowników NVIDIA.",
     "cert": "Certyfikat",
@@ -196,7 +198,7 @@
     "dd_resolution_option_disabled": "Nie zmieniaj rozdzielczości",
     "dd_resolution_option_manual": "Użyj ręcznie wprowadzonej rozdzielczości",
     "dd_resolution_option_manual_desc": "Wprowadź rozdzielczość, która ma być użyta",
-    "dd_wa_hdr_toggle_delay_desc_1": "Podczas używania wirtualnego urządzenia wyświetlającego (VDD) do przesyłania strumieniowego, może ono nieprawidłowo wyświetlić kolory HDR. Vibepollo może próbować złagodzić ten problem, wyłączając HDR i ponownie włączając go.",
+    "dd_wa_hdr_toggle_delay_desc_1": "Podczas używania wirtualnego urządzenia wyświetlającego do przesyłania strumieniowego, może ono nieprawidłowo wyświetlić kolory HDR. Vibepollo może próbować złagodzić ten problem, wyłączając HDR i ponownie włączając go.",
     "dd_wa_hdr_toggle_delay_desc_2": "Jeśli wartość jest ustawiona na 0, obejście jest wyłączone (domyślnie). Jeśli wartość wynosi od 0 do 3000 milisekund, Vibepollo wyłączy HDR, odczeka określony czas, a następnie ponownie włączy HDR. W większości przypadków zalecany czas opóźnienia wynosi około 500 milisekund.",
     "dd_wa_hdr_toggle_delay_desc_3": "NIE używaj tego obejścia, chyba że faktycznie masz problemy z HDR, ponieważ ma to bezpośredni wpływ na czas rozpoczęcia transmisji!",
     "dd_wa_hdr_toggle_delay": "Obejście wysokiego kontrastu dla HDR",
@@ -209,6 +211,8 @@
     "encoder_software": "Oprogramowanie",
     "external_ip": "Zewnętrzny adres IP",
     "external_ip_desc": "Jeśli nie podano zewnętrznego adresu IP, Vibepollo automatycznie wykryje zewnętrzny adres IP",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "fec_percentage": "Procent FEC",
     "fec_percentage_desc": "Procent pakietów korekcji błędów na pakiet danych w każdej klatce wideo. Wyższe wartości mogą skorygować większą utratę pakietów sieciowych, ale kosztem zwiększenia wykorzystania przepustowości.",
     "ffmpeg_auto": "auto -- niech ffmpeg zdecyduje (domyślnie)",
@@ -394,10 +398,6 @@
     "wan_encryption_mode_1": "Włączone dla obsługiwanych klientów (domyślnie)",
     "wan_encryption_mode_2": "Wymagane dla wszystkich klientów",
     "wan_encryption_mode_desc": "Określa, kiedy szyfrowanie będzie używane podczas przesyłania strumieniowego przez Internet. Szyfrowanie może zmniejszyć wydajność przesyłania strumieniowego, szczególnie na mniej wydajnych hostach i klientach.",
-    "bind_address": "Powiąż adres",
-    "bind_address_desc": "Ustaw konkretny adres IP, do którego Vibepollo będzie powiązany. Jeśli pozostanie puste, Vibepollo będzie powiązany ze wszystkimi dostępnymi adresami.",
-    "csrf_allowed_origins": "CSRF Allowed Origins",
-    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "search_options": "Opcje konfiguracji wyszukiwania..."
   },
   "index": {
@@ -420,19 +420,17 @@
   "navbar": {
     "applications": "Aplikacje",
     "configuration": "Konfiguracja",
+    "featured": "Polecane aplikacje",
     "home": "Strona główna",
     "password": "Zmień hasło",
     "pin": "Pin",
     "theme_auto": "Auto",
     "theme_dark": "Ciemny",
-    "theme_light": "Jasny",
-    "toggle_theme": "Wygląd",
-    "troubleshoot": "Rozwiązywanie problemów",
-    "featured": "Polecane aplikacje",
     "theme_ember": "Ember",
     "theme_forest": "Las",
     "theme_indigo": "Indigo",
     "theme_lavender": "Lavender",
+    "theme_light": "Jasny",
     "theme_midnight": "Północ",
     "theme_monochrome": "Monochromatyczne",
     "theme_moonlight": "Księżycowy",
@@ -440,7 +438,9 @@
     "theme_ocean": "Ocean",
     "theme_rose": "Róża dzika",
     "theme_slate": "Łupek",
-    "theme_sunshine": "Słońce"
+    "theme_sunshine": "Słońce",
+    "toggle_theme": "Wygląd",
+    "troubleshoot": "Rozwiązywanie problemów"
   },
   "password": {
     "confirm_password": "Potwierdź hasło",
@@ -503,20 +503,12 @@
     "vigembus_force_reinstall_button": "Wymuś ponowną instalację ViGEmBus /{version}",
     "vigembus_not_installed": "ViGEmBus nie jest zainstalowany."
   },
-  "welcome": {
-    "confirm_password": "Potwierdź hasło",
-    "create_creds": "Przed rozpoczęciem pracy należy utworzyć nową nazwę użytkownika i hasło dostępu do interfejsu użytkownika.",
-    "create_creds_alert": "Poniższe dane uwierzytelniające są potrzebne do uzyskania dostępu do interfejsu użytkownika Vibepollo. Zachowaj je w bezpiecznym miejscu, ponieważ nigdy więcej ich nie zobaczysz!",
-    "greeting": "Witamy w Vibepollo!",
-    "login": "Login",
-    "welcome_success": "Strona zostanie wkrótce przeładowana, a przeglądarka poprosi o podanie nowych danych uwierzytelniających"
-  },
   "featured": {
     "categories": {
       "client": "Klienci",
       "tool": "Narzędzia"
     },
-    "description": "Odkryj klientów, narzędzia i integracje, które zwiększają wrażenia streamowania Vibepollo.",
+    "description": "Odkryj klientów, narzędzia i integracje, które zwiększają wrażenia streamowania Sunshine.",
     "docs": "Dokumentacja",
     "documentation": "Dokumentacja",
     "get": "Pobierz",
@@ -529,5 +521,13 @@
     "official": "Oficjalny",
     "title": "Polecane aplikacje",
     "website": "Strona internetowa"
+  },
+  "welcome": {
+    "confirm_password": "Potwierdź hasło",
+    "create_creds": "Przed rozpoczęciem pracy należy utworzyć nową nazwę użytkownika i hasło dostępu do interfejsu użytkownika.",
+    "create_creds_alert": "Poniższe dane uwierzytelniające są potrzebne do uzyskania dostępu do interfejsu użytkownika Vibepollo. Zachowaj je w bezpiecznym miejscu, ponieważ nigdy więcej ich nie zobaczysz!",
+    "greeting": "Witamy w Vibepollo!",
+    "login": "Login",
+    "welcome_success": "Strona zostanie wkrótce przeładowana, a przeglądarka poprosi o podanie nowych danych uwierzytelniających"
   }
 }

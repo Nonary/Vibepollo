@@ -25,19 +25,19 @@ const frameLimiterStepLabel = computed(() =>
   ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
 );
 
-// SudoVDA status mapping (Apollo-specific)
-const sudovdaStatus = computed(() => ({
-  '1': t('config.sudovda_status_unknown'),
-  '0': t('config.sudovda_status_ready'),
-  '-1': t('config.sudovda_status_uninitialized'),
-  '-2': t('config.sudovda_status_version_incompatible'),
-  '-3': t('config.sudovda_status_watchdog_failed'),
+const virtualDisplayDriverStatus = computed(() => ({
+  '1': t('config.virtual_display_driver_status_unknown'),
+  '0': t('config.virtual_display_driver_status_ready'),
+  '-1': t('config.virtual_display_driver_status_uninitialized'),
+  '-2': t('config.virtual_display_driver_status_version_incompatible'),
+  '-3': t('config.virtual_display_driver_status_watchdog_failed'),
 }));
 const vdisplay = computed(() => (config as any)?.vdisplay || 0);
 const currentDriverStatus = computed(
   () =>
-    sudovdaStatus.value[String(vdisplay.value) as keyof typeof sudovdaStatus.value] ||
-    t('config.sudovda_status_unknown'),
+    virtualDisplayDriverStatus.value[
+      String(vdisplay.value) as keyof typeof virtualDisplayDriverStatus.value
+    ] || t('config.virtual_display_driver_status_unknown'),
 );
 
 const lastAutomationOption = ref('verify_only');
@@ -291,8 +291,8 @@ function selectVirtualDisplayLayout(v: unknown) {
                     :disabled="virtualDisplayMode === 'disabled'"
                   />
                   <ConfigFieldRenderer
-                    setting-key="dd_vdd_static_monitor_count"
-                    v-model="config.dd_vdd_static_monitor_count"
+                    setting-key="dd_virtual_display_permanent_count"
+                    v-model="config.dd_virtual_display_permanent_count"
                     class="mt-4"
                   />
                 </div>

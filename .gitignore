@@ -30,6 +30,8 @@
 *.exe
 *.out
 *.app
+!src_assets/windows/drivers/sunshine/*.dll
+!src_assets/windows/drivers/sunshine/*.exe
 
 # JetBrains IDE
 .idea/

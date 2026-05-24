@@ -1,10 +1,12 @@
 {
   "_common": {
+    "all": "모두",
     "apply": "적용",
     "auto": "자동 설정",
     "autodetect": "자동 감지 (권장)",
     "beta": "(베타)",
     "cancel": "취소",
+    "close": "닫기",
     "disabled": "비활성화",
     "disabled_def": "사용 안 함(기본값)",
     "disabled_def_cbox": "기본값 : 비활성화",
@@ -15,19 +17,17 @@
     "enabled_def": "활성화 (기본값)",
     "enabled_def_cbox": "기본값 : 활성화",
     "error": "오류!",
+    "loading": "로드 중...",
     "note": "참고:",
     "password": "비밀번호",
     "run_as": "관리자 권한으로 실행",
     "save": "저장",
+    "search": "검색...",
     "see_more": "자세히 보기",
     "success": "성공!",
     "undo_cmd": "명령 실행 취소",
     "username": "사용자명",
-    "warning": "경고!",
-    "all": "모두",
-    "close": "닫기",
-    "loading": "로드 중...",
-    "search": "검색..."
+    "warning": "경고!"
   },
   "apps": {
     "actions": "작업",
@@ -45,6 +45,7 @@
     "cmd_prep_desc": "이 애플리케이션 전/후에 실행할 명령 목록입니다. 준비 명령 중 하나라도 실패하면 애플리케이션 시작이 중단됩니다.",
     "cmd_prep_name": "명령 준비",
     "covers_found": "커버 발견",
+    "cover_search_hint": "검색 이름은 IGDB 명명 규칙과 일치해야 합니다.",
     "delete": "삭제",
     "detached_cmds": "분리된 명령",
     "detached_cmds_add": "분리된 명령 추가",
@@ -77,16 +78,15 @@
     "image_desc": "클라이언트로 전송할 애플리케이션 아이콘/사진/이미지 경로입니다. 이미지는 PNG 파일이어야 합니다. 설정하지 않으면 Vibepollo은 기본 상자 이미지를 전송합니다.",
     "loading": "로드 중...",
     "name": "이름",
+    "no_covers_found": "표지를 찾을 수 없습니다.",
     "output_desc": "명령의 출력이 저장되는 파일로, 지정하지 않으면 출력이 무시됩니다.",
     "output_name": "출력",
     "run_as_desc": "이는 제대로 실행하려면 관리자 권한이 필요한 일부 애플리케이션에 필요할 수 있습니다.",
+    "searching_covers": "표지 검색 중...",
     "wait_all": "모든 앱 프로세스가 종료될 때까지 스트리밍을 계속합니다.",
     "wait_all_desc": "앱에서 시작한 모든 프로세스가 종료될 때까지 스트리밍이 계속됩니다. 이 옵션을 선택하지 않으면 다른 앱 프로세스가 계속 실행 중이더라도 초기 앱 프로세스가 종료되면 스트리밍이 중지됩니다.",
     "working_dir": "작업 디렉토리",
-    "working_dir_desc": "프로세스에 전달할 작업 디렉터리입니다. 예를 들어 일부 애플리케이션은 작업 디렉터리를 사용하여 구성 파일을 검색합니다. 이 옵션을 설정하지 않으면 기본적으로 Vibepollo은 다음 명령의 상위 디렉터리로 설정됩니다.",
-    "cover_search_hint": "검색 이름은 IGDB 명명 규칙과 일치해야 합니다.",
-    "no_covers_found": "표지를 찾을 수 없습니다.",
-    "searching_covers": "표지 검색 중..."
+    "working_dir_desc": "프로세스에 전달할 작업 디렉터리입니다. 예를 들어 일부 애플리케이션은 작업 디렉터리를 사용하여 구성 파일을 검색합니다. 이 옵션을 설정하지 않으면 기본적으로 Vibepollo은 다음 명령의 상위 디렉터리로 설정됩니다."
   },
   "config": {
     "adapter_name": "어댑터 이름",
@@ -145,6 +145,8 @@
     "av1_mode_desc": "클라이언트가 AV1 메인 8비트 또는 10비트 비디오 스트림을 요청할 수 있습니다. AV1은 인코딩 시 CPU를 더 많이 사용하므로 이 옵션을 활성화하면 소프트웨어 인코딩을 사용할 때 성능이 저하될 수 있습니다.",
     "back_button_timeout": "홈/가이드 버튼 에뮬레이션 시간 초과",
     "back_button_timeout_desc": "뒤로/선택 버튼을 지정된 밀리초 동안 누르고 있으면 홈/가이드 버튼 누름이 에뮬레이션됩니다. 값을 0 미만(기본값)으로 설정하면 뒤로/선택 버튼을 길게 눌러도 홈/가이드 버튼이 에뮬레이션되지 않습니다.",
+    "bind_address": "바인드 주소",
+    "bind_address_desc": "선샤인이 바인딩할 특정 IP 주소를 설정합니다. 비워두면 Sunshine은 사용 가능한 모든 주소에 바인딩됩니다.",
     "capture": "특정 캡처 방법 강제 적용",
     "capture_desc": "자동 모드에서 Vibepollo은 가장 먼저 작동하는 것을 사용합니다. NvFBC에는 패치된 엔비디아 드라이버가 필요합니다.",
     "cert": "인증서",
@@ -193,7 +195,7 @@
     "dd_resolution_option_disabled": "해상도 변경 금지",
     "dd_resolution_option_manual": "수동으로 입력한 해상도 사용",
     "dd_resolution_option_manual_desc": "사용할 해상도를 입력합니다.",
-    "dd_wa_hdr_toggle_delay_desc_1": "스트리밍에 가상 디스플레이 장치(VDD)를 사용하는 경우 HDR 색상이 잘못 표시될 수 있습니다. HDR을 껐다가 다시 켜면 이 문제를 완화할 수 있습니다.",
+    "dd_wa_hdr_toggle_delay_desc_1": "스트리밍에 가상 디스플레이 장치를 사용하는 경우 HDR 색상이 잘못 표시될 수 있습니다. HDR을 껐다가 다시 켜면 이 문제를 완화할 수 있습니다.",
     "dd_wa_hdr_toggle_delay_desc_2": "값을 0으로 설정하면 해결 방법이 비활성화됩니다(기본값). 값이 0에서 3000밀리초 사이인 경우, Vibepollo은 HDR을 끄고 지정된 시간 동안 기다린 다음 HDR을 다시 켭니다. 대부분의 경우 권장되는 지연 시간은 약 500밀리초입니다.",
     "dd_wa_hdr_toggle_delay_desc_3": "이 해결 방법은 스트림 시작 시간에 직접적인 영향을 미치므로 실제로 HDR에 문제가 없는 한 사용하지 마세요!",
     "dd_wa_hdr_toggle_delay": "HDR을 위한 고대비 해결 방법",
@@ -204,6 +206,8 @@
     "encoder_software": "소프트웨어",
     "external_ip": "외부 IP",
     "external_ip_desc": "외부 IP 주소가 지정되지 않은 경우 Vibepollo은 자동으로 외부 IP를 감지합니다.",
+    "csrf_allowed_origins": "CSRF Allowed Origins",
+    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "fec_percentage": "FEC 백분율",
     "fec_percentage_desc": "각 비디오 프레임의 데이터 패킷당 오류를 수정하는 패킷의 백분율입니다. 값이 높을수록 더 많은 네트워크 패킷 손실을 보정할 수 있지만 대역폭 사용량이 증가합니다.",
     "ffmpeg_auto": "자동 -- FFMPEG 결정에 맡김(기본값)",
@@ -375,10 +379,6 @@
     "wan_encryption_mode_1": "지원되는 클라이언트에 사용(기본값)",
     "wan_encryption_mode_2": "모든 사용자에게 필수",
     "wan_encryption_mode_desc": "인터넷을 통해 스트리밍할 때 암호화를 사용할 시기를 결정합니다. 암호화는 특히 성능이 낮은 호스트와 클라이언트에서 스트리밍 성능을 저하시킬 수 있습니다.",
-    "bind_address": "바인드 주소",
-    "bind_address_desc": "선샤인이 바인딩할 특정 IP 주소를 설정합니다. 비워두면 Vibepollo은 사용 가능한 모든 주소에 바인딩됩니다.",
-    "csrf_allowed_origins": "CSRF Allowed Origins",
-    "csrf_allowed_origins_desc": "Comma-separated list of additional origins allowed for CSRF protection. Only add origins you trust, including protocol and host, for example https://example.com.",
     "search_options": "검색 구성 옵션..."
   },
   "index": {
@@ -401,19 +401,17 @@
   "navbar": {
     "applications": "애플리케이션",
     "configuration": "설정",
+    "featured": "추천 앱",
     "home": "홈",
     "password": "비밀번호 변경",
     "pin": "새 기기 연결",
     "theme_auto": "자동",
     "theme_dark": "다크 테마",
-    "theme_light": "라이트 테마",
-    "toggle_theme": "테마",
-    "troubleshoot": "문제 해결",
-    "featured": "추천 앱",
     "theme_ember": "Ember",
     "theme_forest": "숲",
     "theme_indigo": "인디고",
     "theme_lavender": "라벤더",
+    "theme_light": "라이트 테마",
     "theme_midnight": "미드나잇",
     "theme_monochrome": "단색",
     "theme_moonlight": "달빛",
@@ -421,7 +419,9 @@
     "theme_ocean": "바다",
     "theme_rose": "Rose",
     "theme_slate": "슬레이트",
-    "theme_sunshine": "선샤인"
+    "theme_sunshine": "선샤인",
+    "toggle_theme": "테마",
+    "troubleshoot": "문제 해결"
   },
   "password": {
     "confirm_password": "비밀번호 확인",
@@ -484,20 +484,12 @@
     "vigembus_force_reinstall_button": "ViGEmBus 강제 재설치 v{version}",
     "vigembus_not_installed": "ViGEmBus가 설치되어 있지 않습니다."
   },
-  "welcome": {
-    "confirm_password": "비밀번호 확인",
-    "create_creds": "시작하기 전에 웹 UI에 액세스하기 위한 새 사용자 아이디와 비밀번호를 만들어야 합니다.",
-    "create_creds_alert": "Vibepollo의 웹 UI에 액세스하려면 아래 자격 증명이 필요합니다. 다시는 볼 수 없으니 안전하게 보관하세요!\n(잊어버리면 이 화면을 또 볼 수 있을꺼에요!)",
-    "greeting": "Vibepollo에 오신 것을 환영합니다!",
-    "login": "로그인",
-    "welcome_success": "이 페이지는 곧 새로고침 될 것이며, 브라우저에서 다시 로그인을 해야 합니다."
-  },
   "featured": {
     "categories": {
       "client": "클라이언트",
       "tool": "도구"
     },
-    "description": "Vibepollo 스트리밍 경험을 향상시키는 클라이언트, 도구, 통합 기능을 살펴보세요.",
+    "description": "Sunshine 스트리밍 경험을 향상시키는 클라이언트, 도구, 통합 기능을 살펴보세요.",
     "docs": "문서",
     "documentation": "문서",
     "get": "Get",
@@ -510,5 +502,13 @@
     "official": "공식",
     "title": "추천 앱",
     "website": "웹사이트"
+  },
+  "welcome": {
+    "confirm_password": "비밀번호 확인",
+    "create_creds": "시작하기 전에 웹 UI에 액세스하기 위한 새 사용자 아이디와 비밀번호를 만들어야 합니다.",
+    "create_creds_alert": "Vibepollo의 웹 UI에 액세스하려면 아래 자격 증명이 필요합니다. 다시는 볼 수 없으니 안전하게 보관하세요!\n(잊어버리면 이 화면을 또 볼 수 있을꺼에요!)",
+    "greeting": "Vibepollo에 오신 것을 환영합니다!",
+    "login": "로그인",
+    "welcome_success": "이 페이지는 곧 새로고침 될 것이며, 브라우저에서 다시 로그인을 해야 합니다."
   }
 }

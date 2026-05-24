@@ -808,7 +808,7 @@ namespace proc {
   void initVDisplayDriver() {
     VDISPLAY::ensureVirtualDisplayRegistryDefaults();
     if (!VDISPLAY::ensure_driver_is_ready()) {
-      BOOST_LOG(warning) << "SudoVDA driver reported unavailable during initialization; attempting to continue.";
+      BOOST_LOG(warning) << "Sunshine virtual display driver reported unavailable during initialization; attempting to continue.";
     }
     vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
     if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {

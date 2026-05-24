@@ -197,11 +197,11 @@ namespace nvhttp {
     }
 
     bool has_active_virtual_display() {
-      const auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
       return std::any_of(
         virtual_displays.begin(),
         virtual_displays.end(),
-        [](const VDISPLAY::SudaVDADisplayInfo &info) {
+        [](const VDISPLAY::VirtualDisplayInfo &info) {
           return info.is_active;
         }
       );

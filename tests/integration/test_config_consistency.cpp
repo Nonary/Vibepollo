@@ -20,6 +20,7 @@
 #include <vector>
 
 // local includes
+#include "src/config.h"
 #include "src/file_handler.h"
 
 class ConfigConsistencyTest: public ::testing::Test {
@@ -820,6 +821,17 @@ TEST_F(ConfigConsistencyTest, DummyConfigOptionsDoNotExist) {
     }
     FAIL() << errorMsg;
   }
+}
+
+TEST_F(ConfigConsistencyTest, PermanentVirtualDisplayUiLimitMatchesDriverLimit) {
+  const std::string schema = file_handler::read_file("src_assets/common/assets/web/configs/configFieldSchema.ts");
+  const std::regex pattern(R"DELIM(dd_virtual_display_permanent_count\s*:\s*\{[^}]*\bmax\s*:\s*(\d+))DELIM");
+  std::smatch match;
+
+  ASSERT_TRUE(std::regex_search(schema, match, pattern));
+  ASSERT_GE(match.size(), 2u);
+
+  EXPECT_EQ(std::stoi(match[1].str()), config::SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT);
 }
 
 TEST_F(ConfigConsistencyTest, TestFrameworkDetectsMissingOptions) {

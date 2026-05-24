@@ -1531,7 +1531,7 @@ const ddConfigOption = computed(
   () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
 );
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
-const VIRTUAL_DISPLAY_SELECTION = 'sunshine:sudovda_virtual_display';
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
 const globalOutputName = computed(() => {
   const name = (configStore.config as any)?.output_name;
   return typeof name === 'string' ? name : '';
