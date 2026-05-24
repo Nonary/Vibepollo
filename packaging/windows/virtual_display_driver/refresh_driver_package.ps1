@@ -152,19 +152,43 @@ function Invoke-Cmd {
     }
 }
 
-function Find-SigningThumbprint {
+function Find-SigningCertificate {
     param([string]$CertificatePath)
 
     if ($SigningThumbprint) {
-        return $SigningThumbprint
+        $thumbprint = $SigningThumbprint
+    } elseif (Test-Path -LiteralPath $CertificatePath -PathType Leaf) {
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($CertificatePath))
+        $thumbprint = $cert.Thumbprint
+    } else {
+        return [PSCustomObject]@{
+            Thumbprint = ''
+            UseMachineStore = $false
+        }
     }
 
-    if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
-        return ''
+    foreach ($storeLocation in @('CurrentUser', 'LocalMachine')) {
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', $storeLocation)
+        try {
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+            $matches = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $thumbprint, $false)
+            foreach ($match in $matches) {
+                if ($match.HasPrivateKey) {
+                    return [PSCustomObject]@{
+                        Thumbprint = $thumbprint
+                        UseMachineStore = ($storeLocation -eq 'LocalMachine')
+                    }
+                }
+            }
+        } finally {
+            $store.Close()
+        }
     }
 
-    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($CertificatePath))
-    return $cert.Thumbprint
+    return [PSCustomObject]@{
+        Thumbprint = $thumbprint
+        UseMachineStore = $false
+    }
 }
 
 $libRoot = Resolve-RequiredPath -Path $LibVirtualDisplayDir
@@ -210,10 +234,15 @@ if ($Build) {
         throw "[SunshineVirtualDisplay] Inf2Cat failed with exit code $LASTEXITCODE"
     }
 
-    $thumbprint = Find-SigningThumbprint -CertificatePath $packageCer
-    if ($thumbprint) {
+    $signingCert = Find-SigningCertificate -CertificatePath $packageCer
+    if ($signingCert.Thumbprint) {
         $signtool = Resolve-Tool -Name 'signtool.exe'
-        & $signtool sign /fd SHA256 /sha1 $thumbprint $packageCat
+        $signArgs = @('sign', '/fd', 'SHA256')
+        if ($signingCert.UseMachineStore) {
+            $signArgs += '/sm'
+        }
+        $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
+        & $signtool @signArgs
         if ($LASTEXITCODE -ne 0) {
             throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
         }

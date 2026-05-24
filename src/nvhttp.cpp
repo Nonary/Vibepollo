@@ -217,6 +217,15 @@ namespace nvhttp {
       return has_active_virtual_display();
     }
 
+    video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+      auto ensure_result = VDISPLAY::ensure_display();
+      const auto caps = video::advertised_encoder_capabilities(true);
+      if (ensure_result.tracks_temporary_for_probe) {
+        BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
+      }
+      return caps;
+    }
+
     bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
       if (timeout <= std::chrono::steady_clock::duration::zero()) {
         return has_any_active_display();
@@ -1930,7 +1939,11 @@ namespace nvhttp {
         tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
       }
 
+#ifdef _WIN32
+      const auto advertised_video = advertised_encoder_capabilities_for_http();
+#else
       const auto advertised_video = video::advertised_encoder_capabilities(true);
+#endif
 
       tree.put("root.MaxLumaPixelsHEVC", advertised_video.hevc_mode > 1 ? "1869449984" : "0");
 
@@ -2166,7 +2179,11 @@ namespace nvhttp {
           bits = zwpad::pad_width_for_count(visible_apps.size());
         }
 
+#ifdef _WIN32
+        const auto advertised_video = advertised_encoder_capabilities_for_http();
+#else
         const auto advertised_video = video::advertised_encoder_capabilities(true);
+#endif
         const bool is_hdr_supported = advertised_video.hevc_mode == 3 || advertised_video.av1_mode == 3;
 
         for (size_t i = 0; i < visible_apps.size(); ++i) {
@@ -2469,7 +2486,7 @@ namespace nvhttp {
             BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying encoder probe.";
           }
         }
-        VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
+        VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
 #endif
 
         if (encoder_probe_failed && !is_input_only) {
@@ -2797,7 +2814,7 @@ namespace nvhttp {
           BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying resume encoder probe.";
         }
       }
-      VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed);
+      VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
 #endif
 
       // Skip encoder probing failure for input-only mode

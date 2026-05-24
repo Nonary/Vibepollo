@@ -72,7 +72,8 @@ namespace VDISPLAY {
     const GUID &guid,
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
-    bool hdr_requested = false
+    bool hdr_requested = false,
+    bool allow_pending_enumeration = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).

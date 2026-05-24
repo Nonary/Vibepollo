@@ -3657,7 +3657,8 @@ namespace VDISPLAY {
       const GUID &guid,
       uint32_t base_fps_millihz,
       bool framegen_refresh_active,
-      bool hdr_requested
+      bool hdr_requested,
+      bool allow_pending_enumeration
     ) {
       if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
         return std::nullopt;
@@ -3844,6 +3845,24 @@ namespace VDISPLAY {
       }
 
       if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
+        if (allow_pending_enumeration) {
+          BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
+
+          const auto ready_since = std::chrono::steady_clock::now();
+          VirtualDisplayCreationResult result;
+          result.display_name = resolved_display_name;
+          if (device_id && !device_id->empty()) {
+            result.device_id = *device_id;
+          }
+          if (s_client_name && std::strlen(s_client_name) > 0) {
+            result.client_name = std::string(s_client_name);
+          }
+          result.reused_existing = false;
+          result.ready_since = ready_since;
+          driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
+          return result;
+        }
+
         printf("[SunshineVirtualDisplay] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
         (void) removeVirtualDisplay(guid);
         return std::nullopt;
@@ -3921,7 +3940,8 @@ namespace VDISPLAY {
     const GUID &guid,
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
-    bool hdr_requested
+    bool hdr_requested,
+    bool allow_pending_enumeration
   ) {
     constexpr int kMaxInitializationAttempts = 3;
     const auto requested_uuid = guid_to_uuid(guid);
@@ -3944,7 +3964,8 @@ namespace VDISPLAY {
         guid,
         base_fps_millihz,
         framegen_refresh_active,
-        hdr_requested
+        hdr_requested,
+        allow_pending_enumeration
       );
       if (!result) {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
@@ -3972,7 +3993,7 @@ namespace VDISPLAY {
         continue;
       }
 
-      if (confirm_virtual_display_persistence(*result, width, height)) {
+      if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height)) {
         write_guid_to_state_locked(requested_uuid);
         track_virtual_display_created(requested_uuid);
         return result;
@@ -4537,6 +4558,7 @@ VDISPLAY::ensure_display_result VDISPLAY::ensure_display() {
     60000u,
     result.temporary_guid,
     60000u,
+    false,
     false,
     true
   );
