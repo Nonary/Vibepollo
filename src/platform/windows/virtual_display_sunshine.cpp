@@ -110,6 +110,10 @@ namespace VDISPLAY {
       return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
     }
 
+    bool is_ensure_display_client(const char *client_uid) {
+      return client_uid && std::strcmp(client_uid, "sunshine-ensure") == 0;
+    }
+
     std::int64_t steady_ticks_from_time(std::chrono::steady_clock::time_point tp) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch()).count();
     }
@@ -983,6 +987,30 @@ namespace VDISPLAY {
       for (const auto &entry : conflicts) {
         GUID native_guid = uuid_to_guid(entry);
         (void) removeVirtualDisplay(native_guid);
+      }
+    }
+
+    void release_retained_ensure_display_for_stream(const GUID &guid, const char *client_uid) {
+      if (is_ensure_display_client(client_uid)) {
+        return;
+      }
+
+      GUID guid_to_remove {};
+      {
+        std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+        if (!g_ensure_display_retained || !guid_equal(g_ensure_display_guid, guid)) {
+          return;
+        }
+
+        guid_to_remove = g_ensure_display_guid;
+        g_ensure_display_retained = false;
+        g_ensure_display_failure_count = 0;
+        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+      }
+
+      BOOST_LOG(info) << "Removing retained encoder-probe virtual display before creating the stream display.";
+      if (!removeVirtualDisplay(guid_to_remove)) {
+        BOOST_LOG(warning) << "Failed to remove retained encoder-probe virtual display before stream creation.";
       }
     }
 
@@ -3162,6 +3190,10 @@ namespace VDISPLAY {
       BOOST_LOG(warning) << "Unable to apply configured Sunshine virtual display permanent count; temporary display creation will still be attempted.";
     }
 
+    if (!driver_lease_tracker().all().empty()) {
+      (void) ensure_watchdog_thread_active_for_lease();
+    }
+
     return DRIVER_STATUS::OK;
   }
 
@@ -3675,6 +3707,7 @@ namespace VDISPLAY {
                        << " hdr_requested=" << hdr_requested
                        << " guid=" << requested_uuid.string();
 
+      release_retained_ensure_display_for_stream(guid, s_client_uid);
       teardown_conflicting_virtual_displays(requested_uuid);
       BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
       enforce_teardown_cooldown_if_needed();
