@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -129,6 +130,19 @@ namespace video {
 
     std::optional<std::string> active_virtual_display_dxgi_name() {
       auto virtual_displays = VDISPLAY::enumerateSudaVDADisplays();
+      auto is_dxgi_display_name = [](const std::string &name) {
+        static const std::string prefix = "\\\\.\\DISPLAY";
+        if (name.size() < prefix.size()) {
+          return false;
+        }
+
+        for (size_t i = 0; i < prefix.size(); ++i) {
+          if (std::tolower(static_cast<unsigned char>(name[i])) != std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+          }
+        }
+        return true;
+      };
       auto map_to_dxgi_name = [](const std::wstring &name) -> std::optional<std::string> {
         if (name.empty()) {
           return std::nullopt;
@@ -144,14 +158,18 @@ namespace video {
       for (const auto &info : virtual_displays) {
         if (info.is_active) {
           if (auto mapped = map_to_dxgi_name(info.device_name)) {
-            return mapped;
+            if (is_dxgi_display_name(*mapped)) {
+              return mapped;
+            }
           }
         }
       }
 
       for (const auto &info : virtual_displays) {
         if (auto mapped = map_to_dxgi_name(info.device_name)) {
-          return mapped;
+          if (is_dxgi_display_name(*mapped)) {
+            return mapped;
+          }
         }
       }
 

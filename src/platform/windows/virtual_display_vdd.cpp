@@ -2078,7 +2078,7 @@ namespace VDISPLAY {
       return result;
     }
 
-    bool ensure_hdr10_advanced_color(const DisplayConfigTarget &output) {
+    bool request_hdr10_advanced_color(const DisplayConfigTarget &output) {
       const bool hdr_state_set = set_hdr_state(output, true);
       if (!hdr_state_set) {
         BOOST_LOG(debug) << "VDD HDR: SET_HDR_STATE was not accepted for target " << output.TargetId
@@ -2095,7 +2095,7 @@ namespace VDISPLAY {
         return false;
       }
 
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
       do {
         if (auto info = query_advanced_color(output)) {
           BOOST_LOG(debug) << "VDD HDR: target=" << output.TargetId
@@ -2113,12 +2113,12 @@ namespace VDISPLAY {
             return true;
           }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
       } while (std::chrono::steady_clock::now() < deadline);
 
-      BOOST_LOG(warning) << "VDD HDR: HDR mode did not become active at 10-bit for target "
-                         << output.TargetId << ".";
-      return false;
+      BOOST_LOG(debug) << "VDD HDR: activation requested for target " << output.TargetId
+                       << "; continuing without waiting for HDR state to settle.";
+      return true;
     }
 
     std::optional<DisplayConfigIdentity> query_display_config_identity_inner(const DisplayConfigTarget &output) {
@@ -3501,7 +3501,6 @@ namespace VDISPLAY {
     const auto start = std::chrono::steady_clock::now();
     std::optional<std::chrono::steady_clock::time_point> enumerated_at;
     const auto enumeration_timeout = std::chrono::seconds(2);
-    const auto readiness_timeout = std::chrono::seconds(5);
     const auto activation_grace = std::chrono::milliseconds(500);
     const auto poll_interval = std::chrono::milliseconds(50);
     const bool has_dynamic_hints =
@@ -3513,10 +3512,9 @@ namespace VDISPLAY {
         BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate virtual display.";
         return false;
       }
-      if (enumerated_at && now - *enumerated_at >= readiness_timeout) {
-        BOOST_LOG(warning) << "Timed out waiting for virtual display to report "
-                           << width << 'x' << height << '.';
-        return false;
+      if (enumerated_at && now - *enumerated_at >= activation_grace) {
+        BOOST_LOG(debug) << "Virtual display was enumerated before final mode details settled; continuing so the display helper can apply the session mode.";
+        return true;
       }
 
       auto attempt_candidate = [&](const display_device::EnumeratedDevice &candidate) -> bool {
@@ -3541,6 +3539,10 @@ namespace VDISPLAY {
                            << " is active at " << candidate.m_info->m_resolution.m_width << 'x'
                            << candidate.m_info->m_resolution.m_height << "; waiting for "
                            << width << 'x' << height << '.';
+          if (enumerated_at && now - *enumerated_at >= activation_grace) {
+            BOOST_LOG(debug) << "Virtual display is active before the requested mode settled; continuing so the display helper can apply the session mode.";
+            return true;
+          }
           return false;
         }
 
@@ -3962,7 +3964,7 @@ namespace VDISPLAY {
         return std::nullopt;
       }
 
-      if (hdr_requested && !ensure_hdr10_advanced_color(output)) {
+      if (hdr_requested && !request_hdr10_advanced_color(output)) {
         BOOST_LOG(warning) << "VDD HDR: immediate HDR activation did not complete; display helper will retry with the session configuration.";
       }
 
@@ -4537,13 +4539,7 @@ namespace VDISPLAY {
       SudaVDADisplayInfo info;
       info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
       info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
-      bool assumed_active = device.m_info.has_value();
-      if (!assumed_active) {
-        if (!device.m_display_name.empty() || !device.m_device_id.empty()) {
-          assumed_active = true;
-        }
-      }
-      info.is_active = assumed_active;
+      info.is_active = device.m_info.has_value() || !device.m_display_name.empty();
       info.width = 0;
       info.height = 0;
 

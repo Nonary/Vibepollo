@@ -770,6 +770,13 @@ namespace {
           return false;
         }
 
+        if (platf::display_helper_client::send_ping_fast(100)) {
+          BOOST_LOG(debug) << "Display helper hard restart skipped because existing helper accepted a fast ping.";
+          return true;
+        }
+        platf::display_helper_client::reset_connection();
+        BOOST_LOG(warning) << "Display helper hard restart requested because existing helper did not accept a fast ping.";
+
         BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
                            << ") with no grace period.";
         platf::display_helper_client::reset_connection();

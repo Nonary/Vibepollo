@@ -72,7 +72,7 @@ if (-not $VcVarsPath -and $env:VSINSTALLDIR) {
 
 $BuildType = Resolve-Value -Value $BuildType -CacheKey "CMAKE_BUILD_TYPE" -EnvKey "CMAKE_BUILD_TYPE"
 if (-not $BuildType) {
-  $BuildType = "Debug"
+  $BuildType = "Release"
 }
 
 $Jobs = [int](Resolve-Value -Value ([string]$Jobs) -CacheKey "WEBRTC_BUILD_JOBS" -EnvKey "WEBRTC_BUILD_JOBS")

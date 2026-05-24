@@ -39,6 +39,9 @@ namespace platf::display_helper_client {
   // This does not wait for a reply; it only validates a healthy send path.
   bool send_ping();
 
+  // Fast liveness probe bounded by timeout_ms for connect/send.
+  bool send_ping_fast(int timeout_ms);
+
   // Reset the cached connection so the next send will reconnect.
   void reset_connection();
 }  // namespace platf::display_helper_client

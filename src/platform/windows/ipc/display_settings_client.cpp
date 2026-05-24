@@ -367,6 +367,19 @@ namespace platf::display_helper_client {
     }
     return false;
   }
+
+  bool send_ping_fast(int timeout_ms) {
+    std::unique_lock<std::mutex> lk(pipe_mutex());
+    if (!ensure_connected_locked(timeout_ms)) {
+      return false;
+    }
+    std::vector<uint8_t> payload;
+    auto &pipe = pipe_singleton();
+    if (pipe && send_message(*pipe, MsgType::Ping, payload, timeout_ms)) {
+      return true;
+    }
+    return false;
+  }
 }  // namespace platf::display_helper_client
 
 #endif

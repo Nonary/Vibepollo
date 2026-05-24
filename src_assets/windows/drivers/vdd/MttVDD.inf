@@ -10,7 +10,7 @@ Class = Display
 ClassVer = 2.0
 Provider=%ManufacturerName%
 CatalogFile=MttVDD.cat
-DriverVer = 05/23/2026,26.5.23.17
+DriverVer = 05/23/2026,26.5.23.1
 
 [Manufacturer]
 %ManufacturerName%=Standard,NTamd64

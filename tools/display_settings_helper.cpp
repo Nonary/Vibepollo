@@ -1319,6 +1319,35 @@ namespace {
       return loaded->snapshot;
     }
 
+    bool snapshot_file_has_restore_payload(const std::filesystem::path &path) const {
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec) || ec) {
+        return false;
+      }
+
+      FILE *f = _wfopen(path.wstring().c_str(), L"rb");
+      if (!f) {
+        return false;
+      }
+
+      std::string data;
+      char buf[4096];
+      size_t n = 0;
+      while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        data.append(buf, n);
+      }
+      fclose(f);
+
+      try {
+        display_device::DisplaySettingsSnapshot snap;
+        parse_topology_field(find_str_section(data, "topology"), snap);
+        parse_modes_field(find_str_section(data, "modes"), snap);
+        return !snap.m_topology.empty() && !snap.m_modes.empty();
+      } catch (...) {
+        return false;
+      }
+    }
+
     // Apply snapshot best-effort.
     bool apply_snapshot(
       const display_device::DisplaySettingsSnapshot &snap,
@@ -4566,15 +4595,11 @@ namespace {
       return false;
     }
 
-    if (auto loaded = state.controller.load_display_settings_snapshot_with_metadata(path)) {
-      if (!loaded->snapshot.m_topology.empty() && !loaded->snapshot.m_modes.empty()) {
-        return true;
-      }
-      BOOST_LOG(warning) << "Existing session snapshot collapsed after applying current exclusion/device filters; removing path="
-                         << path.string();
-    } else {
-      BOOST_LOG(warning) << "Existing session snapshot is invalid or filtered out; removing path=" << path.string();
+    if (state.controller.snapshot_file_has_restore_payload(path)) {
+      return true;
     }
+
+    BOOST_LOG(warning) << "Existing session snapshot is missing restore topology/mode data; removing path=" << path.string();
 
     {
       std::error_code ec_rm;
