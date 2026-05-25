@@ -2232,15 +2232,22 @@ namespace webrtc_stream {
       auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
       launch_session->id = ++webrtc_launch_session_id;
       launch_session->device_name = "WebRTC";
+      const auto requested_name = options.client_name.value_or(std::string {});
       const auto requested_uuid = options.client_uuid.value_or(std::string {});
       if (!requested_uuid.empty()) {
         launch_session->unique_id = requested_uuid;
         launch_session->client_uuid = requested_uuid;
       } else {
+#ifdef _WIN32
+        const auto stable_source =
+          std::string {"webrtc:"} + (requested_name.empty() ? launch_session->device_name : requested_name);
+        launch_session->unique_id = VDISPLAY::virtualDisplayUuidFromStableId(stable_source).string();
+        launch_session->client_uuid = launch_session->unique_id;
+#else
         launch_session->unique_id = uuid_util::uuid_t::generate().string();
         launch_session->client_uuid = launch_session->unique_id;
+#endif
       }
-      const auto requested_name = options.client_name.value_or(std::string {});
       launch_session->client_name = requested_name.empty() ? launch_session->device_name : requested_name;
       launch_session->width = options.width.value_or(kDefaultWidth);
       launch_session->height = options.height.value_or(kDefaultHeight);

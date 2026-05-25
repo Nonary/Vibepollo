@@ -38,6 +38,7 @@ AddReg=Device_Install_Hw_AddReg
 HKR,,"UpperFilters",0x00010000,"IndirectKmd"
 HKR,"WUDF","DeviceGroupId",0x00000000,"SunshineVirtualDisplayGroup"
 HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"
+HKR,,"ConfigVersion",0x00010001,1
 
 [Device_Install.NT.Interfaces]
 AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface

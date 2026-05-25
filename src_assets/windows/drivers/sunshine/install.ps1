@@ -112,6 +112,7 @@ function Assert-InfContent {
         'AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface',
         '[ControlInterface_AddReg]',
         'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"',
+        'HKR,,"ConfigVersion",0x00010001,1',
         'UmdfExtensions=IddCx0102',
         'SunshineVirtualDisplayGroup'
     )) {
@@ -211,9 +212,107 @@ function Remove-CertificateIfPresent {
     }
 }
 
+function Stop-SunshineForDriverInstall {
+    $service = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne 'Stopped') {
+        Write-Host '[SunshineVirtualDisplay] Stopping Sunshine service before driver replacement.'
+        Stop-Service -Name 'SunshineService' -Force -ErrorAction Stop
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+
+    foreach ($process in @(Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue)) {
+        Write-Host "[SunshineVirtualDisplay] Stopping Sunshine process $($process.Id) before driver replacement."
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    }
+}
+
 function Install-DriverPackage {
     Write-Host '[SunshineVirtualDisplay] Installing driver package.'
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $infPath, '/install')
+}
+
+function Grant-RegistryKeyAccess {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Identity,
+        [switch]$InheritToChildKeys
+    )
+
+    $rights = [System.Security.AccessControl.RegistryRights]'ReadKey, WriteKey, CreateSubKey, SetValue'
+    $inheritance = if ($InheritToChildKeys) {
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
+    } else {
+        [System.Security.AccessControl.InheritanceFlags]::None
+    }
+    $rule = [System.Security.AccessControl.RegistryAccessRule]::new(
+        $Identity,
+        $rights,
+        $inheritance,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+
+    if ($Path.StartsWith('HKLM:\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $subPath = $Path.Substring('HKLM:\'.Length)
+        $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            $subPath,
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [System.Security.AccessControl.RegistryRights]::ChangePermissions
+        )
+        if (-not $key) {
+            throw "[SunshineVirtualDisplay] Registry key not found: $Path"
+        }
+        try {
+            $acl = $key.GetAccessControl()
+            $acl.SetAccessRule($rule)
+            $key.SetAccessControl($acl)
+        } finally {
+            $key.Dispose()
+        }
+        return
+    }
+
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRule($rule)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Initialize-DriverStateRegistryAccess {
+    $enumRoot = 'HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\DISPLAY'
+    if (-not (Test-Path -LiteralPath $enumRoot -PathType Container)) {
+        return
+    }
+
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $applied = $false
+        foreach ($deviceKey in @(Get-ChildItem -LiteralPath $enumRoot -ErrorAction SilentlyContinue)) {
+            $properties = Get-ItemProperty -LiteralPath $deviceKey.PSPath -ErrorAction SilentlyContinue
+            if (-not $properties -or -not ($properties.HardwareID -contains $hardwareId)) {
+                continue
+            }
+
+            $devicePath = 'HKLM:\' + $deviceKey.Name.Substring('HKEY_LOCAL_MACHINE\'.Length)
+            $parametersPath = Join-Path $devicePath 'Device Parameters'
+            if (-not (Test-Path -LiteralPath $parametersPath -PathType Container)) {
+                New-Item -Path $parametersPath -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            if (-not (Test-Path -LiteralPath $parametersPath -PathType Container)) {
+                continue
+            }
+
+            Grant-RegistryKeyAccess -Path $parametersPath -Identity 'NT AUTHORITY\USER MODE DRIVERS' -InheritToChildKeys
+            Write-Host "[SunshineVirtualDisplay] Driver state registry access is ready at $parametersPath."
+            $applied = $true
+        }
+
+        if ($applied) {
+            return
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw '[SunshineVirtualDisplay] Unable to prepare driver state registry access.'
 }
 
 function Get-DisplayDriverPublishedNamesByOriginalName {
@@ -334,13 +433,16 @@ if ($Uninstall) {
 Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
 
+Stop-SunshineForDriverInstall
 Remove-LegacyVirtualDisplayDrivers
+Remove-DeviceNode
+Remove-DriverPackage
 Install-DriverPackage
 
 Write-Host '[SunshineVirtualDisplay] Recreating device node.'
-Remove-DeviceNode
 Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
 Install-DriverPackage
 Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
+Initialize-DriverStateRegistryAccess
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'

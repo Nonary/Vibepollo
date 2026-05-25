@@ -103,6 +103,7 @@ namespace VDISPLAY {
   bool is_virtual_display_selection(const std::string &output_identifier);
 
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
+  uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id);
   GUID sharedVirtualDisplayGuid();
   bool is_sunshine_virtual_display_identity(
     const std::string &device_path,

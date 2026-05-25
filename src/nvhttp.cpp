@@ -478,13 +478,13 @@ namespace nvhttp {
 
           GUID virtual_display_guid {};
           if (!shared_mode && !launch_session->client_uuid.empty()) {
-            if (auto client_uuid_parsed = parse_uuid(launch_session->client_uuid)) {
-              std::memcpy(&virtual_display_guid, client_uuid_parsed->b8, sizeof(virtual_display_guid));
-              std::copy_n(std::cbegin(client_uuid_parsed->b8), sizeof(client_uuid_parsed->b8), launch_session->virtual_display_guid_bytes.begin());
-            } else {
-              std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
-              std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());
-            }
+            const auto client_virtual_display_uuid = VDISPLAY::virtualDisplayUuidFromStableId(launch_session->client_uuid);
+            std::memcpy(&virtual_display_guid, client_virtual_display_uuid.b8, sizeof(virtual_display_guid));
+            std::copy_n(
+              std::cbegin(client_virtual_display_uuid.b8),
+              sizeof(client_virtual_display_uuid.b8),
+              launch_session->virtual_display_guid_bytes.begin()
+            );
           } else {
             std::memcpy(&virtual_display_guid, session_uuid.b8, sizeof(virtual_display_guid));
             std::copy_n(std::cbegin(session_uuid.b8), sizeof(session_uuid.b8), launch_session->virtual_display_guid_bytes.begin());

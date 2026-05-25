@@ -69,8 +69,30 @@ TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotR
 TEST(SunshineVirtualDisplayPackaging, InstallerDoesNotForceKillUmdfHosts) {
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 
-  EXPECT_EQ(installer.find("Stop-Process"), std::string::npos);
+  EXPECT_EQ(installer.find("Get-Process -Name 'WUDFHost'"), std::string::npos);
+  EXPECT_EQ(installer.find("Stop-Process -Name 'WUDFHost'"), std::string::npos);
   expect_contains(installer, "Let PnP removal unload the UMDF host");
+}
+
+TEST(SunshineVirtualDisplayPackaging, InstallerReplacesExistingSunshineDriverStorePackages) {
+  const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
+
+  const auto stop_sunshine = installer.find("Stop-SunshineForDriverInstall");
+  const auto legacy_cleanup = installer.find("Remove-LegacyVirtualDisplayDrivers");
+  const auto remove_device = installer.find("Remove-DeviceNode", legacy_cleanup);
+  const auto remove_package = installer.find("Remove-DriverPackage", remove_device);
+  const auto install_package = installer.find("Install-DriverPackage", remove_package);
+
+  ASSERT_NE(stop_sunshine, std::string::npos);
+  ASSERT_NE(legacy_cleanup, std::string::npos);
+  ASSERT_NE(remove_device, std::string::npos);
+  ASSERT_NE(remove_package, std::string::npos);
+  ASSERT_NE(install_package, std::string::npos);
+  EXPECT_LT(stop_sunshine, legacy_cleanup);
+  EXPECT_LT(legacy_cleanup, remove_device);
+  EXPECT_LT(remove_device, remove_package);
+  EXPECT_LT(remove_package, install_package);
+  expect_contains(installer, "Stop-Service -Name 'SunshineService' -Force");
 }
 
 TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFourBitPowerShell) {

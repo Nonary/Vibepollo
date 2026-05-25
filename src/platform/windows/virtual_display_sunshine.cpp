@@ -3092,6 +3092,38 @@ namespace VDISPLAY {
     return hash == 0 ? 1 : hash;
   }
 
+  uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id) {
+    if (auto parsed = parse_uuid_string(stable_id)) {
+      return *parsed;
+    }
+
+    uuid_util::uuid_t uuid {};
+    constexpr std::uint64_t k_fnv_offset = 14695981039346656037ull;
+    constexpr std::uint64_t k_fnv_prime = 1099511628211ull;
+
+    auto hash_with_domain = [&](const std::string_view domain) {
+      std::uint64_t hash = k_fnv_offset;
+      for (const auto ch : domain) {
+        hash ^= static_cast<std::uint8_t>(ch);
+        hash *= k_fnv_prime;
+      }
+      for (const auto ch : stable_id) {
+        hash ^= static_cast<std::uint8_t>(ch);
+        hash *= k_fnv_prime;
+      }
+      return hash;
+    };
+
+    uuid.b64[0] = hash_with_domain("sunshine-virtual-display-a:");
+    uuid.b64[1] = hash_with_domain("sunshine-virtual-display-b:");
+    uuid.b8[6] = static_cast<std::uint8_t>((uuid.b8[6] & 0x0f) | 0x50);
+    uuid.b8[8] = static_cast<std::uint8_t>((uuid.b8[8] & 0x3f) | 0x80);
+    if (uuid.b64[0] == 0 && uuid.b64[1] == 0) {
+      uuid.b8[15] = 1;
+    }
+    return uuid;
+  }
+
   GUID sharedVirtualDisplayGuid() {
     return uuid_to_guid(ensure_persistent_guid());
   }
@@ -4028,7 +4060,6 @@ namespace VDISPLAY {
       }
 
       if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height)) {
-        write_guid_to_state_locked(requested_uuid);
         track_virtual_display_created(requested_uuid);
         return result;
       }

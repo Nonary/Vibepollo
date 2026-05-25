@@ -7,6 +7,7 @@
 #ifdef _WIN32
   #include <src/platform/windows/virtual_display.h>
 
+  #include <cstring>
   #include <filesystem>
   #include <fstream>
   #include <sstream>
@@ -69,6 +70,40 @@ TEST(SunshineVirtualDisplay, SharedDisplayIdentityUsesPersistentGuid) {
     VDISPLAY::client_uuid_to_virtual_display_id(shared_guid),
     VDISPLAY::client_uuid_to_virtual_display_id(kClientGuid)
   );
+}
+
+TEST(SunshineVirtualDisplay, StableVirtualDisplayUuidKeepsCanonicalUuidBytes) {
+  const std::string client_uuid = "1d6f6f2a-4f29-41b2-958f-6f01d7583f4b";
+
+  EXPECT_EQ(
+    VDISPLAY::virtualDisplayUuidFromStableId(client_uuid),
+    uuid_util::uuid_t::parse(client_uuid)
+  );
+}
+
+TEST(SunshineVirtualDisplay, StableVirtualDisplayUuidDerivesNonCanonicalClientId) {
+  const auto first = VDISPLAY::virtualDisplayUuidFromStableId("0123456789ABCDEF");
+  const auto second = VDISPLAY::virtualDisplayUuidFromStableId("0123456789ABCDEF");
+  const auto different = VDISPLAY::virtualDisplayUuidFromStableId("FEDCBA9876543210");
+
+  EXPECT_EQ(first, second);
+  EXPECT_NE(first, different);
+
+  GUID first_guid {};
+  GUID second_guid {};
+  std::memcpy(&first_guid, first.b8, sizeof(first_guid));
+  std::memcpy(&second_guid, second.b8, sizeof(second_guid));
+  EXPECT_NE(VDISPLAY::client_uuid_to_virtual_display_id(first_guid), 0u);
+  EXPECT_EQ(
+    VDISPLAY::client_uuid_to_virtual_display_id(first_guid),
+    VDISPLAY::client_uuid_to_virtual_display_id(second_guid)
+  );
+}
+
+TEST(SunshineVirtualDisplay, TemporaryCreationDoesNotPersistSessionGuidAsSharedIdentity) {
+  const auto source = read_virtual_display_source();
+
+  EXPECT_EQ(source.find("write_guid_to_state_locked(requested_uuid)"), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {

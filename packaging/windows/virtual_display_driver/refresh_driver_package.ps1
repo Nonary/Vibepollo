@@ -278,6 +278,7 @@ foreach ($required in @(
     'AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface',
     '[ControlInterface_AddReg]',
     'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"',
+    'HKR,,"ConfigVersion",0x00010001,1',
     'UmdfExtensions=IddCx0102'
 )) {
     if ($infText -notlike "*$required*") {
