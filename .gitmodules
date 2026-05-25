@@ -84,3 +84,7 @@
 [submodule "third-party/depot_tools"]
 	path = third-party/depot_tools
 	url = https://chromium.googlesource.com/chromium/tools/depot_tools.git
+[submodule "third-party/libvirtualdisplay"]
+	path = third-party/libvirtualdisplay
+	url = https://github.com/Nonary/libvirtualdisplay.git
+	branch = master

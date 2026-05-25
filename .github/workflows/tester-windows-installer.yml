@@ -1,0 +1,76 @@
+---
+name: Tester Windows Installer
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: Version string embedded in the tester installer.
+        required: false
+        type: string
+        default: '0.0.0'
+
+run-name: Tester Windows Installer ${{ github.ref_name }} (${{ inputs.build_version || '0.0.0' }})
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    name: Build signed tester installer
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      release_commit: ${{ github.sha }}
+      release_version: ${{ inputs.build_version || '0.0.0' }}
+      release_tag: ''
+      symbol_product_name: Vibeshine
+      symbol_release_prefix: shine
+      publish_symbols: false
+      upload_symbols_artifact: false
+    secrets:
+      symbol_token: ${{ secrets.SYMBOL_TOKEN }}
+      signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      VDD_SIGNING_CERT_PFX_BASE64: ${{ secrets.VDD_SIGNING_CERT_PFX_BASE64 }}
+      VDD_SIGNING_CERT_PASSWORD: ${{ secrets.VDD_SIGNING_CERT_PASSWORD }}
+
+  artifact-link:
+    name: Installer artifact link
+    needs:
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Publish artifact link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          artifacts_json="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts")"
+          artifact_name="$(jq -r '.artifacts[] | select(.name == "build-Windows") | .name' <<<"${artifacts_json}" | head -n 1)"
+          artifact_url="$(jq -r '.artifacts[] | select(.name == "build-Windows") | .archive_download_url' <<<"${artifacts_json}" | head -n 1)"
+
+          {
+            echo "## Tester installer"
+            echo
+            echo "Run artifacts page: https://github.com/${REPOSITORY}/actions/runs/${RUN_ID}#artifacts"
+            if [[ -n "${artifact_name}" && -n "${artifact_url}" ]]; then
+              echo
+              echo "Artifact: ${artifact_name}"
+              echo
+              echo "Authenticated download API URL: ${artifact_url}"
+            else
+              echo
+              echo "The Windows installer artifact was not found in this run."
+              echo "Inspect the artifacts page above for build output."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

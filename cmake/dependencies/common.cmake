@@ -22,10 +22,10 @@ add_subdirectory("${CMAKE_SOURCE_DIR}/third-party/libdisplaydevice")
 # libvirtualdisplay
 set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "" CACHE PATH "Path to libvirtualdisplay source")
 if(NOT SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/../libvirtualdisplay/CMakeLists.txt")
-        set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../libvirtualdisplay")
-    elseif(EXISTS "${CMAKE_SOURCE_DIR}/third-party/libvirtualdisplay/CMakeLists.txt")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third-party/libvirtualdisplay/CMakeLists.txt")
         set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/libvirtualdisplay")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/../libvirtualdisplay/CMakeLists.txt")
+        set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../libvirtualdisplay")
     endif()
 endif()
 
