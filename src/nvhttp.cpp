@@ -1114,7 +1114,27 @@ namespace nvhttp {
     }
 
 
-    std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t *named_cert_p) {
+    struct resolved_client_identity_t {
+      std::string uuid;
+      std::string name;
+    };
+
+    resolved_client_identity_t resolve_client_identity(const crypto::named_cert_t *named_cert_p) {
+      resolved_client_identity_t identity;
+      if (named_cert_p) {
+        identity.uuid = named_cert_p->uuid;
+        identity.name = named_cert_p->name;
+      }
+      return identity;
+    }
+
+    std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session(
+      bool host_audio,
+      bool input_only,
+      const args_t &args,
+      const crypto::named_cert_t *named_cert_p,
+      const resolved_client_identity_t *resolved_client_identity = nullptr
+    ) {
       auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 
       launch_session->id = ++session_id_counter;
@@ -1128,14 +1148,16 @@ namespace nvhttp {
       launch_session->frame_generation_provider = "lossless-scaling";
 #ifdef _WIN32
 #endif
-      launch_session->device_name = named_cert_p->name.empty() ? config::nvhttp.sunshine_name : named_cert_p->name;
+      const auto identity_uuid = resolved_client_identity ? resolved_client_identity->uuid : (named_cert_p ? named_cert_p->uuid : std::string());
+      const auto identity_name = resolved_client_identity ? resolved_client_identity->name : (named_cert_p ? named_cert_p->name : std::string());
+      launch_session->device_name = identity_name.empty() ? config::nvhttp.sunshine_name : identity_name;
       launch_session->virtual_display = false;
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
       launch_session->virtual_display_ready_since.reset();
       launch_session->app_metadata.reset();
-      launch_session->client_uuid = named_cert_p ? named_cert_p->uuid : std::string();
-      launch_session->client_name = named_cert_p ? named_cert_p->name : std::string();
+      launch_session->client_uuid = identity_uuid;
+      launch_session->client_name = identity_name;
       launch_session->hdr_profile.reset();
       launch_session->client_requests_virtual_display = false;
       launch_session->virtual_display_failed = false;
@@ -1155,7 +1177,7 @@ namespace nvhttp {
       }
 
       // If launched from client
-      if (named_cert_p->uuid != http::unique_id) {
+      if (launch_session->client_uuid != http::unique_id) {
         auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
         std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
 
@@ -2254,6 +2276,7 @@ namespace nvhttp {
       bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
 
       auto named_cert_p = get_verified_cert(request);
+      const auto request_client_identity = resolve_client_identity(named_cert_p);
       auto perm = PERM::launch;
 
       BOOST_LOG(verbose) << "Launching app [" << appid_str << "] with UUID [" << appuuid_str << "]";
@@ -2386,7 +2409,7 @@ namespace nvhttp {
       (void) display_helper_integration::disarm_pending_restore();
 #endif
       const bool allow_display_changes = true;
-      auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
+      auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p, &request_client_identity);
       std::optional<std::string> pending_output_override;
       auto output_override_guard = util::fail_guard([&]() {
         if (pending_output_override) {
@@ -2643,6 +2666,7 @@ namespace nvhttp {
     });
 
     auto named_cert_p = get_verified_cert(request);
+    const auto request_client_identity = resolve_client_identity(named_cert_p);
     if (!(named_cert_p->perm & PERM::_allow_view)) {
       BOOST_LOG(debug) << "Permission ViewApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
@@ -2699,7 +2723,7 @@ namespace nvhttp {
     // Prevent interleaving with hot-apply while we prep/resume a session
     auto _hot_apply_gate = config::acquire_apply_read_gate();
 
-    auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p);
+    auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p, &request_client_identity);
     if (!proc::proc.allow_client_commands || !named_cert_p->allow_client_commands) {
       launch_session->client_do_cmds.clear();
       launch_session->client_undo_cmds.clear();
