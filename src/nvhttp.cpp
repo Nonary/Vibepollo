@@ -218,6 +218,10 @@ namespace nvhttp {
     }
 
     video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+      if (video::has_successful_encoder_probe()) {
+        return video::advertised_encoder_capabilities(false);
+      }
+
       auto ensure_result = VDISPLAY::ensure_display();
       const auto caps = video::advertised_encoder_capabilities(true);
       if (ensure_result.tracks_temporary_for_probe) {

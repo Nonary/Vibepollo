@@ -373,6 +373,7 @@ namespace video {
   };
 
   bool has_attempted_encoder_probe();
+  bool has_successful_encoder_probe();
   advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative = false);
 
   void capture(

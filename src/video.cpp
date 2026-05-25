@@ -1502,6 +1502,12 @@ namespace video {
     return encoder_probe_attempted.load(std::memory_order_acquire);
   }
 
+  bool has_successful_encoder_probe() {
+    auto &state = encoder_probe_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return state.valid;
+  }
+
   advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
     auto snapshot = []() {
       return advertised_encoder_capabilities_t {

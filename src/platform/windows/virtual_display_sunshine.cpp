@@ -2559,6 +2559,7 @@ namespace VDISPLAY {
     constexpr auto RECOVERY_MISSING_GRACE = std::chrono::milliseconds(500);
     constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(1);
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
+    constexpr auto RECOVERY_INITIAL_SETTLE_GRACE = std::chrono::seconds(6);
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
     constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
@@ -2826,7 +2827,7 @@ namespace VDISPLAY {
         state.confirmed_active_at_schedule ? std::make_optional(std::chrono::steady_clock::now()) : std::nullopt;
       std::optional<std::chrono::steady_clock::time_point> inactive_since;
       std::optional<std::chrono::steady_clock::time_point> missing_since;
-      auto recovery_cooldown_until = std::chrono::steady_clock::now();
+      auto recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_INITIAL_SETTLE_GRACE;
 
       while (true) {
         if (monitor_should_abort(state)) {
