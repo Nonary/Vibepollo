@@ -1019,7 +1019,7 @@ namespace platf {
     }
 
     if (!g_limit_active && !g_settings_dirty) {
-      return rtss_streaming_start(fps, 1);
+      return rtss_streaming_start(scaled_limit, denominator);
     }
 
     g_rtss_root = resolve_rtss_root();
@@ -1132,7 +1132,7 @@ namespace platf {
       g_recovery_file_owned = write_overrides_file(snapshot);
     }
 
-    return applied_limit;
+    return limit_applied;
   }
 
   void rtss_streaming_stop(bool keep_process_running) {

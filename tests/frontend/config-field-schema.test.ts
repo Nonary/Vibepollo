@@ -38,6 +38,7 @@ describe('configFieldSchema', () => {
 
     expect(field.kind).toBe('number');
     expect(field.min).toBe(0);
+    expect(field.max).toBe(1000);
     expect(field.step).toBe(1);
     expect(field.precision).toBe(0);
   });

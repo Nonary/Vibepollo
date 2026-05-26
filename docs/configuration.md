@@ -2665,6 +2665,10 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">@code{}0@endcode</td>
     </tr>
     <tr>
+        <td>Range</td>
+        <td colspan="2">@code{}0-1000@endcode</td>
+    </tr>
+    <tr>
         <td>Example</td>
         <td colspan="2">@code{}
             frame_limiter_fps_offset = 3
