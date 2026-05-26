@@ -511,6 +511,7 @@ import { useI18n } from 'vue-i18n';
 import { NTag, NSwitch, NInputNumber, NAlert, useDialog, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
+import { computeVideoFrameRenderDelayMs, decideLatencyFenceReset } from '@/utils/webrtc/latency';
 import {
   applyGamepadFeedback,
   attachInputCapture,
@@ -1273,11 +1274,14 @@ const AUDIO_DRAIN_RELEASE_SUSTAIN_MS = 1200;
 const AUDIO_BUFFER_RESET_THRESHOLD_MS = 120;
 const AUDIO_BUFFER_RESET_SUSTAIN_MS = 3000;
 const AUDIO_BUFFER_RESET_COOLDOWN_MS = 15000;
-const VIDEO_BUFFER_RESET_THRESHOLD_MS = 120;
-const VIDEO_RENDER_RESET_THRESHOLD_MS = 50;
-const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 50;
-const VIDEO_BUFFER_RESET_SUSTAIN_MS = 3000;
-const VIDEO_BUFFER_RESET_COOLDOWN_MS = 15000;
+const VIDEO_BUFFER_RESET_THRESHOLD_MS = 140;
+const VIDEO_RENDER_RESET_THRESHOLD_MS = 100;
+const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 100;
+const VIDEO_BUFFER_RESET_FRAME_MARGIN = 6;
+const VIDEO_RENDER_RESET_FRAME_MARGIN = 5;
+const VIDEO_BUFFER_RESET_SUSTAIN_MS = 900;
+const VIDEO_RENDER_RESET_SUSTAIN_MS = 900;
+const VIDEO_BUFFER_RESET_COOLDOWN_MS = 4000;
 type VideoLatencyProfile = {
   drainSustainMs: number;
   drainReleaseSustainMs: number;
@@ -1299,6 +1303,7 @@ type VideoLatencyProfile = {
   runawayDrainWindowMs?: number;
   runawayResetThresholdMs?: number;
   runawayResetSustainMs?: number;
+  runawayResetFrameMargin?: number;
 };
 
 function isSafariBrowser(): boolean {
@@ -1330,6 +1335,12 @@ const DEFAULT_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
   targetFallRateMsPerSec: Number.POSITIVE_INFINITY,
   targetRiseRateMsPerSec: Number.POSITIVE_INFINITY,
   startupTargetMs: 0,
+  runawayDrainTriggerMs: 90,
+  runawayDrainSustainMs: 350,
+  runawayDrainWindowMs: 10000,
+  runawayResetThresholdMs: 220,
+  runawayResetSustainMs: 900,
+  runawayResetFrameMargin: 10,
 };
 
 const SAFARI_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
@@ -1353,6 +1364,7 @@ const SAFARI_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
   runawayDrainWindowMs: 12000,
   runawayResetThresholdMs: 160,
   runawayResetSustainMs: 1500,
+  runawayResetFrameMargin: 8,
 };
 
 const safariLatencyTuningEnabled = isSafariBrowser();
@@ -1368,6 +1380,8 @@ let videoDrainOverloadedSince: number | null = null;
 let videoDrainReleaseSince: number | null = null;
 let videoDrainMode: 'off' | 'adaptive' | 'startup' = 'off';
 let videoBufferOverloadedSince: number | null = null;
+let videoRenderOverloadedSince: number | null = null;
+let videoRunawayOverloadedSince: number | null = null;
 let lastVideoBufferResetAt: number | null = null;
 let lastVideoTargetMs: number | undefined = undefined;
 let desiredVideoTargetMs: number | undefined = undefined;
@@ -1378,9 +1392,8 @@ let videoStartupDrainReleaseSince: number | null = null;
 let lastVideoPlayoutSample: { ts: number; value: number } | null = null;
 let lastPlaybackRateUpdateAt: number | null = null;
 let modeSwitchDrainUntil: number | null = null;
-let safariRunawayDrainSince: number | null = null;
-let safariRunawayDrainLatched = false;
-let safariRunawayResetSince: number | null = null;
+let videoRunawayDrainSince: number | null = null;
+let videoRunawayDrainLatched = false;
 
 function setAudioDrainActive(active: boolean): void {
   if (audioDrainActive === active) return;
@@ -1500,12 +1513,14 @@ function setVideoDrainMode(
 function resetVideoDrainState(): void {
   videoDrainOverloadedSince = null;
   videoDrainReleaseSince = null;
+  videoBufferOverloadedSince = null;
+  videoRenderOverloadedSince = null;
+  videoRunawayOverloadedSince = null;
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
   lastVideoPlayoutSample = null;
-  safariRunawayDrainSince = null;
-  safariRunawayDrainLatched = false;
-  safariRunawayResetSince = null;
+  videoRunawayDrainSince = null;
+  videoRunawayDrainLatched = false;
   const baseTargetMs = resolveVideoBaseTargetMs();
   setVideoDrainMode('off', baseTargetMs);
 }
@@ -1520,6 +1535,32 @@ function triggerVideoDrainWindow(durationMs: number, reason: string): void {
   const baseTargetMs = resolveVideoBaseTargetMs();
   setVideoDrainMode('startup', baseTargetMs, resolveVideoStartupTargetMs());
   pushVideoEvent(`video-drain-${reason}`);
+}
+
+function resolveFrameBoundedThresholdMs(
+  fixedThresholdMs: number,
+  baseTargetMs: number,
+  frameMs: number,
+  frameMargin: number,
+): number {
+  const frameBounded = baseTargetMs + frameMs * frameMargin;
+  return Math.max(MIN_FRAME_AGE_MS, Math.min(fixedThresholdMs, frameBounded));
+}
+
+function resetVideoLatencyFenceState(): void {
+  videoBufferOverloadedSince = null;
+  videoRenderOverloadedSince = null;
+  videoRunawayOverloadedSince = null;
+}
+
+function handleVideoLatencyReset(label: string, drainReason: string): void {
+  resetVideoLatencyFenceState();
+  pushVideoEvent(label);
+  resetVideoElement();
+  triggerVideoDrainWindow(
+    videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.modeSwitchDrainMs,
+    drainReason,
+  );
 }
 
 function setVideoPlaybackRate(rate: number): void {
@@ -1599,57 +1640,53 @@ watch(
     const baseTargetMs = resolveVideoBaseTargetMs();
     const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
     const frameMs = maxFrameAgeMsFromFrames(fps, 1);
-    if (safariLatencyTuningEnabled) {
-      if (
-        typeof videoLatencyProfile.runawayDrainTriggerMs === 'number' &&
-        videoValue >= videoLatencyProfile.runawayDrainTriggerMs
-      ) {
-        if (safariRunawayDrainSince == null) {
-          safariRunawayDrainSince = now;
-        }
-        if (
-          !safariRunawayDrainLatched &&
-          typeof videoLatencyProfile.runawayDrainSustainMs === 'number' &&
-          now - safariRunawayDrainSince >= videoLatencyProfile.runawayDrainSustainMs
-        ) {
-          safariRunawayDrainLatched = true;
-          triggerVideoDrainWindow(
-            videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.startupDrainMs,
-            'runaway',
-          );
-        }
-      } else if (videoValue <= baseTargetMs + frameMs) {
-        safariRunawayDrainSince = null;
-        safariRunawayDrainLatched = false;
+    if (
+      typeof videoLatencyProfile.runawayDrainTriggerMs === 'number' &&
+      videoValue >= videoLatencyProfile.runawayDrainTriggerMs
+    ) {
+      if (videoRunawayDrainSince == null) {
+        videoRunawayDrainSince = now;
       }
-
       if (
-        typeof videoLatencyProfile.runawayResetThresholdMs === 'number' &&
-        videoValue >= videoLatencyProfile.runawayResetThresholdMs
+        !videoRunawayDrainLatched &&
+        typeof videoLatencyProfile.runawayDrainSustainMs === 'number' &&
+        now - videoRunawayDrainSince >= videoLatencyProfile.runawayDrainSustainMs
       ) {
-        if (safariRunawayResetSince == null) {
-          safariRunawayResetSince = now;
-        }
-        if (
-          typeof videoLatencyProfile.runawayResetSustainMs === 'number' &&
-          now - safariRunawayResetSince >= videoLatencyProfile.runawayResetSustainMs
-        ) {
-          if (
-            lastVideoBufferResetAt == null ||
-            now - lastVideoBufferResetAt >= VIDEO_BUFFER_RESET_COOLDOWN_MS
-          ) {
-            lastVideoBufferResetAt = now;
-            safariRunawayResetSince = null;
-            pushVideoEvent('video-runaway-reset');
-            resetVideoElement();
-            triggerVideoDrainWindow(
-              videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.startupDrainMs,
-              'runaway-reset',
-            );
-          }
-        }
-      } else {
-        safariRunawayResetSince = null;
+        videoRunawayDrainLatched = true;
+        triggerVideoDrainWindow(
+          videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.startupDrainMs,
+          'runaway',
+        );
+      }
+    } else if (videoValue <= baseTargetMs + frameMs) {
+      videoRunawayDrainSince = null;
+      videoRunawayDrainLatched = false;
+    }
+
+    const profileResetThreshold =
+      typeof videoLatencyProfile.runawayResetThresholdMs === 'number'
+        ? resolveFrameBoundedThresholdMs(
+            videoLatencyProfile.runawayResetThresholdMs,
+            baseTargetMs,
+            frameMs,
+            videoLatencyProfile.runawayResetFrameMargin ?? 10,
+          )
+        : undefined;
+    if (profileResetThreshold != null) {
+      const decision = decideLatencyFenceReset({
+        valueMs: videoValue,
+        thresholdMs: profileResetThreshold,
+        sustainMs: videoLatencyProfile.runawayResetSustainMs ?? VIDEO_BUFFER_RESET_SUSTAIN_MS,
+        cooldownMs: VIDEO_BUFFER_RESET_COOLDOWN_MS,
+        overloadedSinceMs: videoRunawayOverloadedSince,
+        lastResetAtMs: lastVideoBufferResetAt,
+        nowMs: now,
+      });
+      videoRunawayOverloadedSince = decision.overloadedSinceMs;
+      lastVideoBufferResetAt = decision.lastResetAtMs;
+      if (decision.shouldReset) {
+        handleVideoLatencyReset('video-runaway-reset', 'runaway-reset');
+        return;
       }
     }
     if (lastVideoPlayoutSample) {
@@ -1760,45 +1797,79 @@ watch(
 );
 
 watch(
-  () => stats.value.videoJitterBufferMs,
-  (videoValue) => {
+  () => [videoPlayoutDelayMs.value, renderDelayMs.value, renderIntervalMs.value] as const,
+  ([videoValue, delayValue, intervalValue]) => {
     if (!isConnected.value || !isTabActive()) {
       videoBufferOverloadedSince = null;
+      videoRenderOverloadedSince = null;
       return;
     }
-    const videoOverloaded =
-      typeof videoValue === 'number' &&
-      Number.isFinite(videoValue) &&
-      videoValue >= VIDEO_BUFFER_RESET_THRESHOLD_MS;
-    if (!videoOverloaded) {
-      videoBufferOverloadedSince = null;
-      return;
-    }
-    const delayValue = renderDelayMs.value;
-    const intervalValue = renderIntervalMs.value;
-    const hasRenderSignal = typeof delayValue === 'number' || typeof intervalValue === 'number';
-    const renderDelayHigh =
-      typeof delayValue === 'number' && delayValue >= VIDEO_RENDER_RESET_THRESHOLD_MS;
-    const renderIntervalHigh =
-      typeof intervalValue === 'number' && intervalValue >= VIDEO_INTERVAL_RESET_THRESHOLD_MS;
-    const allowVideoReset = !hasRenderSignal || renderDelayHigh || renderIntervalHigh;
-    if (!allowVideoReset) return;
     const now = Date.now();
-    if (videoBufferOverloadedSince == null) {
-      videoBufferOverloadedSince = now;
+    const baseTargetMs = resolveVideoBaseTargetMs();
+    const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
+    const frameMs = maxFrameAgeMsFromFrames(fps, 1);
+    const videoThresholdMs = resolveFrameBoundedThresholdMs(
+      VIDEO_BUFFER_RESET_THRESHOLD_MS,
+      baseTargetMs,
+      frameMs,
+      VIDEO_BUFFER_RESET_FRAME_MARGIN,
+    );
+    const videoDecision = decideLatencyFenceReset({
+      valueMs: videoValue,
+      thresholdMs: videoThresholdMs,
+      sustainMs: VIDEO_BUFFER_RESET_SUSTAIN_MS,
+      cooldownMs: VIDEO_BUFFER_RESET_COOLDOWN_MS,
+      overloadedSinceMs: videoBufferOverloadedSince,
+      lastResetAtMs: lastVideoBufferResetAt,
+      nowMs: now,
+    });
+    videoBufferOverloadedSince = videoDecision.overloadedSinceMs;
+    lastVideoBufferResetAt = videoDecision.lastResetAtMs;
+    if (videoDecision.shouldReset) {
+      handleVideoLatencyReset('video-buffer-reset', 'buffer-reset');
       return;
     }
-    if (now - videoBufferOverloadedSince < VIDEO_BUFFER_RESET_SUSTAIN_MS) return;
-    if (
-      lastVideoBufferResetAt != null &&
-      now - lastVideoBufferResetAt < VIDEO_BUFFER_RESET_COOLDOWN_MS
-    ) {
+
+    const renderThresholdMs = resolveFrameBoundedThresholdMs(
+      VIDEO_RENDER_RESET_THRESHOLD_MS,
+      baseTargetMs,
+      frameMs,
+      VIDEO_RENDER_RESET_FRAME_MARGIN,
+    );
+    const intervalThresholdMs = resolveFrameBoundedThresholdMs(
+      VIDEO_INTERVAL_RESET_THRESHOLD_MS,
+      baseTargetMs,
+      frameMs,
+      VIDEO_RENDER_RESET_FRAME_MARGIN,
+    );
+    const renderLagValue =
+      typeof delayValue === 'number' &&
+      Number.isFinite(delayValue) &&
+      delayValue >= renderThresholdMs
+        ? delayValue
+        : typeof intervalValue === 'number' &&
+            Number.isFinite(intervalValue) &&
+            intervalValue >= intervalThresholdMs
+          ? intervalValue
+          : undefined;
+    const renderDecision = decideLatencyFenceReset({
+      valueMs: renderLagValue,
+      thresholdMs:
+        renderLagValue === intervalValue && renderLagValue !== delayValue
+          ? intervalThresholdMs
+          : renderThresholdMs,
+      sustainMs: VIDEO_RENDER_RESET_SUSTAIN_MS,
+      cooldownMs: VIDEO_BUFFER_RESET_COOLDOWN_MS,
+      overloadedSinceMs: videoRenderOverloadedSince,
+      lastResetAtMs: lastVideoBufferResetAt,
+      nowMs: now,
+    });
+    videoRenderOverloadedSince = renderDecision.overloadedSinceMs;
+    lastVideoBufferResetAt = renderDecision.lastResetAtMs;
+    if (!renderDecision.shouldReset) {
       return;
     }
-    lastVideoBufferResetAt = now;
-    videoBufferOverloadedSince = null;
-    pushVideoEvent('video-buffer-reset');
-    resetVideoElement();
+    handleVideoLatencyReset('video-render-reset', 'render-reset');
   },
 );
 function resetServerRates(): void {
@@ -2248,31 +2319,79 @@ function updateAudioElement(stream: MediaStream): void {
   audioEl.value.muted = false;
 }
 
-function resetAudioElement(): void {
-  const el = audioEl.value;
-  const stream = audioStream;
-  if (!el || !stream) return;
-  el.srcObject = null;
-  window.setTimeout(() => {
-    const current = audioEl.value;
-    if (!current || audioStream !== stream) return;
-    current.srcObject = stream;
-    current.muted = false;
-    void current.play().catch(() => {});
-  }, 0);
-}
-
 function resetVideoElement(): void {
   const el = videoEl.value;
-  const stream = videoStream;
+  const stream =
+    videoStream ?? (el?.srcObject instanceof MediaStream ? (el.srcObject as MediaStream) : null);
+  if (!el || !stream || stream.getVideoTracks().length === 0) return;
+
+  videoFrameMetrics.value = {};
+  videoPacingMetrics.value = {};
+  lastPlaybackRateUpdateAt = null;
+
+  try {
+    el.pause();
+  } catch {
+    /* ignore */
+  }
+  try {
+    el.srcObject = null;
+    el.load();
+  } catch {
+    /* ignore */
+  }
+
+  window.requestAnimationFrame(() => {
+    if (videoEl.value !== el) return;
+    try {
+      el.srcObject = stream;
+      el.muted = false;
+      el.volume = 1;
+      el.playbackRate = 1;
+    } catch {
+      /* ignore */
+    }
+    const playPromise = el.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch((error) => {
+        const name = error && typeof error === 'object' ? (error as any).name : '';
+        pushVideoEvent(`play-reset-error${name ? `:${name}` : ''}`);
+      });
+    }
+  });
+}
+
+function resetAudioElement(): void {
+  const el = audioEl.value;
+  const stream =
+    audioStream ?? (el?.srcObject instanceof MediaStream ? (el.srcObject as MediaStream) : null);
   if (!el || !stream) return;
-  el.srcObject = null;
-  window.setTimeout(() => {
-    const current = videoEl.value;
-    if (!current || videoStream !== stream) return;
-    current.srcObject = stream;
-    void current.play().catch(() => {});
-  }, 0);
+
+  try {
+    el.pause();
+  } catch {
+    /* ignore */
+  }
+  try {
+    el.srcObject = null;
+    el.load();
+  } catch {
+    /* ignore */
+  }
+
+  audioPlaybackUnlocked = false;
+  window.requestAnimationFrame(() => {
+    if (audioEl.value !== el) return;
+    const hasTrack = stream.getAudioTracks().length > 0;
+    try {
+      el.srcObject = stream;
+      el.volume = 1;
+      el.muted = !hasTrack;
+    } catch {
+      /* ignore */
+    }
+    ensureAudioPlayback('reset');
+  });
 }
 
 function attachVideoDebug(el: HTMLVideoElement): () => void {
@@ -2310,13 +2429,15 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
     const cb = (now: number, meta: VideoFrameCallbackMetadata) => {
       const interval = lastTs != null ? now - lastTs : null;
       lastTs = now;
+      const delay = computeVideoFrameRenderDelayMs(now, meta.expectedDisplayTime);
+      const nextMetrics = { ...videoFrameMetrics.value };
       if (interval != null) {
         intervalSamples.push(interval);
         if (intervalSamples.length > maxSamples) intervalSamples.shift();
         const sorted = [...intervalSamples].sort((a, b) => a - b);
         const p98Idx = Math.floor(sorted.length * 0.98);
         const p99Idx = Math.floor(sorted.length * 0.99);
-        videoFrameMetrics.value = {
+        Object.assign(nextMetrics, {
           lastIntervalMs: interval,
           avgIntervalMs: sorted.reduce((a, b) => a + b, 0) / sorted.length,
           maxIntervalMs: sorted[sorted.length - 1],
@@ -2324,7 +2445,20 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
           avg98IntervalMs: sorted.slice(0, p98Idx + 1).reduce((a, b) => a + b, 0) / (p98Idx + 1),
           p99IntervalMs: sorted[p99Idx],
           avg99IntervalMs: sorted.slice(0, p99Idx + 1).reduce((a, b) => a + b, 0) / (p99Idx + 1),
-        };
+        });
+      }
+      if (delay != null) {
+        delaySamples.push(delay);
+        if (delaySamples.length > maxSamples) delaySamples.shift();
+        const sortedDelay = [...delaySamples].sort((a, b) => a - b);
+        Object.assign(nextMetrics, {
+          lastDelayMs: delay,
+          avgDelayMs: sortedDelay.reduce((a, b) => a + b, 0) / sortedDelay.length,
+          maxDelayMs: sortedDelay[sortedDelay.length - 1],
+        });
+      }
+      if (interval != null || delay != null) {
+        videoFrameMetrics.value = nextMetrics;
       }
       handle = el.requestVideoFrameCallback(cb);
     };
@@ -2362,7 +2496,11 @@ function attachVideoPacingProbe(
     dtMs?: number | null;
     presentedDelta?: number | null;
     now?: number;
+    expectedDisplayTime?: number;
     mediaTime?: number;
+    processingDuration?: number;
+    receiveTime?: number;
+    rtpTimestamp?: number;
   }) => void,
 ): () => void {
   if ('requestVideoFrameCallback' in el) {
@@ -2376,7 +2514,17 @@ function attachVideoPacingProbe(
         lastPresented != null && typeof presentedFrames === 'number'
           ? presentedFrames - lastPresented
           : null;
-      onSample({ dtMs, presentedDelta, now, mediaTime: meta.mediaTime });
+      const metaAny = meta as any;
+      onSample({
+        dtMs,
+        presentedDelta,
+        now,
+        expectedDisplayTime: meta.expectedDisplayTime,
+        mediaTime: meta.mediaTime,
+        processingDuration: metaAny.processingDuration,
+        receiveTime: metaAny.receiveTime,
+        rtpTimestamp: metaAny.rtpTimestamp,
+      });
       lastPresented = presentedFrames ?? lastPresented;
       lastNow = now;
       handle = el.requestVideoFrameCallback(cb);
@@ -2697,9 +2845,10 @@ async function disconnect() {
   lastVideoTargetAdjustAt = null;
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
-  safariRunawayDrainSince = null;
-  safariRunawayDrainLatched = false;
-  safariRunawayResetSince = null;
+  videoRunawayDrainSince = null;
+  videoRunawayDrainLatched = false;
+  resetVideoLatencyFenceState();
+  lastVideoBufferResetAt = null;
   sessionId.value = null;
   serverSession.value = null;
   resetServerRates();
