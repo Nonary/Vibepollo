@@ -921,6 +921,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'frame_limiter_enable',
   'frame_limiter_provider',
   'frame_limiter_fps_limit',
+  'frame_limiter_fps_offset',
   'rtss_frame_limit_type',
   'frame_limiter_disable_vsync',
 
@@ -1772,7 +1773,10 @@ const BOOL_STRING_PAIRS = [
   ['1', '0'],
 ] as const;
 
-const NUMERIC_OVERRIDE_KEYS = new Set<string>(['frame_limiter_fps_limit']);
+const NUMERIC_OVERRIDE_KEYS = new Set<string>([
+  'frame_limiter_fps_limit',
+  'frame_limiter_fps_offset',
+]);
 
 function boolPairFromValue(value: unknown): BoolPair | null {
   if (value === true || value === false) return { truthy: true, falsy: false };

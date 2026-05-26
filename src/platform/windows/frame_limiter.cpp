@@ -15,8 +15,8 @@
   #include <algorithm>
   #include <array>
   #include <cctype>
-  #include <optional>
   #include <numeric>
+  #include <optional>
   #include <string>
   #include <vector>
 
@@ -29,13 +29,19 @@ namespace platf {
     bool g_nvcp_started = false;
     bool g_gen1_framegen_fix_active = false;
     bool g_gen2_framegen_fix_active = false;
-    int g_last_effective_limit = 0;
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
     bool g_prev_disable_vsync = false;
     std::string g_prev_rtss_frame_limit_type;
     bool g_prev_rtss_frame_limit_type_set = false;
+    int g_last_rtss_limit_value = 0;
+    int g_last_rtss_limit_denominator = 1;
+
+    struct rtss_limit_t {
+      int value = 0;
+      int denominator = 1;
+    };
 
     frame_limiter_provider parse_provider(const std::string &value) {
       std::string normalized;
@@ -98,6 +104,58 @@ namespace platf {
         return "nvidia reflex";
       }
       return "front edge sync";
+    }
+
+    int apply_stream_fps_offset(int requested_fps, int offset) {
+      if (requested_fps <= 0 || offset <= 0) {
+        return requested_fps;
+      }
+
+      return std::max(1, requested_fps - offset);
+    }
+
+    void reduce_rtss_limit(rtss_limit_t &limit) {
+      if (limit.denominator <= 1 || limit.value <= 0) {
+        limit.denominator = 1;
+        return;
+      }
+
+      if (limit.value % 1000 == 0) {
+        limit.value /= 1000;
+        limit.denominator = 1;
+      } else if (limit.value % 100 == 0) {
+        limit.value /= 100;
+        limit.denominator = 10;
+      } else if (limit.value % 10 == 0) {
+        limit.value /= 10;
+        limit.denominator = 100;
+      }
+
+      int gcd_value = std::gcd(limit.value, limit.denominator);
+      if (gcd_value > 1) {
+        limit.value /= gcd_value;
+        limit.denominator /= gcd_value;
+      }
+    }
+
+    rtss_limit_t apply_stream_fps_offset_scaled(int requested_fps, int requested_fps_scaled, int offset) {
+      if (requested_fps_scaled <= 0) {
+        return {apply_stream_fps_offset(requested_fps, offset), 1};
+      }
+
+      const int scaled_offset = offset > 0 ? offset * 1000 : 0;
+      int scaled_limit = requested_fps_scaled - scaled_offset;
+      if (offset > 0) {
+        scaled_limit = std::max(1000, scaled_limit);
+      } else {
+        scaled_limit = std::max(0, scaled_limit);
+      }
+      rtss_limit_t limit {
+        scaled_limit,
+        1000
+      };
+      reduce_rtss_limit(limit);
+      return limit;
     }
 
   }  // namespace
@@ -170,40 +228,33 @@ namespace platf {
     const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || capture_fix_enabled) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
-    int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
+    const bool using_lossless_rtss_limit = lossless_rtss_limit && *lossless_rtss_limit > 0;
+    const bool using_manual_fps_limit = config::frame_limiter.fps_limit > 0;
+    const bool using_stream_fps_limit = !using_lossless_rtss_limit && !using_manual_fps_limit;
+
+    int effective_limit = using_lossless_rtss_limit ? *lossless_rtss_limit : fps;
+    if (using_stream_fps_limit) {
+      effective_limit = apply_stream_fps_offset(effective_limit, config::frame_limiter.fps_offset);
+    }
     if (config::frame_limiter.fps_limit > 0) {
       effective_limit = config::frame_limiter.fps_limit;
     }
-    g_last_effective_limit = effective_limit;
 
     int rtss_limit_value = effective_limit;
     int rtss_limit_denominator = 1;
 
-    if ((!lossless_rtss_limit || *lossless_rtss_limit <= 0) && config::frame_limiter.fps_limit <= 0) {
-      if (fps_scaled > 0) {
-        rtss_limit_value = fps_scaled;
-        rtss_limit_denominator = 1000;
+    if (using_stream_fps_limit) {
+      const auto rtss_limit = apply_stream_fps_offset_scaled(fps, fps_scaled, config::frame_limiter.fps_offset);
+      rtss_limit_value = rtss_limit.value;
+      rtss_limit_denominator = rtss_limit.denominator;
+    }
+    g_last_rtss_limit_value = rtss_limit_value;
+    g_last_rtss_limit_denominator = rtss_limit_denominator;
 
-        if (rtss_limit_value % 1000 == 0) {
-          rtss_limit_value /= 1000;
-          rtss_limit_denominator = 1;
-        } else if (rtss_limit_value % 100 == 0) {
-          rtss_limit_value /= 100;
-          rtss_limit_denominator = 10;
-        } else if (rtss_limit_value % 10 == 0) {
-          rtss_limit_value /= 10;
-          rtss_limit_denominator = 100;
-        }
-
-        int gcd_value = std::gcd(rtss_limit_value, rtss_limit_denominator);
-        if (gcd_value > 1) {
-          rtss_limit_value /= gcd_value;
-          rtss_limit_denominator /= gcd_value;
-        }
-      } else {
-        rtss_limit_value = effective_limit;
-        rtss_limit_denominator = 1;
-      }
+    if (using_stream_fps_limit && config::frame_limiter.fps_offset > 0) {
+      BOOST_LOG(info) << "Frame limiter FPS offset applied: requested=" << fps
+                      << ", offset=" << config::frame_limiter.fps_offset
+                      << ", effective=" << effective_limit;
     }
 
     if (frame_limit_enabled) {
@@ -374,15 +425,16 @@ namespace platf {
 
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
-    g_last_effective_limit = 0;
+    g_last_rtss_limit_value = 0;
+    g_last_rtss_limit_denominator = 1;
   }
 
   void frame_limiter_streaming_refresh() {
-    if (g_active_provider != frame_limiter_provider::rtss || g_last_effective_limit <= 0) {
+    if (g_active_provider != frame_limiter_provider::rtss || g_last_rtss_limit_value <= 0) {
       return;
     }
 
-    if (rtss_streaming_refresh(g_last_effective_limit)) {
+    if (rtss_streaming_refresh(g_last_rtss_limit_value, g_last_rtss_limit_denominator)) {
       BOOST_LOG(info) << "Frame limiter provider 'rtss' refreshed";
     }
   }

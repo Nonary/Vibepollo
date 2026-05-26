@@ -1013,13 +1013,13 @@ namespace platf {
     return g_limit_active;
   }
 
-  bool rtss_streaming_refresh(int fps) {
+  bool rtss_streaming_refresh(int scaled_limit, int denominator) {
     if (!config::frame_limiter.enable) {
       return false;
     }
 
     if (!g_limit_active && !g_settings_dirty) {
-      return rtss_streaming_start(fps, 1);
+      return rtss_streaming_start(scaled_limit, denominator);
     }
 
     g_rtss_root = resolve_rtss_root();
@@ -1051,7 +1051,7 @@ namespace platf {
       }
     }
 
-    int current_denominator = 1;
+    int current_denominator = denominator > 0 ? denominator : 1;
     auto old_den = set_limit_denominator(g_rtss_root, current_denominator);
     if (old_den.has_value() && *old_den != current_denominator) {
       if (!g_original_denominator.has_value()) {
@@ -1099,19 +1099,23 @@ namespace platf {
       }
     }
 
-    int scaled_limit = fps;
-    bool applied_limit = false;
-    if (g_hooks) {
-      set_profile_property_int("FramerateLimit", scaled_limit);
-      applied_limit = true;
-    } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", scaled_limit)) {
-      applied_limit = true;
+    int applied_limit = scaled_limit;
+    if (applied_limit < 0) {
+      applied_limit = 0;
     }
-    if (applied_limit) {
+    bool limit_applied = false;
+    if (g_hooks) {
+      set_profile_property_int("FramerateLimit", applied_limit);
+      limit_applied = true;
+    } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", applied_limit)) {
+      limit_applied = true;
+    }
+    if (limit_applied) {
       g_limit_active = true;
       g_limit_modified = true;
       dirty = true;
-      BOOST_LOG(info) << "RTSS refreshed framerate limit=" << scaled_limit << " (denominator=" << current_denominator << ")";
+      double limit_fps = current_denominator > 0 ? (double) applied_limit / current_denominator : 0.0;
+      BOOST_LOG(info) << "RTSS refreshed framerate limit=" << limit_fps << "Hz (raw=" << applied_limit << ", denominator=" << current_denominator << ")";
     }
 
     if (dirty && !g_settings_dirty) {
@@ -1128,7 +1132,7 @@ namespace platf {
       g_recovery_file_owned = write_overrides_file(snapshot);
     }
 
-    return applied_limit;
+    return limit_applied;
   }
 
   void rtss_streaming_stop(bool keep_process_running) {

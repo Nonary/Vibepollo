@@ -28,4 +28,18 @@ describe('configFieldSchema', () => {
 
     expect(field.kind).toBe('checkbox');
   });
+
+  test('keeps frame limiter FPS offset as an integer number field', () => {
+    const field = getConfigFieldDefinition('frame_limiter_fps_offset', {
+      ...baseContext,
+      currentValue: 0,
+      defaultValue: 0,
+    });
+
+    expect(field.kind).toBe('number');
+    expect(field.min).toBe(0);
+    expect(field.max).toBe(1000);
+    expect(field.step).toBe(1);
+    expect(field.precision).toBe(0);
+  });
 });
