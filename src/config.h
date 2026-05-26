@@ -265,6 +265,9 @@ namespace config {
     // Optional FPS limit override. 0 uses the stream's requested FPS.
     int fps_limit {0};
 
+    // Optional offset subtracted from the stream's requested FPS when fps_limit is 0.
+    int fps_offset {0};
+
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
     // Restores the previous VSYNC state when streaming stops.

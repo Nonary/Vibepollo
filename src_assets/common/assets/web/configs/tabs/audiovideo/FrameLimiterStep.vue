@@ -310,13 +310,23 @@ onMounted(() => {
         />
       </div>
 
-      <ConfigFieldRenderer
-        setting-key="frame_limiter_fps_limit"
-        v-model="config.frame_limiter_fps_limit"
-        :label="t('frameLimiter.limitLabel')"
-        :desc="t('frameLimiter.limitHint')"
-        :placeholder="t('frameLimiter.limitPlaceholder')"
-      />
+      <div class="grid gap-4 md:grid-cols-2">
+        <ConfigFieldRenderer
+          setting-key="frame_limiter_fps_limit"
+          v-model="config.frame_limiter_fps_limit"
+          :label="t('frameLimiter.limitLabel')"
+          :desc="t('frameLimiter.limitHint')"
+          :placeholder="t('frameLimiter.limitPlaceholder')"
+        />
+
+        <ConfigFieldRenderer
+          setting-key="frame_limiter_fps_offset"
+          v-model="config.frame_limiter_fps_offset"
+          :label="t('frameLimiter.offsetLabel')"
+          :desc="t('frameLimiter.offsetHint')"
+          :placeholder="t('frameLimiter.offsetPlaceholder')"
+        />
+      </div>
 
       <ConfigFieldRenderer
         setting-key="frame_limiter_disable_vsync"

@@ -26,7 +26,7 @@ namespace platf {
   bool rtss_streaming_start(int scaled_limit, int denominator);
 
   // Re-apply RTSS frame limit and related settings without resetting originals.
-  bool rtss_streaming_refresh(int fps);
+  bool rtss_streaming_refresh(int scaled_limit, int denominator);
 
   // Restore any RTSS settings modified at stream start.
   // If keep_process_running is true, Sunshine leaves RTSS running for pause/resume scenarios.

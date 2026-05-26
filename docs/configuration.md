@@ -2634,7 +2634,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Optional FPS limit to apply while streaming. Set to 0 to use the stream's requested FPS.
+            Optional FPS limit to apply while streaming. Set to 0 to use the stream's requested FPS minus @code{}frame_limiter_fps_offset@endcode.
         </td>
     </tr>
     <tr>
@@ -2645,6 +2645,29 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Example</td>
         <td colspan="2">@code{}
             frame_limiter_fps_limit = 120
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_limiter_fps_offset
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            FPS value subtracted from the stream's requested FPS when @code{}frame_limiter_fps_limit@endcode is 0. This keeps the stream container at the client-requested refresh while applying a lower host-side frame cap.
+            <br><br>
+            For example, a 120 FPS stream with @code{}frame_limiter_fps_offset = 3@endcode applies a 117 FPS limiter.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}0@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_limiter_fps_offset = 3
             @endcode</td>
     </tr>
 </table>
