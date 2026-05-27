@@ -2555,20 +2555,24 @@ namespace video {
       return;
     }
 
+    bool force_sync_teardown = false;
+
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
     // we will complete the encoder teardown in a separate thread if supported.
     // This will move expensive processing off the encoder thread to allow us
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session] {
-      if (encoder.flags & ASYNC_TEARDOWN) {
+    auto fail_guard = util::fail_guard([&encoder, &session, &force_sync_teardown] {
+      if ((encoder.flags & ASYNC_TEARDOWN) && !force_sync_teardown) {
         std::thread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
           BOOST_LOG(info) << "Async encoder teardown complete";
         }};
         encoder_teardown_thread.detach();
+      } else if ((encoder.flags & ASYNC_TEARDOWN) && force_sync_teardown) {
+        BOOST_LOG(debug) << "Using synchronous encoder teardown during capture reinit";
       }
     });
 
@@ -2632,7 +2636,9 @@ namespace video {
       //
       // If we have to reinit before we have received any captured frames, we will encode
       // the blank dummy frame just to let Moonlight know that we're alive.
-      if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && frame_nr > 1)) {
+      const bool reinit_pending = reinit_event.peek() && frame_nr > 1;
+      if (shutdown_event->peek() || !images->running() || reinit_pending) {
+        force_sync_teardown = reinit_pending;
         break;
       }
 
