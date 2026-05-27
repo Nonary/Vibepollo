@@ -306,6 +306,10 @@ namespace {
       std::uint64_t total = 0;
       std::uint64_t used = 0;
     };
+    struct utilization_info_t {
+      float gpu = -1.f;
+      float encoder = -1.f;
+    };
 
     static nvml_t &
       instance() {
@@ -328,6 +332,35 @@ namespace {
         return -1.f;
       }
       return static_cast<float>(temp);
+    }
+
+    utilization_info_t
+      gpu_utilization() {
+      utilization_info_t rates {};
+      if (!_ok) {
+        return rates;
+      }
+      void *device = nullptr;
+      // Just query device 0, same as gpu_temp_c()
+      if (_device_get_handle(0, &device) != 0) {
+        return rates;
+      }
+
+      if (_device_get_utilization_rates) {
+        nvml_utilization_t util {};
+        if (_device_get_utilization_rates(device, &util) == 0) {
+          rates.gpu = static_cast<float>(util.gpu);
+        }
+      }
+
+      if (_device_get_encoder_utilization) {
+        unsigned int utilization = 0;
+        unsigned int sampling_period_us = 0;
+        if (_device_get_encoder_utilization(device, &utilization, &sampling_period_us) == 0) {
+          rates.encoder = static_cast<float>(utilization);
+        }
+      }
+      return rates;
     }
 
     memory_info_t
@@ -380,6 +413,11 @@ namespace {
       unsigned long long total;
       unsigned long long free;
       unsigned long long used;
+    };
+
+    struct nvml_utilization_t {
+      unsigned int gpu;
+      unsigned int memory;
     };
 
     static HMODULE
@@ -475,11 +513,15 @@ namespace {
       using devh_fn = int (*)(unsigned int, void **);
       using temp_fn = int (*)(void *, int, unsigned int *);
       using mem_fn = int (*)(void *, nvml_memory_t *);
+      using util_fn = int (*)(void *, nvml_utilization_t *);
+      using enc_util_fn = int (*)(void *, unsigned int *, unsigned int *);
       auto init_v2 = reinterpret_cast<init_fn>(GetProcAddress(_module, "nvmlInit_v2"));
       _device_get_count = reinterpret_cast<count_fn>(GetProcAddress(_module, "nvmlDeviceGetCount_v2"));
       _device_get_handle = reinterpret_cast<devh_fn>(GetProcAddress(_module, "nvmlDeviceGetHandleByIndex_v2"));
       _device_get_temperature = reinterpret_cast<temp_fn>(GetProcAddress(_module, "nvmlDeviceGetTemperature"));
       _device_get_memory_info = reinterpret_cast<mem_fn>(GetProcAddress(_module, "nvmlDeviceGetMemoryInfo"));
+      _device_get_utilization_rates = reinterpret_cast<util_fn>(GetProcAddress(_module, "nvmlDeviceGetUtilizationRates"));
+      _device_get_encoder_utilization = reinterpret_cast<enc_util_fn>(GetProcAddress(_module, "nvmlDeviceGetEncoderUtilization"));
       if (!init_v2 || !_device_get_handle || !_device_get_temperature) {
         FreeLibrary(_module);
         _module = nullptr;
@@ -504,6 +546,8 @@ namespace {
     int (*_device_get_count)(unsigned int *) = nullptr;
     int (*_device_get_handle)(unsigned int, void **) = nullptr;
     int (*_device_get_temperature)(void *, int, unsigned int *) = nullptr;
+    int (*_device_get_utilization_rates)(void *, nvml_utilization_t *) = nullptr;
+    int (*_device_get_encoder_utilization)(void *, unsigned int *, unsigned int *) = nullptr;
     int (*_device_get_memory_info)(void *, nvml_memory_t *) = nullptr;
   };
 
@@ -603,12 +647,45 @@ namespace {
       }
 
       // GPU
+      const char *gpu_source = nullptr;
+      const char *enc_source = nullptr;
+
       if (_have_gpu_3d) {
         s.gpu_percent = _gpu_3d.collect(100.f);
+        if (s.gpu_percent > 0.f) {
+          gpu_source = "pdh";
+        }
       }
       if (_have_gpu_enc) {
         s.gpu_encoder_percent = _gpu_enc.collect(100.f);
+        if (s.gpu_encoder_percent > 0.f) {
+          enc_source = "pdh";
+        }
       }
+      // Fallback for GPU usage via NVML if PDH counters are zero/unavailable.
+      if (gpu_source == nullptr || enc_source == nullptr) {
+        auto nvml_util = nvml_t::instance().gpu_utilization();
+        if (gpu_source == nullptr && nvml_util.gpu >= 0.f) {
+          s.gpu_percent = nvml_util.gpu;
+          gpu_source = "nvml";
+        }
+        if (enc_source == nullptr && nvml_util.encoder >= 0.f) {
+          s.gpu_encoder_percent = nvml_util.encoder;
+          enc_source = "nvml";
+        }
+      }
+
+      if (gpu_source && (!_logged_gpu_source || _last_gpu_source != gpu_source)) {
+        _logged_gpu_source = true;
+        _last_gpu_source = gpu_source;
+        BOOST_LOG(::info) << "host_stats(win): gpu usage source = " << gpu_source;
+      }
+      if (enc_source && (!_logged_enc_source || _last_enc_source != enc_source)) {
+        _logged_enc_source = true;
+        _last_enc_source = enc_source;
+        BOOST_LOG(::info) << "host_stats(win): gpu encoder usage source = " << enc_source;
+      }
+
       s.vram_total_bytes = _vram_total_cached;
       const char *vram_source = nullptr;
 
@@ -844,6 +921,10 @@ namespace {
     bool _have_gpu_mem = false;
     bool _logged_vram_source = false;
     std::string _last_vram_source;
+    bool _logged_gpu_source = false;
+    std::string _last_gpu_source;
+    bool _logged_enc_source = false;
+    std::string _last_enc_source;
 
     std::string _cpu_model_cached;
     std::string _gpu_model_cached;
