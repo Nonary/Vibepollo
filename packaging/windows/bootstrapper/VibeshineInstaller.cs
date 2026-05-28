@@ -485,13 +485,13 @@ namespace VibepolloInstaller {
         Content = "Install experimental Vibepollo Display Driver",
         FontSize = 13,
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
-        Margin = new Thickness(0, 12, 0, 4),
+        Margin = new Thickness(0, 0, 0, 6),
         IsChecked = false,
-        ToolTip = "Experimental opt-in that may improve performance and smoothness on virtual displays. SudoVDA remains the default."
+        ToolTip = "Experimental opt-in that may improve performance and smoothness on virtual displays. You can switch back to SudoVDA in options."
       };
 
       var installVirtualDisplayHintText = new TextBlock {
-        Text = "SudoVDA remains the default. Existing SudoVDA or MttVDD drivers are left installed.",
+        Text = "This new driver may improve performance and smoothness for games on virtual displays. It replaces SudoVDA when enabled, and you can easily switch back in Options if you have issues.",
         FontSize = 12,
         Foreground = new SolidColorBrush(Color.FromRgb(190, 208, 236)),
         Margin = new Thickness(24, 0, 0, 0),
@@ -560,13 +560,22 @@ namespace VibepolloInstaller {
         TextWrapping = TextWrapping.Wrap
       });
 
-      tipsStack.Children.Add(new System.Windows.Shapes.Rectangle {
-        Height = 1,
-        Fill = new SolidColorBrush(Color.FromArgb(100, 88, 104, 124)),
-        Margin = new Thickness(0, 2, 0, 0)
-      });
-      tipsStack.Children.Add(_installVirtualDisplayCheckBox);
-      tipsStack.Children.Add(installVirtualDisplayHintText);
+      var driverSection = new Border {
+        CornerRadius = new CornerRadius(10),
+        Padding = new Thickness(16),
+        Margin = new Thickness(0, 0, 0, 10),
+        Background = new SolidColorBrush(Color.FromArgb(44, 99, 102, 241)),
+        BorderBrush = new SolidColorBrush(Color.FromArgb(112, 128, 133, 255)),
+        BorderThickness = new Thickness(1)
+      };
+      contentStack.Children.Add(driverSection);
+
+      var driverStack = new StackPanel {
+        Orientation = Orientation.Vertical
+      };
+      driverSection.Child = driverStack;
+      driverStack.Children.Add(_installVirtualDisplayCheckBox);
+      driverStack.Children.Add(installVirtualDisplayHintText);
 
       var divider = new System.Windows.Shapes.Rectangle {
         Height = 1,
@@ -1464,7 +1473,7 @@ namespace VibepolloInstaller {
       _installPathTextBox.IsEnabled = allowInstallInputs && showInstallLocation;
       _installVirtualDisplayCheckBox.IsEnabled = allowInstallInputs;
       _browseButton.IsEnabled = allowInstallInputs && showInstallLocation;
-      _installSection.Visibility = Visibility.Visible;
+      _installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;
       _uninstallButton.Visibility = hasInstalledProduct ? Visibility.Visible : Visibility.Collapsed;
       _continueButton.Visibility = Visibility.Visible;
       _continueButton.Content = BuildInstallButtonLabel();

@@ -192,14 +192,20 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
   expect_contains(bootstrapper, "InternalInstallVirtualDisplay = false;");
   expect_contains(bootstrapper, "IsChecked = false,");
   expect_contains(bootstrapper, "Install experimental Vibepollo Display Driver");
-  expect_contains(bootstrapper, "SudoVDA remains the default. Existing SudoVDA or MttVDD drivers are left installed.");
-  expect_contains(bootstrapper, "may improve performance and smoothness on virtual displays");
+  expect_contains(bootstrapper, "may improve performance and smoothness for games on virtual displays");
+  expect_contains(bootstrapper, "you can easily switch back in Options if you have issues");
   expect_contains(bootstrapper, "contentStack.Children.Add(tipsSection);");
-  expect_contains(bootstrapper, "tipsStack.Children.Add(_installVirtualDisplayCheckBox);");
+  expect_contains(bootstrapper, "contentStack.Children.Add(driverSection);");
+  expect_contains(bootstrapper, "driverStack.Children.Add(_installVirtualDisplayCheckBox);");
+  EXPECT_EQ(bootstrapper.find("tipsStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
   EXPECT_EQ(bootstrapper.find("contentStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
   EXPECT_LT(
     bootstrapper.find("contentStack.Children.Add(tipsSection);"),
-    bootstrapper.find("tipsStack.Children.Add(_installVirtualDisplayCheckBox);")
+    bootstrapper.find("contentStack.Children.Add(driverSection);")
+  );
+  EXPECT_LT(
+    bootstrapper.find("contentStack.Children.Add(driverSection);"),
+    bootstrapper.find("contentStack.Children.Add(divider);")
   );
   expect_contains(bootstrapper, "\"--internal-install-virtual-display-driver\",");
   expect_contains(bootstrapper, "installVirtualDisplayDriver ? \"1\" : \"0\",");
@@ -211,8 +217,8 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
 TEST(SunshineVirtualDisplayPackaging, BootstrapperShowsVirtualDisplayChoiceOnUpgrade) {
   const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
 
-  expect_contains(bootstrapper, "_installSection.Visibility = Visibility.Visible;");
   expect_contains(bootstrapper, "var showInstallLocation = !hasInstalledProduct;");
+  expect_contains(bootstrapper, "_installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
   expect_contains(bootstrapper, "_installPathGrid.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
   expect_contains(bootstrapper, "_installVirtualDisplayCheckBox.IsEnabled = allowInstallInputs;");
 }
