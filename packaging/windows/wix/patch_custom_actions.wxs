@@ -14,7 +14,7 @@
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
-    <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Value="1" Secure="yes"/>
+    <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Value="0" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
     <Property Id="VIGEMBUS_PRESENT">

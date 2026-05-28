@@ -37,7 +37,7 @@ AddReg=Device_Install_Hw_AddReg
 [Device_Install_Hw_AddReg]
 HKR,,"UpperFilters",0x00010000,"IndirectKmd"
 HKR,"WUDF","DeviceGroupId",0x00000000,"SunshineVirtualDisplayGroup"
-HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)"
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-80-2333729190-1599198784-3320592948-2337414441-3098439965)"
 HKR,,"ConfigVersion",0x00010001,1
 
 [Device_Install.NT.Interfaces]
@@ -47,7 +47,7 @@ AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface
 AddReg=ControlInterface_AddReg
 
 [ControlInterface_AddReg]
-HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-80-2333729190-1599198784-3320592948-2337414441-3098439965)"
 
 [Device_Install.NT.Services]
 AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall

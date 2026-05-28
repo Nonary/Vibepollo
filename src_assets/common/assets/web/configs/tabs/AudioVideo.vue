@@ -91,6 +91,16 @@ const displayAutomationEnabled = computed<boolean>({
   },
 });
 
+const sunshineVirtualDriverEnabled = computed<boolean>({
+  get() {
+    return config.value?.dd_use_sunshine_virtual_display_driver === true;
+  },
+  set(enabled) {
+    if (!config.value) return;
+    store.updateOption('dd_use_sunshine_virtual_display_driver', enabled);
+  },
+});
+
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
     const mode = config.value?.['virtual_display_mode'];
@@ -250,7 +260,20 @@ function selectVirtualDisplayLayout(v: unknown) {
             <!-- Highlight driver health before picking a mode -->
             <PlatformLayout>
               <template #windows>
-                <div class="mt-3">
+                <div class="mt-3 space-y-3">
+                  <div
+                    class="flex flex-col gap-3 rounded-md border border-dark/10 dark:border-light/10 bg-surface/20 p-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <div class="text-sm font-medium">
+                        {{ $t('config.dd_use_sunshine_virtual_display_driver') }}
+                      </div>
+                      <p class="text-[11px] opacity-70 mt-1 leading-snug">
+                        {{ $t('config.dd_use_sunshine_virtual_display_driver_desc') }}
+                      </p>
+                    </div>
+                    <n-switch v-model:value="sunshineVirtualDriverEnabled" />
+                  </div>
                   <div
                     class="px-4 py-3 rounded-md"
                     :class="[
@@ -269,7 +292,10 @@ function selectVirtualDisplayLayout(v: unknown) {
             <p class="text-[11px] opacity-70 mt-2 leading-snug">
               {{ $t('config.virtual_display_mode_step_hint') }}
             </p>
-            <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
+            <n-radio-group
+              v-model:value="virtualDisplayMode"
+              class="grid gap-2 sm:grid-cols-3"
+            >
               <n-radio value="disabled">
                 {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>

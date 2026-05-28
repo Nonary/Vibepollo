@@ -283,6 +283,8 @@
     "virtual_display_mode_shared": "Shared Virtual Display",
     "virtual_display_mode_label": "Virtual display mode",
     "virtual_display_mode_step_hint": "Select which display Vibepollo should prepare: keep your physical monitor, create a per-client virtual display, or reuse a shared virtual screen.",
+    "dd_use_sunshine_virtual_display_driver": "Sunshine virtual driver",
+    "dd_use_sunshine_virtual_display_driver_desc": "Use Sunshine's virtual display driver for virtual display streams. Turn this off to keep using an existing SudoVDA setup.",
     "virtual_display_hdr_tip": "HDR Tip: Run Windows HDR Calibration while streaming and save the profile. Then open the Clients tab and click HDR Color Profile for the client to choose the saved profile.",
     "virtual_display_layout_label": "Virtual Display Layout",
     "virtual_display_layout_hint": "Choose how Vibepollo positions and prioritizes your virtual display when it is enabled.",

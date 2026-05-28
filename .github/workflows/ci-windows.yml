@@ -47,9 +47,9 @@ on:
       signpath_api_token:
         required: false
       VDD_SIGNING_CERT_PFX_BASE64:
-        required: true
+        required: false
       VDD_SIGNING_CERT_PASSWORD:
-        required: true
+        required: false
 
 jobs:
   build_windows:
@@ -261,7 +261,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           if ([string]::IsNullOrWhiteSpace($env:VDD_SIGNING_CERT_PFX_BASE64)) {
-            throw 'VDD_SIGNING_CERT_PFX_BASE64 is required to sign the virtual display driver catalog.'
+            'VDD_SIGNING_CERT_PFX_BASE64 was not provided; the driver package refresh will generate a self-signed catalog certificate.'
+            exit 0
           }
           if ([string]::IsNullOrWhiteSpace($env:VDD_SIGNING_CERT_PASSWORD)) {
             throw 'VDD_SIGNING_CERT_PASSWORD is required when VDD_SIGNING_CERT_PFX_BASE64 is set.'
@@ -352,6 +353,56 @@ jobs:
           "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
           "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
 
+      - name: Build virtual display driver package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $libRoot = Resolve-Path -LiteralPath '.\third-party\libvirtualdisplay'
+          $buildDir = Join-Path $PWD 'build-libvirtualdisplay-driver-package'
+          $vsDevCmd = Join-Path $env:WEBRTC_VS_PATH 'Common7\Tools\VsDevCmd.bat'
+          $cmake = Join-Path $env:WEBRTC_MSYS2_BIN 'cmake.exe'
+          $ninja = Join-Path $env:WEBRTC_MSYS2_BIN 'ninja.exe'
+
+          foreach ($required in @($vsDevCmd, $cmake, $ninja)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+              throw "Required virtual display driver build tool is missing: $required"
+            }
+          }
+
+          $packageVersion = $env:BUILD_VERSION
+          if ([string]::IsNullOrWhiteSpace($packageVersion)) {
+            $packageVersion = '0.0.0'
+          }
+          if ($packageVersion -match '^v(.+)$') {
+            $packageVersion = $Matches[1]
+          }
+
+          $command = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && " +
+            "`"$cmake`" -S `"$($libRoot.Path)`" -B `"$buildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" " +
+            "-DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON " +
+            "-DLIBVIRTUALDISPLAY_PACKAGE_VERSION=`"$packageVersion`" -DCMAKE_BUILD_TYPE=Release && " +
+            "`"$cmake`" --build `"$buildDir`" --target package --parallel"
+          & cmd.exe /s /c $command
+          if ($LASTEXITCODE -ne 0) {
+            throw "Virtual display driver package build failed with exit code $LASTEXITCODE"
+          }
+
+          $packageRoot = Get-ChildItem -LiteralPath (Join-Path $buildDir '_CPack_Packages\win64\ZIP') -Directory -Filter 'libvirtualdisplay-*-windows-x64' -ErrorAction Stop |
+            Where-Object {
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.dll') -PathType Leaf) -and
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.inf') -PathType Leaf) -and
+              (Test-Path -LiteralPath (Join-Path $_.FullName 'tools\virtualdisplay_probe.exe') -PathType Leaf)
+            } |
+            Sort-Object -Property LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $packageRoot) {
+            throw 'The virtual display driver package did not produce a driver/tools payload root.'
+          }
+
+          "VDD_PREBUILT_PACKAGE_DIR=$($packageRoot.FullName)" >> $env:GITHUB_ENV
+          "Using virtual display driver package: $($packageRoot.FullName)"
 
       - name: Download pinned WebRTC artifacts
         shell: pwsh
@@ -382,6 +433,11 @@ jobs:
           NPM_PATH="$(cygpath -m "${NODEJS_PATH}/npm.cmd")"
           echo "Using node: $(command -v node) ($(node --version))"
           echo "Using npm: ${NPM_PATH} ($(npm --version))"
+          vdd_prebuilt_arg=()
+          if [[ -n "${VDD_PREBUILT_PACKAGE_DIR:-}" ]]; then
+            vdd_prebuilt_arg=(-DSUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR="$(cygpath -u "${VDD_PREBUILT_PACKAGE_DIR}")")
+            echo "Using prebuilt virtual display driver package: ${VDD_PREBUILT_PACKAGE_DIR}"
+          fi
 
           mkdir -p build
           cmake \
@@ -403,7 +459,8 @@ jobs:
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
-            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support"
+            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support" \
+            "${vdd_prebuilt_arg[@]}"
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build --target all -j "$(nproc)"
           echo "::remove-matcher owner=gcc::"

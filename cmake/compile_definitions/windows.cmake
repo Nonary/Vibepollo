@@ -39,7 +39,11 @@ file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
 
 # vigem
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
-set(SUNSHINE_WINDOWS_VDISPLAY_SOURCE "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sunshine.cpp")
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party")
+set(SUNSHINE_WINDOWS_VDISPLAY_SOURCES
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sunshine.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sudovda.cpp")
 
 # apollo icon
 if(NOT DEFINED PROJECT_ICON_PATH)
@@ -188,9 +192,11 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
-        "${SUNSHINE_WINDOWS_VDISPLAY_SOURCE}"
+        ${SUNSHINE_WINDOWS_VDISPLAY_SOURCES}
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.cpp"
+        "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda-ioctl.h"
+        "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_limiter_nvcp.h"

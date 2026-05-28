@@ -14,20 +14,6 @@ $dllPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.dll'
 $catPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cat'
 $certPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cer'
 $probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'
-$legacyDriverPackages = @(
-    [pscustomobject]@{
-        DisplayName = 'SudoVDA'
-        OriginalNames = @('SudoVDA.inf')
-        HardwareIds = @('Root\SudoMaker\SudoVDA', 'SudoVDA')
-        DeviceGroupIds = @('SudoVDAGroup')
-    },
-    [pscustomobject]@{
-        DisplayName = 'MttVDD'
-        OriginalNames = @('MttVDD.inf')
-        HardwareIds = @('Root\MttVDD', 'MttVDD')
-        DeviceGroupIds = @('MttVDDGroup')
-    }
-)
 
 function Assert-Administrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -111,46 +97,13 @@ function Assert-InfContent {
         'CatalogFile=SunshineVirtualDisplayDriver.cat',
         'AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface',
         '[ControlInterface_AddReg]',
-        'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"',
+        'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-80-2333729190-1599198784-3320592948-2337414441-3098439965)"',
         'HKR,,"ConfigVersion",0x00010001,1',
         'UmdfExtensions=IddCx0102',
         'SunshineVirtualDisplayGroup'
     )) {
         if ($infText -notlike "*$required*") {
             throw "[SunshineVirtualDisplay] INF is missing expected content: $required"
-        }
-    }
-}
-
-function Assert-LegacyCleanupPlan {
-    $legacyExpectations = @(
-        [pscustomobject]@{
-            DisplayName = 'SudoVDA'
-            OriginalName = 'SudoVDA.inf'
-            HardwareId = 'Root\SudoMaker\SudoVDA'
-            DeviceGroupId = 'SudoVDAGroup'
-        },
-        [pscustomobject]@{
-            DisplayName = 'MttVDD'
-            OriginalName = 'MttVDD.inf'
-            HardwareId = 'Root\MttVDD'
-            DeviceGroupId = 'MttVDDGroup'
-        }
-    )
-
-    foreach ($expected in $legacyExpectations) {
-        $entry = $legacyDriverPackages | Where-Object { $_.DisplayName -eq $expected.DisplayName } | Select-Object -First 1
-        if (-not $entry) {
-            throw "[SunshineVirtualDisplay] Legacy cleanup plan is missing $($expected.DisplayName)."
-        }
-        if ($entry.OriginalNames -notcontains $expected.OriginalName) {
-            throw "[SunshineVirtualDisplay] Legacy cleanup plan for $($expected.DisplayName) is missing $($expected.OriginalName)."
-        }
-        if ($entry.HardwareIds -notcontains $expected.HardwareId) {
-            throw "[SunshineVirtualDisplay] Legacy cleanup plan for $($expected.DisplayName) is missing $($expected.HardwareId)."
-        }
-        if ($entry.DeviceGroupIds -notcontains $expected.DeviceGroupId) {
-            throw "[SunshineVirtualDisplay] Legacy cleanup plan for $($expected.DisplayName) is missing $($expected.DeviceGroupId)."
         }
     }
 }
@@ -164,7 +117,6 @@ function Assert-Package {
     }
 
     Assert-InfContent
-    Assert-LegacyCleanupPlan
 }
 
 function Install-CertificateIfPresent {
@@ -386,27 +338,6 @@ function Remove-DeviceNode {
     Remove-DeviceNodeForHardwareId -HardwareId $hardwareId -Label 'Sunshine virtual display'
 }
 
-function Remove-LegacyVirtualDisplayDrivers {
-    foreach ($legacyPackage in $legacyDriverPackages) {
-        foreach ($legacyHardwareId in $legacyPackage.HardwareIds) {
-            Remove-DeviceNodeForHardwareId -HardwareId $legacyHardwareId -Label "$($legacyPackage.DisplayName) legacy virtual display"
-        }
-    }
-
-    foreach ($legacyPackage in $legacyDriverPackages) {
-        $publishedNames = @(Get-DisplayDriverPublishedNamesByOriginalName -OriginalNames $legacyPackage.OriginalNames)
-        if ($publishedNames.Count -eq 0) {
-            Write-Host "[SunshineVirtualDisplay] No legacy $($legacyPackage.DisplayName) driver package was found in the driver store."
-            continue
-        }
-
-        foreach ($publishedName in $publishedNames) {
-            Write-Host "[SunshineVirtualDisplay] Removing legacy $($legacyPackage.DisplayName) driver package $publishedName."
-            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
-        }
-    }
-}
-
 $pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
 
 Assert-Package
@@ -434,7 +365,6 @@ Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
 
 Stop-SunshineForDriverInstall
-Remove-LegacyVirtualDisplayDrivers
 Remove-DeviceNode
 Remove-DriverPackage
 Install-DriverPackage

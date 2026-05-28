@@ -8,6 +8,7 @@ param(
     [switch]$Build,
     [switch]$ValidateOnly,
     [string]$BuildDir,
+    [string]$PrebuiltPackageDir,
     [string]$VsDevCmdPath,
     [string]$SigningThumbprint
 )
@@ -143,6 +144,33 @@ function Assert-SameFile {
     }
 }
 
+function Resolve-PrebuiltPackageRoot {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    $resolved = Resolve-RequiredPath -Path $Path
+    $directDriverDir = Join-Path $resolved 'driver'
+    $directToolsDir = Join-Path $resolved 'tools'
+    if ((Test-Path -LiteralPath $directDriverDir -PathType Container) -and
+        (Test-Path -LiteralPath $directToolsDir -PathType Container)) {
+        return $resolved
+    }
+
+    $driverDirs = @(Get-ChildItem -LiteralPath $resolved -Recurse -Directory -Filter 'driver' -ErrorAction SilentlyContinue)
+    foreach ($driverDir in $driverDirs) {
+        $candidateRoot = Split-Path -Parent $driverDir.FullName
+        $toolsDir = Join-Path $candidateRoot 'tools'
+        if (Test-Path -LiteralPath $toolsDir -PathType Container) {
+            return $candidateRoot
+        }
+    }
+
+    throw "[SunshineVirtualDisplay] Unable to locate prebuilt driver/tools package layout under $resolved"
+}
+
 function Invoke-Cmd {
     param([Parameter(Mandatory = $true)][string]$Command)
 
@@ -155,29 +183,88 @@ function Invoke-Cmd {
 function Find-SigningCertificate {
     param([string]$CertificatePath)
 
+    function Find-PrivateCertificateByThumbprint {
+        param([Parameter(Mandatory = $true)][string]$Thumbprint)
+
+        foreach ($storeLocation in @('CurrentUser', 'LocalMachine')) {
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', $storeLocation)
+            try {
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+                $matches = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $Thumbprint, $false)
+                foreach ($match in $matches) {
+                    if ($match.HasPrivateKey) {
+                        return [PSCustomObject]@{
+                            Certificate = $match
+                            Thumbprint = $Thumbprint
+                            UseMachineStore = ($storeLocation -eq 'LocalMachine')
+                        }
+                    }
+                }
+            } finally {
+                $store.Close()
+            }
+        }
+
+        return $null
+    }
+
+    function Export-PackageCertificate {
+        param(
+            [Parameter(Mandatory = $true)][System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+            [Parameter(Mandatory = $true)][string]$Path
+        )
+
+        $directory = Split-Path -Parent $Path
+        if ($directory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+        }
+        [System.IO.File]::WriteAllBytes($Path, $Certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+    }
+
     if ($SigningThumbprint) {
         $thumbprint = $SigningThumbprint
     } elseif (Test-Path -LiteralPath $CertificatePath -PathType Leaf) {
         $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($CertificatePath))
         $thumbprint = $cert.Thumbprint
     } else {
-        return [PSCustomObject]@{
-            Thumbprint = ''
-            UseMachineStore = $false
-        }
+        $thumbprint = ''
     }
 
+    if ($thumbprint) {
+        $matchedCertificate = Find-PrivateCertificateByThumbprint -Thumbprint $thumbprint
+        if ($matchedCertificate) {
+            if ($SigningThumbprint -or -not $matchedCertificate.UseMachineStore) {
+                return $matchedCertificate
+            }
+            Write-Warning "[SunshineVirtualDisplay] Packaged certificate $thumbprint is only available in LocalMachine\My; selecting a user-store signing certificate when possible."
+        }
+
+        if ($SigningThumbprint) {
+            throw "[SunshineVirtualDisplay] Signing certificate $thumbprint was not found with a private key."
+        }
+
+        Write-Warning "[SunshineVirtualDisplay] Packaged certificate $thumbprint has no matching private key; selecting a usable signing certificate."
+    }
+
+    $candidateSubjects = @(
+        'CN=Sunshine Virtual Display Test',
+        'CN=Virtual Display Driver Local Signing'
+    )
+    $fallbacks = [System.Collections.Generic.List[object]]::new()
     foreach ($storeLocation in @('CurrentUser', 'LocalMachine')) {
         $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', $storeLocation)
         try {
             $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-            $matches = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $thumbprint, $false)
-            foreach ($match in $matches) {
-                if ($match.HasPrivateKey) {
-                    return [PSCustomObject]@{
-                        Thumbprint = $thumbprint
+            foreach ($match in $store.Certificates) {
+                if (-not $match.HasPrivateKey -or $match.NotAfter -le (Get-Date)) {
+                    continue
+                }
+                if ($candidateSubjects -contains $match.Subject) {
+                    $fallbacks.Add([PSCustomObject]@{
+                        Certificate = $match
+                        Thumbprint = $match.Thumbprint
                         UseMachineStore = ($storeLocation -eq 'LocalMachine')
-                    }
+                    })
                 }
             }
         } finally {
@@ -185,8 +272,33 @@ function Find-SigningCertificate {
         }
     }
 
+    $fallback = $fallbacks |
+        Sort-Object -Property @{Expression = { $_.UseMachineStore }; Descending = $false}, @{Expression = { $_.Certificate.NotAfter }; Descending = $true} |
+        Select-Object -First 1
+    if ($fallback) {
+        Export-PackageCertificate -Certificate $fallback.Certificate -Path $CertificatePath
+        return $fallback
+    }
+
+    $newSelfSignedCertificate = Get-Command New-SelfSignedCertificate -ErrorAction SilentlyContinue
+    if ($newSelfSignedCertificate) {
+        $generated = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject 'CN=Sunshine Virtual Display Test' `
+            -KeyUsage DigitalSignature `
+            -KeyExportPolicy Exportable `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -NotAfter (Get-Date).AddYears(5)
+        Export-PackageCertificate -Certificate $generated -Path $CertificatePath
+        return [PSCustomObject]@{
+            Certificate = $generated
+            Thumbprint = $generated.Thumbprint
+            UseMachineStore = $false
+        }
+    }
+
     return [PSCustomObject]@{
-        Thumbprint = $thumbprint
+        Thumbprint = ''
         UseMachineStore = $false
     }
 }
@@ -195,12 +307,13 @@ $libRoot = Resolve-RequiredPath -Path $LibVirtualDisplayDir
 $packageRoot = Resolve-RequiredPath -Path $PackageDir
 $driverSourceInf = Join-Path $libRoot 'src\driver\windows_driver\SunshineVirtualDisplayDriver.inf'
 Resolve-RequiredPath -Path $driverSourceInf -Leaf | Out-Null
+$prebuiltPackageRoot = Resolve-PrebuiltPackageRoot -Path $PrebuiltPackageDir
 
 if (-not $BuildDir) {
     $BuildDir = Join-Path $libRoot 'build-driver'
 }
 
-if ($Build) {
+if ($Build -and -not $prebuiltPackageRoot) {
     $vsDevCmd = Resolve-VsDevCmd
     $cmake = Resolve-Tool -Name 'cmake.exe'
     $ninja = Resolve-Tool -Name 'ninja.exe'
@@ -219,14 +332,36 @@ $packageCat = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.cat'
 $packageCer = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.cer'
 $packageProbe = Join-Path $packageRoot 'virtualdisplay_probe.exe'
 $packageInstaller = Join-Path $packageRoot 'install.ps1'
+$expectedPackageDll = ''
+$expectedPackageInf = ''
+$expectedPackageProbe = ''
+
+if ($prebuiltPackageRoot) {
+    $expectedPackageDll = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.dll'
+    $expectedPackageInf = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.inf'
+    $expectedPackageProbe = Join-Path $prebuiltPackageRoot 'tools\virtualdisplay_probe.exe'
+}
 
 if ($Build) {
-    Assert-File -Path $driverBuildDll
-    Assert-File -Path $driverBuildInf
-    Assert-File -Path $probeBuildExe
-    Copy-Item -Force -LiteralPath $driverBuildDll -Destination $packageDll
-    Copy-Item -Force -LiteralPath $driverSourceInf -Destination $packageInf
-    Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe
+    if ($prebuiltPackageRoot) {
+        Write-Host "[SunshineVirtualDisplay] Refreshing staged driver assets from prebuilt package: $prebuiltPackageRoot"
+        Assert-File -Path $expectedPackageDll
+        Assert-File -Path $expectedPackageInf
+        Assert-File -Path $expectedPackageProbe
+        Copy-Item -Force -LiteralPath $expectedPackageDll -Destination $packageDll
+        Copy-Item -Force -LiteralPath $expectedPackageInf -Destination $packageInf
+        Copy-Item -Force -LiteralPath $expectedPackageProbe -Destination $packageProbe
+    } else {
+        Assert-File -Path $driverBuildDll
+        Assert-File -Path $driverBuildInf
+        Assert-File -Path $probeBuildExe
+        Copy-Item -Force -LiteralPath $driverBuildDll -Destination $packageDll
+        Copy-Item -Force -LiteralPath $driverSourceInf -Destination $packageInf
+        Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe
+        $expectedPackageDll = $driverBuildDll
+        $expectedPackageInf = $driverSourceInf
+        $expectedPackageProbe = $probeBuildExe
+    }
 
     $inf2Cat = Resolve-Tool -Name 'Inf2Cat.exe'
     & $inf2Cat /driver:$packageRoot /os:10_X64,10_RS5_X64,10_GE_X64,Server10_X64
@@ -242,6 +377,7 @@ if ($Build) {
             $signArgs += '/sm'
         }
         $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
+        Write-Host "[SunshineVirtualDisplay] Signing driver catalog with certificate $($signingCert.Thumbprint)."
         & $signtool @signArgs
         if ($LASTEXITCODE -ne 0) {
             throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
@@ -277,7 +413,7 @@ foreach ($required in @(
     'CatalogFile=SunshineVirtualDisplayDriver.cat',
     'AddInterface={5f894d6c-3a69-48a2-86ef-e4c671932d63},,ControlInterface',
     '[ControlInterface_AddReg]',
-    'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"',
+    'HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;S-1-5-80-2333729190-1599198784-3320592948-2337414441-3098439965)"',
     'HKR,,"ConfigVersion",0x00010001,1',
     'UmdfExtensions=IddCx0102'
 )) {
@@ -286,14 +422,14 @@ foreach ($required in @(
     }
 }
 
-if (Test-Path -LiteralPath $driverBuildDll -PathType Leaf) {
-    Assert-SameFile -Expected $driverBuildDll -Actual $packageDll
+if ($expectedPackageDll) {
+    Assert-SameFile -Expected $expectedPackageDll -Actual $packageDll
 }
-if (Test-Path -LiteralPath $driverSourceInf -PathType Leaf) {
-    Assert-SameFile -Expected $driverSourceInf -Actual $packageInf
+if ($expectedPackageInf) {
+    Assert-SameFile -Expected $expectedPackageInf -Actual $packageInf
 }
-if (Test-Path -LiteralPath $probeBuildExe -PathType Leaf) {
-    Assert-SameFile -Expected $probeBuildExe -Actual $packageProbe
+if ($expectedPackageProbe) {
+    Assert-SameFile -Expected $expectedPackageProbe -Actual $packageProbe
 }
 
 & powershell.exe -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File $packageInstaller -ValidateOnly

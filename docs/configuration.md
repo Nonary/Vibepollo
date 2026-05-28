@@ -1543,6 +1543,28 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_use_sunshine_virtual_display_driver
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When enabled, Sunshine uses the Sunshine virtual display driver for virtual display streams instead of legacy virtual display driver integrations such as SudoVDA.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_use_sunshine_virtual_display_driver = true
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_activate_virtual_display
 
 <table>
