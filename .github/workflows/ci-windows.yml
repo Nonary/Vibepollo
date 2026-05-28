@@ -46,10 +46,6 @@ on:
         required: false
       signpath_api_token:
         required: false
-      VDD_SIGNING_CERT_PFX_BASE64:
-        required: false
-      VDD_SIGNING_CERT_PASSWORD:
-        required: false
 
 jobs:
   build_windows:
@@ -215,108 +211,6 @@ jobs:
         run: |
           choco install wixtoolset -y
 
-      - name: Install Windows SDK and Driver Kit
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-          if (-not $winget) {
-            $winget = Get-ChildItem 'C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe' -ErrorAction SilentlyContinue |
-              Sort-Object -Property FullName -Descending |
-              Select-Object -First 1
-          }
-          if (-not $winget) {
-            throw 'winget.exe was not found. The Windows 10 WDK Chocolatey package is too old for the IddCx 1.10 driver build.'
-          }
-          $wingetPath = $winget.Source
-          if ([string]::IsNullOrWhiteSpace($wingetPath)) {
-            $wingetPath = $winget.FullName
-          }
-
-          foreach ($packageId in @(
-            'Microsoft.WindowsSDK.10.0.26100',
-            'Microsoft.WindowsWDK.10.0.26100'
-          )) {
-            & $wingetPath install `
-              --source winget `
-              --exact `
-              --id $packageId `
-              --silent `
-              --accept-package-agreements `
-              --accept-source-agreements `
-              --disable-interactivity
-            $exitCode = $LASTEXITCODE
-            if ($exitCode -ne 0) {
-              throw "winget failed to install $packageId with exit code $exitCode"
-            }
-          }
-
-      - name: Import virtual display driver signing certificate
-        shell: pwsh
-        env:
-          VDD_SIGNING_CERT_PFX_BASE64: ${{ secrets.VDD_SIGNING_CERT_PFX_BASE64 }}
-          VDD_SIGNING_CERT_PASSWORD: ${{ secrets.VDD_SIGNING_CERT_PASSWORD }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          if ([string]::IsNullOrWhiteSpace($env:VDD_SIGNING_CERT_PFX_BASE64)) {
-            'VDD_SIGNING_CERT_PFX_BASE64 was not provided; the driver package refresh will generate a self-signed catalog certificate.'
-            exit 0
-          }
-          if ([string]::IsNullOrWhiteSpace($env:VDD_SIGNING_CERT_PASSWORD)) {
-            throw 'VDD_SIGNING_CERT_PASSWORD is required when VDD_SIGNING_CERT_PFX_BASE64 is set.'
-          }
-
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'sunshine-virtual-display-driver-signing.pfx'
-          [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:VDD_SIGNING_CERT_PFX_BASE64))
-
-          $password = ConvertTo-SecureString $env:VDD_SIGNING_CERT_PASSWORD -AsPlainText -Force
-          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
-          if (-not $cert.HasPrivateKey) {
-            throw 'Imported virtual display driver signing certificate does not include a private key.'
-          }
-
-          Remove-Item -LiteralPath $pfxPath -Force
-
-      - name: Verify virtual display driver build tools
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10).KitsRoot10
-          if ([string]::IsNullOrWhiteSpace($kitsRoot) -or -not (Test-Path -LiteralPath $kitsRoot)) {
-            throw 'Windows SDK KitsRoot10 was not found.'
-          }
-
-          $inf2Cat = Get-ChildItem -LiteralPath (Join-Path $kitsRoot 'bin') -Recurse -Filter Inf2Cat.exe -File -ErrorAction SilentlyContinue |
-            Sort-Object -Property FullName -Descending |
-            Select-Object -First 1
-          if (-not $inf2Cat) {
-            throw "Inf2Cat.exe was not found under $kitsRoot. Install the Windows Driver Kit."
-          }
-
-          $signtool = Get-ChildItem -LiteralPath (Join-Path $kitsRoot 'bin') -Recurse -Filter signtool.exe -File -ErrorAction SilentlyContinue |
-            Sort-Object -Property FullName -Descending |
-            Select-Object -First 1
-          if (-not $signtool) {
-            throw "signtool.exe was not found under $kitsRoot. Install the Windows SDK/WDK signing tools."
-          }
-
-          $iddcx = Get-ChildItem -LiteralPath (Join-Path $kitsRoot 'Include') -Recurse -Filter IddCx.h -File -ErrorAction SilentlyContinue |
-            Sort-Object -Property FullName -Descending |
-            Select-Object -First 1
-          if (-not $iddcx) {
-            throw "IddCx.h was not found under $kitsRoot. Install the Windows Driver Kit."
-          }
-
-          $wdfStub = Get-ChildItem -LiteralPath (Join-Path $kitsRoot 'Lib') -Recurse -Filter WdfDriverStubUm.lib -File -ErrorAction SilentlyContinue |
-            Sort-Object -Property FullName -Descending |
-            Select-Object -First 1
-          if (-not $wdfStub) {
-            throw "WdfDriverStubUm.lib was not found under $kitsRoot. Install the Windows Driver Kit."
-          }
-
       - name: Resolve WebRTC toolchain
         shell: pwsh
         env:
@@ -353,42 +247,46 @@ jobs:
           "WEBRTC_WINSDK_DIR=$kitsRoot" >> $env:GITHUB_ENV
           "WEBRTC_MSYS2_BIN=$msys2Bin" >> $env:GITHUB_ENV
 
-      - name: Build virtual display driver package
+      - name: Download virtual display driver package
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
 
           $libRoot = Resolve-Path -LiteralPath '.\third-party\libvirtualdisplay'
-          $buildDir = Join-Path $PWD 'build-libvirtualdisplay-driver-package'
-          $vsDevCmd = Join-Path $env:WEBRTC_VS_PATH 'Common7\Tools\VsDevCmd.bat'
-          $cmake = Join-Path $env:WEBRTC_MSYS2_BIN 'cmake.exe'
-          $ninja = Join-Path $env:WEBRTC_MSYS2_BIN 'ninja.exe'
-
-          foreach ($required in @($vsDevCmd, $cmake, $ninja)) {
-            if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
-              throw "Required virtual display driver build tool is missing: $required"
-            }
+          & git -C $libRoot.Path fetch --tags --force origin
+          $releaseTag = (& git -C $libRoot.Path describe --tags --abbrev=0 2>$null).Trim()
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            $releaseTag = (gh release list --repo Nonary/libvirtualdisplay --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName').Trim()
+          }
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw 'Unable to resolve a libvirtualdisplay release tag.'
           }
 
-          $packageVersion = $env:BUILD_VERSION
-          if ([string]::IsNullOrWhiteSpace($packageVersion)) {
-            $packageVersion = '0.0.0'
-          }
-          if ($packageVersion -match '^v(.+)$') {
-            $packageVersion = $Matches[1]
-          }
+          $releaseVersion = $releaseTag -replace '^v', ''
+          $downloadDir = Join-Path $PWD 'libvirtualdisplay-release'
+          $extractDir = Join-Path $downloadDir 'extract'
+          New-Item -ItemType Directory -Force -Path $downloadDir, $extractDir | Out-Null
 
-          $command = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && " +
-            "`"$cmake`" -S `"$($libRoot.Path)`" -B `"$buildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" " +
-            "-DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON " +
-            "-DLIBVIRTUALDISPLAY_PACKAGE_VERSION=`"$packageVersion`" -DCMAKE_BUILD_TYPE=Release && " +
-            "`"$cmake`" --build `"$buildDir`" --target package --parallel"
-          & cmd.exe /s /c $command
+          gh release download $releaseTag `
+            --repo Nonary/libvirtualdisplay `
+            --pattern "libvirtualdisplay-$releaseVersion-windows-x64.zip" `
+            --dir $downloadDir `
+            --clobber
           if ($LASTEXITCODE -ne 0) {
-            throw "Virtual display driver package build failed with exit code $LASTEXITCODE"
+            throw "Failed to download libvirtualdisplay release package $releaseTag."
           }
 
-          $packageRoot = Get-ChildItem -LiteralPath (Join-Path $buildDir '_CPack_Packages\win64\ZIP') -Directory -Filter 'libvirtualdisplay-*-windows-x64' -ErrorAction Stop |
+          $zip = Get-ChildItem -LiteralPath $downloadDir -File -Filter "libvirtualdisplay-$releaseVersion-windows-x64.zip" -ErrorAction Stop |
+            Select-Object -First 1
+          if (-not $zip) {
+            throw "libvirtualdisplay release package was not downloaded for $releaseTag."
+          }
+
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extractDir -Force
+
+          $packageRoot = Get-ChildItem -LiteralPath $extractDir -Directory -Recurse -ErrorAction Stop |
             Where-Object {
               (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.dll') -PathType Leaf) -and
               (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.inf') -PathType Leaf) -and

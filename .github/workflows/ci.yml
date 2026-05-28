@@ -206,8 +206,6 @@ jobs:
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
-      VDD_SIGNING_CERT_PFX_BASE64: ${{ secrets.VDD_SIGNING_CERT_PFX_BASE64 }}
-      VDD_SIGNING_CERT_PASSWORD: ${{ secrets.VDD_SIGNING_CERT_PASSWORD }}
 
   release:
     name: Release

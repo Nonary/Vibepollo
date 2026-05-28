@@ -28,15 +28,13 @@ jobs:
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.build_version || '0.0.0' }}
       release_tag: ''
-      symbol_product_name: Vibeshine
-      symbol_release_prefix: shine
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: polo
       publish_symbols: false
       upload_symbols_artifact: false
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
-      VDD_SIGNING_CERT_PFX_BASE64: ${{ secrets.VDD_SIGNING_CERT_PFX_BASE64 }}
-      VDD_SIGNING_CERT_PASSWORD: ${{ secrets.VDD_SIGNING_CERT_PASSWORD }}
 
   artifact-link:
     name: Installer artifact link
