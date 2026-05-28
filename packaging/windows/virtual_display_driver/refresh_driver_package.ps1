@@ -334,11 +334,15 @@ $packageProbe = Join-Path $packageRoot 'virtualdisplay_probe.exe'
 $packageInstaller = Join-Path $packageRoot 'install.ps1'
 $expectedPackageDll = ''
 $expectedPackageInf = ''
+$expectedPackageCat = ''
+$expectedPackageCer = ''
 $expectedPackageProbe = ''
 
 if ($prebuiltPackageRoot) {
     $expectedPackageDll = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.dll'
     $expectedPackageInf = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.inf'
+    $expectedPackageCat = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.cat'
+    $expectedPackageCer = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.cer'
     $expectedPackageProbe = Join-Path $prebuiltPackageRoot 'tools\virtualdisplay_probe.exe'
 }
 
@@ -347,9 +351,17 @@ if ($Build) {
         Write-Host "[SunshineVirtualDisplay] Refreshing staged driver assets from prebuilt package: $prebuiltPackageRoot"
         Assert-File -Path $expectedPackageDll
         Assert-File -Path $expectedPackageInf
+        Assert-File -Path $expectedPackageCat
         Assert-File -Path $expectedPackageProbe
         Copy-Item -Force -LiteralPath $expectedPackageDll -Destination $packageDll
         Copy-Item -Force -LiteralPath $expectedPackageInf -Destination $packageInf
+        Copy-Item -Force -LiteralPath $expectedPackageCat -Destination $packageCat
+        if (Test-Path -LiteralPath $expectedPackageCer -PathType Leaf) {
+            Copy-Item -Force -LiteralPath $expectedPackageCer -Destination $packageCer
+        } elseif (Test-Path -LiteralPath $packageCer -PathType Leaf) {
+            Remove-Item -Force -LiteralPath $packageCer
+            $expectedPackageCer = ''
+        }
         Copy-Item -Force -LiteralPath $expectedPackageProbe -Destination $packageProbe
     } else {
         Assert-File -Path $driverBuildDll
@@ -361,33 +373,33 @@ if ($Build) {
         $expectedPackageDll = $driverBuildDll
         $expectedPackageInf = $driverSourceInf
         $expectedPackageProbe = $probeBuildExe
-    }
 
-    $inf2Cat = Resolve-Tool -Name 'Inf2Cat.exe'
-    & $inf2Cat /driver:$packageRoot /os:10_X64,10_RS5_X64,10_GE_X64,Server10_X64
-    if ($LASTEXITCODE -ne 0) {
-        throw "[SunshineVirtualDisplay] Inf2Cat failed with exit code $LASTEXITCODE"
-    }
+        $inf2Cat = Resolve-Tool -Name 'Inf2Cat.exe'
+        & $inf2Cat /driver:$packageRoot /os:10_X64,10_RS5_X64,10_GE_X64,Server10_X64
+        if ($LASTEXITCODE -ne 0) {
+            throw "[SunshineVirtualDisplay] Inf2Cat failed with exit code $LASTEXITCODE"
+        }
 
-    $signingCert = Find-SigningCertificate -CertificatePath $packageCer
-    if ($signingCert.Thumbprint) {
-        $signtool = Resolve-Tool -Name 'signtool.exe'
-        $signArgs = @('sign', '/fd', 'SHA256')
-        if ($signingCert.UseMachineStore) {
-            $signArgs += '/sm'
+        $signingCert = Find-SigningCertificate -CertificatePath $packageCer
+        if ($signingCert.Thumbprint) {
+            $signtool = Resolve-Tool -Name 'signtool.exe'
+            $signArgs = @('sign', '/fd', 'SHA256')
+            if ($signingCert.UseMachineStore) {
+                $signArgs += '/sm'
+            }
+            $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
+            Write-Host "[SunshineVirtualDisplay] Signing driver catalog with certificate $($signingCert.Thumbprint)."
+            & $signtool @signArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
+            }
+            & $signtool verify /pa $packageCat
+            if ($LASTEXITCODE -ne 0) {
+                throw "[SunshineVirtualDisplay] signtool verify failed with exit code $LASTEXITCODE"
+            }
+        } else {
+            Write-Warning '[SunshineVirtualDisplay] No signing certificate was provided; generated catalog is unsigned.'
         }
-        $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
-        Write-Host "[SunshineVirtualDisplay] Signing driver catalog with certificate $($signingCert.Thumbprint)."
-        & $signtool @signArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
-        }
-        & $signtool verify /pa $packageCat
-        if ($LASTEXITCODE -ne 0) {
-            throw "[SunshineVirtualDisplay] signtool verify failed with exit code $LASTEXITCODE"
-        }
-    } else {
-        Write-Warning '[SunshineVirtualDisplay] No signing certificate was provided; generated catalog is unsigned.'
     }
 }
 
@@ -427,6 +439,12 @@ if ($expectedPackageDll) {
 }
 if ($expectedPackageInf) {
     Assert-SameFile -Expected $expectedPackageInf -Actual $packageInf
+}
+if ($expectedPackageCat) {
+    Assert-SameFile -Expected $expectedPackageCat -Actual $packageCat
+}
+if ($expectedPackageCer) {
+    Assert-SameFile -Expected $expectedPackageCer -Actual $packageCer
 }
 if ($expectedPackageProbe) {
     Assert-SameFile -Expected $expectedPackageProbe -Actual $packageProbe
