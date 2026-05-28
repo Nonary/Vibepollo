@@ -1133,7 +1133,7 @@ namespace nvhttp {
       bool input_only,
       const args_t &args,
       const crypto::named_cert_t *named_cert_p,
-      const resolved_client_identity_t *resolved_client_identity = nullptr
+      const resolved_client_identity_t *resolved_client_identity
     ) {
       auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
 

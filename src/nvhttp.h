@@ -71,8 +71,10 @@ namespace nvhttp {
   cmd_list_t
     extract_command_entries(const nlohmann::json &j, const std::string &key);
 
+  struct resolved_client_identity_t;
+
   std::shared_ptr<rtsp_stream::launch_session_t>
-    make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t *named_cert_p);
+    make_launch_session(bool host_audio, bool input_only, const args_t &args, const crypto::named_cert_t *named_cert_p, const resolved_client_identity_t *resolved_client_identity = nullptr);
 
   /**
    * @brief Setup the nvhttp server.
