@@ -165,6 +165,11 @@ namespace playnite_launcher {
       std::atomic<bool> game_stop_signal {false};
       std::atomic<bool> cleanup_spawn_signal {false};
       std::atomic<bool> active_game_flag {false};
+      // Set when the plugin reports Playnite is shutting down with no game running
+      // (i.e. the user purposely quit Playnite, rather than Playnite quitting to
+      // launch a game). Used to end the session promptly instead of waiting out
+      // the process-missing grace window.
+      std::atomic<bool> playnite_user_exit {false};
       std::atomic<int64_t> grace_deadline_ms {steady_to_millis(std::chrono::steady_clock::now() + std::chrono::seconds(15))};
 
       std::mutex game_mutex;
@@ -242,6 +247,8 @@ namespace playnite_launcher {
           }
           game_started_once = true;
           active_game_flag.store(true);
+          // A fresh launch overrides any prior "Playnite is exiting" intent.
+          playnite_user_exit.store(false);
           game_start_signal.store(true);
           cleanup_spawn_signal.store(true);
           renew_grace_deadline("gameStarted");
@@ -307,6 +314,12 @@ namespace playnite_launcher {
               fullscreen_lossless_applied = false;
             }
           }
+        } else if (msg.status_name == "playniteExiting") {
+          // Playnite is shutting down and the plugin determined no game is running,
+          // so this is a deliberate user quit. Flag it; the main loop ends the
+          // session once it confirms no game process is keeping the stream alive.
+          BOOST_LOG(info) << "Fullscreen mode: Playnite reported user-initiated exit";
+          playnite_user_exit.store(true);
         }
       });
 
@@ -328,38 +341,43 @@ namespace playnite_launcher {
 
       client.start();
 
-      BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.DesktopApp.exe --startfullscreen";
-      bool started = false;
       std::string fullscreen_install_dir_utf8;
-      try {
-        std::wstring assocExe = playnite::query_playnite_executable_from_assoc();
-        if (!assocExe.empty()) {
-          std::filesystem::path assoc_path(assocExe);
-          std::filesystem::path base = assoc_path.parent_path();
-          fullscreen_install_dir_utf8 = platf::dxgi::wide_to_utf8(base.wstring());
-          std::filesystem::path desktopExe = base / L"Playnite.DesktopApp.exe";
-          std::filesystem::path targetExe = desktopExe;
-          if (!std::filesystem::exists(targetExe) && std::filesystem::exists(assoc_path)) {
-            targetExe = assoc_path;
-          }
-          if (std::filesystem::exists(targetExe)) {
-            BOOST_LOG(info) << "Launching Playnite Desktop with --startfullscreen from: " << platf::dxgi::wide_to_utf8(targetExe.wstring());
-            started = playnite::launch_executable_detached_parented_with_args(targetExe.wstring(), L"--startfullscreen");
-          }
-          if (!started) {
-            std::filesystem::path fullscreenExe = base / L"Playnite.FullscreenApp.exe";
-            if (std::filesystem::exists(fullscreenExe)) {
-              BOOST_LOG(info) << "Desktop launch failed; falling back to FullscreenApp from: " << platf::dxgi::wide_to_utf8(fullscreenExe.wstring());
-              started = playnite::launch_executable_detached_parented(fullscreenExe.wstring());
+      auto launch_playnite_fullscreen = [&]() -> bool {
+        bool started = false;
+        try {
+          std::wstring assocExe = playnite::query_playnite_executable_from_assoc();
+          if (!assocExe.empty()) {
+            std::filesystem::path assoc_path(assocExe);
+            std::filesystem::path base = assoc_path.parent_path();
+            fullscreen_install_dir_utf8 = platf::dxgi::wide_to_utf8(base.wstring());
+            std::filesystem::path desktopExe = base / L"Playnite.DesktopApp.exe";
+            std::filesystem::path targetExe = desktopExe;
+            if (!std::filesystem::exists(targetExe) && std::filesystem::exists(assoc_path)) {
+              targetExe = assoc_path;
+            }
+            if (std::filesystem::exists(targetExe)) {
+              BOOST_LOG(info) << "Launching Playnite Desktop with --startfullscreen from: " << platf::dxgi::wide_to_utf8(targetExe.wstring());
+              started = playnite::launch_executable_detached_parented_with_args(targetExe.wstring(), L"--startfullscreen");
+            }
+            if (!started) {
+              std::filesystem::path fullscreenExe = base / L"Playnite.FullscreenApp.exe";
+              if (std::filesystem::exists(fullscreenExe)) {
+                BOOST_LOG(info) << "Desktop launch failed; falling back to FullscreenApp from: " << platf::dxgi::wide_to_utf8(fullscreenExe.wstring());
+                started = playnite::launch_executable_detached_parented(fullscreenExe.wstring());
+              }
             }
           }
+        } catch (...) {
         }
-      } catch (...) {
-      }
-      if (!started) {
-        BOOST_LOG(info) << "Playnite executable not resolved; falling back to playnite://";
-        ensure_playnite_open();
-      }
+        if (!started) {
+          BOOST_LOG(info) << "Playnite executable not resolved; falling back to playnite://";
+          ensure_playnite_open();
+        }
+        return started;
+      };
+
+      BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.DesktopApp.exe --startfullscreen";
+      (void) launch_playnite_fullscreen();
 
       WCHAR selfPath[MAX_PATH] = {};
       GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
@@ -418,6 +436,52 @@ namespace playnite_launcher {
       int consecutive_missing = 0;
       auto connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
 
+      // Track the launched game's processes directly. Playnite can be configured to
+      // quit when launching a game ("exit Playnite after launch"), in which case the
+      // plugin dies and never delivers gameStopped over IPC. Watching the process tree
+      // lets us keep the stream alive while the game runs and tear it down once it ends,
+      // independent of any IPC signal.
+      bool game_proc_seen = false;
+      std::optional<std::chrono::steady_clock::time_point> game_proc_first_seen;
+      std::optional<std::chrono::steady_clock::time_point> game_missing_since;
+      // A long grace absorbs the early launch handoff (bootstrappers exiting and
+      // respawning the real exe, loaders, multi-process launchers). Once a game has
+      // actually been running for a while, any process disappearance is a genuine
+      // exit, so a short grace is enough to confirm it.
+      const auto game_missing_grace_long = std::chrono::seconds(15);
+      const auto game_missing_grace_short = std::chrono::seconds(5);
+      const auto long_session_threshold = std::chrono::seconds(60);
+
+      auto game_processes_alive = [&]() -> bool {
+        std::string install_dir;
+        std::string exe_path;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          install_dir = game_state.install_dir;
+          exe_path = game_state.exe_path;
+        }
+        if (!install_dir.empty()) {
+          try {
+            std::wstring wdir = platf::dxgi::utf8_to_wide(install_dir);
+            if (!focus::find_pids_under_install_dir_sorted(wdir, false).empty()) {
+              return true;
+            }
+          } catch (...) {
+          }
+        }
+        if (!exe_path.empty()) {
+          try {
+            std::filesystem::path p(platf::dxgi::utf8_to_wide(exe_path));
+            std::wstring base = p.filename().wstring();
+            if (!base.empty() && !platf::dxgi::find_process_ids_by_name(base.c_str()).empty()) {
+              return true;
+            }
+          } catch (...) {
+          }
+        }
+        return false;
+      };
+
       auto send_stop_command_if_needed = [&]() {
         if (!client.is_active()) {
           return;
@@ -453,13 +517,42 @@ namespace playnite_launcher {
 
         bool active_game_now = active_game_flag.load();
 
+        auto now = std::chrono::steady_clock::now();
+
+        // Watch the launched game's process tree so the session survives Playnite quitting
+        // on launch (no gameStopped IPC) and ends once the game itself exits.
+        bool game_proc_alive = game_processes_alive();
+        if (game_proc_alive) {
+          game_proc_seen = true;
+          if (!game_proc_first_seen) {
+            game_proc_first_seen = now;
+          }
+          game_missing_since.reset();
+        }
+        bool game_alive;
+        if (game_proc_seen) {
+          if (game_proc_alive) {
+            game_alive = true;
+          } else {
+            if (!game_missing_since) {
+              game_missing_since = now;
+            }
+            // Shorten the grace once the game has clearly been running for a while.
+            bool long_session = game_proc_first_seen && (*game_missing_since - *game_proc_first_seen) >= long_session_threshold;
+            auto grace = long_session ? game_missing_grace_short : game_missing_grace_long;
+            game_alive = (now - *game_missing_since) < grace;
+          }
+        } else {
+          // gameStarted signaled but the process has not been observed yet; trust IPC + grace.
+          game_alive = active_game_now;
+        }
+
         // Playnite fullscreen can exit before the plugin delivers gameStarted for the launched game.
         // Hold the session briefly on that transition so Sunshine does not tear down the stream first.
-        if (!fs_running && fullscreen_was_running && fullscreen_detected && !active_game_now) {
+        if (!fs_running && fullscreen_was_running && fullscreen_detected && !game_alive) {
           renew_grace_deadline("fullscreen-handoff");
         }
 
-        auto now = std::chrono::steady_clock::now();
         int64_t grace_ms = grace_deadline_ms.load();
         bool in_grace = grace_ms > 0 && now < millis_to_steady(grace_ms);
         bool waiting_for_pipe = !pipe_connected.load() && now < connection_grace_deadline;
@@ -468,7 +561,53 @@ namespace playnite_launcher {
           fullscreen_detected = true;
         }
 
-        if (fs_running || active_game_now || in_grace || waiting_for_pipe) {
+        // The user purposely quit Playnite (plugin confirmed no game was running) and no
+        // game process is keeping the stream alive: end the session right away.
+        if (playnite_user_exit.load() && !fs_running && !game_alive) {
+          BOOST_LOG(info) << "Fullscreen mode: ending session after user exit with no active game";
+          break;
+        }
+
+        // A game we were watching has exited (its processes are gone past the grace window)
+        // and Playnite fullscreen is not running. This is the "exit Playnite on launch"
+        // case: Playnite quit to start the game, so the user expects to land back in the
+        // fullscreen library rather than on the desktop with a dead stream. Relaunch
+        // Playnite fullscreen and keep the session going. The session only ends when
+        // Playnite is quit deliberately with no game (playnite_user_exit, handled above).
+        if (game_proc_seen && !game_alive && !fs_running) {
+          BOOST_LOG(info) << "Fullscreen mode: game exited and Playnite is closed; relaunching Playnite fullscreen";
+          {
+            std::lock_guard<std::mutex> lk(game_mutex);
+            game_state.id_original.clear();
+            game_state.id_norm.clear();
+            game_state.install_dir.clear();
+            game_state.exe_path.clear();
+            game_state.cleanup_dir.clear();
+          }
+          active_game_flag.store(false);
+          game_proc_seen = false;
+          game_proc_first_seen.reset();
+          game_missing_since.reset();
+          fullscreen_detected = false;
+          fullscreen_was_running = false;
+          consecutive_missing = 0;
+          (void) launch_playnite_fullscreen();
+          // Give Playnite time to come back before any teardown is reconsidered, and
+          // allow the plugin's IPC connection to re-establish.
+          renew_grace_deadline("fullscreen-relaunch");
+          connection_grace_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(30, config.timeout_sec));
+          // Re-arm autofocus for the relaunched fullscreen UI.
+          if (config.focus_attempts > 0 && config.focus_timeout_secs > 0) {
+            fullscreen_successes_left = std::max(0, config.focus_attempts);
+            fullscreen_focus_budget_active = true;
+            fullscreen_focus_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(std::max(1, config.focus_timeout_secs));
+            next_fullscreen_focus_check = std::chrono::steady_clock::now();
+          }
+          std::this_thread::sleep_for(500ms);
+          continue;
+        }
+
+        if (fs_running || game_alive || in_grace || waiting_for_pipe) {
           consecutive_missing = 0;
         }
         else {

@@ -2177,11 +2177,56 @@ function Cleanup-StaleRunspaceByName {
   }
 }
 
+# Decide what the fullscreen launcher should do when Playnite is shutting down.
+#
+# Two distinct cases must be told apart:
+#   * Playnite is configured to quit when a game launches ("exit Playnite after
+#     launch"). Here a game is running as Playnite exits, and the stream must stay
+#     up. We (re)send gameStarted for every running game so the launcher knows the
+#     install dir / exe and can watch the process directly (no further gameStopped
+#     will ever arrive, because the plugin is about to die with Playnite).
+#   * The user purposely quit Playnite with nothing running. Here we send an
+#     explicit 'playniteExiting' status so the launcher ends the session promptly.
+function Send-ShutdownSessionHandoff {
+  try {
+    $running = @()
+    try { $running = Get-RunningGames } catch { $running = @() }
+    if ($running -and $running.Count -gt 0) {
+      $handed = 0
+      foreach ($game in $running) {
+        if (-not $game) { continue }
+        $payload = $null
+        try { $payload = Build-StatusPayload -Name 'gameStarted' -Game $game } catch { $payload = $null }
+        if (-not $payload) { continue }
+        try {
+          $queued = Send-PayloadToLauncherConnections -Payload $payload -Context 'Shutdown handoff' -ReturnCount
+          if ($queued -gt 0) { $handed += $queued }
+        } catch {}
+      }
+      Write-Log ("Shutdown: handed off {0} running game(s) to launcher connection(s)" -f $handed)
+    } else {
+      $payload = $null
+      try { $payload = @{ type = 'status'; status = @{ name = 'playniteExiting' } } | ConvertTo-Json -Depth 4 -Compress } catch { $payload = $null }
+      if ($payload) {
+        try { Send-PayloadToLauncherConnections -Payload $payload -Context 'Shutdown exit signal' | Out-Null } catch {}
+        Write-Log "Shutdown: signaled playniteExiting to launcher connection(s)"
+      }
+    }
+  } catch {
+    Write-Log ("Shutdown: session handoff failed: {0}" -f $_.Exception.Message)
+  }
+}
+
 # Optional: clean up on exit (cooperative cancellation)
 function OnApplicationStopped() {
   try {
     Write-Log "OnApplicationStopped: begin shutdown"
     try { Write-DebugLog ("OnApplicationStopped: connCount(before)={0}" -f ($global:LauncherConns.Count)) } catch {}
+    # Tell launcher connections whether to keep streaming (game running) or end the
+    # session (user quit) BEFORE tearing anything down, then give the per-connection
+    # writer pumps a brief window to flush the decision over the pipe.
+    try { Send-ShutdownSessionHandoff } catch { Write-Log "OnApplicationStopped: handoff error: $($_.Exception.Message)" }
+    try { Start-Sleep -Milliseconds 400 } catch {}
     # 1) Signal all loops to exit ASAP
     try { if ($script:Cts) { $script:Cts.Cancel() } } catch {}
     # Actively break the connector runspace's blocking ReadLine()
