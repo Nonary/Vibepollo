@@ -3935,9 +3935,7 @@ namespace VDISPLAY {
       }
 
       if (hdr_requested && !request_hdr10_advanced_color(output)) {
-        BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; reverting temporary display.";
-        (void) removeVirtualDisplay(guid);
-        return std::nullopt;
+        BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
       }
 
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.

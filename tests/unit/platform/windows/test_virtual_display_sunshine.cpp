@@ -161,17 +161,20 @@ TEST(SunshineVirtualDisplay, HdrActivationRequiresWindowsHdrSupportAndTenBit) {
   expect_contains(source, "Windows did not report HDR support/enabled at 10-bit");
 }
 
-TEST(SunshineVirtualDisplay, HdrRequestedTemporaryDisplayDoesNotContinueAsSdr) {
+TEST(SunshineVirtualDisplay, HdrRequestedTemporaryDisplayFallsBackToSdr) {
   const auto source = read_virtual_display_source();
 
   const auto activation_failure = source.find("if (hdr_requested && !request_hdr10_advanced_color(output))");
   ASSERT_NE(activation_failure, std::string::npos);
 
-  const auto revert = source.find("(void) removeVirtualDisplay(guid);", activation_failure);
-  ASSERT_NE(revert, std::string::npos);
+  const auto fallback = source.find("continuing with SDR capture", activation_failure);
+  ASSERT_NE(fallback, std::string::npos);
 
-  const auto fail_create = source.find("return std::nullopt;", activation_failure);
-  ASSERT_NE(fail_create, std::string::npos);
-  EXPECT_LT(revert, fail_create);
+  const auto success = source.find("Virtual display added successfully", activation_failure);
+  ASSERT_NE(success, std::string::npos);
+  EXPECT_LT(fallback, success);
+
+  const auto destructive_revert = source.find("(void) removeVirtualDisplay(guid);", activation_failure);
+  EXPECT_TRUE(destructive_revert == std::string::npos || destructive_revert > success);
 }
 #endif
