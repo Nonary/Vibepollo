@@ -76,7 +76,7 @@ namespace VDISPLAY_SUDOVDA {
   using VDISPLAY::ensure_display_result;
   using SudaVDADisplayInfo = VDISPLAY::VirtualDisplayInfo;
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = VDISPLAY::VIRTUAL_DISPLAY_SELECTION;
-  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
+  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
 
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();

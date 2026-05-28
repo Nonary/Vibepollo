@@ -14,6 +14,7 @@
 
 namespace VDISPLAY {
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
+  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
   enum class DRIVER_STATUS {
     UNKNOWN = 1,
