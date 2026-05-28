@@ -32,14 +32,13 @@ const virtualDisplayDriverStatus = computed(() => ({
   '-2': t('config.virtual_display_driver_status_version_incompatible'),
   '-3': t('config.virtual_display_driver_status_watchdog_failed'),
 }));
-const vdisplay = computed(() => (config as any)?.vdisplay || 0);
+const vdisplay = computed(() => (config.value as any)?.vdisplay || 0);
 const currentDriverStatus = computed(
   () =>
     virtualDisplayDriverStatus.value[
       String(vdisplay.value) as keyof typeof virtualDisplayDriverStatus.value
     ] || t('config.virtual_display_driver_status_unknown'),
 );
-
 const lastAutomationOption = ref('verify_only');
 watch(
   () => config.value?.dd_configuration_option,
@@ -100,6 +99,28 @@ const sunshineVirtualDriverEnabled = computed<boolean>({
     store.updateOption('dd_use_sunshine_virtual_display_driver', enabled);
   },
 });
+const selectedVirtualDisplayDriverName = computed(() =>
+  sunshineVirtualDriverEnabled.value
+    ? t('config.virtual_display_driver_vibeshine_name')
+    : t('config.virtual_display_driver_sudovda_name'),
+);
+const currentDriverStatusMessage = computed(() => {
+  if (!vdisplay.value) {
+    return sunshineVirtualDriverEnabled.value
+      ? t('config.virtual_display_status_vibeshine_ready')
+      : t('config.virtual_display_status_sudovda_ready');
+  }
+
+  return t('config.virtual_display_status_driver_state', {
+    driver: selectedVirtualDisplayDriverName.value,
+    status: currentDriverStatus.value,
+  });
+});
+const currentDriverStatusHint = computed(() =>
+  sunshineVirtualDriverEnabled.value
+    ? t('config.virtual_display_status_hint_vibeshine')
+    : t('config.virtual_display_status_hint_sudovda'),
+);
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   get() {
@@ -257,23 +278,9 @@ function selectVirtualDisplayLayout(v: unknown) {
             <legend class="px-2 text-sm font-medium">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
             </legend>
-            <!-- Highlight driver health before picking a mode -->
             <PlatformLayout>
               <template #windows>
                 <div class="mt-3 space-y-3">
-                  <div
-                    class="flex flex-col gap-3 rounded-md border border-dark/10 dark:border-light/10 bg-surface/20 p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div>
-                      <div class="text-sm font-medium">
-                        {{ $t('config.dd_use_sunshine_virtual_display_driver') }}
-                      </div>
-                      <p class="text-[11px] opacity-70 mt-1 leading-snug">
-                        {{ $t('config.dd_use_sunshine_virtual_display_driver_desc') }}
-                      </p>
-                    </div>
-                    <n-switch v-model:value="sunshineVirtualDriverEnabled" />
-                  </div>
                   <div
                     class="px-4 py-3 rounded-md"
                     :class="[
@@ -281,10 +288,10 @@ function selectVirtualDisplayLayout(v: unknown) {
                     ]"
                   >
                     <i class="fa-solid fa-circle-info mr-2"></i>
-                    {{ t('config.virtual_display_status_label') }} {{ currentDriverStatus }}
+                    {{ currentDriverStatusMessage }}
                   </div>
                   <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
-                    {{ t('config.virtual_display_status_hint') }}
+                    {{ currentDriverStatusHint }}
                   </p>
                 </div>
               </template>
@@ -431,6 +438,26 @@ function selectVirtualDisplayLayout(v: unknown) {
           <div class="my-4 border-t border-dark/5 dark:border-light/5" />
 
           <FrameLimiterStep :step-label="frameLimiterStepLabel" />
+
+          <PlatformLayout>
+            <template #windows>
+              <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
+                <div
+                  class="flex flex-col gap-3 rounded-md border border-dark/10 bg-surface/20 p-3 dark:border-light/10 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <div class="text-sm font-medium">
+                      {{ $t('config.dd_use_sunshine_virtual_display_driver') }}
+                    </div>
+                    <p class="mt-1 text-[11px] leading-snug opacity-70">
+                      {{ $t('config.dd_use_sunshine_virtual_display_driver_desc') }}
+                    </p>
+                  </div>
+                  <n-switch v-model:value="sunshineVirtualDriverEnabled" />
+                </div>
+              </div>
+            </template>
+          </PlatformLayout>
         </div>
       </div>
     </section>

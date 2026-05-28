@@ -1,6 +1,6 @@
 /**
  * @file tests/integration/test_virtual_display_packaging.cpp
- * @brief Tests for Sunshine virtual display driver packaging invariants.
+ * @brief Tests for Vibepollo Display Driver packaging invariants.
  */
 #include "../tests_common.h"
 
@@ -191,8 +191,9 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
 
   expect_contains(bootstrapper, "InternalInstallVirtualDisplay = false;");
   expect_contains(bootstrapper, "IsChecked = false,");
-  expect_contains(bootstrapper, "Install experimental Sunshine virtual display driver");
+  expect_contains(bootstrapper, "Install experimental Vibepollo Display Driver");
   expect_contains(bootstrapper, "SudoVDA remains the default. Existing SudoVDA or MttVDD drivers are left installed.");
+  expect_contains(bootstrapper, "may improve performance and smoothness on virtual displays");
   expect_contains(bootstrapper, "contentStack.Children.Add(tipsSection);");
   expect_contains(bootstrapper, "tipsStack.Children.Add(_installVirtualDisplayCheckBox);");
   EXPECT_EQ(bootstrapper.find("contentStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
@@ -228,7 +229,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(migration, "[string]$InstallVirtualDisplayDriver");
   expect_contains(migration, "Update-SunshineVirtualDriverPreference");
   expect_contains(migration, "dd_use_sunshine_virtual_display_driver");
-  expect_contains(migration, "Updated Sunshine virtual driver preference from installer selection.");
+  expect_contains(migration, "Updated Vibepollo Display Driver preference from installer selection.");
   expect_contains(header, "use_sunshine_virtual_display_driver");
   expect_contains(config, "bool_f(vars, \"dd_use_sunshine_virtual_display_driver\", video.dd.use_sunshine_virtual_display_driver);");
   expect_contains(config, "\"dd_use_sunshine_virtual_display_driver\"");
@@ -237,8 +238,16 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(audioVideo, "sunshineVirtualDriverEnabled");
   expect_contains(audioVideo, "config.dd_use_sunshine_virtual_display_driver");
   expect_contains(audioVideo, "config.dd_use_sunshine_virtual_display_driver_desc");
-  expect_contains(locale, "\"dd_use_sunshine_virtual_display_driver\": \"Sunshine virtual driver\"");
+  expect_contains(audioVideo, "currentDriverStatusMessage");
+  expect_contains(audioVideo, "virtual_display_status_sudovda_ready");
+  expect_contains(audioVideo, "virtual_display_status_vibeshine_ready");
+  expect_contains(locale, "\"dd_use_sunshine_virtual_display_driver\": \"Vibepollo Display Driver\"");
+  expect_contains(locale, "may improve performance and smoothness for games on virtual displays");
+  expect_contains(locale, "\"virtual_display_status_sudovda_ready\": \"SudoVDA driver ready\"");
+  expect_contains(locale, "\"virtual_display_status_vibeshine_ready\": \"Vibepollo driver ready\"");
   expect_contains(docs, "### dd_use_sunshine_virtual_display_driver");
+  expect_contains(docs, "experimental Vibepollo Display Driver");
+  EXPECT_LT(audioVideo.find("<FrameLimiterStep"), audioVideo.find("v-model:value=\"sunshineVirtualDriverEnabled\""));
 }
 
 TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
@@ -277,6 +286,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDri
 
   expect_contains(cmake, "drivers/sudovda");
   expect_contains(cmake, "drivers/sunshine");
+  expect_contains(cmake, "Vibepollo Display Driver");
   expect_contains(actions, "SudoVdaRegistryDefaults");
   expect_contains(actions, "InstallSudovda");
   expect_contains(actions, "drivers\\sudovda\\install.ps1");

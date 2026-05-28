@@ -1549,7 +1549,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            When enabled, Sunshine uses the Sunshine virtual display driver for virtual display streams instead of legacy virtual display driver integrations such as SudoVDA.
+            When enabled, Vibepollo uses the experimental Vibepollo Display Driver for virtual display streams instead of legacy virtual display driver integrations such as SudoVDA.
             @note{Applies to Windows only.}
         </td>
     </tr>
@@ -1679,7 +1679,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            When using Sunshine's virtual display driver, create and set the virtual monitor to double the target refresh rate to avoid unexplained FPS drops seen on virtual screens.<br>
+            When using Vibepollo Display Driver, create and set the virtual monitor to double the target refresh rate to avoid unexplained FPS drops seen on virtual screens.<br>
             Disable only if a specific game or virtual monitor behaves incorrectly with the doubled refresh.<br>
             @note{Applies to Windows virtual displays only.}
         </td>

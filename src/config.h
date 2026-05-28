@@ -187,7 +187,7 @@ namespace config {
       bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
-      bool use_sunshine_virtual_display_driver;  ///< Opt into the Sunshine virtual display driver instead of legacy virtual display drivers.
+      bool use_sunshine_virtual_display_driver;  ///< Opt into the Vibepollo Display Driver instead of legacy virtual display drivers.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
