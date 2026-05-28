@@ -74,9 +74,10 @@
 
   <Fragment>
     <DirectoryRef Id="INSTALL_ROOT">
-      <Component Id="VirtualDisplayRegistryDefaults" Guid="*" Win64="yes">
-        <RegistryKey Root="HKLM" Key="SOFTWARE\Sunshine\VirtualDisplayDriver">
-          <RegistryValue Id="RegSunshineVirtualDisplayInstalled" Name="Installed" Type="integer" Value="1" KeyPath="yes"/>
+      <Component Id="SudoVdaRegistryDefaults" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SOFTWARE\SudoMaker\SudoVDA">
+          <RegistryValue Id="RegSudoVdaSdrBits" Name="sdrBits" Type="integer" Value="10" KeyPath="yes"/>
+          <RegistryValue Id="RegSudoVdaHdrBits" Name="hdrBits" Type="integer" Value="12"/>
         </RegistryKey>
       </Component>
     </DirectoryRef>
@@ -123,6 +124,7 @@
     <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
@@ -139,6 +141,7 @@
     <CustomAction Id="KillProcsQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="KillProcsQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveServiceQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="FactoryResetAppData" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="CleanupEmptyInstallRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -154,9 +157,14 @@
     <CustomAction Id="SetRunInstallerMigrations"
                  Property="RunInstallerMigrations"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]scripts\installer-migrations.ps1&quot; -InstallVirtualDisplayDriver &quot;[INSTALL_VIRTUAL_DISPLAY_DRIVER]&quot;"/>
-    <!-- The virtual display driver is 64-bit. Keep its PowerShell host in System64Folder;
+    <!-- SudoVDA is a 64-bit display driver path. Keep its PowerShell host in System64Folder;
          the 32-bit host from SystemFolder/SysWOW64 can wedge the elevated MSI custom-action
          server while probing or installing the driver. -->
+    <CustomAction Id="SetInstallSudovda"
+                 Property="InstallSudovda"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
+
+    <!-- The experimental Sunshine virtual display driver is opt-in. -->
     <CustomAction Id="SetInstallVirtualDisplayDriver"
                  Property="InstallVirtualDisplayDriver"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot;"/>
@@ -170,6 +178,10 @@
     <CustomAction Id="SetRestoreNvPrefsUndo"
                  Property="RestoreNvPrefsUndo"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C if exist &quot;[INSTALL_ROOT]sunshine.exe&quot; ( &quot;[INSTALL_ROOT]sunshine.exe&quot; --restore-nvprefs-undo ) else ( exit /b 0 )"/>
+
+    <CustomAction Id="SetUninstallSudovda"
+                 Property="UninstallSudovda"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot; -Uninstall"/>
 
     <CustomAction Id="SetUninstallVirtualDisplayDriver"
                  Property="UninstallVirtualDisplayDriver"

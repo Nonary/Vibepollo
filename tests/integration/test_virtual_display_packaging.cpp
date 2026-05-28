@@ -130,10 +130,19 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
 TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeMigrations) {
   const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
 
+  expect_contains(patch, "<Property Id=\"INSTALL_SUDOVDA\" Value=\"1\" Secure=\"yes\"/>");
   expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Value=\"0\" Secure=\"yes\"/>");
   expect_contains(
     patch,
-    "<Custom Action=\"SetInstallVirtualDisplayDriver\" After=\"ResetAcls\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
+    "<Custom Action=\"SetInstallSudovda\" After=\"ResetAcls\">NOT REMOVE AND INSTALL_SUDOVDA = \"1\"</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"InstallSudovda\" After=\"SetInstallSudovda\">NOT REMOVE AND INSTALL_SUDOVDA = \"1\"</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetInstallVirtualDisplayDriver\" After=\"InstallSudovda\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
   );
   expect_contains(
     patch,
@@ -145,7 +154,15 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetUninstallVirtualDisplayDriver\" After=\"RestoreNvPrefsUndo\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
+    "<Custom Action=\"SetUninstallSudovda\" After=\"RestoreNvPrefsUndo\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"UninstallSudovda\" After=\"SetUninstallSudovda\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetUninstallVirtualDisplayDriver\" After=\"UninstallSudovda\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
   );
 }
 
@@ -175,7 +192,7 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
   expect_contains(bootstrapper, "InternalInstallVirtualDisplay = false;");
   expect_contains(bootstrapper, "IsChecked = false,");
   expect_contains(bootstrapper, "Install experimental Sunshine virtual display driver");
-  expect_contains(bootstrapper, "Experimental opt-in. Existing SudoVDA or MttVDD drivers are left installed.");
+  expect_contains(bootstrapper, "SudoVDA remains the default. Existing SudoVDA or MttVDD drivers are left installed.");
   expect_contains(bootstrapper, "contentStack.Children.Add(tipsSection);");
   expect_contains(bootstrapper, "tipsStack.Children.Add(_installVirtualDisplayCheckBox);");
   EXPECT_EQ(bootstrapper.find("contentStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
@@ -252,18 +269,25 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperPassesVirtualDisplayRemovalCho
   expect_contains(bootstrapper, "\"REMOVEVIRTUALDISPLAYDRIVER=\" + (removeVirtualDisplayDriver ? \"1\" : \"0\")");
 }
 
-TEST(SunshineVirtualDisplayPackaging, DriverPackageNoLongerInstallsLegacyDrivers) {
+TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDriverOptIn) {
   const auto cmake = read_source_file("cmake/packaging/windows.cmake");
   const auto actions = read_source_file("packaging/windows/wix/custom_actions.wxs");
   const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 
+  expect_contains(cmake, "drivers/sudovda");
+  expect_contains(cmake, "drivers/sunshine");
+  expect_contains(actions, "SudoVdaRegistryDefaults");
+  expect_contains(actions, "InstallSudovda");
+  expect_contains(actions, "drivers\\sudovda\\install.ps1");
+  expect_contains(actions, "drivers\\sunshine\\install.ps1");
+  expect_contains(patch, "<Property Id=\"INSTALL_SUDOVDA\" Value=\"1\" Secure=\"yes\"/>");
+  expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Value=\"0\" Secure=\"yes\"/>");
+  expect_contains(patch, "INSTALL_SUDOVDA = \"1\"");
+  expect_contains(patch, "INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"");
   EXPECT_EQ(cmake.find("drivers/vdd"), std::string::npos);
-  EXPECT_EQ(cmake.find("drivers/sudovda"), std::string::npos);
   EXPECT_EQ(actions.find("drivers\\vdd"), std::string::npos);
-  EXPECT_EQ(actions.find("drivers\\sudovda"), std::string::npos);
   EXPECT_EQ(patch.find("drivers\\vdd"), std::string::npos);
-  EXPECT_EQ(patch.find("drivers\\sudovda"), std::string::npos);
   EXPECT_EQ(installer.find("SudoVDA"), std::string::npos);
   EXPECT_EQ(installer.find("MttVDD"), std::string::npos);
 }

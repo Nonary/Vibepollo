@@ -487,11 +487,11 @@ namespace VibepolloInstaller {
         Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
         Margin = new Thickness(0, 12, 0, 4),
         IsChecked = false,
-        ToolTip = "Experimental opt-in for the new Sunshine virtual display driver instead of an existing SudoVDA setup"
+        ToolTip = "Experimental opt-in for the new Sunshine virtual display driver. SudoVDA remains the default."
       };
 
       var installVirtualDisplayHintText = new TextBlock {
-        Text = "Experimental opt-in. Existing SudoVDA or MttVDD drivers are left installed.",
+        Text = "SudoVDA remains the default. Existing SudoVDA or MttVDD drivers are left installed.",
         FontSize = 12,
         Foreground = new SolidColorBrush(Color.FromRgb(190, 208, 236)),
         Margin = new Thickness(24, 0, 0, 0),

@@ -14,6 +14,7 @@
     </Property>
     <Property Id="REMOVEVIRTUALDISPLAYDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
+    <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Value="0" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>
     <Condition Message="Administrator privileges are required.">Privileged</Condition>
@@ -27,7 +28,7 @@
       <ComponentRef Id="RemoveLegacyApolloUninstallKey"/>
       <ComponentRef Id="Fw_Exceptions"/>
       <ComponentRef Id="StartMenuShortcut"/>
-      <ComponentRef Id="VirtualDisplayRegistryDefaults"/>
+      <ComponentRef Id="SudoVdaRegistryDefaults"/>
       <ComponentRef Id="ArpCustomUninstallEntry"/>
     </Feature>
     <InstallExecuteSequence>
@@ -59,7 +60,9 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallVirtualDisplayDriver" After="ResetAcls">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
+      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
+      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
+      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
       <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
       <Custom Action="SetMigrateConfig" After="InstallVirtualDisplayDriver">NOT REMOVE</Custom>
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
@@ -73,7 +76,9 @@
       <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
 
       <!-- Remove Virtual Display Driver only when explicitly requested by uninstall properties. -->
-      <Custom Action="SetUninstallVirtualDisplayDriver" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="SetUninstallSudovda" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="SetUninstallVirtualDisplayDriver" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallVirtualDisplayDriver" After="SetUninstallVirtualDisplayDriver">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
 
       <!-- Factory reset only removes known Vibepollo app data. MSI-owned files are removed by MSI itself. -->
