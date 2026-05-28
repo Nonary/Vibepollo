@@ -68,3 +68,7 @@ build-msvc
 AGENTS.md
 .github/copilot-instructions.md
 /build_release
+
+# Local runtime/test artifacts
+test_sunshine.log
+vibeshine_state.json
