@@ -500,7 +500,7 @@ namespace VDISPLAY_SUNSHINE {
         }
       }
       // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
-      const bool needs_double_minimum = config::video.double_refreshrate || framegen_refresh_active;
+      const bool needs_double_minimum = config::video.dd.wa.virtual_double_refresh || framegen_refresh_active;
       if (needs_double_minimum && base_fps_millihz > 0) {
         const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * 2ull;
         const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));

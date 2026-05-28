@@ -509,7 +509,7 @@ namespace nvhttp {
             vd_fps *= 1000u;
           }
           const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
-          if (base_vd_fps_millihz > 0 && (config::video.double_refreshrate || framegen_refresh_active)) {
+          if (base_vd_fps_millihz > 0 && (config::video.dd.wa.virtual_double_refresh || framegen_refresh_active)) {
             vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
           }
 

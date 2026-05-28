@@ -834,7 +834,7 @@ namespace config {
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
-      {false}  // wa
+      {false, true}  // wa
     },  // display_device
 
     0,  // max_bitrate
@@ -1541,7 +1541,8 @@ namespace config {
     remap_option("double_refreshrate", "dd_wa_virtual_double_refresh");
 
     bool_f(vars, "limit_framerate", video.limit_framerate);
-    bool_f(vars, "dd_wa_virtual_double_refresh", video.double_refreshrate);
+    bool_f(vars, "dd_wa_virtual_double_refresh", video.dd.wa.virtual_double_refresh);
+    video.double_refreshrate = video.dd.wa.virtual_double_refresh;
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
@@ -1687,6 +1688,7 @@ namespace config {
       }
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
+    video.double_refreshrate = video.dd.wa.virtual_double_refresh;
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -2454,7 +2456,7 @@ namespace config {
       const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
-      const auto prev_dd_double_refreshrate = video.double_refreshrate;
+      const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
       const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
@@ -2512,7 +2514,7 @@ namespace config {
                                      (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
-                                     (prev_dd_double_refreshrate != video.double_refreshrate);
+                                     (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {
