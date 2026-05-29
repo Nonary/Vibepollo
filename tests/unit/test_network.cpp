@@ -138,3 +138,11 @@ TEST_F(BindAddressTest, WildcardAddressFunction) {
   ASSERT_EQ(net::af_to_any_address_string(net::af_e::IPV4), "0.0.0.0");
   ASSERT_EQ(net::af_to_any_address_string(net::af_e::BOTH), "::");
 }
+
+TEST_F(BindAddressTest, TcpProtocolMatchesBindAddressFamily) {
+  const auto v4_protocol = net::tcp_protocol_for_address(boost::asio::ip::make_address("192.168.1.100"));
+  ASSERT_EQ(v4_protocol, boost::asio::ip::tcp::v4());
+
+  const auto v6_protocol = net::tcp_protocol_for_address(boost::asio::ip::make_address("::1"));
+  ASSERT_EQ(v6_protocol, boost::asio::ip::tcp::v6());
+}

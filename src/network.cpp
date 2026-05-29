@@ -127,6 +127,10 @@ namespace net {
     return std::string(af_to_any_address_string(af));
   }
 
+  boost::asio::ip::tcp tcp_protocol_for_address(const boost::asio::ip::address &address) {
+    return address.is_v6() ? boost::asio::ip::tcp::v6() : boost::asio::ip::tcp::v4();
+  }
+
   boost::asio::ip::address normalize_address(boost::asio::ip::address address) {
     // Convert IPv6-mapped IPv4 addresses into regular IPv4 addresses
     if (address.is_v6()) {

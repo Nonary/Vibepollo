@@ -74,6 +74,13 @@ namespace net {
   std::string get_bind_address(af_e af);
 
   /**
+   * @brief Get the TCP protocol matching the provided address family.
+   * @param address The address that will be used for binding.
+   * @return IPv4 or IPv6 TCP protocol matching the address.
+   */
+  boost::asio::ip::tcp tcp_protocol_for_address(const boost::asio::ip::address &address);
+
+  /**
    * @brief Convert an address to a normalized form.
    * @details Normalization converts IPv4-mapped IPv6 addresses into IPv4 addresses.
    * @param address The address to normalize.
