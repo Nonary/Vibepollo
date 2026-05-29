@@ -85,16 +85,15 @@ function Update-SunshineVirtualDriverPreference {
     )
 
     $enabled = Convert-InstallerBooleanValue -Value $InstallVirtualDisplayDriver
-    if ($null -eq $enabled) {
+    if ($null -eq $enabled -or -not $enabled) {
         return $false
     }
 
     $configPath = Join-Path $RootDir 'config\sunshine.conf'
-    $configValue = if ($enabled) { 'enabled' } else { 'disabled' }
     return Set-SunshineConfigOption `
         -ConfigPath $configPath `
         -Name 'dd_use_sunshine_virtual_display_driver' `
-        -Value $configValue
+        -Value 'enabled'
 }
 
 function Convert-LegacySplitEncodeValue {

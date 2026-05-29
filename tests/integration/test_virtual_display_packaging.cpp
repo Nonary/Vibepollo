@@ -235,6 +235,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(migration, "[string]$InstallVirtualDisplayDriver");
   expect_contains(migration, "Update-SunshineVirtualDriverPreference");
   expect_contains(migration, "dd_use_sunshine_virtual_display_driver");
+  expect_contains(migration, "if ($null -eq $enabled -or -not $enabled)");
   expect_contains(migration, "Updated Vibepollo Display Driver preference from installer selection.");
   expect_contains(header, "use_sunshine_virtual_display_driver");
   expect_contains(config, "bool_f(vars, \"dd_use_sunshine_virtual_display_driver\", video.dd.use_sunshine_virtual_display_driver);");
