@@ -2596,14 +2596,17 @@ namespace VibepolloInstaller {
           if (kind == InstalledProductKind.Unknown) {
             continue;
           }
+          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
+          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
+          if (IsBrowserWebAppRegistration(productKey, uninstallString, quietUninstallString)) {
+            continue;
+          }
           if (!includeSunshine && kind == InstalledProductKind.Sunshine) {
             continue;
           }
 
           var versionText = Convert.ToString(productKey.GetValue("DisplayVersion"));
           var parsedVersion = ParseVersion(versionText);
-          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
-          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
 
           output.Add(new InstalledProductInfo {
             ProductCode = subKeyName,
@@ -2637,12 +2640,14 @@ namespace VibepolloInstaller {
           if (kind == InstalledProductKind.Unknown) {
             continue;
           }
+          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
+          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
+          if (IsBrowserWebAppRegistration(productKey, uninstallString, quietUninstallString)) {
+            continue;
+          }
           if (!includeSunshine && kind == InstalledProductKind.Sunshine) {
             continue;
           }
-
-          var uninstallString = Convert.ToString(productKey.GetValue("UninstallString")) ?? string.Empty;
-          var quietUninstallString = Convert.ToString(productKey.GetValue("QuietUninstallString")) ?? string.Empty;
 
           output.Add(new InstalledProductInfo {
             ProductCode = LooksLikeProductCode(subKeyName) ? subKeyName : string.Empty,
@@ -2704,6 +2709,62 @@ namespace VibepolloInstaller {
         return InstalledProductKind.Sunshine;
       }
       return InstalledProductKind.Unknown;
+    }
+
+    private static bool IsBrowserWebAppRegistration(
+      RegistryKey productKey,
+      string uninstallString,
+      string quietUninstallString) {
+      if (productKey == null) {
+        return false;
+      }
+
+      var installLocation = Convert.ToString(productKey.GetValue("InstallLocation")) ?? string.Empty;
+      var displayIcon = Convert.ToString(productKey.GetValue("DisplayIcon")) ?? string.Empty;
+      if (ReferencesBrowserWebAppPath(installLocation) || ReferencesBrowserWebAppPath(displayIcon)) {
+        return true;
+      }
+
+      return IsBrowserWebAppUninstallCommand(uninstallString)
+        || IsBrowserWebAppUninstallCommand(quietUninstallString);
+    }
+
+    private static bool ReferencesBrowserWebAppPath(string value) {
+      if (string.IsNullOrWhiteSpace(value)) {
+        return false;
+      }
+
+      var normalized = Environment.ExpandEnvironmentVariables(value)
+        .Trim()
+        .Trim('"')
+        .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+      return normalized.IndexOf(@"\Web Applications\", StringComparison.OrdinalIgnoreCase) >= 0
+        && normalized.IndexOf("_crx_", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsBrowserWebAppUninstallCommand(string commandLine) {
+      string executablePath;
+      string arguments;
+      if (!TrySplitExecutableAndArguments(commandLine, out executablePath, out arguments)) {
+        return false;
+      }
+
+      return IsBrowserExecutable(executablePath)
+        && arguments.IndexOf("--uninstall-app-id", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsBrowserExecutable(string executablePath) {
+      if (string.IsNullOrWhiteSpace(executablePath)) {
+        return false;
+      }
+
+      var fileName = Path.GetFileName(executablePath.Trim().Trim('"'));
+      return string.Equals(fileName, "chrome.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "msedge.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "brave.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "vivaldi.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "opera.exe", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fileName, "opera_gx.exe", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Version ParseVersion(string value) {
