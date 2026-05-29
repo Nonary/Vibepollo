@@ -505,6 +505,9 @@ namespace platf {
       return false;
     }
 
+    virtual void prepare_for_reinit() {
+    }
+
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
       std::memset(&metadata, 0, sizeof(metadata));
       return false;

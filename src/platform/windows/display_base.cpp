@@ -510,6 +510,15 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
+  void display_base_t::prepare_for_reinit() {
+    release_snapshot();
+
+    if (device_ctx) {
+      device_ctx->ClearState();
+      device_ctx->Flush();
+    }
+  }
+
   /**
    * @brief Tests to determine if the Desktop Duplication API can capture the given output.
    * @details When testing for enumeration only, we avoid resyncing the thread desktop.

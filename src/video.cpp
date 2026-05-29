@@ -1903,6 +1903,7 @@ namespace video {
         case platf::capture_e::reinit:
           {
             reinit_event.raise(true);
+            disp->prepare_for_reinit();
 
             // Some classes of images contain references to the display --> display won't delete unless img is deleted
             for (auto &img : imgs) {
