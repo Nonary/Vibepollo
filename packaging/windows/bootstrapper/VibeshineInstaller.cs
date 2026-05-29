@@ -177,12 +177,13 @@ namespace VibepolloInstaller {
       var showInstallLocation = !BuildFlavor.IsUninstallOnly && _installedProduct == null;
       _showInstallVirtualDisplayOption = !BuildFlavor.IsUninstallOnly && !(_installedProduct != null && _installVirtualDisplayDriverEnabledInConfig);
       var showInstallOptions = showInstallLocation || _showInstallVirtualDisplayOption;
+      var useCompactUpdateLayout = !BuildFlavor.IsUninstallOnly && _installedProduct != null && !showInstallOptions;
       var displayVersion = GetTargetVersionText();
       Title = (BuildFlavor.IsUninstallOnly ? "Vibepollo Uninstaller v" : "Vibepollo Installer v") + displayVersion;
       Width = 720;
-      Height = showInstallOptions ? 620 : 500;
+      Height = showInstallOptions ? 620 : useCompactUpdateLayout ? 430 : 500;
       MinWidth = 690;
-      MinHeight = showInstallOptions ? 580 : 470;
+      MinHeight = showInstallOptions ? 580 : useCompactUpdateLayout ? 410 : 470;
       WindowStartupLocation = WindowStartupLocation.CenterScreen;
       ResizeMode = ResizeMode.CanMinimize;
       WindowStyle = WindowStyle.None;
