@@ -109,7 +109,7 @@ Private Function IsTargetProduct(displayName)
     nameUpper = UCase(Trim(displayName))
     IsTargetProduct = (Left(nameUpper, 8) = "SUNSHINE") _
         Or (nameUpper = "APOLLO") _
-        Or (Left(nameUpper, 9) = "VIBEPOLLO")
+        Or (Left(nameUpper, 9) = "VIBESHINE")
 End Function
 
 Private Function BuildMsiUninstallCommand(shell, productCode)

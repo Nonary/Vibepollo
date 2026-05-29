@@ -2543,8 +2543,7 @@ namespace nvhttp {
         return;
       }
 
-      no_active_sessions =
-        (rtsp_stream::session_count() == 0) && !webrtc_stream::has_active_sessions();
+      no_active_sessions = !has_active_or_stopping_stream_session();
 
       if (is_input_only) {
         BOOST_LOG(info) << "Launching input only session..."sv;
