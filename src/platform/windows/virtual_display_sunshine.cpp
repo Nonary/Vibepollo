@@ -233,6 +233,13 @@ namespace VDISPLAY_SUNSHINE {
       g_watchdog_fail_cb = fail_cb;
     }
 
+    std::function<void()> default_watchdog_fail_cb() {
+      return []() {
+        BOOST_LOG(error) << "Sunshine virtual display lease-feed failed without a registered process callback; closing driver transport.";
+        closeVDisplayDevice();
+      };
+    }
+
     bool watchdog_thread_running() {
       std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
       return g_watchdog_thread.joinable();
@@ -245,8 +252,8 @@ namespace VDISPLAY_SUNSHINE {
 
       auto fail_cb = copy_watchdog_fail_cb();
       if (!fail_cb) {
-        BOOST_LOG(warning) << "Sunshine virtual display lease-feed thread is not running and no failure callback is registered.";
-        return false;
+        BOOST_LOG(warning) << "Sunshine virtual display lease-feed thread is not running and no failure callback is registered; using driver transport reset fallback.";
+        fail_cb = default_watchdog_fail_cb();
       }
 
       if (!startPingThread(std::move(fail_cb))) {
