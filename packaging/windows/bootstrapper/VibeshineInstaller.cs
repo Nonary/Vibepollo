@@ -2695,7 +2695,9 @@ namespace VibepolloInstaller {
       if (displayName.StartsWith("Vibepollo", StringComparison.OrdinalIgnoreCase)) {
         return InstalledProductKind.Vibepollo;
       }
-      if (displayName.StartsWith("Apollo", StringComparison.OrdinalIgnoreCase)) {
+      // Apollo is also a common prefix in unrelated software titles, so only
+      // the exact streaming-host product name is considered a conflict.
+      if (string.Equals(displayName.Trim(), "Apollo", StringComparison.OrdinalIgnoreCase)) {
         return InstalledProductKind.Apollo;
       }
       if (displayName.StartsWith("Sunshine", StringComparison.OrdinalIgnoreCase)) {
