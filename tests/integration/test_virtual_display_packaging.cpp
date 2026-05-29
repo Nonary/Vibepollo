@@ -220,7 +220,7 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperShowsVirtualDisplayChoiceOnUpg
   expect_contains(bootstrapper, "var showInstallLocation = !hasInstalledProduct;");
   expect_contains(bootstrapper, "_installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
   expect_contains(bootstrapper, "_installPathGrid.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
-  expect_contains(bootstrapper, "_installVirtualDisplayCheckBox.IsEnabled = allowInstallInputs;");
+  expect_contains(bootstrapper, "_installVirtualDisplayCheckBox.IsEnabled = allowInstallInputs && _showInstallVirtualDisplayOption;");
 }
 
 TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriverFlag) {
@@ -254,7 +254,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(locale, "\"virtual_display_status_vibeshine_ready\": \"Vibepollo driver ready\"");
   expect_contains(docs, "### dd_use_sunshine_virtual_display_driver");
   expect_contains(docs, "experimental Vibepollo Display Driver");
-  EXPECT_LT(audioVideo.find("<FrameLimiterStep"), audioVideo.find("v-model:value=\"sunshineVirtualDriverEnabled\""));
+  EXPECT_LT(audioVideo.find("v-model:value=\"sunshineVirtualDriverEnabled\""), audioVideo.find("<FrameLimiterStep"));
 }
 
 TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
