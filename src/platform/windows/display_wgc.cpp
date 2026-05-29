@@ -15,6 +15,7 @@
 // local includes
 #include "ipc/ipc_session.h"
 #include "ipc/misc_utils.h"
+#include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/windows/display.h"
 #include "src/platform/windows/display_vram.h"
@@ -95,6 +96,19 @@ namespace platf::dxgi {
 
       return timeout;
     }
+
+    bool forward_cached_wgcc_frame(capture_e status, const std::shared_ptr<platf::img_t> &cached_frame, std::shared_ptr<platf::img_t> &img_out) {
+      if (status != capture_e::timeout || config::video.capture != "wgcc" || !cached_frame) {
+        return false;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      img_out = cached_frame;
+      img_out->frame_timestamp = now;
+      img_out->host_processing_timestamp = now;
+      img_out->capture_pacing_timestamp = now;
+      return true;
+    }
   }  // namespace
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
@@ -150,6 +164,10 @@ namespace platf::dxgi {
 
     auto capture_status = _ipc_session->wait_for_frame(timeout);
     if (capture_status != capture_e::ok) {
+      if (forward_cached_wgcc_frame(capture_status, last_cached_frame, img_out)) {
+        return capture_e::ok;
+      }
+
       return capture_status;
     }
 
@@ -268,6 +286,7 @@ namespace platf::dxgi {
     // use compositor timestamp jitter as the capture-loop sleep anchor.
     img->capture_pacing_timestamp = host_processing_timestamp;
     img_out = img;
+    last_cached_frame = img;
 
     return capture_e::ok;
   }
@@ -379,6 +398,10 @@ namespace platf::dxgi {
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
+      if (forward_cached_wgcc_frame(status, last_cached_frame, img_out)) {
+        return capture_e::ok;
+      }
+
       // For the default mode just return the capture status on timeouts.
       return status;
     }
@@ -487,6 +510,7 @@ namespace platf::dxgi {
     img->frame_timestamp = frame_timestamp;
     img->host_processing_timestamp = host_processing_timestamp;
     img->capture_pacing_timestamp = host_processing_timestamp;
+    last_cached_frame = img_out;
 
     return capture_e::ok;
   }

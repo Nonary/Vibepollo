@@ -466,6 +466,7 @@ namespace platf::dxgi {
     std::unique_ptr<class ipc_session_t> _ipc_session;
     ::video::config_t _config;
     std::string _display_name;
+    std::shared_ptr<platf::img_t> last_cached_frame;
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
   };
@@ -538,6 +539,7 @@ namespace platf::dxgi {
      * @brief Name of the display being captured.
      */
     std::string _display_name;
+    std::shared_ptr<platf::img_t> last_cached_frame;
 
     /**
      * @brief Last width of the staging texture for the base class texture.
