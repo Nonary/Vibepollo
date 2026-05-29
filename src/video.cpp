@@ -15,7 +15,9 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <system_error>
 #include <thread>
+#include <vector>
 
 // lib includes
 #include <boost/algorithm/string/predicate.hpp>
@@ -125,6 +127,27 @@ namespace video {
 
       return false;
     }
+
+#ifdef _WIN32
+    bool is_d3d_capture_image(const std::shared_ptr<platf::img_t> &img) {
+      return dynamic_cast<platf::dxgi::img_d3d_t *>(img.get()) != nullptr;
+    }
+
+    void release_d3d_capture_images_async(std::vector<std::shared_ptr<platf::img_t>> images) {
+      if (images.empty()) {
+        return;
+      }
+
+      try {
+        std::thread {[images = std::move(images)]() mutable {
+          platf::set_thread_name("video::d3dRelease");
+          images.clear();
+        }}.detach();
+      } catch (const std::system_error &err) {
+        BOOST_LOG(warning) << "Failed to start async D3D image release thread: " << err.what();
+      }
+    }
+#endif
 
     std::optional<std::string> active_virtual_display_dxgi_name() {
       auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
@@ -1742,8 +1765,45 @@ namespace video {
     uint64_t image_pool_wait_count = 0;
 
     std::vector<std::optional<std::chrono::steady_clock::time_point>> imgs_used_timestamps;
+    auto release_image_pool = [&]() {
+#ifdef _WIN32
+      std::vector<std::shared_ptr<platf::img_t>> d3d_images;
+#endif
+
+      for (auto &img : imgs) {
+        if (!img) {
+          continue;
+        }
+
+#ifdef _WIN32
+        if (is_d3d_capture_image(img)) {
+          d3d_images.emplace_back(std::move(img));
+          continue;
+        }
+#endif
+
+        img.reset();
+      }
+
+#ifdef _WIN32
+      release_d3d_capture_images_async(std::move(d3d_images));
+#endif
+      imgs_used_timestamps.clear();
+    };
+    auto release_image_pool_guard = util::fail_guard([&]() {
+      release_image_pool();
+    });
+
     const std::chrono::seconds trim_timeot = 3s;
     auto trim_imgs = [&]() {
+#ifdef _WIN32
+      if (std::any_of(std::begin(imgs), std::end(imgs), [](const auto &img) {
+            return img && is_d3d_capture_image(img);
+          })) {
+        return;
+      }
+#endif
+
       // count allocated and used within current pool
       size_t allocated_count = 0;
       size_t used_count = 0;
@@ -1906,9 +1966,7 @@ namespace video {
             disp->prepare_for_reinit();
 
             // Some classes of images contain references to the display --> display won't delete unless img is deleted
-            for (auto &img : imgs) {
-              img.reset();
-            }
+            release_image_pool();
 
             // display_wp is modified in this thread only
             // Wait for the other shared_ptr's of display to be destroyed.
@@ -3115,12 +3173,11 @@ namespace video {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
     auto images = std::make_shared<img_event_t::element_type>();
+    auto ref = capture_thread_async.ref();
     auto lg = util::fail_guard([&]() {
       images->stop();
       shutdown_event->raise(true);
     });
-
-    auto ref = capture_thread_async.ref();
     if (!ref) {
       return;
     }
