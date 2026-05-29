@@ -14,6 +14,7 @@ $dllPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.dll'
 $catPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cat'
 $certPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cer'
 $probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'
+$userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 
 function Assert-Administrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -190,6 +191,11 @@ function Grant-RegistryKeyAccess {
         [switch]$InheritToChildKeys
     )
 
+    $identityReference = if ($Identity -match '^S-\d-\d+(-\d+)+$') {
+        [System.Security.Principal.SecurityIdentifier]::new($Identity)
+    } else {
+        [System.Security.Principal.NTAccount]::new($Identity)
+    }
     $rights = [System.Security.AccessControl.RegistryRights]'ReadKey, WriteKey, CreateSubKey, SetValue'
     $inheritance = if ($InheritToChildKeys) {
         [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
@@ -197,7 +203,7 @@ function Grant-RegistryKeyAccess {
         [System.Security.AccessControl.InheritanceFlags]::None
     }
     $rule = [System.Security.AccessControl.RegistryAccessRule]::new(
-        $Identity,
+        $identityReference,
         $rights,
         $inheritance,
         [System.Security.AccessControl.PropagationFlags]::None,
@@ -252,7 +258,7 @@ function Initialize-DriverStateRegistryAccess {
                 continue
             }
 
-            Grant-RegistryKeyAccess -Path $parametersPath -Identity 'NT AUTHORITY\USER MODE DRIVERS' -InheritToChildKeys
+            Grant-RegistryKeyAccess -Path $parametersPath -Identity $userModeDriversSid -InheritToChildKeys
             Write-Host "[SunshineVirtualDisplay] Driver state registry access is ready at $parametersPath."
             $applied = $true
         }

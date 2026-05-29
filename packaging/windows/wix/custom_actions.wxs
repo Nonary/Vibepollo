@@ -125,7 +125,7 @@
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
