@@ -152,7 +152,6 @@ namespace webrtc_stream {
     constexpr int kDefaultAudioPacketMs = 10;
     constexpr std::size_t kEncodedPrefixLogLimit = 5;
     constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds {100};
-    constexpr std::size_t kKeyframeConsecutiveDrops = 3;
     constexpr auto kKeyframeResyncInterval = std::chrono::seconds {2};
     constexpr auto kVideoPacingSlackLatency = std::chrono::milliseconds {0};
     constexpr auto kVideoPacingSlackBalanced = std::chrono::milliseconds {2};
@@ -1521,7 +1520,6 @@ namespace webrtc_stream {
       std::shared_ptr<platf::img_t> last_video_frame;
       std::optional<std::chrono::steady_clock::time_point> last_video_push;
       bool needs_keyframe = false;
-      std::size_t consecutive_drops = 0;
       std::optional<std::chrono::steady_clock::time_point> startup_keyframe_until;
       std::optional<std::chrono::steady_clock::time_point> startup_keyframe_deadline;
       std::optional<std::chrono::steady_clock::time_point> last_keyframe_request;
@@ -1647,6 +1645,30 @@ namespace webrtc_stream {
 
       idr_events->raise(true);
       BOOST_LOG(debug) << "WebRTC: keyframe requested (" << reason << ')';
+    }
+
+    void reset_video_pacing_after_dependency_gap(Session &session, std::chrono::steady_clock::time_point now) {
+      session.video_pacing_state.anchor_capture.reset();
+      session.video_pacing_state.anchor_send.reset();
+      session.video_pacing_state.last_drift_reset = now;
+      session.last_video_push.reset();
+    }
+
+    void mark_video_dependency_gap(Session &session, std::chrono::steady_clock::time_point now, std::string_view reason) {
+      const bool was_waiting_for_keyframe = session.needs_keyframe;
+      session.needs_keyframe = true;
+      reset_video_pacing_after_dependency_gap(session, now);
+
+      if (!was_waiting_for_keyframe) {
+        BOOST_LOG(debug) << "WebRTC: waiting for keyframe after encoded frame gap id="
+                         << session.state.id << " reason=" << reason;
+      }
+
+      if (!session.last_keyframe_request ||
+          now - *session.last_keyframe_request >= kKeyframeRequestInterval) {
+        session.last_keyframe_request = now;
+        request_keyframe(reason);
+      }
     }
 
     int codec_to_video_format(const std::optional<std::string> &codec) {
@@ -3861,7 +3883,7 @@ namespace webrtc_stream {
                 }
               }
 
-              const bool waiting_for_keyframe = session.needs_keyframe || startup_keyframe_active;
+              bool waiting_for_keyframe = session.needs_keyframe || startup_keyframe_active;
               bool queued_keyframe = false;
               const int fps = std::max(1, session.video_config.framerate);
               const auto frame_interval = std::chrono::nanoseconds(1s) / fps;
@@ -3888,10 +3910,17 @@ namespace webrtc_stream {
                 }
                 return now - *mapped;
               };
-              auto drop_oldest_frame = [&](bool keep_keyframes) {
-                if (session.video_frames.drop_oldest(keep_keyframes)) {
-                  session.state.video_dropped++;
+              auto drop_oldest_frame = [&](bool keep_keyframes, std::string_view reason) {
+                if (!session.video_frames.drop_oldest(keep_keyframes)) {
+                  return false;
                 }
+
+                session.state.video_dropped++;
+                if (!keep_keyframes) {
+                  mark_video_dependency_gap(session, now, reason);
+                  waiting_for_keyframe = true;
+                }
+                return true;
               };
               if (session.video_pacing_state.recovery_prefer_latest_until &&
                   now >= *session.video_pacing_state.recovery_prefer_latest_until) {
@@ -3903,7 +3932,7 @@ namespace webrtc_stream {
                   if (!current_age || *current_age <= max_frame_age) {
                     break;
                   }
-                  drop_oldest_frame(waiting_for_keyframe);
+                  drop_oldest_frame(waiting_for_keyframe, "stale encoded frame drop");
                 }
                 session.video_pacing_state.recovery_prefer_latest_until = now + max_frame_age;
               }
@@ -3917,7 +3946,7 @@ namespace webrtc_stream {
                 drift_reset_recently;
               if (pacing.mode == video_pacing_mode_e::balanced && behind) {
                 while (session.video_frames.size() > 1) {
-                  drop_oldest_frame(waiting_for_keyframe);
+                  drop_oldest_frame(waiting_for_keyframe, "encoded pacing backlog");
                 }
                 session.video_pacing_state.recovery_prefer_latest_until = now + max_frame_age;
               }
@@ -3938,6 +3967,7 @@ namespace webrtc_stream {
               }
               auto handle_frame = [&](EncodedVideoFrame &&frame) {
                 if (waiting_for_keyframe && !frame.idr) {
+                  session.state.video_dropped++;
                   return;
                 }
                 if (waiting_for_keyframe) {
@@ -3982,18 +4012,8 @@ namespace webrtc_stream {
                 const bool target_too_old = target_send + max_frame_age < now;
                 if (pacing.drop_old_frames && target_too_old && !session.video_frames.empty()) {
                   session.state.video_dropped++;
-                  if (frame.idr) {
-                    session.needs_keyframe = true;
-                    session.consecutive_drops = 0;
-                  } else if (pacing.mode != video_pacing_mode_e::latency) {
-                    session.consecutive_drops++;
-                    if (session.consecutive_drops >= kKeyframeConsecutiveDrops) {
-                      session.needs_keyframe = true;
-                      session.consecutive_drops = 0;
-                    }
-                  } else {
-                    session.consecutive_drops = 0;
-                  }
+                  mark_video_dependency_gap(session, now, "stale encoded frame send skip");
+                  waiting_for_keyframe = true;
                   return;
                 }
                 if (target_too_old) {
@@ -4069,8 +4089,16 @@ namespace webrtc_stream {
                 }
               }
               if (prefer_latest) {
+                const auto queued_before_latest = session.video_frames.size();
                 EncodedVideoFrame latest;
                 if (session.video_frames.pop_latest(latest)) {
+                  if (queued_before_latest > 1) {
+                    session.state.video_dropped += queued_before_latest - 1;
+                  }
+                  if (queued_before_latest > 1 && !latest.idr) {
+                    mark_video_dependency_gap(session, now, "encoded latest-frame skip");
+                    waiting_for_keyframe = true;
+                  }
                   handle_frame(std::move(latest));
                 }
               } else {
@@ -4128,28 +4156,7 @@ namespace webrtc_stream {
                 auto it = sessions.find(work.session_id);
                 if (it != sessions.end()) {
                   it->second.state.video_dropped++;
-                  if (work.is_keyframe) {
-                    it->second.needs_keyframe = true;
-                    it->second.consecutive_drops = 0;
-                  } else if (it->second.video_pacing.mode != video_pacing_mode_e::latency) {
-                    it->second.consecutive_drops++;
-                    if (it->second.consecutive_drops >= kKeyframeConsecutiveDrops) {
-                      it->second.needs_keyframe = true;
-                      it->second.consecutive_drops = 0;
-                    }
-                  } else {
-                    it->second.consecutive_drops = 0;
-                  }
-                  it->second.video_pacing_state.anchor_capture.reset();
-                  it->second.video_pacing_state.anchor_send.reset();
-                  it->second.video_pacing_state.last_drift_reset = send_now;
-                  it->second.last_video_push.reset();
-                  if (it->second.needs_keyframe &&
-                      (!it->second.last_keyframe_request ||
-                       send_now - *it->second.last_keyframe_request >= kKeyframeRequestInterval)) {
-                    it->second.last_keyframe_request = send_now;
-                    request_keyframe("sender backlog");
-                  }
+                  mark_video_dependency_gap(it->second, send_now, "sender backlog");
                 }
               }
               continue;
@@ -4184,7 +4191,6 @@ namespace webrtc_stream {
             std::lock_guard lg {session_mutex};
             auto it = sessions.find(work.session_id);
             if (it != sessions.end()) {
-              it->second.consecutive_drops = 0;
               if (work.is_keyframe) {
                 it->second.last_keyframe_sent = std::chrono::steady_clock::now();
               }
@@ -4811,11 +4817,16 @@ namespace webrtc_stream {
         }
       }
       if (prefer_latest_enqueue) {
+        bool dropped_dependency = false;
         while (!session.video_frames.empty()) {
           if (!session.video_frames.drop_oldest()) {
             break;
           }
           session.state.video_dropped++;
+          dropped_dependency = true;
+        }
+        if (dropped_dependency && !frame.idr) {
+          mark_video_dependency_gap(session, now, "encoded queue drop");
         }
       }
 
@@ -4828,6 +4839,9 @@ namespace webrtc_stream {
       session.state.last_video_frame_index = packet.frame_index();
       if (dropped) {
         session.state.video_dropped++;
+        if (!session.state.last_video_idr) {
+          mark_video_dependency_gap(session, now, "encoded queue overflow");
+        }
       }
     }
 #ifdef SUNSHINE_ENABLE_WEBRTC
