@@ -1127,7 +1127,107 @@ namespace nvhttp {
       std::string name;
     };
 
-    resolved_client_identity_t resolve_client_identity(const crypto::named_cert_t *named_cert_p) {
+    std::mutex tls_client_identity_mutex;
+    std::unordered_map<std::string, resolved_client_identity_t> tls_client_identity_by_endpoint;
+
+    std::string endpoint_key(req_https_t request) {
+      if (!request) {
+        return {};
+      }
+
+      const auto endpoint = request->remote_endpoint();
+      if (endpoint.address().is_unspecified() || endpoint.port() == 0) {
+        return {};
+      }
+
+      return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+    }
+
+    std::optional<resolved_client_identity_t> resolve_client_identity_from_peer_cert(const crypto::x509_t &client_cert) {
+      if (!client_cert) {
+        BOOST_LOG(debug) << "No client certificate available";
+        return std::nullopt;
+      }
+
+      const auto client_cert_signature = crypto::signature(const_cast<X509 *>(client_cert.get()));
+
+      std::lock_guard<std::mutex> lock(client_mutex);
+      for (const auto &named_cert : client_root.named_devices) {
+        if (!named_cert) {
+          continue;
+        }
+
+        auto stored_x509 = crypto::x509(named_cert->cert);
+        if (!stored_x509) {
+          continue;
+        }
+
+        const auto stored_signature = crypto::signature(stored_x509.get());
+        if (stored_signature == client_cert_signature) {
+          BOOST_LOG(debug) << "Found matching client UUID: " << named_cert->uuid << " for client: " << named_cert->name;
+          return resolved_client_identity_t {
+            named_cert->uuid,
+            named_cert->name,
+          };
+        }
+      }
+
+      BOOST_LOG(debug) << "No matching client UUID found for certificate";
+      return std::nullopt;
+    }
+
+    void remember_tls_client_identity(req_https_t request, const resolved_client_identity_t &identity) {
+      const auto key = endpoint_key(request);
+      if (key.empty() || identity.uuid.empty()) {
+        return;
+      }
+
+      std::lock_guard<std::mutex> lock(tls_client_identity_mutex);
+      tls_client_identity_by_endpoint[key] = identity;
+    }
+
+    std::optional<resolved_client_identity_t> get_remembered_tls_client_identity(req_https_t request) {
+      const auto key = endpoint_key(request);
+      if (key.empty()) {
+        return std::nullopt;
+      }
+
+      std::lock_guard<std::mutex> lock(tls_client_identity_mutex);
+      const auto it = tls_client_identity_by_endpoint.find(key);
+      if (it == tls_client_identity_by_endpoint.end()) {
+        return std::nullopt;
+      }
+
+      return it->second;
+    }
+
+    std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
+      if (launch_unique_id.empty()) {
+        return {};
+      }
+
+      std::lock_guard<std::mutex> lock(client_mutex);
+      for (const auto &named_cert : client_root.named_devices) {
+        if (named_cert && named_cert->uuid == launch_unique_id) {
+          return launch_unique_id;
+        }
+      }
+
+      BOOST_LOG(debug) << "Ignoring unmatched launch uniqueid for per-client settings: " << launch_unique_id;
+      return {};
+    }
+
+    resolved_client_identity_t resolve_client_identity(req_https_t request, const crypto::named_cert_t *named_cert_p) {
+      if (auto remembered = get_remembered_tls_client_identity(request)) {
+        return *remembered;
+      }
+
+      if (tl_peer_certificate) {
+        if (auto resolved = resolve_client_identity_from_peer_cert(tl_peer_certificate)) {
+          return *resolved;
+        }
+      }
+
       resolved_client_identity_t identity;
       if (named_cert_p) {
         identity.uuid = named_cert_p->uuid;
@@ -1180,8 +1280,12 @@ namespace nvhttp {
         launch_session->device_name = client_name_arg;
       }
 
+      // Some launch paths may not provide a peer certificate. Fall back only
+      // when the client-provided unique ID is one of our known paired-client
+      // UUIDs. Treating placeholder IDs as per-client UUIDs creates a fresh
+      // Windows monitor identity and loses DPI/HDR calibration.
       if (launch_session->client_uuid.empty()) {
-        launch_session->client_uuid = get_arg(args, "uniqueid", "");
+        launch_session->client_uuid = resolve_known_client_uuid_from_launch_id(get_arg(args, "uniqueid", ""));
       }
 
       // If launched from client
@@ -2282,7 +2386,7 @@ namespace nvhttp {
       bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
 
       auto named_cert_p = get_verified_cert(request);
-      const auto request_client_identity = resolve_client_identity(named_cert_p);
+      const auto request_client_identity = resolve_client_identity(request, named_cert_p);
       auto perm = PERM::launch;
 
       BOOST_LOG(verbose) << "Launching app [" << appid_str << "] with UUID [" << appuuid_str << "]";
@@ -2385,8 +2489,15 @@ namespace nvhttp {
             overrides = app_iter->config_overrides;
           }
 
-          if (named_cert_p) {
-            for (const auto &[k, v] : named_cert_p->config_overrides) {
+          auto client_settings = named_cert_p;
+          if (!client_settings && !request_client_identity.uuid.empty()) {
+            client_settings = get_named_cert_by_uuid(request_client_identity.uuid);
+          }
+          if (!client_settings) {
+            client_settings = get_named_cert_by_uuid(resolve_known_client_uuid_from_launch_id(get_arg(args, "uniqueid", "")));
+          }
+          if (client_settings) {
+            for (const auto &[k, v] : client_settings->config_overrides) {
               overrides.insert_or_assign(k, v);
             }
           }
@@ -2669,7 +2780,7 @@ namespace nvhttp {
     });
 
     auto named_cert_p = get_verified_cert(request);
-    const auto request_client_identity = resolve_client_identity(named_cert_p);
+    const auto request_client_identity = resolve_client_identity(request, named_cert_p);
     if (!(named_cert_p->perm & PERM::_allow_view)) {
       BOOST_LOG(debug) << "Permission ViewApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
 
@@ -3183,6 +3294,9 @@ namespace nvhttp {
 
       verified = true;
       if (x509_verify) {
+        if (auto identity = resolve_client_identity_from_peer_cert(x509_verify)) {
+          remember_tls_client_identity(req, *identity);
+        }
         tl_peer_certificate = std::move(x509_verify);
       }
 

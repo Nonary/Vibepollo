@@ -307,6 +307,17 @@ TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayReleas
   EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, RtspLaunchIgnoresUnmatchedUniqueIdForPerClientDisplayIdentity) {
+  const auto nvhttp = read_source_file("src/nvhttp.cpp");
+
+  expect_contains(nvhttp, "remember_tls_client_identity(remote_endpoint, *identity);");
+  expect_contains(nvhttp, "get_remembered_tls_client_identity(request)");
+  expect_contains(nvhttp, "resolve_known_client_uuid_from_launch_id");
+  expect_contains(nvhttp, "Ignoring unmatched launch uniqueid for per-client settings");
+  EXPECT_EQ(nvhttp.find("launch_session->client_uuid = get_arg(args, \"uniqueid\", \"\");"), std::string::npos);
+  EXPECT_EQ(nvhttp.find("client_uuid = get_arg(args, \"uniqueid\", \"\");"), std::string::npos);
+}
+
 TEST(SunshineVirtualDisplayPackaging, BootstrapperPassesVirtualDisplayRemovalChoiceToMsi) {
   const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
 
