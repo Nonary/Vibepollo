@@ -1972,6 +1972,14 @@ namespace video {
             // Wait for the other shared_ptr's of display to be destroyed.
             // New displays will only be created in this thread.
             while (display_wp->use_count() != 1) {
+              // If capture is being torn down (stream/session ending), stop waiting on
+              // encoder threads that may still hold a display reference while blocked in a
+              // slow or hung driver call. Spinning here until those threads are force-joined
+              // is what lets a wedged reinit escalate into the 10s teardown watchdog crash.
+              if (!capture_ctx_queue->running()) {
+                return;
+              }
+
               // Free images that weren't consumed by the encoders. These can reference the display and prevent
               // the ref count from reaching 1. We do this here rather than on the encoder thread to avoid race
               // conditions where the encoding loop might free a good frame after reinitializing if we capture
