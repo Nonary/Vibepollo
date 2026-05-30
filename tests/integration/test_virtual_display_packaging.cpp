@@ -277,6 +277,27 @@ TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
   EXPECT_EQ(audioVideo.find(":disabled=\"platform === 'windows' && !sunshineVirtualDriverEnabled\""), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, RuntimeAvailabilityChecksDoNotRepairOrReinstallMissingDrivers) {
+  const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
+  const auto sudoDriver = read_source_file("src/platform/windows/virtual_display_sudovda.cpp");
+
+  expect_contains(sunshineDriver, "bool is_sunshine_driver_installed_passive()");
+  expect_contains(sunshineDriver, "return find_virtual_display_device_instance_id().has_value();");
+  const auto sunshineStatusPos = sunshineDriver.find("bool isVirtualDisplayDriverInstalled() {");
+  ASSERT_NE(sunshineStatusPos, std::string::npos);
+  const auto sunshineStatus = sunshineDriver.substr(sunshineStatusPos, 400);
+  expect_contains(sunshineStatus, "return is_sunshine_driver_installed_passive();");
+  EXPECT_EQ(sunshineStatus.find("ensure_driver_is_ready"), std::string::npos);
+
+  expect_contains(sudoDriver, "bool is_sudovda_driver_installed_passive()");
+  expect_contains(sudoDriver, "return find_sudovda_device_instance_id().has_value();");
+  const auto sudoStatusPos = sudoDriver.find("bool isSudaVDADriverInstalled() {");
+  ASSERT_NE(sudoStatusPos, std::string::npos);
+  const auto sudoStatus = sudoDriver.substr(sudoStatusPos, 400);
+  expect_contains(sudoStatus, "return is_sudovda_driver_installed_passive();");
+  EXPECT_EQ(sudoStatus.find("ensure_driver_is_ready"), std::string::npos);
+}
+
 TEST(SunshineVirtualDisplayPackaging, SunshineDriverUsesConfiguredRenderAdapterPreference) {
   const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
 

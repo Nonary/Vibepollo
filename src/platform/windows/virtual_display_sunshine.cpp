@@ -4369,12 +4369,22 @@ namespace VDISPLAY_SUNSHINE {
     return false;
   }
 
-  bool isVirtualDisplayDriverInstalled() {
+  static bool is_sunshine_driver_installed_passive() {
+    // Status/enumeration paths must not repair or restart a missing device node.
+    // Recovery remains limited to explicit driver initialization/use.
     if (driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())) {
       return true;
     }
 
-    return ensure_driver_is_ready();
+    if (probe_driver_responsive_once()) {
+      return true;
+    }
+
+    return find_virtual_display_device_instance_id().has_value();
+  }
+
+  bool isVirtualDisplayDriverInstalled() {
+    return is_sunshine_driver_installed_passive();
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {

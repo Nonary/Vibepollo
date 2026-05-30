@@ -3742,12 +3742,23 @@ namespace VDISPLAY_SUDOVDA {
     return false;
   }
 
-  bool isSudaVDADriverInstalled() {
+  static bool is_sudovda_driver_installed_passive() {
+    // Status/enumeration paths must not repair a missing device node. Users can
+    // remove SudoVDA when they do not use virtual displays; reinstall only from
+    // explicit driver initialization/recovery.
     if (driver_handle_responsive(SUDOVDA_DRIVER_HANDLE)) {
       return true;
     }
 
-    return ensure_driver_is_ready();
+    if (probe_driver_responsive_once()) {
+      return true;
+    }
+
+    return find_sudovda_device_instance_id().has_value();
+  }
+
+  bool isSudaVDADriverInstalled() {
+    return is_sudovda_driver_installed_passive();
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
