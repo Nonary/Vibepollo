@@ -392,6 +392,33 @@ namespace confighttp {
 
   }  // namespace
 
+  static std::string get_web_ui_host_for_local_open() {
+    const auto address_family = net::af_from_enum_string(config::sunshine.address_family);
+    const auto bind_address = boost::algorithm::trim_copy(config::sunshine.bind_address);
+    if (bind_address.empty()) {
+      return address_family == net::IPV4 ? "127.0.0.1"s : "localhost"s;
+    }
+
+    boost::system::error_code ec;
+    const auto address = boost::asio::ip::make_address(bind_address, ec);
+    if (ec) {
+      return bind_address;
+    }
+
+    if (address.is_unspecified()) {
+      return address.is_v4() ? "127.0.0.1"s : "localhost"s;
+    }
+
+    return net::addr_to_url_escaped_string(address);
+  }
+
+  std::string get_web_ui_url(std::string_view path) {
+    auto port_https = net::map_port(PORT_HTTPS);
+    auto url = std::format("https://{}:{}", get_web_ui_host_for_local_open(), port_https);
+    url += path;
+    return url;
+  }
+
   // Forward declaration for error helper implemented later
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
   void getAppCover(resp_https_t response, req_https_t request);
@@ -5063,8 +5090,8 @@ namespace confighttp {
     auto accept_and_run = [&](auto *server) {
       try {
         platf::set_thread_name("confighttp::tcp");
-        server->start([](unsigned short port) {
-          BOOST_LOG(info) << "Configuration UI available at [https://localhost:"sv << port << "]";
+        server->start([](unsigned short) {
+          BOOST_LOG(info) << "Configuration UI available at ["sv << get_web_ui_url() << "]";
         });
       } catch (boost::system::system_error &err) {
         // It's possible the exception gets thrown after calling server->stop() from a different thread

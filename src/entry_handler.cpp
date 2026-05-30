@@ -6,6 +6,7 @@
 #include <csignal>
 #include <format>
 #include <iostream>
+#include <string_view>
 #include <thread>
 
 // local includes
@@ -27,10 +28,7 @@ extern "C" {
 using namespace std::literals;
 
 void launch_ui(const std::optional<std::string> &path) {
-  std::string url = std::format("https://localhost:{}", static_cast<int>(net::map_port(confighttp::PORT_HTTPS)));
-  if (path) {
-    url += *path;
-  }
+  std::string url = confighttp::get_web_ui_url(path ? std::string_view {*path} : std::string_view {});
   platf::open_url(url);
 }
 

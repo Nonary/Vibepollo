@@ -12,6 +12,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 // third-party includes
@@ -33,6 +34,7 @@ namespace confighttp {
 
   constexpr auto PORT_HTTPS = 1;
   constexpr auto SESSION_EXPIRE_DURATION = 24h * 15;
+  std::string get_web_ui_url(std::string_view path = {});
   void start();
 
   // Token scopes for API tokens used by tests and UI
