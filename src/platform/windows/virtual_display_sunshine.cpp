@@ -3462,15 +3462,114 @@ namespace VDISPLAY_SUNSHINE {
     }
   }
 
-  bool setRenderAdapterByName(const std::wstring &adapterName) {
-    BOOST_LOG(debug) << "Sunshine virtual display backend ignores render adapter override request for '"
-                     << platf::to_utf8(adapterName) << "'.";
+  bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
+    if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
+      return false;
+    }
+
+    sunshine_driver::ControlClient client {*VIRTUAL_DISPLAY_DRIVER_TRANSPORT};
+    sunshine_driver::SetRenderAdapterRequest request {};
+    request.adapter_luid = sunshine_driver::from_windows_luid(adapter_luid);
+    const auto result = client.set_render_adapter(request);
+    if (!result.ok()) {
+      BOOST_LOG(warning) << "Failed to set Sunshine virtual display render adapter to '"
+                         << platf::to_utf8(adapter_name)
+                         << "' (status=" << sunshine_driver::to_string(result.status)
+                         << ", native_error=" << result.native_error << ").";
+      return false;
+    }
+
+    const unsigned long long dedicated_mib = static_cast<unsigned long long>(dedicated_memory / (1024ull * 1024ull));
+    const unsigned long long shared_mib = static_cast<unsigned long long>(shared_memory / (1024ull * 1024ull));
+    BOOST_LOG(info) << "Sunshine virtual display render adapter set to '"
+                    << platf::to_utf8(adapter_name)
+                    << "' (dedicated=" << dedicated_mib
+                    << " MiB, shared=" << shared_mib << " MiB).";
     return true;
   }
 
+  bool setRenderAdapterByName(const std::wstring &adapterName) {
+    if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
+      return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+      return false;
+    }
+
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+      if (std::wstring_view(desc.Description) != adapterName) {
+        continue;
+      }
+
+      return set_render_adapter_luid(desc.AdapterLuid, desc.Description, desc.DedicatedVideoMemory, desc.SharedSystemMemory);
+    }
+
+    BOOST_LOG(warning) << "Sunshine virtual display render adapter named '"
+                       << platf::to_utf8(adapterName)
+                       << "' was not found.";
+    return false;
+  }
+
   bool setRenderAdapterWithMostDedicatedMemory() {
-    BOOST_LOG(debug) << "Sunshine virtual display backend ignores automatic render adapter override request.";
-    return true;
+    if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
+      return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+      return false;
+    }
+
+    SIZE_T best_dedicated = 0;
+    SIZE_T best_shared = 0;
+    LUID best_luid {};
+    std::wstring best_name;
+    bool found = false;
+
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+      if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      const SIZE_T dedicated = desc.DedicatedVideoMemory;
+      const SIZE_T shared = desc.SharedSystemMemory;
+      if (!found || dedicated > best_dedicated || (dedicated == best_dedicated && shared > best_shared)) {
+        best_dedicated = dedicated;
+        best_shared = shared;
+        best_luid = desc.AdapterLuid;
+        best_name.assign(desc.Description);
+        found = true;
+      }
+    }
+
+    if (!found) {
+      return false;
+    }
+
+    return set_render_adapter_luid(best_luid, best_name, best_dedicated, best_shared);
   }
 
   bool wait_for_virtual_display_ready(

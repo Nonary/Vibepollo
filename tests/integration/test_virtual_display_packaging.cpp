@@ -277,6 +277,36 @@ TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
   EXPECT_EQ(audioVideo.find(":disabled=\"platform === 'windows' && !sunshineVirtualDriverEnabled\""), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, SunshineDriverUsesConfiguredRenderAdapterPreference) {
+  const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
+
+  expect_contains(sunshineDriver, "SetRenderAdapterRequest request {};");
+  expect_contains(sunshineDriver, "request.adapter_luid = sunshine_driver::from_windows_luid(adapter_luid);");
+  expect_contains(sunshineDriver, "client.set_render_adapter(request);");
+
+  const auto byNamePos = sunshineDriver.find("bool setRenderAdapterByName(const std::wstring &adapterName) {");
+  ASSERT_NE(byNamePos, std::string::npos);
+  const auto byName = sunshineDriver.substr(byNamePos, sunshineDriver.find("bool setRenderAdapterWithMostDedicatedMemory", byNamePos) - byNamePos);
+  expect_contains(byName, "std::wstring_view(desc.Description) != adapterName");
+  expect_contains(byName, "return set_render_adapter_luid(desc.AdapterLuid");
+
+  const auto automaticPos = sunshineDriver.find("bool setRenderAdapterWithMostDedicatedMemory() {");
+  ASSERT_NE(automaticPos, std::string::npos);
+  const auto automatic = sunshineDriver.substr(automaticPos, sunshineDriver.find("bool wait_for_virtual_display_ready", automaticPos) - automaticPos);
+  expect_contains(automatic, "desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE");
+  expect_contains(automatic, "dedicated > best_dedicated");
+  expect_contains(automatic, "return set_render_adapter_luid(best_luid");
+  EXPECT_EQ(automatic.find("ignores automatic render adapter override request"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
+  const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
+
+  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.2");
+  expect_contains(workflow, "$releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG");
+  EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
+}
+
 TEST(SunshineVirtualDisplayPackaging, BootstrapperPassesVirtualDisplayRemovalChoiceToMsi) {
   const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
 

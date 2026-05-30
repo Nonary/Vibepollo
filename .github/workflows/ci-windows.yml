@@ -251,15 +251,11 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.2
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $libRoot = Resolve-Path -LiteralPath '.\third-party\libvirtualdisplay'
-          & git -C $libRoot.Path fetch --tags --force origin
-          $releaseTag = (& git -C $libRoot.Path describe --tags --abbrev=0 2>$null).Trim()
-          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-            $releaseTag = (gh release list --repo Nonary/libvirtualdisplay --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName').Trim()
-          }
+          $releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($releaseTag)) {
             throw 'Unable to resolve a libvirtualdisplay release tag.'
           }
