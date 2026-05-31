@@ -233,21 +233,21 @@ namespace platf::playnite {
     }
 
     ~deinit_t_impl() override {
+      g_instance.store(nullptr, std::memory_order_release);
+
       // Stop inactivity monitor thread first
       stop_inactivity_monitor();
 
-      if (client_) {
-        client_->stop();
-        client_.reset();
-      }
-      g_instance.store(nullptr, std::memory_order_release);
+      stop_client();
     }
 
     bool is_server_active() const {
+      std::scoped_lock lk(client_mutex_);
       return client_ && client_->is_active();
     }
 
     bool send_cmd_json_line(const std::string &s) {
+      std::scoped_lock lk(client_mutex_);
       return client_ && client_->send_json_line(s);
     }
 
@@ -274,10 +274,14 @@ namespace platf::playnite {
     // Hot-toggle helpers: stop or start the IPC client without destroying the instance
     void stop_client() {
       try {
-        if (client_) {
+        std::unique_ptr<platf::playnite::IpcClient> client;
+        {
+          std::scoped_lock lk(client_mutex_);
+          client = std::move(client_);
+        }
+        if (client) {
           BOOST_LOG(info) << "Playnite: stopping IPC client (hot-toggle)";
-          client_->stop();
-          client_.reset();
+          client->stop();
         }
         // Clear cached snapshots so UI doesn't falsely show data as connected
         try {
@@ -299,6 +303,7 @@ namespace platf::playnite {
       // Avoid hot-toggling: if a server exists and is already running (even if not
       // yet connected), do not tear it down and recreate it. This prevents rapid
       // restarts during the handshake window.
+      std::scoped_lock lk(client_mutex_);
       if (client_ && (client_->is_active() || client_->is_started())) {
         return;
       }
@@ -313,7 +318,7 @@ namespace platf::playnite {
           hello["type"] = "hello";
           hello["role"] = "sunshine";
           hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
-          client_->send_json_line(hello.dump());
+          send_cmd_json_line(hello.dump());
         } catch (...) {}
       });
       client_->start();
@@ -782,6 +787,7 @@ namespace platf::playnite {
     }
 
     std::unique_ptr<platf::playnite::IpcClient> client_;
+    mutable std::mutex client_mutex_;
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -79,6 +80,7 @@ namespace platf::playnite {
     std::atomic<bool> running_ {false};
     std::thread worker_;
     std::unique_ptr<platf::dxgi::AsyncNamedPipe> pipe_;
+    mutable std::mutex pipe_mutex_;
     std::function<void(std::span<const uint8_t>)> handler_;
     std::function<void()> connected_handler_;
     std::function<void()> disconnected_handler_;

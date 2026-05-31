@@ -58,13 +58,20 @@ namespace platf::playnite {
 
   void IpcClient::stop() {
     running_.store(false);
-    if (pipe_) {
-      pipe_->stop();
+    {
+      std::scoped_lock lk(pipe_mutex_);
+      if (pipe_) {
+        pipe_->stop();
+      }
     }
     if (worker_.joinable()) {
       worker_.join();
     }
-    pipe_.reset();
+    {
+      std::scoped_lock lk(pipe_mutex_);
+      pipe_.reset();
+      recv_buffer_.clear();
+    }
     active_.store(false);
   }
 
@@ -105,10 +112,17 @@ namespace platf::playnite {
         broken_.store(true);
       };
 
-      pipe_ = std::make_unique<platf::dxgi::AsyncNamedPipe>(std::move(data_pipe));
-      if (!pipe_->start(on_msg, on_err, on_broken)) {
+      bool pipe_started = false;
+      {
+        std::scoped_lock lk(pipe_mutex_);
+        pipe_ = std::make_unique<platf::dxgi::AsyncNamedPipe>(std::move(data_pipe));
+        pipe_started = pipe_->start(on_msg, on_err, on_broken);
+        if (!pipe_started) {
+          pipe_.reset();
+        }
+      }
+      if (!pipe_started) {
         BOOST_LOG(error) << "Playnite IPC: failed to start async pipe";
-        pipe_.reset();
         std::this_thread::sleep_for(500ms);
         continue;
       }
@@ -120,9 +134,12 @@ namespace platf::playnite {
         } catch (...) {}
       }
       serve_connected_loop();
-      if (pipe_) {
-        pipe_->stop();
-        pipe_.reset();
+      {
+        std::scoped_lock lk(pipe_mutex_);
+        if (pipe_) {
+          pipe_->stop();
+          pipe_.reset();
+        }
       }
       active_.store(false);
       if (disconnected_handler_) {
@@ -181,7 +198,15 @@ namespace platf::playnite {
 
   void IpcClient::serve_connected_loop() {
     BOOST_LOG(debug) << "Playnite IPC: client connected";
-    while (running_.load() && pipe_ && pipe_->is_connected() && !broken_.load()) {
+    while (running_.load() && !broken_.load()) {
+      bool connected = false;
+      {
+        std::scoped_lock lk(pipe_mutex_);
+        connected = pipe_ && pipe_->is_connected();
+      }
+      if (!connected) {
+        break;
+      }
       std::this_thread::sleep_for(200ms);
     }
     BOOST_LOG(debug) << "Playnite IPC: client disconnected";
@@ -201,6 +226,7 @@ namespace platf::playnite {
   }
 
   bool IpcClient::send_json_line(const std::string &json) {
+    std::scoped_lock lk(pipe_mutex_);
     if (!pipe_ || !pipe_->is_connected()) {
       BOOST_LOG(warning) << "Playnite IPC: send_json_line called but client not connected";
       return false;
