@@ -293,11 +293,20 @@ bool ProcessHandler::start(
 }
 
 bool ProcessHandler::wait(DWORD &exit_code) {
+  return wait_for(exit_code, INFINITE);
+}
+
+bool ProcessHandler::wait_for(DWORD &exit_code, DWORD timeout_ms) {
   if (!running_ || pi_.hProcess == nullptr) {
     return false;
   }
-  DWORD wait_result = WaitForSingleObject(pi_.hProcess, INFINITE);
+  DWORD wait_result = WaitForSingleObject(pi_.hProcess, timeout_ms);
   if (wait_result != WAIT_OBJECT_0) {
+    if (wait_result == WAIT_TIMEOUT) {
+      BOOST_LOG(warning) << "Process wait timed out after " << timeout_ms << "ms";
+    } else {
+      BOOST_LOG(warning) << "Process wait failed, result=" << wait_result << ", error=" << GetLastError();
+    }
     return false;
   }
   BOOL got_code = GetExitCodeProcess(pi_.hProcess, &exit_code);
@@ -316,7 +325,9 @@ bool ProcessHandler::wait(DWORD &exit_code) {
 
 void ProcessHandler::terminate() {
   if (running_ && pi_.hProcess) {
-    TerminateProcess(pi_.hProcess, 1);
+    if (!TerminateProcess(pi_.hProcess, 1)) {
+      BOOST_LOG(warning) << "TerminateProcess failed, error=" << GetLastError();
+    }
     // Do not clear running_/handles here: callers may need to wait() for full teardown
     // to avoid overlapping helper instances and destabilizing the driver stack.
   }

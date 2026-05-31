@@ -192,4 +192,19 @@ TEST(SunshineWgcCapture, UsesFp16ForAdvancedColorTargets) {
   expect_contains(display_source, "device.get(), advanced_color_capture");
   expect_contains(ipc_source, "config_data.advanced_color_capture = _advanced_color_capture ? 1u : 0u;");
 }
+
+TEST(SunshineWgcCapture, HelperStartupAndStopAreBounded) {
+  const auto ipc_source = read_source("src/platform/windows/ipc/ipc_session.cpp");
+  const auto process_header = read_source("src/platform/windows/ipc/process_handler.h");
+
+  const auto create_pipe = ipc_source.find("auto control_pipe = anon_connector->create_server(pipe_guid);");
+  const auto start_helper = ipc_source.find("_process_helper->start(exe_path.wstring(), arguments)");
+  ASSERT_NE(create_pipe, std::string::npos);
+  ASSERT_NE(start_helper, std::string::npos);
+  EXPECT_LT(create_pipe, start_helper);
+
+  expect_contains(ipc_source, "_process_helper->wait_for(exit_code, 3000)");
+  expect_contains(ipc_source, "WGC helper did not exit within 3000ms");
+  expect_contains(process_header, "bool wait_for(DWORD &exit_code, DWORD timeout_ms);");
+}
 #endif

@@ -259,16 +259,6 @@ namespace platf::dxgi {
     std::filesystem::path mainExeDir = std::filesystem::path(exePathBuffer).parent_path();
     std::string pipe_guid = generate_guid();
 
-    std::filesystem::path exe_path = mainExeDir / L"tools" / L"sunshine_wgc_capture.exe";
-    std::wstring arguments = platf::from_utf8(pipe_guid);
-
-    if (!_process_helper->start(exe_path.wstring(), arguments)) {
-      auto err = GetLastError();
-      BOOST_LOG(error) << "Failed to start sunshine_wgc_capture executable at: " << exe_path.wstring()
-                       << " (error code: " << err << ")";
-      return;
-    }
-
     auto on_message = [this](std::span<const uint8_t> msg) {
       if (msg.size() == 1) {
         handle_desktop_switch_message(msg);
@@ -289,6 +279,16 @@ namespace platf::dxgi {
     auto control_pipe = anon_connector->create_server(pipe_guid);
     if (!control_pipe) {
       BOOST_LOG(error) << "IPC pipe setup failed for WGC session; aborting";
+      return;
+    }
+
+    std::filesystem::path exe_path = mainExeDir / L"tools" / L"sunshine_wgc_capture.exe";
+    std::wstring arguments = platf::from_utf8(pipe_guid);
+
+    if (!_process_helper->start(exe_path.wstring(), arguments)) {
+      auto err = GetLastError();
+      BOOST_LOG(error) << "Failed to start sunshine_wgc_capture executable at: " << exe_path.wstring()
+                       << " (error code: " << err << ")";
       return;
     }
 
@@ -747,7 +747,10 @@ namespace platf::dxgi {
 
     DWORD exit_code = 0;
     _process_helper->terminate();  // best effort
-    _process_helper->wait(exit_code);
+    if (!_process_helper->wait_for(exit_code, 3000)) {
+      BOOST_LOG(warning) << "WGC helper did not exit within 3000ms after termination request; continuing teardown.";
+      _process_helper = std::make_unique<ProcessHandler>();
+    }
     _last_helper_stop = std::chrono::steady_clock::now();
   }
 
