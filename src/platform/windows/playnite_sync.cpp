@@ -456,6 +456,29 @@ namespace platf::playnite::sync {
     return nullptr;
   }
 
+  static bool convert_playnite_image_to_png(const std::string &src_path, const std::filesystem::path &dst) {
+    if (src_path.empty()) {
+      return false;
+    }
+
+    const auto src = std::filesystem::path(src_path);
+    auto dstDir = dst.parent_path();
+    file_handler::make_directory(dstDir.string());
+
+    bool ok = false;
+    std::error_code src_time_ec;
+    std::error_code dst_time_ec;
+    if (std::filesystem::exists(dst)) {
+      const auto src_time = std::filesystem::last_write_time(src, src_time_ec);
+      const auto dst_time = std::filesystem::last_write_time(dst, dst_time_ec);
+      ok = !src_time_ec && !dst_time_ec && dst_time >= src_time;
+    }
+    if (!ok) {
+      ok = platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring());
+    }
+    return ok;
+  }
+
   void apply_game_metadata_to_app(const Game &g, nlohmann::json &app) {
     try {
       if (!g.name.empty()) {
@@ -464,24 +487,20 @@ namespace platf::playnite::sync {
     } catch (...) {}
     try {
       if (!g.box_art_path.empty()) {
-        const auto src = std::filesystem::path(g.box_art_path);
-        auto dstDir = platf::appdata() / "covers";
-        file_handler::make_directory(dstDir.string());
-        auto dst = dstDir / ("playnite_" + g.id + ".png");
-        bool ok = false;
-        std::error_code src_time_ec;
-        std::error_code dst_time_ec;
-        if (std::filesystem::exists(dst)) {
-          const auto src_time = std::filesystem::last_write_time(src, src_time_ec);
-          const auto dst_time = std::filesystem::last_write_time(dst, dst_time_ec);
-          ok = !src_time_ec && !dst_time_ec && dst_time >= src_time;
-        }
-        if (!ok) {
-          ok = platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring());
-        }
-        if (ok) {
+        auto dst = platf::appdata() / "covers" / ("playnite_" + g.id + ".png");
+        if (convert_playnite_image_to_png(g.box_art_path, dst)) {
           app["image-path"] = dst.generic_string();
         }
+      }
+    } catch (...) {}
+    try {
+      if (!g.icon_path.empty()) {
+        auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
+        if (convert_playnite_image_to_png(g.icon_path, dst)) {
+          app["playnite-icon-path"] = dst.generic_string();
+        }
+      } else if (app.contains("playnite-icon-path")) {
+        app.erase("playnite-icon-path");
       }
     } catch (...) {}
     try {

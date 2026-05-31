@@ -434,6 +434,7 @@ namespace confighttp {
   void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Helper to keep confighttp.cpp free of Playnite details
   void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
+  void enhance_app_with_playnite_icon(nlohmann::json &input_tree);
   // New: download Playnite-related logs as a ZIP
 
   // RTSS status endpoint (Windows-only)
@@ -1658,6 +1659,7 @@ namespace confighttp {
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
 #ifdef _WIN32
       enhance_app_with_playnite_cover(input_tree);
+      enhance_app_with_playnite_icon(input_tree);
       try {
         if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
           const auto playnite_id = input_tree["playnite-id"].get<std::string>();
@@ -1809,6 +1811,71 @@ namespace confighttp {
     headers.emplace("X-Frame-Options", "DENY");
     headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
     response->write(success_ok, in, headers);
+  }
+
+  /**
+   * @brief Serve a Playnite application's icon image by UUID.
+   */
+  void getAppIcon(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    std::string uuid;
+    if (request->path_match.size() > 1) {
+      uuid = request->path_match[1];
+    }
+    if (uuid.empty()) {
+      bad_request(response, request, "Missing application uuid");
+      return;
+    }
+
+    try {
+      std::string content = file_handler::read_file(config::stream.file_apps.c_str());
+      nlohmann::json file_tree = nlohmann::json::parse(content);
+      if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+        not_found(response, request);
+        return;
+      }
+
+      fs::path icon_path;
+      for (const auto &app : file_tree["apps"]) {
+        if (!app.contains("uuid") || !app["uuid"].is_string()) {
+          continue;
+        }
+        if (app["uuid"].get<std::string>() != uuid) {
+          continue;
+        }
+        if (app.contains("playnite-icon-path") && app["playnite-icon-path"].is_string()) {
+          std::string raw_path = app["playnite-icon-path"].get<std::string>();
+          boost::algorithm::trim(raw_path);
+          if (!raw_path.empty()) {
+            icon_path = raw_path;
+          }
+        }
+        break;
+      }
+
+      if (icon_path.empty() || !fs::exists(icon_path)) {
+        not_found(response, request);
+        return;
+      }
+
+      std::ifstream in(icon_path, std::ios::binary);
+      if (!in) {
+        bad_request(response, request, "Unable to read application icon");
+        return;
+      }
+
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "image/png");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(success_ok, in, headers);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "GetAppIcon: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
   }
 
   /**
@@ -5137,6 +5204,7 @@ namespace confighttp {
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
 #endif
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
+    register_api_route("^/api/apps/([A-Fa-f0-9-]+)/icon$", "GET", getAppIcon);
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);

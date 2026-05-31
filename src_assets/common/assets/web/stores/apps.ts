@@ -15,6 +15,7 @@ export interface App {
   uuid?: string;
   'working-dir'?: string;
   'image-path'?: string;
+  'playnite-icon-path'?: string;
   'exclude-global-prep-cmd'?: boolean;
   'exclude-global-state-cmd'?: boolean;
   'config-overrides'?: Record<string, unknown>;

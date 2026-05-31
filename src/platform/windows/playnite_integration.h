@@ -136,6 +136,15 @@ namespace platf::playnite {
    */
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path);
 
+  /**
+   * @brief Retrieve or generate an icon PNG for a Playnite game and return its path.
+   *
+   * @param playnite_id Playnite game identifier.
+   * @param out_path Receives a path to a PNG image suitable for serving to the web UI.
+   * @return `true` if an icon PNG path was obtained, `false` otherwise.
+   */
+  bool get_icon_png_for_playnite_game(const std::string &playnite_id, std::string &out_path);
+
   // no-op: persistence helper moved to confighttp as refresh_client_apps_cache
 
   /**

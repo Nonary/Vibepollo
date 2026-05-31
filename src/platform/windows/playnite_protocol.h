@@ -56,6 +56,7 @@ namespace platf::playnite {
     uint64_t playtime_minutes = 0;  ///< Total playtime in minutes (playtimeMinutes).
     std::string last_played;  ///< Last played timestamp (ISO8601) (lastPlayed).
     std::string box_art_path;  ///< Path/URL to cover art (boxArtPath).
+    std::string icon_path;  ///< Path/URL to game icon (iconPath).
     std::string description;  ///< Optional description / notes.
     std::vector<std::string> tags;  ///< Tag list.
     bool installed = false;  ///< Installation state (installed / isInstalled).

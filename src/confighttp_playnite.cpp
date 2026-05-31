@@ -103,6 +103,20 @@ namespace confighttp {
     }
   }
 
+  void enhance_app_with_playnite_icon(nlohmann::json &input_tree) {
+    try {
+      if ((!input_tree.contains("playnite-icon-path") || (input_tree["playnite-icon-path"].is_string() && input_tree["playnite-icon-path"].get<std::string>().empty())) &&
+          input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
+        std::string icon;
+        if (platf::playnite::get_icon_png_for_playnite_game(input_tree["playnite-id"].get<std::string>(), icon)) {
+          input_tree["playnite-icon-path"] = icon;
+        }
+      }
+    } catch (...) {
+      // Best-effort only
+    }
+  }
+
   // No longer needed: old fallback path resolver removed with AssocQueryString-based detection
 
   void getPlayniteStatus(resp_https_t response, req_https_t request) {

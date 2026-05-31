@@ -1318,6 +1318,51 @@ namespace platf::playnite {
     return false;
   }
 
+  bool get_icon_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {
+    auto inst = g_instance.load(std::memory_order_acquire);
+    if (!inst) {
+      return false;
+    }
+    std::vector<platf::playnite::Game> copy;
+    inst->snapshot_games(copy);
+    const platf::playnite::Game *gptr = nullptr;
+    for (const auto &g : copy) {
+      if (g.id == playnite_id) {
+        gptr = &g;
+        break;
+      }
+    }
+    if (!gptr || gptr->icon_path.empty()) {
+      return false;
+    }
+
+    try {
+      std::filesystem::path src = gptr->icon_path;
+      std::filesystem::path dstDir = platf::appdata() / "covers";
+      file_handler::make_directory(dstDir.string());
+      std::filesystem::path dst = dstDir / ("playnite_icon_" + playnite_id + ".png");
+      bool ok = false;
+      std::error_code ec1, ec2;
+      if (std::filesystem::exists(dst)) {
+        auto dstTime = std::filesystem::last_write_time(dst, ec1);
+        auto srcTime = std::filesystem::last_write_time(src, ec2);
+        if (!ec1 && !ec2 && dstTime >= srcTime) {
+          ok = true;
+        }
+      }
+      if (!ok) {
+        std::wstring wsrc = src.wstring();
+        std::wstring wdst = dst.wstring();
+        ok = platf::img::convert_to_png_96dpi(wsrc, wdst);
+      }
+      if (ok) {
+        out_path = dst.generic_string();
+        return true;
+      }
+    } catch (...) {}
+    return false;
+  }
+
   // Helper: gather running Playnite PIDs and capture any discovered exe path
   static void collect_playnite_state(std::vector<DWORD> &pids, std::wstring &exe_path_out) {
     try {

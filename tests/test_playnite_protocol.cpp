@@ -51,6 +51,7 @@ TEST(PlayniteProtocol_Parse, Games_PopulatesBasicFields) {
       "playtimeMinutes": 42,
       "lastPlayed":"2024-01-02T03:04:05Z",
       "boxArtPath":"C:/box.png",
+      "iconPath":"C:/icon.png",
       "description":"desc",
       "tags":["t1","t2"],
       "installed": true
@@ -70,6 +71,7 @@ TEST(PlayniteProtocol_Parse, Games_PopulatesBasicFields) {
   EXPECT_EQ(g.playtime_minutes, 42u);
   EXPECT_EQ(g.last_played, "2024-01-02T03:04:05Z");
   EXPECT_EQ(g.box_art_path, "C:/box.png");
+  EXPECT_EQ(g.icon_path, "C:/icon.png");
   ASSERT_EQ(g.tags.size(), 2u);
   EXPECT_TRUE(g.installed);
 }

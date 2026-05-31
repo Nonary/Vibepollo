@@ -68,6 +68,22 @@
           @keydown.enter.prevent="openEdit(app, i)"
           @keydown.space.prevent="openEdit(app, i)"
         >
+          <div class="apps-row__art" aria-hidden="true">
+            <img
+              v-if="appHasPlayniteIcon(app)"
+              class="apps-row__icon"
+              :src="playniteIconUrl(app)"
+              :alt="app.name || 'Application'"
+              loading="lazy"
+              @error="onPlayniteIconError(app)"
+            />
+            <i
+              v-else
+              class="fas apps-row__fallback-icon"
+              :class="app['playnite-id'] ? 'fa-gamepad' : 'fa-window-maximize'"
+            />
+          </div>
+
           <div class="apps-row__main">
             <div class="apps-row__title-line">
               <span class="apps-row__title">{{ app.name || '(untitled)' }}</span>
@@ -94,8 +110,8 @@
         </div>
         <h3 class="apps-empty__title">No applications yet</h3>
         <p class="apps-empty__description">
-          Add your first application to start streaming, or connect Playnite to import your
-          library automatically.
+          Add your first application to start streaming, or connect Playnite to import your library
+          automatically.
         </p>
         <div class="apps-empty__actions">
           <n-button type="primary" size="medium" strong @click="openAdd">
@@ -162,7 +178,8 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);
 const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
-const currentIndex = ref<number | null>(-1);
+const currentIndex = ref(-1);
+const failedPlayniteIconKeys = ref<Set<string>>(new Set());
 
 async function reload(): Promise<void> {
   await appsStore.loadApps(true);
@@ -183,6 +200,35 @@ function openEdit(app: App, i: number): void {
 function appKey(app: App | null | undefined, index: number) {
   const id = app?.uuid || '';
   return `${app?.name || 'app'}|${id}|${index}`;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
+
+function playniteIconKey(app: App): string {
+  return firstString(app.uuid, app['playnite-id'], app.name);
+}
+
+function appHasPlayniteIcon(app: App): boolean {
+  const key = playniteIconKey(app);
+  if (!app.uuid || !key || failedPlayniteIconKeys.value.has(key)) return false;
+  return !!app['playnite-icon-path'];
+}
+
+function playniteIconUrl(app: App): string {
+  return `/api/apps/${encodeURIComponent(app.uuid || '')}/icon`;
+}
+
+function onPlayniteIconError(app: App): void {
+  const key = playniteIconKey(app);
+  if (!key) return;
+  const next = new Set(failedPlayniteIconKeys.value);
+  next.add(key);
+  failedPlayniteIconKeys.value = next;
 }
 
 function appSubtitle(app: App): string {
@@ -387,7 +433,7 @@ auth.onLogin(() => {
 .apps-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.875rem;
   padding: 0.625rem 1rem;
   width: 100%;
   text-align: left;
@@ -430,6 +476,39 @@ auth.onLogin(() => {
   .apps-row {
     padding: 0.625rem 1.25rem;
   }
+}
+
+.apps-row__art {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: 0 0 2.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  background: rgb(var(--color-dark) / 0.08);
+  color: rgb(var(--color-dark) / 0.55);
+  box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.08);
+}
+
+.dark .apps-row__art {
+  background: rgb(var(--color-light) / 0.08);
+  color: rgb(var(--color-light) / 0.62);
+  box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.08);
+}
+
+.apps-row__icon {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  padding: 0.25rem;
+}
+
+.apps-row__fallback-icon {
+  font-size: 1rem;
+  opacity: 0.78;
 }
 
 /* Main text column */
@@ -514,7 +593,9 @@ auth.onLogin(() => {
   flex-shrink: 0;
   font-size: 0.75rem;
   opacity: 0.3;
-  transition: transform 0.12s ease, opacity 0.12s ease;
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease;
   margin-left: 0.25rem;
 }
 

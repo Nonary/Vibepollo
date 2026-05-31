@@ -95,6 +95,7 @@ namespace platf::playnite {
           }
           game.last_played = g.value("lastPlayed", "");
           game.box_art_path = g.value("boxArtPath", "");
+          game.icon_path = g.value("iconPath", "");
           game.description = g.value("description", "");
           game.tags = to_string_list(g.value("tags", json::array()));
           // Installed flag may be provided as 'installed' or 'isInstalled'.

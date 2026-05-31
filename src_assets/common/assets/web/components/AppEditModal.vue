@@ -562,6 +562,7 @@ function fresh(): AppForm {
     cmd: '',
     workingDir: '',
     imagePath: '',
+    playniteIconPath: '',
     excludeGlobalPrepCmd: false,
     excludeGlobalStateCmd: false,
     configOverrides: {},
@@ -776,6 +777,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     cmd: String(cmdStr ?? ''),
     workingDir: String(src['working-dir'] ?? ''),
     imagePath: String(src['image-path'] ?? ''),
+    playniteIconPath: String(src['playnite-icon-path'] ?? ''),
     excludeGlobalPrepCmd: !!src['exclude-global-prep-cmd'],
     excludeGlobalStateCmd: !!src['exclude-global-state-cmd'],
     configOverrides:
@@ -897,6 +899,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   }
   if (f.playniteId) payload['playnite-id'] = f.playniteId;
   if (f.playniteManaged) payload['playnite-managed'] = f.playniteManaged;
+  if (f.playniteIconPath) payload['playnite-icon-path'] = f.playniteIconPath;
   const provider = normalizeFrameGenerationProvider(f.frameGenerationProvider);
   const mode = f.frameGenerationMode ?? 'off';
   let resolvedProvider: FrameGenerationProvider = provider;
