@@ -1660,18 +1660,18 @@ private:
     }
     const auto copy_submit = std::chrono::steady_clock::now() - copy_start;
 
+    // Publish the metadata while still holding the shared keyed mutex so the
+    // consumer can never lock a newer texture while reading an older frame id.
+    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+
     const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
     if (FAILED(rel_hr)) {
       BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", rel_hr);
       return;
     }
 
-    // Publish metadata after releasing the keyed mutex. The seqlock in
-    // publish_frame_metadata is independent of the mutex, so this ordering is
-    // safe; doing it after ReleaseSync makes "consumer observes new frame_id"
-    // imply "shared mutex is free", so the consumer's lock_frame() AcquireSync
-    // can never block waiting for the helper's release path.
-    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+    // Signal only after releasing the mutex so a woken consumer can acquire the
+    // frame without waiting on the producer's normal release path.
     _deps->resource_manager.signal_frame_ready();
     _published_frames.fetch_add(1, std::memory_order_relaxed);
 

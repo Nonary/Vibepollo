@@ -575,9 +575,9 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    // The helper signals the frame-ready event only after publishing metadata
-    // and releasing this keyed mutex. After acquiring the mutex here, the
-    // metadata snapshot and shared texture contents refer to the latest frame.
+    // The helper publishes metadata while holding this keyed mutex and signals
+    // the frame-ready event after releasing it. After acquiring the mutex here,
+    // the metadata snapshot and shared texture contents refer to the latest frame.
     frame_metadata_snapshot_t snapshot;
     if (!read_frame_metadata_snapshot(_frame_metadata, snapshot)) {
       (void) _keyed_mutex->ReleaseSync(0);

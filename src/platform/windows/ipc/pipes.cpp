@@ -1077,7 +1077,9 @@ namespace platf::dxgi {
         return Success;
       } else {
         DWORD overlappedErr = GetLastError();
-        if (overlappedErr == ERROR_BROKEN_PIPE) {
+        if (overlappedErr == ERROR_BROKEN_PIPE ||
+            overlappedErr == ERROR_PIPE_NOT_CONNECTED ||
+            overlappedErr == ERROR_NO_DATA) {
           BOOST_LOG(warning) << "IPC pipe connection to helper process was lost.";
           _connected.store(false, std::memory_order_release);
           return BrokenPipe;

@@ -306,6 +306,7 @@ namespace platf::dxgi {
     }
 
     gpu_tex.copy_to(&src);
+    _frame_locked = true;
 
     return capture_e::ok;
   }
