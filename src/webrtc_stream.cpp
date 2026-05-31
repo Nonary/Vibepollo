@@ -642,6 +642,7 @@ namespace webrtc_stream {
       std::optional<int> app_id;
       std::optional<WebRtcCaptureConfigKey> config_key;
       std::optional<WebRtcStreamStartParams> stream_start_params;
+      std::atomic_bool mirroring_rtsp_capture {false};
     };
 
     template<class T>
@@ -1627,13 +1628,18 @@ namespace webrtc_stream {
 
     void request_keyframe(std::string_view reason) {
       auto mail = current_capture_mail();
-      if (!mail) {
-        if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
-          stream::request_idr_for_all_sessions();
-          BOOST_LOG(debug) << "WebRTC: keyframe requested via RTSP (" << reason << ')';
-        } else {
-          BOOST_LOG(debug) << "WebRTC: keyframe request skipped (" << reason << ") - no capture mail";
+      const bool request_rtsp_keyframe =
+        rtsp_sessions_active.load(std::memory_order_relaxed) &&
+        (!mail || webrtc_capture.mirroring_rtsp_capture.load(std::memory_order_acquire));
+      if (request_rtsp_keyframe) {
+        stream::request_idr_for_all_sessions();
+        BOOST_LOG(debug) << "WebRTC: keyframe requested via RTSP (" << reason << ')';
+        if (!mail) {
+          return;
         }
+      }
+      if (!mail) {
+        BOOST_LOG(debug) << "WebRTC: keyframe request skipped (" << reason << ") - no capture mail";
         return;
       }
 
@@ -2435,6 +2441,7 @@ namespace webrtc_stream {
       webrtc_capture.config_key.reset();
       webrtc_capture.stream_start_params.reset();
       webrtc_capture.idle_shutdown_pending.store(false, std::memory_order_release);
+      webrtc_capture.mirroring_rtsp_capture.store(false, std::memory_order_release);
       webrtc_capture.active.store(false, std::memory_order_release);
 
 #ifdef _WIN32
@@ -2553,6 +2560,11 @@ namespace webrtc_stream {
         }
       }
 
+      if (rtsp_active) {
+        BOOST_LOG(debug) << "WebRTC: mirroring active RTSP capture for client '"
+                         << launch_session->client_name << "' while WebRTC capture starts for handoff.";
+      }
+
       if (!rtsp_active) {
 #ifdef _WIN32
         stream::cancel_paused_display_cleanup();
@@ -2609,6 +2621,7 @@ namespace webrtc_stream {
       webrtc_capture.launch_session = launch_session;
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
       webrtc_capture.config_key = desired_key;
+      webrtc_capture.mirroring_rtsp_capture.store(rtsp_active, std::memory_order_release);
       webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
 #ifdef SUNSHINE_ENABLE_WEBRTC
       webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
@@ -4781,7 +4794,14 @@ namespace webrtc_stream {
       return;
     }
 
-    if (!webrtc_capture.active.load(std::memory_order_acquire) || packet.channel_data != nullptr) {
+    if (!webrtc_capture.active.load(std::memory_order_acquire)) {
+      return;
+    }
+
+    const bool accept_rtsp_packet = packet.channel_data != nullptr &&
+                                    rtsp_sessions_active.load(std::memory_order_relaxed) &&
+                                    webrtc_capture.mirroring_rtsp_capture.load(std::memory_order_acquire);
+    if (packet.channel_data != nullptr && !accept_rtsp_packet) {
       return;
     }
 
@@ -5008,6 +5028,7 @@ namespace webrtc_stream {
   void set_rtsp_sessions_active(bool active) {
     rtsp_sessions_active.store(active, std::memory_order_relaxed);
     if (!active) {
+      webrtc_capture.mirroring_rtsp_capture.store(false, std::memory_order_release);
       clear_rtsp_capture_config();
     }
   }
