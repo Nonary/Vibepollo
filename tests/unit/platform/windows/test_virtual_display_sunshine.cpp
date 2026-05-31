@@ -28,9 +28,8 @@ namespace {
     {0x9b, 0x7a, 0x79, 0x45, 0x0b, 0x81, 0x2d, 0x60}
   };
 
-  std::string read_virtual_display_source() {
-    const auto path = std::filesystem::path {SUNSHINE_SOURCE_DIR} /
-                      "src/platform/windows/virtual_display_sunshine.cpp";
+  std::string read_source(const std::filesystem::path &relative_path) {
+    const auto path = std::filesystem::path {SUNSHINE_SOURCE_DIR} / relative_path;
     std::ifstream file {path, std::ios::binary};
     if (!file) {
       ADD_FAILURE() << "Failed to open " << path.string();
@@ -40,6 +39,10 @@ namespace {
     std::ostringstream buffer;
     buffer << file.rdbuf();
     return buffer.str();
+  }
+
+  std::string read_virtual_display_source() {
+    return read_source("src/platform/windows/virtual_display_sunshine.cpp");
   }
 
   void expect_contains(const std::string &content, const std::string &needle) {
@@ -176,5 +179,17 @@ TEST(SunshineVirtualDisplay, HdrRequestedTemporaryDisplayFallsBackToSdr) {
 
   const auto destructive_revert = source.find("(void) removeVirtualDisplay(guid);", activation_failure);
   EXPECT_TRUE(destructive_revert == std::string::npos || destructive_revert > success);
+}
+
+TEST(SunshineWgcCapture, UsesFp16ForAdvancedColorTargets) {
+  const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
+  const auto display_source = read_source("src/platform/windows/display_wgc.cpp");
+  const auto ipc_source = read_source("src/platform/windows/ipc/ipc_session.cpp");
+
+  expect_contains(helper_source, "g_config.dynamic_range || g_config.advanced_color_capture");
+  expect_contains(helper_source, "DXGI_FORMAT_R16G16B16A16_FLOAT");
+  expect_contains(display_source, "const bool advanced_color_capture = is_hdr();");
+  expect_contains(display_source, "device.get(), advanced_color_capture");
+  expect_contains(ipc_source, "config_data.advanced_color_capture = _advanced_color_capture ? 1u : 0u;");
 }
 #endif

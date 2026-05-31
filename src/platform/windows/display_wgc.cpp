@@ -130,9 +130,11 @@ namespace platf::dxgi {
 
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
 
+    const bool advanced_color_capture = is_hdr();
+
     // Create session
     _ipc_session = std::make_unique<ipc_session_t>();
-    if (_ipc_session->init(config, display_name, device.get())) {
+    if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
 
@@ -363,9 +365,11 @@ namespace platf::dxgi {
     // The display helper handles resolution changes before capture starts if needed.
     // We use the dimensions set by display_base_t::init() which reflect the actual monitor size.
 
+    const bool advanced_color_capture = is_hdr();
+
     // Create session
     _ipc_session = std::make_unique<ipc_session_t>();
-    if (_ipc_session->init(config, display_name, device.get())) {
+    if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
 

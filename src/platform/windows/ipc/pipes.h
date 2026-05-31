@@ -62,6 +62,7 @@ namespace platf::dxgi {
   /**
    * @brief Structure for configuration data shared via IPC.
    * @param dynamic_range Dynamic range setting.
+   * @param advanced_color_capture Whether the target output is already in HDR/Advanced Color.
    * @param log_level Logging level.
    * @param display_name Display name (wide string, max 32 chars).
    * @param adapter_luid LUID of the DXGI adapter to use for D3D11 device creation.
@@ -80,6 +81,7 @@ namespace platf::dxgi {
 
   struct config_data_t {
     int dynamic_range;
+    uint32_t advanced_color_capture;
     int log_level;
     wchar_t display_name[32];
     LUID adapter_luid;

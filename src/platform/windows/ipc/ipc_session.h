@@ -49,9 +49,10 @@ namespace platf::dxgi {
      * @param config Video configuration.
      * @param display_name Display name for the session.
      * @param device D3D11 device for shared texture operations (not owned).
+     * @param advanced_color_capture True when the target display is already HDR/Advanced Color.
      * @return `0` on success; non-zero otherwise.
      */
-    int init(const ::video::config_t &config, std::string_view display_name, ID3D11Device *device);
+    int init(const ::video::config_t &config, std::string_view display_name, ID3D11Device *device, bool advanced_color_capture);
 
     /**
      * @brief Start the helper process and set up IPC connection if not already initialized.
@@ -191,6 +192,7 @@ namespace platf::dxgi {
     UINT _height = 0;  ///< Shared texture height.
     ::video::config_t _config;  ///< Cached video config.
     std::string _display_name;  ///< Display name copy.
+    bool _advanced_color_capture = false;  ///< True when target display is already Advanced Color/HDR.
     std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
   };
 

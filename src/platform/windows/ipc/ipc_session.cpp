@@ -174,11 +174,12 @@ namespace platf::dxgi {
     }
   }
 
-  int ipc_session_t::init(const ::video::config_t &config, std::string_view display_name, ID3D11Device *device) {
+  int ipc_session_t::init(const ::video::config_t &config, std::string_view display_name, ID3D11Device *device, bool advanced_color_capture) {
     _process_helper = std::make_unique<ProcessHandler>();
     _config = config;
     _display_name = display_name;
     _device.copy_from(device);
+    _advanced_color_capture = advanced_color_capture;
     return 0;
   }
 
@@ -302,6 +303,7 @@ namespace platf::dxgi {
     // Send config data to helper process
     config_data_t config_data = {};
     config_data.dynamic_range = _config.dynamicRange;
+    config_data.advanced_color_capture = _advanced_color_capture ? 1u : 0u;
     config_data.log_level = config::sunshine.min_log_level;
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);
     config_data.target_fps = wgc_target_fps(_config);

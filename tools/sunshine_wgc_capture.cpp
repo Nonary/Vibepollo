@@ -129,7 +129,7 @@ const int INITIAL_LOG_LEVEL = 2;
 /**
  * @brief Global configuration data received from the main process.
  */
-static platf::dxgi::config_data_t g_config = {0, 0, L"", {0, 0}, 10000, 60, 2, 2, 0};
+static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 2, 2, 0};
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 
@@ -2139,9 +2139,12 @@ int main(int argc, char *argv[]) {
   // Calculate final resolution based on config and monitor info
   display_manager.configure_capture_resolution(item);
 
-  // Choose format based on config.dynamic_range
+  // Use FP16 whenever the stream is HDR or the target output is already in
+  // Advanced Color. WGC can otherwise hand us an SDR UNORM frame pool for an
+  // HDR desktop during encoder probing, and that stale format can carry into
+  // the real HDR stream until a later capture reinit.
   DXGI_FORMAT capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  if (g_config_received && g_config.dynamic_range) {
+  if (g_config_received && (g_config.dynamic_range || g_config.advanced_color_capture)) {
     capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
   }
 
