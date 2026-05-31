@@ -69,10 +69,23 @@ add_custom_command(
 )
 add_custom_target(build_uninstall_ui ALL DEPENDS "${SUNSHINE_UNINSTALL_UI_EXE}")
 
+set(SUNSHINE_WINDOWS_PACKAGED_TARGETS sunshine)
+foreach(_packaged_target IN ITEMS
+        dxgi-info
+        audio-info
+        sunshinesvc
+        playnite-launcher
+        sunshine_wgc_capture
+        sunshine_display_helper)
+    if(TARGET "${_packaged_target}")
+        list(APPEND SUNSHINE_WINDOWS_PACKAGED_TARGETS "${_packaged_target}")
+    endif()
+endforeach()
+
 # Convenience target to build MSI via CPack (WiX)
 add_custom_target(package_msi
     COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
-    DEPENDS sunshine copy_playnite_plugin build_uninstall_ui
+    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} copy_playnite_plugin build_uninstall_ui
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 
