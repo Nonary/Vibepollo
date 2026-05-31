@@ -1002,8 +1002,8 @@ namespace VDISPLAY_SUNSHINE {
 
       std::lock_guard<std::mutex> lock(mutex);
       std::uint64_t lease_id = 0;
-      while (lease_id == 0) {
-        lease_id = rng();
+      while (lease_id < sunshine_driver::kMinOpaqueLeaseId) {
+        lease_id = rng() | sunshine_driver::kMinOpaqueLeaseId;
       }
       return lease_id;
     }

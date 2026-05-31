@@ -320,6 +320,17 @@ TEST(SunshineVirtualDisplayPackaging, SunshineDriverUsesConfiguredRenderAdapterP
   EXPECT_EQ(automatic.find("ignores automatic render adapter override request"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, SunshineDriverGeneratesProtocolValidLeaseIds) {
+  const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
+
+  const auto generatorPos = sunshineDriver.find("std::uint64_t generate_driver_lease_id() {");
+  ASSERT_NE(generatorPos, std::string::npos);
+  const auto generator = sunshineDriver.substr(generatorPos, sunshineDriver.find("bool is_missing_lease_error", generatorPos) - generatorPos);
+  expect_contains(generator, "sunshine_driver::kMinOpaqueLeaseId");
+  expect_contains(generator, "lease_id < sunshine_driver::kMinOpaqueLeaseId");
+  expect_contains(generator, "rng() | sunshine_driver::kMinOpaqueLeaseId");
+}
+
 TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
   const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
 
