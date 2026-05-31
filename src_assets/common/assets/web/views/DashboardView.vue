@@ -244,7 +244,7 @@
                     {{
                       translate(
                         'config.golden_snapshot_outdated_desc',
-                        'Your saved snapshot may no longer match your display setup. Recreate it when possible to reduce the chance of display recovery issues.',
+                        'Display restore has not completed successfully for the last few days, which may mean your saved snapshot is out of date. If your monitors have not been restoring properly when you return to the PC, recreate the snapshot. Otherwise, you can ignore this message.',
                       )
                     }}
                   </p>
@@ -531,6 +531,15 @@ type GoldenStatus = {
   out_of_date?: boolean;
   comparison_available?: boolean;
   out_of_date_reason?: string;
+  current_mismatch_reason?: string;
+  restore_failure_count?: number;
+  restore_failure_threshold?: number;
+  restore_failure_window_hours?: number;
+  restore_status_reason?: string;
+  restore_last_failure_reason?: string;
+  restore_first_failure_unix_ms?: number | null;
+  restore_latest_failure_unix_ms?: number | null;
+  restore_status_updated_at_unix_ms?: number | null;
 };
 const playnite = ref<PlayniteStatus | null>(null);
 

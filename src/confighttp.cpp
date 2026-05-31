@@ -4019,6 +4019,17 @@ namespace confighttp {
     return out;
   }
 
+  static std::vector<std::filesystem::path> golden_snapshot_status_candidates() {
+    std::vector<std::filesystem::path> out;
+    for (const auto &snapshot : golden_snapshot_candidates()) {
+      const auto parent = snapshot.parent_path();
+      if (!parent.empty()) {
+        out.emplace_back(parent / L"display_golden_restore_status.json");
+      }
+    }
+    return out;
+  }
+
   constexpr int kGoldenSnapshotLatestVersion = 2;
 
   struct golden_current_mode_t {
@@ -4131,6 +4142,54 @@ namespace confighttp {
     } catch (...) {
       return std::nullopt;
     }
+  }
+
+  struct golden_restore_status_t {
+    bool snapshot_out_of_date {false};
+    std::string reason;
+    std::string last_failure_reason;
+    size_t unresolved_restore_attempts {0};
+    size_t failure_threshold {0};
+    size_t failure_window_hours {0};
+    std::optional<long long> first_failure_unix_ms;
+    std::optional<long long> latest_failure_unix_ms;
+    std::optional<long long> updated_at_unix_ms;
+  };
+
+  static std::optional<golden_restore_status_t> read_golden_restore_status() {
+    for (const auto &p : golden_snapshot_status_candidates()) {
+      if (!file_exists_nofail(p)) {
+        continue;
+      }
+      auto root = read_json_file_nofail(p);
+      if (!root) {
+        continue;
+      }
+
+      golden_restore_status_t status;
+      status.snapshot_out_of_date = root->value("snapshot_out_of_date", false);
+      status.reason = root->value("reason", std::string {});
+      status.last_failure_reason = root->value("last_failure_reason", std::string {});
+      status.unresolved_restore_attempts = static_cast<size_t>(
+        root->value("unresolved_restore_attempts", root->value("consecutive_restore_failures", 0ull))
+      );
+      status.failure_threshold = static_cast<size_t>(root->value("failure_threshold", 0ull));
+      status.failure_window_hours = static_cast<size_t>(root->value("failure_window_hours", 0ull));
+      auto first_it = root->find("first_failure_unix_ms");
+      if (first_it != root->end() && first_it->is_number_integer()) {
+        status.first_failure_unix_ms = first_it->get<long long>();
+      }
+      auto latest_it = root->find("latest_failure_unix_ms");
+      if (latest_it != root->end() && latest_it->is_number_integer()) {
+        status.latest_failure_unix_ms = latest_it->get<long long>();
+      }
+      auto updated_it = root->find("updated_at_unix_ms");
+      if (updated_it != root->end() && updated_it->is_number_integer()) {
+        status.updated_at_unix_ms = updated_it->get<long long>();
+      }
+      return status;
+    }
+    return std::nullopt;
   }
 
   static std::optional<int> parse_snapshot_version(const nlohmann::json &root) {
@@ -4386,6 +4445,8 @@ namespace confighttp {
     bool out_of_date = false;
     bool comparison_available = false;
     std::string out_of_date_reason;
+    std::string current_mismatch_reason;
+    std::optional<golden_restore_status_t> restore_status;
     try {
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
@@ -4403,8 +4464,7 @@ namespace confighttp {
               if (auto mismatch = snapshot_current_mismatch_reason(*root)) {
                 comparison_available = true;
                 if (!mismatch->empty()) {
-                  out_of_date = true;
-                  out_of_date_reason = *mismatch;
+                  current_mismatch_reason = *mismatch;
                 }
               }
             }
@@ -4414,6 +4474,31 @@ namespace confighttp {
             out_of_date_reason = "unreadable_snapshot";
           }
           break;
+        }
+      }
+      if (exists) {
+        restore_status = read_golden_restore_status();
+        if (restore_status) {
+          bool restore_status_out_of_date = restore_status->snapshot_out_of_date;
+          if (!restore_status_out_of_date &&
+              restore_status->failure_threshold > 0 &&
+              restore_status->failure_window_hours > 0 &&
+              restore_status->unresolved_restore_attempts >= restore_status->failure_threshold &&
+              restore_status->first_failure_unix_ms) {
+            const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch()
+            )
+                                  .count();
+            const auto window_ms = static_cast<long long>(restore_status->failure_window_hours) * 60LL * 60LL * 1000LL;
+            restore_status_out_of_date = now_ms >= *restore_status->first_failure_unix_ms &&
+                                         now_ms - *restore_status->first_failure_unix_ms >= window_ms;
+          }
+          if (restore_status_out_of_date) {
+            out_of_date = true;
+            if (out_of_date_reason.empty()) {
+              out_of_date_reason = "restore_failed_for_days";
+            }
+          }
         }
       }
     } catch (...) {
@@ -4426,6 +4511,32 @@ namespace confighttp {
     out["out_of_date"] = out_of_date;
     out["comparison_available"] = comparison_available;
     out["out_of_date_reason"] = out_of_date_reason;
+    out["current_mismatch_reason"] = current_mismatch_reason;
+    if (restore_status) {
+      out["restore_failure_count"] = restore_status->unresolved_restore_attempts;
+      out["restore_failure_threshold"] = restore_status->failure_threshold;
+      out["restore_failure_window_hours"] = restore_status->failure_window_hours;
+      out["restore_status_reason"] = restore_status->reason;
+      out["restore_last_failure_reason"] = restore_status->last_failure_reason;
+      out["restore_first_failure_unix_ms"] = restore_status->first_failure_unix_ms ?
+                                              nlohmann::json(*restore_status->first_failure_unix_ms) :
+                                              nlohmann::json(nullptr);
+      out["restore_latest_failure_unix_ms"] = restore_status->latest_failure_unix_ms ?
+                                               nlohmann::json(*restore_status->latest_failure_unix_ms) :
+                                               nlohmann::json(nullptr);
+      out["restore_status_updated_at_unix_ms"] = restore_status->updated_at_unix_ms ?
+                                                   nlohmann::json(*restore_status->updated_at_unix_ms) :
+                                                   nlohmann::json(nullptr);
+    } else {
+      out["restore_failure_count"] = 0;
+      out["restore_failure_threshold"] = 0;
+      out["restore_failure_window_hours"] = 0;
+      out["restore_status_reason"] = "";
+      out["restore_last_failure_reason"] = "";
+      out["restore_first_failure_unix_ms"] = nlohmann::json(nullptr);
+      out["restore_latest_failure_unix_ms"] = nlohmann::json(nullptr);
+      out["restore_status_updated_at_unix_ms"] = nlohmann::json(nullptr);
+    }
     send_response(response, out);
   }
 
@@ -4444,6 +4555,12 @@ namespace confighttp {
           if (!ec) {
             any_deleted = true;
           }
+        }
+      }
+      for (const auto &p : golden_snapshot_status_candidates()) {
+        if (file_exists_nofail(p)) {
+          std::error_code ec;
+          std::filesystem::remove(p, ec);
         }
       }
     } catch (...) {

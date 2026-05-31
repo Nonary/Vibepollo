@@ -19,6 +19,7 @@
   #include <cstring>
   #include <cwchar>
   #include <filesystem>
+  #include <fstream>
   #include <functional>
   #include <memory>
   #include <map>
@@ -2322,6 +2323,7 @@ namespace {
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
     std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
     std::filesystem::path golden_path;  // file to store golden snapshot
+    std::filesystem::path golden_status_path;  // restore health marker for golden snapshot
     std::filesystem::path session_current_path;  // file to store current session baseline snapshot (first apply)
     std::filesystem::path session_previous_path;  // file to persist last known-good baseline across runs
     std::atomic<bool> session_saved {false};
@@ -2366,6 +2368,11 @@ namespace {
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
     static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
     static constexpr size_t kGoldenFallbackCompletionThreshold = 3;
+    static constexpr size_t kGoldenOutOfDateFailureThreshold = 3;
+    static constexpr auto kGoldenOutOfDateFailureWindow = std::chrono::hours(72);
+    std::mutex golden_restore_issue_mutex;
+    bool golden_restore_had_issue_this_request {false};
+    std::string golden_restore_last_issue;
     std::atomic<size_t> restore_backoff_index {0};
     std::atomic<long long> restore_next_allowed_ms {0};
     static constexpr std::array<std::chrono::seconds, 8> kRestoreBackoffProfile {
@@ -2472,6 +2479,153 @@ namespace {
 
     size_t note_pending_golden_session_fallback() {
       return golden_pending_session_fallbacks.fetch_add(1, std::memory_order_acq_rel) + 1;
+    }
+
+    bool write_text_atomically(const std::filesystem::path &path, const std::string &text) const {
+      if (path.empty()) {
+        return false;
+      }
+
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+
+      auto temp_path = path;
+      temp_path += L".tmp";
+
+      {
+        FILE *f = _wfopen(temp_path.wstring().c_str(), L"wb");
+        if (!f) {
+          return false;
+        }
+        auto guard = std::unique_ptr<FILE, int (*)(FILE *)>(f, fclose);
+        const auto written = fwrite(text.data(), 1, text.size(), f);
+        if (written != text.size()) {
+          guard.reset();
+          std::error_code ec_rm_tmp;
+          std::filesystem::remove(temp_path, ec_rm_tmp);
+          return false;
+        }
+      }
+
+      std::error_code ec_move;
+      std::filesystem::rename(temp_path, path, ec_move);
+      if (!ec_move) {
+        return true;
+      }
+
+      std::error_code ec_copy;
+      std::filesystem::copy_file(temp_path, path, std::filesystem::copy_options::overwrite_existing, ec_copy);
+      std::error_code ec_rm_tmp;
+      std::filesystem::remove(temp_path, ec_rm_tmp);
+      return !ec_copy;
+    }
+
+    void clear_golden_restore_status(const char *reason) {
+      reset_golden_restore_request_tracking();
+      if (golden_status_path.empty()) {
+        return;
+      }
+
+      std::error_code ec;
+      const bool removed = std::filesystem::remove(golden_status_path, ec);
+      if (removed && !ec) {
+        BOOST_LOG(info) << "Golden restore health reset"
+                        << (reason ? std::string(" (") + reason + ")" : "") << ".";
+      }
+    }
+
+    void reset_golden_restore_request_tracking() {
+      std::lock_guard<std::mutex> lock(golden_restore_issue_mutex);
+      golden_restore_had_issue_this_request = false;
+      golden_restore_last_issue.clear();
+    }
+
+    void note_golden_restore_issue(const char *reason) {
+      std::lock_guard<std::mutex> lock(golden_restore_issue_mutex);
+      golden_restore_had_issue_this_request = true;
+      golden_restore_last_issue = reason && *reason ? reason : "restore_failed";
+    }
+
+    void register_unresolved_golden_restore_request(const char *context) {
+      std::string reason;
+      {
+        std::lock_guard<std::mutex> lock(golden_restore_issue_mutex);
+        if (!golden_restore_had_issue_this_request) {
+          return;
+        }
+        reason = golden_restore_last_issue.empty() ? "restore_failed" : golden_restore_last_issue;
+        golden_restore_had_issue_this_request = false;
+        golden_restore_last_issue.clear();
+      }
+
+      const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch()
+      )
+                            .count();
+
+      long long first_failure_ms = now_ms;
+      size_t failures = 0;
+      if (!golden_status_path.empty()) {
+        try {
+          std::ifstream file(golden_status_path, std::ios::binary);
+          if (file.is_open()) {
+            auto previous = nlohmann::json::parse(file, nullptr, false);
+            if (!previous.is_discarded() && previous.is_object()) {
+              first_failure_ms = previous.value("first_failure_unix_ms", first_failure_ms);
+              failures = static_cast<size_t>(previous.value("unresolved_restore_attempts", 0ull));
+            }
+          }
+        } catch (...) {
+        }
+      }
+
+      failures += 1;
+      const auto failure_window_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       kGoldenOutOfDateFailureWindow
+      )
+                                       .count();
+      const auto unresolved_ms = std::max<long long>(0, now_ms - first_failure_ms);
+      const bool enough_attempts = failures >= kGoldenOutOfDateFailureThreshold;
+      const bool old_enough = unresolved_ms >= failure_window_ms;
+      const bool should_warn = enough_attempts && old_enough;
+
+      nlohmann::json status;
+      status["snapshot_out_of_date"] = should_warn;
+      status["reason"] = should_warn ? "restore_failed_for_days" : reason;
+      status["last_failure_reason"] = reason;
+      status["unresolved_restore_attempts"] = failures;
+      status["failure_threshold"] = kGoldenOutOfDateFailureThreshold;
+      status["failure_window_hours"] = std::chrono::duration_cast<std::chrono::hours>(
+                                         kGoldenOutOfDateFailureWindow
+      )
+                                         .count();
+      status["first_failure_unix_ms"] = first_failure_ms;
+      status["latest_failure_unix_ms"] = now_ms;
+      status["updated_at_unix_ms"] = now_ms;
+
+      if (!write_text_atomically(golden_status_path, status.dump(2) + "\n")) {
+        BOOST_LOG(warning) << "Golden restore remained unresolved"
+                           << (context ? std::string(" (") + context + ")" : "")
+                           << ", but failed to write restore health marker.";
+        return;
+      }
+
+      if (should_warn) {
+        BOOST_LOG(warning) << "Golden restore has remained unresolved for "
+                           << std::chrono::duration_cast<std::chrono::hours>(
+                                std::chrono::milliseconds(unresolved_ms)
+                              )
+                                .count()
+                           << "h across " << failures
+                           << " restore request(s); marking saved display snapshot as possibly out of date.";
+      } else {
+        BOOST_LOG(info) << "Golden restore remained unresolved"
+                        << (context ? std::string(" (") + context + ")" : "")
+                        << " (" << reason << "); observing for "
+                        << kGoldenOutOfDateFailureThreshold << " attempts over "
+                        << std::chrono::duration_cast<std::chrono::hours>(kGoldenOutOfDateFailureWindow).count()
+                        << "h before warning.";
+      }
     }
 
     void arm_restore_grace(std::chrono::milliseconds delay, const char *reason) {
@@ -3052,6 +3206,7 @@ namespace {
       if (confirm_current_matches_golden()) {
         BOOST_LOG(info) << "Golden restore confirmed without apply; clearing session restore snapshots.";
         clear_session_restore_snapshots_after_golden();
+        clear_golden_restore_status("restore confirmed");
         return true;
       }
       // Attempt 1
@@ -3074,6 +3229,7 @@ namespace {
       if (ok) {
         BOOST_LOG(info) << "Golden restore confirmed; clearing session restore snapshots.";
         clear_session_restore_snapshots_after_golden();
+        clear_golden_restore_status("restore confirmed");
         return true;
       }
 
@@ -3090,6 +3246,7 @@ namespace {
       if (confirm_current_matches_golden()) {
         BOOST_LOG(info) << "Golden restore confirmed before retry apply; clearing session restore snapshots.";
         clear_session_restore_snapshots_after_golden();
+        clear_golden_restore_status("restore confirmed");
         return true;
       }
       (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
@@ -3107,6 +3264,7 @@ namespace {
       if (ok) {
         BOOST_LOG(info) << "Golden restore confirmed (retry); clearing session restore snapshots.";
         clear_session_restore_snapshots_after_golden();
+        clear_golden_restore_status("restore confirmed");
       }
       return ok;
     }
@@ -3292,12 +3450,18 @@ namespace {
               joined += missing[i];
             }
             BOOST_LOG(info) << "Golden snapshot skipped (missing devices): [" << joined << "]";
+            note_golden_restore_issue("missing_devices");
             return false;
           }
           if (controller.validate_topology_with_os(golden->m_topology)) {
             if (apply_golden_and_confirm(st, guard_generation)) {
               return true;
             }
+            if (!cancelled()) {
+              note_golden_restore_issue("restore_not_confirmed");
+            }
+          } else {
+            note_golden_restore_issue("invalid_topology");
           }
         }
         return false;
@@ -3383,11 +3547,15 @@ namespace {
           return true;
         }
 
+        register_unresolved_golden_restore_request("session fallback accepted");
         reset_pending_golden_session_fallbacks();
         return true;
       } else {
         // Default: prefer session snapshots, fallback to golden
         if (try_session_snapshots()) {
+          if (tried_golden_before_previous) {
+            register_unresolved_golden_restore_request("session fallback accepted");
+          }
           reset_pending_golden_session_fallbacks();
           return true;
         }
@@ -3762,7 +3930,12 @@ namespace {
       self->reset_restore_backoff();
 
       if (exit_due_to_timeout) {
+        self->register_unresolved_golden_restore_request("restore window exhausted");
         return;
+      }
+
+      if (!cancelled()) {
+        self->register_unresolved_golden_restore_request("restore ended unresolved");
       }
 
       self->event_pump.stop();
@@ -4193,6 +4366,7 @@ namespace {
 
   struct SnapshotPaths {
     std::filesystem::path golden;
+    std::filesystem::path golden_status;
     std::filesystem::path session_current;
     std::filesystem::path session_previous;
     std::filesystem::path vibeshine_state;
@@ -4201,6 +4375,7 @@ namespace {
   SnapshotPaths make_snapshot_paths(const std::filesystem::path &root) {
     return SnapshotPaths {
       .golden = root / L"display_golden_restore.json",
+      .golden_status = root / L"display_golden_restore_status.json",
       .session_current = root / L"display_session_current.json",
       .session_previous = root / L"display_session_previous.json",
       .vibeshine_state = root / L"vibeshine_state.json",
@@ -4933,6 +5108,7 @@ namespace {
     state.cancel_post_apply_tasks();
     state.direct_revert_bypass_grace.store(true, std::memory_order_release);
     state.exit_after_revert.store(true, std::memory_order_release);
+    state.reset_golden_restore_request_tracking();
     state.restore_requested.store(true, std::memory_order_release);
     if (revert_options.always_restore_from_golden.has_value()) {
       state.always_restore_from_golden.store(*revert_options.always_restore_from_golden, std::memory_order_release);
@@ -4952,6 +5128,9 @@ namespace {
     }
     if (type == MsgType::ExportGolden) {
       const bool saved = state.save_snapshot_with_retry(state.golden_path, "export-golden");
+      if (saved) {
+        state.clear_golden_restore_status("snapshot exported");
+      }
       BOOST_LOG(info) << "Export golden restore snapshot result=" << (saved ? "true" : "false");
     } else if (type == MsgType::Reset) {
       (void) state.controller.reset_persistence();
@@ -5045,6 +5224,7 @@ namespace {
 
     BOOST_LOG(info) << "Client disconnected; entering restore polling loop (3s interval) until successful.";
     state.exit_after_revert.store(true, std::memory_order_release);
+    state.reset_golden_restore_request_tracking();
     state.restore_requested.store(true, std::memory_order_release);
     state.restore_origin_epoch.store(connection_epoch, std::memory_order_release);
     state.arm_restore_grace(5000ms, "disconnect");
@@ -5113,6 +5293,7 @@ int main(int argc, char *argv[]) {
     dd_log_bridge().install();
     ServiceState state;
     state.golden_path = active_snapshots.golden;
+    state.golden_status_path = active_snapshots.golden_status;
     state.session_current_path = active_snapshots.session_current;
     state.session_previous_path = active_snapshots.session_previous;
     {
@@ -5169,6 +5350,7 @@ int main(int argc, char *argv[]) {
     std::atomic<bool> running {true};
     state.running_flag = &running;
     state.exit_after_revert.store(true, std::memory_order_release);
+    state.reset_golden_restore_request_tracking();
     state.restore_requested.store(true, std::memory_order_release);
     state.restore_origin_epoch.store(0, std::memory_order_release);
 
@@ -5188,6 +5370,7 @@ int main(int argc, char *argv[]) {
   ServiceState state;
   // Suppression of startup restore is deprecated; REVERTs are always allowed.
   state.golden_path = active_snapshots.golden;
+  state.golden_status_path = active_snapshots.golden_status;
   state.session_current_path = active_snapshots.session_current;
   state.session_previous_path = active_snapshots.session_previous;
   {
