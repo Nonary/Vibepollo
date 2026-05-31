@@ -334,7 +334,7 @@ TEST(SunshineVirtualDisplayPackaging, SunshineDriverGeneratesProtocolValidLeaseI
 TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
   const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
 
-  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.3");
+  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.4");
   expect_contains(workflow, "$releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG");
   EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
 }
