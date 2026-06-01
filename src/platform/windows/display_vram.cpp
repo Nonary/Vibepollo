@@ -944,6 +944,16 @@ namespace platf::dxgi {
 
     ::video::color_t *color_p;
 
+    // Destroyed last (declared first): the encoder holds a shared_ptr to the capture display, and the
+    // capture thread waits on `while (display_wp->use_count() != 1)` before it tears down / recreates the
+    // capture device. Releasing this reference is what unblocks that wait, so it must outlive everything
+    // below that still references the capture device -- the encoder's own D3D11 device/context and the
+    // shared encoder textures + keyed mutexes in img_ctx_map (opened from the capture device via
+    // OpenSharedResource1). If `display` were released first, the capture thread could destroy the capture
+    // device concurrently with this device's DestroyDriverInstance, faulting the NVIDIA UMD on a freed
+    // cross-device shared-resource dependency.
+    std::shared_ptr<display_base_t> display;
+
     // Keep the underlying D3D device/context alive until after all dependent resources have been released.
     device_t device;
     device_ctx_t device_ctx;
@@ -968,7 +978,8 @@ namespace platf::dxgi {
     // amongst multiple hwdevice_t objects (and therefore multiple ID3D11Devices).
     std::map<uint32_t, encoder_img_ctx_t> img_ctx_map;
 
-    std::shared_ptr<display_base_t> display;
+    // NOTE: `display` is intentionally declared near the top of this member list (not here) so it is
+    // destroyed last. See the comment on its declaration above.
 
     vs_t convert_Y_or_YUV_vs;
     ps_t convert_Y_or_YUV_ps;
