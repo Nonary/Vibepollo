@@ -53,7 +53,8 @@ TEST(SunshineVirtualDisplayPackaging, RefreshScriptBuildsDriverProbeAndValidates
   expect_contains(script, "Export-PackageCertificate");
   expect_contains(script, "-DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON");
   expect_contains(script, "-DBUILD_VIRTUALDISPLAY_PROBE=ON");
-  expect_contains(script, "--target SunshineVirtualDisplayDriver virtualdisplay_probe");
+  expect_contains(script, "--target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe");
+  expect_contains(script, "Get-ChildItem -LiteralPath $driverBuildDir -Recurse -Directory -Filter 'driver-package'");
   expect_contains(script, "$probeBuildExe = Join-Path $BuildDir 'src\\driver\\virtualdisplay_probe.exe'");
   expect_contains(script, "$packageProbe = Join-Path $packageRoot 'virtualdisplay_probe.exe'");
   expect_contains(script, "Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe");
@@ -334,7 +335,7 @@ TEST(SunshineVirtualDisplayPackaging, SunshineDriverGeneratesProtocolValidLeaseI
 TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
   const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
 
-  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.4");
+  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.5");
   expect_contains(workflow, "$releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG");
   EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
 }

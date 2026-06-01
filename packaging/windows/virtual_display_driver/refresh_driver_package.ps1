@@ -317,7 +317,7 @@ if ($Build -and -not $prebuiltPackageRoot) {
     $vsDevCmd = Resolve-VsDevCmd
     $cmake = Resolve-Tool -Name 'cmake.exe'
     $ninja = Resolve-Tool -Name 'ninja.exe'
-    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DCMAKE_BUILD_TYPE=Release && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriver virtualdisplay_probe -j 10"
+    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DCMAKE_BUILD_TYPE=Release && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe -j 10"
     Invoke-Cmd -Command $buildCommand
 }
 
@@ -325,6 +325,19 @@ $driverBuildDir = Join-Path $BuildDir 'src\driver\windows_driver'
 $driverBuildDll = Join-Path $driverBuildDir 'SunshineVirtualDisplayDriver.dll'
 $driverBuildInf = Join-Path $driverBuildDir 'SunshineVirtualDisplayDriver.inf'
 $probeBuildExe = Join-Path $BuildDir 'src\driver\virtualdisplay_probe.exe'
+
+$driverPackageDir = @(Get-ChildItem -LiteralPath $driverBuildDir -Recurse -Directory -Filter 'driver-package' -ErrorAction SilentlyContinue |
+    Sort-Object -Property FullName |
+    Select-Object -First 1)
+if ($driverPackageDir) {
+    $packagedDriverDll = Join-Path $driverPackageDir.FullName 'SunshineVirtualDisplayDriver.dll'
+    $packagedDriverInf = Join-Path $driverPackageDir.FullName 'SunshineVirtualDisplayDriver.inf'
+    if ((Test-Path -LiteralPath $packagedDriverDll -PathType Leaf) -and
+        (Test-Path -LiteralPath $packagedDriverInf -PathType Leaf)) {
+        $driverBuildDll = $packagedDriverDll
+        $driverBuildInf = $packagedDriverInf
+    }
+}
 
 $packageDll = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.dll'
 $packageInf = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.inf'
@@ -368,10 +381,10 @@ if ($Build) {
         Assert-File -Path $driverBuildInf
         Assert-File -Path $probeBuildExe
         Copy-Item -Force -LiteralPath $driverBuildDll -Destination $packageDll
-        Copy-Item -Force -LiteralPath $driverSourceInf -Destination $packageInf
+        Copy-Item -Force -LiteralPath $driverBuildInf -Destination $packageInf
         Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe
         $expectedPackageDll = $driverBuildDll
-        $expectedPackageInf = $driverSourceInf
+        $expectedPackageInf = $driverBuildInf
         $expectedPackageProbe = $probeBuildExe
 
         $inf2Cat = Resolve-Tool -Name 'Inf2Cat.exe'
