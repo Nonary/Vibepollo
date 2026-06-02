@@ -214,8 +214,9 @@ function applyCodecPreferences(
       filteredPreferred = packetizationMode1;
     }
   }
+  const rest = caps.codecs.filter((codec) => !mimes.includes(codec.mimeType.toLowerCase()));
   try {
-    transceiver.setCodecPreferences(filteredPreferred);
+    transceiver.setCodecPreferences([...filteredPreferred, ...rest]);
   } catch {
     /* ignore */
   }
