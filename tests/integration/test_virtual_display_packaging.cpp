@@ -83,6 +83,11 @@ TEST(SunshineVirtualDisplayPackaging, InstallerDoesNotForceKillUmdfHosts) {
 TEST(SunshineVirtualDisplayPackaging, InstallerReplacesOnlyExistingSunshineDriverStorePackages) {
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 
+  expect_contains(installer, "Test-DriverPackageRefreshNeeded");
+  expect_contains(installer, "Get-CurrentDriverStoreDllPaths");
+  expect_contains(installer, "Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath");
+  expect_contains(installer, "Installed driver package already matches packaged driver payload; skipping driver replacement.");
+
   const auto stop_sunshine = installer.find("Stop-SunshineForDriverInstall");
   const auto remove_device = installer.find("Remove-DeviceNode", stop_sunshine);
   const auto remove_package = installer.find("Remove-DriverPackage", remove_device);
@@ -256,6 +261,17 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(docs, "### dd_use_sunshine_virtual_display_driver");
   expect_contains(docs, "experimental Vibepollo Display Driver");
   EXPECT_LT(audioVideo.find("v-model:value=\"sunshineVirtualDriverEnabled\""), audioVideo.find("<FrameLimiterStep"));
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperCliPreservesSunshineDriverSelection) {
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  expect_contains(bootstrapper, "PreserveCliVirtualDisplayDriverSelection(cliArgs);");
+  expect_contains(bootstrapper, "HasProperty(cliArgs, \"INSTALL_VIRTUAL_DISPLAY_DRIVER\")");
+  expect_contains(bootstrapper, "CliInstallUsesSunshineVirtualDisplayDriver(cliArgs)");
+  expect_contains(bootstrapper, "cliArgs.Add(\"INSTALL_VIRTUAL_DISPLAY_DRIVER=1\");");
+  expect_contains(bootstrapper, "GetPropertyValue(cliArgs, \"INSTALL_ROOT\")");
+  expect_contains(bootstrapper, "dd_use_sunshine_virtual_display_driver");
 }
 
 TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {

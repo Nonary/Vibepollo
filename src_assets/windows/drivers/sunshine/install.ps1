@@ -308,6 +308,50 @@ function Get-SunshineDriverPublishedNames {
     Get-DisplayDriverPublishedNamesByOriginalName -OriginalNames @('SunshineVirtualDisplayDriver.inf')
 }
 
+function Get-CurrentDriverStoreDllPaths {
+    $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
+    $driverStoreRoot = Join-Path $systemRoot 'System32\DriverStore\FileRepository'
+    if (-not (Test-Path -LiteralPath $driverStoreRoot -PathType Container)) {
+        return @()
+    }
+
+    return @(
+        Get-ChildItem -LiteralPath $driverStoreRoot -Directory -Filter 'sunshinevirtualdisplaydriver.inf_*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'SunshineVirtualDisplayDriver.dll' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -Unique
+    )
+}
+
+function Test-DriverPackageRefreshNeeded {
+    $publishedNames = @(Get-SunshineDriverPublishedNames)
+    if ($publishedNames.Count -eq 0) {
+        Write-Host '[SunshineVirtualDisplay] No installed Sunshine virtual display driver package was found; driver install is required.'
+        return $true
+    }
+
+    $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
+    if ($currentDllPaths.Count -eq 0) {
+        Write-Host '[SunshineVirtualDisplay] No DriverStore Sunshine virtual display DLL was found; driver install is required.'
+        return $true
+    }
+
+    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    $currentHashes = @(
+        $currentDllPaths |
+            ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash } |
+            Select-Object -Unique
+    )
+
+    if ($currentHashes.Count -eq 1 -and [string]::Equals($currentHashes[0], $packagedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host '[SunshineVirtualDisplay] Installed driver package already matches packaged driver payload; skipping driver replacement.'
+        return $false
+    }
+
+    Write-Host '[SunshineVirtualDisplay] Packaged driver payload differs from the installed driver package; driver replacement is required.'
+    return $true
+}
+
 function Remove-DriverPackage {
     $publishedNames = @(Get-SunshineDriverPublishedNames)
     if ($publishedNames.Count -eq 0) {
@@ -369,6 +413,11 @@ if ($Uninstall) {
 
 Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
+
+if (-not (Test-DriverPackageRefreshNeeded)) {
+    Write-Host '[SunshineVirtualDisplay] Driver install complete.'
+    exit 0
+}
 
 Stop-SunshineForDriverInstall
 Remove-DeviceNode

@@ -1391,69 +1391,7 @@ namespace VibepolloInstaller {
     }
 
     private static bool IsSunshineVirtualDisplayDriverEnabledInConfiguration(string installDirectory) {
-      foreach (var configPath in BuildSunshineConfigPathCandidates(installDirectory)) {
-        bool enabled;
-        if (TryReadSunshineVirtualDisplayDriverEnabled(configPath, out enabled)) {
-          return enabled;
-        }
-      }
-
-      return false;
-    }
-
-    private static IEnumerable<string> BuildSunshineConfigPathCandidates(string installDirectory) {
-      if (!string.IsNullOrWhiteSpace(installDirectory)) {
-        yield return Path.Combine(installDirectory, "config", "sunshine.conf");
-        yield return Path.Combine(installDirectory, "sunshine.conf");
-      }
-
-      var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-      if (!string.IsNullOrWhiteSpace(roaming)) {
-        yield return Path.Combine(roaming, "Sunshine", "sunshine.conf");
-        yield return Path.Combine(roaming, "Sunshine", "config", "sunshine.conf");
-      }
-    }
-
-    private static bool TryReadSunshineVirtualDisplayDriverEnabled(string configPath, out bool enabled) {
-      enabled = false;
-      if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath)) {
-        return false;
-      }
-
-      try {
-        foreach (var rawLine in File.ReadLines(configPath)) {
-          var line = rawLine.Trim();
-          if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal) || line.StartsWith(";", StringComparison.Ordinal)) {
-            continue;
-          }
-
-          var equalsIndex = line.IndexOf('=');
-          if (equalsIndex <= 0) {
-            continue;
-          }
-
-          var key = line.Substring(0, equalsIndex).Trim();
-          if (!string.Equals(key, "dd_use_sunshine_virtual_display_driver", StringComparison.OrdinalIgnoreCase)) {
-            continue;
-          }
-
-          var value = line.Substring(equalsIndex + 1).Trim().Trim('"');
-          enabled = IsTruthyConfigValue(value);
-          return true;
-        }
-      } catch {
-        return false;
-      }
-
-      return false;
-    }
-
-    private static bool IsTruthyConfigValue(string value) {
-      return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(value, "enabled", StringComparison.OrdinalIgnoreCase);
+      return InstallerRunner.IsSunshineVirtualDisplayDriverEnabledInConfiguration(installDirectory);
     }
 
     private async Task ShowLicenseDialogAsync() {
@@ -2379,6 +2317,72 @@ namespace VibepolloInstaller {
           Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
           "Apollo");
       }
+    }
+
+    public static bool IsSunshineVirtualDisplayDriverEnabledInConfiguration(string installDirectory) {
+      foreach (var configPath in BuildSunshineConfigPathCandidates(installDirectory)) {
+        bool enabled;
+        if (TryReadSunshineVirtualDisplayDriverEnabled(configPath, out enabled)) {
+          return enabled;
+        }
+      }
+
+      return false;
+    }
+
+    private static IEnumerable<string> BuildSunshineConfigPathCandidates(string installDirectory) {
+      if (!string.IsNullOrWhiteSpace(installDirectory)) {
+        yield return Path.Combine(installDirectory, "config", "sunshine.conf");
+        yield return Path.Combine(installDirectory, "sunshine.conf");
+      }
+
+      var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+      if (!string.IsNullOrWhiteSpace(roaming)) {
+        yield return Path.Combine(roaming, "Sunshine", "sunshine.conf");
+        yield return Path.Combine(roaming, "Sunshine", "config", "sunshine.conf");
+      }
+    }
+
+    private static bool TryReadSunshineVirtualDisplayDriverEnabled(string configPath, out bool enabled) {
+      enabled = false;
+      if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath)) {
+        return false;
+      }
+
+      try {
+        foreach (var rawLine in File.ReadLines(configPath)) {
+          var line = rawLine.Trim();
+          if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal) || line.StartsWith(";", StringComparison.Ordinal)) {
+            continue;
+          }
+
+          var equalsIndex = line.IndexOf('=');
+          if (equalsIndex <= 0) {
+            continue;
+          }
+
+          var key = line.Substring(0, equalsIndex).Trim();
+          if (!string.Equals(key, "dd_use_sunshine_virtual_display_driver", StringComparison.OrdinalIgnoreCase)) {
+            continue;
+          }
+
+          var value = line.Substring(equalsIndex + 1).Trim().Trim('"');
+          enabled = IsTruthyConfigValue(value);
+          return true;
+        }
+      } catch {
+        return false;
+      }
+
+      return false;
+    }
+
+    private static bool IsTruthyConfigValue(string value) {
+      return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "1", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(value, "enabled", StringComparison.OrdinalIgnoreCase);
     }
 
     public static InstalledProductInfo GetInstalledVibeshineProduct() {
@@ -4507,6 +4511,7 @@ namespace VibepolloInstaller {
       if (!HasProperty(cliArgs, "SUPPRESSMSGBOXES")) {
         cliArgs.Add("SUPPRESSMSGBOXES=1");
       }
+      PreserveCliVirtualDisplayDriverSelection(cliArgs);
 
       var logPath = TryGetMsiLogPath(cliArgs);
       if (!HasLogSwitch(cliArgs)) {
@@ -4931,6 +4936,66 @@ namespace VibepolloInstaller {
         }
       } catch {
         return false;
+      }
+    }
+
+    private static void PreserveCliVirtualDisplayDriverSelection(List<string> cliArgs) {
+      if (!IsMsiInstallOperation(cliArgs) || HasProperty(cliArgs, "INSTALL_VIRTUAL_DISPLAY_DRIVER")) {
+        return;
+      }
+
+      if (!CliInstallUsesSunshineVirtualDisplayDriver(cliArgs)) {
+        return;
+      }
+
+      cliArgs.Add("INSTALL_VIRTUAL_DISPLAY_DRIVER=1");
+    }
+
+    private static bool IsMsiInstallOperation(List<string> cliArgs) {
+      var operation = cliArgs == null ? null : cliArgs.FirstOrDefault(IsOperationSwitch);
+      return string.Equals(operation, "/i", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(operation, "/package", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CliInstallUsesSunshineVirtualDisplayDriver(List<string> cliArgs) {
+      foreach (var installDirectory in ResolveCliInstallDirectoryCandidates(cliArgs)) {
+        if (IsSunshineVirtualDisplayDriverEnabledInConfiguration(installDirectory)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    private static IEnumerable<string> ResolveCliInstallDirectoryCandidates(List<string> cliArgs) {
+      var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      var installRoot = GetPropertyValue(cliArgs, "INSTALL_ROOT");
+      if (!string.IsNullOrWhiteSpace(installRoot)) {
+        var normalizedInstallRoot = NormalizeDirectoryPath(installRoot);
+        if (seen.Add(normalizedInstallRoot)) {
+          yield return normalizedInstallRoot;
+        }
+      }
+
+      foreach (var installedProduct in new[] {
+        GetInstalledVibepolloProduct(),
+        GetInstalledVibeshineProduct(),
+        GetInstalledSunshineProduct(),
+        GetInstalledApolloProduct()
+      }) {
+        if (installedProduct == null || string.IsNullOrWhiteSpace(installedProduct.InstallLocation)) {
+          continue;
+        }
+
+        var normalizedInstallLocation = NormalizeDirectoryPath(installedProduct.InstallLocation);
+        if (seen.Add(normalizedInstallLocation)) {
+          yield return normalizedInstallLocation;
+        }
+      }
+
+      var defaultInstallDirectory = DefaultInstallDirectory;
+      if (seen.Add(defaultInstallDirectory)) {
+        yield return defaultInstallDirectory;
       }
     }
 
@@ -5756,6 +5821,20 @@ namespace VibepolloInstaller {
       }
 
       return string.Empty;
+    }
+
+    private static string GetPropertyValue(List<string> args, string propertyName) {
+      if (args == null || string.IsNullOrWhiteSpace(propertyName)) {
+        return string.Empty;
+      }
+
+      var prefix = propertyName + "=";
+      var argument = args.FirstOrDefault(arg => arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+      if (string.IsNullOrWhiteSpace(argument)) {
+        return string.Empty;
+      }
+
+      return argument.Substring(prefix.Length).Trim().Trim('"');
     }
 
     private static bool HasLogSwitch(List<string> args) {
