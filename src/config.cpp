@@ -1028,6 +1028,14 @@ namespace config {
     return result;
   }
 
+  std::string normalize_config_key(std::string key) {
+    const auto first_ascii = std::find_if(key.begin(), key.end(), [](unsigned char ch) {
+      return std::isalnum(ch) || ch == '_';
+    });
+    key.erase(key.begin(), first_ascii);
+    return key;
+  }
+
   template<class It>
   It skip_list(It skipper, It end) {
     int stack = 1;
@@ -1102,6 +1110,11 @@ namespace config {
       }
 
       if (!var) {
+        continue;
+      }
+
+      var->first = normalize_config_key(std::move(var->first));
+      if (var->first.empty()) {
         continue;
       }
 

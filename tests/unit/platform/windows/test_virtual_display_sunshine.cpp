@@ -109,6 +109,26 @@ TEST(SunshineVirtualDisplay, TemporaryCreationDoesNotPersistSessionGuidAsSharedI
   EXPECT_EQ(source.find("write_guid_to_state_locked(requested_uuid)"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
+  const auto rtsp_source = read_source("src/nvhttp.cpp");
+  expect_contains(
+    rtsp_source,
+    "resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name, false)"
+  );
+
+  const auto webrtc_source = read_source("src/webrtc_stream.cpp");
+  expect_contains(
+    webrtc_source,
+    "resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name, false)"
+  );
+}
+
+TEST(SunshineVirtualDisplay, ResolverCanDisableGenericFallback) {
+  const auto source = read_virtual_display_source();
+
+  expect_contains(source, "No exact virtual display match found and generic fallback is disabled.");
+}
+
 TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {
   EXPECT_TRUE(VDISPLAY::is_sunshine_virtual_display_identity(
     "\\\\?\\DISPLAY#SunshineVirtualDisplay#5&1",

@@ -3845,7 +3845,8 @@ namespace VDISPLAY_SUDOVDA {
 
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(
     const std::string &preferred_output_identifier,
-    const std::string &client_name
+    const std::string &client_name,
+    bool allow_any_fallback
   ) {
     BOOST_LOG(debug) << "Resolving active virtual display device_id from preferred_output='"
                      << preferred_output_identifier << "' client_name='" << client_name << "'.";
@@ -3935,6 +3936,10 @@ namespace VDISPLAY_SUDOVDA {
     if (client_match) {
       BOOST_LOG(debug) << "Resolved inactive virtual display fallback by client name: device_id='" << *client_match << "'.";
       return client_match;
+    }
+    if (!allow_any_fallback) {
+      BOOST_LOG(debug) << "No exact virtual display match found and generic fallback is disabled.";
+      return std::nullopt;
     }
     if (active_any_match) {
       BOOST_LOG(debug) << "Resolved active virtual display fallback: device_id='" << *active_any_match << "'.";

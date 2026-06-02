@@ -248,7 +248,7 @@ namespace webrtc_stream {
       if (!allow_display_changes) {
         if (request_virtual_display) {
           if (auto existing_device =
-                VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name)) {
+                VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name, false)) {
             session->virtual_display = true;
             session->virtual_display_failed = false;
             session->virtual_display_device_id = *existing_device;
