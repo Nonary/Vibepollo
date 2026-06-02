@@ -34,6 +34,8 @@
 namespace platf::dxgi {
   namespace {
     constexpr auto kRecentDesktopSwitchGrace = std::chrono::seconds(3);
+    constexpr auto kHelperHandleWaitTimeout = std::chrono::seconds(15);
+    constexpr auto kHelperHandleProgressInterval = std::chrono::seconds(3);
     constexpr std::int64_t kWgcMinUpdateInterval100ns = 10000;  // 1 ms
     constexpr uint32_t kWgcLatencyInitialBufferSize = 2;
     std::atomic<std::int64_t> g_last_wgc_desktop_switch_us {0};
@@ -337,11 +339,14 @@ namespace platf::dxgi {
       return;
     }
 
-    constexpr auto handle_wait_timeout = std::chrono::seconds(3);
-    auto deadline = std::chrono::steady_clock::now() + handle_wait_timeout;
+    const auto handle_wait_start = std::chrono::steady_clock::now();
+    auto deadline = handle_wait_start + kHelperHandleWaitTimeout;
+    auto next_progress_log = handle_wait_start + kHelperHandleProgressInterval;
     std::array<uint8_t, sizeof(shared_handle_data_t)> control_buffer {};
     bool handle_received = false;
     bool timed_out_waiting = false;
+    bool helper_exited = false;
+    DWORD helper_exit_code = 0;
 
     while (!handle_received) {
       auto now = std::chrono::steady_clock::now();
@@ -350,11 +355,31 @@ namespace platf::dxgi {
         break;
       }
 
+      if (HANDLE helper_process = _process_helper ? _process_helper->get_process_handle() : nullptr) {
+        const DWORD wait_result = WaitForSingleObject(helper_process, 0);
+        if (wait_result == WAIT_OBJECT_0) {
+          helper_exited = true;
+          GetExitCodeProcess(helper_process, &helper_exit_code);
+          break;
+        }
+      }
+
+      if (now >= next_progress_log) {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - handle_wait_start).count();
+        BOOST_LOG(warning) << "Still waiting for WGC helper shared handles after " << elapsed_ms
+                           << "ms; helper startup may be delayed by system load.";
+        next_progress_log = now + kHelperHandleProgressInterval;
+      }
+
       const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
       const int wait_ms = std::max(1, static_cast<int>(remaining.count()));
 
       size_t bytes_read = 0;
-      auto result = control_pipe->receive(std::span<uint8_t>(control_buffer.data(), control_buffer.size()), bytes_read, wait_ms);
+      auto result = control_pipe->receive(
+        std::span<uint8_t>(control_buffer.data(), control_buffer.size()),
+        bytes_read,
+        std::min(wait_ms, 250)
+      );
 
       if (result == PipeResult::Success) {
         if (bytes_read == sizeof(shared_handle_data_t)) {
@@ -382,10 +407,14 @@ namespace platf::dxgi {
     }
 
     if (!handle_received) {
-      if (timed_out_waiting) {
-        BOOST_LOG(error) << "Timed out waiting for handle data from helper process (3s)";
+      if (helper_exited) {
+        BOOST_LOG(error) << "WGC helper exited before sending shared handle data (exit_code=" << helper_exit_code << ')';
       }
-      BOOST_LOG(error) << "Failed to receive handle data from helper process! Helper is likely deadlocked!";
+      if (timed_out_waiting) {
+        BOOST_LOG(error) << "Timed out waiting for handle data from helper process ("
+                         << std::chrono::duration_cast<std::chrono::seconds>(kHelperHandleWaitTimeout).count() << "s)";
+      }
+      BOOST_LOG(error) << "Failed to receive handle data from WGC helper process.";
       _process_helper->terminate();
       return;
     }
@@ -742,6 +771,10 @@ namespace platf::dxgi {
 
   void ipc_session_t::stop_helper_process() {
     if (!_process_helper) {
+      return;
+    }
+
+    if (!_process_helper->get_process_handle()) {
       return;
     }
 

@@ -1062,7 +1062,9 @@ private:
   std::chrono::steady_clock::time_point _last_quiet_start = std::chrono::steady_clock::now();  ///< Last time frame processing became quiet
   std::chrono::steady_clock::time_point _last_buffer_check = std::chrono::steady_clock::now();  ///< Last time buffer size was checked
   std::atomic<uint64_t> _drained_pool_frames {0};
+  std::atomic<uint64_t> _slow_context_waits {0};
   std::atomic<uint64_t> _slow_mutex_waits {0};
+  std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
   std::mutex _delivery_mutex;
@@ -1632,6 +1634,14 @@ private:
       return;
     }
 
+    // Take the helper-local D3D context lock before the cross-process keyed
+    // mutex. The callback thread also uses this context for scratch copies; if
+    // GPU load makes that copy slow, waiting here must not block Sunshine from
+    // acquiring the shared WGC texture.
+    const auto context_wait_start = std::chrono::steady_clock::now();
+    std::unique_lock context_lock(_d3d_context_mutex);
+    const auto context_wait = std::chrono::steady_clock::now() - context_wait_start;
+
     const auto mutex_wait_start = std::chrono::steady_clock::now();
     HRESULT hr = _deps->resource_manager.get_keyed_mutex()->AcquireSync(0, 200);
     const auto mutex_wait = std::chrono::steady_clock::now() - mutex_wait_start;
@@ -1651,13 +1661,18 @@ private:
       BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
     }
 
+    const auto shared_mutex_hold_start = std::chrono::steady_clock::now();
+    auto release_shared_mutex = util::fail_guard([&]() {
+      const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
+      if (FAILED(rel_hr)) {
+        BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", rel_hr);
+      }
+    });
+
     // Copy frame data while holding the keyed mutex. The main process acquires
     // the same mutex before snapshotting this shared texture into a pool-owned frame.
     const auto copy_start = std::chrono::steady_clock::now();
-    {
-      std::lock_guard context_lock(_d3d_context_mutex);
-      _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
-    }
+    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
     const auto copy_submit = std::chrono::steady_clock::now() - copy_start;
 
     // Publish the metadata while still holding the shared keyed mutex so the
@@ -1665,29 +1680,44 @@ private:
     _deps->resource_manager.publish_frame_metadata(frame_qpc);
 
     const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
+    release_shared_mutex.disable();
     if (FAILED(rel_hr)) {
       BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", rel_hr);
       return;
     }
+    const auto shared_mutex_hold = std::chrono::steady_clock::now() - shared_mutex_hold_start;
+    context_lock.unlock();
 
     // Signal only after releasing the mutex so a woken consumer can acquire the
     // frame without waiting on the producer's normal release path.
     _deps->resource_manager.signal_frame_ready();
     _published_frames.fetch_add(1, std::memory_order_relaxed);
 
+    const auto context_wait_ms = std::chrono::duration<double, std::milli>(context_wait).count();
     const auto mutex_wait_ms = std::chrono::duration<double, std::milli>(mutex_wait).count();
+    const auto shared_mutex_hold_ms = std::chrono::duration<double, std::milli>(shared_mutex_hold).count();
     const auto copy_submit_ms = std::chrono::duration<double, std::milli>(copy_submit).count();
+    const bool slow_context = context_wait_ms > 1.0;
     const bool slow_mutex = mutex_wait_ms > 1.0;
+    const bool slow_shared_hold = shared_mutex_hold_ms > 1.0;
     const bool slow_copy = copy_submit_ms > 1.0;
-    if (slow_mutex || slow_copy) {
+    if (slow_context || slow_mutex || slow_shared_hold || slow_copy) {
+      const auto slow_context_count = slow_context ? (_slow_context_waits.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_context_waits.load(std::memory_order_relaxed);
       const auto slow_mutex_count = slow_mutex ? (_slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_mutex_waits.load(std::memory_order_relaxed);
+      const auto slow_hold_count = slow_shared_hold ? (_slow_shared_mutex_holds.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_shared_mutex_holds.load(std::memory_order_relaxed);
       const auto slow_copy_count = slow_copy ? (_slow_copy_submissions.fetch_add(1, std::memory_order_relaxed) + 1) : _slow_copy_submissions.load(std::memory_order_relaxed);
+      const bool should_log_slow_context = slow_context && (slow_context_count <= 5 || slow_context_count % 120 == 0);
       const bool should_log_slow_mutex = slow_mutex && (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0);
+      const bool should_log_slow_hold = slow_shared_hold && (slow_hold_count <= 5 || slow_hold_count % 120 == 0);
       const bool should_log_slow_copy = slow_copy && (slow_copy_count <= 5 || slow_copy_count % 120 == 0);
-      if (should_log_slow_mutex || should_log_slow_copy) {
-        BOOST_LOG(debug) << "WGC helper copy timing: mutex_wait_ms=" << mutex_wait_ms
+      if (should_log_slow_context || should_log_slow_mutex || should_log_slow_hold || should_log_slow_copy) {
+        BOOST_LOG(debug) << "WGC helper copy timing: context_wait_ms=" << context_wait_ms
+                         << " mutex_wait_ms=" << mutex_wait_ms
+                         << " shared_mutex_hold_ms=" << shared_mutex_hold_ms
                          << " copy_submit_ms=" << copy_submit_ms
+                         << " slow_context_count=" << slow_context_count
                          << " slow_mutex_count=" << slow_mutex_count
+                         << " slow_shared_hold_count=" << slow_hold_count
                          << " slow_copy_count=" << slow_copy_count;
       }
     }

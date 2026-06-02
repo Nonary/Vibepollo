@@ -207,4 +207,22 @@ TEST(SunshineWgcCapture, HelperStartupAndStopAreBounded) {
   expect_contains(ipc_source, "WGC helper did not exit within 3000ms");
   expect_contains(process_header, "bool wait_for(DWORD &exit_code, DWORD timeout_ms);");
 }
+
+TEST(SunshineWgcCapture, HelperDoesNotHoldSharedMutexWhileWaitingForLocalD3DContext) {
+  const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
+
+  const auto function_start = helper_source.find("void copy_frame_to_shared_texture(");
+  ASSERT_NE(function_start, std::string::npos);
+
+  const auto context_lock = helper_source.find("std::unique_lock context_lock(_d3d_context_mutex);", function_start);
+  const auto shared_mutex = helper_source.find("get_keyed_mutex()->AcquireSync(0, 200)", function_start);
+  ASSERT_NE(context_lock, std::string::npos);
+  ASSERT_NE(shared_mutex, std::string::npos);
+  EXPECT_LT(context_lock, shared_mutex);
+
+  expect_contains(helper_source, "context_wait_ms=");
+  expect_contains(helper_source, "shared_mutex_hold_ms=");
+  expect_contains(helper_source, "slow_context_count=");
+  expect_contains(helper_source, "slow_shared_hold_count=");
+}
 #endif
