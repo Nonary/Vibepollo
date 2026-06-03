@@ -1032,6 +1032,7 @@ namespace {
     if (config::video.dd.always_restore_from_golden) {
       j["sunshine_always_restore_from_golden"] = true;
     }
+    j["sunshine_restore_on_disconnect"] = config::video.dd.config_revert_on_disconnect;
 
     return j.dump();
   }

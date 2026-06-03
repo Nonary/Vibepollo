@@ -2347,6 +2347,9 @@ namespace {
     std::atomic<bool> always_restore_from_golden {false};
     // When true, prefer golden over previous only when current is unavailable.
     std::atomic<bool> prefer_golden_if_current_missing {true};
+    // Set by APPLY. When false, a broken Sunshine IPC connection should not
+    // autonomously restore because the stream is intentionally pause-retained.
+    std::atomic<bool> restore_on_disconnect {true};
 
     // Polling-based restore loop state (replaces topology-change-triggered retries)
     std::jthread restore_poll_thread;
@@ -4989,6 +4992,12 @@ namespace {
           state.always_restore_from_golden.store(j["sunshine_always_restore_from_golden"].get<bool>(), std::memory_order_release);
           j.erase("sunshine_always_restore_from_golden");
         }
+        if (j.contains("sunshine_restore_on_disconnect") && j["sunshine_restore_on_disconnect"].is_boolean()) {
+          state.restore_on_disconnect.store(j["sunshine_restore_on_disconnect"].get<bool>(), std::memory_order_release);
+          j.erase("sunshine_restore_on_disconnect");
+        } else {
+          state.restore_on_disconnect.store(true, std::memory_order_release);
+        }
         if (j.contains("sunshine_device_refresh_rate_overrides") && j["sunshine_device_refresh_rate_overrides"].is_object()) {
           for (auto it = j["sunshine_device_refresh_rate_overrides"].begin(); it != j["sunshine_device_refresh_rate_overrides"].end(); ++it) {
             const auto &node = it.value();
@@ -5193,6 +5202,17 @@ namespace {
                                       state.exit_after_revert.load(std::memory_order_acquire);
     if (!potentially_modified) {
       state.restore_requested.store(false, std::memory_order_release);
+      running.store(false, std::memory_order_release);
+      return;
+    }
+
+    const bool explicit_restore_pending =
+      state.exit_after_revert.load(std::memory_order_acquire) ||
+      state.direct_revert_bypass_grace.load(std::memory_order_acquire) ||
+      state.restore_requested.load(std::memory_order_acquire);
+    if (!state.restore_on_disconnect.load(std::memory_order_acquire) && !explicit_restore_pending) {
+      BOOST_LOG(info) << "Client disconnected with restore-on-disconnect disabled; disarming restore state.";
+      state.disarm_restore_requests("Restore-on-disconnect disabled after client disconnect");
       running.store(false, std::memory_order_release);
       return;
     }
