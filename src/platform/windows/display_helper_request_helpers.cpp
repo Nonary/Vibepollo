@@ -186,6 +186,16 @@ namespace display_helper_integration::helpers {
       return value * 2;
     }
 
+    std::optional<int> positive_dimension_to_int(unsigned int value) {
+      if (value == 0) {
+        return std::nullopt;
+      }
+      return static_cast<int>(std::min<unsigned int>(
+        value,
+        static_cast<unsigned int>(std::numeric_limits<int>::max())
+      ));
+    }
+
     double get_refresh_rate_value(const display_device::FloatingPoint &value) {
       return std::visit(
         [](const auto &v) -> double {
@@ -234,6 +244,15 @@ namespace display_helper_integration::helpers {
         !effective_video_config_.output_name.empty()) {
       effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
     }
+  }
+
+  std::optional<display_device::Resolution> SessionDisplayConfigurationHelper::initial_virtual_display_resolution() const {
+    const auto parsed = display_device::parse_configuration(effective_video_config_, session_);
+    const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
+    if (!cfg || !cfg->m_resolution || cfg->m_resolution->m_width == 0 || cfg->m_resolution->m_height == 0) {
+      return std::nullopt;
+    }
+    return cfg->m_resolution;
   }
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
@@ -352,10 +371,14 @@ namespace display_helper_integration::helpers {
     auto &overrides = builder.mutable_session_overrides();
     overrides.device_id_override = target_device_id.empty() ? std::nullopt : std::optional<std::string>(target_device_id);
     overrides.virtual_display_override = true;
-    if (effective_width > 0) {
+    if (vd_cfg.m_resolution) {
+      overrides.width_override = positive_dimension_to_int(vd_cfg.m_resolution->m_width);
+      overrides.height_override = positive_dimension_to_int(vd_cfg.m_resolution->m_height);
+    }
+    if (!overrides.width_override && effective_width > 0) {
       overrides.width_override = effective_width;
     }
-    if (effective_height > 0) {
+    if (!overrides.height_override && effective_height > 0) {
       overrides.height_override = effective_height;
     }
     if (display_fps > 0) {

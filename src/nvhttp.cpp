@@ -500,6 +500,13 @@ namespace nvhttp {
 
           uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
           uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
+          display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *launch_session);
+          if (auto initial_resolution = initial_display_helper.initial_virtual_display_resolution()) {
+            vd_width = initial_resolution->m_width;
+            vd_height = initial_resolution->m_height;
+            BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
+                            << vd_width << 'x' << vd_height;
+          }
           uint32_t base_vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
           uint32_t base_vd_fps_millihz = base_vd_fps;
           if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {

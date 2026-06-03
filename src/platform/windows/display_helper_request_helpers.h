@@ -19,6 +19,11 @@ namespace display_helper_integration::helpers {
     SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
 
     /**
+     * @brief Resolve the display configuration resolution that should be used when creating a virtual display.
+     */
+    [[nodiscard]] std::optional<display_device::Resolution> initial_virtual_display_resolution() const;
+
+    /**
      * @brief Populate the provided builder with configuration data.
      * @return True if a request should be dispatched; false if configuration parsing failed.
      */

@@ -127,3 +127,43 @@ TEST(DisplayHelperRequestHelpers, SkipsPhysicalOutputWhenDisplayConfigurationDis
 
   EXPECT_FALSE(request.has_value());
 }
+
+TEST(DisplayHelperRequestHelpers, UsesRemappedVirtualDisplayResolutionForSessionOverrides) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
+  video_config.dd.resolution_option = config::video_t::dd_t::resolution_option_e::automatic;
+  video_config.dd.refresh_rate_option = config::video_t::dd_t::refresh_rate_option_e::automatic;
+  video_config.dd.mode_remapping.mixed = {
+    {
+      .requested_resolution = "2560x1440",
+      .requested_fps = "",
+      .final_resolution = "3840x2160",
+      .final_refresh_rate = ""
+    }
+  };
+
+  rtsp_stream::launch_session_t session {};
+  session.virtual_display = true;
+  session.virtual_display_device_id = "{virtual-device}";
+  session.width = 2560;
+  session.height = 1440;
+  session.fps = 120;
+
+  display_helper_integration::helpers::SessionDisplayConfigurationHelper helper(video_config, session);
+  auto initial_resolution = helper.initial_virtual_display_resolution();
+  ASSERT_TRUE(initial_resolution.has_value());
+  EXPECT_EQ(initial_resolution->m_width, 3840);
+  EXPECT_EQ(initial_resolution->m_height, 2160);
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  ASSERT_TRUE(request.has_value());
+  ASSERT_TRUE(request->session_overrides.width_override.has_value());
+  ASSERT_TRUE(request->session_overrides.height_override.has_value());
+  EXPECT_EQ(*request->session_overrides.width_override, 3840);
+  EXPECT_EQ(*request->session_overrides.height_override, 2160);
+  ASSERT_TRUE(request->configuration.has_value());
+  ASSERT_TRUE(request->configuration->m_resolution.has_value());
+  EXPECT_EQ(request->configuration->m_resolution->m_width, 3840);
+  EXPECT_EQ(request->configuration->m_resolution->m_height, 2160);
+}
