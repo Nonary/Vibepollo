@@ -172,11 +172,14 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   );
 }
 
-TEST(SunshineVirtualDisplayPackaging, CmakePassesPrebuiltDriverPackageToRefreshScript) {
+TEST(SunshineVirtualDisplayPackaging, CmakeUsesPrebuiltDriverPackageOnlyInGithubActions) {
   const auto cmake = read_source_file("cmake/packaging/windows.cmake");
 
   expect_contains(cmake, "SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR");
-  expect_contains(cmake, "-PrebuiltPackageDir \"${SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR}\"");
+  expect_contains(cmake, "SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR");
+  expect_contains(cmake, "NOT \"$ENV{GITHUB_ACTIONS}\" STREQUAL \"true\"");
+  expect_contains(cmake, "Ignoring SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR outside GitHub Actions");
+  expect_contains(cmake, "-PrebuiltPackageDir \"${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}\"");
 }
 
 TEST(SunshineVirtualDisplayPackaging, WindowsCiCanSelfSignDriverWithoutPersistentSecret) {
