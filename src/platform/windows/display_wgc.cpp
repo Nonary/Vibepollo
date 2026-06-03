@@ -29,7 +29,6 @@ namespace platf::dxgi {
   namespace {
     struct wgc_dxgi_fallback_state_t {
       bool secure_desktop_active;
-      bool default_input_desktop_inactive;
       bool recent_desktop_switch;
     };
 
@@ -57,11 +56,10 @@ namespace platf::dxgi {
     std::optional<wgc_dxgi_fallback_state_t> get_wgc_dxgi_fallback_state() {
       wgc_dxgi_fallback_state_t state {
         .secure_desktop_active = platf::dxgi::is_secure_desktop_active(),
-        .default_input_desktop_inactive = !platf::is_default_input_desktop_active(),
         .recent_desktop_switch = recent_wgc_desktop_switch_grace_active()
       };
 
-      if (!state.secure_desktop_active && !state.default_input_desktop_inactive && !state.recent_desktop_switch) {
+      if (!state.secure_desktop_active && !state.recent_desktop_switch) {
         return std::nullopt;
       }
 
@@ -74,24 +72,10 @@ namespace platf::dxgi {
                          << "using DXGI fallback for WGC capture (" << path_name << ")";
       } else if (state.secure_desktop_active) {
         BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (" << path_name << ")";
-      } else if (state.default_input_desktop_inactive && state.recent_desktop_switch) {
-        BOOST_LOG(debug) << "Default input desktop is inactive and the desktop-switch grace window is active; "
-                         << "using DXGI fallback for WGC capture (" << path_name << ")";
-      } else if (state.default_input_desktop_inactive) {
-        BOOST_LOG(debug) << "Default input desktop is inactive, using DXGI fallback for WGC capture (" << path_name << ")";
       } else {
         BOOST_LOG(debug) << "Recent desktop switch grace window active, using DXGI fallback for WGC capture ("
                          << path_name << ")";
       }
-    }
-
-    bool should_reinit_wgc_for_dxgi_fallback(const char *path_name) {
-      if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
-        log_wgc_dxgi_fallback_reason(path_name, *fallback_state);
-        return true;
-      }
-
-      return false;
     }
 
     std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout) {
@@ -167,10 +151,6 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    if (should_reinit_wgc_for_dxgi_fallback("VRAM")) {
-      return capture_e::reinit;
-    }
-
     // Generally this only becomes true if the helper process has crashed or is otherwise not responding.
     if (_ipc_session->should_reinit()) {
       return capture_e::reinit;
@@ -186,10 +166,6 @@ namespace platf::dxgi {
 
     auto capture_status = _ipc_session->wait_for_frame(timeout);
     if (capture_status != capture_e::ok) {
-      if (capture_status == capture_e::timeout && should_reinit_wgc_for_dxgi_fallback("VRAM timeout")) {
-        return capture_e::reinit;
-      }
-
       if (forward_cached_wgcc_frame(capture_status, last_cached_frame, img_out)) {
         return capture_e::ok;
       }
@@ -410,10 +386,6 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    if (should_reinit_wgc_for_dxgi_fallback("RAM")) {
-      return capture_e::reinit;
-    }
-
     // If the helper process crashed or was terminated forcefully by the user, we will re-initialize it.
     if (_ipc_session->should_reinit()) {
       return capture_e::reinit;
@@ -431,10 +403,6 @@ namespace platf::dxgi {
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
-      if (status == capture_e::timeout && should_reinit_wgc_for_dxgi_fallback("RAM timeout")) {
-        return capture_e::reinit;
-      }
-
       if (forward_cached_wgcc_frame(status, last_cached_frame, img_out)) {
         return capture_e::ok;
       }
@@ -587,7 +555,8 @@ namespace platf::dxgi {
     // Check periodically if secure desktop is still active
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      if (!get_wgc_dxgi_fallback_state()) {
+      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
+      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
@@ -601,7 +570,8 @@ namespace platf::dxgi {
     // Check periodically if secure desktop is still active
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      if (!get_wgc_dxgi_fallback_state()) {
+      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
+      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
