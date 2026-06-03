@@ -129,6 +129,32 @@ TEST(SunshineVirtualDisplay, ResolverCanDisableGenericFallback) {
   expect_contains(source, "No exact virtual display match found and generic fallback is disabled.");
 }
 
+TEST(SunshineVirtualDisplay, StreamStartRemovesRetainedProbeDisplayRegardlessOfStreamGuid) {
+  const auto source = read_virtual_display_source();
+
+  const auto cleanup_pos = source.find("void release_retained_ensure_display_for_stream");
+  ASSERT_NE(cleanup_pos, std::string::npos);
+  const auto cleanup_body = source.substr(cleanup_pos, source.find("bool adopt_existing_driver_lease", cleanup_pos) - cleanup_pos);
+
+  expect_contains(cleanup_body, "if (g_ensure_display_retained)");
+  expect_contains(cleanup_body, "resolve_virtual_display_name_from_devices_for_client(\"Sunshine Temporary\")");
+  expect_contains(cleanup_body, "Removing encoder-probe virtual display before creating stream display");
+  EXPECT_EQ(cleanup_body.find("!guid_equal(g_ensure_display_guid, guid)"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplay, StreamReadinessDoesNotAcceptInactiveCandidates) {
+  const auto source = read_virtual_display_source();
+
+  const auto wait_pos = source.find("bool wait_for_virtual_display_ready(");
+  ASSERT_NE(wait_pos, std::string::npos);
+  const auto wait_body = source.substr(wait_pos, source.find("bool wait_for_virtual_display_teardown", wait_pos) - wait_pos);
+
+  expect_contains(wait_body, "bool allow_inactive_success = false");
+  expect_contains(wait_body, "if (allow_inactive_success && enumerated_at && now - *enumerated_at >= activation_grace)");
+  expect_contains(source, "wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, allow_pending_enumeration)");
+  expect_contains(source, "wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, allow_pending_enumeration)");
+}
+
 TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {
   EXPECT_TRUE(VDISPLAY::is_sunshine_virtual_display_identity(
     "\\\\?\\DISPLAY#SunshineVirtualDisplay#5&1",

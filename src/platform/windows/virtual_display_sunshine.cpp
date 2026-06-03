@@ -1040,25 +1040,36 @@ namespace VDISPLAY_SUNSHINE {
       }
     }
 
+    std::optional<std::wstring> resolve_virtual_display_name_from_devices_for_client(const char *client_name);
+
     void release_retained_ensure_display_for_stream(const GUID &guid, const char *client_uid) {
       if (is_ensure_display_client(client_uid)) {
         return;
       }
 
-      GUID guid_to_remove {};
+      GUID guid_to_remove = uuid_to_guid(persistentVirtualDisplayUuid());
+      bool should_remove = false;
       {
         std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-        if (!g_ensure_display_retained || !guid_equal(g_ensure_display_guid, guid)) {
-          return;
+        if (g_ensure_display_retained) {
+          guid_to_remove = g_ensure_display_guid;
+          g_ensure_display_retained = false;
+          g_ensure_display_failure_count = 0;
+          std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+          should_remove = true;
         }
-
-        guid_to_remove = g_ensure_display_guid;
-        g_ensure_display_retained = false;
-        g_ensure_display_failure_count = 0;
-        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
       }
 
-      BOOST_LOG(info) << "Removing retained encoder-probe virtual display before creating the stream display.";
+      if (!should_remove && resolve_virtual_display_name_from_devices_for_client("Sunshine Temporary")) {
+        should_remove = true;
+      }
+
+      if (!should_remove) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Removing encoder-probe virtual display before creating stream display guid="
+                      << guid_to_uuid(guid).string() << '.';
       if (!removeVirtualDisplay(guid_to_remove)) {
         BOOST_LOG(warning) << "Failed to remove retained encoder-probe virtual display before stream creation.";
       }
@@ -3692,7 +3703,8 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<std::string> &device_id,
     uint32_t width,
     uint32_t height,
-    const DisplayConfigIdentity *display_config_identity = nullptr
+    const DisplayConfigIdentity *display_config_identity = nullptr,
+    bool allow_inactive_success = false
   ) {
     std::optional<std::string> normalized_name;
     if (display_name && !display_name->empty()) {
@@ -3728,7 +3740,7 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate virtual display.";
         return false;
       }
-      if (enumerated_at && now - *enumerated_at >= activation_grace) {
+      if (allow_inactive_success && enumerated_at && now - *enumerated_at >= activation_grace) {
         BOOST_LOG(debug) << "Virtual display was enumerated before final mode details settled; continuing so the display helper can apply the session mode.";
         return true;
       }
@@ -3762,7 +3774,7 @@ namespace VDISPLAY_SUNSHINE {
           return false;
         }
 
-        if (enumerated_at && now - *enumerated_at >= activation_grace) {
+        if (allow_inactive_success && enumerated_at && now - *enumerated_at >= activation_grace) {
           return true;
         }
 
@@ -4068,7 +4080,7 @@ namespace VDISPLAY_SUNSHINE {
                            << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
                            << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
           std::optional<std::wstring> display_name = reuse_name;
-          if (wait_for_virtual_display_ready(display_name, device_id, width, height)) {
+          if (wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, allow_pending_enumeration)) {
             if (display_name) {
               wprintf(
                 L"[SunshineVirtualDisplay] Reusing existing virtual display (error=%lu): %ls\n",
@@ -4179,7 +4191,7 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(debug) << "Sunshine temporary display created before Windows exposed a target-specific display identity; waiting for virtual display enumeration.";
       }
 
-      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
+      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, allow_pending_enumeration)) {
         if (allow_pending_enumeration) {
           BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
 
