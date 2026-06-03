@@ -159,9 +159,14 @@ namespace stream {
   namespace {
     std::atomic_uint64_t g_paused_display_cleanup_generation {0};
 
-    void schedule_paused_display_cleanup(std::chrono::seconds timeout, std::string reason, bool enforce_display_restore) {
+    void schedule_paused_display_cleanup(
+      std::chrono::seconds timeout,
+      std::string reason,
+      bool enforce_display_restore,
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
+    ) {
       const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore]() {
+      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore, virtual_display_guid_bytes]() {
         std::this_thread::sleep_for(timeout);
 
         if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
@@ -178,7 +183,13 @@ namespace stream {
 
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
                         << reason << ").";
-        const auto cleanup = platf::virtual_display_cleanup::run("paused_session_timeout", enforce_display_restore);
+        const auto cleanup = platf::virtual_display_cleanup::run(
+          "paused_session_timeout",
+          enforce_display_restore,
+          platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
+          true,
+          virtual_display_guid_bytes
+        );
         if (cleanup.helper_revert_dispatched) {
           display_helper_integration::stop_watchdog();
         }
@@ -2590,13 +2601,24 @@ namespace stream {
         } else if (delay_virtual_display_cleanup_due_to_pause) {
           BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
                           << "scheduling virtual display removal without display restore in " << paused_timeout_secs << "s.";
-          schedule_paused_display_cleanup(std::chrono::seconds(paused_timeout_secs), "rtsp_session_paused", false);
+          schedule_paused_display_cleanup(
+            std::chrono::seconds(paused_timeout_secs),
+            "rtsp_session_paused",
+            false,
+            session.virtual_display.guid_bytes
+          );
         } else if (keep_virtual_display_due_to_pause) {
           BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false, paused timeout disabled).";
         } else {
           g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
           const auto cleanup_reason = is_paused && !revert_display_config ? "rtsp_session_paused" : "rtsp_session_end";
-          const auto cleanup = platf::virtual_display_cleanup::run(cleanup_reason, revert_display_config);
+          const auto cleanup = platf::virtual_display_cleanup::run(
+            cleanup_reason,
+            revert_display_config,
+            platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
+            true,
+            session.virtual_display.guid_bytes
+          );
           if (cleanup.helper_revert_dispatched) {
             // If we reverted the display configuration, the helper watchdog is no longer needed.
             display_helper_integration::stop_watchdog();

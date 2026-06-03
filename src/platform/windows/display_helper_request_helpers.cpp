@@ -119,20 +119,30 @@ namespace display_helper_integration::helpers {
     }
 
     std::optional<std::string> resolve_virtual_device_id(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
-      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session.virtual_display_device_id, session.client_name)) {
+      if (!session.virtual_display_device_id.empty()) {
+        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session.virtual_display_device_id, session.client_name, false)) {
+          return resolved;
+        }
+      }
+
+      if (!session.client_name.empty()) {
+        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(std::string {}, session.client_name, false)) {
+          return resolved;
+        }
+      }
+
+      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(video_config.output_name, session.client_name, false)) {
         return resolved;
       }
 
-      if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
-        return resolved;
-      }
-
-      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(video_config.output_name, session.client_name)) {
-        return resolved;
-      }
-
-      if (!video_config.output_name.empty()) {
+      if (!video_config.output_name.empty() && !output_name_targets_virtual(video_config.output_name)) {
         return video_config.output_name;
+      }
+
+      if (session.client_name.empty()) {
+        if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
+          return resolved;
+        }
       }
 
       return std::nullopt;

@@ -8,7 +8,9 @@
   #include "src/platform/windows/virtual_display.h"
 
   #include <algorithm>
+  #include <array>
   #include <chrono>
+  #include <cstring>
   #include <display_device/windows/win_api_layer.h>
   #include <display_device/windows/win_display_device.h>
   #include <exception>
@@ -73,13 +75,31 @@ namespace platf::virtual_display_cleanup {
       }
       return false;
     }
+
+    bool guid_bytes_are_empty(const std::array<std::uint8_t, 16> &guid_bytes) {
+      return std::all_of(guid_bytes.begin(), guid_bytes.end(), [](std::uint8_t byte) {
+        return byte == 0;
+      });
+    }
+
+    bool remove_specific_virtual_display(const std::optional<std::array<std::uint8_t, 16>> &guid_bytes) {
+      if (!guid_bytes || guid_bytes_are_empty(*guid_bytes)) {
+        return true;
+      }
+
+      GUID guid {};
+      static_assert(sizeof(guid) == 16);
+      std::memcpy(&guid, guid_bytes->data(), sizeof(guid));
+      return VDISPLAY::removeVirtualDisplay(guid);
+    }
   }  // namespace
 
   cleanup_result_t run(
     const std::string_view reason,
     const bool enforce_db_restore,
     const revert_order_t revert_order,
-    const bool prefer_golden_if_current_missing
+    const bool prefer_golden_if_current_missing,
+    const std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes
   ) {
     cleanup_result_t result;
 
@@ -109,7 +129,9 @@ namespace platf::virtual_display_cleanup {
       try_helper_revert();
     }
 
-    result.virtual_displays_removed = VDISPLAY::removeAllVirtualDisplays();
+    const bool specific_display_removed = remove_specific_virtual_display(virtual_display_guid_bytes);
+    const bool tracked_displays_removed = VDISPLAY::removeAllVirtualDisplays();
+    result.virtual_displays_removed = specific_display_removed && tracked_displays_removed;
     const bool should_wait_for_teardown_before_restore =
       had_active_virtual_display &&
       enforce_db_restore &&

@@ -2,6 +2,9 @@
 
 #ifdef _WIN32
 
+  #include <array>
+  #include <cstdint>
+  #include <optional>
   #include <string_view>
 
 namespace platf::virtual_display_cleanup {
@@ -20,7 +23,8 @@ namespace platf::virtual_display_cleanup {
     std::string_view reason,
     bool enforce_db_restore = true,
     revert_order_t revert_order = revert_order_t::remove_before_restore,
-    bool prefer_golden_if_current_missing = true
+    bool prefer_golden_if_current_missing = true,
+    std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
   );
 }  // namespace platf::virtual_display_cleanup
 

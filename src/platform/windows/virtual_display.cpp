@@ -32,7 +32,8 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     bool hdr_requested,
-    bool allow_pending_enumeration
+    bool allow_pending_enumeration,
+    bool replace_existing
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
@@ -85,7 +86,8 @@ namespace VDISPLAY_SUDOVDA {
     const GUID &guid,
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
-    bool hdr_requested
+    bool hdr_requested,
+    bool replace_existing
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
@@ -170,12 +172,13 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
     bool hdr_requested,
-    bool allow_pending_enumeration
+    bool allow_pending_enumeration,
+    bool replace_existing
   ) {
     if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, hdr_requested, allow_pending_enumeration);
+      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, hdr_requested, allow_pending_enumeration, replace_existing);
     }
-    return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, hdr_requested);
+    return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, hdr_requested, replace_existing);
   }
 
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {

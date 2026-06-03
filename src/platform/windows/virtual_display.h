@@ -74,7 +74,8 @@ namespace VDISPLAY {
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
     bool hdr_requested = false,
-    bool allow_pending_enumeration = false
+    bool allow_pending_enumeration = false,
+    bool replace_existing = true
   );
 
   // Apply an HDR color profile to a physical output (best-effort).

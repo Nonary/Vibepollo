@@ -408,10 +408,9 @@ namespace nvhttp {
             return;
           }
 
-
           if (!no_active_sessions) {
             auto existing_device =
-              VDISPLAY::resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name);
+              VDISPLAY::resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name, false);
             if (existing_device) {
               launch_session->virtual_display = true;
               launch_session->virtual_display_failed = false;
@@ -463,7 +462,10 @@ namespace nvhttp {
             return generated;
           };
 
-          const bool shared_mode = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+          const auto effective_virtual_display_mode =
+            launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+          const bool shared_mode =
+            (effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
           uuid_util::uuid_t session_uuid;
           if (shared_mode) {
             session_uuid = ensure_shared_guid();
@@ -589,7 +591,9 @@ namespace nvhttp {
             virtual_display_guid,
             base_vd_fps_millihz,
             framegen_refresh_active,
-            launch_session->enable_hdr
+            launch_session->enable_hdr,
+            false,
+            !shared_mode
           );
           if (display_info) {
             launch_session->virtual_display = true;

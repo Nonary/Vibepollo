@@ -96,7 +96,8 @@ namespace VDISPLAY_SUDOVDA {
     const GUID &guid,
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
-    bool hdr_requested = false
+    bool hdr_requested = false,
+    bool replace_existing = true
   );
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
@@ -3334,7 +3335,8 @@ namespace VDISPLAY_SUDOVDA {
       uint32_t fps,
       const GUID &guid,
       uint32_t base_fps_millihz,
-      bool framegen_refresh_active
+      bool framegen_refresh_active,
+      bool replace_existing
     ) {
       if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
         return std::nullopt;
@@ -3360,6 +3362,13 @@ namespace VDISPLAY_SUDOVDA {
       if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
         const DWORD error_code = GetLastError();
         BOOST_LOG(warning) << "AddVirtualDisplay failed: error=" << error_code << " guid=" << requested_uuid.string();
+
+        if (replace_existing) {
+          BOOST_LOG(info) << "Virtual display create collided with existing state for guid="
+                          << requested_uuid.string() << "; removing it before retry instead of reusing it.";
+          (void) removeVirtualDisplay(guid);
+          return std::nullopt;
+        }
 
         auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
         if (!reuse_name) {
@@ -3414,7 +3423,11 @@ namespace VDISPLAY_SUDOVDA {
 
             // Prefer a real GDI display name (\\.\DISPLAYx) over a GUID-like placeholder when available.
             if ((!result.display_name || result.display_name->empty() || !is_gdi_display_name(*result.display_name))) {
-              if (auto gdi_name = resolve_virtual_display_name_from_devices()) {
+              auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
+              if (!gdi_name && (!s_client_name || std::strlen(s_client_name) == 0)) {
+                gdi_name = resolve_virtual_display_name_from_devices();
+              }
+              if (gdi_name) {
                 if (!gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
                   BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after reuse.";
                   result.display_name = gdi_name;
@@ -3473,7 +3486,7 @@ namespace VDISPLAY_SUDOVDA {
 
       if (!resolved_display_name) {
         resolved_display_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-        if (!resolved_display_name) {
+        if (!resolved_display_name && (!s_client_name || std::strlen(s_client_name) == 0)) {
           resolved_display_name = resolve_virtual_display_name_from_devices();
         }
       }
@@ -3504,7 +3517,7 @@ namespace VDISPLAY_SUDOVDA {
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
       if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
         auto gdi_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
-        if (!gdi_name) {
+        if (!gdi_name && (!s_client_name || std::strlen(s_client_name) == 0)) {
           gdi_name = resolve_virtual_display_name_from_devices();
         }
         if (gdi_name && !gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
@@ -3558,7 +3571,8 @@ namespace VDISPLAY_SUDOVDA {
     const GUID &guid,
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
-    bool hdr_requested
+    bool hdr_requested,
+    bool replace_existing
   ) {
     (void) hdr_requested;
     constexpr int kMaxInitializationAttempts = 3;
@@ -3581,7 +3595,8 @@ namespace VDISPLAY_SUDOVDA {
         fps,
         guid,
         base_fps_millihz,
-        framegen_refresh_active
+        framegen_refresh_active,
+        replace_existing
       );
       if (!result) {
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
@@ -3777,29 +3792,19 @@ namespace VDISPLAY_SUDOVDA {
       return std::nullopt;
     }
 
-    std::optional<std::string> fallback;
-    std::optional<std::string> active_fallback;
     for (const auto &device : *devices) {
-      if (is_virtual_display_device(device) && !device.m_device_id.empty()) {
-        if (!fallback) {
-          fallback = device.m_device_id;
-        }
-        if (!active_fallback && device.m_info) {
-          active_fallback = device.m_device_id;
-        }
+      if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
+        continue;
       }
 
-      const auto device_name = normalize_display_name(device.m_display_name);
-      if (!device_name.empty() && device_name == target && !device.m_device_id.empty()) {
+      const auto device_id = normalize_display_name(device.m_device_id);
+      const auto display_name = normalize_display_name(device.m_display_name);
+      const auto friendly_name = normalize_display_name(device.m_friendly_name);
+      if (device_id == target ||
+          (!display_name.empty() && display_name == target) ||
+          (!friendly_name.empty() && friendly_name == target)) {
         return device.m_device_id;
       }
-    }
-
-    if (active_fallback) {
-      return active_fallback;
-    }
-    if (fallback) {
-      return fallback;
     }
 
     return std::nullopt;
@@ -4213,6 +4218,7 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
     60000u,
     result.temporary_guid,
     60000u,
+    false,
     false,
     false
   );
