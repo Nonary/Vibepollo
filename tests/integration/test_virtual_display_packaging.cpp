@@ -351,6 +351,39 @@ TEST(SunshineVirtualDisplayPackaging, SunshineDriverGeneratesProtocolValidLeaseI
   expect_contains(generator, "rng() | sunshine_driver::kMinOpaqueLeaseId");
 }
 
+TEST(SunshineVirtualDisplayPackaging, SunshineDriverReopensStaleControlTransportForLeaseFeeding) {
+  const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
+
+  const auto closePos = sunshineDriver.find("void closeVDisplayDevice() {");
+  ASSERT_NE(closePos, std::string::npos);
+  const auto closeBody = sunshineDriver.substr(closePos, sunshineDriver.find("void ensureVirtualDisplayRegistryDefaults", closePos) - closePos);
+  expect_contains(closeBody, "setWatchdogFeedingEnabled(false);");
+  expect_contains(closeBody, "g_watchdog_grace_deadline_ns.store(0, std::memory_order_release);");
+  expect_contains(closeBody, "VIRTUAL_DISPLAY_DRIVER_TRANSPORT.reset();");
+  EXPECT_EQ(closeBody.find("!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()"), std::string::npos);
+
+  expect_contains(sunshineDriver, "bool ensure_control_transport_responsive(std::string_view operation)");
+  expect_contains(sunshineDriver, "driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())");
+  expect_contains(sunshineDriver, "ensure_control_transport_responsive(\"Sunshine virtual display lease feed\")");
+  expect_contains(sunshineDriver, "ensure_control_transport_responsive(\"Sunshine virtual display watchdog feed\")");
+  expect_contains(sunshineDriver, "log_control_failure(\"Sunshine virtual display lease feed\", fed.status, fed.native_error);");
+}
+
+TEST(SunshineVirtualDisplayPackaging, SunshineDriverKeepsTransportFailuresOutOfProtocolMismatchStatus) {
+  const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
+
+  const auto openPos = sunshineDriver.find("DRIVER_STATUS openVDisplayDevice() {");
+  ASSERT_NE(openPos, std::string::npos);
+  const auto openBody = sunshineDriver.substr(openPos, sunshineDriver.find("static bool ensure_driver_is_ready_impl", openPos) - openPos);
+
+  expect_contains(openBody, "const auto version = client.query_protocol_version();");
+  expect_contains(openBody, "log_control_failure(\"Sunshine virtual display protocol query\", version.status, version.native_error);");
+  expect_contains(openBody, "const bool incompatible_protocol = version.status == sunshine_driver::ControlStatus::ProtocolIncompatible;");
+  expect_contains(openBody, "const auto failed_status =");
+  expect_contains(openBody, "incompatible_protocol ? DRIVER_STATUS::VERSION_INCOMPATIBLE : DRIVER_STATUS::FAILED;");
+  expect_contains(openBody, "return failed_status;");
+}
+
 TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
   const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
 

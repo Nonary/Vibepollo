@@ -1064,6 +1064,72 @@ namespace VDISPLAY_SUNSHINE {
       }
     }
 
+    bool adopt_existing_driver_lease(
+      sunshine_driver::ControlClient &client,
+      const uuid_util::uuid_t &guid,
+      std::uint64_t display_id,
+      const std::optional<std::wstring> &display_name,
+      const std::optional<std::string> &device_id,
+      const std::optional<std::wstring> &monitor_device_path
+    ) {
+      const auto state = client.query_display_state();
+      if (!state.ok()) {
+        log_control_failure("Sunshine virtual display state query", state.status, state.native_error);
+        return false;
+      }
+
+      for (std::uint32_t i = 0; i < state.value.entry_count && i < sunshine_driver::kMaxDisplayStateEntries; ++i) {
+        const auto &entry = state.value.entries[i];
+        if (entry.kind != sunshine_driver::kDisplayStateKindTemporary || entry.display_id != display_id) {
+          continue;
+        }
+
+        if (entry.lease_id == 0) {
+          BOOST_LOG(warning) << "Sunshine virtual display reuse found display_id=" << display_id
+                             << " but the driver did not report a lease id.";
+          return false;
+        }
+
+        sunshine_driver::LeaseRequest lease {};
+        lease.lease_id = entry.lease_id;
+        lease.requested_timeout_ms = DRIVER_LEASE_TIMEOUT_MS;
+        const auto query = client.query_lease(lease);
+        if (!query.ok() || query.value.lease_exists == 0) {
+          if (!query.ok()) {
+            log_control_failure("Sunshine virtual display lease query", query.status, query.native_error);
+          }
+          BOOST_LOG(warning) << "Sunshine virtual display reuse found display_id=" << display_id
+                             << " with missing lease_id=" << entry.lease_id << '.';
+          return false;
+        }
+
+        const auto fed = client.feed_lease(lease);
+        if (!fed.ok()) {
+          log_control_failure("Sunshine virtual display lease feed during reuse", fed.status, fed.native_error);
+          return false;
+        }
+
+        driver_lease_tracker().put(
+          guid,
+          DriverLeaseInfo {
+            entry.display_id,
+            entry.lease_id,
+            display_name,
+            device_id,
+            monitor_device_path
+          }
+        );
+        (void) ensure_watchdog_thread_active_for_lease();
+        BOOST_LOG(info) << "Adopted existing Sunshine virtual display lease for guid=" << guid.string()
+                        << " display_id=" << entry.display_id << " lease_id=" << entry.lease_id << '.';
+        return true;
+      }
+
+      BOOST_LOG(warning) << "Sunshine virtual display reuse could not find display_id=" << display_id
+                         << " in driver state.";
+      return false;
+    }
+
     bool equals_ci(const std::string &lhs, const std::string &rhs) {
       if (lhs.size() != rhs.size()) {
         return false;
@@ -3205,14 +3271,35 @@ namespace VDISPLAY_SUNSHINE {
   void closeVDisplayDevice() {
     g_watchdog_stop_requested.store(true, std::memory_order_release);
     stop_watchdog_thread(true);
-    if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
-      setWatchdogFeedingEnabled(false);
-      return;
-    }
-
     setWatchdogFeedingEnabled(false);
     g_watchdog_grace_deadline_ns.store(0, std::memory_order_release);
     VIRTUAL_DISPLAY_DRIVER_TRANSPORT.reset();
+  }
+
+  bool ensure_control_transport_responsive(std::string_view operation) {
+    if (driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())) {
+      return true;
+    }
+
+    if (VIRTUAL_DISPLAY_DRIVER_TRANSPORT) {
+      BOOST_LOG(debug) << operation << ": cached Sunshine virtual display driver transport is not responsive; reopening.";
+      closeVDisplayDevice();
+    }
+
+    const auto status = openVDisplayDevice();
+    if (status != DRIVER_STATUS::OK) {
+      BOOST_LOG(warning) << operation << ": failed to open Sunshine virtual display driver transport (status="
+                         << static_cast<int>(status) << ").";
+      return false;
+    }
+
+    if (!driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())) {
+      BOOST_LOG(warning) << operation << ": opened Sunshine virtual display driver transport is not responsive.";
+      closeVDisplayDevice();
+      return false;
+    }
+
+    return true;
   }
 
   void ensureVirtualDisplayRegistryDefaults() {
@@ -3249,10 +3336,27 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     sunshine_driver::ControlClient client {*VIRTUAL_DISPLAY_DRIVER_TRANSPORT};
-    if (!check_driver_protocol_compatible(client)) {
-      printf("[SunshineVirtualDisplay] Control protocol is not compatible with driver!\n");
+    const auto version = client.query_protocol_version();
+    if (!version.ok()) {
+      if (version.status == sunshine_driver::ControlStatus::ProtocolIncompatible &&
+          !sunshine_driver::is_valid_api_namespace(version.value.api_namespace)) {
+        BOOST_LOG(warning) << "Sunshine virtual display control protocol namespace mismatch.";
+      } else if (version.status == sunshine_driver::ControlStatus::ProtocolIncompatible) {
+        BOOST_LOG(warning) << "Sunshine virtual display control protocol version "
+                           << version.value.major << '.' << version.value.minor << '.' << version.value.patch
+                           << " is incompatible; require "
+                           << REQUIRED_DRIVER_PROTOCOL_MAJOR << '.' << REQUIRED_DRIVER_PROTOCOL_MINOR << "+.";
+      } else {
+        log_control_failure("Sunshine virtual display protocol query", version.status, version.native_error);
+      }
+
+      printf("[SunshineVirtualDisplay] Control protocol query failed (status=%s, error=%lu)!\n",
+             sunshine_driver::to_string(version.status),
+             static_cast<unsigned long>(version.native_error));
       closeVDisplayDevice();
-      return DRIVER_STATUS::VERSION_INCOMPATIBLE;
+      const bool incompatible_protocol = version.status == sunshine_driver::ControlStatus::ProtocolIncompatible;
+      const auto failed_status = incompatible_protocol ? DRIVER_STATUS::VERSION_INCOMPATIBLE : DRIVER_STATUS::FAILED;
+      return failed_status;
     }
 
     if (!query_driver(client)) {
@@ -3370,7 +3474,7 @@ namespace VDISPLAY_SUNSHINE {
     store_watchdog_fail_cb(failCb);
     auto failure_cb = std::make_shared<std::function<void()>>(std::move(failCb));
 
-    if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
+    if (!ensure_control_transport_responsive("Sunshine virtual display lease feed")) {
       return false;
     }
 
@@ -3421,7 +3525,9 @@ namespace VDISPLAY_SUNSHINE {
           sunshine_driver::LeaseRequest feed {};
           feed.lease_id = lease.lease_id;
           feed.requested_timeout_ms = DRIVER_LEASE_TIMEOUT_MS;
-          if (!client.feed_lease(feed).ok()) {
+          const auto fed = client.feed_lease(feed);
+          if (!fed.ok()) {
+            log_control_failure("Sunshine virtual display lease feed", fed.status, fed.native_error);
             feed_ok = false;
             break;
           }
@@ -3456,10 +3562,19 @@ namespace VDISPLAY_SUNSHINE {
       g_watchdog_grace_deadline_ns.store(steady_ticks_from_time(deadline), std::memory_order_release);
     }
     g_watchdog_feed_requested.store(enable, std::memory_order_release);
-    if (enable && VIRTUAL_DISPLAY_DRIVER_TRANSPORT && VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
-      (void) ensure_watchdog_thread_active_for_lease();
-      g_watchdog_feed_requested.store(true, std::memory_order_release);
+    if (!enable) {
+      return;
     }
+
+    const bool transport_ready = ensure_control_transport_responsive("Sunshine virtual display watchdog feed");
+    g_watchdog_feed_requested.store(true, std::memory_order_release);
+    if (!transport_ready) {
+      BOOST_LOG(warning) << "Sunshine virtual display watchdog feed requested but driver transport is unavailable.";
+      return;
+    }
+
+    (void) ensure_watchdog_thread_active_for_lease();
+    g_watchdog_feed_requested.store(true, std::memory_order_release);
   }
 
   bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
@@ -3992,6 +4107,11 @@ namespace VDISPLAY_SUNSHINE {
             result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
             result.reused_existing = true;
             result.ready_since = ready_since;
+            if (!adopt_existing_driver_lease(client, requested_uuid, display_id, result.display_name, result.device_id, result.monitor_device_path)) {
+              BOOST_LOG(warning) << "Refusing to reuse existing Sunshine virtual display for guid="
+                                 << requested_uuid.string() << " because its driver lease could not be adopted.";
+              return std::nullopt;
+            }
             std::optional<std::string> hdr_profile;
             if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
               hdr_profile = std::string(s_hdr_profile);
@@ -4160,11 +4280,9 @@ namespace VDISPLAY_SUNSHINE {
     const auto requested_uuid = guid_to_uuid(guid);
 
     for (int attempt = 1; attempt <= kMaxInitializationAttempts; ++attempt) {
-      if (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
-        if (openVDisplayDevice() != DRIVER_STATUS::OK) {
-          BOOST_LOG(warning) << "Unable to open Sunshine virtual display driver transport for virtual display creation.";
-          return std::nullopt;
-        }
+      if (!ensure_control_transport_responsive("Sunshine virtual display creation")) {
+        BOOST_LOG(warning) << "Unable to open Sunshine virtual display driver transport for virtual display creation.";
+        return std::nullopt;
       }
 
       auto result = create_virtual_display_once(
@@ -4271,18 +4389,28 @@ namespace VDISPLAY_SUNSHINE {
     const auto lease_info = driver_lease_tracker().get(guid_uuid);
     auto cached_display_name = lease_info && lease_info->display_name ? lease_info->display_name : resolve_virtual_display_name_from_devices();
 
-    const bool initial_transport_invalid = (!VIRTUAL_DISPLAY_DRIVER_TRANSPORT || !VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid());
+    const bool initial_transport_invalid = !driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get());
     bool opened_handle = false;
 
     auto ensure_handle = [&]() -> bool {
-      if (VIRTUAL_DISPLAY_DRIVER_TRANSPORT && VIRTUAL_DISPLAY_DRIVER_TRANSPORT->valid()) {
+      if (driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())) {
         return true;
       }
+
+      if (VIRTUAL_DISPLAY_DRIVER_TRANSPORT) {
+        printf("[SunshineVirtualDisplay] Cached driver transport is not responsive while removing virtual display; reopening.\n");
+        closeVDisplayDevice();
+      }
+
       if (openVDisplayDevice() != DRIVER_STATUS::OK) {
         printf("[SunshineVirtualDisplay] Failed to open driver while removing virtual display.\n");
         return false;
       }
       opened_handle = true;
+      if (!driver_transport_responsive(VIRTUAL_DISPLAY_DRIVER_TRANSPORT.get())) {
+        closeVDisplayDevice();
+        return false;
+      }
       return true;
     };
 
@@ -4333,7 +4461,7 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     auto [removed, error_code] = perform_remove();
-    if (!removed && !initial_transport_invalid && error_code == ERROR_INVALID_HANDLE) {
+    if (!removed && error_code == ERROR_INVALID_HANDLE) {
       printf("[SunshineVirtualDisplay] Driver transport became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if (openVDisplayDevice() == DRIVER_STATUS::OK) {
