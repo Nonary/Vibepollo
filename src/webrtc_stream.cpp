@@ -247,6 +247,8 @@ namespace webrtc_stream {
       const bool metadata_requests_virtual = session->app_metadata && session->app_metadata->virtual_screen;
       bool request_virtual_display =
         session->virtual_display || config_requests_virtual || metadata_requests_virtual;
+      const std::string virtual_display_stable_id =
+        !session->unique_id.empty() ? session->unique_id : session->client_uuid;
       const bool has_app_output_override = app_output_override.has_value();
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
                        << "' allow_display_changes=" << allow_display_changes
@@ -262,7 +264,7 @@ namespace webrtc_stream {
       if (!allow_display_changes) {
         if (request_virtual_display) {
           if (auto existing_device =
-                VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name, false)) {
+                VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, session->virtual_display_device_id, session->client_name, false)) {
             session->virtual_display = true;
             session->virtual_display_failed = false;
             session->virtual_display_device_id = *existing_device;
@@ -439,7 +441,7 @@ namespace webrtc_stream {
         session->virtual_display_failed = false;
         if (display_info->device_id && !display_info->device_id->empty()) {
           session->virtual_display_device_id = *display_info->device_id;
-        } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, client_label, false)) {
+        } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(session->unique_id, session->virtual_display_device_id, client_label, false)) {
           session->virtual_display_device_id = *resolved_device;
         } else {
           session->virtual_display_device_id.clear();

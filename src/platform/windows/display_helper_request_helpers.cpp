@@ -93,6 +93,8 @@ namespace display_helper_integration::helpers {
       rtsp_stream::launch_session_t snapshot {};
       snapshot.id = session.id;
       snapshot.host_audio = session.host_audio;
+      snapshot.unique_id = session.unique_id;
+      snapshot.client_uuid = session.client_uuid;
       snapshot.client_name = session.client_name;
       snapshot.enable_hdr = session.enable_hdr;
       snapshot.enable_sops = session.enable_sops;
@@ -119,19 +121,26 @@ namespace display_helper_integration::helpers {
     }
 
     std::optional<std::string> resolve_virtual_device_id(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+      const auto effective_virtual_display_mode =
+        session.virtual_display_mode_override.value_or(video_config.virtual_display_mode);
+      const bool shared_mode =
+        effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
+      const std::string stable_id =
+        (!shared_mode && !session.client_uuid.empty()) ? session.client_uuid : session.unique_id;
+
       if (!session.virtual_display_device_id.empty()) {
-        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(session.virtual_display_device_id, session.client_name, false)) {
+        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, session.virtual_display_device_id, session.client_name, false)) {
           return resolved;
         }
       }
 
       if (!session.client_name.empty()) {
-        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(std::string {}, session.client_name, false)) {
+        if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, std::string {}, session.client_name, false)) {
           return resolved;
         }
       }
 
-      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceId(video_config.output_name, session.client_name, false)) {
+      if (auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, video_config.output_name, session.client_name, false)) {
         return resolved;
       }
 

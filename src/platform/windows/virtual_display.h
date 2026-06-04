@@ -101,6 +101,12 @@ namespace VDISPLAY {
     const std::string &client_name,
     bool allow_any_fallback = true
   );
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback = true
+  );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);

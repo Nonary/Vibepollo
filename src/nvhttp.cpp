@@ -327,6 +327,14 @@ namespace nvhttp {
       const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
       bool request_virtual_display =
         launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual;
+      const auto requested_virtual_display_mode =
+        launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool shared_virtual_display_mode =
+        requested_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
+      const std::string virtual_display_stable_id =
+        (!shared_virtual_display_mode && !launch_session->client_uuid.empty()) ?
+          launch_session->client_uuid :
+          launch_session->unique_id;
       const bool has_app_output_override = app_output_override.has_value();
       BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
                        << "' allow_display_changes=" << allow_display_changes
@@ -344,7 +352,7 @@ namespace nvhttp {
       if (!allow_display_changes) {
         if (request_virtual_display) {
           if (auto existing_device =
-                VDISPLAY::resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name, false)) {
+                VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, launch_session->virtual_display_device_id, launch_session->client_name, false)) {
             launch_session->virtual_display = true;
             launch_session->virtual_display_failed = false;
             launch_session->virtual_display_device_id = *existing_device;
@@ -420,7 +428,7 @@ namespace nvhttp {
 
           if (!no_active_sessions) {
             auto existing_device =
-              VDISPLAY::resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name, false);
+              VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, launch_session->virtual_display_device_id, launch_session->client_name, false);
             if (existing_device) {
               launch_session->virtual_display = true;
               launch_session->virtual_display_failed = false;
@@ -472,10 +480,7 @@ namespace nvhttp {
             return generated;
           };
 
-          const auto effective_virtual_display_mode =
-            launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
-          const bool shared_mode =
-            (effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+          const bool shared_mode = shared_virtual_display_mode;
           uuid_util::uuid_t session_uuid;
           if (shared_mode) {
             session_uuid = ensure_shared_guid();
@@ -610,7 +615,7 @@ namespace nvhttp {
             launch_session->virtual_display_failed = false;
             if (display_info->device_id && !display_info->device_id->empty()) {
               launch_session->virtual_display_device_id = *display_info->device_id;
-            } else if (auto resolved_device = VDISPLAY::resolveVirtualDisplayDeviceIdForClient(client_label)) {
+            } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(display_uuid_source, launch_session->virtual_display_device_id, client_label, false)) {
               launch_session->virtual_display_device_id = *resolved_device;
             } else {
               launch_session->virtual_display_device_id.clear();

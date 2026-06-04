@@ -247,6 +247,9 @@ namespace platf::display_helper_client {
       return *result;
     }
 
+    BOOST_LOG(warning) << "Display helper IPC: dropping cached connection after missing APPLY result";
+    pipe->disconnect();
+    pipe.reset();
     return false;
   }
 

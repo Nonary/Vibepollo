@@ -36,6 +36,7 @@
 #include <fstream>
 #include <highlevelmonitorconfigurationapi.h>
 #include <icm.h>
+#include <iomanip>
 #include <initguid.h>
 #include <iostream>
 #include <limits>
@@ -47,6 +48,7 @@
 #include <optional>
 #include <physicalmonitorenumerationapi.h>
 #include <setupapi.h>
+#include <sstream>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -104,6 +106,12 @@ namespace VDISPLAY_SUNSHINE {
   bool removeAllVirtualDisplays();
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback = true
+  );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_selection(const std::string &output_identifier);
   bool isVirtualDisplayDriverInstalled();
@@ -1766,10 +1774,37 @@ namespace VDISPLAY_SUNSHINE {
       return static_cast<std::uint16_t>(0x5000u | (display_id & 0x0fffu));
     }
 
+    std::string virtual_display_product_code_string_from_display_id(const std::uint64_t display_id) {
+      std::ostringstream stream;
+      stream << std::setfill('0')
+             << std::setw(4)
+             << std::hex
+             << std::uppercase
+             << virtual_display_product_code_from_display_id(display_id);
+      return stream.str();
+    }
+
     std::uint32_t virtual_display_serial_number_from_display_id(const std::uint64_t display_id) {
       const auto folded = static_cast<std::uint32_t>(display_id) ^
                           static_cast<std::uint32_t>(display_id >> 32);
       return folded == 0 ? 1 : folded;
+    }
+
+    bool matches_virtual_display_id_edid(
+      const display_device::EnumeratedDevice &device,
+      const std::uint64_t display_id
+    ) {
+      if (!device.m_edid) {
+        return false;
+      }
+      if (!equals_ci(device.m_edid->m_manufacturer_id, "SDD")) {
+        return false;
+      }
+
+      const auto expected_product_code = virtual_display_product_code_string_from_display_id(display_id);
+      const auto expected_serial = virtual_display_serial_number_from_display_id(display_id);
+      return equals_ci(device.m_edid->m_product_code, expected_product_code) &&
+             device.m_edid->m_serial_number == expected_serial;
     }
 
     std::wstring virtual_display_dpi_settings_prefix(const std::uint64_t display_id) {
@@ -4833,6 +4868,61 @@ namespace VDISPLAY_SUNSHINE {
     BOOST_LOG(debug) << "No virtual display device_id could be resolved for preferred_output='"
                      << preferred_output_identifier << "' client_name='" << client_name << "'.";
     return std::nullopt;
+  }
+
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback
+  ) {
+    if (stable_id.empty()) {
+      return resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
+    }
+
+    const auto stable_uuid = virtualDisplayUuidFromStableId(stable_id);
+    const auto stable_guid = uuid_to_guid(stable_uuid);
+    const auto expected_display_id = client_uuid_to_virtual_display_id(stable_guid);
+
+    BOOST_LOG(debug) << "Resolving active virtual display device_id from stable_id='"
+                     << stable_id << "' display_id=" << expected_display_id
+                     << " preferred_output='" << preferred_output_identifier
+                     << "' client_name='" << client_name << "'.";
+
+    auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+    if (!devices) {
+      BOOST_LOG(debug) << "Resolving active virtual display device_id by stable id failed: device enumeration unavailable.";
+      return resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
+    }
+
+    std::optional<std::string> inactive_identity_match;
+    for (const auto &device : *devices) {
+      if (!is_virtual_display_device(device) || device.m_device_id.empty()) {
+        continue;
+      }
+      if (!matches_virtual_display_id_edid(device, expected_display_id)) {
+        continue;
+      }
+
+      if (device.m_info) {
+        BOOST_LOG(debug) << "Resolved active virtual display by stable EDID identity: device_id='"
+                         << device.m_device_id << "'.";
+        return device.m_device_id;
+      }
+      if (!inactive_identity_match) {
+        inactive_identity_match = device.m_device_id;
+      }
+    }
+
+    if (inactive_identity_match) {
+      BOOST_LOG(debug) << "Resolved inactive virtual display fallback by stable EDID identity: device_id='"
+                       << *inactive_identity_match << "'.";
+      return inactive_identity_match;
+    }
+
+    BOOST_LOG(debug) << "No virtual display matched stable EDID identity for stable_id='"
+                     << stable_id << "'; falling back to exact display/client names.";
+    return resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {

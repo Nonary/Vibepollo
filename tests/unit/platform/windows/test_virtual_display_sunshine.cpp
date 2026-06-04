@@ -113,13 +113,13 @@ TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
   const auto rtsp_source = read_source("src/nvhttp.cpp");
   expect_contains(
     rtsp_source,
-    "resolveActiveVirtualDisplayDeviceId(launch_session->virtual_display_device_id, launch_session->client_name, false)"
+    "resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, launch_session->virtual_display_device_id, launch_session->client_name, false)"
   );
 
   const auto webrtc_source = read_source("src/webrtc_stream.cpp");
   expect_contains(
     webrtc_source,
-    "resolveActiveVirtualDisplayDeviceId(session->virtual_display_device_id, session->client_name, false)"
+    "resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, session->virtual_display_device_id, session->client_name, false)"
   );
 }
 
@@ -127,6 +127,14 @@ TEST(SunshineVirtualDisplay, ResolverCanDisableGenericFallback) {
   const auto source = read_virtual_display_source();
 
   expect_contains(source, "No exact virtual display match found and generic fallback is disabled.");
+}
+
+TEST(SunshineVirtualDisplay, StableIdentityResolverUsesEdidBeforeFriendlyName) {
+  const auto source = read_virtual_display_source();
+
+  expect_contains(source, "matches_virtual_display_id_edid(device, expected_display_id)");
+  expect_contains(source, "Resolved active virtual display by stable EDID identity");
+  expect_contains(source, "falling back to exact display/client names");
 }
 
 TEST(SunshineVirtualDisplay, StreamStartRemovesRetainedProbeDisplayRegardlessOfStreamGuid) {

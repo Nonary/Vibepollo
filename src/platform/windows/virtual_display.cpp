@@ -44,6 +44,7 @@ namespace VDISPLAY_SUNSHINE {
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(const std::string &stable_id, const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
@@ -224,6 +225,18 @@ namespace VDISPLAY {
 
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback) {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback) : VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
+  }
+
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback
+  ) {
+    if (use_sunshine_driver()) {
+      return VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, preferred_output_identifier, client_name, allow_any_fallback);
+    }
+    return VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {
