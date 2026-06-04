@@ -316,6 +316,7 @@ namespace nvhttp {
         app_output_override.reset();
       }
       launch_session->virtual_display_recreated_on_demand = false;
+      launch_session->virtual_display_needs_resume_apply = false;
 
       bool config_requests_virtual = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
       if (launch_session->virtual_display_mode_override) {
@@ -348,11 +349,12 @@ namespace nvhttp {
             launch_session->virtual_display_failed = false;
             launch_session->virtual_display_device_id = *existing_device;
             launch_session->virtual_display_ready_since = std::chrono::steady_clock::now();
+            launch_session->virtual_display_needs_resume_apply = true;
             config::set_runtime_output_name_override(*existing_device);
             pending_output_override = *existing_device;
             BOOST_LOG(info) << "Display helper: preserving virtual display capture target for resume (device_id="
                             << *existing_device << ").";
-            BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume; preserving capture target only.";
+            BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for resume.";
             return;
           }
 
@@ -2974,12 +2976,15 @@ namespace nvhttp {
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
       const bool should_apply_display_request =
-
-        allow_display_changes || launch_session->virtual_display_recreated_on_demand;
+        allow_display_changes ||
+        launch_session->virtual_display_recreated_on_demand ||
+        launch_session->virtual_display_needs_resume_apply;
       if (should_apply_display_request) {
         BOOST_LOG(debug) << "Display helper: applying session display request on "
-                         << (allow_display_changes ? "normal start/resume" : "resume virtual-display recreation")
-
+                         << (allow_display_changes ? "normal start/resume" :
+                                                       (launch_session->virtual_display_recreated_on_demand ?
+                                                          "resume virtual-display recreation" :
+                                                          "resume virtual-display refresh"))
                          << " for client '" << launch_session->client_name << "'.";
         revert_display_configuration = allow_display_changes;
 
