@@ -387,7 +387,7 @@ TEST(SunshineVirtualDisplayPackaging, SunshineDriverKeepsTransportFailuresOutOfP
 TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayRelease) {
   const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
 
-  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.2.7");
+  expect_contains(workflow, "LIBVIRTUALDISPLAY_RELEASE_TAG: v1.3.0");
   expect_contains(workflow, "$releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG");
   EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
 }
@@ -395,10 +395,12 @@ TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayReleas
 TEST(SunshineVirtualDisplayPackaging, RtspLaunchIgnoresUnmatchedUniqueIdForPerClientDisplayIdentity) {
   const auto nvhttp = read_source_file("src/nvhttp.cpp");
 
-  expect_contains(nvhttp, "remember_tls_client_identity(remote_endpoint, *identity);");
+  expect_contains(nvhttp, "remember_tls_client_identity(req, *identity);");
   expect_contains(nvhttp, "get_remembered_tls_client_identity(request)");
   expect_contains(nvhttp, "resolve_known_client_uuid_from_launch_id");
   expect_contains(nvhttp, "Ignoring unmatched launch uniqueid for per-client settings");
+  expect_contains(nvhttp, "is a placeholder and conflicts with launch uniqueid; using paired client UUID");
+  expect_contains(nvhttp, "Ignoring placeholder TLS client identity");
   EXPECT_EQ(nvhttp.find("launch_session->client_uuid = get_arg(args, \"uniqueid\", \"\");"), std::string::npos);
   EXPECT_EQ(nvhttp.find("client_uuid = get_arg(args, \"uniqueid\", \"\");"), std::string::npos);
 }
