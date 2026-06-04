@@ -2122,7 +2122,9 @@ namespace nvhttp {
         tree.put("root.mac", platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())));
 
         auto named_cert_p = get_verified_cert(request);
-        if (!!(named_cert_p->perm & PERM::server_cmd)) {
+        const auto client_perm = named_cert_p ? named_cert_p->perm : PERM::_no;
+
+        if (!!(client_perm & PERM::server_cmd)) {
           pt::ptree &root_node = tree.get_child("root");
 
           if (config::sunshine.server_cmds.size() > 0) {
@@ -2133,15 +2135,17 @@ namespace nvhttp {
               root_node.push_back(std::make_pair("ServerCommand", cmd_node));
             }
           }
+        } else if (named_cert_p) {
+          BOOST_LOG(debug) << "Permission Get ServerCommand denied for [" << named_cert_p->name << "] (" << (uint32_t) client_perm << ")";
         } else {
-          BOOST_LOG(debug) << "Permission Get ServerCommand denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+          BOOST_LOG(debug) << "Permission Get ServerCommand denied for unverified HTTPS client";
         }
 
-        tree.put("root.Permission", std::to_string((uint32_t) named_cert_p->perm));
+        tree.put("root.Permission", std::to_string((uint32_t) client_perm));
 
 #ifdef _WIN32
         tree.put("root.VirtualDisplayCapable", true);
-        if (!!(named_cert_p->perm & PERM::_all_actions)) {
+        if (!!(client_perm & PERM::_all_actions)) {
           tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
         } else {
           tree.put("root.VirtualDisplayDriverReady", true);
