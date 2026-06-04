@@ -1197,6 +1197,16 @@ namespace nvhttp {
       tls_client_identity_by_endpoint[key] = identity;
     }
 
+    void forget_tls_client_identity(req_https_t request) {
+      const auto key = endpoint_key(request);
+      if (key.empty()) {
+        return;
+      }
+
+      std::lock_guard<std::mutex> lock(tls_client_identity_mutex);
+      tls_client_identity_by_endpoint.erase(key);
+    }
+
     std::optional<resolved_client_identity_t> get_remembered_tls_client_identity(req_https_t request) {
       const auto key = endpoint_key(request);
       if (key.empty()) {
@@ -3226,20 +3236,9 @@ namespace nvhttp {
 
     // Verify certificates after establishing connection
     https_server.verify = [](req_https_t req, SSL *ssl) {
-      crypto::x509_t x509 {
-#if OPENSSL_VERSION_MAJOR >= 3
-        SSL_get1_peer_certificate(ssl)
-#else
-      SSL_get_peer_certificate(ssl)
-#endif
-      };
+      tl_peer_certificate.reset();
+      forget_tls_client_identity(req);
 
-      // Store peer certificate in thread-local storage for use in request handlers
-      if (x509) {
-        tl_peer_certificate = std::move(x509);
-      }
-
-      // Re-fetch for verification logic
       crypto::x509_t x509_verify {
 #if OPENSSL_VERSION_MAJOR >= 3
         SSL_get1_peer_certificate(ssl)
