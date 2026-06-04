@@ -213,6 +213,7 @@ namespace {
   constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
   constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
+  constexpr std::chrono::milliseconds kHelperStartFailureCooldown {30000};
   constexpr int kMaxDeferredApplyAttempts = 6;
 
   bool shutdown_requested();
@@ -590,6 +591,7 @@ namespace {
   static std::atomic<std::int64_t> g_last_revert_us {0};
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
   static std::atomic<std::int64_t> g_last_disarm_success_us {0};
+  static std::atomic<std::int64_t> g_last_helper_start_failure_us {0};
 
   // Tracks when the most recent successful APPLY completed, so the capture thread
   // can add a stabilization delay before attempting to reinit after topology changes.
@@ -598,6 +600,29 @@ namespace {
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+  }
+
+  bool helper_start_failure_cooldown_active() {
+    const auto last_us = g_last_helper_start_failure_us.load(std::memory_order_relaxed);
+    if (last_us <= 0) {
+      return false;
+    }
+
+    const auto elapsed_us = now_steady_us() - last_us;
+    const auto cooldown_us = std::chrono::duration_cast<std::chrono::microseconds>(kHelperStartFailureCooldown).count();
+    if (elapsed_us >= cooldown_us) {
+      return false;
+    }
+
+    const auto remaining_ms = (cooldown_us - elapsed_us) / 1000;
+    BOOST_LOG(warning) << "Display helper: skipping helper start during failure cooldown ("
+                       << remaining_ms << "ms remaining).";
+    return true;
+  }
+
+  void note_helper_start_failure(const char *reason) {
+    g_last_helper_start_failure_us.store(now_steady_us(), std::memory_order_relaxed);
+    BOOST_LOG(warning) << "Display helper: helper start failure cooldown armed after " << reason << ".";
   }
 
   bool restore_expected_with_live_helper() {
@@ -767,6 +792,7 @@ namespace {
           }
           platf::display_helper_client::reset_connection();
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
+          note_helper_start_failure("failed ping");
           return false;
         }
 
@@ -809,6 +835,10 @@ namespace {
       return false;
     }
 
+    if (helper_start_failure_cooldown_active()) {
+      return false;
+    }
+
     kill_all_helper_processes();
 
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
@@ -840,12 +870,14 @@ namespace {
     }
     if (!started) {
       BOOST_LOG(error) << "Failed to start display helper: " << platf::to_utf8(helper.wstring());
+      note_helper_start_failure("process launch failure");
       return false;
     }
 
     HANDLE h = helper_proc().get_process_handle();
     if (!h) {
       BOOST_LOG(error) << "Display helper started but no process handle available";
+      note_helper_start_failure("missing process handle");
       return false;
     }
 
@@ -867,6 +899,7 @@ namespace {
           const bool retry_started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
+            note_helper_start_failure("singleton retry launch failure");
             return false;
           }
           h = helper_proc().get_process_handle();
@@ -878,6 +911,7 @@ namespace {
           break;
         } else {
           BOOST_LOG(error) << "Display helper exited unexpectedly with code " << exit_code;
+          note_helper_start_failure("unexpected process exit");
           return false;
         }
       }
@@ -885,7 +919,11 @@ namespace {
 
     // Final initialization delay for pipe server creation
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    return wait_for_helper_ipc_ready_locked();
+    const bool ipc_ready = wait_for_helper_ipc_ready_locked();
+    if (!ipc_ready) {
+      note_helper_start_failure("IPC readiness timeout");
+    }
+    return ipc_ready;
   }
 
   // Watchdog state for helper liveness during active streams

@@ -21,6 +21,9 @@ HANDLE stop_event;
 HANDLE session_change_event;
 
 constexpr auto SERVICE_NAME = "ApolloService";
+constexpr DWORD FAST_EXIT_WINDOW_MS = 60 * 1000;
+constexpr DWORD CRASH_LOOP_RESTART_DELAY_MS = 30 * 1000;
+constexpr DWORD CRASH_LOOP_FAST_EXIT_THRESHOLD = 3;
 
 DWORD WINAPI HandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
   switch (dwControl) {
@@ -244,6 +247,9 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
 
   SetEnvironmentVariableW(platf::service_launch::launched_by_service_env_var, L"1");
 
+  DWORD fast_exit_count = 0;
+  ULONGLONG first_fast_exit_tick = 0;
+
   // Loop every 3 seconds until the stop event is set or Sunshine.exe is running
   while (WaitForSingleObject(stop_event, 3000) != WAIT_OBJECT_0) {
     auto console_session_id = WTSGetActiveConsoleSessionId();
@@ -275,6 +281,8 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
     }
 
     bool still_running = true;
+    bool self_exit = false;
+    const auto process_start_tick = GetTickCount64();
     do {
       // Wait for the stop event to be set, Sunshine.exe to terminate, or the console session to change
       const HANDLE wait_objects[] = {stop_event, process_info.hProcess, session_change_event};
@@ -300,6 +308,7 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
         case WAIT_OBJECT_0 + 1:
           {
             // Sunshine terminated itself.
+            self_exit = true;
 
             DWORD exit_code;
             if (GetExitCodeProcess(process_info.hProcess, &exit_code) && exit_code == ERROR_SHUTDOWN_IN_PROGRESS) {
@@ -316,6 +325,32 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
     CloseHandle(process_info.hProcess);
     CloseHandle(console_token);
     CloseHandle(job_handle);
+
+    if (!self_exit) {
+      fast_exit_count = 0;
+      first_fast_exit_tick = 0;
+      continue;
+    }
+
+    const auto now_tick = GetTickCount64();
+    if (now_tick - process_start_tick > FAST_EXIT_WINDOW_MS) {
+      fast_exit_count = 0;
+      first_fast_exit_tick = 0;
+      continue;
+    }
+
+    if (first_fast_exit_tick == 0 || now_tick - first_fast_exit_tick > FAST_EXIT_WINDOW_MS) {
+      first_fast_exit_tick = now_tick;
+      fast_exit_count = 1;
+    } else {
+      ++fast_exit_count;
+    }
+
+    if (fast_exit_count >= CRASH_LOOP_FAST_EXIT_THRESHOLD) {
+      if (WaitForSingleObject(stop_event, CRASH_LOOP_RESTART_DELAY_MS) == WAIT_OBJECT_0) {
+        break;
+      }
+    }
   }
 
   // Let SCM know we've stopped
