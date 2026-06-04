@@ -227,20 +227,6 @@ TEST(SunshineVirtualDisplay, HdrRequestedTemporaryDisplayFallsBackToSdr) {
   EXPECT_TRUE(destructive_revert == std::string::npos || destructive_revert > success);
 }
 
-TEST(SunshineVirtualDisplay, TemporaryCreationCarriesRetainedDpiSettings) {
-  const auto source = read_virtual_display_source();
-
-  expect_contains(source, "void apply_cached_virtual_display_dpi_value()");
-
-  const auto activation = source.find("if (hdr_requested && !request_hdr10_advanced_color(output))");
-  ASSERT_NE(activation, std::string::npos);
-  const auto dpi_apply = source.find("apply_cached_virtual_display_dpi_value();", activation);
-  ASSERT_NE(dpi_apply, std::string::npos);
-  const auto profile_apply = source.find("apply_hdr_profile_if_available", activation);
-  ASSERT_NE(profile_apply, std::string::npos);
-  EXPECT_LT(dpi_apply, profile_apply);
-}
-
 TEST(SunshineWgcCapture, UsesFp16ForAdvancedColorTargets) {
   const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
   const auto display_source = read_source("src/platform/windows/display_wgc.cpp");

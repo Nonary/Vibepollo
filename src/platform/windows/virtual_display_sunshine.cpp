@@ -1856,17 +1856,6 @@ namespace VDISPLAY_SUNSHINE {
       return applied;
     }
 
-    void apply_cached_virtual_display_dpi_value() {
-      const auto dpi = read_virtual_display_dpi_value();
-      if (!dpi) {
-        BOOST_LOG(debug) << "Sunshine virtual display DPI: no cached SDD DpiValue found.";
-        return;
-      }
-      if (!apply_virtual_display_dpi_value(*dpi)) {
-        BOOST_LOG(warning) << "Sunshine virtual display DPI: failed to reapply cached DpiValue=" << *dpi << '.';
-      }
-    }
-
     fs::path legacy_virtual_display_cache_path() {
       return platf::appdata() / "virtual_display_cache.json";
     }
@@ -4091,7 +4080,9 @@ namespace VDISPLAY_SUNSHINE {
           }
         }
 
-        apply_cached_virtual_display_dpi_value();
+        if (auto dpi = read_virtual_display_dpi_value()) {
+          (void) apply_virtual_display_dpi_value(*dpi);
+        }
 
         if (reuse_name || device_id) {
           BOOST_LOG(debug) << "Waiting for virtual display ready (reuse). display_name='"
@@ -4146,7 +4137,6 @@ namespace VDISPLAY_SUNSHINE {
                                  << requested_uuid.string() << " because its driver lease could not be adopted.";
               return std::nullopt;
             }
-            apply_cached_virtual_display_dpi_value();
             std::optional<std::string> hdr_profile;
             if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
               hdr_profile = std::string(s_hdr_profile);
@@ -4241,8 +4231,6 @@ namespace VDISPLAY_SUNSHINE {
       if (hdr_requested && !request_hdr10_advanced_color(output)) {
         BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
       }
-
-      apply_cached_virtual_display_dpi_value();
 
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
       if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
