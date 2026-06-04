@@ -1762,19 +1762,62 @@ namespace VDISPLAY_SUNSHINE {
       }).detach();
     }
 
-    std::optional<uint32_t> read_virtual_display_dpi_value() {
+    std::uint16_t virtual_display_product_code_from_display_id(const std::uint64_t display_id) {
+      return static_cast<std::uint16_t>(0x5000u | (display_id & 0x0fffu));
+    }
+
+    std::uint32_t virtual_display_serial_number_from_display_id(const std::uint64_t display_id) {
+      const auto folded = static_cast<std::uint32_t>(display_id) ^
+                          static_cast<std::uint32_t>(display_id >> 32);
+      return folded == 0 ? 1 : folded;
+    }
+
+    std::wstring virtual_display_dpi_settings_prefix(const std::uint64_t display_id) {
+      wchar_t hardware_id[8] {};
+      std::swprintf(
+        hardware_id,
+        std::size(hardware_id),
+        L"SDD%04X",
+        static_cast<unsigned int>(virtual_display_product_code_from_display_id(display_id))
+      );
+      return std::wstring {hardware_id} + std::to_wstring(virtual_display_serial_number_from_display_id(display_id));
+    }
+
+    bool starts_with(const std::wstring_view value, const std::wstring_view prefix) {
+      return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+    }
+
+    struct virtual_display_dpi_snapshot_t {
+      std::wstring settings_prefix;
+      std::map<std::wstring, uint32_t> source_values;
+      uint32_t value {};
+    };
+
+    std::optional<uint32_t> read_dpi_value(HKEY key) {
+      DWORD value = 0;
+      DWORD value_size = sizeof(value);
+      const LSTATUS query_status = RegGetValueW(key, nullptr, L"DpiValue", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
+      if (query_status != ERROR_SUCCESS || value_size != sizeof(value)) {
+        return std::nullopt;
+      }
+      return value;
+    }
+
+    std::optional<virtual_display_dpi_snapshot_t> read_virtual_display_dpi_value(const std::wstring &settings_prefix) {
       HKEY root = nullptr;
       if (RegOpenKeyExW(
             HKEY_CURRENT_USER,
             L"Control Panel\\Desktop\\PerMonitorSettings",
             0,
-            KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
+            KEY_ENUMERATE_SUB_KEYS,
             &root
           ) != ERROR_SUCCESS) {
         return std::nullopt;
       }
 
-      std::optional<uint32_t> result;
+      std::map<std::wstring, uint32_t> source_values;
+      std::optional<uint32_t> snapshot_value;
+      bool conflicting_values = false;
       wchar_t name[256];
       for (DWORD index = 0;; ++index) {
         DWORD name_len = _countof(name);
@@ -1785,32 +1828,75 @@ namespace VDISPLAY_SUNSHINE {
         if (enum_status != ERROR_SUCCESS) {
           continue;
         }
-        if (name_len < 3 || std::wcsncmp(name, L"SDD", 3) != 0) {
+        std::wstring_view key_name {name, name_len};
+        if (!starts_with(key_name, settings_prefix)) {
           continue;
         }
 
-        DWORD value = 0;
-        DWORD value_size = sizeof(value);
-        const LSTATUS query_status = RegGetValueW(root, name, L"DpiValue", RRF_RT_REG_DWORD, nullptr, &value, &value_size);
-        if (query_status == ERROR_SUCCESS) {
-          result = value;
-          break;
+        const std::wstring key_name_string {key_name};
+        HKEY subkey = nullptr;
+        if (RegOpenKeyExW(root, key_name_string.c_str(), 0, KEY_QUERY_VALUE, &subkey) != ERROR_SUCCESS) {
+          continue;
+        }
+        auto value = read_dpi_value(subkey);
+        RegCloseKey(subkey);
+        if (value) {
+          if (snapshot_value && *snapshot_value != *value) {
+            conflicting_values = true;
+          } else {
+            snapshot_value = *value;
+          }
+          source_values.emplace(std::move(key_name_string), *value);
         }
       }
 
       RegCloseKey(root);
-      return result;
+      if (conflicting_values) {
+        BOOST_LOG(info) << "Sunshine virtual display DPI: skipped cached value for " << platf::to_utf8(settings_prefix)
+                        << " because matching settings disagree.";
+        return std::nullopt;
+      }
+      if (!snapshot_value || source_values.empty()) {
+        return std::nullopt;
+      }
+      return virtual_display_dpi_snapshot_t {
+        settings_prefix,
+        std::move(source_values),
+        *snapshot_value
+      };
     }
 
-    bool apply_virtual_display_dpi_value(uint32_t value) {
+    bool dpi_snapshot_is_still_current(HKEY root, const virtual_display_dpi_snapshot_t &snapshot) {
+      for (const auto &[source_key_name, source_value] : snapshot.source_values) {
+        HKEY source_key = nullptr;
+        if (RegOpenKeyExW(root, source_key_name.c_str(), 0, KEY_QUERY_VALUE, &source_key) != ERROR_SUCCESS) {
+          return false;
+        }
+        const auto current_value = read_dpi_value(source_key);
+        RegCloseKey(source_key);
+        if (!current_value || *current_value != source_value) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    bool apply_virtual_display_dpi_value(const virtual_display_dpi_snapshot_t &snapshot) {
       HKEY root = nullptr;
       if (RegOpenKeyExW(
             HKEY_CURRENT_USER,
             L"Control Panel\\Desktop\\PerMonitorSettings",
             0,
-            KEY_ENUMERATE_SUB_KEYS | KEY_SET_VALUE,
+            KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE,
             &root
           ) != ERROR_SUCCESS) {
+        return false;
+      }
+
+      if (!dpi_snapshot_is_still_current(root, snapshot)) {
+        RegCloseKey(root);
+        BOOST_LOG(info) << "Sunshine virtual display DPI: skipped stale cached value for " << platf::to_utf8(snapshot.settings_prefix)
+                        << " because the source setting changed.";
         return false;
       }
 
@@ -1825,24 +1911,35 @@ namespace VDISPLAY_SUNSHINE {
         if (enum_status != ERROR_SUCCESS) {
           continue;
         }
-        if (name_len < 3 || std::wcsncmp(name, L"SDD", 3) != 0) {
+        std::wstring_view key_name {name, name_len};
+        if (!starts_with(key_name, snapshot.settings_prefix)) {
           continue;
         }
 
+        const std::wstring key_name_string {key_name};
         HKEY subkey = nullptr;
-        if (RegOpenKeyExW(root, name, 0, KEY_SET_VALUE, &subkey) != ERROR_SUCCESS) {
+        if (RegOpenKeyExW(root, key_name_string.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &subkey) != ERROR_SUCCESS) {
           continue;
         }
 
-        const DWORD data = value;
-        const auto status = RegSetValueExW(
-          subkey,
-          L"DpiValue",
-          0,
-          REG_DWORD,
-          reinterpret_cast<const BYTE *>(&data),
-          sizeof(data)
-        );
+        const auto current_value = read_dpi_value(subkey);
+        LSTATUS status = ERROR_SUCCESS;
+        if (!current_value || *current_value != snapshot.value) {
+          if (!dpi_snapshot_is_still_current(root, snapshot)) {
+            RegCloseKey(subkey);
+            break;
+          }
+
+          const DWORD data = snapshot.value;
+          status = RegSetValueExW(
+            subkey,
+            L"DpiValue",
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE *>(&data),
+            sizeof(data)
+          );
+        }
         RegCloseKey(subkey);
         if (status == ERROR_SUCCESS) {
           applied = true;
@@ -1851,7 +1948,11 @@ namespace VDISPLAY_SUNSHINE {
 
       RegCloseKey(root);
       if (applied) {
-        printf("[SunshineVirtualDisplay] Applied cached virtual display DPI value: %u\n", static_cast<unsigned int>(value));
+        printf(
+          "[SunshineVirtualDisplay] Applied cached virtual display DPI value: %u (%ls)\n",
+          static_cast<unsigned int>(snapshot.value),
+          snapshot.settings_prefix.c_str()
+        );
       }
       return applied;
     }
@@ -4039,6 +4140,8 @@ namespace VDISPLAY_SUNSHINE {
       const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
       const auto display_id = client_uuid_to_virtual_display_id(guid);
       const auto lease_id = generate_driver_lease_id();
+      const auto dpi_settings_prefix = virtual_display_dpi_settings_prefix(display_id);
+      const auto dpi_snapshot = read_virtual_display_dpi_value(dpi_settings_prefix);
 
       sunshine_driver::CreateTemporaryDisplayRequest create_request {};
       create_request.lease_id = lease_id;
@@ -4080,8 +4183,8 @@ namespace VDISPLAY_SUNSHINE {
           }
         }
 
-        if (auto dpi = read_virtual_display_dpi_value()) {
-          (void) apply_virtual_display_dpi_value(*dpi);
+        if (dpi_snapshot) {
+          (void) apply_virtual_display_dpi_value(*dpi_snapshot);
         }
 
         if (reuse_name || device_id) {
@@ -4136,6 +4239,9 @@ namespace VDISPLAY_SUNSHINE {
               BOOST_LOG(warning) << "Refusing to reuse existing Sunshine virtual display for guid="
                                  << requested_uuid.string() << " because its driver lease could not be adopted.";
               return std::nullopt;
+            }
+            if (dpi_snapshot) {
+              (void) apply_virtual_display_dpi_value(*dpi_snapshot);
             }
             std::optional<std::string> hdr_profile;
             if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
@@ -4230,6 +4336,10 @@ namespace VDISPLAY_SUNSHINE {
 
       if (hdr_requested && !request_hdr10_advanced_color(output)) {
         BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
+      }
+
+      if (dpi_snapshot) {
+        (void) apply_virtual_display_dpi_value(*dpi_snapshot);
       }
 
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
