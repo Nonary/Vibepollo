@@ -134,6 +134,7 @@ namespace crypto {
   pkey_t pkey(const std::string_view &k);
   std::string pem(x509_t &x509);
   std::string pem(pkey_t &pkey);
+  std::string subject_name(const X509 *x509);
 
   std::vector<uint8_t> sign256(const pkey_t &pkey, const std::string_view &data);
   bool verify256(const x509_t &x509, const std::string_view &data, const std::string_view &signature);

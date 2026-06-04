@@ -28,6 +28,24 @@ namespace crypto {
     _certs.clear();
   }
 
+  std::string subject_name(const X509 *x509) {
+    if (!x509) {
+      return {};
+    }
+
+    const auto *name = X509_get_subject_name(x509);
+    if (!name) {
+      return {};
+    }
+
+    char subject_name[256] {};
+    if (!X509_NAME_oneline(name, subject_name, sizeof(subject_name))) {
+      return {};
+    }
+
+    return subject_name;
+  }
+
   static int openssl_verify_cb(int ok, X509_STORE_CTX *ctx) {
     int err_code = X509_STORE_CTX_get_error(ctx);
 

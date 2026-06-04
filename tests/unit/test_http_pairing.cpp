@@ -9,6 +9,14 @@
 
 using namespace nvhttp;
 
+TEST(HttpPairingCertLogging, MissingSubjectNameIsEmptyInsteadOfCrashing) {
+  ASSERT_EQ(crypto::subject_name(nullptr), "");
+
+  crypto::x509_t empty_cert {X509_new()};
+  ASSERT_TRUE(empty_cert);
+  ASSERT_EQ(crypto::subject_name(empty_cert.get()), "");
+}
+
 struct pairing_input {
   std::shared_ptr<pair_session_t> session;
   /**
