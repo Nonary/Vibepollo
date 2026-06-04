@@ -391,7 +391,20 @@ namespace system_tray {
     }
 #endif
     if (tray_thread.joinable()) {
-      tray_thread.join();
+      // end_tray() can run on the tray thread itself: a tray menu action
+      // (Restart/Quit) calls platf::restart()/lifetime::exit_sunshine(), which
+      // raises SIGINT. The SIGINT handler executes synchronously on the calling
+      // (tray) thread and invokes end_tray(). Joining our own thread throws
+      // std::system_error(resource_deadlock_would_occur); that exception is
+      // uncaught, so std::terminate()/abort() kills the process during shutdown
+      // (FAST_FAIL_FATAL_APP_EXIT). Detach in that case and let the tray loop
+      // unwind on its own once it observes tray_shutdown_requested after we
+      // return to the message pump. The main-thread shutdown path still joins.
+      if (tray_thread.get_id() == std::this_thread::get_id()) {
+        tray_thread.detach();
+      } else {
+        tray_thread.join();
+      }
     }
 #ifdef _WIN32
     std::lock_guard lock(tray_action_mutex);
