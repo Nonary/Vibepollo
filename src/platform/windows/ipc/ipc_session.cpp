@@ -37,7 +37,11 @@ namespace platf::dxgi {
     constexpr auto kHelperHandleWaitTimeout = std::chrono::seconds(15);
     constexpr auto kHelperHandleProgressInterval = std::chrono::seconds(3);
     constexpr std::int64_t kWgcMinUpdateInterval100ns = 10000;  // 1 ms
-    constexpr uint32_t kWgcLatencyInitialBufferSize = 2;
+    constexpr uint32_t kWgcLowLatencyInitialBufferSize = 1;
+    constexpr uint32_t kWgcAdaptiveMaxBufferSize = 2;
+    constexpr uint32_t kWgcAdaptiveFramePoolFlags =
+      WGC_IPC_FLAG_DRAIN_TO_LATEST |
+      WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
     std::atomic<std::int64_t> g_last_wgc_desktop_switch_us {0};
 
     std::int64_t now_steady_us() {
@@ -71,18 +75,18 @@ namespace platf::dxgi {
     }
 
     uint32_t wgc_ipc_flags() {
-      // Preserve ordered WGC delivery and keep the frame pool steady-state
-      // stable. Recreating or shrinking the pool during capture can introduce
-      // cadence spikes that are worse than bounded producer backpressure.
-      return 0;
+      // Keep WGC latency-first when the helper is keeping up. If producer
+      // backpressure appears, the helper can grow to a second frame, drain stale
+      // queued WGC frames, then shrink back after a quiet period.
+      return kWgcAdaptiveFramePoolFlags;
     }
 
     uint32_t wgc_initial_frame_buffer_size() {
-      return kWgcLatencyInitialBufferSize;
+      return kWgcLowLatencyInitialBufferSize;
     }
 
     uint32_t wgc_max_frame_buffer_size() {
-      return kWgcLatencyInitialBufferSize;
+      return kWgcAdaptiveMaxBufferSize;
     }
 
     struct frame_metadata_snapshot_t {

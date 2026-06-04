@@ -262,6 +262,27 @@ TEST(SunshineWgcCapture, HelperStartupAndStopAreBounded) {
   expect_contains(process_header, "bool wait_for(DWORD &exit_code, DWORD timeout_ms);");
 }
 
+TEST(SunshineWgcCapture, FramePoolStartsLowLatencyAndCanAdapt) {
+  const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
+  const auto ipc_source = read_source("src/platform/windows/ipc/ipc_session.cpp");
+
+  expect_contains(ipc_source, "constexpr uint32_t kWgcLowLatencyInitialBufferSize = 1;");
+  expect_contains(ipc_source, "constexpr uint32_t kWgcAdaptiveMaxBufferSize = 2;");
+  expect_contains(ipc_source, "WGC_IPC_FLAG_DRAIN_TO_LATEST");
+  expect_contains(ipc_source, "WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE");
+  expect_contains(ipc_source, "return kWgcLowLatencyInitialBufferSize;");
+  expect_contains(ipc_source, "return kWgcAdaptiveMaxBufferSize;");
+
+  expect_contains(helper_source, "_current_buffer_size > _initial_buffer_size");
+  expect_contains(helper_source, "allow_buffer_decrease: ");
+  expect_contains(helper_source, "recent_pool_pressure");
+  expect_contains(helper_source, "WGC drained ");
+  expect_contains(helper_source, "WGC capture diagnostics: interval_s=");
+  expect_contains(helper_source, "approx_extra_pool_latency_ms=");
+  expect_contains(helper_source, "capture_fps=");
+  expect_contains(helper_source, "publish_fps=");
+}
+
 TEST(SunshineWgcCapture, HelperDoesNotHoldSharedMutexWhileWaitingForLocalD3DContext) {
   const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
 

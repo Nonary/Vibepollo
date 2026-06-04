@@ -129,7 +129,10 @@ const int INITIAL_LOG_LEVEL = 2;
 /**
  * @brief Global configuration data received from the main process.
  */
-static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 2, 2, 0};
+constexpr uint32_t DEFAULT_WGC_IPC_FLAGS =
+  platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST |
+  platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
+static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS};
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 
@@ -1045,6 +1048,9 @@ private:
     uint64_t frame_qpc = 0;
   };
 
+  static constexpr auto WGC_DIAGNOSTICS_LOG_INTERVAL = std::chrono::seconds(15);
+  static constexpr auto WGC_DRAIN_LOG_INTERVAL = std::chrono::seconds(5);
+
   std::atomic<bool> _shutting_down {false};
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
@@ -1059,14 +1065,29 @@ private:
   std::deque<std::chrono::steady_clock::time_point> _drop_timestamps;  ///< Timestamps of recent frame drops for analysis
   std::atomic<int> _outstanding_frames {0};  ///< Number of frames currently being processed
   std::atomic<int> _peak_outstanding {0};  ///< Peak number of outstanding frames (for monitoring)
+  std::atomic<int64_t> _last_frame_pool_pressure_us {0};  ///< Last source drop/drain pressure signal
+  std::atomic<int64_t> _last_drain_log_us {0};  ///< Last rate-limited drain log timestamp
+  std::atomic<int64_t> _last_diagnostics_log_us {0};  ///< Last aggregate diagnostics log timestamp
   std::chrono::steady_clock::time_point _last_quiet_start = std::chrono::steady_clock::now();  ///< Last time frame processing became quiet
   std::chrono::steady_clock::time_point _last_buffer_check = std::chrono::steady_clock::now();  ///< Last time buffer size was checked
+  std::atomic<uint64_t> _captured_frames {0};
+  std::atomic<uint64_t> _frame_pool_empty_drops {0};
   std::atomic<uint64_t> _drained_pool_frames {0};
   std::atomic<uint64_t> _slow_context_waits {0};
   std::atomic<uint64_t> _slow_mutex_waits {0};
   std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
+  uint64_t _last_diagnostics_captured_frames = 0;
+  uint64_t _last_diagnostics_published_frames = 0;
+  uint64_t _last_diagnostics_empty_drops = 0;
+  uint64_t _last_diagnostics_drained_frames = 0;
+  uint64_t _last_diagnostics_replaced_frames = 0;
+  uint64_t _last_diagnostics_scratch_dropped = 0;
+  uint64_t _last_diagnostics_slow_context = 0;
+  uint64_t _last_diagnostics_slow_mutex = 0;
+  uint64_t _last_diagnostics_slow_hold = 0;
+  uint64_t _last_diagnostics_slow_copy = 0;
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1110,6 +1131,11 @@ public:
       _max_buffer_size
     );
     _current_buffer_size = _initial_buffer_size;
+
+    const auto now = std::chrono::steady_clock::now();
+    _last_quiet_start = now;
+    _last_buffer_check = now;
+    _last_diagnostics_log_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 
     _delivery_thread = std::jthread([this](std::stop_token stop_token) {
       delivery_thread_proc(stop_token);
@@ -1216,7 +1242,7 @@ public:
 
   /**
    * @brief Recreates the frame pool with a new buffer size for dynamic adjustment.
-   * @param buffer_size The number of frames to buffer (1 or 2).
+   * @param buffer_size The number of frames to buffer.
    * @returns true if the frame pool was recreated successfully, false otherwise.
    */
   bool create_or_adjust_frame_pool(uint32_t buffer_size) {
@@ -1295,8 +1321,14 @@ public:
       // Frame drop detected - record timestamp for sliding window analysis
       auto now = std::chrono::steady_clock::now();
       _drop_timestamps.push_back(now);
+      record_frame_pool_pressure(now);
 
-      BOOST_LOG(info) << "Frame drop detected (total drops in 5s window: " << _drop_timestamps.size() << ")";
+      const auto total_empty_drops = _frame_pool_empty_drops.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (total_empty_drops <= 5 || total_empty_drops % 120 == 0) {
+        BOOST_LOG(info) << "WGC frame pool returned no frame"
+                        << " (recent drops in 5s window=" << _drop_timestamps.size()
+                        << ", total=" << total_empty_drops << ")";
+      }
     } else {
       // Frame successfully retrieved
       try {
@@ -1325,13 +1357,113 @@ private:
     return (g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) != 0;
   }
 
-  void record_frame_arrival(uint32_t drained_frames) {
-    if (drained_frames > 0) {
-      const auto total_drained = _drained_pool_frames.fetch_add(drained_frames, std::memory_order_relaxed) + drained_frames;
-      if (total_drained == drained_frames || total_drained % 300 == 0) {
-        BOOST_LOG(debug) << "WGC drained " << drained_frames << " queued frame(s) from frame pool"
-                         << " (total drained=" << total_drained << ")";
+  static int64_t steady_time_us(const std::chrono::steady_clock::time_point &time) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(time.time_since_epoch()).count();
+  }
+
+  void record_frame_pool_pressure(const std::chrono::steady_clock::time_point &now) {
+    _last_frame_pool_pressure_us.store(steady_time_us(now), std::memory_order_relaxed);
+  }
+
+  static bool should_log_rate_limited(std::atomic<int64_t> &last_log_us, const std::chrono::steady_clock::time_point &now, std::chrono::microseconds interval) {
+    const auto now_us = steady_time_us(now);
+    auto last_us = last_log_us.load(std::memory_order_relaxed);
+    while (last_us == 0 || now_us - last_us >= interval.count()) {
+      if (last_log_us.compare_exchange_weak(last_us, now_us, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        return true;
       }
+    }
+    return false;
+  }
+
+  double expected_frame_ms() const {
+    return 1000.0 / static_cast<double>(std::max(1, g_config.target_fps));
+  }
+
+  double approximate_extra_pool_latency_ms(uint32_t buffer_size) const {
+    return buffer_size > _initial_buffer_size ?
+             static_cast<double>(buffer_size - _initial_buffer_size) * expected_frame_ms() :
+             0.0;
+  }
+
+  void record_frame_arrival(uint32_t drained_frames) {
+    _captured_frames.fetch_add(1, std::memory_order_relaxed);
+
+    if (drained_frames > 0) {
+      const auto now = std::chrono::steady_clock::now();
+      record_frame_pool_pressure(now);
+      const auto total_drained = _drained_pool_frames.fetch_add(drained_frames, std::memory_order_relaxed) + drained_frames;
+      if (should_log_rate_limited(_last_drain_log_us, now, std::chrono::duration_cast<std::chrono::microseconds>(WGC_DRAIN_LOG_INTERVAL))) {
+        BOOST_LOG(info) << "WGC drained " << drained_frames << " queued frame(s) from frame pool"
+                        << " (total_drained=" << total_drained
+                        << ", buffer=" << _current_buffer_size << "/" << _max_buffer_size
+                        << ", approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(_current_buffer_size) << ")";
+      }
+    }
+  }
+
+  void maybe_log_capture_diagnostics(const std::chrono::steady_clock::time_point &now) {
+    const auto now_us = steady_time_us(now);
+    auto last_log_us = _last_diagnostics_log_us.load(std::memory_order_relaxed);
+    const auto interval_us = std::chrono::duration_cast<std::chrono::microseconds>(WGC_DIAGNOSTICS_LOG_INTERVAL).count();
+
+    while (now_us - last_log_us >= interval_us) {
+      if (!_last_diagnostics_log_us.compare_exchange_weak(last_log_us, now_us, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        continue;
+      }
+
+      const double interval_s = static_cast<double>(now_us - last_log_us) / 1000000.0;
+      if (interval_s <= 0.0) {
+        return;
+      }
+
+      const auto captured = _captured_frames.load(std::memory_order_relaxed);
+      const auto published = _published_frames.load(std::memory_order_relaxed);
+      const auto empty_drops = _frame_pool_empty_drops.load(std::memory_order_relaxed);
+      const auto drained = _drained_pool_frames.load(std::memory_order_relaxed);
+      const auto replaced = _delivery_replaced_frames.load(std::memory_order_relaxed);
+      const auto scratch_dropped = _scratch_dropped_frames.load(std::memory_order_relaxed);
+      const auto slow_context = _slow_context_waits.load(std::memory_order_relaxed);
+      const auto slow_mutex = _slow_mutex_waits.load(std::memory_order_relaxed);
+      const auto slow_hold = _slow_shared_mutex_holds.load(std::memory_order_relaxed);
+      const auto slow_copy = _slow_copy_submissions.load(std::memory_order_relaxed);
+
+      const auto captured_delta = captured - _last_diagnostics_captured_frames;
+      const auto published_delta = published - _last_diagnostics_published_frames;
+      const auto empty_drop_delta = empty_drops - _last_diagnostics_empty_drops;
+      const auto drained_delta = drained - _last_diagnostics_drained_frames;
+      const auto replaced_delta = replaced - _last_diagnostics_replaced_frames;
+      const auto scratch_dropped_delta = scratch_dropped - _last_diagnostics_scratch_dropped;
+      const auto slow_context_delta = slow_context - _last_diagnostics_slow_context;
+      const auto slow_mutex_delta = slow_mutex - _last_diagnostics_slow_mutex;
+      const auto slow_hold_delta = slow_hold - _last_diagnostics_slow_hold;
+      const auto slow_copy_delta = slow_copy - _last_diagnostics_slow_copy;
+
+      _last_diagnostics_captured_frames = captured;
+      _last_diagnostics_published_frames = published;
+      _last_diagnostics_empty_drops = empty_drops;
+      _last_diagnostics_drained_frames = drained;
+      _last_diagnostics_replaced_frames = replaced;
+      _last_diagnostics_scratch_dropped = scratch_dropped;
+      _last_diagnostics_slow_context = slow_context;
+      _last_diagnostics_slow_mutex = slow_mutex;
+      _last_diagnostics_slow_hold = slow_hold;
+      _last_diagnostics_slow_copy = slow_copy;
+
+      BOOST_LOG(info) << "WGC capture diagnostics: interval_s=" << interval_s
+                      << " buffer=" << _current_buffer_size << "/" << _max_buffer_size
+                      << " approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(_current_buffer_size)
+                      << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
+                      << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
+                      << " drained=" << drained_delta
+                      << " empty_drops=" << empty_drop_delta
+                      << " delivery_replaced=" << replaced_delta
+                      << " scratch_dropped=" << scratch_dropped_delta
+                      << " slow_context=" << slow_context_delta
+                      << " slow_mutex=" << slow_mutex_delta
+                      << " slow_shared_hold=" << slow_hold_delta
+                      << " slow_copy=" << slow_copy_delta;
+      return;
     }
   }
 
@@ -1354,7 +1486,8 @@ private:
     if (_drop_timestamps.size() >= 2 && _current_buffer_size < _max_buffer_size) {
       uint32_t new_buffer_size = _current_buffer_size + 1;
       BOOST_LOG(info) << "Detected " << _drop_timestamps.size() << " frame drops in 5s window, increasing buffer from "
-                      << _current_buffer_size << " to " << new_buffer_size;
+                      << _current_buffer_size << " to " << new_buffer_size
+                      << " (approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(new_buffer_size) << ")";
       create_or_adjust_frame_pool(new_buffer_size);
       _drop_timestamps.clear();  // Reset after adjustment
       _peak_outstanding = 0;  // Reset peak tracking
@@ -1374,7 +1507,13 @@ private:
       return false;
     }
 
+    constexpr auto quiet_period = std::chrono::seconds(30);
+    const auto last_pressure_us = _last_frame_pool_pressure_us.load(std::memory_order_relaxed);
+    const auto quiet_period_us = std::chrono::duration_cast<std::chrono::microseconds>(quiet_period).count();
+    const bool recent_pool_pressure = last_pressure_us > 0 &&
+                                      steady_time_us(now) - last_pressure_us < quiet_period_us;
     bool is_quiet = _drop_timestamps.empty() &&
+                    !recent_pool_pressure &&
                     _peak_outstanding.load() <= static_cast<int>(_current_buffer_size) - 1;
 
     if (!is_quiet) {
@@ -1383,11 +1522,12 @@ private:
     }
 
     // Check if we've been quiet for 30 seconds
-    if (now - _last_quiet_start >= std::chrono::seconds(30) && _current_buffer_size > _initial_buffer_size) {
+    if (now - _last_quiet_start >= quiet_period && _current_buffer_size > _initial_buffer_size) {
       uint32_t new_buffer_size = _current_buffer_size - 1;
       BOOST_LOG(info) << "Sustained quiet period (30s) with peak occupancy " << _peak_outstanding.load()
-                      << " ≤ " << (_current_buffer_size - 1) << ", decreasing buffer from "
-                      << _current_buffer_size << " to " << new_buffer_size;
+                      << " <= " << (_current_buffer_size - 1) << ", decreasing buffer from "
+                      << _current_buffer_size << " to " << new_buffer_size
+                      << " (approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(new_buffer_size) << ")";
       create_or_adjust_frame_pool(new_buffer_size);
       _peak_outstanding = 0;  // Reset peak tracking
       _last_quiet_start = now;  // Reset quiet timer
@@ -1838,11 +1978,13 @@ private:
 
     // 2) Try to increase buffer count if we have recent drops
     if (try_increase_buffer_size(now)) {
+      maybe_log_capture_diagnostics(now);
       return;
     }
 
     // 3) Try to decrease buffer count if we've been quiet
     try_decrease_buffer_size(now);
+    maybe_log_capture_diagnostics(now);
   }
 };
 
@@ -1967,7 +2109,8 @@ void handle_ipc_message(std::span<const uint8_t> message) {
                     << ", min_update_interval_100ns: " << g_config.min_update_interval_100ns
                     << ", initial_buffers: " << g_config.initial_frame_buffer_size
                     << ", max_buffers: " << g_config.max_frame_buffer_size
-                    << ", drain_to_latest: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) ? "yes" : "no");
+                    << ", drain_to_latest: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) ? "yes" : "no")
+                    << ", allow_buffer_decrease: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) ? "yes" : "no");
     g_config_cv.notify_all();
   }
 }
