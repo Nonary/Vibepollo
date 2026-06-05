@@ -341,7 +341,7 @@ jobs:
             -DBUILD_WERROR=ON \
             -DBUILD_TESTS=OFF \
             -DBUILD_DOCS=OFF \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_BUILD_TYPE=Release \
             -DSUNSHINE_ENABLE_WEBRTC=ON \
             -DWEBRTC_ROOT="$(cygpath -u "${WEBRTC_ROOT}")" \
             -DWEBRTC_INCLUDE_DIR="$(cygpath -u "${WEBRTC_ROOT}")/include" \
@@ -462,6 +462,13 @@ jobs:
           fi
 
           strip --strip-debug --strip-unneeded "${binaries[@]}"
+
+          for binary in "${binaries[@]}"; do
+            if objdump -h "${binary}" | grep -Eq ' \.(debug|zdebug)'; then
+              echo "Unstripped debug sections remain in ${binary}" >&2
+              exit 1
+            fi
+          done
 
       # WiX already installed before configure so env:WIX is available
 
