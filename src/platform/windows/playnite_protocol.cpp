@@ -79,6 +79,7 @@ namespace platf::playnite {
           game.exe = g.value("exe", "");
           game.args = g.value("args", "");
           game.working_dir = g.value("workingDir", "");
+          game.install_dir = g.value("installDir", "");
           game.categories = to_string_list(g.value("categories", json::array()));
           game.plugin_id = g.value("pluginId", "");
           game.plugin_name = g.value("pluginName", "");

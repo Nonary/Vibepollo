@@ -54,6 +54,43 @@ namespace platf::playnite {
 
   // Time parsing helper moved to platf::playnite::sync
 
+  namespace {
+    // Steam/URL-launched games often arrive with no executable and no working/install dir in the
+    // games list, but their install directory IS reported on launch ("gameStarted") status
+    // messages. Cache those here so the icon extractor can still find the game executable and pull
+    // a high-resolution icon for games that lack a usable path in the library snapshot.
+    std::mutex g_install_dir_mutex;
+    std::unordered_map<std::string, std::string> g_install_dirs;  // lower(playnite id) -> install dir
+
+    std::string lower_copy(std::string s) {
+      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+      return s;
+    }
+
+    void remember_install_dir(const std::string &id, const std::string &dir) {
+      if (id.empty() || dir.empty()) {
+        return;
+      }
+      std::scoped_lock lk(g_install_dir_mutex);
+      g_install_dirs[lower_copy(id)] = dir;
+    }
+  }  // namespace
+
+  bool get_cached_install_dir(const std::string &playnite_id, std::string &out) {
+    if (playnite_id.empty()) {
+      return false;
+    }
+    std::scoped_lock lk(g_install_dir_mutex);
+    auto it = g_install_dirs.find(lower_copy(playnite_id));
+    if (it == g_install_dirs.end() || it->second.empty()) {
+      return false;
+    }
+    out = it->second;
+    return true;
+  }
+
   struct playnite_session_tracker_t {
     std::mutex mtx;
     std::string last_started_id;
@@ -655,6 +692,12 @@ namespace platf::playnite {
                          << "' id='" << msg.status_game_id
                          << "' exe='" << msg.status_exe
                          << "' installDir='" << msg.status_install_dir << "'";
+        if (!msg.status_game_id.empty() && !msg.status_install_dir.empty()) {
+          // Cache the install dir (cheap) so the next sync can pull the game's high-resolution
+          // icon. The heavy filesystem scan + icon extraction is intentionally NOT run here -- it
+          // must never block the IPC handler thread.
+          remember_install_dir(msg.status_game_id, msg.status_install_dir);
+        }
         if (msg.status_name == "gameStarted") {
           playnite_session_tracker().on_started(msg.status_game_id);
           platf::frame_limiter_streaming_refresh();
@@ -1332,31 +1375,41 @@ namespace platf::playnite {
         break;
       }
     }
-    if (!gptr || gptr->icon_path.empty()) {
+    if (!gptr) {
+      return false;
+    }
+    // Resolve the install directory from the plugin's explicit field, the library working dir,
+    // or the install dir cached from a prior "gameStarted" status message (Steam/URL games).
+    std::string install_dir = !gptr->install_dir.empty() ? gptr->install_dir : gptr->working_dir;
+    if (install_dir.empty()) {
+      std::string cached;
+      if (get_cached_install_dir(playnite_id, cached)) {
+        install_dir = cached;
+      }
+    }
+    // A game may have no Playnite icon yet still expose an executable we can pull one from.
+    if (gptr->icon_path.empty() && gptr->exe.empty() && install_dir.empty()) {
       return false;
     }
 
     try {
-      std::filesystem::path src = gptr->icon_path;
       std::filesystem::path dstDir = platf::appdata() / "covers";
       file_handler::make_directory(dstDir.string());
       std::filesystem::path dst = dstDir / ("playnite_icon_" + playnite_id + ".png");
-      bool ok = false;
-      std::error_code ec1, ec2;
-      if (std::filesystem::exists(dst)) {
-        auto dstTime = std::filesystem::last_write_time(dst, ec1);
-        auto srcTime = std::filesystem::last_write_time(src, ec2);
-        if (!ec1 && !ec2 && dstTime >= srcTime) {
-          ok = true;
-        }
-      }
-      if (!ok) {
-        std::wstring wsrc = src.wstring();
-        std::wstring wdst = dst.wstring();
-        ok = platf::img::convert_to_png_96dpi(wsrc, wdst);
-      }
-      if (ok) {
+      // Prefer the executable's high-resolution icon over Playnite's stored (often 32x32) icon.
+      platf::img::IconResolutionInfo diag;
+      if (platf::img::resolve_best_app_icon_png(
+            std::filesystem::path(gptr->icon_path).wstring(),
+            std::filesystem::path(gptr->exe).wstring(),
+            std::filesystem::path(install_dir).wstring(),
+            dst.wstring(),
+            &diag)) {
         out_path = dst.generic_string();
+        BOOST_LOG(debug) << "Playnite icon: id='" << playnite_id << "' name='" << gptr->name
+                         << "' installDir='" << install_dir
+                         << "' chosenExe='" << platf::dxgi::wide_to_utf8(diag.exe)
+                         << "' exeIcon=" << diag.exe_size << " playniteIcon=" << diag.icon_size
+                         << " -> width=" << platf::img::image_pixel_width(dst.wstring());
         return true;
       }
     } catch (...) {}

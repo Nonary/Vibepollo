@@ -145,6 +145,18 @@ namespace platf::playnite {
    */
   bool get_icon_png_for_playnite_game(const std::string &playnite_id, std::string &out_path);
 
+  /**
+   * @brief Look up a game's install directory cached from a prior "gameStarted" status message.
+   *
+   * Steam/URL-launched games frequently lack an executable or working directory in the library
+   * snapshot; their install directory is only reported when the game launches. This exposes that
+   * cached value so icon extraction can locate the game executable.
+   * @param playnite_id Playnite game identifier.
+   * @param out Receives the cached install directory on success.
+   * @return `true` if a non-empty install directory was cached for the game, `false` otherwise.
+   */
+  bool get_cached_install_dir(const std::string &playnite_id, std::string &out);
+
   // no-op: persistence helper moved to confighttp as refresh_client_apps_cache
 
   /**

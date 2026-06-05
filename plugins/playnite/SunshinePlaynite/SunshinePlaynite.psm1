@@ -1268,12 +1268,15 @@ function Get-PlayniteGames {
     try { if ($g.PluginId) { $pluginId = $g.PluginId.ToString() } } catch {}
     $pluginName = ''
     if ($pluginId -and $pluginMap.ContainsKey($pluginId)) { $pluginName = $pluginMap[$pluginId] }
+    $instDir = ''
+    try { if ($g.InstallDirectory) { $instDir = $g.InstallDirectory } } catch {}
     $games += @{
       id              = $g.Id.ToString()
       name            = $g.Name
       exe             = $act.exe
       args            = $act.args
       workingDir      = $act.workingDir
+      installDir      = $instDir
       categories      = $catNames
       pluginId        = $pluginId
       pluginName      = $pluginName

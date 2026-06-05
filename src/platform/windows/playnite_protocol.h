@@ -50,6 +50,7 @@ namespace platf::playnite {
     std::string exe;  ///< Launch executable path (may be empty).
     std::string args;  ///< Arguments passed on launch.
     std::string working_dir;  ///< Working directory (Playnite JSON key: workingDir).
+    std::string install_dir;  ///< Game install directory (Playnite JSON key: installDir).
     std::vector<std::string> categories;  ///< Category names attached to the game.
     std::string plugin_id;  ///< Library plugin identifier that owns the game.
     std::string plugin_name;  ///< Library plugin display name (best effort).

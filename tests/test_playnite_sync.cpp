@@ -1,5 +1,6 @@
 #include "src/platform/windows/playnite_sync.h"
 
+#include <filesystem>
 #include <gtest/gtest.h>
 
 using namespace platf::playnite;
@@ -104,4 +105,26 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
   purge_uninstalled_and_ttl(root, uninstalled, 1 /*days*/, now, last_played, true /*recent*/, true /*require repl*/, true /*remove uninstalled*/, false /*sync all*/, selected_ids, changed);
   EXPECT_TRUE(changed);
   EXPECT_EQ(root["apps"].size(), 0);
+}
+
+TEST(PlayniteSync_Metadata, KeepsBoxArtWhenGameIconMissing) {
+  const auto cover_path = std::filesystem::path {SUNSHINE_SOURCE_DIR} / "sunshine.png";
+  ASSERT_TRUE(std::filesystem::exists(cover_path));
+
+  Game game;
+  game.id = "fallback-icon";
+  game.name = "Fallback Icon";
+  game.box_art_path = cover_path.string();
+  game.icon_path.clear();
+
+  nlohmann::json app = nlohmann::json::object();
+  apply_game_metadata_to_app(game, app);
+
+  ASSERT_TRUE(app.contains("image-path"));
+  EXPECT_FALSE(app.contains("playnite-icon-path"));
+  EXPECT_NE(app["image-path"].get<std::string>().find("playnite_fallback-icon.png"), std::string::npos);
+
+  std::error_code ec;
+  std::filesystem::remove(platf::appdata() / "covers" / "playnite_fallback-icon.png", ec);
+  std::filesystem::remove(platf::appdata() / "covers" / "playnite_icon_fallback-icon.png", ec);
 }

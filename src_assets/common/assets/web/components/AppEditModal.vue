@@ -25,9 +25,19 @@
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-3">
             <div
-              class="h-14 w-14 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 text-primary flex items-center justify-center shadow-inner"
+              class="app-modal-icon"
+              :class="{
+                'app-modal-icon--playnite': hasHeaderArtwork,
+              }"
             >
-              <i class="fas fa-window-restore text-xl" />
+              <img
+                v-if="hasHeaderArtwork"
+                class="app-modal-icon__image"
+                :src="headerArtworkUrl"
+                :alt="form.name || 'Application'"
+                @error="headerArtworkFailed = true"
+              />
+              <i v-else class="fas fa-window-restore text-xl" />
             </div>
             <div class="flex flex-col">
               <span class="text-xl font-semibold">{{
@@ -1010,6 +1020,35 @@ const isPlayniteManaged = computed<boolean>(() => !!form.value.playniteId);
 const isPlayniteAuto = computed<boolean>(
   () => isPlayniteManaged.value && form.value.playniteManaged !== 'manual',
 );
+const headerArtworkFailed = ref(false);
+const headerArtworkKey = computed(() => {
+  const identity = String(
+    (props.app as ServerApp | null | undefined)?.uuid ||
+      form.value.playniteId ||
+      form.value.name ||
+      '',
+  );
+  const appAny = props.app as any;
+  return `${identity}|${form.value.playniteIconPath || ''}|${appAny?.['playnite-icon-version'] || ''}`;
+});
+const headerArtworkUrl = computed(() => {
+  const uuid = String((props.app as ServerApp | null | undefined)?.uuid || '');
+  if (!uuid) return '';
+  const appAny = props.app as any;
+  const version = appAny?.['playnite-icon-version'];
+  const base = `/api/apps/${encodeURIComponent(uuid)}/icon`;
+  return version ? `${base}?v=${version}` : base;
+});
+const hasHeaderArtwork = computed(
+  () =>
+    isPlayniteManaged.value &&
+    !!headerArtworkUrl.value &&
+    !!form.value.playniteIconPath &&
+    !headerArtworkFailed.value,
+);
+watch(headerArtworkKey, () => {
+  headerArtworkFailed.value = false;
+});
 
 const losslessExecutableStatus = ref<any | null>(null);
 const losslessExecutableCheckComplete = ref(false);
@@ -2843,6 +2882,45 @@ async function del() {
 <style scoped>
 .mobile-only-hidden {
   display: none;
+}
+
+.app-modal-icon {
+  width: 3.5rem;
+  height: 3.5rem;
+  flex: 0 0 3.5rem;
+  border-radius: 9999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: linear-gradient(
+    135deg,
+    rgb(var(--color-primary) / 0.2),
+    rgb(var(--color-primary) / 0.1)
+  );
+  color: rgb(var(--color-primary));
+  box-shadow: inset 0 0 0 1px rgb(var(--color-primary) / 0.14);
+}
+
+.app-modal-icon--playnite {
+  border-radius: 0.45rem;
+  background: rgb(var(--color-dark) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--color-dark) / 0.08);
+}
+
+.dark .app-modal-icon--playnite {
+  background: rgb(var(--color-light) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--color-light) / 0.08);
+}
+
+.app-modal-icon__image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  padding: 0.25rem;
+  /* High-quality smooth scaling; avoid forcing a GPU layer, which can soften the image. */
+  image-rendering: auto;
 }
 
 /* Mobile-friendly modal sizing and sticky header/footer */

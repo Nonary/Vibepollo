@@ -1576,6 +1576,37 @@ namespace confighttp {
         }
       }
 
+      // Attach cache-busting stamps for artwork so the UI re-fetches when an icon/cover is
+      // regenerated (the icon/cover URLs are otherwise stable and get cached by the browser).
+      // Added after persistence so these transient fields never get written to apps.json.
+      if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
+        auto art_stamp = [](const std::string &path) -> long long {
+          std::error_code ec;
+          auto t = fs::last_write_time(fs::path(path), ec);
+          if (ec) {
+            return 0;
+          }
+          return static_cast<long long>(t.time_since_epoch().count());
+        };
+        for (auto &app : file_tree["apps"]) {
+          try {
+            if (app.contains("playnite-icon-path") && app["playnite-icon-path"].is_string()) {
+              const auto v = art_stamp(app["playnite-icon-path"].get<std::string>());
+              if (v) {
+                app["playnite-icon-version"] = v;
+              }
+            }
+            if (app.contains("image-path") && app["image-path"].is_string()) {
+              const auto v = art_stamp(app["image-path"].get<std::string>());
+              if (v) {
+                app["image-version"] = v;
+              }
+            }
+          } catch (...) {
+          }
+        }
+      }
+
       send_response(response, file_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "GetApps: "sv << e.what();

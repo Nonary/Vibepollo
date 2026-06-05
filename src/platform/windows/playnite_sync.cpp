@@ -3,6 +3,8 @@
  */
 
 #include "playnite_sync.h"
+#include "src/logging.h"
+#include "src/platform/windows/playnite_integration.h"
 #include "src/uuid.h"
 
 #include <iomanip>
@@ -494,11 +496,29 @@ namespace platf::playnite::sync {
       }
     } catch (...) {}
     try {
-      if (!g.icon_path.empty()) {
-        auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
-        if (convert_playnite_image_to_png(g.icon_path, dst)) {
-          app["playnite-icon-path"] = dst.generic_string();
+      auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
+      // Resolve the install dir from the plugin's explicit field, the library working dir, or the
+      // dir cached from a prior "gameStarted" status message (Steam/URL games expose none in the
+      // snapshot). This lets us pull the high-resolution icon embedded in the game executable
+      // instead of Playnite's stored icon, which is frequently a tiny 32x32 image.
+      std::string install_dir = !g.install_dir.empty() ? g.install_dir : g.working_dir;
+      if (install_dir.empty()) {
+        std::string cached;
+        if (platf::playnite::get_cached_install_dir(g.id, cached)) {
+          install_dir = cached;
         }
+      }
+      platf::img::IconResolutionInfo diag;
+      if (platf::img::resolve_best_app_icon_png(
+            std::filesystem::path(g.icon_path).wstring(),
+            std::filesystem::path(g.exe).wstring(),
+            std::filesystem::path(install_dir).wstring(),
+            dst.wstring(),
+            &diag)) {
+        app["playnite-icon-path"] = dst.generic_string();
+        BOOST_LOG(debug) << "Playnite sync icon: name='" << g.name << "' installDir='" << install_dir
+                         << "' exeIcon=" << diag.exe_size << " playniteIcon=" << diag.icon_size
+                         << " -> width=" << platf::img::image_pixel_width(dst.wstring());
       } else if (app.contains("playnite-icon-path")) {
         app.erase("playnite-icon-path");
       }

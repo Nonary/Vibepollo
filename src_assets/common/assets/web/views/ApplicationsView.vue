@@ -210,7 +210,8 @@ function firstString(...values: unknown[]): string {
 }
 
 function playniteIconKey(app: App): string {
-  return firstString(app.uuid, app['playnite-id'], app.name);
+  const identity = firstString(app.uuid, app['playnite-id'], app.name);
+  return `${identity}|${app['playnite-icon-path'] || ''}|${app['playnite-icon-version'] || ''}`;
 }
 
 function appHasPlayniteIcon(app: App): boolean {
@@ -220,7 +221,9 @@ function appHasPlayniteIcon(app: App): boolean {
 }
 
 function playniteIconUrl(app: App): string {
-  return `/api/apps/${encodeURIComponent(app.uuid || '')}/icon`;
+  const version = app['playnite-icon-version'];
+  const base = `/api/apps/${encodeURIComponent(app.uuid || '')}/icon`;
+  return version ? `${base}?v=${version}` : base;
 }
 
 function onPlayniteIconError(app: App): void {
@@ -479,9 +482,9 @@ auth.onLogin(() => {
 }
 
 .apps-row__art {
-  width: 2.75rem;
-  height: 2.75rem;
-  flex: 0 0 2.75rem;
+  width: 3.25rem;
+  height: 3.25rem;
+  flex: 0 0 3.25rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -504,6 +507,8 @@ auth.onLogin(() => {
   display: block;
   object-fit: contain;
   padding: 0.25rem;
+  /* High-quality smooth scaling; avoid forcing a GPU layer, which can soften the image. */
+  image-rendering: auto;
 }
 
 .apps-row__fallback-icon {
