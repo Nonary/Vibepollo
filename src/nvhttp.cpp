@@ -20,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -1809,6 +1810,23 @@ namespace nvhttp {
       return nullptr;
     }
 
+    inline PERM client_perm(const crypto::named_cert_t *named_cert_p) {
+      return named_cert_p ? named_cert_p->perm : PERM::_no;
+    }
+
+    inline bool has_client_perm(const crypto::named_cert_t *named_cert_p, PERM perm) {
+      return !!(client_perm(named_cert_p) & perm);
+    }
+
+    inline void log_permission_denied(std::string_view action, const crypto::named_cert_t *named_cert_p) {
+      const auto perm = client_perm(named_cert_p);
+      if (named_cert_p) {
+        BOOST_LOG(debug) << "Permission " << action << " denied for [" << named_cert_p->name << "] (" << (uint32_t) perm << ")";
+      } else {
+        BOOST_LOG(debug) << "Permission " << action << " denied for unverified HTTPS client";
+      }
+    }
+
     template<class T>
     void print_req(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
       BOOST_LOG(verbose) << "HTTP "sv << request->method << ' ' << request->path << " tunnel="sv << tunnel<T>::to_string;
@@ -2127,9 +2145,9 @@ namespace nvhttp {
         tree.put("root.mac", platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())));
 
         auto named_cert_p = get_verified_cert(request);
-        const auto client_perm = named_cert_p ? named_cert_p->perm : PERM::_no;
+        const auto perm = client_perm(named_cert_p);
 
-        if (!!(client_perm & PERM::server_cmd)) {
+        if (!!(perm & PERM::server_cmd)) {
           pt::ptree &root_node = tree.get_child("root");
 
           if (config::sunshine.server_cmds.size() > 0) {
@@ -2140,17 +2158,15 @@ namespace nvhttp {
               root_node.push_back(std::make_pair("ServerCommand", cmd_node));
             }
           }
-        } else if (named_cert_p) {
-          BOOST_LOG(debug) << "Permission Get ServerCommand denied for [" << named_cert_p->name << "] (" << (uint32_t) client_perm << ")";
         } else {
-          BOOST_LOG(debug) << "Permission Get ServerCommand denied for unverified HTTPS client";
+          log_permission_denied("Get ServerCommand"sv, named_cert_p);
         }
 
-        tree.put("root.Permission", std::to_string((uint32_t) client_perm));
+        tree.put("root.Permission", std::to_string((uint32_t) perm));
 
 #ifdef _WIN32
         tree.put("root.VirtualDisplayCapable", true);
-        if (!!(client_perm & PERM::_all_actions)) {
+        if (!!(perm & PERM::_all_actions)) {
           tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
         } else {
           tree.put("root.VirtualDisplayDriverReady", true);
@@ -2376,7 +2392,7 @@ namespace nvhttp {
       apps.put("<xmlattr>.status_code", 200);
 
       auto named_cert_p = get_verified_cert(request);
-      if (!!(named_cert_p->perm & PERM::_all_actions)) {
+      if (has_client_perm(named_cert_p, PERM::_all_actions)) {
         auto current_appid = proc::proc.running();
         // Only expose the special "Terminate" entry (and the "busy minimal list" behavior)
         // when input-only mode is enabled. Otherwise, Moonlight handles terminate/resume UI
@@ -2444,7 +2460,7 @@ namespace nvhttp {
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
       } else {
-        BOOST_LOG(debug) << "Permission ListApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+        log_permission_denied("ListApp"sv, named_cert_p);
 
         pt::ptree app_node;
 
@@ -2488,7 +2504,7 @@ namespace nvhttp {
 
       auto named_cert_p = get_verified_cert(request);
       const auto request_client_identity = resolve_client_identity(request, named_cert_p);
-      auto perm = PERM::launch;
+      auto required_perm = PERM::launch;
 
       BOOST_LOG(verbose) << "Launching app [" << appid_str << "] with UUID [" << appuuid_str << "]";
       // BOOST_LOG(verbose) << "QS: " << request->query_string;
@@ -2497,11 +2513,11 @@ namespace nvhttp {
       if (
         current_appid > 0 && (appuuid_str != TERMINATE_APP_UUID || appid != proc::terminate_app_id) && (is_input_only || appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid))
       ) {
-        perm = PERM::_allow_view;
+        required_perm = PERM::_allow_view;
       }
 
-      if (!(named_cert_p->perm & perm)) {
-        BOOST_LOG(debug) << "Permission LaunchApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+      if (!has_client_perm(named_cert_p, required_perm)) {
+        log_permission_denied("LaunchApp"sv, named_cert_p);
 
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 403);
@@ -2896,8 +2912,8 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
     const auto request_client_identity = resolve_client_identity(request, named_cert_p);
-    if (!(named_cert_p->perm & PERM::_allow_view)) {
-      BOOST_LOG(debug) << "Permission ViewApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+    if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
+      log_permission_denied("ViewApp"sv, named_cert_p);
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -3145,8 +3161,8 @@ namespace nvhttp {
     });
 
     auto named_cert_p = get_verified_cert(request);
-    if (!(named_cert_p->perm & PERM::launch)) {
-      BOOST_LOG(debug) << "Permission CancelApp denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+    if (!has_client_perm(named_cert_p, PERM::launch)) {
+      log_permission_denied("CancelApp"sv, named_cert_p);
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
@@ -3184,8 +3200,8 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
 
-    if (!(named_cert_p->perm & PERM::_all_actions)) {
-      BOOST_LOG(debug) << "Permission Get AppAsset denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+    if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
+      log_permission_denied("Get AppAsset"sv, named_cert_p);
 
       fg.disable();
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
@@ -3211,9 +3227,9 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
 
     if (
-      !(named_cert_p->perm & PERM::_allow_view) || !(named_cert_p->perm & PERM::clipboard_read)
+      !has_client_perm(named_cert_p, PERM::_allow_view) || !has_client_perm(named_cert_p, PERM::clipboard_read)
     ) {
-      BOOST_LOG(debug) << "Permission Read Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+      log_permission_denied("Read Clipboard"sv, named_cert_p);
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
@@ -3257,9 +3273,9 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
 
     if (
-      !(named_cert_p->perm & PERM::_allow_view) || !(named_cert_p->perm & PERM::clipboard_set)
+      !has_client_perm(named_cert_p, PERM::_allow_view) || !has_client_perm(named_cert_p, PERM::clipboard_set)
     ) {
-      BOOST_LOG(debug) << "Permission Write Clipboard denied for [" << named_cert_p->name << "] (" << (uint32_t) named_cert_p->perm << ")";
+      log_permission_denied("Write Clipboard"sv, named_cert_p);
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
