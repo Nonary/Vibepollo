@@ -2622,6 +2622,8 @@ namespace video {
       return;
     }
 
+    auto shutdown_event = mail->event<bool>(mail::shutdown);
+
     bool force_sync_teardown = false;
 
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
@@ -2630,16 +2632,19 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session, &force_sync_teardown] {
-      if ((encoder.flags & ASYNC_TEARDOWN) && !force_sync_teardown) {
+    auto fail_guard = util::fail_guard([&encoder, &session, &force_sync_teardown, shutdown_event] {
+      const bool shutdown_teardown = shutdown_event && shutdown_event->peek();
+      const bool sync_teardown = force_sync_teardown || shutdown_teardown;
+      if ((encoder.flags & ASYNC_TEARDOWN) && !sync_teardown) {
         std::thread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
           BOOST_LOG(info) << "Async encoder teardown complete";
         }};
         encoder_teardown_thread.detach();
-      } else if ((encoder.flags & ASYNC_TEARDOWN) && force_sync_teardown) {
-        BOOST_LOG(debug) << "Using synchronous encoder teardown during capture reinit";
+      } else if ((encoder.flags & ASYNC_TEARDOWN) && sync_teardown) {
+        BOOST_LOG(debug) << "Using synchronous encoder teardown during "
+                         << (shutdown_teardown ? "shutdown"sv : "capture reinit"sv);
       }
     });
 
@@ -2657,7 +2662,6 @@ namespace video {
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
-    auto shutdown_event = mail->event<bool>(mail::shutdown);
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);

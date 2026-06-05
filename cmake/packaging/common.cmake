@@ -16,7 +16,11 @@ set(CPACK_RESOURCE_FILE_LICENSE ${PROJECT_SOURCE_DIR}/LICENSE)
 set(CPACK_PACKAGE_ICON ${PROJECT_SOURCE_DIR}/sunshine.png)
 # Ensure the generated installer filename uses the branded name
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}")
-set(CPACK_STRIP_FILES YES)
+if(CMAKE_BUILD_TYPE MATCHES "^(Debug|RelWithDebInfo)$")
+    set(CPACK_STRIP_FILES NO)
+else()
+    set(CPACK_STRIP_FILES YES)
+endif()
 
 # install common assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
