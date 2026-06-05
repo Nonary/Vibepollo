@@ -2605,9 +2605,15 @@ namespace webrtc_stream {
 
         if (video::probe_encoders()) {
 #ifdef _WIN32
-          // If probe failed, try ensuring a display is available for headless systems
-          auto ensure_result = VDISPLAY::ensure_display();
-          bool retry_failed = ensure_result.success ? video::probe_encoders() : true;
+          // If probe failed, try ensuring a display is available for headless systems.
+          // Never substitute a generic temporary display for a session that owns a per-client
+          // virtual display: it would displace that display and capture the wrong resolution.
+          // Instead just re-probe (the per-client display's async recovery re-applies it).
+          VDISPLAY::ensure_display_result ensure_result {};
+          if (!launch_session->virtual_display) {
+            ensure_result = VDISPLAY::ensure_display();
+          }
+          bool retry_failed = (launch_session->virtual_display || ensure_result.success) ? video::probe_encoders() : true;
           VDISPLAY::cleanup_ensure_display(ensure_result, !retry_failed);
           if (retry_failed) {
             return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};

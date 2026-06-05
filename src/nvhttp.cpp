@@ -2717,8 +2717,16 @@ namespace nvhttp {
         // or any number of other factors).
 
 #ifdef _WIN32
-      // Ensure a display is available for probing (creates a temporary virtual display if headless)
-      auto ensure_result = VDISPLAY::ensure_display();
+      // Ensure a display is available for probing (creates a temporary virtual display if headless).
+      // Skip this when the session owns a per-client virtual display: that display IS the probe
+      // target, and its async recovery monitor re-creates/re-applies it if a topology APPLY fails.
+      // Substituting a generic 1080p temporary display here would tear the per-client display down
+      // and make the temp the capture target (wrong resolution). Creation failure clears
+      // virtual_display, so genuinely headless sessions still fall through to ensure_display().
+      VDISPLAY::ensure_display_result ensure_result {};
+      if (!launch_session->virtual_display) {
+        ensure_result = VDISPLAY::ensure_display();
+      }
 #endif
 
         bool encoder_probe_failed = video::probe_encoders();
@@ -3048,7 +3056,13 @@ namespace nvhttp {
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
 #ifdef _WIN32
-      auto ensure_result = VDISPLAY::ensure_display();
+      // See the launch path above: never let the generic encoder-probe ensure display replace a
+      // per-client virtual display. Only create a temporary probe display when this session does
+      // not own one (genuinely headless, or per-client creation failed).
+      VDISPLAY::ensure_display_result ensure_result {};
+      if (!launch_session->virtual_display) {
+        ensure_result = VDISPLAY::ensure_display();
+      }
 #endif
       bool encoder_probe_failed = video::probe_encoders();
 

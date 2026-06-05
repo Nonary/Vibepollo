@@ -5061,7 +5061,14 @@ bool VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() {
 }
 
 uuid_util::uuid_t VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid() {
-  return ensure_persistent_guid();
+  // Reserved, deterministic identity for the headless encoder-probe / shared "Sunshine Temporary"
+  // display. It must never equal a per-client display GUID (those are derived from client stable
+  // ids via virtualDisplayUuidFromStableId), otherwise the temporary display becomes an identity
+  // twin of a paired client and defeats stable-identity matching. Deriving it from the fixed
+  // "sunshine-ensure" sentinel (the same client_uid used to create the temp display) keeps it
+  // stable across runs and immune to the state-file contamination that previously let
+  // root.virtual_display_guid hold a real client's display GUID.
+  return virtualDisplayUuidFromStableId("sunshine-ensure");
 }
 
 VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {

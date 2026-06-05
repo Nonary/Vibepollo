@@ -109,6 +109,57 @@ TEST(SunshineVirtualDisplay, TemporaryCreationDoesNotPersistSessionGuidAsSharedI
   EXPECT_EQ(source.find("write_guid_to_state_locked(requested_uuid)"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplay, EnsureDisplayReservedIdentityNeverCollidesWithClients) {
+  // The headless encoder-probe / "Sunshine Temporary" display is identified by the reserved
+  // "sunshine-ensure" sentinel. It must never resolve to the same identity as a real per-client
+  // virtual display. Regression: a client whose stable id mirrored a contaminated
+  // root.virtual_display_guid became an identity twin of the temporary display, which then
+  // displaced the per-client display and streamed at the wrong resolution.
+  const auto reserved = VDISPLAY::virtualDisplayUuidFromStableId("sunshine-ensure");
+
+  // Deterministic across calls (stable identity, no state-file dependency).
+  EXPECT_EQ(reserved, VDISPLAY::virtualDisplayUuidFromStableId("sunshine-ensure"));
+
+  // Distinct from canonical-GUID client identities, including the exact stable ids from the
+  // reported incident (TV and Mac clients).
+  EXPECT_NE(reserved, VDISPLAY::virtualDisplayUuidFromStableId("C19912B3-2432-D020-368E-65EC0EDD3C72"));
+  EXPECT_NE(reserved, VDISPLAY::virtualDisplayUuidFromStableId("2430544F-24C6-860F-B981-B84D70E57BFF"));
+
+  GUID reserved_guid {};
+  std::memcpy(&reserved_guid, reserved.b8, sizeof(reserved_guid));
+  EXPECT_NE(VDISPLAY::client_uuid_to_virtual_display_id(reserved_guid), 0u);
+  EXPECT_NE(
+    VDISPLAY::client_uuid_to_virtual_display_id(reserved_guid),
+    VDISPLAY::client_uuid_to_virtual_display_id(kClientGuid)
+  );
+}
+
+TEST(SunshineVirtualDisplay, PersistentVirtualDisplayUuidUsesReservedSentinel) {
+  const auto source = read_virtual_display_source();
+
+  const auto fn_pos = source.find("VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid()");
+  ASSERT_NE(fn_pos, std::string::npos);
+  const auto fn_body = source.substr(fn_pos, source.find('}', fn_pos) - fn_pos);
+
+  // The ensure/shared display identity must be the reserved sentinel, not the mutable,
+  // state-backed GUID that could be contaminated with a client's display identity.
+  expect_contains(fn_body, "virtualDisplayUuidFromStableId(\"sunshine-ensure\")");
+  EXPECT_EQ(fn_body.find("ensure_persistent_guid()"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplay, EncoderProbeEnsureDisplaySkippedForPerClientVirtualDisplay) {
+  // A session that owns a per-client virtual display must never be served the generic
+  // encoder-probe temporary display: creating it would tear down the per-client display and make
+  // the 1080p temp the capture target (wrong resolution).
+  const auto rtsp_source = read_source("src/nvhttp.cpp");
+  expect_contains(rtsp_source, "VDISPLAY::ensure_display_result ensure_result {};");
+  expect_contains(rtsp_source, "if (!launch_session->virtual_display) {");
+
+  const auto webrtc_source = read_source("src/webrtc_stream.cpp");
+  expect_contains(webrtc_source, "VDISPLAY::ensure_display_result ensure_result {};");
+  expect_contains(webrtc_source, "if (!launch_session->virtual_display) {");
+}
+
 TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
   const auto rtsp_source = read_source("src/nvhttp.cpp");
   expect_contains(
