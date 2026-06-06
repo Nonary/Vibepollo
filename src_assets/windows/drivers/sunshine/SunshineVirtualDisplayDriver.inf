@@ -10,7 +10,7 @@ ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}
 ClassVer=2.0
 Provider=%ManufacturerName%
 CatalogFile=SunshineVirtualDisplayDriver.cat
-DriverVer=05/28/2026,1.2.0.0
+DriverVer=06/06/2026,1.3.0.0
 PnpLockdown=1
 
 [Manufacturer]

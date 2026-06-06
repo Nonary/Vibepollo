@@ -201,17 +201,18 @@ TEST(SunshineVirtualDisplay, StreamStartRemovesRetainedProbeDisplayRegardlessOfS
   EXPECT_EQ(cleanup_body.find("!guid_equal(g_ensure_display_guid, guid)"), std::string::npos);
 }
 
-TEST(SunshineVirtualDisplay, StreamReadinessDoesNotAcceptInactiveCandidates) {
+TEST(SunshineVirtualDisplay, StreamReadinessAllowsHelperToActivateEnumeratedDisplay) {
   const auto source = read_virtual_display_source();
 
   const auto wait_pos = source.find("bool wait_for_virtual_display_ready(");
   ASSERT_NE(wait_pos, std::string::npos);
   const auto wait_body = source.substr(wait_pos, source.find("bool wait_for_virtual_display_teardown", wait_pos) - wait_pos);
 
-  expect_contains(wait_body, "bool allow_inactive_success = false");
-  expect_contains(wait_body, "if (allow_inactive_success && enumerated_at && now - *enumerated_at >= activation_grace)");
-  expect_contains(source, "wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, allow_pending_enumeration)");
-  expect_contains(source, "wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, allow_pending_enumeration)");
+  expect_contains(wait_body, "if (enumerated_at && now - *enumerated_at >= activation_grace)");
+  expect_contains(wait_body, "continuing so the display helper can apply the session mode");
+  EXPECT_EQ(wait_body.find("allow_inactive_success"), std::string::npos);
+  expect_contains(source, "wait_for_virtual_display_ready(display_name, device_id, width, height)");
+  expect_contains(source, "wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)");
 }
 
 TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {
