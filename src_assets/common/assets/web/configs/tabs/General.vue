@@ -174,7 +174,9 @@ function removeServerCommand(index: number) {
           class="rounded-md border border-dark/10 dark:border-light/10 p-3 space-y-3"
         >
           <div class="flex items-center justify-between gap-2">
-            <div class="text-xs opacity-70">Command {{ index + 1 }}</div>
+            <div class="text-xs opacity-70">
+              {{ $t('config.server_cmd_entry', { index: index + 1 }) }}
+            </div>
             <div class="flex items-center gap-2">
               <Checkbox
                 v-if="platform === 'windows'"
@@ -198,7 +200,7 @@ function removeServerCommand(index: number) {
             <ConfigInputField
               :id="`server_cmd_name_${index}`"
               v-model="command.name"
-              :label="$t('_common.name')"
+              :label="$t('config.server_cmd_name')"
               desc=""
               @update:model-value="markManualDirty()"
             />
@@ -206,7 +208,7 @@ function removeServerCommand(index: number) {
             <ConfigInputField
               :id="`server_cmd_cmd_${index}`"
               v-model="command.cmd"
-              :label="$t('_common.cmd')"
+              :label="$t('config.server_cmd_command')"
               desc=""
               type="textarea"
               monospace

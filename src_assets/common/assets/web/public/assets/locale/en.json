@@ -37,7 +37,12 @@
     "remove": "Remove",
     "clear_all": "Clear All",
     "refresh": "Refresh",
-    "close": "Close"
+    "close": "Close",
+    "cmd": "Command",
+    "name": "Name",
+    "cmd_val": "Command",
+    "default_global": "Default (global)",
+    "learn_more": "Learn More"
   },
   "apps": {
     "actions": "Actions",
@@ -117,14 +122,43 @@
     "wait_all_desc": "This will continue streaming until all processes started by the app have terminated. When unchecked, streaming will stop when the initial app process exits, even if other app processes are still running.",
     "working_dir": "Working Directory",
     "working_dir_desc": "The working directory that should be passed to the process. For example, some applications use the working directory to search for configuration files. If not set, Vibepollo will default to the parent directory of the command",
-    "more_fields_below": "More fields below — scroll"
+    "more_fields_below": "More fields below — scroll",
+    "alphabetize": "Alphabetize",
+    "already_ordered": "Applications are already ordered.",
+    "applications_reorder_desc": "Drag applications to change the order shown to clients.",
+    "applications_tips": "Tip: save the order after rearranging applications.",
+    "close_warning": "Are you sure you want to close the running application?",
+    "cmd_": "Command",
+    "cmd_state_name": "State Commands",
+    "cmd_state_desc": "Commands to run when the application state changes.",
+    "env_app_status": "The current application status",
+    "env_app_uuid": "The application UUID",
+    "env_client_name": "The client name",
+    "env_client_uuid": "The client UUID",
+    "env_rtss_cli_example": "Example - RTSS command line:",
+    "env_sunshine_compatibility": "Sunshine compatibility environment variables are also provided.",
+    "export_launcher_file": "Export Launcher File",
+    "launch_failed": "Failed to launch application: ",
+    "launch_local_client": "This action must be run from the host. Launch the local client?",
+    "launch_warning": "Launch this application now?",
+    "reorder_failed": "Failed to save application order: ",
+    "resolution_scale_factor": "Resolution Scale Factor",
+    "resolution_scale_factor_desc": "Scale the requested client resolution before applying display automation.",
+    "save_failed": "Failed to save application: ",
+    "save_order": "Save Order"
   },
   "offline": {
     "title": "Lost Connection to Vibepollo",
     "description": "The web interface lost connectivity to the Vibepollo service.",
     "retrying": "Attempting to reconnect… The page will refresh once available.",
     "refresh_now": "Refresh now",
-    "close_hint": "If you stopped Vibepollo intentionally, you may close this tab."
+    "close_hint": "If you stopped Vibepollo intentionally, you may close this tab.",
+    "output_name_desc_linux": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_desc_macos": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_desc_unix": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_desc_windows": "Manually specify a display device id to use for capture. If unset, the primary display is captured. Note: If you specified a GPU above, this display must be connected to that GPU.",
+    "output_name": "Display Id",
+    "output_name_default": "Primary display (default)"
   },
   "config": {
     "amf": {
@@ -604,7 +638,41 @@
     "virtual_display_layout": "Virtual display layout",
     "virtual_display_mode": "Virtual display mode",
     "dd_step_4": "Step 4",
-    "search_options": "Search configuration options..."
+    "search_options": "Search configuration options...",
+    "adapter_name_placeholder_linux": "/dev/dri/renderD128",
+    "adapter_name_placeholder_macos": "Automatic",
+    "adapter_name_placeholder_unix": "/dev/dri/renderD128",
+    "audio_sink_desc_unix": "The name of the audio sink used for Audio Loopback. If you do not specify this variable, the system will select the default monitor device.",
+    "audio_sink_placeholder_linux": "alsa_output.pci-0000_09_00.3.analog-stereo",
+    "audio_sink_placeholder_unix": "alsa_output.pci-0000_09_00.3.analog-stereo",
+    "dd_mode_remapping_desc_5_sops_mixed_only": "The \"Optimize Game Settings\" option must be enabled in the Moonlight client, otherwise entries with a specified resolution field will be skipped.",
+    "dd_mode_remapping_desc_5_sops_resolution_only": "The \"Optimize Game Settings\" option must be enabled in the Moonlight client, otherwise remapping will be skipped.",
+    "dd_resolution_option_ogs_desc": "The \"Optimize Game Settings\" option must be enabled in the Moonlight client for this to work.",
+    "dd_virtual_display_permanent_count": "Permanent virtual displays",
+    "dd_virtual_display_permanent_count_desc": "Number of always-present Vibepollo virtual displays to keep outside streaming sessions. 0 lets Vibepollo create temporary displays only while streaming.",
+    "log_level": "Log Level",
+    "log_level_0": "Verbose",
+    "log_level_1": "Debug",
+    "log_level_2": "Info",
+    "log_level_3": "Warning",
+    "log_level_4": "Error",
+    "log_level_5": "Fatal",
+    "log_level_6": "None",
+    "log_level_desc": "The minimum log level printed to standard out",
+    "nvenc_intra_refresh": "Intra Refresh",
+    "nvenc_intra_refresh_desc": "Use periodic intra refresh instead of full keyframes when supported. Automatic leaves the encoder default.",
+    "nvenc_section_desc": "Hardware encoder settings for NVIDIA GPUs.",
+    "output_name_desc_linux": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_desc_macos": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
+    "output_name_unix": "Display number",
+    "output_name_windows": "Display Device Id",
+    "server_cmd": "Server Commands",
+    "server_cmd_desc": "Commands that authorized clients can run on the host.",
+    "virtual_display_status_hint": "Use the Vibepollo virtual display driver to automatically create a high-refresh virtual monitor. If the driver reports an error, reinstall Vibepollo or repair the driver before streaming.",
+    "virtual_display_status_label": "Vibepollo virtual display driver:",
+    "server_cmd_entry": "Command {index}",
+    "server_cmd_name": "Command Name",
+    "server_cmd_command": "Command"
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
@@ -1081,7 +1149,33 @@
     "pair_success": "Success! Please check Moonlight to continue",
     "pin_pairing": "PIN Pairing",
     "send": "Pair",
-    "warning_msg": "Make sure you have access to the client you are pairing with. This software can give total control to your computer, so be careful!"
+    "warning_msg": "Make sure you have access to the client you are pairing with. This software can give total control to your computer, so be careful!",
+    "allow_client_commands": "Allow client commands",
+    "allow_client_commands_desc": "Allow this client to run configured connect and disconnect commands.",
+    "client_do_cmd": "Connect Commands",
+    "client_do_cmd_desc": "Commands to run when this client connects.",
+    "client_undo_cmd": "Disconnect Commands",
+    "client_undo_cmd_desc": "Commands to run when this client disconnects.",
+    "device_management": "Device Management",
+    "device_management_desc": "Manage paired clients and their permissions.",
+    "device_management_warning": "Removing a device prevents it from starting or resuming future sessions.",
+    "display_mode_override_error": "Use the format 1920x1080x60 or leave this field blank.",
+    "generate_pin": "Generate PIN",
+    "otp_expired": "PIN expired",
+    "otp_expired_msg": "Generate a new PIN and try pairing again.",
+    "otp_msg": "Enter this PIN in your Moonlight client to pair with Vibepollo.",
+    "otp_pair_now": "Pair this client now?",
+    "otp_pairing": "PIN Pairing",
+    "otp_passphrase": "PIN",
+    "otp_success": "PIN generated successfully.",
+    "pair_success_check_perm": "Pairing succeeded. Review this client's permissions before continuing.",
+    "save_client_error": "Failed to save client: ",
+    "unpair_all": "Unpair All",
+    "unpair_all_error": "Error while unpairing devices.",
+    "unpair_all_success": "All devices unpaired.",
+    "unpair_single_no_devices": "There are no paired devices.",
+    "unpair_single_success": "Device unpaired.",
+    "unpair_single_unknown": "Unknown Client"
   },
   "resource_card": {
     "github_discussions": "GitHub Discussions",
@@ -1091,7 +1185,8 @@
     "resources": "Resources",
     "discord_desc": "Join the community",
     "resources_desc": "Resources for Vibepollo!",
-    "third_party_notice": "Third Party Notice"
+    "third_party_notice": "Third Party Notice",
+    "lizardbyte_website": "LizardByte Website"
   },
   "troubleshooting": {
     "dd_reset": "Reset Persistent Display Device Settings",
@@ -1165,7 +1260,16 @@
     "vigembus_install_error": "Failed to install ViGEmBus driver.",
     "vigembus_install_success": "ViGEmBus driver installed successfully! You may need to restart your computer.",
     "vigembus_force_reinstall_button": "Force Reinstall ViGEmBus v{version}",
-    "vigembus_not_installed": "ViGEmBus is not installed."
+    "vigembus_not_installed": "ViGEmBus is not installed.",
+    "search_results_window": "Showing {start}-{end} of {count} results",
+    "quit_apollo": "Quit Apollo",
+    "quit_apollo_confirm": "Are you sure you want to quit Apollo?",
+    "quit_apollo_desc": "Stop the Apollo service. Active sessions will be disconnected.",
+    "quit_apollo_success": "Apollo quit request sent.",
+    "quit_apollo_success_ongoing": "Apollo is shutting down. This page may stop responding.",
+    "restart_apollo": "Restart Apollo",
+    "restart_apollo_desc": "Restart the Apollo service. Active sessions will be disconnected.",
+    "restart_apollo_success": "Apollo restart request sent."
   },
   "featured": {
     "categories": {
@@ -1192,7 +1296,8 @@
     "create_creds_alert": "The credentials below are needed to access Vibepollo's Web UI. Keep them safe, since you will never see them again!",
     "greeting": "Welcome to Vibepollo!",
     "login": "Login",
-    "welcome_success": "This page will reload soon, your browser will ask you for the new credentials"
+    "welcome_success": "This page will reload soon, your browser will ask you for the new credentials",
+    "login_success": "Login successful! Redirecting..."
   },
   "auth": {
     "title": "API Token Management",
@@ -1463,5 +1568,40 @@
     "all_releases_title": "All releases",
     "release_line_title": "Release line {line}",
     "current_version_title": "Current version {version}"
+  },
+  "_comment": "Fallback strings copied from English until translated.",
+  "client_card": {
+    "clients": "Clients",
+    "clients_desc": "Download a Moonlight-compatible client to connect to Vibepollo.",
+    "generic_moonlight_clients_desc": "Generic Moonlight clients may work, but Artemis clients are recommended for Vibepollo."
+  },
+  "stats": {
+    "config_desc": "Collect realtime host and session metrics for dashboards and history views.",
+    "config_header": "Realtime statistics",
+    "disabled_desc": "Enable realtime stats in configuration to collect host metrics and session history charts.",
+    "disabled_title": "Realtime stats are disabled",
+    "enable": "Enable stats",
+    "history_empty": "No host stats recorded yet.",
+    "history_title": "Host stats history",
+    "subtitle": "Monitor active streams, host metrics, and session history.",
+    "title": "Performance Stats"
+  },
+  "login": {
+    "save_password": "Save password"
+  },
+  "logout": {
+    "logged_out": "Logged out",
+    "logged_out_desc": "You have been signed out of Vibepollo.",
+    "login": "Log in"
+  },
+  "permissions": {
+    "clipboard_set": "Set clipboard",
+    "clipboard_read": "Read clipboard",
+    "server_cmd": "Run server commands",
+    "input_controller": "Controller input",
+    "input_touch": "Touch input",
+    "input_pen": "Pen input",
+    "input_mouse": "Mouse input",
+    "input_kbd": "Keyboard input"
   }
 }
