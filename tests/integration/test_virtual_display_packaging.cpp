@@ -405,6 +405,23 @@ TEST(SunshineVirtualDisplayPackaging, RtspLaunchIgnoresUnmatchedUniqueIdForPerCl
   EXPECT_EQ(nvhttp.find("client_uuid = get_arg(args, \"uniqueid\", \"\");"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, ClientPermissionChecksUseRememberedTlsIdentityBeforeThreadLocalCert) {
+  const auto nvhttp = read_source_file("src/nvhttp.cpp");
+
+  const auto getVerifiedPos = nvhttp.find("inline crypto::named_cert_t *get_verified_cert(req_https_t request)");
+  ASSERT_NE(getVerifiedPos, std::string::npos);
+  const auto clientPermPos = nvhttp.find("inline PERM client_perm", getVerifiedPos);
+  ASSERT_NE(clientPermPos, std::string::npos);
+  const auto getVerifiedBody = nvhttp.substr(getVerifiedPos, clientPermPos - getVerifiedPos);
+
+  const auto rememberedPos = getVerifiedBody.find("auto remembered = get_remembered_tls_client_identity(request)");
+  const auto threadLocalPos = getVerifiedBody.find("if (!tl_peer_certificate)");
+  ASSERT_NE(rememberedPos, std::string::npos);
+  ASSERT_NE(threadLocalPos, std::string::npos);
+  EXPECT_LT(rememberedPos, threadLocalPos);
+  expect_contains(getVerifiedBody, "named_cert_p && named_cert_p->uuid == remembered->uuid");
+}
+
 TEST(SunshineVirtualDisplayPackaging, BootstrapperPassesVirtualDisplayRemovalChoiceToMsi) {
   const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
 

@@ -1791,7 +1791,16 @@ namespace nvhttp {
       static auto constexpr to_string = "NONE"sv;
     };
 
-    inline crypto::named_cert_t *get_verified_cert(req_https_t) {
+    inline crypto::named_cert_t *get_verified_cert(req_https_t request) {
+      if (auto remembered = get_remembered_tls_client_identity(request)) {
+        std::lock_guard<std::mutex> lock(client_mutex);
+        for (const auto &named_cert_p : client_root.named_devices) {
+          if (named_cert_p && named_cert_p->uuid == remembered->uuid) {
+            return named_cert_p.get();
+          }
+        }
+      }
+
       if (!tl_peer_certificate) {
         return nullptr;
       }
