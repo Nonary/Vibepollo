@@ -1965,7 +1965,24 @@ namespace video {
             reinit_event.raise(true);
             disp->prepare_for_reinit();
 
-            // Some classes of images contain references to the display --> display won't delete unless img is deleted
+            // Some classes of images contain references to the display --> display won't delete unless img is deleted.
+            //
+            // D3D capture images additionally own cross-device SHARED keyed-mutex surfaces
+            // that the per-client encoder devices still have open. Freeing them now (the old
+            // behavior, on a detached thread) races the encoders' teardown and the GPU's
+            // deferred eviction during the mode change, which can bugcheck the kernel video
+            // memory manager (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e) when a second client is
+            // connected. These surfaces hold no display reference, so deferring them does not
+            // block the use_count() wait below; hold them until every encoder has dropped its
+            // display reference, then free them once no device still has them open.
+#ifdef _WIN32
+            std::vector<std::shared_ptr<platf::img_t>> deferred_d3d_images;
+            for (auto &img : imgs) {
+              if (img && is_d3d_capture_image(img)) {
+                deferred_d3d_images.emplace_back(std::move(img));
+              }
+            }
+#endif
             release_image_pool();
 
             // display_wp is modified in this thread only
@@ -1977,6 +1994,11 @@ namespace video {
               // slow or hung driver call. Spinning here until those threads are force-joined
               // is what lets a wedged reinit escalate into the 10s teardown watchdog crash.
               if (!capture_ctx_queue->running()) {
+#ifdef _WIN32
+                // Don't block this bail-out on a synchronous D3D teardown; hand the deferred
+                // surfaces to the async releaser as the old code path did.
+                release_d3d_capture_images_async(std::move(deferred_d3d_images));
+#endif
                 return;
               }
 
@@ -1999,6 +2021,15 @@ namespace video {
 
               std::this_thread::sleep_for(20ms);
             }
+
+#ifdef _WIN32
+            // Every encoder device has now released the shared capture surfaces (their
+            // display references reached zero above), so it is safe to free them. Done
+            // synchronously on this thread rather than on a detached thread, so no surface
+            // is freed while another device still references it or while it is still queued
+            // for GPU eviction during the mode change.
+            deferred_d3d_images.clear();
+#endif
 
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
@@ -2632,9 +2663,17 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session, &force_sync_teardown, shutdown_event] {
+    auto fail_guard = util::fail_guard([&encoder, &session, &force_sync_teardown, &reinit_event, shutdown_event] {
       const bool shutdown_teardown = shutdown_event && shutdown_event->peek();
-      const bool sync_teardown = force_sync_teardown || shutdown_teardown;
+      // A display reinit (resolution/HDR/colorspace change, e.g. alt-tabbing a game on a
+      // virtual display) frees the shared capture surfaces this encoder's device has open.
+      // Tearing the encoder down on a detached thread during that window abandons a hung
+      // NVENC session that races the surface free and the GPU's deferred eviction, which can
+      // bugcheck the kernel video memory manager (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e),
+      // especially with a second client connected. Force an ordered synchronous teardown
+      // whenever a reinit is in progress so this encoder releases its surfaces before the
+      // capture side frees them.
+      const bool sync_teardown = force_sync_teardown || shutdown_teardown || reinit_event.peek();
       if ((encoder.flags & ASYNC_TEARDOWN) && !sync_teardown) {
         std::thread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
