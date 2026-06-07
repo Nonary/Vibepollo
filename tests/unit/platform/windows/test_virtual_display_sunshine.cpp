@@ -174,6 +174,20 @@ TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
   );
 }
 
+TEST(SunshineVirtualDisplay, ActiveRtspJoinSkipsVirtualDisplayPreparation) {
+  const auto source = read_source("src/nvhttp.cpp");
+
+  const auto skip_pos = source.find("another session is active; joining existing capture target without display changes");
+  ASSERT_NE(skip_pos, std::string::npos);
+
+  const auto recreate_pos = source.find("resume requested virtual display capture but no active virtual display was found");
+  ASSERT_NE(recreate_pos, std::string::npos);
+  EXPECT_LT(skip_pos, recreate_pos);
+
+  expect_contains(source, "if (!no_active_sessions) {");
+  expect_contains(source, "launch_session->virtual_display = false;");
+}
+
 TEST(SunshineVirtualDisplay, ResolverCanDisableGenericFallback) {
   const auto source = read_virtual_display_source();
 
