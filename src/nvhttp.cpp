@@ -834,7 +834,6 @@ namespace nvhttp {
       return std::nullopt;
     }
 
-
     std::optional<config::video_t::virtual_display_layout_e> parse_virtual_display_layout_override(const std::string &value) {
       if (value.empty()) {
         return std::nullopt;
@@ -868,13 +867,19 @@ namespace nvhttp {
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
 
       nlohmann::json root = nlohmann::json::object();
-      if (fs::exists(sunshine_path)) {
+      std::error_code sunshine_exists_ec;
+      const bool sunshine_exists = fs::exists(sunshine_path, sunshine_exists_ec);
+      if (sunshine_exists_ec) {
+        BOOST_LOG(error) << "Couldn't inspect "sv << sunshine_path << ": "sv << sunshine_exists_ec.message();
+        return;
+      }
+      if (sunshine_exists) {
         try {
           std::ifstream in(sunshine_path);
           in >> root;
         } catch (const std::exception &e) {
           BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
-          root = nlohmann::json::object();
+          return;
         }
       }
 
@@ -970,13 +975,8 @@ namespace nvhttp {
         };
 
         pt::ptree vibeshine_tree;
-        if (fs::exists(vibeshine_path)) {
-          try {
-            pt::read_json(vibeshine_path, vibeshine_tree);
-          } catch (const std::exception &e) {
-            BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
-            vibeshine_tree = {};
-          }
+        if (!statefile::load_json_for_update(vibeshine_path, vibeshine_tree)) {
+          return;
         }
 
         auto &vibe_root = ensure_root(vibeshine_tree);

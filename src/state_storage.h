@@ -25,6 +25,15 @@ namespace statefile {
   void write_json_atomic(const std::string &path, const boost::property_tree::ptree &tree);
 
   /**
+   * @brief Load an existing JSON file before a read/modify/write update.
+   *
+   * Missing files are treated as an empty tree and return true. Existing files
+   * that cannot be inspected or parsed return false so callers do not overwrite
+   * the last on-disk state with a partial replacement.
+   */
+  bool load_json_for_update(const std::string &path, boost::property_tree::ptree &tree);
+
+  /**
    * @brief Best-effort repair for Windows config ACL inheritance.
    *
    * A previous session history build could protect the shared config directory
