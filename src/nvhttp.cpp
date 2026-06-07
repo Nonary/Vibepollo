@@ -868,14 +868,18 @@ namespace nvhttp {
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
 
       nlohmann::json root = nlohmann::json::object();
-      if (fs::exists(sunshine_path)) {
+      std::error_code state_exists_error;
+      if (fs::exists(sunshine_path, state_exists_error)) {
         try {
           std::ifstream in(sunshine_path);
           in >> root;
         } catch (const std::exception &e) {
           BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
-          root = nlohmann::json::object();
+          return;
         }
+      } else if (state_exists_error) {
+        BOOST_LOG(error) << "Couldn't inspect "sv << sunshine_path << ": "sv << state_exists_error.message();
+        return;
       }
 
       root["root"] = nlohmann::json::object();
@@ -970,13 +974,8 @@ namespace nvhttp {
         };
 
         pt::ptree vibeshine_tree;
-        if (fs::exists(vibeshine_path)) {
-          try {
-            pt::read_json(vibeshine_path, vibeshine_tree);
-          } catch (const std::exception &e) {
-            BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
-            vibeshine_tree = {};
-          }
+        if (!statefile::load_json_for_update(vibeshine_path, vibeshine_tree)) {
+          return;
         }
 
         auto &vibe_root = ensure_root(vibeshine_tree);

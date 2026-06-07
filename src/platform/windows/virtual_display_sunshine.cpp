@@ -2775,12 +2775,8 @@ namespace VDISPLAY_SUNSHINE {
       std::lock_guard<std::mutex> lock(statefile::state_mutex());
       const fs::path path(path_str);
       pt::ptree tree;
-      try {
-        if (fs::exists(path)) {
-          pt::read_json(path.string(), tree);
-        }
-      } catch (...) {
-        tree = pt::ptree {};
+      if (!statefile::load_json_for_update(path.string(), tree)) {
+        return;
       }
 
       tree.put("root.virtual_display_guid", uuid.string());

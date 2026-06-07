@@ -32,6 +32,12 @@ namespace statefile {
 
     std::once_flag migration_once;
 
+    enum class json_load_result_e {
+      loaded,
+      missing,
+      failed,
+    };
+
     pt::ptree &ensure_root(pt::ptree &tree) {
       auto it = tree.find("root");
       if (it == tree.not_found()) {
@@ -39,6 +45,43 @@ namespace statefile {
         return inserted->second;
       }
       return it->second;
+    }
+
+    json_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
+      out = {};
+      if (path.empty()) {
+        BOOST_LOG(error) << "statefile: refusing to update empty state path";
+        return json_load_result_e::failed;
+      }
+
+      std::error_code ec;
+      if (!fs::exists(path, ec)) {
+        if (ec) {
+          BOOST_LOG(error) << "statefile: unable to inspect "sv << path.string() << ": "sv << ec.message();
+          return json_load_result_e::failed;
+        }
+        return json_load_result_e::missing;
+      }
+
+      if (!fs::is_regular_file(path, ec) || ec) {
+        if (ec) {
+          BOOST_LOG(error) << "statefile: unable to inspect "sv << path.string() << ": "sv << ec.message();
+        } else {
+          BOOST_LOG(error) << "statefile: refusing to update non-file state path "sv << path.string();
+        }
+        return json_load_result_e::failed;
+      }
+
+      try {
+        pt::ptree parsed;
+        pt::read_json(path.string(), parsed);
+        out = std::move(parsed);
+        return json_load_result_e::loaded;
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
+                         << " after failed read: "sv << e.what();
+        return json_load_result_e::failed;
+      }
     }
 
     bool load_tree_if_exists(const fs::path &path, pt::ptree &out) {
@@ -56,6 +99,30 @@ namespace statefile {
 
     void write_tree(const fs::path &path, const pt::ptree &tree) {
       write_json_atomic(path.string(), tree);
+    }
+
+    bool parse_json_file(const fs::path &path, pt::ptree *tree = nullptr) {
+      try {
+        pt::ptree parsed;
+        pt::read_json(path.string(), parsed);
+        if (tree) {
+          *tree = std::move(parsed);
+        }
+        return true;
+      } catch (...) {
+        return false;
+      }
+    }
+
+    bool parse_json_string(const std::string &contents) {
+      try {
+        std::istringstream in(contents);
+        pt::ptree parsed;
+        pt::read_json(in, parsed);
+        return true;
+      } catch (...) {
+        return false;
+      }
     }
 
 #ifdef _WIN32
@@ -229,11 +296,29 @@ namespace statefile {
   }
 
   void write_json_atomic(const std::string &path, const pt::ptree &tree) {
+    if (path.empty()) {
+      throw std::runtime_error("atomic JSON write path is empty");
+    }
+
     std::ostringstream out;
     pt::write_json(out, tree);
-    if (file_handler::write_file(path.c_str(), out.str()) != 0) {
+    const std::string contents = out.str();
+    if (!parse_json_string(contents)) {
+      throw std::runtime_error("refusing to write malformed JSON");
+    }
+
+    const fs::path target(path);
+    if (file_handler::write_file(path.c_str(), contents) != 0) {
       throw std::runtime_error("atomic JSON write failed");
     }
+
+    if (!parse_json_file(target)) {
+      throw std::runtime_error("atomic JSON write verification failed");
+    }
+  }
+
+  bool load_json_for_update(const std::string &path, pt::ptree &tree) {
+    return load_tree_for_update(fs::path(path), tree) != json_load_result_e::failed;
   }
 
   const std::string &sunshine_state_path() {
@@ -293,16 +378,21 @@ namespace statefile {
       std::lock_guard<std::mutex> guard(state_mutex());
 
       pt::ptree old_tree;
-      const bool old_loaded = load_tree_if_exists(old_path, old_tree);
+      const auto old_load_result = load_tree_for_update(old_path, old_tree);
+      if (old_load_result == json_load_result_e::failed) {
+        return;
+      }
 
       pt::ptree new_tree;
-      const bool new_loaded = load_tree_if_exists(new_path, new_tree);
-      (void) new_loaded;
+      const auto new_load_result = load_tree_for_update(new_path, new_tree);
+      if (new_load_result == json_load_result_e::failed) {
+        return;
+      }
 
       bool old_modified = false;
       bool new_modified = false;
 
-      if (old_loaded) {
+      if (old_load_result == json_load_result_e::loaded) {
         auto old_root_it = old_tree.find("root");
         if (old_root_it != old_tree.not_found()) {
           auto &old_root = old_root_it->second;
@@ -413,7 +503,9 @@ namespace statefile {
     const fs::path path(path_str);
 
     pt::ptree root;
-    (void) load_tree_if_exists(path, root);
+    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+      return;
+    }
 
     // Build the exclusion list as a property tree array
     pt::ptree exclusions_pt;

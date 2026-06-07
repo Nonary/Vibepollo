@@ -323,8 +323,12 @@ namespace confighttp {
     if (_dependencies.file_exists(state_path)) {
       try {
         _dependencies.read_json(state_path, root);
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "ApiTokenManager: refusing to write state after failed read: " << e.what();
+        return;
       } catch (...) {
-        root = {};
+        BOOST_LOG(error) << "ApiTokenManager: refusing to write state after unknown read failure";
+        return;
       }
     }
     pt::ptree tokens_pt;
@@ -803,48 +807,53 @@ namespace confighttp {
         try {
           _dependencies.read_json(state_path, root);
         } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "SessionTokenManager: failed reading state file: " << e.what();
-          root = {};
+          BOOST_LOG(error) << "SessionTokenManager: refusing to write state after failed read: " << e.what();
+          write_failed = true;
+        } catch (...) {
+          BOOST_LOG(error) << "SessionTokenManager: refusing to write state after unknown read failure";
+          write_failed = true;
         }
       }
 
-      pt::ptree sessions_pt;
-      for (const auto &entry : snapshot) {
-        const auto &hash = entry.first;
-        const auto &token = entry.second;
-        pt::ptree node;
-        node.put("hash", hash);
-        node.put("username", token.username);
-        node.put("created_at", std::chrono::duration_cast<std::chrono::seconds>(token.created_at.time_since_epoch()).count());
-        node.put("expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.expires_at.time_since_epoch()).count());
-        node.put("refresh_expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.refresh_expires_at.time_since_epoch()).count());
-        node.put("last_seen", std::chrono::duration_cast<std::chrono::seconds>(token.last_seen.time_since_epoch()).count());
-        node.put("remember_me", token.remember_me);
-        if (!token.refresh_token_hash.empty()) {
-          node.put("refresh_token_hash", token.refresh_token_hash);
+      if (!write_failed) {
+        pt::ptree sessions_pt;
+        for (const auto &entry : snapshot) {
+          const auto &hash = entry.first;
+          const auto &token = entry.second;
+          pt::ptree node;
+          node.put("hash", hash);
+          node.put("username", token.username);
+          node.put("created_at", std::chrono::duration_cast<std::chrono::seconds>(token.created_at.time_since_epoch()).count());
+          node.put("expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.expires_at.time_since_epoch()).count());
+          node.put("refresh_expires_at", std::chrono::duration_cast<std::chrono::seconds>(token.refresh_expires_at.time_since_epoch()).count());
+          node.put("last_seen", std::chrono::duration_cast<std::chrono::seconds>(token.last_seen.time_since_epoch()).count());
+          node.put("remember_me", token.remember_me);
+          if (!token.refresh_token_hash.empty()) {
+            node.put("refresh_token_hash", token.refresh_token_hash);
+          }
+          if (!token.rotation_id.empty()) {
+            node.put("rotation_id", token.rotation_id);
+          }
+          if (!token.user_agent.empty()) {
+            node.put("user_agent", token.user_agent);
+          }
+          if (!token.remote_address.empty()) {
+            node.put("remote_address", token.remote_address);
+          }
+          if (!token.device_label.empty()) {
+            node.put("device_label", token.device_label);
+          }
+          sessions_pt.push_back({"", node});
         }
-        if (!token.rotation_id.empty()) {
-          node.put("rotation_id", token.rotation_id);
-        }
-        if (!token.user_agent.empty()) {
-          node.put("user_agent", token.user_agent);
-        }
-        if (!token.remote_address.empty()) {
-          node.put("remote_address", token.remote_address);
-        }
-        if (!token.device_label.empty()) {
-          node.put("device_label", token.device_label);
-        }
-        sessions_pt.push_back({"", node});
-      }
 
-      root.put_child("root.session_tokens", sessions_pt);
+        root.put_child("root.session_tokens", sessions_pt);
 
-      try {
-        _dependencies.write_json(state_path, root);
-      } catch (const std::exception &e) {
-        BOOST_LOG(error) << "SessionTokenManager: failed writing state file: " << e.what();
-        write_failed = true;
+        try {
+          _dependencies.write_json(state_path, root);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "SessionTokenManager: failed writing state file: " << e.what();
+          write_failed = true;
+        }
       }
     }
 
