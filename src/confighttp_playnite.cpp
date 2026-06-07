@@ -649,13 +649,8 @@ namespace confighttp {
       std::lock_guard<std::mutex> lock(statefile::state_mutex());
       fs::path path(path_str);
       pt::ptree tree;
-      if (fs::exists(path)) {
-        try {
-          pt::read_json(path.string(), tree);
-        } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "Crash dismissal: failed to read existing state file: " << e.what();
-          tree = {};
-        }
+      if (!statefile::load_json_for_update(path.string(), tree)) {
+        return false;
       }
       auto &root = ensure_pt_root(tree);
       pt::ptree node;

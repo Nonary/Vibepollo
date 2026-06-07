@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 using namespace confighttp;
@@ -371,6 +372,47 @@ TEST(SessionTokenManagerStatefulTest, RefreshTokenRenewsExpiredAccessToken) {
   EXPECT_TRUE(manager.validate_session_token(refreshed->session_token));
 }
 
+TEST(SessionTokenManagerStatefulTest, SaveDoesNotOverwriteStateWhenExistingFileCannotBeRead) {
+  SessionTokenManagerDependencies deps;
+  std::vector<std::string> token_stream {"session-1", "refresh-1", "rot-1"};
+  deps.rand_alphabet = [&token_stream](std::size_t) {
+    auto value = token_stream.front();
+    token_stream.erase(token_stream.begin());
+    return value;
+  };
+  const auto now = std::chrono::system_clock::now();
+  deps.now = [now]() {
+    return now;
+  };
+  deps.hash = [](const std::string &input) {
+    return input + "_hash";
+  };
+  deps.file_exists = [](const std::string &) {
+    return true;
+  };
+
+  int read_count = 0;
+  int write_count = 0;
+  deps.read_json = [&read_count](const std::string &, pt::ptree &) {
+    ++read_count;
+    throw std::runtime_error("state read failed");
+  };
+  deps.write_json = [&write_count](const std::string &, const pt::ptree &) {
+    ++write_count;
+  };
+
+  SessionTokenManager manager(deps);
+  const auto bundle = manager.issue_session_tokens("admin", std::chrono::seconds(60));
+
+  EXPECT_FALSE(bundle.session_token.empty());
+  EXPECT_EQ(read_count, 1);
+  EXPECT_EQ(write_count, 0);
+
+  manager.save_session_tokens();
+  EXPECT_EQ(read_count, 2);
+  EXPECT_EQ(write_count, 0);
+}
+
 TEST_F(ApiTokenManagerTest, given_invalid_token_when_authenticating_then_should_return_false) {
   // Given: An invalid token that doesn't exist in the system
   EXPECT_CALL(*mock_deps, hash("invalid_token"))
@@ -652,6 +694,22 @@ TEST_F(ApiTokenManagerTest, given_tokens_exist_when_saving_tokens_then_should_wr
   manager->save_api_tokens();
 
   // Then: File should be written (verified by mock expectation)
+}
+
+TEST_F(ApiTokenManagerTest, given_existing_state_read_fails_when_saving_tokens_then_should_not_write_empty_state) {
+  std::map<std::string, std::set<std::string, std::less<>>, std::less<>> path_methods;
+  path_methods["/api/data"] = {"GET"};
+  ApiTokenInfo token_info {"test_hash", path_methods, "test_user", test_time};
+  InjectToken(token_info);
+
+  EXPECT_CALL(*mock_deps, file_exists(_))
+    .WillOnce(Return(true));
+  EXPECT_CALL(*mock_deps, read_json(_, _))
+    .WillOnce(Throw(std::runtime_error("state read failed")));
+  EXPECT_CALL(*mock_deps, write_json(_, _))
+    .Times(0);
+
+  manager->save_api_tokens();
 }
 
 TEST_F(ApiTokenManagerTest, given_default_dependencies_when_creating_manager_then_should_work_correctly) {

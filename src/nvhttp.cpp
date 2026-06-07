@@ -874,7 +874,7 @@ namespace nvhttp {
           in >> root;
         } catch (const std::exception &e) {
           BOOST_LOG(error) << "Couldn't read "sv << sunshine_path << ": "sv << e.what();
-          root = nlohmann::json::object();
+          return;
         }
       }
 
@@ -975,7 +975,7 @@ namespace nvhttp {
             pt::read_json(vibeshine_path, vibeshine_tree);
           } catch (const std::exception &e) {
             BOOST_LOG(error) << "Couldn't read "sv << vibeshine_path << ": "sv << e.what();
-            vibeshine_tree = {};
+            return;
           }
         }
 
