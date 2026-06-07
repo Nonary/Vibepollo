@@ -345,6 +345,19 @@ namespace nvhttp {
                        << "' active_output='" << config::get_active_output_name()
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
                        << "'.";
+
+      if (!no_active_sessions) {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_failed = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+        launch_session->virtual_display_ready_since.reset();
+        launch_session->virtual_display_recreated_on_demand = false;
+        launch_session->virtual_display_needs_resume_apply = false;
+        BOOST_LOG(info) << "Display helper: another session is active; joining existing capture target without display changes.";
+        return;
+      }
+
       if (has_app_output_override && !client_requests_virtual) {
         request_virtual_display = false;
         disable_virtual_display_request();
