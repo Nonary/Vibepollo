@@ -157,6 +157,13 @@ static safe_winevent_hook g_desktop_switch_hook = nullptr;
 static bool g_secure_desktop_detected = false;
 
 /**
+ * @brief Set when the GraphicsCaptureItem reports it was closed (display mode change,
+ * DWM restart, monitor removal). FrameArrived never fires again after this, so the
+ * helper must exit and let the main process reinitialize capture.
+ */
+static std::atomic<bool> g_capture_item_closed {false};
+
+/**
  * @brief Pending verification deadline for desktop switches that were not immediately secure.
  */
 static std::optional<std::chrono::steady_clock::time_point> g_pending_secure_desktop_check_deadline;
@@ -2312,6 +2319,15 @@ int main(int argc, char *argv[]) {
   // Calculate final resolution based on config and monitor info
   display_manager.configure_capture_resolution(item);
 
+  // WGC silently stops delivering frames once the capture item closes; display mode
+  // changes, DWM restarts and monitor removals all do this (especially on Windows 10).
+  // Exit so the main process notices the broken pipe and reinitializes capture instead
+  // of freezing on the last delivered frame.
+  item.Closed([](GraphicsCaptureItem const &, winrt::Windows::Foundation::IInspectable const &) {
+    BOOST_LOG(warning) << "GraphicsCaptureItem closed; shutting down so capture can be reinitialized";
+    g_capture_item_closed.store(true, std::memory_order_release);
+  });
+
   // Use FP16 whenever the stream is HDR or the target output is already in
   // Advanced Color. WGC can otherwise hand us an SDR UNORM frame pool for an
   // HDR desktop during encoder probing, and that stale format can carry into
@@ -2383,7 +2399,7 @@ int main(int argc, char *argv[]) {
 
   // Main message loop
   bool shutdown_requested = false;
-  while (pipe_shared->is_connected() && !shutdown_requested) {
+  while (pipe_shared->is_connected() && !shutdown_requested && !g_capture_item_closed.load(std::memory_order_acquire)) {
     // Process window messages and check for shutdown
     if (!process_window_messages(shutdown_requested)) {
       break;
@@ -2394,7 +2410,11 @@ int main(int argc, char *argv[]) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Reduced from 5ms for lower IPC jitter
   }
 
-  BOOST_LOG(info) << "Main process disconnected, shutting down...";
+  if (g_capture_item_closed.load(std::memory_order_acquire)) {
+    BOOST_LOG(info) << "Capture item closed, shutting down...";
+  } else {
+    BOOST_LOG(info) << "Main process disconnected, shutting down...";
+  }
 
   pipe_shared->stop();
 

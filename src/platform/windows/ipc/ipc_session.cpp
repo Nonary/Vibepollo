@@ -126,6 +126,10 @@ namespace platf::dxgi {
     }
   }  // namespace
 
+  void note_wgc_desktop_switch() {
+    record_recent_wgc_desktop_switch();
+  }
+
   bool recent_wgc_desktop_switch_grace_active() {
     const auto last_switch_us = g_last_wgc_desktop_switch_us.load(std::memory_order_relaxed);
     if (last_switch_us == 0) {
