@@ -469,6 +469,8 @@ namespace platf::dxgi {
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
     std::shared_ptr<platf::img_t> _last_cached_frame;
+    std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
+    std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {
@@ -554,6 +556,15 @@ namespace platf::dxgi {
      */
     DXGI_FORMAT _last_format = DXGI_FORMAT_UNKNOWN;
 
+    /**
+     * @brief Start of the current frame-wait stall (zero when frames are flowing).
+     */
+    std::chrono::steady_clock::time_point _wgc_stall_start {};
+
+    /**
+     * @brief Last secure-desktop probe performed during a stall.
+     */
+    std::chrono::steady_clock::time_point _last_secure_desktop_probe {};
   };
 
   /**

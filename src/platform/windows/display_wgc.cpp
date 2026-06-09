@@ -101,6 +101,34 @@ namespace platf::dxgi {
       return config::video.capture == "wgcc";
     }
 
+    // The helper detects UAC/lock transitions via a desktop-switch hook, but it runs
+    // with the user's token and its notification can be missed entirely (hook not yet
+    // installed, pipe down, event lost). Without it the stream freezes on the last
+    // pre-UAC frame forever. As a safety net, once frame delivery stalls, probe the
+    // input desktop from this process; when the secure desktop is active, force a
+    // reinit so the factory swaps to the DXGI fallback.
+    bool wgc_stall_requires_dxgi_fallback(std::chrono::steady_clock::time_point &stall_start, std::chrono::steady_clock::time_point &last_probe) {
+      constexpr auto stall_before_first_probe = std::chrono::milliseconds(200);
+      constexpr auto probe_interval = std::chrono::milliseconds(250);
+
+      const auto now = std::chrono::steady_clock::now();
+      if (stall_start.time_since_epoch().count() == 0) {
+        stall_start = now;
+        last_probe = {};
+      }
+
+      if (now - stall_start < stall_before_first_probe) {
+        return false;
+      }
+
+      if (last_probe.time_since_epoch().count() != 0 && now - last_probe < probe_interval) {
+        return false;
+      }
+
+      last_probe = now;
+      return is_secure_desktop_active();
+    }
+
     capture_e forward_cached_wgc_frame(std::shared_ptr<platf::img_t> cached_frame, std::shared_ptr<platf::img_t> &img_out) {
       if (!cached_frame) {
         return capture_e::timeout;
@@ -170,11 +198,19 @@ namespace platf::dxgi {
 
     auto capture_status = _ipc_session->wait_for_frame(timeout);
     if (capture_status != capture_e::ok) {
-      if (capture_status == capture_e::timeout && is_wgc_constant_mode()) {
-        return forward_cached_wgc_frame(_last_cached_frame, img_out);
+      if (capture_status == capture_e::timeout) {
+        if (wgc_stall_requires_dxgi_fallback(_wgc_stall_start, _last_secure_desktop_probe)) {
+          BOOST_LOG(info) << "WGC frames stalled while the secure desktop is active; falling back to DXGI capture";
+          note_wgc_desktop_switch();
+          return capture_e::reinit;
+        }
+        if (is_wgc_constant_mode()) {
+          return forward_cached_wgc_frame(_last_cached_frame, img_out);
+        }
       }
       return capture_status;
     }
+    _wgc_stall_start = {};
 
     // Peek the shared texture's descriptor without taking the keyed mutex.
     // The descriptor is fixed at session setup; reading it here lets us know
@@ -406,12 +442,20 @@ namespace platf::dxgi {
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
-      if (status == capture_e::timeout && is_wgc_constant_mode()) {
-        return forward_cached_wgc_frame(_last_cached_frame, img_out);
+      if (status == capture_e::timeout) {
+        if (wgc_stall_requires_dxgi_fallback(_wgc_stall_start, _last_secure_desktop_probe)) {
+          BOOST_LOG(info) << "WGC frames stalled while the secure desktop is active; falling back to DXGI capture";
+          note_wgc_desktop_switch();
+          return capture_e::reinit;
+        }
+        if (is_wgc_constant_mode()) {
+          return forward_cached_wgc_frame(_last_cached_frame, img_out);
+        }
       }
       // For the default mode just return the capture status on timeouts.
       return status;
     }
+    _wgc_stall_start = {};
 
     // Get description of the captured texture
     D3D11_TEXTURE2D_DESC desc;
