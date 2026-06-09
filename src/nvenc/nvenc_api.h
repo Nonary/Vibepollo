@@ -146,6 +146,12 @@ namespace nvenc::api {
     }
   }
 
+  // Struct revisions below must match the NV_ENC_*_VER macros in each SDK's
+  // nvEncodeAPI.h (ffnvcodec sdk/<version> branches). Drivers dispatch struct
+  // layout by revision, so an understated revision makes the driver read the
+  // older layout: SDK 12.2 already uses the 13.0-era revisions, including the
+  // separate input/output bit-depth fields (10-bit silently breaks otherwise).
+
   constexpr uint32_t function_list_version(uint32_t api_version) {
     return make_struct_version(api_version, 2U);
   }
@@ -165,9 +171,9 @@ namespace nvenc::api {
         return make_struct_version(api_version, 5U, true);
 
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 6U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 7U, true);
 
@@ -183,9 +189,9 @@ namespace nvenc::api {
 
       case make_api_version(12U, 0U):
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 8U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 9U, true);
 
@@ -199,9 +205,9 @@ namespace nvenc::api {
       case make_api_version(11U, 0U):
       case make_api_version(12U, 0U):
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 4U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 5U, true);
 
@@ -215,9 +221,9 @@ namespace nvenc::api {
       case make_api_version(11U, 0U):
       case make_api_version(12U, 0U):
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 1U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 2U, true);
 
@@ -232,6 +238,7 @@ namespace nvenc::api {
 
   constexpr uint32_t event_params_version(uint32_t api_version) {
     switch (api_version) {
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 2U);
 
@@ -251,9 +258,9 @@ namespace nvenc::api {
 
       case make_api_version(12U, 0U):
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 6U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 7U, true);
 
@@ -271,9 +278,9 @@ namespace nvenc::api {
         return make_struct_version(api_version, 2U);
 
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 1U, true);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 2U, true);
 
@@ -289,9 +296,9 @@ namespace nvenc::api {
 
       case make_api_version(12U, 0U):
       case make_api_version(12U, 1U):
-      case make_api_version(12U, 2U):
         return make_struct_version(api_version, 4U);
 
+      case make_api_version(12U, 2U):
       case make_api_version(13U, 0U):
         return make_struct_version(api_version, 5U);
 
