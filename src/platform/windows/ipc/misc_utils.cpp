@@ -240,7 +240,11 @@ namespace platf::dxgi {
     // Open the input desktop for the current session
     HDESK hDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP);
     if (!hDesk) {
-      return false;  // can't open — treat as not secure
+      // Secure desktops (Winlogon/SAD) deny access to processes running with the
+      // interactive user's token, such as the WGC capture helper. An access-denied
+      // failure therefore means the input desktop is one we may not see — treat it
+      // as secure so UAC/lock transitions are detected from non-SYSTEM processes.
+      return GetLastError() == ERROR_ACCESS_DENIED;
     }
 
     bool isSecure = false;

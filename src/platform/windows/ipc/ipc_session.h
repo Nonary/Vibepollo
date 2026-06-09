@@ -32,6 +32,12 @@ namespace platf::dxgi {
    * @return `true` while DXGI should still be preferred after a helper desktop-switch notification.
    */
   bool recent_wgc_desktop_switch_grace_active();
+
+  /**
+   * @brief Record a desktop switch detected outside the helper (e.g. a secure-desktop
+   * probe from the main process) so the DXGI-fallback grace window applies.
+   */
+  void note_wgc_desktop_switch();
   /**
    * @brief Shared WGC IPC session encapsulating helper process, control pipe, shared texture and sync primitives.
    * Manages lifecycle & communication with the helper process, duplication of shared textures, keyed mutex
