@@ -96,26 +96,35 @@ TEST(NvencApiTest, StructVersionMappingsMatchReviewedValues) {
   EXPECT_EQ(nvenc::api::initialize_params_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 5U, true));
   EXPECT_EQ(nvenc::api::initialize_params_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 5U, true));
   EXPECT_EQ(nvenc::api::initialize_params_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 6U, true));
+  EXPECT_EQ(nvenc::api::initialize_params_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 7U, true));
   EXPECT_EQ(nvenc::api::initialize_params_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 7U, true));
 
   EXPECT_EQ(nvenc::api::config_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 7U, true));
   EXPECT_EQ(nvenc::api::config_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 8U, true));
+  EXPECT_EQ(nvenc::api::config_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 8U, true));
+  EXPECT_EQ(nvenc::api::config_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 9U, true));
   EXPECT_EQ(nvenc::api::config_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 9U, true));
 
   EXPECT_EQ(nvenc::api::preset_config_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 4U, true));
   EXPECT_EQ(nvenc::api::preset_config_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 4U, true));
+  EXPECT_EQ(nvenc::api::preset_config_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 5U, true));
   EXPECT_EQ(nvenc::api::preset_config_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 5U, true));
 
   EXPECT_EQ(nvenc::api::reconfigure_params_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 1U, true));
   EXPECT_EQ(nvenc::api::reconfigure_params_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 1U, true));
+  EXPECT_EQ(nvenc::api::reconfigure_params_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 2U, true));
   EXPECT_EQ(nvenc::api::reconfigure_params_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 2U, true));
 
   EXPECT_EQ(nvenc::api::pic_params_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 4U, true));
   EXPECT_EQ(nvenc::api::pic_params_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 6U, true));
+  EXPECT_EQ(nvenc::api::pic_params_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 6U, true));
+  EXPECT_EQ(nvenc::api::pic_params_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 7U, true));
   EXPECT_EQ(nvenc::api::pic_params_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 7U, true));
 
   EXPECT_EQ(nvenc::api::register_resource_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 3U));
   EXPECT_EQ(nvenc::api::register_resource_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 4U));
+  EXPECT_EQ(nvenc::api::register_resource_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 4U));
+  EXPECT_EQ(nvenc::api::register_resource_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 5U));
   EXPECT_EQ(nvenc::api::register_resource_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 5U));
 }
 
@@ -123,13 +132,14 @@ TEST(NvencApiTest, LockBitstreamVersionHandlesSdkSpecificShapeChanges) {
   EXPECT_EQ(nvenc::api::lock_bitstream_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 1U));
   EXPECT_EQ(nvenc::api::lock_bitstream_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 2U));
   EXPECT_EQ(nvenc::api::lock_bitstream_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 1U, true));
+  EXPECT_EQ(nvenc::api::lock_bitstream_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 2U, true));
   EXPECT_EQ(nvenc::api::lock_bitstream_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 2U, true));
 }
 
-TEST(NvencApiTest, EventParamsVersionOnlyBumpsAtSdk130) {
+TEST(NvencApiTest, EventParamsVersionBumpsAtSdk122) {
   EXPECT_EQ(nvenc::api::event_params_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 1U));
   EXPECT_EQ(nvenc::api::event_params_version(kApi12_0), nvenc::api::make_struct_version(kApi12_0, 1U));
   EXPECT_EQ(nvenc::api::event_params_version(kApi12_1), nvenc::api::make_struct_version(kApi12_1, 1U));
-  EXPECT_EQ(nvenc::api::event_params_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 1U));
+  EXPECT_EQ(nvenc::api::event_params_version(kApi12_2), nvenc::api::make_struct_version(kApi12_2, 2U));
   EXPECT_EQ(nvenc::api::event_params_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 2U));
 }
