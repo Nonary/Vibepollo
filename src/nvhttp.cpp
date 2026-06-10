@@ -1827,13 +1827,32 @@ namespace nvhttp {
       return !!(client_perm(named_cert_p) & perm);
     }
 
-    inline void log_permission_denied(std::string_view action, const crypto::named_cert_t *named_cert_p) {
+    // `quiet` keeps high-frequency background polls (e.g. ServerCommand) at debug level
+    // so a client that legitimately lacks the permission doesn't flood the log.
+    inline void log_permission_denied(std::string_view action, std::string_view perm_label, const crypto::named_cert_t *named_cert_p, bool quiet = false) {
       const auto perm = client_perm(named_cert_p);
+      auto &log_target = quiet ? debug : warning;
       if (named_cert_p) {
-        BOOST_LOG(debug) << "Permission " << action << " denied for [" << named_cert_p->name << "] (" << (uint32_t) perm << ")";
+        BOOST_LOG(log_target) << "Permission " << action << " denied for client [" << named_cert_p->name << "]: it lacks the \"" << perm_label
+                              << "\" permission (current permission mask 0x" << std::hex << (uint32_t) perm << std::dec
+                              << "). Grant it in the Web UI under Client Management.";
       } else {
-        BOOST_LOG(debug) << "Permission " << action << " denied for unverified HTTPS client";
+        BOOST_LOG(log_target) << "Permission " << action << " denied: HTTPS client certificate not recognized. The device may need to be re-paired.";
       }
+    }
+
+    // Sent to Moonlight as the launch/resume/cancel status_message, which most clients
+    // show verbatim in their error dialog, so it has to explain the fix rather than just fail.
+    inline std::string permission_denied_status_message(const crypto::named_cert_t *named_cert_p, std::string_view perm_label) {
+      if (!named_cert_p) {
+        return "Permission denied: this device's certificate is not recognized by the host. Unpair and pair this device again.";
+      }
+      std::string msg;
+      msg.reserve(160);
+      msg += "Permission denied: this device lacks the \"";
+      msg += perm_label;
+      msg += "\" permission. Enable it on the host in the Vibepollo Web UI under Client Management.";
+      return msg;
     }
 
     template<class T>
@@ -2168,7 +2187,7 @@ namespace nvhttp {
             }
           }
         } else {
-          log_permission_denied("Get ServerCommand"sv, named_cert_p);
+          log_permission_denied("Get ServerCommand"sv, "Run server commands"sv, named_cert_p, true);
         }
 
         tree.put("root.Permission", std::to_string((uint32_t) perm));
@@ -2469,12 +2488,12 @@ namespace nvhttp {
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
       } else {
-        log_permission_denied("ListApp"sv, named_cert_p);
+        log_permission_denied("ListApp"sv, "List applications"sv, named_cert_p);
 
         pt::ptree app_node;
 
         app_node.put("IsHdrSupported"s, 0);
-        app_node.put("AppTitle"s, "Permission Denied");
+        app_node.put("AppTitle"s, "Permission denied - enable \"List applications\" for this device in the host's Web UI");
         app_node.put("UUID", "");
         app_node.put("IDX", "0");
         app_node.put("ID", "114514");
@@ -2526,11 +2545,12 @@ namespace nvhttp {
       }
 
       if (!has_client_perm(named_cert_p, required_perm)) {
-        log_permission_denied("LaunchApp"sv, named_cert_p);
+        const auto perm_label = required_perm == PERM::launch ? "Launch applications"sv : "View stream"sv;
+        log_permission_denied("LaunchApp"sv, perm_label, named_cert_p);
 
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 403);
-        tree.put("root.<xmlattr>.status_message", "Permission denied");
+        tree.put("root.<xmlattr>.status_message", permission_denied_status_message(named_cert_p, perm_label));
 
         return;
       }
@@ -2922,11 +2942,11 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
     const auto request_client_identity = resolve_client_identity(request, named_cert_p);
     if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
-      log_permission_denied("ViewApp"sv, named_cert_p);
+      log_permission_denied("ViewApp"sv, "View stream"sv, named_cert_p);
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Permission denied");
+      tree.put("root.<xmlattr>.status_message", permission_denied_status_message(named_cert_p, "View stream"sv));
 
       return;
     }
@@ -3171,11 +3191,11 @@ namespace nvhttp {
 
     auto named_cert_p = get_verified_cert(request);
     if (!has_client_perm(named_cert_p, PERM::launch)) {
-      log_permission_denied("CancelApp"sv, named_cert_p);
+      log_permission_denied("CancelApp"sv, "Launch applications"sv, named_cert_p);
 
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 403);
-      tree.put("root.<xmlattr>.status_message", "Permission denied");
+      tree.put("root.<xmlattr>.status_message", permission_denied_status_message(named_cert_p, "Launch applications"sv));
 
       return;
     }
@@ -3210,7 +3230,7 @@ namespace nvhttp {
     auto named_cert_p = get_verified_cert(request);
 
     if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
-      log_permission_denied("Get AppAsset"sv, named_cert_p);
+      log_permission_denied("Get AppAsset"sv, "List applications"sv, named_cert_p);
 
       fg.disable();
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
@@ -3238,7 +3258,7 @@ namespace nvhttp {
     if (
       !has_client_perm(named_cert_p, PERM::_allow_view) || !has_client_perm(named_cert_p, PERM::clipboard_read)
     ) {
-      log_permission_denied("Read Clipboard"sv, named_cert_p);
+      log_permission_denied("Read Clipboard"sv, "Read clipboard"sv, named_cert_p);
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
@@ -3284,7 +3304,7 @@ namespace nvhttp {
     if (
       !has_client_perm(named_cert_p, PERM::_allow_view) || !has_client_perm(named_cert_p, PERM::clipboard_set)
     ) {
-      log_permission_denied("Write Clipboard"sv, named_cert_p);
+      log_permission_denied("Write Clipboard"sv, "Set clipboard"sv, named_cert_p);
 
       response->write(SimpleWeb::StatusCode::client_error_unauthorized);
       response->close_connection_after_response = true;
