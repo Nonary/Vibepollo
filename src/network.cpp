@@ -131,6 +131,10 @@ namespace net {
     return address.is_v6() ? boost::asio::ip::tcp::v6() : boost::asio::ip::tcp::v4();
   }
 
+  boost::asio::ip::udp udp_protocol_for_address(const boost::asio::ip::address &address) {
+    return address.is_v6() ? boost::asio::ip::udp::v6() : boost::asio::ip::udp::v4();
+  }
+
   boost::asio::ip::address normalize_address(boost::asio::ip::address address) {
     // Convert IPv6-mapped IPv4 addresses into regular IPv4 addresses
     if (address.is_v6()) {
@@ -177,11 +181,19 @@ namespace net {
     enet_address_set_host(&addr, bind_addr.c_str());
     enet_address_set_port(&addr, port);
 
-    // Maximum of 128 clients, which should be enough for anyone
-    auto host = host_t {enet_host_create(af == IPV4 ? AF_INET : AF_INET6, &addr, 128, 0, 0, 0)};
+    // The socket family must match the bind address: an AF_INET6 socket cannot
+    // bind an IPv4 bind_address even when address_family is set to "both".
+    boost::system::error_code ec;
+    const auto parsed_bind_addr = boost::asio::ip::make_address(bind_addr, ec);
+    const bool use_ipv4 = ec ? af == IPV4 : parsed_bind_addr.is_v4();
 
-    // Enable opportunistic QoS tagging (automatically disables if the network appears to drop tagged packets)
-    enet_socket_set_option(host->socket, ENET_SOCKOPT_QOS, 1);
+    // Maximum of 128 clients, which should be enough for anyone
+    auto host = host_t {enet_host_create(use_ipv4 ? AF_INET : AF_INET6, &addr, 128, 0, 0, 0)};
+
+    if (host) {
+      // Enable opportunistic QoS tagging (automatically disables if the network appears to drop tagged packets)
+      enet_socket_set_option(host->socket, ENET_SOCKOPT_QOS, 1);
+    }
 
     return host;
   }
