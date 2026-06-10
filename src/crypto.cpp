@@ -404,13 +404,18 @@ namespace crypto {
     return {mem_ptr->data, mem_ptr->length};
   }
 
-  std::string_view signature(const x509_t &x) {
-    // X509_ALGOR *_ = nullptr;
-
+  std::string_view signature(const X509 *x) {
     const ASN1_BIT_STRING *asn1 = nullptr;
-    X509_get0_signature(&asn1, nullptr, x.get());
+    X509_get0_signature(&asn1, nullptr, x);
+    if (!asn1) {
+      return {};
+    }
 
     return {(const char *) asn1->data, (std::size_t) asn1->length};
+  }
+
+  std::string_view signature(const x509_t &x) {
+    return signature(x.get());
   }
 
   std::string rand(std::size_t bytes) {
