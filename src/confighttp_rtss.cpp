@@ -42,6 +42,27 @@ namespace confighttp {
   using lossless_paths::discover_lossless_candidates;
   using lossless_paths::resolve_lossless_candidate;
 
+  namespace {
+    constexpr auto k_lossless_default_hint = "C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
+
+    nlohmann::json make_lossless_status_unavailable_response() {
+      return {
+        {"configured_path", config::lossless_scaling.exe_path},
+        {"checked_path", config::lossless_scaling.exe_path},
+        {"configured_exists", false},
+        {"checked_exists", false},
+        {"configured_is_directory", false},
+        {"checked_is_directory", false},
+        {"default_path", k_lossless_default_hint},
+        {"default_exists", false},
+        {"default_is_directory", false},
+        {"suggested_path", k_lossless_default_hint},
+        {"candidates", nlohmann::json::array()},
+        {"message", "Lossless Scaling status unavailable. Check the Sunshine logs for details."}
+      };
+    }
+  }  // namespace
+
   void getRtssStatus(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -180,7 +201,7 @@ namespace confighttp {
     send_response(response, out);
   }
 
-  void getLosslessScalingStatus(resp_https_t response, req_https_t request) {
+  void getLosslessScalingStatus(resp_https_t response, req_https_t request) try {
     if (!authenticate(response, request)) {
       return;
     }
@@ -236,6 +257,8 @@ namespace confighttp {
     const bool checked_is_directory = checked_path && std::filesystem::is_directory(*checked_path, checked_ec);
     std::error_code default_ec;
     const bool default_is_directory = default_path && std::filesystem::is_directory(*default_path, default_ec);
+    std::error_code default_exists_ec;
+    const bool default_exists = default_path && std::filesystem::exists(*default_path, default_exists_ec);
 
     nlohmann::json out;
     out["configured_path"] = configured_utf8;
@@ -245,7 +268,7 @@ namespace confighttp {
     out["configured_is_directory"] = configured_is_directory;
     out["checked_is_directory"] = checked_is_directory;
     out["default_path"] = default_hint;
-    out["default_exists"] = resolved_default.has_value() || (default_path && std::filesystem::exists(*default_path));
+    out["default_exists"] = resolved_default.has_value() || default_exists;
     out["default_is_directory"] = default_is_directory;
 
     std::string suggested_utf8 = configured_utf8;
@@ -294,6 +317,12 @@ namespace confighttp {
     out["message"] = message;
 
     send_response(response, out);
+  } catch (const std::exception &e) {
+    BOOST_LOG(warning) << "Lossless Scaling status check failed: " << e.what();
+    send_response(response, make_lossless_status_unavailable_response());
+  } catch (...) {
+    BOOST_LOG(warning) << "Lossless Scaling status check failed with an unknown exception";
+    send_response(response, make_lossless_status_unavailable_response());
   }
 
 }  // namespace confighttp
