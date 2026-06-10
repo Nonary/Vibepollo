@@ -141,6 +141,7 @@ namespace crypto {
 
   creds_t gen_creds(const std::string_view &cn, std::uint32_t key_bits);
 
+  std::string_view signature(const X509 *x);
   std::string_view signature(const x509_t &x);
 
   std::string rand(std::size_t bytes);
