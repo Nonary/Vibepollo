@@ -23,6 +23,12 @@
   #include <utility>
   #include <vector>
 
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <winsock2.h>
+  #include <windows.h>
+
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
   #include "src/platform/windows/display_helper_v2/golden_health.h"
@@ -42,8 +48,6 @@
   #include <display_device/json.h>
   #include <display_device/logging.h>
   #include <nlohmann/json.hpp>
-
-  #include <windows.h>
 
 namespace {
   enum class MsgType : uint8_t {
