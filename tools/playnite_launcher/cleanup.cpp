@@ -214,10 +214,7 @@ namespace playnite_launcher::cleanup {
     }
 
     bool launch_desktop_command(const std::wstring &path, DWORD flags) {
-      std::wstring cmd =
-        L""
-        " + path + L"
-        " --startdesktop";
+      std::wstring cmd = L"\"" + path + L"\" --startdesktop";
       std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
       cmdline.push_back(0);
       STARTUPINFOW si {};
