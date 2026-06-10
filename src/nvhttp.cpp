@@ -1137,7 +1137,6 @@ namespace nvhttp {
         cert_chain.clear();
         for (auto &named_cert : client.named_devices) {
           cert_chain.add(named_cert);
-
         }
 
         client_root = client;
@@ -1189,7 +1188,7 @@ namespace nvhttp {
         return std::nullopt;
       }
 
-      const auto client_cert_signature = crypto::signature(const_cast<X509 *>(client_cert.get()));
+      const auto client_cert_signature = crypto::signature(client_cert.get());
 
       std::lock_guard<std::mutex> lock(client_mutex);
       for (const auto &named_cert : client_root.named_devices) {
