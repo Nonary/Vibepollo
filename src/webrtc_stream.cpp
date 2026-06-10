@@ -2595,10 +2595,22 @@ namespace webrtc_stream {
           }
           (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
+          bool applied = false;
           if (!request) {
             BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
-          } else if (!display_helper_integration::apply(*request)) {
+          } else if (!(applied = display_helper_integration::apply(*request))) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+          }
+
+          if (applied) {
+            // Soft gate: wait (bounded) for the helper's apply verification before
+            // probing encoders so the first capture isn't grabbed mid-modeset.
+            const auto verification_status =
+              display_helper_integration::wait_for_apply_verification(std::chrono::milliseconds(6000));
+            if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
+              BOOST_LOG(warning)
+                << "Display helper validation failed; continuing with WebRTC capture anyway.";
+            }
           }
         }
 #endif

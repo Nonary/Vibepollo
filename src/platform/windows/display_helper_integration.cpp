@@ -18,6 +18,7 @@
   #include <mutex>
   #include <optional>
   #include <string>
+  #include <string_view>
   #include <thread>
   #include <vector>
 
@@ -603,6 +604,30 @@ namespace {
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
   static std::atomic<bool> g_restore_expected {false};
+  // True when the most recent APPLY was dispatched through the helper; gates the
+  // capture-start verification wait (v2 engine only).
+  static std::atomic<bool> g_last_apply_used_helper {false};
+
+  // Resolve the effective display helper engine. In automatic mode the v2 engine
+  // only rides pre-release builds; stable releases keep the legacy engine until
+  // v2 has soaked, and users opt in explicitly via dd_display_helper_engine.
+  static bool use_legacy_helper_engine() {
+    using engine_e = config::video_t::dd_t::helper_engine_e;
+    switch (config::video.dd.display_helper_engine) {
+      case engine_e::legacy:
+        return true;
+      case engine_e::v2:
+        return false;
+      case engine_e::automatic:
+      default:
+        break;
+    }
+#ifdef PROJECT_VERSION_PRERELEASE
+    return std::string_view(PROJECT_VERSION_PRERELEASE).empty();
+#else
+    return true;
+#endif
+  }
   static std::atomic<std::uint64_t> g_restore_generation {0};
   static std::atomic<std::uint64_t> g_disarm_generation_sent {0};
   static std::atomic<std::int64_t> g_last_revert_us {0};
@@ -875,14 +900,21 @@ namespace {
     }
 
     const bool allow_system_fallback = platf::is_running_as_system() && !user_session_ready();
-    BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring());
-    bool started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
+    // Select the helper engine (legacy fallback vs v2) and propagate the log level.
+    const bool legacy_engine = use_legacy_helper_engine();
+    std::wstring helper_args = legacy_engine ? L"--engine=legacy" : L"--engine=v2";
+    helper_args += L" --log-level=";
+    helper_args += std::to_wstring(std::clamp(config::sunshine.min_log_level, 0, 6));
+    statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
+    BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
+                     << " " << platf::to_utf8(helper_args);
+    bool started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
+        started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
       }
     }
     if (!started) {
@@ -913,7 +945,7 @@ namespace {
                              << "Retrying after extended cleanup delay...";
           std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-          const bool retry_started = helper_proc().start(helper.wstring(), L"", allow_system_fallback);
+          const bool retry_started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
           if (!retry_started) {
             BOOST_LOG(error) << "Display helper retry start failed";
             note_helper_start_failure("singleton retry launch failure");
@@ -939,6 +971,10 @@ namespace {
     const bool ipc_ready = wait_for_helper_ipc_ready_locked();
     if (!ipc_ready) {
       note_helper_start_failure("IPC readiness timeout");
+    } else if (!legacy_engine) {
+      // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
+      // log "Unknown message type" for this frame).
+      (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));
     }
     return ipc_ready;
   }
@@ -1248,6 +1284,7 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
         const bool ok = platf::display_helper_client::send_apply_json(*payload);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        g_last_apply_used_helper.store(ok, std::memory_order_relaxed);
         if (ok && request.session) {
           g_restore_expected.store(false, std::memory_order_relaxed);
           g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
@@ -1317,7 +1354,27 @@ namespace display_helper_integration {
     }
   }  // namespace
 
+  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout) {
+    // The legacy engine never emits VerificationResult frames; don't burn the timeout.
+    if (use_legacy_helper_engine()) {
+      return ApplyVerificationStatus::Unknown;
+    }
+    if (!g_last_apply_used_helper.exchange(false, std::memory_order_acq_rel)) {
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    const int timeout_ms = static_cast<int>(std::max<long long>(timeout.count(), 0LL));
+    const auto result = platf::display_helper_client::wait_for_verification_result(timeout_ms);
+    if (!result.has_value()) {
+      BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    return *result ? ApplyVerificationStatus::Verified : ApplyVerificationStatus::Failed;
+  }
+
   bool apply(const DisplayApplyRequest &request) {
+    g_last_apply_used_helper.store(false, std::memory_order_relaxed);
     // Remember the session's virtual display before the APPLY payload is built so the
     // helper can exclude it from the pre-apply baseline it may capture.
     if (request.session) {
