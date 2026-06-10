@@ -447,6 +447,12 @@ namespace stream {
   struct broadcast_ctx_t {
     message_queue_queue_t message_queue_queue;
 
+    // Raw datagram counters for the video/audio sockets. Used to distinguish
+    // "no UDP reached us at all" (blocked by firewall/VPN filter driver) from
+    // "UDP arrived but didn't match a session" when waiting for pings.
+    std::atomic<std::uint64_t> video_recv_count {0};
+    std::atomic<std::uint64_t> audio_recv_count {0};
+
     std::thread recv_thread;
     std::thread video_thread;
     std::thread audio_thread;
@@ -518,6 +524,10 @@ namespace stream {
 
       std::uint32_t connect_data;  // Used for new clients with ML_FF_SESSION_ID_V1
       std::string expected_peer_address;  // Only used for legacy clients without ML_FF_SESSION_ID_V1
+
+      // Control socket datagram count at session start, used to tell whether any
+      // UDP reached the control port when the peer never connects.
+      std::uint32_t enet_recv_baseline;
 
       net::peer_t peer;
       std::uint32_t seq;
@@ -1580,6 +1590,21 @@ namespace stream {
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
             BOOST_LOG(info) << address << ": Ping Timeout"sv;
+            if (!session->control.peer) {
+              const auto control_received = server->_host->totalReceivedPackets - session->control.enet_recv_baseline;
+              if (control_received == 0) {
+                BOOST_LOG(error) << "The control stream peer never connected and no UDP datagrams reached the control socket (port "sv
+                                 << net::map_port(CONTROL_PORT) << ") during this session. "sv
+                                 << "Inbound UDP is most likely being blocked before it reaches Sunshine. "sv
+                                 << "Check Windows Firewall, VPN clients with kill switches or LAN blocking "sv
+                                 << "(e.g. NordVPN, Private Internet Access - these filter traffic even while disconnected), "sv
+                                 << "and router/NAT port forwarding."sv;
+              } else {
+                BOOST_LOG(error) << "The control stream peer never connected, but "sv << control_received
+                                 << " UDP datagram(s) reached the control socket (port "sv << net::map_port(CONTROL_PORT)
+                                 << "). The ENet handshake did not complete; outbound replies to the client may be getting dropped."sv;
+              }
+            }
             session::stop(*session);
           }
 
@@ -1744,6 +1769,8 @@ namespace stream {
           BOOST_LOG(error) << "Couldn't receive data from udp socket: "sv << ec.message();
           return;
         }
+
+        (buf_elem ? ctx.audio_recv_count : ctx.video_recv_count).fetch_add(1, std::memory_order_relaxed);
 
         if (bytes == 4) {
           // For legacy PING packets, find the matching session by address.
@@ -2239,10 +2266,21 @@ namespace stream {
     audio_packets->reset();
 
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-    auto protocol = address_family == net::IPV4 ? udp::v4() : udp::v6();
     auto control_port = net::map_port(CONTROL_PORT);
     auto video_port = net::map_port(VIDEO_STREAM_PORT);
     auto audio_port = net::map_port(AUDIO_STREAM_PORT);
+
+    // Parse the bind address up front so the socket protocol can follow the
+    // actual endpoint family. An IPv4 bind_address must open IPv4 sockets even
+    // when address_family is set to "both".
+    boost::system::error_code ec;
+    auto bind_addr_str = net::get_bind_address(address_family);
+    const auto bind_addr = boost::asio::ip::make_address(bind_addr_str, ec);
+    if (ec) {
+      BOOST_LOG(fatal) << "Invalid bind address: "sv << bind_addr_str << " - " << ec.message();
+      return -1;
+    }
+    auto protocol = net::udp_protocol_for_address(bind_addr);
 
     if (ctx.control_server.bind(address_family, control_port)) {
       BOOST_LOG(error) << "Couldn't bind Control server to port ["sv << control_port << "], likely another process already bound to the port"sv;
@@ -2250,7 +2288,6 @@ namespace stream {
       return -1;
     }
 
-    boost::system::error_code ec;
     ctx.video_sock.open(protocol, ec);
     if (ec) {
       BOOST_LOG(fatal) << "Couldn't open socket for Video server: "sv << ec.message();
@@ -2346,6 +2383,9 @@ namespace stream {
     auto messages = std::make_shared<message_queue_t::element_type>(30);
     av_session_id_t session_id = std::string {expected_payload};
 
+    auto &recv_counter = type == socket_e::video ? ref->video_recv_count : ref->audio_recv_count;
+    const auto recv_baseline = recv_counter.load(std::memory_order_relaxed);
+
     // Only allow matches on the peer address for legacy clients
     if (!(session->config.mlFeatureFlags & ML_FF_SESSION_ID_V1)) {
       ref->message_queue_queue->raise(type, peer.address(), messages);
@@ -2392,6 +2432,19 @@ namespace stream {
     }
 
     BOOST_LOG(error) << "Initial Ping Timeout"sv;
+
+    const auto type_str = type == socket_e::video ? "video"sv : "audio"sv;
+    const auto received = recv_counter.load(std::memory_order_relaxed) - recv_baseline;
+    if (received == 0) {
+      BOOST_LOG(error) << "No UDP datagrams reached the "sv << type_str << " socket while waiting for the client's ping. "sv
+                       << "Inbound UDP is most likely being blocked before it reaches Sunshine. "sv
+                       << "Check Windows Firewall, VPN clients with kill switches or LAN blocking "sv
+                       << "(e.g. NordVPN, Private Internet Access - these filter traffic even while disconnected), "sv
+                       << "and router/NAT port forwarding."sv;
+    } else {
+      BOOST_LOG(error) << received << " UDP datagram(s) reached the "sv << type_str << " socket, but none matched this session's ping. "sv
+                       << "The client may be pinging from an unexpected address or with an unexpected payload."sv;
+    }
     return -1;
   }
 
@@ -2666,6 +2719,7 @@ namespace stream {
       }
 
       session.control.expected_peer_address = addr_string;
+      session.control.enet_recv_baseline = session.broadcast_ref->control_server._host->totalReceivedPackets;
       BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
 
 #ifdef _WIN32

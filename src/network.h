@@ -81,6 +81,13 @@ namespace net {
   boost::asio::ip::tcp tcp_protocol_for_address(const boost::asio::ip::address &address);
 
   /**
+   * @brief Get the UDP protocol matching the provided address family.
+   * @param address The address that will be used for binding.
+   * @return IPv4 or IPv6 UDP protocol matching the address.
+   */
+  boost::asio::ip::udp udp_protocol_for_address(const boost::asio::ip::address &address);
+
+  /**
    * @brief Convert an address to a normalized form.
    * @details Normalization converts IPv4-mapped IPv6 addresses into IPv4 addresses.
    * @param address The address to normalize.
