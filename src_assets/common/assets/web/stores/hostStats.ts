@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { fetchHostInfo, fetchHostStats } from '@/services/hostStatsApi';
+import { useConfigStore } from '@/stores/config';
 import { HostHistoryPoint, HostInfo, HostStatsSnapshot } from '@/types/host';
 
-const POLL_INTERVAL_MS = 2000;
-const HISTORY_WINDOW_MS = 5 * 60 * 1000;
-const MAX_POINTS = Math.ceil(HISTORY_WINDOW_MS / POLL_INTERVAL_MS) + 5;
+const DEFAULT_POLL_INTERVAL_MS = 2000;
+const DEFAULT_HISTORY_WINDOW_S = 300;
+const DEFAULT_MAX_POINTS = 300;
 
 const emptySnapshot: HostStatsSnapshot = {
   cpu_percent: -1,
@@ -21,7 +22,15 @@ const emptySnapshot: HostStatsSnapshot = {
   vram_percent: 0,
 };
 
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 export const useHostStatsStore = defineStore('hostStats', () => {
+  const configStore = useConfigStore();
+
   const snapshot = ref<HostStatsSnapshot>({ ...emptySnapshot });
   const info = ref<HostInfo>({
     cpu_model: '',
@@ -33,10 +42,44 @@ export const useHostStatsStore = defineStore('hostStats', () => {
   const history = ref<HostHistoryPoint[]>([]);
   const lastError = ref<string>('');
   const polling = ref<boolean>(false);
+  const pausedHidden = ref<boolean>(false);
+  const lastUpdated = ref<number | null>(null);
 
   let intervalId = 0;
   let consumerCount = 0;
   let infoLoaded = false;
+  let visibilityHooked = false;
+
+  // Stats preferences sourced from the shared server config.
+  const statsEnabled = computed(() => Boolean(configStore.config?.realtime_stats_enabled ?? true));
+  const pollIntervalMs = computed(() =>
+    clampNumber(
+      configStore.config?.realtime_stats_poll_interval_ms,
+      DEFAULT_POLL_INTERVAL_MS,
+      250,
+      60000,
+    ),
+  );
+  const historyWindowMs = computed(
+    () =>
+      clampNumber(
+        configStore.config?.realtime_stats_history_retention_seconds,
+        DEFAULT_HISTORY_WINDOW_S,
+        30,
+        3600,
+      ) * 1000,
+  );
+  const maxPoints = computed(() =>
+    clampNumber(
+      configStore.config?.realtime_stats_max_history_points,
+      DEFAULT_MAX_POINTS,
+      30,
+      2000,
+    ),
+  );
+  const pauseWhenHidden = computed(() =>
+    Boolean(configStore.config?.realtime_stats_pause_when_hidden ?? true),
+  );
 
   const pushHistory = (s: HostStatsSnapshot) => {
     const now = Date.now();
@@ -48,20 +91,28 @@ export const useHostStatsStore = defineStore('hostStats', () => {
       ram_percent: s.ram_percent,
       vram_percent: s.vram_percent,
     });
-    const cutoff = now - HISTORY_WINDOW_MS;
-    while (history.value.length && history.value[0].timestamp < cutoff) {
+    trimHistory();
+  };
+
+  const trimHistory = () => {
+    const cutoff = Date.now() - historyWindowMs.value;
+    while (history.value.length > 0 && (history.value[0]?.timestamp ?? Infinity) < cutoff) {
       history.value.shift();
     }
-    if (history.value.length > MAX_POINTS) {
-      history.value.splice(0, history.value.length - MAX_POINTS);
+    if (history.value.length > maxPoints.value) {
+      history.value.splice(0, history.value.length - maxPoints.value);
     }
   };
 
   const refresh = async () => {
+    if (!statsEnabled.value) {
+      return;
+    }
     try {
       const s = await fetchHostStats();
       snapshot.value = s;
       pushHistory(s);
+      lastUpdated.value = Date.now();
       lastError.value = '';
     } catch (err: unknown) {
       lastError.value = err instanceof Error ? err.message : 'host_stats fetch failed';
@@ -80,17 +131,49 @@ export const useHostStatsStore = defineStore('hostStats', () => {
     }
   };
 
-  const start = () => {
-    consumerCount += 1;
-    if (polling.value) {
+  const clearTimer = () => {
+    if (intervalId !== 0) {
+      window.clearInterval(intervalId);
+      intervalId = 0;
+    }
+  };
+
+  const shouldPoll = () =>
+    consumerCount > 0 && statsEnabled.value && !(pauseWhenHidden.value && document.hidden);
+
+  const syncTimer = (immediate: boolean) => {
+    clearTimer();
+    pausedHidden.value = consumerCount > 0 && pauseWhenHidden.value && document.hidden;
+    if (!shouldPoll()) {
+      polling.value = false;
       return;
     }
     polling.value = true;
     void loadInfoOnce();
-    void refresh();
+    if (immediate) {
+      void refresh();
+    }
     intervalId = window.setInterval(() => {
       void refresh();
-    }, POLL_INTERVAL_MS);
+    }, pollIntervalMs.value);
+  };
+
+  const onVisibilityChange = () => {
+    syncTimer(!document.hidden);
+  };
+
+  const hookVisibility = () => {
+    if (visibilityHooked || typeof document === 'undefined') return;
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    visibilityHooked = true;
+  };
+
+  const start = () => {
+    consumerCount += 1;
+    hookVisibility();
+    if (consumerCount === 1 || !polling.value) {
+      syncTimer(true);
+    }
   };
 
   const stop = () => {
@@ -99,11 +182,38 @@ export const useHostStatsStore = defineStore('hostStats', () => {
       return;
     }
     polling.value = false;
-    if (intervalId !== 0) {
-      window.clearInterval(intervalId);
-      intervalId = 0;
-    }
+    pausedHidden.value = false;
+    clearTimer();
   };
 
-  return { snapshot, info, history, lastError, polling, start, stop, refresh };
+  // React to settings changes while polling is active.
+  watch([statsEnabled, pollIntervalMs, pauseWhenHidden], () => {
+    if (consumerCount > 0) {
+      syncTimer(statsEnabled.value);
+    }
+    if (!statsEnabled.value) {
+      snapshot.value = { ...emptySnapshot };
+      history.value = [];
+      lastUpdated.value = null;
+    }
+  });
+
+  watch([historyWindowMs, maxPoints], () => {
+    trimHistory();
+  });
+
+  return {
+    snapshot,
+    info,
+    history,
+    lastError,
+    polling,
+    pausedHidden,
+    lastUpdated,
+    statsEnabled,
+    pollIntervalMs,
+    start,
+    stop,
+    refresh,
+  };
 });

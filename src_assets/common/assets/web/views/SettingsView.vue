@@ -215,6 +215,7 @@ import Advanced from '@/configs/tabs/Advanced.vue';
 import Playnite from '@/configs/tabs/Playnite.vue';
 import AudioVideo from '@/configs/tabs/AudioVideo.vue';
 import Capture from '@/configs/tabs/Capture.vue';
+import RealtimeStats from '@/configs/tabs/RealtimeStats.vue';
 import { useConfigStore } from '@/stores/config';
 import { useAuthStore } from '@/stores/auth';
 import { http } from '@/http';
@@ -264,6 +265,7 @@ const tabs = [
   { id: 'network', name: 'Network', component: markRaw(Network) },
   { id: 'files', name: 'Files', component: markRaw(Files) },
   { id: 'advanced', name: 'Advanced', component: markRaw(Advanced) },
+  { id: 'stats', name: 'Stats', component: markRaw(RealtimeStats) },
   { id: 'playnite', name: 'Playnite', component: markRaw(Playnite) },
 ];
 

@@ -257,24 +257,6 @@ function removeServerCommand(index: number) {
     />
 
     <ConfigFieldRenderer
-      v-model="config.session_history_enabled"
-      setting-key="session_history_enabled"
-      class="mb-3"
-    />
-
-    <ConfigFieldRenderer
-      v-model="config.session_history_ttl_days"
-      setting-key="session_history_ttl_days"
-      class="mb-6"
-    />
-
-    <ConfigFieldRenderer
-      v-model="config.session_history_db_size_limit_mb"
-      setting-key="session_history_db_size_limit_mb"
-      class="mb-6"
-    />
-
-    <ConfigFieldRenderer
       v-model="config.notify_pre_releases"
       setting-key="notify_pre_releases"
       class="mb-3"

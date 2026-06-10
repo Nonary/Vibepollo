@@ -28,6 +28,9 @@
                   <RouterLink to="/clients" :class="linkClass('/clients')">
                     <i class="fas fa-users-cog" /><span>{{ $t('clients.nav') }}</span>
                   </RouterLink>
+                  <RouterLink to="/stats" :class="linkClass('/stats')">
+                    <i class="fas fa-chart-line" /><span>{{ $t('navbar.stats') }}</span>
+                  </RouterLink>
                   <RouterLink to="/webrtc" :class="linkClass('/webrtc')">
                     <i class="fas fa-satellite-dish" /><span>{{ $t('webrtc.nav') }}</span>
                   </RouterLink>
@@ -184,6 +187,7 @@ watch(
       '/logs': 'navbar.troubleshoot',
       '/troubleshooting': 'navbar.troubleshoot',
       '/clients': 'clients.nav',
+      '/stats': 'navbar.stats',
       '/webrtc': 'webrtc.nav',
     };
     const v = map[p] || 'Vibepollo';
@@ -240,6 +244,7 @@ const mobileMenuOptions = computed(() => {
       icon: icon('fas fa-table-cells-large'),
     },
     { label: t('clients.nav'), key: '/clients', icon: icon('fas fa-users-cog') },
+    { label: t('navbar.stats'), key: '/stats', icon: icon('fas fa-chart-line') },
     { label: t('webrtc.nav'), key: '/webrtc', icon: icon('fas fa-satellite-dish') },
     { label: t('navbar.configuration'), key: '/settings', icon: icon('fas fa-sliders') },
     { label: t('navbar.troubleshoot'), key: '/troubleshooting', icon: icon('fas fa-bug') },
