@@ -8,7 +8,16 @@
 #include <display_device/windows/win_api_layer.h>
 #include <display_device/windows/win_api_recovery.h>
 #include <display_device/windows/win_display_device.h>
+
+#if defined(__GNUC__)
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-function"
+  #pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
 #include <sudovda/sudovda.h>
+#if defined(__GNUC__)
+  #pragma GCC diagnostic pop
+#endif
 
 namespace display_helper::v2 {
   class WinVirtualDisplayDriver final : public IVirtualDisplayDriver {
