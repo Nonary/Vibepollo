@@ -170,6 +170,16 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/state_machine.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.h"
@@ -242,6 +252,7 @@ list(PREPEND PLATFORM_LIBRARIES
         shlwapi
         shell32
         crypt32
+        taskschd
         synchronization.lib
         Windowscodecs
         userenv

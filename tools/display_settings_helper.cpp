@@ -5378,7 +5378,7 @@ namespace {
   }
 }  // namespace
 
-int main(int argc, char *argv[]) {
+int run_legacy_helper(int argc, char *argv[]) {
   bool restore_mode = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
@@ -5720,8 +5720,4 @@ int main(int argc, char *argv[]) {
   return 0;
 }
 
-#else
-int main() {
-  return 0;
-}
 #endif

@@ -439,6 +439,16 @@ namespace config {
       return video_t::dd_t::config_option_e::disabled;  // Default to this if value is invalid
     }
 
+    video_t::dd_t::helper_engine_e helper_engine_from_view(const ::std::string_view value) {
+      if (value == "v2"sv) {
+        return video_t::dd_t::helper_engine_e::v2;
+      }
+      if (value == "legacy"sv) {
+        return video_t::dd_t::helper_engine_e::legacy;
+      }
+      return video_t::dd_t::helper_engine_e::automatic;  // "auto" / invalid
+    }
+
     video_t::dd_t::resolution_option_e resolution_option_from_view(const ::std::string_view value) {
 #define _CONVERT_2_ARG_(str, val) \
   if (value == #str##sv) \
@@ -822,6 +832,7 @@ namespace config {
       {},  // config_revert_on_disconnect
       0,  // paused_virtual_display_timeout_secs
       false,  // always_restore_from_golden
+      video_t::dd_t::helper_engine_e::automatic,  // display_helper_engine
       0,  // snapshot_restore_hotkey
 #ifdef _WIN32
       MOD_CONTROL | MOD_ALT | MOD_SHIFT,  // snapshot_restore_hotkey_modifiers
@@ -1660,6 +1671,7 @@ namespace config {
       video.dd.paused_virtual_display_timeout_secs = std::max(0, value);
     }
     bool_f(vars, "dd_always_restore_from_golden", video.dd.always_restore_from_golden);
+    generic_f(vars, "dd_display_helper_engine", video.dd.display_helper_engine, dd::helper_engine_from_view);
     bool_f(vars, "dd_use_sunshine_virtual_display_driver", video.dd.use_sunshine_virtual_display_driver);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
     {
@@ -2242,6 +2254,7 @@ namespace config {
         "dd_config_revert_on_disconnect",
         "dd_paused_virtual_display_timeout_secs",
         "dd_always_restore_from_golden",
+        "dd_display_helper_engine",
         "dd_snapshot_exclude_devices",
         "dd_snapshot_restore_hotkey",
         "dd_snapshot_restore_hotkey_modifiers",

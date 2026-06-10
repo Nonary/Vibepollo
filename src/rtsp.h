@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <list>
 #include <map>
 #include <memory>
@@ -111,6 +112,18 @@ namespace rtsp_stream {
     std::list<crypto::command_entry_t> client_undo_cmds;
 
     std::string client_cert;
+
+#ifdef _WIN32
+    enum class display_helper_gate_status_e : uint8_t {
+      proceed,  ///< Verified/ready (or no-op)
+      proceed_gaveup,  ///< Unknown/unavailable/timeout
+      abort_failed  ///< Verified failure (capture proceeds anyway; logged)
+    };
+
+    /// Soft gate: capture start waits (bounded) for the display helper's apply
+    /// verification so the first frames aren't grabbed mid-modeset.
+    std::shared_future<display_helper_gate_status_e> display_helper_gate;
+#endif
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);

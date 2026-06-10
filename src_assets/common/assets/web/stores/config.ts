@@ -143,6 +143,7 @@ const defaultGroups = [
       dd_config_revert_on_disconnect: 'disabled',
       dd_paused_virtual_display_timeout_secs: 0,
       dd_always_restore_from_golden: false,
+      dd_display_helper_engine: 'auto',
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',

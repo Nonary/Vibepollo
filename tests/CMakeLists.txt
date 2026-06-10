@@ -26,6 +26,15 @@ include_directories("${GTEST_SOURCE_DIR}/googletest/include" "${GTEST_SOURCE_DIR
 set(CMAKE_CXX_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
 set(CMAKE_C_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
 
+if(WIN32)
+    # gcc 15 + MinGW ld: this huge asio TU at -O0 emits COMDAT debug/typeinfo
+    # references the linker cannot resolve ("undefined reference to `...::loc'").
+    # Building it at -O1 collapses the template bloat below the breaking point;
+    # the file is not a coverage/debugging target for unit tests.
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
+        PROPERTIES COMPILE_OPTIONS "-O1;-g1")
+endif()
+
 # Find the correct libgcov library path matching the gcc compiler version
 # This ensures the test executable links against the same libgcov version used during compilation
 if(UNIX AND NOT APPLE)
