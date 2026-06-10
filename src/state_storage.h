@@ -60,4 +60,20 @@ namespace statefile {
    */
   std::vector<std::string> load_snapshot_exclude_devices();
 
+  /**
+   * @brief Remember a Sunshine-managed virtual display device id in vibeshine_state.json.
+   * @param device_id Device id of a virtual display created/resolved for a session.
+   *
+   * The display helper merges this list into its snapshot exclusions so virtual
+   * displays are never captured into (or restored from) display baselines, even
+   * when the virtual monitor uses a custom EDID the helper cannot classify.
+   */
+  void remember_virtual_display_device(const std::string &device_id);
+
+  /**
+   * @brief Load the remembered virtual display device ids from vibeshine_state.json.
+   * @return The list of device IDs, or an empty vector if not found.
+   */
+  std::vector<std::string> load_virtual_display_devices();
+
 }  // namespace statefile

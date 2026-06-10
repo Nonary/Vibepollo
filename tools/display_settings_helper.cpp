@@ -1520,7 +1520,10 @@ namespace {
         return true;
       }
 
-      return device.m_edid && equals_ci(device.m_edid->m_manufacturer_id, "SDD");
+      // SDD = bundled Sunshine virtual display driver, SMK = SudoVDA (legacy driver).
+      return device.m_edid &&
+             (equals_ci(device.m_edid->m_manufacturer_id, "SDD") ||
+              equals_ci(device.m_edid->m_manufacturer_id, "SMK"));
     }
 
     static bool is_active_display_device(const display_device::EnumeratedDevice &device) {
@@ -4971,13 +4974,30 @@ namespace {
       if (j.is_discarded()) {
         return false;
       }
-      // vibeshine_state.json format: { "root": { "snapshot_exclude_devices": [...] } }
+      // vibeshine_state.json format:
+      // { "root": { "snapshot_exclude_devices": [...], "virtual_display_devices": [...] } }
+      // Sunshine-managed virtual display ids are merged into the exclusions so they are
+      // never captured into (or restored from) display baselines.
       if (j.is_object() && j.contains("root")) {
         const auto &root = j["root"];
-        if (root.is_object() && root.contains("snapshot_exclude_devices")) {
-          ids_out = parse_snapshot_exclude_json_node(root["snapshot_exclude_devices"]);
-          return !ids_out.empty() || root["snapshot_exclude_devices"].is_array();
+        if (!root.is_object()) {
+          return false;
         }
+        bool found = false;
+        if (root.contains("snapshot_exclude_devices")) {
+          ids_out = parse_snapshot_exclude_json_node(root["snapshot_exclude_devices"]);
+          found = !ids_out.empty() || root["snapshot_exclude_devices"].is_array();
+        }
+        if (root.contains("virtual_display_devices")) {
+          auto virtual_ids = parse_snapshot_exclude_json_node(root["virtual_display_devices"]);
+          for (auto &id : virtual_ids) {
+            if (std::find(ids_out.begin(), ids_out.end(), id) == ids_out.end()) {
+              ids_out.push_back(std::move(id));
+            }
+          }
+          found = found || !ids_out.empty();
+        }
+        return found;
       }
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Failed to parse vibeshine_state.json for snapshot exclusions: " << e.what();
@@ -5104,8 +5124,19 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
-    // Snapshot is taken earlier via SnapshotCurrent before any display enumeration
-    // that might activate external dummy plugs.
+    // The session baseline is normally captured earlier via SnapshotCurrent, before any
+    // display enumeration that might activate external dummy plugs. That request is
+    // fire-and-forget and can be lost (helper hard-restart races, helper not yet running),
+    // which used to leave REVERT with nothing to restore and strand the user on the
+    // session-only display layout (vibeshine#223). Capture the pre-apply state here as a
+    // fallback whenever no baseline exists yet; the snapshot exclusions set above keep
+    // virtual displays out of it.
+    if (!ServiceState::path_exists(state.session_current_path)) {
+      BOOST_LOG(warning) << "Display helper: no session baseline present at APPLY; capturing pre-apply baseline now.";
+      if (!state.capture_current_snapshot("pre-apply baseline")) {
+        BOOST_LOG(warning) << "Display helper: pre-apply baseline capture failed; REVERT may have nothing to restore.";
+      }
+    }
     state.retry_revert_on_topology.store(false, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
 
