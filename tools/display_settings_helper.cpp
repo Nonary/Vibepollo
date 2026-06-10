@@ -477,6 +477,27 @@ namespace {
       return false;
     }
 
+    std::optional<display_device::Resolution> get_display_resolution(const std::string &device_id) const {
+      if (device_id.empty() || !ensure_initialized()) {
+        return std::nullopt;
+      }
+      try {
+        const auto normalized = normalize_device_id(device_id);
+        const auto devices = m_dd->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+        for (const auto &device : devices) {
+          if (device.m_device_id.empty() || normalize_device_id(device.m_device_id) != normalized) {
+            continue;
+          }
+          if (device.m_info) {
+            return device.m_info->m_resolution;
+          }
+          return std::nullopt;
+        }
+      } catch (...) {
+      }
+      return std::nullopt;
+    }
+
     /**
      * @brief Restore a device's refresh rate to the given rational value.
      * @return True if the mode was successfully applied.
@@ -4230,9 +4251,19 @@ namespace {
                   next_pending.emplace_back(device_id, origin);
                   continue;
                 }
+                // The whole monitor rect must fit inside the GDI virtual screen
+                // (±32767), so the maximum origin shrinks by the monitor size.
+                // Clamping only the origin to 32767 always fails SetDisplayConfig
+                // with ERROR_INVALID_PARAMETER for any non-zero-sized display.
+                int max_origin_x = kMaxDisplayOrigin;
+                int max_origin_y = kMaxDisplayOrigin;
+                if (const auto res = controller.get_display_resolution(device_id)) {
+                  max_origin_x = std::max(kMinDisplayOrigin, kMaxDisplayOrigin - static_cast<int>(res->m_width) + 1);
+                  max_origin_y = std::max(kMinDisplayOrigin, kMaxDisplayOrigin - static_cast<int>(res->m_height) + 1);
+                }
                 const auto clamped_origin = display_device::Point {
-                  std::clamp(origin.m_x, kMinDisplayOrigin, kMaxDisplayOrigin),
-                  std::clamp(origin.m_y, kMinDisplayOrigin, kMaxDisplayOrigin)
+                  std::clamp(origin.m_x, kMinDisplayOrigin, max_origin_x),
+                  std::clamp(origin.m_y, kMinDisplayOrigin, max_origin_y)
                 };
                 if (clamped_origin.m_x != origin.m_x || clamped_origin.m_y != origin.m_y) {
                   BOOST_LOG(warning) << "Display helper: clamped monitor position override for device_id=" << device_id
@@ -4656,10 +4687,20 @@ namespace {
     exec_action->put_Arguments(_bstr_t(L"--restore"));
     exec_action->Release();
 
+    // Without an interactive user (helper launched as SYSTEM after sign-out or
+    // from the lock screen), TASK_LOGON_INTERACTIVE_TOKEN cannot be resolved and
+    // registration fails with 0x80070534 (ERROR_NONE_MAPPED). Bind the task to
+    // BUILTIN\Users by SID (locale independent) so it still runs at next logon.
+    static constexpr wchar_t builtin_users_sid[] = L"S-1-5-32-545";
+    const TASK_LOGON_TYPE logon_type = has_username ? TASK_LOGON_INTERACTIVE_TOKEN : TASK_LOGON_GROUP;
+
     IPrincipal *principal = nullptr;
     hr = task->get_Principal(&principal);
     if (SUCCEEDED(hr)) {
-      principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN);
+      if (!has_username) {
+        principal->put_GroupId(_bstr_t(builtin_users_sid));
+      }
+      principal->put_LogonType(logon_type);
       principal->put_RunLevel(TASK_RUNLEVEL_LUA);
       principal->Release();
     }
@@ -4669,9 +4710,9 @@ namespace {
       _bstr_t(task_name.c_str()),
       task,
       TASK_CREATE_OR_UPDATE,
+      has_username ? _variant_t() : _variant_t(builtin_users_sid),
       _variant_t(),
-      _variant_t(),
-      TASK_LOGON_INTERACTIVE_TOKEN,
+      logon_type,
       _variant_t(L""),
       &registered_task
     );
