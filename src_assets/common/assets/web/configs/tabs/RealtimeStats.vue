@@ -1,14 +1,9 @@
 <script setup lang="ts">
-import { storeToRefs } from 'pinia';
-import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
-import { useConfigStore } from '@/stores/config';
-
-const store = useConfigStore();
-const { config } = storeToRefs(store);
+import StatsSettingsPanel from '@/components/StatsSettingsPanel.vue';
 </script>
 
 <template>
-  <div id="realtime_stats" class="config-page realtime-stats-config space-y-5">
+  <div id="stats" class="config-page space-y-5">
     <div
       class="rounded-xl border border-dark/10 bg-light/60 px-4 py-3 dark:border-light/10 dark:bg-dark/40 sm:px-5 sm:py-4"
     >
@@ -23,58 +18,17 @@ const { config } = storeToRefs(store);
           <p class="mt-1 text-xs leading-relaxed opacity-70">
             {{ $t('stats.config_desc') }}
           </p>
+          <router-link
+            to="/stats"
+            class="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            <i class="fas fa-arrow-up-right-from-square text-[10px]" />
+            <span>{{ $t('stats.open_stats_page') }}</span>
+          </router-link>
         </div>
       </div>
     </div>
 
-    <div class="space-y-5 sm:space-y-6">
-      <div class="realtime-stats-setting">
-        <ConfigFieldRenderer
-          v-model="config.realtime_stats_enabled"
-          setting-key="realtime_stats_enabled"
-        />
-      </div>
-
-      <div class="realtime-stats-setting">
-        <ConfigFieldRenderer
-          v-model="config.realtime_stats_poll_interval_ms"
-          setting-key="realtime_stats_poll_interval_ms"
-        />
-      </div>
-
-      <div class="realtime-stats-setting">
-        <ConfigFieldRenderer
-          v-model="config.realtime_stats_history_retention_seconds"
-          setting-key="realtime_stats_history_retention_seconds"
-        />
-      </div>
-
-      <div class="realtime-stats-setting">
-        <ConfigFieldRenderer
-          v-model="config.realtime_stats_max_history_points"
-          setting-key="realtime_stats_max_history_points"
-        />
-      </div>
-
-    </div>
+    <StatsSettingsPanel />
   </div>
 </template>
-
-<style scoped>
-.realtime-stats-setting {
-  min-width: 0;
-}
-
-.realtime-stats-setting :deep(.n-input),
-.realtime-stats-setting :deep(.n-input-number) {
-  width: 100%;
-  max-width: 24rem;
-}
-
-@media (max-width: 640px) {
-  .realtime-stats-setting :deep(.n-input),
-  .realtime-stats-setting :deep(.n-input-number) {
-    max-width: none;
-  }
-}
-</style>

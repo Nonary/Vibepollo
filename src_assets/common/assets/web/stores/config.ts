@@ -72,11 +72,27 @@ const defaultGroups = [
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,
+      system_tray: true,
+    },
+  },
+  {
+    id: 'stats',
+    name: 'Stats',
+    options: {
       session_history_enabled: 'enabled',
       session_history_ttl_days: 0,
       session_history_db_size_limit_mb: 0,
       system_tray: true,
       hide_tray_controls: 'disabled',
+      realtime_stats_enabled: true,
+      realtime_stats_poll_interval_ms: 2000,
+      realtime_stats_history_retention_seconds: 300,
+      realtime_stats_max_history_points: 300,
+      realtime_stats_pause_when_hidden: true,
+      realtime_stats_show_active_sessions: true,
+      realtime_stats_show_host_stats: true,
+      realtime_stats_show_host_charts: true,
+      realtime_stats_show_session_history: true,
     },
   },
   {
@@ -548,6 +564,12 @@ export const useConfigStore = defineStore('config', () => {
       'dd_use_sunshine_virtual_display_driver',
       'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
+      'realtime_stats_enabled',
+      'realtime_stats_pause_when_hidden',
+      'realtime_stats_show_active_sessions',
+      'realtime_stats_show_host_stats',
+      'realtime_stats_show_host_charts',
+      'realtime_stats_show_session_history',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {

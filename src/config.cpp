@@ -1981,6 +1981,23 @@ namespace config {
       }
     }
 
+    bool_f(vars, "realtime_stats_enabled", sunshine.realtime_stats_enabled);
+    int_between_f(vars, "realtime_stats_poll_interval_ms", sunshine.realtime_stats_poll_interval_ms, {250, 60000});
+
+    // Web-UI-only realtime stats preferences; consumed here so they are not
+    // reported as unrecognized options.
+    for (const auto *ui_only_key : {
+           "realtime_stats_history_retention_seconds",
+           "realtime_stats_max_history_points",
+           "realtime_stats_pause_when_hidden",
+           "realtime_stats_show_active_sessions",
+           "realtime_stats_show_host_stats",
+           "realtime_stats_show_host_charts",
+           "realtime_stats_show_session_history",
+         }) {
+      vars.erase(ui_only_key);
+    }
+
 #ifdef _WIN32
     platf::hotkey::update_restore_hotkey(
       video.dd.snapshot_restore_hotkey,

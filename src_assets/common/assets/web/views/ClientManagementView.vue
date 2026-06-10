@@ -28,6 +28,10 @@
             <i class="fas fa-key" />
             <span class="ml-2">{{ $t('clients.api_tokens_short') }}</span>
           </n-button>
+          <n-button size="small" tertiary @click="goToStats">
+            <i class="fas fa-chart-line" />
+            <span class="ml-2">{{ $t('navbar.stats') }}</span>
+          </n-button>
           <span class="clients-last-updated">{{ lastRefreshedLabel }}</span>
         </div>
       </div>
@@ -46,15 +50,6 @@
         </div>
       </div>
     </section>
-
-    <!-- Active Streaming Sessions -->
-    <ActiveSessionsCard />
-
-    <!-- Host system stats -->
-    <HostStatsCard />
-
-    <!-- Session History -->
-    <SessionHistoryCard />
 
     <!-- Pair New Client -->
     <n-card class="clients-card" :segmented="{ content: true, footer: false }">
@@ -857,7 +852,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { http } from '@/http';
 import {
   NAlert,
@@ -877,9 +872,6 @@ import {
 import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
-import ActiveSessionsCard from '@/components/ActiveSessionsCard.vue';
-import HostStatsCard from '@/components/HostStatsCard.vue';
-import SessionHistoryCard from '@/components/SessionHistoryCard.vue';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
@@ -1078,6 +1070,7 @@ type UnknownRecord = Record<string, unknown>;
 
 const { t } = useI18n();
 const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 const configStore = useConfigStore();
 const apiTokensSectionRef = ref<HTMLElement | null>(null);
@@ -2018,6 +2011,10 @@ function displayDeviceActiveState(info: unknown): boolean | null {
 
 function scrollToTokenSection(): void {
   apiTokensSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function goToStats(): void {
+  void router.push('/stats');
 }
 
 onMounted(async () => {
