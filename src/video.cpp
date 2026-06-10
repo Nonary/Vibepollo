@@ -132,7 +132,18 @@ namespace video {
     bool is_d3d_capture_image(const std::shared_ptr<platf::img_t> &img) {
       return dynamic_cast<platf::dxgi::img_d3d_t *>(img.get()) != nullptr;
     }
+#endif
 
+    // Serializes destruction of encode sessions (and, on Windows, the async release of shared
+    // D3D capture surfaces). When two clients share one capture target, a capture reinit makes
+    // both video threads tear down their NVENC session + D3D11 device at the same instant. Both
+    // devices have the same shared capture textures open, and the NVIDIA UMD's cross-device
+    // shared-resource dependency cleanup (DestroyDriverInstance) is not safe against a concurrent
+    // teardown of the other device: it faults walking freed dependency entries. Funnel all
+    // encoder teardown through this mutex so only one device is ever mid-destruction.
+    std::mutex encode_session_teardown_mutex;
+
+#ifdef _WIN32
     void release_d3d_capture_images_async(std::vector<std::shared_ptr<platf::img_t>> images) {
       if (images.empty()) {
         return;
@@ -141,6 +152,7 @@ namespace video {
       try {
         std::thread {[images = std::move(images)]() mutable {
           platf::set_thread_name("video::d3dRelease");
+          std::lock_guard lg {encode_session_teardown_mutex};
           images.clear();
         }}.detach();
       } catch (const std::system_error &err) {
@@ -2027,8 +2039,12 @@ namespace video {
             // display references reached zero above), so it is safe to free them. Done
             // synchronously on this thread rather than on a detached thread, so no surface
             // is freed while another device still references it or while it is still queued
-            // for GPU eviction during the mode change.
-            deferred_d3d_images.clear();
+            // for GPU eviction during the mode change. Take the teardown mutex so this free
+            // cannot overlap an async d3dRelease thread still draining a previous generation.
+            {
+              std::lock_guard lg {encode_session_teardown_mutex};
+              deferred_d3d_images.clear();
+            }
 #endif
 
             while (capture_ctx_queue->running()) {
@@ -2677,13 +2693,23 @@ namespace video {
       if ((encoder.flags & ASYNC_TEARDOWN) && !sync_teardown) {
         std::thread encoder_teardown_thread {[session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
+          std::lock_guard lg {encode_session_teardown_mutex};
           session.reset();
           BOOST_LOG(info) << "Async encoder teardown complete";
         }};
         encoder_teardown_thread.detach();
-      } else if ((encoder.flags & ASYNC_TEARDOWN) && sync_teardown) {
-        BOOST_LOG(debug) << "Using synchronous encoder teardown during "
-                         << (shutdown_teardown ? "shutdown"sv : "capture reinit"sv);
+      } else {
+        if ((encoder.flags & ASYNC_TEARDOWN) && sync_teardown) {
+          BOOST_LOG(debug) << "Using synchronous encoder teardown during "
+                           << (shutdown_teardown ? "shutdown"sv : "capture reinit"sv);
+        }
+
+        // Destroy the session here, under the teardown mutex, rather than letting it die at
+        // scope exit. During a capture reinit both video threads reach this point at the same
+        // moment; unserialized concurrent NVENC/D3D11 device destruction crashes the NVIDIA UMD
+        // (access violation in nvwgf2umx during cross-device shared-resource dependency cleanup).
+        std::lock_guard lg {encode_session_teardown_mutex};
+        session.reset();
       }
     });
 
@@ -2738,7 +2764,31 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
     encode_bootstrap_state_t bootstrap_state {.allow_placeholder_before_first_real = frame_nr <= 1};
 
+    // Per-session encode-loop accounting. When several clients share one capture target, a
+    // single client can freeze while the others stream fine, and nothing else in the log
+    // distinguishes a session that is encoding live frames from one that is starved or gated.
+    // The channel_data pointer is a stable per-session tag for correlating these lines.
+    struct {
+      uint64_t popped_real = 0;
+      uint64_t popped_placeholder = 0;
+      uint64_t pop_timeouts = 0;
+      uint64_t gate_skipped = 0;
+      uint64_t encoded = 0;
+      std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
+    } loop_stats;
+
     while (true) {
+      if (auto now = std::chrono::steady_clock::now(); now - loop_stats.last_log >= 10s) {
+        BOOST_LOG(debug) << "Encode loop [" << channel_data << "] " << config.width << 'x' << config.height
+                         << ": popped_real=" << loop_stats.popped_real
+                         << " popped_placeholder=" << loop_stats.popped_placeholder
+                         << " pop_timeouts=" << loop_stats.pop_timeouts
+                         << " gate_skipped=" << loop_stats.gate_skipped
+                         << " encoded=" << loop_stats.encoded
+                         << " frame_nr=" << frame_nr;
+        loop_stats = {};
+        loop_stats.last_log = now;
+      }
       // Break out of the encoding loop if any of the following are true:
       // a) The stream is ending
       // b) Sunshine is quitting
@@ -2778,6 +2828,11 @@ namespace video {
       if (!requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           placeholder_input = is_placeholder_capture_image(*img);
+          if (placeholder_input) {
+            ++loop_stats.popped_placeholder;
+          } else {
+            ++loop_stats.popped_real;
+          }
           if (!placeholder_input && bootstrap_state.current_input_placeholder) {
             session->request_idr_frame();
           }
@@ -2817,11 +2872,13 @@ namespace video {
         } else if (!images->running()) {
           break;
         } else {
+          ++loop_stats.pop_timeouts;
           placeholder_input = bootstrap_state.current_input_placeholder;
         }
       }
 
       if (placeholder_input && !bootstrap_state.should_encode_placeholder()) {
+        ++loop_stats.gate_skipped;
         continue;
       }
 
@@ -2829,6 +2886,7 @@ namespace video {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         break;
       }
+      ++loop_stats.encoded;
 
       if (placeholder_input) {
         bootstrap_state.placeholder_encoded = true;
