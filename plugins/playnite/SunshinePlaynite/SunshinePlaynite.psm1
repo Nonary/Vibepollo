@@ -1311,7 +1311,7 @@ function Send-InitialSnapshot {
   $catCount = 0; try { $catCount = [int]$categories.Count } catch { $catCount = 0 }
   Write-Log ("Sent categories snapshot ({0})" -f $catCount)
 
-  $games = Get-PlayniteGames
+  $games = @(Get-PlayniteGames)
   # Send in batches to avoid overly large messages
   $batchSize = 100
   Write-DebugLog ("Initial snapshot: totalGames={0} batchSize={1}" -f $games.Count, $batchSize)
@@ -1727,7 +1727,7 @@ function Get-RunningGames {
 
 function Send-RunningGamesStatusSnapshot {
   try {
-    $running = Get-RunningGames
+    $running = @(Get-RunningGames)
     if (-not $running -or $running.Count -eq 0) { return }
     foreach ($game in $running) {
       if (-not $game) { continue }
@@ -1768,7 +1768,7 @@ function Sync-LauncherConnectionActiveGame {
       if ($game -and (Test-GameIsRunning -Game $game)) { $candidates = @($game) }
     }
     if (-not $candidates -or $candidates.Count -eq 0) {
-      $candidates = Get-RunningGames
+      $candidates = @(Get-RunningGames)
     }
     foreach ($game in $candidates) {
       if (-not $game) { continue }
@@ -1898,7 +1898,7 @@ function Get-PendingLauncherGameIds {
 
 function Flush-PendingLauncherStatuses {
   param([string[]]$Targets)
-  $ids = Get-PendingLauncherGameIds
+  $ids = @(Get-PendingLauncherGameIds)
   if (-not $ids -or $ids.Count -eq 0) { return 0 }
   $sent = 0
   foreach ($id in $ids) {
@@ -2206,7 +2206,7 @@ function Cleanup-StaleRunspaceByName {
 function Send-ShutdownSessionHandoff {
   try {
     $running = @()
-    try { $running = Get-RunningGames } catch { $running = @() }
+    try { $running = @(Get-RunningGames) } catch { $running = @() }
     if ($running -and $running.Count -gt 0) {
       $handed = 0
       foreach ($game in $running) {
