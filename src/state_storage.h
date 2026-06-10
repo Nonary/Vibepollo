@@ -76,4 +76,11 @@ namespace statefile {
    */
   std::vector<std::string> load_virtual_display_devices();
 
+  /**
+   * @brief Persist the selected display helper engine ("legacy" or "v2") to
+   *        vibeshine_state.json so the boot --restore scheduled task runs the
+   *        same engine that armed it.
+   */
+  void save_display_helper_engine(const std::string &engine);
+
 }  // namespace statefile

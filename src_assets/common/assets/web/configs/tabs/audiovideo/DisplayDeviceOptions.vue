@@ -326,6 +326,12 @@ const ddHdrOptions = computed(() => [
   { label: t('config.dd_hdr_option_auto') as string, value: 'auto' },
 ]);
 
+const ddHelperEngineOptions = computed(() => [
+  { label: t('config.dd_display_helper_engine_auto') as string, value: 'auto' },
+  { label: t('config.dd_display_helper_engine_v2') as string, value: 'v2' },
+  { label: t('config.dd_display_helper_engine_legacy') as string, value: 'legacy' },
+]);
+
 // ----- Manual Resolution Validation -----
 // Validate formats like 1920x1080 (optionally allowing spaces around the separator)
 const manualResolutionPattern = /^(\s*\d{2,5}\s*[xX×]\s*\d{2,5}\s*)$/;
@@ -659,6 +665,25 @@ function clearSnapshotHotkey(): void {
                 locale-prefix="config"
                 default="false"
               />
+            </div>
+
+            <!-- Display helper engine selection -->
+            <div class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3 space-y-2">
+              <label for="dd_display_helper_engine" class="form-label">{{
+                $t('config.dd_display_helper_engine')
+              }}</label>
+              <n-select
+                id="dd_display_helper_engine"
+                v-model:value="config.dd_display_helper_engine"
+                :options="ddHelperEngineOptions"
+                :data-search-options="
+                  ddHelperEngineOptions.map((o) => `${o.label}::${o.value}`).join('|')
+                "
+                class="w-full"
+              />
+              <p class="text-[11px] opacity-60">
+                {{ $t('config.dd_display_helper_engine_desc') }}
+              </p>
             </div>
 
             <div

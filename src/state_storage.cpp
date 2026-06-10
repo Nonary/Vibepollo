@@ -671,4 +671,37 @@ namespace statefile {
     return devices;
   }
 
+  void save_display_helper_engine(const std::string &engine) {
+    if (engine.empty()) {
+      return;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    if (root_node.get<std::string>("display_helper_engine", "") == engine) {
+      return;  // unchanged; avoid rewriting the state file
+    }
+    root_node.put("display_helper_engine", engine);
+
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
+      return;
+    }
+    BOOST_LOG(info) << "statefile: persisted display helper engine '" << engine << "' to vibeshine state";
+  }
+
 }  // namespace statefile

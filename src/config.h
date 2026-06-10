@@ -185,7 +185,14 @@ namespace config {
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       int paused_virtual_display_timeout_secs;  ///< Optional delay before virtual display cleanup while stream is paused (0 keeps alive).
+      enum class helper_engine_e : int {
+        automatic,  ///< v2 engine on pre-release builds, legacy engine on stable releases.
+        v2,  ///< Always use the v2 state-machine engine.
+        legacy  ///< Always use the legacy engine.
+      };
+
       bool always_restore_from_golden;  ///< When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens).
+      helper_engine_e display_helper_engine;  ///< Which display helper engine to run.
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool use_sunshine_virtual_display_driver;  ///< Opt into the Vibepollo Display Driver instead of legacy virtual display drivers.

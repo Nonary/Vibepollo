@@ -1449,6 +1449,34 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### dd_display_helper_engine
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Engine used to apply and restore display settings.
+            In automatic mode the new v2 state-machine engine runs on pre-release builds only;
+            stable releases keep the legacy engine unless you opt in with @code{}v2@endcode.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Choices</td>
+        <td colspan="2">@code{}auto@endcode, @code{}v2@endcode, @code{}legacy@endcode</td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}auto@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            dd_display_helper_engine = v2
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_snapshot_exclude_devices
 
 <table>
