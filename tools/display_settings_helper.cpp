@@ -730,10 +730,14 @@ namespace {
       // Build a stable textual representation
       std::string s;
       s.reserve(1024);
-      // Topology
+      // Topology (canonical order: group enumeration order is OS-dependent and meaningless)
       s += "T:";
-      for (auto grp : snap.m_topology) {
+      auto topology = snap.m_topology;
+      for (auto &grp : topology) {
         std::sort(grp.begin(), grp.end());
+      }
+      std::sort(topology.begin(), topology.end());
+      for (const auto &grp : topology) {
         s += "[";
         for (const auto &id : grp) {
           s += id;
@@ -2910,9 +2914,32 @@ namespace {
       self->controller.blank_hdr_states(1000ms);
     }
 
-    // Strict comparator: require full structural equality; allow Unknown==Unknown for HDR
+    // Windows enumerates topology groups in an arbitrary, session-dependent order;
+    // only the set of groups (and their members) is meaningful, mirroring
+    // WinDisplayDevice::isTopologyTheSame.
+    static display_device::ActiveTopology canonical_topology(display_device::ActiveTopology topology) {
+      for (auto &group : topology) {
+        std::sort(group.begin(), group.end());
+      }
+      std::sort(topology.begin(), topology.end());
+      return topology;
+    }
+
+    // Strict comparator: require full structural equality; allow Unknown==Unknown for HDR.
+    // Topology is compared order-insensitively so a restore isn't treated as failed
+    // (and endlessly re-applied) just because the OS enumerates paths in a new order.
     static bool equal_snapshots_strict(const display_device::DisplaySettingsSnapshot &a, const display_device::DisplaySettingsSnapshot &b) {
-      return a == b;
+      if (canonical_topology(a.m_topology) != canonical_topology(b.m_topology)) {
+        return false;
+      }
+      if (!(a.m_modes == b.m_modes && a.m_hdr_states == b.m_hdr_states && a.m_primary_device == b.m_primary_device)) {
+        return false;
+      }
+      // Origins are optional for backward compatibility with older snapshots
+      if (!a.m_origins.empty() && !b.m_origins.empty()) {
+        return a.m_origins == b.m_origins;
+      }
+      return true;
     }
 
     static std::set<std::string> snapshot_device_set(const display_device::DisplaySettingsSnapshot &s) {
