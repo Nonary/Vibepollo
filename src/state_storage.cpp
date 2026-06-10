@@ -566,4 +566,109 @@ namespace statefile {
     return devices;
   }
 
+  void remember_virtual_display_device(const std::string &device_id) {
+    if (device_id.empty()) {
+      return;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    std::vector<std::string> devices;
+    if (auto devices_opt = root_node.get_child_optional("virtual_display_devices")) {
+      for (const auto &item : *devices_opt) {
+        const auto id = item.second.get_value<std::string>("");
+        if (!id.empty()) {
+          devices.push_back(id);
+        }
+      }
+    }
+
+    const auto ascii_lower = [](char ch) {
+      return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
+    };
+    const auto equals_ci = [&](const std::string &lhs, const std::string &rhs) {
+      return lhs.size() == rhs.size() &&
+             std::equal(lhs.begin(), lhs.end(), rhs.begin(), [&](char a, char b) {
+               return ascii_lower(a) == ascii_lower(b);
+             });
+    };
+    for (const auto &existing : devices) {
+      if (equals_ci(existing, device_id)) {
+        return;  // already remembered; avoid rewriting the state file
+      }
+    }
+
+    devices.push_back(device_id);
+    constexpr size_t kMaxRememberedVirtualDisplays = 16;
+    if (devices.size() > kMaxRememberedVirtualDisplays) {
+      devices.erase(devices.begin(), devices.end() - kMaxRememberedVirtualDisplays);
+    }
+
+    pt::ptree devices_pt;
+    for (const auto &id : devices) {
+      pt::ptree item;
+      item.put_value(id);
+      devices_pt.push_back({"", item});
+    }
+    root_node.put_child("virtual_display_devices", devices_pt);
+
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
+      return;
+    }
+    BOOST_LOG(info) << "statefile: remembered virtual display device " << device_id
+                    << " (" << devices.size() << " total) in vibeshine state";
+  }
+
+  std::vector<std::string> load_virtual_display_devices() {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return {};
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+
+    pt::ptree root;
+    if (!load_tree_if_exists(path, root)) {
+      return {};
+    }
+
+    std::vector<std::string> devices;
+    try {
+      auto root_node_opt = root.get_child_optional("root");
+      if (!root_node_opt) {
+        return {};
+      }
+      auto devices_opt = root_node_opt->get_child_optional("virtual_display_devices");
+      if (!devices_opt) {
+        return {};
+      }
+      for (const auto &item : *devices_opt) {
+        const auto device_id = item.second.get_value<std::string>("");
+        if (!device_id.empty()) {
+          devices.push_back(device_id);
+        }
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "statefile: failed to parse virtual display devices: " << e.what();
+    }
+    return devices;
+  }
+
 }  // namespace statefile
