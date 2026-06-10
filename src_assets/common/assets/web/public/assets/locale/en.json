@@ -672,7 +672,21 @@
     "virtual_display_status_label": "Vibepollo virtual display driver:",
     "server_cmd_entry": "Command {index}",
     "server_cmd_name": "Command Name",
-    "server_cmd_command": "Command"
+    "server_cmd_command": "Command",
+    "realtime_stats_enabled": "Enable Realtime Stats",
+    "realtime_stats_enabled_desc": "Collect live host metrics (CPU, GPU, RAM, VRAM, network) for the Stats page. Disabling stops the background sampler entirely and also omits host metrics from session history samples.",
+    "realtime_stats_poll_interval_ms": "Update Frequency (ms)",
+    "realtime_stats_poll_interval_ms_desc": "How often host stats are sampled and the dashboard refreshes, in milliseconds. Lower values are smoother but use slightly more CPU.",
+    "realtime_stats_history_retention_seconds": "Chart Retention",
+    "realtime_stats_history_retention_seconds_desc": "How far back the live history charts keep data.",
+    "realtime_stats_max_history_points": "Max Chart Points",
+    "realtime_stats_max_history_points_desc": "Upper bound on the number of data points kept for the live charts, regardless of retention window.",
+    "realtime_stats_pause_when_hidden": "Pause When Tab Hidden",
+    "realtime_stats_pause_when_hidden_desc": "Stop polling while the browser tab is in the background to save resources; resumes automatically when you return.",
+    "realtime_stats_show_active_sessions": "Show Active Sessions Card",
+    "realtime_stats_show_host_stats": "Show Host Stats Card",
+    "realtime_stats_show_host_charts": "Show History Charts Card",
+    "realtime_stats_show_session_history": "Show Session History Card"
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
@@ -727,7 +741,8 @@
     "toggle_theme": "Theme",
     "troubleshoot": "Troubleshooting",
     "logout": "Logout",
-    "api_tokens": "API Tokens"
+    "api_tokens": "API Tokens",
+    "stats": "Stats"
   },
   "webrtc": {
     "nav": "Stream",
@@ -1576,15 +1591,28 @@
     "generic_moonlight_clients_desc": "Generic Moonlight clients may work, but Artemis clients are recommended for Vibepollo."
   },
   "stats": {
-    "config_desc": "Collect realtime host and session metrics for dashboards and history views.",
-    "config_header": "Realtime statistics",
-    "disabled_desc": "Enable realtime stats in configuration to collect host metrics and session history charts.",
-    "disabled_title": "Realtime stats are disabled",
-    "enable": "Enable stats",
-    "history_empty": "No host stats recorded yet.",
-    "history_title": "Host stats history",
-    "subtitle": "Monitor active streams, host metrics, and session history.",
-    "title": "Performance Stats"
+    "title": "Performance Stats",
+    "subtitle": "Live host performance, active streaming sessions, and session history.",
+    "live": "Live",
+    "paused": "Paused",
+    "settings": "Stats Settings",
+    "updated_just_now": "Updated just now",
+    "updated_seconds_ago": "Updated {seconds}s ago",
+    "disabled_title": "Realtime statistics are disabled",
+    "disabled_desc": "Host performance sampling and live dashboards are turned off. Session history is controlled separately by the Session History settings.",
+    "enable": "Enable Statistics",
+    "all_cards_hidden": "All stats cards are hidden. Enable some in the stats settings.",
+    "config_header": "Statistics",
+    "config_desc": "Control how Vibepollo collects and displays live host stats, charts, and session history. These settings are shared with the Stats page.",
+    "open_stats_page": "Open the Stats page",
+    "section_collection": "Collection",
+    "section_charts": "History Charts",
+    "section_cards": "Visible Cards",
+    "section_cards_desc": "Choose which cards appear on the Stats page.",
+    "section_history": "Session History",
+    "section_history_desc": "Persistent per-session records stored in a local database, independent of live sampling.",
+    "history_title": "Host History Charts",
+    "history_empty": "No history yet. Data points appear as host stats are sampled."
   },
   "login": {
     "save_password": "Save password"

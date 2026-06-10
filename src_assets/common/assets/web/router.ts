@@ -8,6 +8,7 @@ const ApplicationsView = () => import('@/views/ApplicationsView.vue');
 const SettingsView = () => import('@/views/SettingsView.vue');
 const TroubleshootingView = () => import('@/views/TroubleshootingView.vue');
 const ClientManagementView = () => import('@/views/ClientManagementView.vue');
+const StatsView = () => import('@/views/StatsView.vue');
 const WebRtcClientView = () => import('@/views/WebRtcClientView.vue');
 
 const routes = [
@@ -18,6 +19,12 @@ const routes = [
   { path: '/troubleshooting', component: TroubleshootingView },
   { path: '/changelog', redirect: '/' },
   { path: '/clients', component: ClientManagementView },
+  { path: '/stats', component: StatsView, meta: { container: 'xl' } },
+  {
+    path: '/api-tokens',
+    alias: '/api-tokens/',
+    redirect: { path: '/clients', query: { sec: 'tokens' } },
+  },
   { path: '/webrtc', component: WebRtcClientView, meta: { container: 'full' } },
 ];
 

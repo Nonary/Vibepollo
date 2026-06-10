@@ -4,9 +4,11 @@
  */
 #include "host_stats.h"
 
+#include "config.h"
 #include "logging.h"
 #include "sync.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -19,7 +21,11 @@ namespace host_stats {
   using namespace std::chrono_literals;
 
   namespace {
-    constexpr auto SAMPLE_INTERVAL = 2s;
+    constexpr auto DISABLED_RECHECK_INTERVAL = 2s;
+
+    std::chrono::milliseconds sample_interval() {
+      return std::chrono::milliseconds(std::clamp(config::sunshine.realtime_stats_poll_interval_ms, 250, 60000));
+    }
 
     sync_util::sync_t<platf::host_stats_t> g_latest;
     platf::host_info_t g_info;
@@ -35,20 +41,31 @@ namespace host_stats {
 
     void
       sampler_loop() {
+      bool was_enabled = true;
       while (!g_stop.load(std::memory_order_acquire)) {
-        try {
-          auto sample = g_provider->sample();
-          {
-            auto lg = g_latest.lock();
-            g_latest.raw = sample;
+        const bool enabled = config::sunshine.realtime_stats_enabled;
+        if (enabled) {
+          try {
+            auto sample = g_provider->sample();
+            {
+              auto lg = g_latest.lock();
+              g_latest.raw = sample;
+            }
+          } catch (const std::exception &e) {
+            BOOST_LOG(warning) << "host_stats: provider sample failed: " << e.what();
+          } catch (...) {
+            BOOST_LOG(warning) << "host_stats: provider sample failed (unknown exception)";
           }
-        } catch (const std::exception &e) {
-          BOOST_LOG(warning) << "host_stats: provider sample failed: " << e.what();
-        } catch (...) {
-          BOOST_LOG(warning) << "host_stats: provider sample failed (unknown exception)";
+        } else if (was_enabled) {
+          // Opt-out: stop collecting and clear the cached snapshot back to sentinels.
+          auto lg = g_latest.lock();
+          g_latest.raw = platf::host_stats_t {};
+          BOOST_LOG(::info) << "host_stats: sampling paused (realtime stats disabled)";
         }
+        was_enabled = enabled;
+        const auto wait_interval = enabled ? std::chrono::milliseconds(sample_interval()) : std::chrono::milliseconds(DISABLED_RECHECK_INTERVAL);
         std::unique_lock<std::mutex> lk(g_cv_mutex);
-        g_cv.wait_for(lk, SAMPLE_INTERVAL, [] {
+        g_cv.wait_for(lk, wait_interval, [] {
           return g_stop.load(std::memory_order_acquire);
         });
       }
@@ -106,12 +123,14 @@ namespace host_stats {
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "host_stats: provider info() failed: " << e.what();
     }
-    try {
-      auto first = g_provider->sample();
-      auto lg = g_latest.lock();
-      g_latest.raw = first;
-    } catch (...) {
-      BOOST_LOG(warning) << "host_stats: initial sample failed";
+    if (config::sunshine.realtime_stats_enabled) {
+      try {
+        auto first = g_provider->sample();
+        auto lg = g_latest.lock();
+        g_latest.raw = first;
+      } catch (...) {
+        BOOST_LOG(warning) << "host_stats: initial sample failed";
+      }
     }
     g_thread = std::thread(sampler_loop);
     g_owner_generation = ++g_next_generation;

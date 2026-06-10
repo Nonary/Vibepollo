@@ -385,6 +385,8 @@ namespace config {
     int session_history_ttl_days {0};  ///< Delete ended sessions older than this many days (0 disables age pruning)
     int session_history_db_size_limit_mb {0};  ///< Approximate live DB quota in MiB (0 disables size pruning)
     std::vector<std::string> csrf_allowed_origins;
+    bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
+    int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
   };
 
   extern video_t video;
