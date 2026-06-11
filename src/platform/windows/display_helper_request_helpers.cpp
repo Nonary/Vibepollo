@@ -533,6 +533,19 @@ namespace display_helper_integration::helpers {
     }
     BOOST_LOG(info) << "Display helper topology: default device_id=" << default_device_id;
 
+    if (!session_.virtual_display) {
+      // Physical capture target: applySettings() already derives the topology from
+      // the device preparation option (ensure_active keeps the other displays
+      // enabled), so only pin a single-display topology when the user explicitly
+      // chose to deactivate the other displays. The virtual display placement
+      // logic below does not apply to physical sessions.
+      if (effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::ensure_only_display &&
+          topology.topology.empty() && !default_device_id.empty()) {
+        topology.topology = {{default_device_id}};
+      }
+      return;
+    }
+
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
     if (session_.virtual_display_layout_override) {
       BOOST_LOG(debug) << "session_.virtual_display_layout_override value: " << static_cast<int>(*session_.virtual_display_layout_override);
