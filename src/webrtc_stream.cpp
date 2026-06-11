@@ -183,6 +183,10 @@ namespace webrtc_stream {
     constexpr std::size_t kVideoInflightFramesMax = 6;
     constexpr std::size_t kVideoInflightKeyframeExtra = 2;
     constexpr auto kWebrtcIdleGracePeriod = std::chrono::minutes {5};
+    // While a virtual display is active the physical monitors may be disabled
+    // (exclusive layout); keep the post-disconnect grace period short so they
+    // are restored promptly instead of staying dark for the full idle window.
+    constexpr auto kWebrtcIdleGracePeriodVirtualDisplay = std::chrono::seconds {15};
 
     struct SharedEncodedPayloadReleaseContext {
       std::shared_ptr<std::vector<std::uint8_t>> payload;
@@ -2413,7 +2417,7 @@ namespace webrtc_stream {
       return key;
     }
 
-    void stop_webrtc_capture_locked(bool allow_platform_teardown) {
+    void stop_webrtc_capture_locked(bool allow_platform_teardown, bool final_teardown) {
       if (webrtc_capture.mail) {
         auto shutdown_event = webrtc_capture.mail->event<bool>(mail::shutdown);
         shutdown_event->raise(true);
@@ -2447,7 +2451,12 @@ namespace webrtc_stream {
 #ifdef _WIN32
       if (allow_platform_teardown) {
         const bool is_paused = proc::proc.running() > 0;
-        const bool revert_enabled = config::video.dd.config_revert_on_disconnect;
+        // config_revert_on_disconnect only governs reverting while an app is still
+        // running (paused session). When the stream is fully over with no app left,
+        // the physical display configuration must always be restored — otherwise a
+        // desktop WebRTC session leaves the monitors disabled with nothing else
+        // (e.g. app termination) ever dispatching the revert.
+        const bool revert_enabled = config::video.dd.config_revert_on_disconnect || (final_teardown && !is_paused);
         const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
         const bool delay_virtual_display_cleanup_due_to_pause = is_paused && !revert_enabled && paused_timeout_secs > 0;
         const bool keep_virtual_display_due_to_pause = is_paused && !revert_enabled && paused_timeout_secs == 0;
@@ -2539,7 +2548,9 @@ namespace webrtc_stream {
       }
 
       if (webrtc_capture.active.load(std::memory_order_acquire)) {
-        stop_webrtc_capture_locked(!rtsp_active);
+        // Reconfigure: a new capture starts right after, so don't treat this as a
+        // final teardown (no forced display restore between stop and restart).
+        stop_webrtc_capture_locked(!rtsp_active, false);
       }
 
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
@@ -2670,7 +2681,7 @@ namespace webrtc_stream {
       if (rtsp_sessions_active.load(std::memory_order_relaxed)) {
         return;
       }
-      stop_webrtc_capture_locked(true);
+      stop_webrtc_capture_locked(true, true);
     }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
@@ -4296,6 +4307,22 @@ namespace webrtc_stream {
     void schedule_webrtc_idle_shutdown() {
       webrtc_capture.idle_shutdown_pending.store(true, std::memory_order_release);
       const auto token = webrtc_idle_shutdown_token.fetch_add(1, std::memory_order_acq_rel) + 1;
+      std::chrono::steady_clock::duration grace_period = kWebrtcIdleGracePeriod;
+#ifdef _WIN32
+      const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
+      const bool virtual_display_active = std::any_of(
+        virtual_displays.begin(),
+        virtual_displays.end(),
+        [](const VDISPLAY::VirtualDisplayInfo &info) {
+          return info.is_active;
+        }
+      );
+      if (virtual_display_active) {
+        BOOST_LOG(info) << "WebRTC: last session closed with an active virtual display; "
+                        << "shortening idle shutdown grace period to restore displays promptly.";
+        grace_period = kWebrtcIdleGracePeriodVirtualDisplay;
+      }
+#endif
       task_pool.pushDelayed(
         [token]() {
           if (webrtc_idle_shutdown_token.load(std::memory_order_acquire) != token) {
@@ -4311,7 +4338,7 @@ namespace webrtc_stream {
           stop_webrtc_capture_if_idle();
           reset_webrtc_factory();
         },
-        kWebrtcIdleGracePeriod
+        grace_period
       );
     }
 
