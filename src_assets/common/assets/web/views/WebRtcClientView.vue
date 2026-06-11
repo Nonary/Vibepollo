@@ -251,8 +251,10 @@
             @click="terminateSession"
             class="action-btn danger"
             :disabled="terminatePending"
+            :title="$t('webrtc.terminate_desc')"
+            :aria-label="$t('webrtc.terminate')"
           >
-            <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-power-off'"></i>
+            <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-rectangle-xmark'"></i>
           </button>
 
           <div class="quick-toggles">
