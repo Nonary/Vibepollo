@@ -746,7 +746,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     frameGenerationModeFromConfig && frameGenerationModeFromConfig !== 'off'
       ? (frameGenerationModeFromConfig as FrameGenerationProvider)
       : normalizedProvider;
-  const rawOutput = String(src.output ?? '');
+  const hasDisplayOutput = Object.prototype.hasOwnProperty.call(src, 'display-output');
+  const rawOutput = String(hasDisplayOutput ? ((src as any)['display-output'] ?? '') : (src.output ?? ''));
   const rawVirtualScreen = src['virtual-screen'];
   const virtualScreen =
     typeof rawVirtualScreen === 'boolean'
@@ -975,12 +976,10 @@ function toServerPayload(f: AppForm): Record<string, any> {
   if (Object.keys(customPayload).length > 0) {
     payload['lossless-scaling-custom'] = customPayload;
   }
-  // Only persist output if it differs from global output (including virtual selection flag)
-  if (typeof f.output === 'string') {
-    const curOut = String(f.output || '');
-    if (curOut !== '' && (curOut !== _globalOutput || selection === 'physical')) {
-      payload['output'] = curOut;
-    }
+  // Physical display overrides use their own field so an empty string can explicitly mean
+  // "primary display" instead of "no app override".
+  if (selection === 'physical') {
+    payload['display-output'] = typeof f.output === 'string' ? f.output.trim() : '';
   }
 
   // Only persist virtual-screen if it differs from the global virtual output flag.
@@ -1671,13 +1670,8 @@ const displaySelection = computed<DisplaySelection>({
       }
       form.value.virtualDisplayMode = 'disabled';
       form.value.virtualScreen = false;
-      const current = typeof form.value.output === 'string' ? form.value.output.trim() : '';
-      if (!current || current === VIRTUAL_DISPLAY_SELECTION) {
-        if (lastPhysicalOutput.value) {
-          form.value.output = lastPhysicalOutput.value;
-        } else if (globalOutputName.value && globalOutputName.value !== VIRTUAL_DISPLAY_SELECTION) {
-          form.value.output = globalOutputName.value;
-        }
+      if (form.value.output === VIRTUAL_DISPLAY_SELECTION) {
+        form.value.output = '';
       }
     } else {
       form.value.virtualScreen = false;
@@ -1752,18 +1746,20 @@ const displayNameCache = ref<Record<string, string>>({});
 const physicalOutputModel = computed<string | null>({
   get: () => {
     const value = typeof form.value.output === 'string' ? form.value.output.trim() : '';
-    return value || null;
+    return displaySelection.value === 'physical' ? value : null;
   },
   set: (value) => {
-    const normalized = typeof value === 'string' ? value.trim() : '';
-    if (!normalized) {
+    if (value === null || value === undefined) {
       displaySelection.value = 'global';
       displayOverrideEnabled.value = false;
       return;
     }
+    const normalized = typeof value === 'string' ? value.trim() : '';
     form.value.output = normalized;
     form.value.virtualScreen = false;
-    lastPhysicalOutput.value = normalized;
+    if (normalized) {
+      lastPhysicalOutput.value = normalized;
+    }
     displaySelection.value = 'physical';
     displayOverrideEnabled.value = true;
   },
@@ -1819,9 +1815,17 @@ const displayDeviceOptions = computed(() => {
     value: string;
     displayName?: string;
     id?: string;
-    active?: boolean;
-  }> = [];
-  const seen = new Set<string>();
+    active?: boolean | null;
+  }> = [
+    {
+      label: t('config.output_name_default') as string,
+      value: '',
+      displayName: t('config.output_name_default') as string,
+      id: '',
+      active: null,
+    },
+  ];
+  const seen = new Set<string>(['']);
   for (const d of displayDevices.value) {
     const value = d.device_id || d.display_name || '';
     if (!value || seen.has(value)) continue;

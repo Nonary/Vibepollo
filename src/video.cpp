@@ -81,9 +81,7 @@ namespace video {
       }
 
       if (auto runtime_output_name = config::runtime_output_name_override()) {
-        if (!runtime_output_name->empty()) {
-          return VDISPLAY::is_virtual_display_output(*runtime_output_name);
-        }
+        return !runtime_output_name->empty() && VDISPLAY::is_virtual_display_output(*runtime_output_name);
       }
 
       if (!VDISPLAY::isVirtualDisplayDriverInstalled()) {
@@ -1616,7 +1614,7 @@ namespace video {
   void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index, std::string &preferred_display_name) {
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
     const auto runtime_output_override = config::runtime_output_name_override();
-    const bool has_runtime_output_override = runtime_output_override && !runtime_output_override->empty();
+    const bool has_runtime_output_override = runtime_output_override.has_value();
     const auto output_name = display_device::map_output_name(config::get_active_output_name());
     std::string current_display_name;
     auto names_match = [](const std::string &lhs, const std::string &rhs) {

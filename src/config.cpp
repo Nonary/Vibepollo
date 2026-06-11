@@ -2428,7 +2428,7 @@ namespace config {
     bool should_schedule_deferred_reapply = false;
 
     std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
-    if (output_name && output_name->empty()) {
+    if (!output_name) {
       g_runtime_output_name_override.reset();
 #ifdef _WIN32
       g_deferred_virtual_output_name_override.reset();
@@ -2471,7 +2471,7 @@ namespace config {
 
   std::string get_active_output_name() {
     std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
-    if (g_runtime_output_name_override && !g_runtime_output_name_override->empty()) {
+    if (g_runtime_output_name_override) {
       return *g_runtime_output_name_override;
     }
     return video.output_name;

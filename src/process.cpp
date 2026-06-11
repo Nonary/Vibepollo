@@ -3011,6 +3011,13 @@ namespace proc {
             }
           }
 
+          if (app_node.contains("display-output")) {
+            ctx.output_name_override = parse_env_val(this_env, app_node.value("display-output", ""));
+          } else if (!ctx.output.empty()) {
+            // Backward compatibility for apps saved before display output received its own field.
+            ctx.output_name_override = ctx.output;
+          }
+
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);
         ctx.virtual_screen = util::get_non_string_json_value<bool>(app_node, "virtual-screen", false);

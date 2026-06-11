@@ -105,6 +105,7 @@ export interface AppForm {
 export interface ServerApp {
   name?: string;
   output?: string;
+  'display-output'?: string;
   cmd?: string | string[];
   uuid?: string;
   'working-dir'?: string;

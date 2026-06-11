@@ -11,6 +11,7 @@ export interface PrepCmd {
 export interface App {
   name?: string;
   output?: string;
+  'display-output'?: string;
   cmd?: string | string[];
   uuid?: string;
   'working-dir'?: string;
