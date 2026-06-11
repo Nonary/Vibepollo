@@ -28,6 +28,20 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
   return Math.min(max, Math.max(min, n));
 }
 
+function isTabActive(): boolean {
+  if (typeof document === 'undefined') {
+    return true;
+  }
+
+  const visible =
+    typeof document.visibilityState === 'string'
+      ? document.visibilityState === 'visible'
+      : !document.hidden;
+  const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+
+  return visible && focused;
+}
+
 export const useHostStatsStore = defineStore('hostStats', () => {
   const configStore = useConfigStore();
 
@@ -43,7 +57,7 @@ export const useHostStatsStore = defineStore('hostStats', () => {
   const lastError = ref<string>('');
   const polling = ref<boolean>(false);
   const pausedHidden = ref<boolean>(false);
-  const lastUpdated = ref<number | null>(null);
+  const lastUpdated = ref<number>();
 
   let intervalId = 0;
   let consumerCount = 0;
@@ -139,11 +153,11 @@ export const useHostStatsStore = defineStore('hostStats', () => {
   };
 
   const shouldPoll = () =>
-    consumerCount > 0 && statsEnabled.value && !(pauseWhenHidden.value && document.hidden);
+    consumerCount > 0 && statsEnabled.value && !(pauseWhenHidden.value && !isTabActive());
 
   const syncTimer = (immediate: boolean) => {
     clearTimer();
-    pausedHidden.value = consumerCount > 0 && pauseWhenHidden.value && document.hidden;
+    pausedHidden.value = consumerCount > 0 && pauseWhenHidden.value && !isTabActive();
     if (!shouldPoll()) {
       polling.value = false;
       return;
@@ -158,13 +172,17 @@ export const useHostStatsStore = defineStore('hostStats', () => {
     }, pollIntervalMs.value);
   };
 
-  const onVisibilityChange = () => {
-    syncTimer(!document.hidden);
+  const onActivityChange = () => {
+    syncTimer(isTabActive());
   };
 
   const hookVisibility = () => {
     if (visibilityHooked || typeof document === 'undefined') return;
-    document.addEventListener('visibilitychange', onVisibilityChange);
+    document.addEventListener('visibilitychange', onActivityChange);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onActivityChange);
+      window.addEventListener('blur', onActivityChange);
+    }
     visibilityHooked = true;
   };
 
@@ -194,7 +212,7 @@ export const useHostStatsStore = defineStore('hostStats', () => {
     if (!statsEnabled.value) {
       snapshot.value = { ...emptySnapshot };
       history.value = [];
-      lastUpdated.value = null;
+      lastUpdated.value = undefined;
     }
   });
 
