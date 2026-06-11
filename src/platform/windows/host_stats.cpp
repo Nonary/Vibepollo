@@ -8,9 +8,9 @@
  *               and @c "\GPU Engine(*engtype_VideoEncode)\Utilization Percentage".
  *               Vendor-agnostic (NVIDIA / AMD / Intel) — uses the WDDM
  *               scheduler, the same source Task Manager reads.
- * VRAM used   : Tries vendor-agnostic sources first, then NVML as a last
- *               resort. The picked source is logged once on the first
- *               successful sample so it's visible in the runtime log.
+ * VRAM used   : Tries vendor-agnostic sources first. The picked source is
+ *               logged once on the first successful sample so it's visible
+ *               in the runtime log.
  *               Order:
  *                 1) PDH @c "\GPU Adapter Memory(*)\Dedicated Usage" filtered
  *                    to the DXGI adapter LUID — system-wide, vendor-agnostic
@@ -20,10 +20,23 @@
  *                    we fall through.
  *                 2) PDH @c "\GPU Process Memory(*)\Dedicated Usage" summed
  *                    by adapter LUID and clamped to total VRAM.
- *                 3) NVML @c nvmlDeviceGetMemoryInfo (NVIDIA only) when both
- *                    PDH counters return no data.
+ *                 3) D3DKMT @c D3DKMTQueryStatistics segment residency summed
+ *                    over non-aperture segments — vendor-agnostic, kernel
+ *                    mediated, and safe to call while the GPU is in TDR.
+ *                 4) NVML @c nvmlDeviceGetMemoryInfo (NVIDIA only), but only
+ *                    until D3DKMT delivers its first sample; see below.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
- * GPU temp    : optional NVML loaded at runtime via @c LoadLibrary.
+ * GPU temp    : D3DKMT @c KMTQAITYPE_ADAPTERPERFDATA (same source Task
+ *               Manager uses, deci-Celsius), NVML as a fallback.
+ *
+ * NVML is a user-mode shim into the NVIDIA driver and has been observed to
+ * AV inside nvml.dll while the driver is mid-TDR-reset (the 2026-06-10
+ * incident: GPU hang -> 25 s TDR cycle -> sampler called NVML each second ->
+ * 0xc0000005 in nvml.dll killed the whole process while capture/encode were
+ * recovering). D3DKMT goes through dxgkrnl, which fails such calls with an
+ * NTSTATUS instead of faulting. Policy: once a D3DKMT query has succeeded
+ * once, NVML is locked out for the lifetime of the process; it remains only
+ * for systems where the D3DKMT path is unavailable.
  *
  * Counters that are not available on the current system are reported as
  * @c -1.f / @c 0 — the FE renders these as "N/A".
@@ -32,7 +45,9 @@
 #include "src/platform/common.h"
 
 // standard includes
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -295,6 +310,280 @@ namespace {
   }
 
   /**
+   * @brief D3DKMT GPU telemetry (temperature + VRAM residency).
+   *
+   * MinGW ships no d3dkmthk.h, so the structures below are local replicas of
+   * the Windows 11 SDK (10.0.26100) definitions. The x64 layout is pinned by
+   * static_asserts against offsets measured from the canonical header; this
+   * ABI is frozen — existing binaries would break if Microsoft changed it.
+   *
+   * All calls are kernel-mediated through gdi32/dxgkrnl: while the GPU is
+   * hung or mid-TDR they fail with an NTSTATUS instead of faulting, which is
+   * the property the sampler needs (see file header).
+   */
+  namespace kmt {
+    using kmt_handle_t = UINT32;  // D3DKMT_HANDLE
+    constexpr UINT QAITYPE_ADAPTERPERFDATA = 62;  // KMTQAITYPE_ADAPTERPERFDATA
+    constexpr UINT QUERYSTATISTICS_ADAPTER = 0;  // D3DKMT_QUERYSTATISTICS_ADAPTER
+    constexpr UINT QUERYSTATISTICS_SEGMENT = 3;  // D3DKMT_QUERYSTATISTICS_SEGMENT
+
+    struct open_adapter_from_luid_t {  // D3DKMT_OPENADAPTERFROMLUID
+      LUID adapter_luid;
+      kmt_handle_t adapter;
+    };
+
+    static_assert(sizeof(open_adapter_from_luid_t) == 0xc);
+
+    struct close_adapter_t {  // D3DKMT_CLOSEADAPTER
+      kmt_handle_t adapter;
+    };
+
+    struct query_adapter_info_t {  // D3DKMT_QUERYADAPTERINFO
+      kmt_handle_t adapter;
+      UINT type;
+      VOID *private_driver_data;
+      UINT private_driver_data_size;
+    };
+
+    static_assert(sizeof(query_adapter_info_t) == 0x18);
+
+    struct adapter_perfdata_t {  // D3DKMT_ADAPTER_PERFDATA
+      UINT32 physical_adapter_index;  // in
+      ULONGLONG memory_frequency;
+      ULONGLONG max_memory_frequency;
+      ULONGLONG max_memory_frequency_oc;
+      ULONGLONG memory_bandwidth;
+      ULONGLONG pcie_bandwidth;
+      ULONG fan_rpm;
+      ULONG power;
+      ULONG temperature;  // deci-Celsius, 1 = 0.1 C
+      UCHAR power_state_override;
+    };
+
+    static_assert(sizeof(adapter_perfdata_t) == 0x40);
+    static_assert(offsetof(adapter_perfdata_t, fan_rpm) == 0x30);
+    static_assert(offsetof(adapter_perfdata_t, temperature) == 0x38);
+
+    struct query_statistics_segment_information_t {  // D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION
+      ULONGLONG commit_limit;
+      ULONGLONG bytes_committed;
+      ULONGLONG bytes_resident;
+
+      struct {  // D3DKMT_QUERYSTATISTICS_MEMORY
+        ULONGLONG total_bytes_evicted;
+        ULONG allocs_committed;
+        ULONG allocs_resident;
+      } memory;
+
+      ULONG aperture;  // boolean
+      ULONGLONG total_bytes_evicted_by_priority[5];
+      UINT64 system_memory_end_address;
+      UINT64 power_flags;
+      UINT64 segment_properties;
+      UINT64 reserved[5];
+    };
+
+    static_assert(sizeof(query_statistics_segment_information_t) == 0x98);
+    static_assert(offsetof(query_statistics_segment_information_t, aperture) == 0x28);
+
+    struct query_statistics_t {  // D3DKMT_QUERYSTATISTICS
+      UINT type;  // in
+      LUID adapter_luid;  // in
+      HANDLE process;  // in
+      union {  // out
+        struct {
+          ULONG nb_segments;
+          ULONG node_count;
+        } adapter_information;  // prefix of D3DKMT_QUERYSTATISTICS_ADAPTER_INFORMATION
+        query_statistics_segment_information_t segment_information;
+        UCHAR result_storage[0x308];  // sizeof(D3DKMT_QUERYSTATISTICS_RESULT)
+      } query_result;
+      union {  // in
+        ULONG segment_id;  // D3DKMT_QUERYSTATISTICS_QUERY_SEGMENT
+        UCHAR query_storage[8];
+      };
+    };
+
+    static_assert(sizeof(query_statistics_t) == 0x328);
+    static_assert(offsetof(query_statistics_t, process) == 0x10);
+    static_assert(offsetof(query_statistics_t, query_result) == 0x18);
+    static_assert(offsetof(query_statistics_t, segment_id) == 0x320);
+
+    using pfn_open_adapter_from_luid = LONG(APIENTRY *)(open_adapter_from_luid_t *);
+    using pfn_close_adapter = LONG(APIENTRY *)(const close_adapter_t *);
+    using pfn_query_adapter_info = LONG(APIENTRY *)(const query_adapter_info_t *);
+    using pfn_query_statistics = LONG(APIENTRY *)(const query_statistics_t *);
+  }  // namespace kmt
+
+  class d3dkmt_gpu_stats_t {
+  public:
+    struct vram_t {
+      std::uint64_t used = 0;
+      std::uint64_t total = 0;
+    };
+
+    d3dkmt_gpu_stats_t() {
+      HMODULE gdi32 = LoadLibraryExW(L"gdi32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+      if (!gdi32) {
+        return;
+      }
+      _open = reinterpret_cast<kmt::pfn_open_adapter_from_luid>(GetProcAddress(gdi32, "D3DKMTOpenAdapterFromLuid"));
+      _close = reinterpret_cast<kmt::pfn_close_adapter>(GetProcAddress(gdi32, "D3DKMTCloseAdapter"));
+      _query_info = reinterpret_cast<kmt::pfn_query_adapter_info>(GetProcAddress(gdi32, "D3DKMTQueryAdapterInfo"));
+      _query_stats = reinterpret_cast<kmt::pfn_query_statistics>(GetProcAddress(gdi32, "D3DKMTQueryStatistics"));
+      // gdi32 stays loaded for the process lifetime; no FreeLibrary.
+    }
+
+    ~d3dkmt_gpu_stats_t() {
+      close_adapter();
+    }
+
+    d3dkmt_gpu_stats_t(const d3dkmt_gpu_stats_t &) = delete;
+    d3dkmt_gpu_stats_t &operator=(const d3dkmt_gpu_stats_t &) = delete;
+
+    void
+      set_adapter_luid(const LUID &luid) {
+      if (_have_luid && luid.LowPart == _luid.LowPart && luid.HighPart == _luid.HighPart) {
+        return;
+      }
+      close_adapter();
+      _luid = luid;
+      _have_luid = luid.LowPart != 0 || luid.HighPart != 0;
+    }
+
+    /**
+     * @brief True once any D3DKMT temperature query has succeeded.
+     *
+     * Used to lock NVML out of the temperature path.
+     */
+    bool
+      perfdata_works() const {
+      return _perfdata_ok_once;
+    }
+
+    /**
+     * @brief True once any D3DKMT VRAM query has succeeded.
+     *
+     * Used to lock NVML out of the VRAM path.
+     */
+    bool
+      statistics_work() const {
+      return _stats_ok_once;
+    }
+
+    /**
+     * @brief True when the most recent query failed — e.g. the adapter LUID
+     * went stale after a full driver restart. The owner may re-enumerate DXGI
+     * and call @ref set_adapter_luid with the fresh LUID.
+     */
+    bool
+      last_query_failed() const {
+      return _last_query_failed;
+    }
+
+    float
+      gpu_temp_c() {
+      if (!_open || !_close || !_query_info || !_have_luid) {
+        return -1.f;
+      }
+      if (!ensure_adapter()) {
+        _last_query_failed = true;
+        return -1.f;
+      }
+      kmt::adapter_perfdata_t perfdata {};
+      kmt::query_adapter_info_t query {};
+      query.adapter = _adapter;
+      query.type = kmt::QAITYPE_ADAPTERPERFDATA;
+      query.private_driver_data = &perfdata;
+      query.private_driver_data_size = sizeof(perfdata);
+      if (_query_info(&query) < 0) {
+        // Fails while the GPU is in TDR or after a driver restart invalidated
+        // the handle; drop the handle so the next sample reopens it.
+        close_adapter();
+        _last_query_failed = true;
+        return -1.f;
+      }
+      _last_query_failed = false;
+      if (perfdata.temperature == 0) {
+        return -1.f;
+      }
+      _perfdata_ok_once = true;
+      return static_cast<float>(perfdata.temperature) / 10.f;
+    }
+
+    vram_t
+      gpu_vram() {
+      vram_t out {};
+      if (!_query_stats || !_have_luid) {
+        return out;
+      }
+      kmt::query_statistics_t adapter_query {};
+      adapter_query.type = kmt::QUERYSTATISTICS_ADAPTER;
+      adapter_query.adapter_luid = _luid;
+      if (_query_stats(&adapter_query) < 0) {
+        _last_query_failed = true;
+        return out;
+      }
+      const ULONG segment_count = std::min<ULONG>(adapter_query.query_result.adapter_information.nb_segments, 16);
+      for (ULONG segment = 0; segment < segment_count; ++segment) {
+        kmt::query_statistics_t segment_query {};
+        segment_query.type = kmt::QUERYSTATISTICS_SEGMENT;
+        segment_query.adapter_luid = _luid;
+        segment_query.segment_id = segment;
+        if (_query_stats(&segment_query) < 0) {
+          continue;
+        }
+        const auto &info = segment_query.query_result.segment_information;
+        if (info.aperture) {
+          continue;
+        }
+        out.used += info.bytes_resident;
+        out.total += info.commit_limit;
+      }
+      _last_query_failed = false;
+      if (out.used > 0 || out.total > 0) {
+        _stats_ok_once = true;
+      }
+      return out;
+    }
+
+  private:
+    bool
+      ensure_adapter() {
+      if (_adapter) {
+        return true;
+      }
+      kmt::open_adapter_from_luid_t open {};
+      open.adapter_luid = _luid;
+      if (_open(&open) < 0) {
+        return false;
+      }
+      _adapter = open.adapter;
+      return true;
+    }
+
+    void
+      close_adapter() {
+      if (_adapter && _close) {
+        kmt::close_adapter_t close {_adapter};
+        _close(&close);
+      }
+      _adapter = 0;
+    }
+
+    kmt::pfn_open_adapter_from_luid _open = nullptr;
+    kmt::pfn_close_adapter _close = nullptr;
+    kmt::pfn_query_adapter_info _query_info = nullptr;
+    kmt::pfn_query_statistics _query_stats = nullptr;
+    kmt::kmt_handle_t _adapter = 0;
+    LUID _luid {};
+    bool _have_luid = false;
+    bool _perfdata_ok_once = false;
+    bool _stats_ok_once = false;
+    bool _last_query_failed = false;
+  };
+
+  /**
    * @brief NVIDIA NVML temperature query (runtime-loaded).
    *
    * Returns -1.f when nvml.dll is missing or the query fails. The DLL is
@@ -535,6 +824,7 @@ namespace {
       if (_vram_total_cached > 0) {
         _vram_adapter_instance = luid_instance_prefix(_vram_adapter_luid);
       }
+      _kmt.set_adapter_luid(_vram_adapter_luid);
       if (!_vram_adapter_instance.empty() && _gpu_adapter_mem.open()) {
         _have_gpu_adapter_mem = true;
       } else if (!_vram_adapter_instance.empty()) {
@@ -631,8 +921,23 @@ namespace {
         }
       }
 
-      // Fallback B: NVIDIA-only NVML, last resort (e.g. PDH counters disabled by policy).
+      // Fallback B: D3DKMT segment residency — vendor-agnostic and TDR-safe.
       if (s.vram_used_bytes == 0) {
+        auto kmt_memory = _kmt.gpu_vram();
+        if (kmt_memory.used > 0) {
+          s.vram_used_bytes = _vram_total_cached > 0 && kmt_memory.used > _vram_total_cached
+                                ? _vram_total_cached
+                                : kmt_memory.used;
+          if (s.vram_total_bytes == 0) {
+            s.vram_total_bytes = kmt_memory.total;
+          }
+          vram_source = "d3dkmt";
+        }
+      }
+
+      // Fallback C: NVIDIA-only NVML — locked out for good once D3DKMT has
+      // worked, because NVML can AV in-process while the driver is in TDR.
+      if (s.vram_used_bytes == 0 && !_kmt.statistics_work()) {
         auto nvml_memory = nvml_t::instance().gpu_memory(_vram_total_cached);
         if (nvml_memory.used > 0) {
           s.vram_used_bytes = _vram_total_cached > 0 && nvml_memory.used > _vram_total_cached
@@ -655,8 +960,34 @@ namespace {
           << " MiB, instance='" << std::string(_vram_adapter_instance.begin(), _vram_adapter_instance.end()) << "')";
       }
 
-      // Temps (best effort, NVIDIA only via NVML).
-      s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
+      // Temps (best effort): D3DKMT perfdata first, NVML only on systems
+      // where perfdata has never worked (pre-WDDM 2.4).
+      s.gpu_temp_c = _kmt.gpu_temp_c();
+      if (s.gpu_temp_c < 0.f && !_kmt.perfdata_works()) {
+        s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
+      }
+
+      // A full driver restart (as opposed to a plain TDR reset) hands the
+      // adapter a new LUID, leaving every D3DKMT/PDH query aimed at a stale
+      // one. When D3DKMT keeps failing, re-enumerate DXGI occasionally and
+      // re-target the fresh LUID.
+      if (_kmt.last_query_failed()) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - _last_adapter_reenum > std::chrono::seconds(30)) {
+          _last_adapter_reenum = now;
+          std::uint64_t vram_total = 0;
+          LUID adapter_luid {};
+          std::string gpu_model;
+          query_dxgi(vram_total, adapter_luid, gpu_model);
+          if (vram_total > 0) {
+            _vram_total_cached = vram_total;
+            _vram_adapter_luid = adapter_luid;
+            _gpu_model_cached = gpu_model;
+            _vram_adapter_instance = luid_instance_prefix(adapter_luid);
+            _kmt.set_adapter_luid(adapter_luid);
+          }
+        }
+      }
 
       // Network throughput (delta over wall-clock time on the primary interface).
       sample_network(s);
@@ -852,6 +1183,8 @@ namespace {
     std::uint64_t _vram_total_cached = 0;
     LUID _vram_adapter_luid {};
     std::wstring _vram_adapter_instance;
+    d3dkmt_gpu_stats_t _kmt;
+    std::chrono::steady_clock::time_point _last_adapter_reenum {};
 
     // Network state
     bool _net_have_iface = false;
