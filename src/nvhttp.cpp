@@ -308,11 +308,11 @@ namespace nvhttp {
       };
 
       std::optional<std::string> app_output_override;
-      if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+      if (launch_session->output_name_override) {
         app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
       }
 
-      if (app_output_override && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
+      if (app_output_override && !app_output_override->empty() && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
         launch_session->virtual_display = true;
         app_output_override.reset();
       }
@@ -361,6 +361,9 @@ namespace nvhttp {
       if (has_app_output_override && !client_requests_virtual) {
         request_virtual_display = false;
         disable_virtual_display_request();
+        if (!launch_session->virtual_display_mode_override) {
+          launch_session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+        }
       }
 
       if (!allow_display_changes) {
@@ -387,7 +390,8 @@ namespace nvhttp {
           if (app_output_override) {
             config::set_runtime_output_name_override(*app_output_override);
             pending_output_override = *app_output_override;
-            BOOST_LOG(info) << "Display helper: preserving output override for resume: " << *app_output_override;
+            BOOST_LOG(info) << "Display helper: preserving output override for resume: "
+                            << (app_output_override->empty() ? "primary display" : *app_output_override);
           } else {
             BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
           }
@@ -408,7 +412,8 @@ namespace nvhttp {
       if (app_output_override) {
         config::set_runtime_output_name_override(*app_output_override);
         pending_output_override = *app_output_override;
-        BOOST_LOG(info) << "App-specific display override requested: output_name=" << *app_output_override;
+        BOOST_LOG(info) << "App-specific display override requested: output_name="
+                        << (app_output_override->empty() ? "primary display" : *app_output_override);
       }
       BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
       BOOST_LOG(debug) << "client_requests_virtual: " << client_requests_virtual;
@@ -1515,10 +1520,8 @@ namespace nvhttp {
               if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
                 launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
               }
-              if (!launch_session->output_name_override || launch_session->output_name_override->empty()) {
-                if (!app_ctx.output.empty()) {
-                  launch_session->output_name_override = app_ctx.output;
-                }
+              if (!launch_session->output_name_override && app_ctx.output_name_override) {
+                launch_session->output_name_override = *app_ctx.output_name_override;
               }
               launch_session->app_metadata = std::move(metadata);
               break;
