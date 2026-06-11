@@ -230,11 +230,11 @@ namespace webrtc_stream {
       }
 
       std::optional<std::string> app_output_override;
-      if (session->output_name_override && !session->output_name_override->empty()) {
+      if (session->output_name_override) {
         app_output_override = boost::algorithm::trim_copy(*session->output_name_override);
       }
 
-      if (app_output_override && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
+      if (app_output_override && !app_output_override->empty() && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
         session->virtual_display = true;
         app_output_override.reset();
         session->output_name_override.reset();
@@ -263,6 +263,9 @@ namespace webrtc_stream {
                        << "'.";
       if (has_app_output_override) {
         request_virtual_display = false;
+        if (!session->virtual_display_mode_override) {
+          session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+        }
       }
 
       if (!allow_display_changes) {
@@ -286,7 +289,8 @@ namespace webrtc_stream {
           session->virtual_display_recreated_on_demand = true;
         } else if (app_output_override) {
           config::set_runtime_output_name_override(*app_output_override);
-          BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: " << *app_output_override;
+          BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: "
+                          << (app_output_override->empty() ? "primary display" : *app_output_override);
           return;
         }
       }
@@ -2345,10 +2349,8 @@ namespace webrtc_stream {
               if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
                 launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
               }
-              if (!launch_session->output_name_override || launch_session->output_name_override->empty()) {
-                if (!app_ctx.output.empty()) {
-                  launch_session->output_name_override = app_ctx.output;
-                }
+              if (!launch_session->output_name_override && app_ctx.output_name_override) {
+                launch_session->output_name_override = *app_ctx.output_name_override;
               }
               launch_session->app_metadata = std::move(metadata);
               break;
@@ -2556,9 +2558,10 @@ namespace webrtc_stream {
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
 
       const bool allow_display_changes = !rtsp_active && !resume_only;
-      if (allow_display_changes && launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+      if (allow_display_changes && launch_session->output_name_override) {
 #ifdef _WIN32
-        if (!VDISPLAY::is_virtual_display_selection(*launch_session->output_name_override)) {
+        if (launch_session->output_name_override->empty() ||
+            !VDISPLAY::is_virtual_display_selection(*launch_session->output_name_override)) {
           config::set_runtime_output_name_override(*launch_session->output_name_override);
         }
 #else
@@ -2601,7 +2604,7 @@ namespace webrtc_stream {
                                                             "resume virtual-display recreation" :
                                                             "resume virtual-display refresh"))
                            << " for client '" << launch_session->client_name << "'.";
-          if (launch_session->output_name_override && !launch_session->output_name_override->empty()) {
+          if (launch_session->output_name_override) {
             config::set_runtime_output_name_override(*launch_session->output_name_override);
           }
           (void) display_helper_integration::disarm_pending_restore();

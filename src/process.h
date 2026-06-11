@@ -111,6 +111,7 @@ namespace proc {
     std::string cmd;
     std::string working_dir;
     std::string output;
+    std::optional<std::string> output_name_override;
     std::string image_path;
     std::string id;
     std::string gamepad;

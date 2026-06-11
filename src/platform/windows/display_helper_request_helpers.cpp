@@ -85,8 +85,7 @@ namespace display_helper_integration::helpers {
 
     bool session_has_physical_output_override(const rtsp_stream::launch_session_t &session) {
       return session.output_name_override &&
-             !session.output_name_override->empty() &&
-             !output_name_targets_virtual(*session.output_name_override);
+             (session.output_name_override->empty() || !output_name_targets_virtual(*session.output_name_override));
     }
 
     rtsp_stream::launch_session_t make_display_request_session_snapshot_impl(const rtsp_stream::launch_session_t &session) {
@@ -254,9 +253,7 @@ namespace display_helper_integration::helpers {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
     if (auto runtime_output_override = config::runtime_output_name_override()) {
-      if (runtime_output_override && !runtime_output_override->empty()) {
-        effective_video_config_.output_name = *runtime_output_override;
-      }
+      effective_video_config_.output_name = *runtime_output_override;
     }
     if (session_.virtual_display &&
         effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
@@ -510,9 +507,7 @@ namespace display_helper_integration::helpers {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
     if (auto runtime_output_override = config::runtime_output_name_override()) {
-      if (runtime_output_override && !runtime_output_override->empty()) {
-        effective_video_config_.output_name = *runtime_output_override;
-      }
+      effective_video_config_.output_name = *runtime_output_override;
     }
     if (session_.virtual_display &&
         effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
