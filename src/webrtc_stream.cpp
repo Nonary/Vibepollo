@@ -1517,6 +1517,7 @@ namespace webrtc_stream {
       std::string remote_offer_type;
       std::string local_answer_sdp;
       std::string local_answer_type;
+      std::string negotiation_error;
 #ifdef SUNSHINE_ENABLE_WEBRTC
       lwrtc_peer_t *peer = nullptr;
       std::shared_ptr<SessionIceContext> ice_context;
@@ -2832,6 +2833,20 @@ namespace webrtc_stream {
       delete ctx;
     }
 
+    void store_negotiation_error(const std::string &session_id, std::string message) {
+      {
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(session_id);
+        if (it == sessions.end()) {
+          return;
+        }
+        it->second.negotiation_error = std::move(message);
+      }
+      // Wake any HTTP handler blocked in wait_for_local_answer so the client
+      // sees the failure immediately instead of timing out.
+      local_answer_cv.notify_all();
+    }
+
     void on_set_local_failure(void *user, const char *err) {
       auto *ctx = static_cast<LocalDescriptionContext *>(user);
       if (!ctx) {
@@ -2839,6 +2854,7 @@ namespace webrtc_stream {
       }
       BOOST_LOG(error) << "WebRTC: failed to set local description for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
+      store_negotiation_error(ctx->session_id, std::string {"Failed to set local description: "} + (err ? err : "unknown"));
       delete ctx;
     }
 
@@ -2885,6 +2901,7 @@ namespace webrtc_stream {
       }
       BOOST_LOG(error) << "WebRTC: failed to create answer for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
+      store_negotiation_error(ctx->session_id, std::string {"Failed to create answer: "} + (err ? err : "unknown"));
       delete ctx;
     }
 
@@ -2921,6 +2938,20 @@ namespace webrtc_stream {
       }
       BOOST_LOG(error) << "WebRTC: failed to set remote description for " << ctx->session_id
                        << ": " << (err ? err : "unknown");
+      std::string offer_sdp;
+      {
+        std::lock_guard lg {session_mutex};
+        auto it = sessions.find(ctx->session_id);
+        if (it != sessions.end()) {
+          offer_sdp = it->second.remote_offer_sdp;
+        }
+      }
+      if (!offer_sdp.empty()) {
+        BOOST_LOG(error) << "WebRTC: rejected remote offer for " << ctx->session_id
+                         << " (" << offer_sdp.size() << " bytes):\n"
+                         << offer_sdp;
+      }
+      store_negotiation_error(ctx->session_id, std::string {"Failed to set remote description: "} + (err ? err : "unknown"));
       delete ctx;
     }
 
@@ -5107,6 +5138,7 @@ namespace webrtc_stream {
       it->second.remote_offer_sdp = sdp;
       it->second.remote_offer_type = type;
       it->second.state.has_remote_offer = true;
+      it->second.negotiation_error.clear();
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
       if (it->second.state.codec && boost::iequals(*it->second.state.codec, "av1")) {
@@ -5311,6 +5343,9 @@ namespace webrtc_stream {
         type_out = it->second.local_answer_type;
         return true;
       }
+      if (!it->second.negotiation_error.empty()) {
+        return false;
+      }
       if (timeout <= std::chrono::milliseconds::zero()) {
         return false;
       }
@@ -5318,6 +5353,15 @@ namespace webrtc_stream {
         return false;
       }
     }
+  }
+
+  std::string get_negotiation_error(std::string_view id) {
+    std::lock_guard lg {session_mutex};
+    auto it = sessions.find(std::string {id});
+    if (it == sessions.end()) {
+      return {};
+    }
+    return it->second.negotiation_error;
   }
 
   std::vector<IceCandidateInfo> get_local_candidates(std::string_view id, std::size_t since) {
