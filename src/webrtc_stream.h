@@ -118,6 +118,7 @@ namespace webrtc_stream {
     std::string &type_out,
     std::chrono::milliseconds timeout
   );
+  std::string get_negotiation_error(std::string_view id);
   bool add_local_candidate(std::string_view id, std::string mid, int mline_index, std::string candidate);
 
   struct IceCandidateInfo {
