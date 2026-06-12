@@ -12,6 +12,7 @@
 #include <fstream>
 #include <future>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <queue>
 #include <thread>
@@ -2608,8 +2609,11 @@ namespace stream {
       // Current Nvidia drivers have a bug where NVENC can deadlock the encoder thread with hardware-accelerated
       // GPU scheduling enabled. If this happens, we will terminate ourselves and the service can restart.
       // The alternative is that Sunshine can never start another session until it's manually restarted.
-      auto task = []() {
-        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds."sv;
+      // Name the join stage for the watchdog so a crash bundle says outright what hung
+      // (e.g. vibeshine#187 took dump archaeology to learn it was the video thread).
+      auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");
+      auto task = [hung_stage]() {
+        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds. Stuck waiting for: "sv << hung_stage->load();
         logging::log_flush();
         lifetime::debug_trap();
       };
@@ -2621,10 +2625,13 @@ namespace stream {
 
       BOOST_LOG(debug) << "Waiting for video to end..."sv;
       session.videoThread.join();
+      hung_stage->store("audio thread");
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
+      hung_stage->store("control end");
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
+      hung_stage->store("post-join cleanup");
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input);

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -666,11 +667,10 @@ namespace video {
     avcodec_encode_session_t(avcodec_encode_session_t &&other) noexcept = default;
 
     ~avcodec_encode_session_t() {
-      // Flush any remaining frames in the encoder
-      if (avcodec_send_frame(avcodec_ctx.get(), nullptr) == 0) {
-        packet_raw_avcodec pkt;
-        while (avcodec_receive_packet(avcodec_ctx.get(), pkt.av_packet) == 0);
-      }
+      // Don't drain the encoder before freeing it. The drained packets are discarded anyway,
+      // and FFmpeg's AMF backend waits on the driver without a deadline while draining — a
+      // wedged AMF runtime turns that into a permanent hang on the session teardown path
+      // (vibeshine#187). avcodec_free_context() is documented to be safe without a drain.
 
       // Order matters here because the context relies on the hwdevice still being valid
       avcodec_ctx.reset();
@@ -1175,7 +1175,9 @@ namespace video {
       },
       "h264_amf"s,
     },
-    PARALLEL_ENCODING
+    // ASYNC_TEARDOWN: like NVENC, a hung AMF session must not stall the encoder thread on
+    // mid-stream reinit; the bounded sync teardown in encode_run covers shutdown/reinit.
+    PARALLEL_ENCODING | ASYNC_TEARDOWN
   };
 
   encoder_t mediafoundation {
@@ -2706,8 +2708,32 @@ namespace video {
         // scope exit. During a capture reinit both video threads reach this point at the same
         // moment; unserialized concurrent NVENC/D3D11 device destruction crashes the NVIDIA UMD
         // (access violation in nvwgf2umx during cross-device shared-resource dependency cleanup).
-        std::lock_guard lg {encode_session_teardown_mutex};
-        session.reset();
+        if (dynamic_cast<avcodec_encode_session_t *>(session.get())) {
+          // A wedged driver can block avcodec session destruction indefinitely (vibeshine#187:
+          // AMF teardown stuck inside amfrtdrv64). On the shutdown path that blocks
+          // videoThread.join() until the 10-second session watchdog kills the whole host, so
+          // run the destruction on a helper thread and abandon it if it overruns. An abandoned
+          // session leaks (and keeps the teardown mutex held), but the stream host survives.
+          // NVENC keeps the fully synchronous teardown: its driver waits are already bounded
+          // (nvenc_base) and its teardown-vs-surface-free ordering is load-bearing
+          // (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e bugcheck).
+          std::promise<void> done;
+          auto done_future = done.get_future();
+          std::thread teardown_thread {[session = std::move(session), done = std::move(done)]() mutable {
+            std::lock_guard lg {encode_session_teardown_mutex};
+            session.reset();
+            done.set_value();
+          }};
+          if (done_future.wait_for(5s) == std::future_status::ready) {
+            teardown_thread.join();
+          } else {
+            BOOST_LOG(error) << "Encoder teardown did not finish within 5 seconds; abandoning the session to keep the stream host alive"sv;
+            teardown_thread.detach();
+          }
+        } else {
+          std::lock_guard lg {encode_session_teardown_mutex};
+          session.reset();
+        }
       }
     });
 
