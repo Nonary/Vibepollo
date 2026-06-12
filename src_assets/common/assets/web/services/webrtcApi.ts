@@ -310,22 +310,23 @@ export class WebRtcHttpApi implements WebRtcApi {
     const start = Date.now();
     const timeoutMs = 30000;
     while (Date.now() - start < timeoutMs) {
+      let r: Awaited<ReturnType<typeof http.get<WebRtcOfferResponse>>> | null = null;
       try {
-        const r = await http.get<WebRtcOfferResponse>(
+        r = await http.get<WebRtcOfferResponse>(
           `/api/webrtc/sessions/${encodeURIComponent(sessionId)}/answer`,
           webrtcAuthConfig(),
         );
-        if (r.status === 200 && r.data?.error && r.data.error !== 'Answer not ready') {
-          throw new Error(`Failed to fetch WebRTC answer: ${r.data.error}`);
-        }
+      } catch {
+        /* ignore transient request failures and keep polling */
+      }
+      if (r) {
         if (r.status === 200 && r.data?.sdp) {
           return { type: r.data.type ?? 'answer', sdp: r.data.sdp };
         }
-        if (r.status === 400 && r.data?.error && r.data.error !== 'Answer not ready') {
-          throw new Error(`Failed to fetch WebRTC answer: ${r.data.error}`);
+        const error = r.data?.error;
+        if ((r.status === 200 || r.status === 400) && error && error !== 'Answer not ready') {
+          throw new Error(`Failed to fetch WebRTC answer: ${error}`);
         }
-      } catch {
-        /* ignore */
       }
       await new Promise((resolve) => window.setTimeout(resolve, 300));
     }
