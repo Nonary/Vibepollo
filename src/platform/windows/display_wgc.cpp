@@ -78,27 +78,44 @@ namespace platf::dxgi {
       }
     }
 
-    std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout) {
-      if (timeout.count() == 0) {
-        // WGC's instantaneous publish cadence is vsync-stepped on the source
-        // monitor (frame_qpc_delta tracks 240/N for an N integer), so the
-        // window between our sleep_target wake and the next helper publish
-        // can be up to one full helper interarrival. When DWM is composing
-        // at 240/2 = 120 fps the gap is ~8.3 ms, but when it bounces between
-        // 240 and 120 the average interarrival drops to ~6 ms and a 4 ms
-        // grace times out frequently -- captured rate falls visibly below
-        // the helper publish rate even though the helper is producing more
-        // than enough frames. 6 ms covers the high-rate regime while still
-        // staying under the 8.33 ms 120 Hz cadence with ~2 ms of slack for
-        // the snapshot's CPU work.
-        return std::chrono::milliseconds(6);
-      }
-
-      return timeout;
-    }
-
     bool is_wgc_constant_mode() {
       return config::video.capture == "wgcc";
+    }
+
+    std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout, int client_framerate) {
+      if (timeout.count() != 0) {
+        return timeout;
+      }
+
+      // WGC's instantaneous publish cadence is vsync-stepped on the source
+      // monitor (frame_qpc_delta tracks 240/N for an N integer), so the
+      // window between our sleep_target wake and the next helper publish
+      // can be up to one full helper interarrival. When DWM is composing
+      // at 240/2 = 120 fps the gap is ~8.3 ms, but when it bounces between
+      // 240 and 120 the average interarrival drops to ~6 ms and a 4 ms
+      // grace times out frequently -- captured rate falls visibly below
+      // the helper publish rate even though the helper is producing more
+      // than enough frames. 6 ms covers the high-rate regime while still
+      // staying under the 8.33 ms 120 Hz cadence with ~2 ms of slack for
+      // the snapshot's CPU work.
+      auto grace = std::chrono::milliseconds(6);
+
+      if (is_wgc_constant_mode() && client_framerate > 0) {
+        // In constant mode a timed-out zero-timeout snapshot forwards the
+        // cached frame, so the pacing group must survive the full grace: the
+        // snapshot returns at slot + grace, and if that lands past the next
+        // slot the capture loop invalidates the pacing group and re-anchors
+        // through a 200 ms blocking snapshot. Above ~166 fps the client frame
+        // interval is shorter than the 6 ms grace, so an idle screen busts
+        // the group on every forwarded frame and capture collapses to the
+        // compositor's publish rate (vibepollo#267). Clamp the grace to leave
+        // ~2 ms of the slot for wait/scheduling overhead.
+        const auto frame_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / client_framerate;
+        const auto clamped = std::chrono::duration_cast<std::chrono::milliseconds>(frame_interval - std::chrono::milliseconds(2));
+        grace = std::clamp(clamped, std::chrono::milliseconds(1), grace);
+      }
+
+      return grace;
     }
 
     // The helper detects UAC/lock transitions via a desktop-switch hook, but it runs
@@ -194,7 +211,7 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    timeout = effective_wgc_timeout(timeout);
+    timeout = effective_wgc_timeout(timeout, _config.framerate);
 
     auto capture_status = _ipc_session->wait_for_frame(timeout);
     if (capture_status != capture_e::ok) {
@@ -338,7 +355,7 @@ namespace platf::dxgi {
     }
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
-    auto status = _ipc_session->acquire(effective_wgc_timeout(timeout), gpu_tex, frame_qpc);
+    auto status = _ipc_session->acquire(effective_wgc_timeout(timeout, _config.framerate), gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
       return status;
@@ -438,7 +455,7 @@ namespace platf::dxgi {
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
     uint64_t frame_qpc = 0;
-    timeout = effective_wgc_timeout(timeout);
+    timeout = effective_wgc_timeout(timeout, _config.framerate);
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
