@@ -979,8 +979,14 @@ namespace {
     return ipc_ready;
   }
 
-  // Watchdog state for helper liveness during active streams
-  static std::atomic<bool> g_watchdog_running {false};
+  // Watchdog state for helper liveness during active streams.
+  // g_watchdog_mutex guards g_watchdog_running and g_watchdog_thread together:
+  // start/stop are called from many threads (rtsp/webrtc session end, app
+  // termination, paused-session cleanup, hotkeys, shutdown), and an
+  // unsynchronized jthread move-assign racing joinable()/join() can make
+  // join() throw std::system_error, which escapes to std::terminate.
+  static std::mutex g_watchdog_mutex;
+  static bool g_watchdog_running = false;
   static std::jthread g_watchdog_thread;
   static std::chrono::steady_clock::time_point g_last_vd_reenable {};
 
@@ -1821,19 +1827,31 @@ namespace display_helper_integration {
   }
 
   void start_watchdog() {
-    if (g_watchdog_running.exchange(true, std::memory_order_acq_rel)) {
+    std::scoped_lock lk(g_watchdog_mutex);
+    if (g_watchdog_running) {
       return;  // already running
     }
+    g_watchdog_running = true;
     g_watchdog_thread = std::jthread(watchdog_proc);
   }
 
   void stop_watchdog() {
-    if (!g_watchdog_running.exchange(false, std::memory_order_acq_rel)) {
-      return;  // not running
+    std::jthread thread;
+    {
+      std::scoped_lock lk(g_watchdog_mutex);
+      if (!g_watchdog_running) {
+        return;  // not running
+      }
+      g_watchdog_running = false;
+      thread = std::move(g_watchdog_thread);
     }
-    if (g_watchdog_thread.joinable()) {
-      g_watchdog_thread.request_stop();
-      g_watchdog_thread.join();
+    if (thread.joinable()) {
+      thread.request_stop();
+      try {
+        thread.join();
+      } catch (const std::system_error &e) {
+        BOOST_LOG(warning) << "Display helper: failed to join watchdog thread: " << e.what();
+      }
     }
     if (config::video.dd.config_revert_on_disconnect) {
       platf::display_helper_client::reset_connection();
