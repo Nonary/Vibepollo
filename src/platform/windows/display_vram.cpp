@@ -454,11 +454,21 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "Encoder mutex was abandoned; continuing with lock held";
       }
 
-      auto release_encoder_mutex = util::fail_guard([&]() {
+      bool encoder_mutex_held = true;
+      auto release_encoder_mutex_now = [&]() {
+        if (!encoder_mutex_held) {
+          return true;
+        }
         const HRESULT hr = img_ctx.encoder_mutex->ReleaseSync(0);
         if (FAILED(hr)) {
           BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(hr).to_string_view() << ']';
+          return false;
         }
+        encoder_mutex_held = false;
+        return true;
+      };
+      auto release_encoder_mutex = util::fail_guard([&]() {
+        (void) release_encoder_mutex_now();
       });
 
       // Clear render target view(s) once so that the aspect ratio mismatch "bars" appear black
@@ -474,6 +484,7 @@ namespace platf::dxgi {
       DXGI_FORMAT encode_input_format = img.format;
       bool encode_input_sdr_to_pq = false;
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      ID3D11Texture2D *truehdr_input_texture = img_ctx.encoder_texture.get();
       const bool truehdr_supported_sdr_input =
         img.format == DXGI_FORMAT_B8G8R8A8_UNORM ||
         img.format == DXGI_FORMAT_R8G8B8A8_UNORM ||
@@ -511,17 +522,29 @@ namespace platf::dxgi {
       }
       if (truehdr_should_convert) {
         if (truehdr_supported_sdr_input) {
-          if (!truehdr_engine) {
+          bool truehdr_private_input_ready = false;
+          if (ensure_truehdr_input_context(img_ctx)) {
+            device_ctx->CopyResource(img_ctx.truehdr_input_texture.get(), img_ctx.encoder_texture.get());
+            encode_input_res = &img_ctx.truehdr_input_res;
+            truehdr_input_texture = img_ctx.truehdr_input_texture.get();
+            truehdr_private_input_ready = release_encoder_mutex_now();
+          } else if (!truehdr_failure_logged) {
+            BOOST_LOG(warning) << "RTX HDR: streaming unconverted frame because private TrueHDR input setup failed.";
+            truehdr_failure_logged = true;
+          }
+
+          bool truehdr_converted = false;
+          if (truehdr_private_input_ready && !truehdr_engine) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
             truehdr_engine->init(device.get());
           }
-          if (truehdr_engine->available()) {
+          if (truehdr_private_input_ready && truehdr_engine->available()) {
             truehdr_params_t p;
             p.contrast = truehdr_frame_state.contrast;
             p.saturation = truehdr_frame_state.saturation;
             p.middle_gray = truehdr_frame_state.middle_gray;
             p.peak_brightness = truehdr_frame_state.peak_brightness;
-            if (auto *hdr_tex = truehdr_engine->convert(img_ctx.encoder_texture.get(), p)) {
+            if (auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p)) {
               if (hdr_tex != truehdr_srv_texture) {
                 truehdr_srv.reset();
                 truehdr_srv_texture = nullptr;
@@ -539,6 +562,7 @@ namespace platf::dxgi {
                 }
                 encode_input_res = &truehdr_srv;
                 encode_input_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                truehdr_converted = true;
               } else if (!truehdr_failure_logged) {
                 BOOST_LOG(warning) << "RTX HDR: failed to create shader resource view for TrueHDR output; streaming unconverted frame.";
                 truehdr_failure_logged = true;
@@ -547,6 +571,9 @@ namespace platf::dxgi {
               BOOST_LOG(warning) << "RTX HDR: TrueHDR conversion failed; streaming unconverted frame.";
               truehdr_failure_logged = true;
             }
+          }
+          if (!truehdr_converted) {
+            encode_input_sdr_to_pq = true;
           }
         } else if (!truehdr_unsupported_format_logged) {
           BOOST_LOG(warning) << "RTX HDR: capture format " << display->dxgi_format_to_string(img.format)
@@ -563,11 +590,8 @@ namespace platf::dxgi {
       draw(*encode_input_res, out_Y_or_YUV_viewports, out_UV_viewport, encode_input_format, encode_input_sdr_to_pq);
 
       // Release encoder mutex to allow capture code to reuse this image
-      const HRESULT release_hr = img_ctx.encoder_mutex->ReleaseSync(0);
-      if (SUCCEEDED(release_hr)) {
+      if (release_encoder_mutex_now()) {
         release_encoder_mutex.disable();
-      } else {
-        BOOST_LOG(warning) << "Failed to release encoder mutex [0x"sv << util::hex(release_hr).to_string_view() << ']';
       }
 
       unbind_shader_resource();
@@ -984,6 +1008,8 @@ namespace platf::dxgi {
       texture2d_t encoder_texture;
       shader_res_t encoder_input_res;
       keyed_mutex_t encoder_mutex;
+      texture2d_t truehdr_input_texture;
+      shader_res_t truehdr_input_res;
 
       std::weak_ptr<const platf::img_t> img_weak;
 
@@ -992,6 +1018,8 @@ namespace platf::dxgi {
         encoder_texture.reset();
         encoder_input_res.reset();
         encoder_mutex.reset();
+        truehdr_input_texture.reset();
+        truehdr_input_res.reset();
         img_weak.reset();
       }
     };
@@ -1040,6 +1068,53 @@ namespace platf::dxgi {
 
       return 0;
     }
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    bool ensure_truehdr_input_context(encoder_img_ctx_t &img_ctx) {
+      D3D11_TEXTURE2D_DESC src_desc {};
+      img_ctx.encoder_texture->GetDesc(&src_desc);
+
+      if (img_ctx.truehdr_input_texture) {
+        D3D11_TEXTURE2D_DESC existing_desc {};
+        img_ctx.truehdr_input_texture->GetDesc(&existing_desc);
+        if (existing_desc.Width == src_desc.Width &&
+            existing_desc.Height == src_desc.Height &&
+            existing_desc.Format == src_desc.Format &&
+            existing_desc.SampleDesc.Count == src_desc.SampleDesc.Count &&
+            existing_desc.SampleDesc.Quality == src_desc.SampleDesc.Quality) {
+          return true;
+        }
+      }
+
+      img_ctx.truehdr_input_res.reset();
+      img_ctx.truehdr_input_texture.reset();
+
+      D3D11_TEXTURE2D_DESC desc {};
+      desc.Width = src_desc.Width;
+      desc.Height = src_desc.Height;
+      desc.MipLevels = 1;
+      desc.ArraySize = 1;
+      desc.Format = src_desc.Format;
+      desc.SampleDesc = src_desc.SampleDesc;
+      desc.Usage = D3D11_USAGE_DEFAULT;
+      desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+      auto status = device->CreateTexture2D(&desc, nullptr, &img_ctx.truehdr_input_texture);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "RTX HDR: failed to create private TrueHDR input texture [0x"sv << util::hex(status).to_string_view() << ']';
+        return false;
+      }
+
+      status = device->CreateShaderResourceView(img_ctx.truehdr_input_texture.get(), nullptr, &img_ctx.truehdr_input_res);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "RTX HDR: failed to create private TrueHDR input view [0x"sv << util::hex(status).to_string_view() << ']';
+        img_ctx.truehdr_input_texture.reset();
+        return false;
+      }
+
+      return true;
+    }
+#endif
 
     bool ensure_black_texture_for_rtv_clear() {
       if (black_texture_for_clear_srv) {
