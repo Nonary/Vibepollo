@@ -456,58 +456,6 @@ function selectVirtualDisplayLayout(v: unknown) {
 
     <!-- Display Modes -->
     <DisplayModesSettings />
-
-    <!-- NVIDIA RTX HDR: synthesize HDR from an SDR source via NVIDIA TrueHDR -->
-    <PlatformLayout>
-      <template #windows>
-        <section class="mb-8">
-          <div class="rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
-            <div class="bg-surface/40 px-4 py-3">
-              <h3 class="text-sm font-medium">{{ $t('config.rtx_hdr_title') }}</h3>
-              <p class="text-[11px] opacity-70 mt-1">{{ $t('config.rtx_hdr_intro') }}</p>
-            </div>
-            <div class="p-4">
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr"
-                v-model="config.rtx_hdr"
-                class="mb-4"
-                :desc="t('config.rtx_hdr_desc')"
-              />
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr_force_sdr"
-                v-model="config.rtx_hdr_force_sdr"
-                class="mb-4"
-                :desc="t('config.rtx_hdr_force_sdr_desc')"
-              />
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr_peak_brightness"
-                v-model="config.rtx_hdr_peak_brightness"
-                class="mb-3"
-                :desc="t('config.rtx_hdr_peak_brightness_desc')"
-              />
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr_middle_gray"
-                v-model="config.rtx_hdr_middle_gray"
-                class="mb-3"
-                :desc="t('config.rtx_hdr_middle_gray_desc')"
-              />
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr_contrast"
-                v-model="config.rtx_hdr_contrast"
-                class="mb-3"
-                :desc="t('config.rtx_hdr_contrast_desc')"
-              />
-              <ConfigFieldRenderer
-                setting-key="rtx_hdr_saturation"
-                v-model="config.rtx_hdr_saturation"
-                class="mb-3"
-                :desc="t('config.rtx_hdr_saturation_desc')"
-              />
-            </div>
-          </div>
-        </section>
-      </template>
-    </PlatformLayout>
   </div>
 </template>
 

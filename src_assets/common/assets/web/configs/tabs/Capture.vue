@@ -361,6 +361,51 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
       <ConfigFieldRenderer setting-key="capture" v-model="config.capture" />
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
       <ConfigFieldRenderer setting-key="prefer_10bit_sdr" v-model="config.prefer_10bit_sdr" />
+
+      <section
+        v-if="platform === 'windows'"
+        class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
+      >
+        <div class="space-y-1">
+          <h3 class="text-sm font-medium">{{ $t('config.rtx_hdr_title') }}</h3>
+          <p class="text-[11px] opacity-70">{{ $t('config.rtx_hdr_intro') }}</p>
+        </div>
+        <div class="grid gap-4">
+          <ConfigFieldRenderer
+            setting-key="rtx_hdr"
+            v-model="config.rtx_hdr"
+            :desc="t('config.rtx_hdr_desc')"
+          />
+          <ConfigFieldRenderer
+            setting-key="rtx_hdr_force_sdr"
+            v-model="config.rtx_hdr_force_sdr"
+            :desc="t('config.rtx_hdr_force_sdr_desc')"
+          />
+          <div class="grid gap-3 md:grid-cols-2">
+            <ConfigFieldRenderer
+              setting-key="rtx_hdr_peak_brightness"
+              v-model="config.rtx_hdr_peak_brightness"
+              :desc="t('config.rtx_hdr_peak_brightness_desc')"
+            />
+            <ConfigFieldRenderer
+              setting-key="rtx_hdr_middle_gray"
+              v-model="config.rtx_hdr_middle_gray"
+              :desc="t('config.rtx_hdr_middle_gray_desc')"
+            />
+            <ConfigFieldRenderer
+              setting-key="rtx_hdr_contrast"
+              v-model="config.rtx_hdr_contrast"
+              :desc="t('config.rtx_hdr_contrast_desc')"
+            />
+            <ConfigFieldRenderer
+              setting-key="rtx_hdr_saturation"
+              v-model="config.rtx_hdr_saturation"
+              :desc="t('config.rtx_hdr_saturation_desc')"
+            />
+          </div>
+        </div>
+      </section>
+
       <fieldset
         v-if="platform === 'windows'"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"

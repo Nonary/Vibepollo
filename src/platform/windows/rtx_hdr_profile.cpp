@@ -28,11 +28,6 @@ namespace platf::rtx_hdr {
     constexpr NvU32 RTX_HDR_CONTRAST_ID = 0x00DD48FE;
     constexpr NvU32 RTX_HDR_SATURATION_ID = 0x00DD48FF;
 
-    constexpr int DEFAULT_CONTRAST = 100;
-    constexpr int DEFAULT_SATURATION = 100;
-    constexpr int DEFAULT_MIDDLE_GRAY = 50;
-    constexpr int DEFAULT_PEAK_BRIGHTNESS = 1000;
-
     std::mutex g_invalid_log_mutex;
     std::unordered_set<std::string> g_invalid_logged;
 
@@ -88,7 +83,13 @@ namespace platf::rtx_hdr {
       }
     }
 
-    std::optional<NvU32> get_dword_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name) {
+    std::optional<NvU32> get_dword_setting(
+      NvDRSSessionHandle session,
+      NvDRSProfileHandle profile,
+      NvU32 setting_id,
+      const std::string &profile_name,
+      bool application_profile
+    ) {
       NVDRS_SETTING setting = {};
       setting.version = NVDRS_SETTING_VER;
       const auto status = NvAPI_DRS_GetSetting(session, profile, setting_id, &setting);
@@ -98,14 +99,24 @@ namespace platf::rtx_hdr {
       if (status != NVAPI_OK) {
         return std::nullopt;
       }
-      if (setting.settingType != NVDRS_DWORD_TYPE || setting.settingLocation != NVDRS_CURRENT_PROFILE_LOCATION) {
+      if (setting.settingType != NVDRS_DWORD_TYPE) {
+        return std::nullopt;
+      }
+
+      const bool profile_value_visible =
+        setting.settingLocation == NVDRS_CURRENT_PROFILE_LOCATION ||
+        (application_profile &&
+          setting.settingLocation == NVDRS_BASE_PROFILE_LOCATION) ||
+        (!application_profile &&
+          setting.settingLocation == NVDRS_GLOBAL_PROFILE_LOCATION);
+      if (!profile_value_visible) {
         return std::nullopt;
       }
       return setting.u32CurrentValue;
     }
 
-    std::optional<bool> read_bool_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name) {
-      auto raw = get_dword_setting(session, profile, setting_id, profile_name);
+    std::optional<bool> read_bool_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name, bool application_profile) {
+      auto raw = get_dword_setting(session, profile, setting_id, profile_name, application_profile);
       if (!raw) {
         return std::nullopt;
       }
@@ -119,8 +130,8 @@ namespace platf::rtx_hdr {
       return std::nullopt;
     }
 
-    std::optional<int> read_int_range_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, int min_value, int max_value, const std::string &profile_name) {
-      auto raw = get_dword_setting(session, profile, setting_id, profile_name);
+    std::optional<int> read_int_range_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, int min_value, int max_value, const std::string &profile_name, bool application_profile) {
+      auto raw = get_dword_setting(session, profile, setting_id, profile_name, application_profile);
       if (!raw) {
         return std::nullopt;
       }
@@ -133,31 +144,31 @@ namespace platf::rtx_hdr {
       return signed_value;
     }
 
-    std::optional<int> read_sdk_percent_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name) {
-      auto raw = get_dword_setting(session, profile, setting_id, profile_name);
+    std::optional<int> read_sdk_percent_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name, bool application_profile) {
+      auto raw = get_dword_setting(session, profile, setting_id, profile_name, application_profile);
       if (!raw) {
         return std::nullopt;
       }
 
       const auto signed_value = static_cast<int32_t>(*raw);
-      if (signed_value >= -100 && signed_value <= 100) {
-        return signed_value + 100;
-      }
       if (*raw <= 200) {
         return static_cast<int>(*raw);
+      }
+      if (signed_value >= -100 && signed_value < 0) {
+        return signed_value + 100;
       }
 
       log_invalid_once(profile_name, setting_id, *raw, "outside expected percentage range");
       return std::nullopt;
     }
 
-    profile_values_t read_profile_values(NvDRSSessionHandle session, NvDRSProfileHandle profile, const std::string &profile_name) {
+    profile_values_t read_profile_values(NvDRSSessionHandle session, NvDRSProfileHandle profile, const std::string &profile_name, bool application_profile) {
       profile_values_t values;
-      values.enabled = read_bool_setting(session, profile, RTX_HDR_ENABLE_ID, profile_name);
-      values.peak_brightness = read_int_range_setting(session, profile, RTX_HDR_PEAK_ID, 400, 2000, profile_name);
-      values.middle_gray = read_int_range_setting(session, profile, RTX_HDR_MIDDLE_GRAY_ID, 10, 100, profile_name);
-      values.contrast = read_sdk_percent_setting(session, profile, RTX_HDR_CONTRAST_ID, profile_name);
-      values.saturation = read_sdk_percent_setting(session, profile, RTX_HDR_SATURATION_ID, profile_name);
+      values.enabled = read_bool_setting(session, profile, RTX_HDR_ENABLE_ID, profile_name, application_profile);
+      values.peak_brightness = read_int_range_setting(session, profile, RTX_HDR_PEAK_ID, 400, 2000, profile_name, application_profile);
+      values.middle_gray = read_int_range_setting(session, profile, RTX_HDR_MIDDLE_GRAY_ID, 10, 100, profile_name, application_profile);
+      values.contrast = read_sdk_percent_setting(session, profile, RTX_HDR_CONTRAST_ID, profile_name, application_profile);
+      values.saturation = read_sdk_percent_setting(session, profile, RTX_HDR_SATURATION_ID, profile_name, application_profile);
       return values;
     }
 
@@ -197,7 +208,30 @@ namespace platf::rtx_hdr {
       return values;
     }
 
+    bool has_override(const char *key) {
+      return config::has_runtime_config_override(key);
+    }
+
+    bool has_runtime_profile_override() {
+      return has_override("rtx_hdr") ||
+             has_override("rtx_hdr_contrast") ||
+             has_override("rtx_hdr_saturation") ||
+             has_override("rtx_hdr_middle_gray") ||
+             has_override("rtx_hdr_peak_brightness");
+    }
+
     runtime_values_t merge_runtime_values(const resolved_profile_t &resolved, const runtime_values_t &config_fallback) {
+      runtime_values_t disabled;
+
+      // The effective Sunshine config is the feature gate. A false value from global
+      // config or runtime app/client overrides disables RTX HDR completely.
+      if (!config_fallback.enabled) {
+        disabled.source = profile_source_e::config;
+        return disabled;
+      }
+
+      const bool runtime_profile_override = has_runtime_profile_override();
+
       if (!resolved.lookup_available) {
         return config_fallback;
       }
@@ -205,23 +239,36 @@ namespace platf::rtx_hdr {
         return config_fallback;
       }
 
-      const bool app_has_enable = resolved.application.enabled.has_value();
-      const bool global_has_enable = resolved.global.enabled.has_value();
-      const bool enabled = resolved.application.enabled.value_or(resolved.global.enabled.value_or(false));
+      if (resolved.application.enabled == false && !runtime_profile_override) {
+        disabled.source = profile_source_e::application;
+        return disabled;
+      }
+
+      const bool enabled = resolved.application.enabled.value_or(resolved.global.enabled.value_or(config_fallback.enabled));
       if (!enabled) {
-        runtime_values_t values;
-        values.enabled = false;
-        values.source = app_has_enable ? profile_source_e::application : (global_has_enable ? profile_source_e::global : profile_source_e::none);
-        return values;
+        disabled.source = resolved.application.enabled.has_value() ?
+                            profile_source_e::application :
+                            (resolved.global.enabled.has_value() ? profile_source_e::global : profile_source_e::config);
+        return disabled;
       }
 
       runtime_values_t values;
       values.enabled = true;
-      values.contrast = resolved.application.contrast.value_or(resolved.global.contrast.value_or(DEFAULT_CONTRAST));
-      values.saturation = resolved.application.saturation.value_or(resolved.global.saturation.value_or(DEFAULT_SATURATION));
-      values.middle_gray = resolved.application.middle_gray.value_or(resolved.global.middle_gray.value_or(DEFAULT_MIDDLE_GRAY));
-      values.peak_brightness = resolved.application.peak_brightness.value_or(resolved.global.peak_brightness.value_or(DEFAULT_PEAK_BRIGHTNESS));
-      values.source = resolved.application.has_any() ? profile_source_e::application : profile_source_e::global;
+      values.contrast = has_override("rtx_hdr_contrast") ?
+                          config_fallback.contrast :
+                          resolved.application.contrast.value_or(resolved.global.contrast.value_or(config_fallback.contrast));
+      values.saturation = has_override("rtx_hdr_saturation") ?
+                            config_fallback.saturation :
+                            resolved.application.saturation.value_or(resolved.global.saturation.value_or(config_fallback.saturation));
+      values.middle_gray = has_override("rtx_hdr_middle_gray") ?
+                             config_fallback.middle_gray :
+                             resolved.application.middle_gray.value_or(resolved.global.middle_gray.value_or(config_fallback.middle_gray));
+      values.peak_brightness = has_override("rtx_hdr_peak_brightness") ?
+                                 config_fallback.peak_brightness :
+                                 resolved.application.peak_brightness.value_or(resolved.global.peak_brightness.value_or(config_fallback.peak_brightness));
+      values.source = resolved.application.has_any() ?
+                        profile_source_e::application :
+                        (resolved.global.has_any() ? profile_source_e::global : profile_source_e::config);
       return values;
     }
 
@@ -291,13 +338,13 @@ namespace platf::rtx_hdr {
       if (app_profile) {
         resolved.source = profile_source_e::application;
         resolved.profile_name = app_profile->second;
-        resolved.application = read_profile_values(session, app_profile->first, app_profile->second);
+        resolved.application = read_profile_values(session, app_profile->first, app_profile->second, true);
       }
     }
 
     NvDRSProfileHandle base_profile = nullptr;
     if (NvAPI_DRS_GetBaseProfile(session, &base_profile) == NVAPI_OK && base_profile) {
-      resolved.global = read_profile_values(session, base_profile, "global");
+      resolved.global = read_profile_values(session, base_profile, "global", false);
       if (resolved.source == profile_source_e::none && resolved.global.has_any()) {
         resolved.source = profile_source_e::global;
       }

@@ -42,6 +42,15 @@ namespace platf::rtx_hdr {
       return foreground.active_app_exe.empty() ? foreground.foreground_exe : foreground.active_app_exe;
     }
 
+    void apply_values(frame_state_t &frame, const runtime_values_t &values) {
+      frame.enabled = values.enabled;
+      frame.contrast = values.contrast;
+      frame.saturation = values.saturation;
+      frame.middle_gray = values.middle_gray;
+      frame.peak_brightness = values.peak_brightness;
+      frame.source = values.source;
+    }
+
     void copy_foreground(frame_state_t &frame, const platf::foreground_app::state_t &foreground) {
       frame.foreground_matches = foreground.matches_active_app;
       frame.foreground_exe = foreground.foreground_exe;
@@ -252,12 +261,7 @@ namespace platf::rtx_hdr {
 
       const auto values = materialize_runtime_values_for_tests(resolved, config_runtime_values());
       auto frame = state->cached_frame_state;
-      frame.enabled = values.enabled;
-      frame.contrast = values.contrast;
-      frame.saturation = values.saturation;
-      frame.middle_gray = values.middle_gray;
-      frame.peak_brightness = values.peak_brightness;
-      frame.source = values.source;
+      apply_values(frame, values);
       frame.lookup_available = resolved.lookup_available;
       state->cached_frame_state = std::move(frame);
       state->next_profile_refresh = finish + state->profile_refresh_interval;

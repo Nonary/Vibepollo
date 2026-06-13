@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 using platf::rtx_hdr::materialize_runtime_values_for_tests;
@@ -25,6 +26,7 @@ namespace {
 
     rtx_hdr_config_guard_t():
         original {config::video.rtx_hdr} {
+      config::clear_runtime_config_overrides();
       config::video.rtx_hdr.enabled = true;
       config::video.rtx_hdr.force_sdr = false;
       config::video.rtx_hdr.contrast = 0;
@@ -35,6 +37,7 @@ namespace {
 
     ~rtx_hdr_config_guard_t() {
       config::video.rtx_hdr = original;
+      config::clear_runtime_config_overrides();
     }
   };
 
@@ -122,17 +125,13 @@ namespace {
   };
 }  // namespace
 
-TEST(RtxHdrProfileResolution, PerGameSettingsOverrideGlobalSettings) {
+TEST(RtxHdrProfileResolution, ApplicationProfileSettingsActivateConversion) {
+  rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
   resolved.application.enabled = true;
   resolved.application.contrast = 140;
   resolved.application.peak_brightness = 1200;
-  resolved.global.enabled = true;
-  resolved.global.contrast = 90;
-  resolved.global.saturation = 80;
-  resolved.global.middle_gray = 45;
-  resolved.global.peak_brightness = 800;
 
   runtime_values_t config;
   config.enabled = true;
@@ -146,20 +145,16 @@ TEST(RtxHdrProfileResolution, PerGameSettingsOverrideGlobalSettings) {
 
   EXPECT_TRUE(values.enabled);
   EXPECT_EQ(values.contrast, 140);
-  EXPECT_EQ(values.saturation, 80);
-  EXPECT_EQ(values.middle_gray, 45);
+  EXPECT_EQ(values.saturation, 100);
+  EXPECT_EQ(values.middle_gray, 50);
   EXPECT_EQ(values.peak_brightness, 1200);
   EXPECT_EQ(values.source, profile_source_e::application);
 }
 
-TEST(RtxHdrProfileResolution, MissingPerGameSettingsFallBackToGlobalSettings) {
+TEST(RtxHdrProfileResolution, EmptyApplicationProfileFallsBackToConfig) {
+  rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
-  resolved.global.enabled = true;
-  resolved.global.contrast = 95;
-  resolved.global.saturation = 105;
-  resolved.global.middle_gray = 55;
-  resolved.global.peak_brightness = 900;
 
   runtime_values_t config;
   config.enabled = true;
@@ -172,21 +167,150 @@ TEST(RtxHdrProfileResolution, MissingPerGameSettingsFallBackToGlobalSettings) {
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
   EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.contrast, 130);
+  EXPECT_EQ(values.saturation, 130);
+  EXPECT_EQ(values.middle_gray, 60);
+  EXPECT_EQ(values.peak_brightness, 1500);
+  EXPECT_EQ(values.source, profile_source_e::config);
+}
+
+TEST(RtxHdrProfileResolution, GlobalProfileSettingsActivateAndFillMissingApplicationValues) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.global.enabled = true;
+  resolved.global.contrast = 95;
+  resolved.global.saturation = 105;
+  resolved.global.middle_gray = 55;
+  resolved.global.peak_brightness = 900;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.contrast = 130;
+  config.saturation = 131;
+  config.middle_gray = 60;
+  config.peak_brightness = 1500;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_TRUE(values.enabled);
   EXPECT_EQ(values.contrast, 95);
   EXPECT_EQ(values.saturation, 105);
   EXPECT_EQ(values.middle_gray, 55);
   EXPECT_EQ(values.peak_brightness, 900);
   EXPECT_EQ(values.source, profile_source_e::global);
+
+  resolved.application.enabled = true;
+  resolved.application.contrast = 140;
+  const auto app_values = materialize_runtime_values_for_tests(resolved, config);
+  EXPECT_TRUE(app_values.enabled);
+  EXPECT_EQ(app_values.contrast, 140);
+  EXPECT_EQ(app_values.saturation, 105);
+  EXPECT_EQ(app_values.middle_gray, 55);
+  EXPECT_EQ(app_values.peak_brightness, 900);
+  EXPECT_EQ(app_values.source, profile_source_e::application);
 }
 
-TEST(RtxHdrProfileResolution, DisabledPerGameSettingPreventsConversion) {
+TEST(RtxHdrProfileResolution, RuntimeOverridesTakePriorityOverApplicationProfileSettings) {
+  rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.contrast = 80;
+  config::video.rtx_hdr.saturation = 81;
+  config::video.rtx_hdr.middle_gray = 82;
+  config::video.rtx_hdr.peak_brightness = 1500;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr_contrast", "80"},
+    {"rtx_hdr_saturation", "81"},
+    {"rtx_hdr_middle_gray", "82"},
+    {"rtx_hdr_peak_brightness", "1500"},
+  });
+
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.application.enabled = true;
+  resolved.application.contrast = 140;
+  resolved.application.saturation = 120;
+  resolved.application.middle_gray = 55;
+  resolved.application.peak_brightness = 1200;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.contrast = 180;
+  config.saturation = 181;
+  config.middle_gray = 82;
+  config.peak_brightness = 1500;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.contrast, 180);
+  EXPECT_EQ(values.saturation, 181);
+  EXPECT_EQ(values.middle_gray, 82);
+  EXPECT_EQ(values.peak_brightness, 1500);
+  EXPECT_EQ(values.source, profile_source_e::application);
+}
+
+TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesWithoutApplicationProfileSettings) {
+  rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.contrast = 25;
+  config::video.rtx_hdr.saturation = 26;
+  config::video.rtx_hdr.middle_gray = 54;
+  config::video.rtx_hdr.peak_brightness = 1300;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+  });
+
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.contrast = 125;
+  config.saturation = 126;
+  config.middle_gray = 54;
+  config.peak_brightness = 1300;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.contrast, 125);
+  EXPECT_EQ(values.saturation, 126);
+  EXPECT_EQ(values.middle_gray, 54);
+  EXPECT_EQ(values.peak_brightness, 1300);
+  EXPECT_EQ(values.source, profile_source_e::config);
+}
+
+TEST(RtxHdrProfileResolution, RtxHdrFalseDisablesConversion) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.application.enabled = true;
+  resolved.application.contrast = 140;
+
+  runtime_values_t config;
+  config.enabled = false;
+  config.contrast = 111;
+  config.saturation = 112;
+  config.middle_gray = 53;
+  config.peak_brightness = 1300;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::config);
+}
+
+TEST(RtxHdrProfileResolution, DisabledApplicationProfilePreventsConversion) {
+  rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
   resolved.application.enabled = false;
   resolved.application.contrast = 180;
   resolved.application.saturation = 180;
   resolved.application.peak_brightness = 1600;
-  resolved.global.enabled = true;
 
   runtime_values_t config;
   config.enabled = true;
@@ -196,50 +320,6 @@ TEST(RtxHdrProfileResolution, DisabledPerGameSettingPreventsConversion) {
 
   EXPECT_FALSE(values.enabled);
   EXPECT_EQ(values.source, profile_source_e::application);
-}
-
-TEST(RtxHdrProfileResolution, UnavailableNvapiFallsBackToConfig) {
-  resolved_profile_t resolved;
-  resolved.lookup_available = false;
-
-  runtime_values_t config;
-  config.enabled = true;
-  config.contrast = 123;
-  config.saturation = 124;
-  config.middle_gray = 52;
-  config.peak_brightness = 1100;
-  config.source = profile_source_e::config;
-
-  const auto values = materialize_runtime_values_for_tests(resolved, config);
-
-  EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.contrast, 123);
-  EXPECT_EQ(values.saturation, 124);
-  EXPECT_EQ(values.middle_gray, 52);
-  EXPECT_EQ(values.peak_brightness, 1100);
-  EXPECT_EQ(values.source, profile_source_e::config);
-}
-
-TEST(RtxHdrProfileResolution, MissingAllRtxHdrProfileDataFallsBackToConfig) {
-  resolved_profile_t resolved;
-  resolved.lookup_available = true;
-
-  runtime_values_t config;
-  config.enabled = true;
-  config.contrast = 111;
-  config.saturation = 112;
-  config.middle_gray = 53;
-  config.peak_brightness = 1300;
-  config.source = profile_source_e::config;
-
-  const auto values = materialize_runtime_values_for_tests(resolved, config);
-
-  EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.contrast, 111);
-  EXPECT_EQ(values.saturation, 112);
-  EXPECT_EQ(values.middle_gray, 53);
-  EXPECT_EQ(values.peak_brightness, 1300);
-  EXPECT_EQ(values.source, profile_source_e::config);
 }
 
 TEST(RtxHdrForegroundMatching, PlayniteExecutableAndInstallDirMatch) {
@@ -315,6 +395,28 @@ TEST(RtxHdrRuntimeScheduler, ForegroundMismatchDisablesWithoutProfileLookup) {
   fake.runtime.poll_foreground_for_tests();
   EXPECT_FALSE(fake.runtime.run_pending_profile_lookup_for_tests());
   EXPECT_EQ(fake.resolve_calls, 1);
+}
+
+TEST(RtxHdrRuntimeScheduler, RuntimeOverrideDoesNotActivateDuringForegroundMismatch) {
+  rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.contrast = 25;
+  config::video.rtx_hdr.saturation = 26;
+  config::video.rtx_hdr.middle_gray = 54;
+  config::video.rtx_hdr.peak_brightness = 1300;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+  });
+
+  fake_runtime_t fake;
+  fake.foreground = mismatched_foreground();
+
+  fake.runtime.poll_foreground_for_tests();
+  const auto frame = fake.runtime.update_for_frame(std::nullopt);
+
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_FALSE(frame.foreground_matches);
+  EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_EQ(fake.resolve_calls, 0);
 }
 
 TEST(RtxHdrRuntimeScheduler, IdentityChangeBypassesUntilProfileLookupCompletes) {

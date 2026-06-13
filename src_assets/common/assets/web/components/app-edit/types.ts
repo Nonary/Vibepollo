@@ -24,6 +24,7 @@ export type Anime4kSize = 'S' | 'M' | 'L' | 'VL' | 'UL';
 export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion' | 'game-provided';
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
 export type AppVirtualDisplayMode = 'disabled' | 'per_client' | 'shared';
+export type RtxHdrMode = 'inherit' | 'enabled' | 'disabled';
 export type AppVirtualDisplayLayout =
   | 'exclusive'
   | 'extended'
@@ -91,6 +92,12 @@ export interface AppForm {
   losslessScalingProfile: LosslessProfileKey;
   losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
   losslessScalingLaunchDelay: number | null;
+  rtxHdrMode: RtxHdrMode;
+  rtxHdrForceSdr: boolean;
+  rtxHdrPeakBrightness: number;
+  rtxHdrMiddleGray: number;
+  rtxHdrContrast: number;
+  rtxHdrSaturation: number;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
   ddConfigurationOption?:

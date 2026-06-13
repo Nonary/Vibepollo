@@ -352,6 +352,11 @@
             </div>
           </div>
 
+          <AppEditRtxHdrSection
+            v-if="isWindows"
+            v-model:form="form"
+          />
+
           <AppEditConfigOverridesSection
             v-model:overrides="form.configOverrides"
             v-model:picker-open="overridesPickerOpen"
@@ -513,6 +518,7 @@ import type {
   FrameGenHealth,
   AppVirtualDisplayMode,
   AppVirtualDisplayLayout,
+  RtxHdrMode,
 } from './app-edit/types';
 import {
   LOSSLESS_PROFILE_DEFAULTS,
@@ -533,6 +539,7 @@ import AppEditConfigOverridesSection from './app-edit/AppEditConfigOverridesSect
 import AppEditLosslessScalingSection from './app-edit/AppEditLosslessScalingSection.vue';
 import AppEditPrepCommandsSection from './app-edit/AppEditPrepCommandsSection.vue';
 import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
+import AppEditRtxHdrSection from './app-edit/AppEditRtxHdrSection.vue';
 import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
 type DisplayDevice = {
@@ -603,6 +610,12 @@ function fresh(): AppForm {
     losslessScalingProfile: 'recommended',
     losslessScalingProfiles: emptyLosslessProfileState(),
     losslessScalingLaunchDelay: null,
+    rtxHdrMode: 'inherit',
+    rtxHdrForceSdr: false,
+    rtxHdrPeakBrightness: 1000,
+    rtxHdrMiddleGray: 50,
+    rtxHdrContrast: 0,
+    rtxHdrSaturation: 0,
     virtualDisplayMode: null,
     virtualDisplayLayout: null,
     ddConfigurationOption: null,
@@ -619,6 +632,89 @@ const APP_VIRTUAL_DISPLAY_LAYOUTS: AppVirtualDisplayLayout[] = [
   'extended_isolated',
   'extended_primary_isolated',
 ];
+const RTX_HDR_OVERRIDE_KEYS = [
+  'rtx_hdr',
+  'rtx_hdr_force_sdr',
+  'rtx_hdr_peak_brightness',
+  'rtx_hdr_middle_gray',
+  'rtx_hdr_contrast',
+  'rtx_hdr_saturation',
+] as const;
+
+function clonePlainRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return { ...(value as Record<string, unknown>) };
+  }
+}
+
+function parseBooleanOverride(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .trim();
+  if (['true', '1', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseNumberOverride(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function extractRtxHdrOverrides(overrides: Record<string, unknown>) {
+  const rest = { ...overrides };
+  const hasRtxHdrOverride = RTX_HDR_OVERRIDE_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(rest, key),
+  );
+  const rawEnabled = rest.rtx_hdr;
+  let mode: RtxHdrMode = 'inherit';
+  if (hasRtxHdrOverride) {
+    mode = parseBooleanOverride(rawEnabled, true) ? 'enabled' : 'disabled';
+  }
+  for (const key of RTX_HDR_OVERRIDE_KEYS) {
+    delete rest[key];
+  }
+
+  return {
+    rest,
+    mode,
+    forceSdr: parseBooleanOverride(overrides.rtx_hdr_force_sdr, false),
+    peakBrightness: parseNumberOverride(overrides.rtx_hdr_peak_brightness, 1000, 400, 2000),
+    middleGray: parseNumberOverride(overrides.rtx_hdr_middle_gray, 50, 10, 100),
+    contrast: parseNumberOverride(overrides.rtx_hdr_contrast, 0, -100, 100),
+    saturation: parseNumberOverride(overrides.rtx_hdr_saturation, 0, -100, 100),
+  };
+}
+
+function buildConfigOverridesPayload(f: AppForm): Record<string, unknown> {
+  const overrides = clonePlainRecord(f.configOverrides);
+  for (const key of RTX_HDR_OVERRIDE_KEYS) {
+    delete overrides[key];
+  }
+  if (f.rtxHdrMode === 'enabled') {
+    overrides.rtx_hdr = true;
+    overrides.rtx_hdr_force_sdr = !!f.rtxHdrForceSdr;
+    overrides.rtx_hdr_peak_brightness = f.rtxHdrPeakBrightness;
+    overrides.rtx_hdr_middle_gray = f.rtxHdrMiddleGray;
+    overrides.rtx_hdr_contrast = f.rtxHdrContrast;
+    overrides.rtx_hdr_saturation = f.rtxHdrSaturation;
+  } else if (f.rtxHdrMode === 'disabled') {
+    overrides.rtx_hdr = false;
+  }
+  return Object.fromEntries(
+    Object.entries(overrides).filter(
+      ([key, value]) => typeof key === 'string' && key.length > 0 && value !== undefined && value !== null,
+    ),
+  );
+}
 
 function parseAppVirtualDisplayMode(value: unknown): AppVirtualDisplayMode | null {
   if (typeof value !== 'string') {
@@ -780,6 +876,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     src['dlss-framegen-capture-fix'] ||
     src['gen2-framegen-fix']
   );
+  const rawConfigOverrides = clonePlainRecord((src as any)?.['config-overrides']);
+  const rtxHdrOverrides = extractRtxHdrOverrides(rawConfigOverrides);
   return {
     index: idx,
     uuid: typeof src.uuid === 'string' ? src.uuid : undefined,
@@ -791,12 +889,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     playniteIconPath: String(src['playnite-icon-path'] ?? ''),
     excludeGlobalPrepCmd: !!src['exclude-global-prep-cmd'],
     excludeGlobalStateCmd: !!src['exclude-global-state-cmd'],
-    configOverrides:
-      (src as any)?.['config-overrides'] &&
-      typeof (src as any)['config-overrides'] === 'object' &&
-      !Array.isArray((src as any)['config-overrides'])
-        ? JSON.parse(JSON.stringify((src as any)['config-overrides']))
-        : {},
+    configOverrides: rtxHdrOverrides.rest,
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
@@ -835,6 +928,12 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingProfile: profileKey,
     losslessScalingProfiles: losslessProfiles,
     losslessScalingLaunchDelay: lsLaunchDelay,
+    rtxHdrMode: rtxHdrOverrides.mode,
+    rtxHdrForceSdr: rtxHdrOverrides.forceSdr,
+    rtxHdrPeakBrightness: rtxHdrOverrides.peakBrightness,
+    rtxHdrMiddleGray: rtxHdrOverrides.middleGray,
+    rtxHdrContrast: rtxHdrOverrides.contrast,
+    rtxHdrSaturation: rtxHdrOverrides.saturation,
     virtualDisplayMode: serverVirtualDisplayMode ?? (hasDisplayOutput ? 'disabled' : null),
     virtualDisplayLayout: serverVirtualDisplayLayout,
     ddConfigurationOption: ddConfigValue,
@@ -844,6 +943,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 function toServerPayload(f: AppForm): Record<string, any> {
   const selection = displaySelection.value;
   const captureFixEnabled = !!(f.gen1FramegenFix || f.gen2FramegenFix);
+  const configOverridesPayload = buildConfigOverridesPayload(f);
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
@@ -853,17 +953,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'image-path': String(f.imagePath || '').replace(/\"/g, ''),
     'exclude-global-prep-cmd': !!f.excludeGlobalPrepCmd,
     'exclude-global-state-cmd': !!f.excludeGlobalStateCmd,
-    ...(f.configOverrides &&
-    typeof f.configOverrides === 'object' &&
-    !Array.isArray(f.configOverrides) &&
-    Object.keys(f.configOverrides).length
-      ? {
-          'config-overrides': Object.fromEntries(
-            Object.entries(f.configOverrides).filter(
-              ([k, v]) => typeof k === 'string' && k.length > 0 && v !== undefined && v !== null,
-            ),
-          ),
-        }
+    ...(Object.keys(configOverridesPayload).length
+      ? { 'config-overrides': configOverridesPayload }
       : {}),
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
