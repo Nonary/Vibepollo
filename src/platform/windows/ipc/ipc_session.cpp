@@ -74,11 +74,17 @@ namespace platf::dxgi {
       return kWgcMinUpdateInterval100ns;
     }
 
-    uint32_t wgc_ipc_flags() {
+    uint32_t wgc_ipc_flags(const ::video::config_t &config) {
       // Keep WGC latency-first when the helper is keeping up. If producer
       // backpressure appears, the helper can grow to a second frame, drain stale
       // queued WGC frames, then shrink back after a quiet period.
-      return kWgcAdaptiveFramePoolFlags;
+      auto flags = kWgcAdaptiveFramePoolFlags;
+      if (config.rtx_hdr_active) {
+        // TrueHDR generates the HDR frame itself. Keep the stream HDR, but ask WGC
+        // for an SDR-compatible UNORM frame pool so the NGX TrueHDR input accepts it.
+        flags |= WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT;
+      }
+      return flags;
     }
 
     uint32_t wgc_initial_frame_buffer_size() {
@@ -317,7 +323,7 @@ namespace platf::dxgi {
     config_data.log_level = config::sunshine.min_log_level;
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);
     config_data.target_fps = wgc_target_fps(_config);
-    config_data.flags = wgc_ipc_flags();
+    config_data.flags = wgc_ipc_flags(_config);
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
     config_data.max_frame_buffer_size = wgc_max_frame_buffer_size();
 

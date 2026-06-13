@@ -385,6 +385,7 @@ namespace platf {
     virtual int convert(platf::img_t &img) = 0;
 
     video::sunshine_colorspace_t colorspace;
+    bool rtx_hdr_active = false;
   };
 
   struct avcodec_encode_device_t: encode_device_t {

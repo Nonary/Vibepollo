@@ -31,7 +31,12 @@ export type ConfigFieldSchemaContext = ConfigSelectOptionsContext & {
   options?: ConfigSelectOption[];
 };
 
-const SWITCH_KEYS = new Set<string>(['frame_limiter_enable', 'frame_limiter_disable_vsync']);
+const SWITCH_KEYS = new Set<string>([
+  'frame_limiter_enable',
+  'frame_limiter_disable_vsync',
+  'rtx_hdr',
+  'rtx_hdr_force_sdr',
+]);
 
 const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   fec_percentage: { placeholder: '20' },
@@ -58,6 +63,10 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   ping_timeout: { min: 0, step: 100, placeholder: '10000' },
   max_bitrate: { min: 0, placeholder: '0' },
   minimum_fps_target: { min: 0, max: 1000, placeholder: '0' },
+  rtx_hdr_contrast: { min: -100, max: 100, step: 1, placeholder: '0' },
+  rtx_hdr_saturation: { min: -100, max: 100, step: 1, placeholder: '0' },
+  rtx_hdr_middle_gray: { min: 10, max: 100, step: 1, placeholder: '50' },
+  rtx_hdr_peak_brightness: { min: 400, max: 2000, step: 1, placeholder: '1000' },
   dd_virtual_display_permanent_count: { min: 0, max: 4, step: 1, precision: 0, placeholder: '0' },
   nvenc_vbv_increase: { min: 0, max: 400, placeholder: '0' },
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 1, precision: 0, placeholder: '0' },

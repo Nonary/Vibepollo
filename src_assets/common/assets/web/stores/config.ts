@@ -157,6 +157,12 @@ const defaultGroups = [
       },
       dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
+      rtx_hdr: false,
+      rtx_hdr_force_sdr: false,
+      rtx_hdr_peak_brightness: 1000,
+      rtx_hdr_middle_gray: 50,
+      rtx_hdr_contrast: 0,
+      rtx_hdr_saturation: 0,
       max_bitrate: 0,
       minimum_fps_target: 20,
       fallback_mode: '1920x1080x60',
@@ -570,6 +576,8 @@ export const useConfigStore = defineStore('config', () => {
       'realtime_stats_show_host_stats',
       'realtime_stats_show_host_charts',
       'realtime_stats_show_session_history',
+      'rtx_hdr',
+      'rtx_hdr_force_sdr',
     ];
     const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
     const toBool = (v: any): boolean | null => {

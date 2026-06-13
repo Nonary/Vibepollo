@@ -812,6 +812,15 @@ namespace config {
       2,  // vk.rc_mode (default: cbr)
     },  // vk
 
+    {
+      false,  // rtx_hdr.enabled
+      false,  // rtx_hdr.force_sdr
+      0,  // rtx_hdr.contrast
+      0,  // rtx_hdr.saturation
+      50,  // rtx_hdr.middle_gray
+      1000,  // rtx_hdr.peak_brightness
+    },  // rtx_hdr
+
     {},  // capture
     {},  // encoder
     {},  // adapter_name
@@ -1642,6 +1651,13 @@ namespace config {
     int_f(vars, "vk_tune", video.vk.tune);
     int_f(vars, "vk_rc_mode", video.vk.rc_mode);
 
+    bool_f(vars, "rtx_hdr", video.rtx_hdr.enabled);
+    bool_f(vars, "rtx_hdr_force_sdr", video.rtx_hdr.force_sdr);
+    int_between_f(vars, "rtx_hdr_contrast", video.rtx_hdr.contrast, {-100, 100});
+    int_between_f(vars, "rtx_hdr_saturation", video.rtx_hdr.saturation, {-100, 100});
+    int_between_f(vars, "rtx_hdr_middle_gray", video.rtx_hdr.middle_gray, {10, 100});
+    int_between_f(vars, "rtx_hdr_peak_brightness", video.rtx_hdr.peak_brightness, {400, 2000});
+
     string_f(vars, "capture", video.capture);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
@@ -2316,6 +2332,12 @@ namespace config {
         "vaapi_strict_rc_buffer",
         "vk_tune",
         "vk_rc_mode",
+        "rtx_hdr",
+        "rtx_hdr_force_sdr",
+        "rtx_hdr_contrast",
+        "rtx_hdr_saturation",
+        "rtx_hdr_middle_gray",
+        "rtx_hdr_peak_brightness",
         "sw_preset",
         "sw_tune",
       };

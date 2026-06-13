@@ -116,6 +116,20 @@ namespace config {
       int rc_mode;  // 0=driver, 1=cqp, 2=cbr, 4=vbr
     } vk;
 
+    // NVIDIA TrueHDR (RTX HDR) SDR->HDR synthesis. When enabled and the client supports
+    // HDR, captured SDR frames are run through the RTX Video SDK TrueHDR model before
+    // encoding, so HDR can be streamed from an SDR source (e.g. an SDR virtual display)
+    // without the source display being in HDR mode. Dials mirror the NVIDIA App RTX HDR
+    // overlay. Per-app overrides live in apps.json (see proc::ctx_t).
+    struct rtx_hdr_t {
+      bool enabled;  ///< Master enable for the global default.
+      bool force_sdr;  ///< Force the source display to SDR before synthesis for compatibility.
+      int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
+      int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
+      int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)
+      int peak_brightness;  ///< 400..2000 nits (overlay "Peak Brightness", default 1000)
+    } rtx_hdr;
+
     std::string capture;
     std::string encoder;
     std::string adapter_name;

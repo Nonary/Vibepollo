@@ -90,6 +90,10 @@ namespace rtsp_stream {
   void cmd_not_found(tcp::socket &sock, launch_session_t &, msg_t &&req);
   void respond(tcp::socket &sock, launch_session_t &session, POPTION_ITEM options, int statuscode, const char *status_msg, int seqn, const std::string_view &payload);
 
+  void apply_rtx_hdr_stream_policy(video::config_t &config) {
+    config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
+  }
+
   class socket_t: public std::enable_shared_from_this<socket_t> {
   public:
     socket_t(boost::asio::io_context &io_context, std::function<void(tcp::socket &sock, launch_session_t &, msg_t &&)> &&handle_data_fn):
@@ -1364,6 +1368,7 @@ namespace rtsp_stream {
         config.monitor.prefer_sdr_10bit = true;
       }
     }
+    apply_rtx_hdr_stream_policy(config.monitor);
 
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up

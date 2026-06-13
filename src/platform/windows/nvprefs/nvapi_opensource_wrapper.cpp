@@ -117,12 +117,28 @@ NVAPI_INTERFACE NvAPI_DRS_FindProfileByName(NvDRSSessionHandle hSession, NvAPI_U
   return call_interface<decltype(NvAPI_DRS_FindProfileByName)>("NvAPI_DRS_FindProfileByName", hSession, profileName, phProfile);
 }
 
+NVAPI_INTERFACE NvAPI_DRS_GetProfileInfo(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NVDRS_PROFILE *pProfileInfo) {
+  return call_interface<decltype(NvAPI_DRS_GetProfileInfo)>("NvAPI_DRS_GetProfileInfo", hSession, hProfile, pProfileInfo);
+}
+
+NVAPI_INTERFACE NvAPI_DRS_EnumProfiles(NvDRSSessionHandle hSession, NvU32 index, NvDRSProfileHandle *phProfile) {
+  return call_interface<decltype(NvAPI_DRS_EnumProfiles)>("NvAPI_DRS_EnumProfiles", hSession, index, phProfile);
+}
+
 NVAPI_INTERFACE NvAPI_DRS_CreateApplication(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NVDRS_APPLICATION *pApplication) {
   return call_interface<decltype(NvAPI_DRS_CreateApplication)>("NvAPI_DRS_CreateApplication", hSession, hProfile, pApplication);
 }
 
 NVAPI_INTERFACE NvAPI_DRS_GetApplicationInfo(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvAPI_UnicodeString appName, NVDRS_APPLICATION *pApplication) {
   return call_interface<decltype(NvAPI_DRS_GetApplicationInfo)>("NvAPI_DRS_GetApplicationInfo", hSession, hProfile, appName, pApplication);
+}
+
+NVAPI_INTERFACE NvAPI_DRS_EnumApplications(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvU32 startIndex, NvU32 *appCount, NVDRS_APPLICATION *pApplication) {
+  return call_interface<decltype(NvAPI_DRS_EnumApplications)>("NvAPI_DRS_EnumApplications", hSession, hProfile, startIndex, appCount, pApplication);
+}
+
+NVAPI_INTERFACE NvAPI_DRS_FindApplicationByName(NvDRSSessionHandle hSession, NvAPI_UnicodeString appName, NvDRSProfileHandle *phProfile, NVDRS_APPLICATION *pApplication) {
+  return call_interface<decltype(NvAPI_DRS_FindApplicationByName)>("NvAPI_DRS_FindApplicationByName", hSession, appName, phProfile, pApplication);
 }
 
 NVAPI_INTERFACE NvAPI_DRS_SetSetting(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NVDRS_SETTING *pSetting) {

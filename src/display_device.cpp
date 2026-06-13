@@ -354,6 +354,7 @@ namespace display_device {
      */
     std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
+      using hdr_request_override_e = config::video_t::dd_t::hdr_request_override_e;
 
       if (video_config.dd.wa.dummy_plug_hdr10) {
         return HdrState::Enabled;
@@ -361,6 +362,11 @@ namespace display_device {
 
       switch (video_config.dd.hdr_option) {
         case hdr_option_e::automatic:
+          if (session.enable_hdr && video_config.rtx_hdr.enabled && video_config.rtx_hdr.force_sdr &&
+              video_config.dd.hdr_request_override == hdr_request_override_e::automatic) {
+            BOOST_LOG(info) << "RTX HDR: force SDR source is enabled; keeping source display in SDR while the stream remains HDR.";
+            return HdrState::Disabled;
+          }
           return session.enable_hdr ? HdrState::Enabled : HdrState::Disabled;
         case hdr_option_e::disabled:
           break;

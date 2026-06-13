@@ -10,7 +10,8 @@ param(
     [string]$BuildDir,
     [string]$PrebuiltPackageDir,
     [string]$VsDevCmdPath,
-    [string]$SigningThumbprint
+    [string]$SigningThumbprint,
+    [switch]$SkipSigning
 )
 
 $ErrorActionPreference = 'Stop'
@@ -393,25 +394,29 @@ if ($Build) {
             throw "[SunshineVirtualDisplay] Inf2Cat failed with exit code $LASTEXITCODE"
         }
 
-        $signingCert = Find-SigningCertificate -CertificatePath $packageCer
-        if ($signingCert.Thumbprint) {
-            $signtool = Resolve-Tool -Name 'signtool.exe'
-            $signArgs = @('sign', '/fd', 'SHA256')
-            if ($signingCert.UseMachineStore) {
-                $signArgs += '/sm'
-            }
-            $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
-            Write-Host "[SunshineVirtualDisplay] Signing driver catalog with certificate $($signingCert.Thumbprint)."
-            & $signtool @signArgs
-            if ($LASTEXITCODE -ne 0) {
-                throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
-            }
-            & $signtool verify /pa $packageCat
-            if ($LASTEXITCODE -ne 0) {
-                throw "[SunshineVirtualDisplay] signtool verify failed with exit code $LASTEXITCODE"
-            }
+        if ($SkipSigning) {
+            Write-Warning '[SunshineVirtualDisplay] Skipping local driver catalog signing; generated catalog is unsigned.'
         } else {
-            Write-Warning '[SunshineVirtualDisplay] No signing certificate was provided; generated catalog is unsigned.'
+            $signingCert = Find-SigningCertificate -CertificatePath $packageCer
+            if ($signingCert.Thumbprint) {
+                $signtool = Resolve-Tool -Name 'signtool.exe'
+                $signArgs = @('sign', '/fd', 'SHA256')
+                if ($signingCert.UseMachineStore) {
+                    $signArgs += '/sm'
+                }
+                $signArgs += @('/sha1', $signingCert.Thumbprint, $packageCat)
+                Write-Host "[SunshineVirtualDisplay] Signing driver catalog with certificate $($signingCert.Thumbprint)."
+                & $signtool @signArgs
+                if ($LASTEXITCODE -ne 0) {
+                    throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
+                }
+                & $signtool verify /pa $packageCat
+                if ($LASTEXITCODE -ne 0) {
+                    throw "[SunshineVirtualDisplay] signtool verify failed with exit code $LASTEXITCODE"
+                }
+            } else {
+                Write-Warning '[SunshineVirtualDisplay] No signing certificate was provided; generated catalog is unsigned.'
+            }
         }
     }
 }

@@ -48,6 +48,10 @@ extern "C" {
 #ifdef _WIN32
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
+  #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    #include "src/platform/windows/foreground_app.h"
+    #include "src/platform/windows/rtx_hdr_profile.h"
+  #endif
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
@@ -2973,7 +2977,15 @@ namespace video {
   std::unique_ptr<platf::encode_device_t> make_encode_device(platf::display_t &disp, const encoder_t &encoder, const config_t &config) {
     std::unique_ptr<platf::encode_device_t> result;
 
-    auto colorspace = colorspace_from_client_config(config, disp.is_hdr());
+    bool hdr_display = disp.is_hdr();
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    // When NVIDIA TrueHDR (RTX HDR) is enabled for an HDR stream, synthesize HDR from an
+    // SDR capture. The source display may intentionally remain SDR; the actual SDR->HDR
+    // conversion happens in the encode device's convert() step.
+    const bool rtx_hdr_stream = config.rtx_hdr_active;
+    hdr_display = hdr_display || rtx_hdr_stream;
+#endif
+    auto colorspace = colorspace_from_client_config(config, hdr_display);
 
     platf::pix_fmt_e pix_fmt;
     if (config.chromaSamplingType == 1) {
@@ -3016,6 +3028,7 @@ namespace video {
 
     if (result) {
       result->colorspace = colorspace;
+      result->rtx_hdr_active = config.rtx_hdr_active;
     }
 
     return result;
@@ -3039,7 +3052,36 @@ namespace video {
     if (colorspace_is_hdr(encode_device->colorspace)) {
       if (disp->get_hdr_metadata(hdr_info->metadata)) {
         hdr_info->enabled = true;
-      } else {
+      }
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      else if (ctx.config.rtx_hdr_active) {
+        // SDR source + TrueHDR: the display has no HDR metadata, so synthesize Rec.2020
+        // HDR10 metadata from the dials (primaries/white normalized to 50000).
+        int rtx_hdr_peak_brightness = config::video.rtx_hdr.peak_brightness;
+#ifdef _WIN32
+        std::string rtx_hdr_foreground_exe;
+        const auto rtx_hdr_foreground = platf::foreground_app::snapshot();
+        if (rtx_hdr_foreground.matches_active_app) {
+          rtx_hdr_foreground_exe = rtx_hdr_foreground.active_app_exe.empty() ? rtx_hdr_foreground.foreground_exe : rtx_hdr_foreground.active_app_exe;
+        }
+        if (auto resolved_peak = platf::rtx_hdr::resolve_session_peak_brightness(rtx_hdr_foreground_exe)) {
+          rtx_hdr_peak_brightness = *resolved_peak;
+        }
+#endif
+        auto &m = hdr_info->metadata;
+        m.displayPrimaries[0] = {35400, 14600};  // R (Rec.2020)
+        m.displayPrimaries[1] = {8500, 39850};  // G
+        m.displayPrimaries[2] = {6550, 2300};  // B
+        m.whitePoint = {15635, 16450};  // D65
+        m.maxDisplayLuminance = (uint16_t) rtx_hdr_peak_brightness;  // nits
+        m.minDisplayLuminance = 1;  // 1/10000th nit (~0)
+        m.maxContentLightLevel = (uint16_t) rtx_hdr_peak_brightness;
+        m.maxFrameAverageLightLevel = (uint16_t) (rtx_hdr_peak_brightness / 4);
+        hdr_info->enabled = true;
+        BOOST_LOG(info) << "RTX HDR: synthesized HDR10 metadata (peak " << rtx_hdr_peak_brightness << " nits) for SDR source";
+      }
+#endif
+      else {
         BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
       }
     }

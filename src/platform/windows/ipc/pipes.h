@@ -77,6 +77,7 @@ namespace platf::dxgi {
   enum wgc_ipc_config_flags_e : uint32_t {
     WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
     WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
+    WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
   };
 
   struct config_data_t {

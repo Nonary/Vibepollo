@@ -1,3 +1,14 @@
 ©2018 Valve Corporation. Steam and the Steam logo are trademarks and/or
 registered trademarks of Valve Corporation in the U.S. and/or other countries. All
 rights reserved.
+
+NVIDIA RTX Video SDK
+
+Vibeshine Windows builds may include NVIDIA RTX Video SDK components for the optional
+RTX HDR / TrueHDR feature:
+
+- nvngx_truehdr.dll
+
+NVIDIA, NVIDIA RTX, GeForce RTX, and related marks are trademarks and/or registered
+trademarks of NVIDIA Corporation in the United States and other countries. The NVIDIA
+RTX Video SDK is governed by NVIDIA's SDK license terms.

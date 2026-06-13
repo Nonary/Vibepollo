@@ -89,9 +89,14 @@ add_custom_target(package_msi
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 
+set(SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS "")
+if(NOT "$ENV{GITHUB_ACTIONS}" STREQUAL "true")
+    list(APPEND SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS -DisableSignPath)
+endif()
+
 # Build custom elevated installer EXE that wraps the generated MSI
 add_custom_target(package_installer
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}"
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}" ${SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS}
     DEPENDS package_msi
     COMMENT "Building custom installer executable"
 )

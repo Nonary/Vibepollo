@@ -214,6 +214,7 @@ namespace webrtc_stream {
       int dynamic_range = 0;
       int chroma_sampling_type = 0;
       bool prefer_sdr_10bit = false;
+      bool rtx_hdr_active = false;
       int audio_channels = 0;
       bool host_audio = false;
 
@@ -2138,6 +2139,10 @@ namespace webrtc_stream {
       return config;
     }
 
+    void apply_rtx_hdr_stream_policy(video::config_t &config) {
+      config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
+    }
+
     audio::config_t build_audio_config(const SessionOptions &options) {
       audio::config_t config {};
       config.packetDuration = kDefaultAudioPacketMs;
@@ -2415,6 +2420,7 @@ namespace webrtc_stream {
       key.dynamic_range = video_config.dynamicRange;
       key.chroma_sampling_type = video_config.chromaSamplingType;
       key.prefer_sdr_10bit = video_config.prefer_sdr_10bit;
+      key.rtx_hdr_active = video_config.rtx_hdr_active;
       key.audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
       key.host_audio = options.host_audio;
       return key;
@@ -2538,6 +2544,7 @@ namespace webrtc_stream {
       auto video_config = build_video_config(options);
       auto audio_config = build_audio_config(options);
       apply_rtsp_video_overrides(video_config, rtsp_config);
+      apply_rtx_hdr_stream_policy(video_config);
       const auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
       const bool force_reconfigure = was_idle_shutdown_pending;
 
@@ -4651,6 +4658,7 @@ namespace webrtc_stream {
     session.state.client_uuid = options.client_uuid;
     session.video_config = build_video_config(options);
     apply_rtsp_video_overrides(session.video_config, rtsp_config);
+    apply_rtx_hdr_stream_policy(session.video_config);
     session.state.width = session.video_config.width;
     session.state.height = session.video_config.height;
     session.state.fps = session.video_config.framerate;
