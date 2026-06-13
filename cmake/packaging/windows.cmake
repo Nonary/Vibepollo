@@ -17,6 +17,16 @@ if(WEBRTC_RUNTIME_DLL)
     install(FILES "${WEBRTC_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
 endif()
 
+# Optional NVIDIA TrueHDR runtime. Local/release builders must place these files in this
+# directory before packaging. Only the TrueHDR feature DLL is bundled; VSR is not used.
+set(SUNSHINE_TRUEHDR_RUNTIME_DIR "${CMAKE_BINARY_DIR}" CACHE PATH "Directory containing vibeshine_truehdr.dll and the NVIDIA NGX TrueHDR runtime DLL")
+install(FILES
+        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/vibeshine_truehdr.dll"
+        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/nvngx_truehdr.dll"
+        DESTINATION "."
+        COMPONENT application
+        OPTIONAL)
+
 # ARM64: include minhook-detours DLL (shared library for ARM64)
 if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
     install(FILES "${_MINHOOK_DLL}" DESTINATION "." COMPONENT application)
@@ -80,6 +90,10 @@ if(SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR AND NOT "$ENV{GITHUB_ACTIONS}" STREQU
     message(WARNING "Ignoring SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR outside GitHub Actions; local installer builds refresh the driver from SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR.")
     set(SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR "")
 endif()
+set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS "")
+if(NOT "$ENV{GITHUB_ACTIONS}" STREQUAL "true")
+    list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)
+endif()
 set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/install.ps1"
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.inf"
@@ -128,6 +142,7 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
                 -LibVirtualDisplayDir "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}"
                 -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
                 -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"
+                ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS}
         DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
         COMMENT "Building and refreshing Vibepollo Display Driver package assets"
         VERBATIM)

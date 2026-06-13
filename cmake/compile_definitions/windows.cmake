@@ -147,6 +147,11 @@ set(VIGEMBUS_PACKAGED_V "1.21.442")
 set(VIGEMBUS_PACKAGED_V_2 "${VIGEMBUS_PACKAGED_V}.0")
 list(APPEND SUNSHINE_DEFINITIONS VIGEMBUS_PACKAGED_VERSION="${VIGEMBUS_PACKAGED_V_2}")
 
+# NVIDIA TrueHDR (RTX HDR) SDR->HDR synthesis. The host code is SDK-free and loads the
+# MSVC-built shim (vibeshine_truehdr.dll, see tools/truehdr_shim) at runtime, so this is
+# always compiled in on Windows; it no-ops gracefully when the shim/runtime is absent.
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_NV_TRUEHDR=1)
+
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
@@ -194,9 +199,17 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/config_playnite.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_runtime.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_runtime.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"

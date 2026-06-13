@@ -906,6 +906,12 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'dd_wa_dummy_plug_hdr10',
   'max_bitrate',
   'minimum_fps_target',
+  'rtx_hdr',
+  'rtx_hdr_force_sdr',
+  'rtx_hdr_peak_brightness',
+  'rtx_hdr_middle_gray',
+  'rtx_hdr_contrast',
+  'rtx_hdr_saturation',
 
   // Codec / capture negotiation
   'fec_percentage',

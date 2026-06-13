@@ -157,6 +157,18 @@ namespace platf::playnite {
    */
   bool get_cached_install_dir(const std::string &playnite_id, std::string &out);
 
+  struct active_game_status_t {
+    bool active {false};
+    std::string id;
+    std::string exe;
+    std::string install_dir;
+  };
+
+  /**
+   * @brief Snapshot the latest gameStarted/gameStopped status reported by the Playnite plugin.
+   */
+  active_game_status_t get_active_game_status();
+
   // no-op: persistence helper moved to confighttp as refresh_client_apps_cache
 
   /**

@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -490,6 +491,63 @@ namespace proc {
 #ifdef _WIN32
     constexpr auto k_lossless_observation_duration = std::chrono::seconds(10);
     constexpr auto k_lossless_poll_interval = std::chrono::milliseconds(250);
+
+    std::optional<DWORD> foreground_window_process_id() {
+      HWND hwnd = GetForegroundWindow();
+      if (!hwnd) {
+        return std::nullopt;
+      }
+
+      DWORD pid = 0;
+      if (!GetWindowThreadProcessId(hwnd, &pid) || pid == 0) {
+        return std::nullopt;
+      }
+
+      return pid;
+    }
+
+    std::vector<DWORD> process_group_pids(const bp::group &group) {
+      std::vector<DWORD> pids;
+      if (!group) {
+        return pids;
+      }
+
+      const auto job_handle = (HANDLE) group.native_handle();
+      DWORD required_length = sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST);
+      auto process_id_list = (PJOBOBJECT_BASIC_PROCESS_ID_LIST) calloc(1, required_length);
+      auto fg = util::fail_guard([&process_id_list]() {
+        free(process_id_list);
+      });
+
+      while (!QueryInformationJobObject(job_handle, JobObjectBasicProcessIdList, process_id_list, required_length, &required_length) &&
+             GetLastError() == ERROR_MORE_DATA) {
+        free(process_id_list);
+        process_id_list = (PJOBOBJECT_BASIC_PROCESS_ID_LIST) calloc(1, required_length);
+        if (!process_id_list) {
+          return pids;
+        }
+      }
+
+      if (!process_id_list) {
+        return pids;
+      }
+
+      pids.reserve(process_id_list->NumberOfProcessIdsInList);
+      for (DWORD i = 0; i < process_id_list->NumberOfProcessIdsInList; ++i) {
+        pids.push_back(static_cast<DWORD>(process_id_list->ProcessIdList[i]));
+      }
+
+      return pids;
+    }
+
+    bool process_group_contains_pid(const bp::group &group, DWORD pid) {
+      if (!group || pid == 0) {
+        return false;
+      }
+
+      auto pids = process_group_pids(group);
+      return std::find(pids.begin(), pids.end(), pid) != pids.end();
+    }
 
     struct lossless_process_candidate {
       DWORD pid = 0;
@@ -2181,6 +2239,89 @@ namespace proc {
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+#endif
+  }
+
+  bool proc_t::foreground_window_matches_running_app() {
+#ifdef _WIN32
+    if (!has_trackable_running_app()) {
+      return false;
+    }
+
+    const auto foreground_pid = foreground_window_process_id();
+    if (!foreground_pid) {
+      return false;
+    }
+
+    try {
+      if (_process && static_cast<DWORD>(_process.id()) == *foreground_pid) {
+        return true;
+      }
+    } catch (...) {
+    }
+
+    try {
+      return process_group_contains_pid(_process_group, *foreground_pid);
+    } catch (...) {
+      return false;
+    }
+#else
+    return false;
+#endif
+  }
+
+#ifdef _WIN32
+  bool proc_t::running_app_contains_pid(uint32_t pid) {
+    if (!has_trackable_running_app() || pid == 0) {
+      return false;
+    }
+
+    const auto win_pid = static_cast<DWORD>(pid);
+    try {
+      if (_process && static_cast<DWORD>(_process.id()) == win_pid) {
+        return true;
+      }
+    } catch (...) {
+    }
+
+    try {
+      return process_group_contains_pid(_process_group, win_pid);
+    } catch (...) {
+      return false;
+    }
+  }
+
+  running_app_state_t proc_t::running_app_state() const {
+    running_app_state_t state;
+    state.has_active_app = _app_id > 0;
+    if (!state.has_active_app) {
+      return state;
+    }
+
+    state.trackable = !placebo && (_process || _process_group);
+    state.uses_playnite = !_app.playnite_id.empty();
+    state.playnite_id = _app.playnite_id;
+    state.name = _app.name;
+    state.command = _app.cmd;
+    state.working_dir = _app.working_dir;
+
+    try {
+      if (_process) {
+        state.root_pid = static_cast<uint32_t>(_process.id());
+      }
+    } catch (...) {
+      state.root_pid = 0;
+    }
+
+    return state;
+  }
+#endif
+
+  bool proc_t::has_trackable_running_app() const {
+#ifdef _WIN32
+    return _app_id > 0 && !placebo && (_process || _process_group);
+#else
+    return _app_id > 0 && !placebo && static_cast<bool>(_process);
 #endif
   }
 

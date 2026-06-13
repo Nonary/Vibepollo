@@ -61,6 +61,8 @@ namespace platf::playnite {
     // a high-resolution icon for games that lack a usable path in the library snapshot.
     std::mutex g_install_dir_mutex;
     std::unordered_map<std::string, std::string> g_install_dirs;  // lower(playnite id) -> install dir
+    std::mutex g_active_game_mutex;
+    active_game_status_t g_active_game;
 
     std::string lower_copy(std::string s) {
       std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -76,6 +78,25 @@ namespace platf::playnite {
       std::scoped_lock lk(g_install_dir_mutex);
       g_install_dirs[lower_copy(id)] = dir;
     }
+
+    void remember_active_game_started(const std::string &id, const std::string &exe, const std::string &install_dir) {
+      if (id.empty()) {
+        return;
+      }
+      std::scoped_lock lk(g_active_game_mutex);
+      g_active_game.active = true;
+      g_active_game.id = id;
+      g_active_game.exe = exe;
+      g_active_game.install_dir = install_dir;
+    }
+
+    void remember_active_game_stopped(const std::string &id) {
+      std::scoped_lock lk(g_active_game_mutex);
+      if (!id.empty() && !g_active_game.id.empty() && id != g_active_game.id) {
+        return;
+      }
+      g_active_game = {};
+    }
   }  // namespace
 
   bool get_cached_install_dir(const std::string &playnite_id, std::string &out) {
@@ -89,6 +110,11 @@ namespace platf::playnite {
     }
     out = it->second;
     return true;
+  }
+
+  active_game_status_t get_active_game_status() {
+    std::scoped_lock lk(g_active_game_mutex);
+    return g_active_game;
   }
 
   struct playnite_session_tracker_t {
@@ -699,9 +725,11 @@ namespace platf::playnite {
           remember_install_dir(msg.status_game_id, msg.status_install_dir);
         }
         if (msg.status_name == "gameStarted") {
+          remember_active_game_started(msg.status_game_id, msg.status_exe, msg.status_install_dir);
           playnite_session_tracker().on_started(msg.status_game_id);
           platf::frame_limiter_streaming_refresh();
         } else if (msg.status_name == "gameStopped") {
+          remember_active_game_stopped(msg.status_game_id);
           auto guard = proc::proc.active_session_guard();
           if (!guard.has_active_app || !guard.uses_playnite) {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped because no active Playnite-backed app";

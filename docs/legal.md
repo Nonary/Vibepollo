@@ -16,6 +16,10 @@ contained within Sunshine. If you plan to sell access to Sunshine as part of the
 for obtaining the necessary licenses to do so. This may include obtaining a license from the
 Motion Picture Experts Group (MPEG-LA) and/or any other necessary licensing requirements.
 
+Windows builds that include RTX HDR support may also bundle NVIDIA RTX Video SDK components, including
+the TrueHDR feature runtime (`nvngx_truehdr.dll`). Those files are governed by NVIDIA's SDK license terms,
+not the GPL-3.0 license. Vibeshine does not bundle the RTX Video Super Resolution (`nvngx_vsr.dll`) runtime.
+
 In summary, while Sunshine is free to use, it is the user's responsibility to ensure compliance with all applicable
 licensing requirements when redistributing the software as part of a commercial offering. If you have any questions or
 concerns about using Sunshine in a commercial setting, we recommend consulting with a lawyer.

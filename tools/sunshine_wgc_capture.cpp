@@ -2116,6 +2116,7 @@ void handle_ipc_message(std::span<const uint8_t> message) {
                     << ", min_update_interval_100ns: " << g_config.min_update_interval_100ns
                     << ", initial_buffers: " << g_config.initial_frame_buffer_size
                     << ", max_buffers: " << g_config.max_frame_buffer_size
+                    << ", force_sdr_capture: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT) ? "yes" : "no")
                     << ", drain_to_latest: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) ? "yes" : "no")
                     << ", allow_buffer_decrease: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) ? "yes" : "no");
     g_config_cv.notify_all();
@@ -2329,11 +2330,13 @@ int main(int argc, char *argv[]) {
   });
 
   // Use FP16 whenever the stream is HDR or the target output is already in
-  // Advanced Color. WGC can otherwise hand us an SDR UNORM frame pool for an
-  // HDR desktop during encoder probing, and that stale format can carry into
-  // the real HDR stream until a later capture reinit.
+  // Advanced Color, except when the main process asks for SDR-compatible
+  // capture so RTX HDR/TrueHDR can synthesize the HDR frame itself.
   DXGI_FORMAT capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  if (g_config_received && (g_config.dynamic_range || g_config.advanced_color_capture)) {
+  const bool force_sdr_capture =
+    g_config_received &&
+    ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT) != 0);
+  if (g_config_received && !force_sdr_capture && (g_config.dynamic_range || g_config.advanced_color_capture)) {
     capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
   }
 

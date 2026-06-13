@@ -42,9 +42,11 @@ const outputNameDefaultLabel = computed(() =>
     'Primary display (default)',
   ),
 );
-const outputNameDesc = computed(() =>
-  $tp('config.output_name_desc', $tp('offline.output_name_desc', '')),
-);
+const outputNameDesc = computed(() => {
+  const description = $tp('config.output_name_desc', '');
+  if (description) return description;
+  return $tp('offline.output_name_desc', '');
+});
 
 async function loadDisplayDevices() {
   loading.value = true;
