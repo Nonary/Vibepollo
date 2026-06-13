@@ -470,7 +470,7 @@
     "minimum_fps_target": "Minimum FPS Target",
     "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. A value of 0 is treated as roughly half of the stream's FPS. A setting of 20 is recommended if you stream 24 or 30fps content.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
-    "rtx_hdr_intro": "Use NVIDIA's TrueHDR AI model to synthesize HDR when the client supports HDR. Requires an NVIDIA RTX GPU, the Vibeshine TrueHDR shim, and the NVIDIA TrueHDR runtime. Dials match the NVIDIA App RTX HDR overlay.",
+    "rtx_hdr_intro": "Use NVIDIA's TrueHDR AI model to synthesize HDR when the client supports HDR. Requires an NVIDIA RTX GPU, the Vibepollo TrueHDR shim, and the NVIDIA TrueHDR runtime. Dials match the NVIDIA App RTX HDR overlay.",
     "rtx_hdr": "Enable RTX HDR",
     "rtx_hdr_desc": "When enabled and the client requests HDR, supported SDR-compatible captured frames are converted to HDR with NVIDIA TrueHDR before encoding.",
     "rtx_hdr_force_sdr": "Force SDR source for RTX HDR",
