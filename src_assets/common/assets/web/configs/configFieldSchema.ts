@@ -4,7 +4,14 @@ import {
   type ConfigSelectOptionsContext,
 } from './configSelectOptions';
 
-export type ConfigFieldKind = 'checkbox' | 'switch' | 'select' | 'number' | 'input' | 'textarea';
+export type ConfigFieldKind =
+  | 'checkbox'
+  | 'switch'
+  | 'select'
+  | 'number'
+  | 'slider'
+  | 'input'
+  | 'textarea';
 
 export type ConfigFieldDefinition = {
   kind: ConfigFieldKind;
@@ -72,6 +79,13 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 1, precision: 0, placeholder: '0' },
 };
 
+const SLIDER_KEYS = new Set<string>([
+  'rtx_hdr_contrast',
+  'rtx_hdr_saturation',
+  'rtx_hdr_middle_gray',
+  'rtx_hdr_peak_brightness',
+]);
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -80,6 +94,11 @@ function inferDurationUnit(key: string): ConfigFieldDefinition['durationUnit'] {
   if (key === 'update_check_interval') return 'seconds';
   if (key.endsWith('_seconds') || key.endsWith('_secs')) return 'seconds';
   return undefined;
+}
+
+function getDurationUnitDefinition(key: string): Pick<ConfigFieldDefinition, 'durationUnit'> {
+  const durationUnit = inferDurationUnit(key);
+  return durationUnit ? { durationUnit } : {};
 }
 
 function kindSampleValue(ctx: ConfigFieldSchemaContext): unknown {
@@ -143,10 +162,10 @@ export function getConfigFieldDefinition(
         : ctx.kind === 'select'
           ? { filterable: true }
           : {}),
-      ...(ctx.kind === 'number'
+      ...(ctx.kind === 'number' || ctx.kind === 'slider'
         ? {
             ...(NUMBER_FIELD_OVERRIDES[key] ?? {}),
-            ...(inferDurationUnit(key) ? { durationUnit: inferDurationUnit(key) } : {}),
+            ...getDurationUnitDefinition(key),
           }
         : {}),
       localePrefix: 'config',
@@ -184,9 +203,9 @@ export function getConfigFieldDefinition(
     isFiniteNumber(sampleValue)
   ) {
     return {
-      kind: 'number',
+      kind: SLIDER_KEYS.has(key) ? 'slider' : 'number',
       ...(NUMBER_FIELD_OVERRIDES[key] ?? {}),
-      ...(inferDurationUnit(key) ? { durationUnit: inferDurationUnit(key) } : {}),
+      ...getDurationUnitDefinition(key),
     };
   }
 

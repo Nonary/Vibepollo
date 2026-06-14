@@ -8,6 +8,7 @@ import ConfigDurationField from '@/ConfigDurationField.vue';
 import ConfigInputField from '@/ConfigInputField.vue';
 import ConfigNumberField from '@/ConfigNumberField.vue';
 import ConfigSelectField from '@/ConfigSelectField.vue';
+import ConfigSliderField from '@/ConfigSliderField.vue';
 import ConfigSwitchField from '@/ConfigSwitchField.vue';
 import { useConfigStore } from '@/stores/config';
 import {
@@ -123,6 +124,11 @@ const mergedNumberAttrs = computed(() => ({
   ...resolvedNumberProps.value,
   ...attrs,
 }));
+const mergedDurationAttrs = computed(() => ({
+  ...(resolvedMin.value !== undefined ? { min: resolvedMin.value } : {}),
+  ...(resolvedMax.value !== undefined ? { max: resolvedMax.value } : {}),
+  ...attrs,
+}));
 
 const stringModel = computed<string>({
   get() {
@@ -230,9 +236,7 @@ const switchModel = computed<boolean>({
     :label="resolvedLabel"
     :desc="resolvedDesc"
     :size="resolvedSize"
-    :min="resolvedMin"
-    :max="resolvedMax"
-    v-bind="attrs"
+    v-bind="mergedDurationAttrs"
   >
     <template #actions><slot name="actions" /></template>
     <template #meta><slot name="meta" /></template>
@@ -253,6 +257,22 @@ const switchModel = computed<boolean>({
     <template #meta><slot name="meta" /></template>
     <slot />
   </ConfigNumberField>
+
+  <ConfigSliderField
+    v-else-if="field.kind === 'slider'"
+    :id="props.settingKey"
+    v-model="numberModel"
+    :label="resolvedLabel"
+    :desc="resolvedDesc"
+    :size="resolvedSize"
+    :placeholder="resolvedPlaceholder"
+    :default-value="resolvedDefaultValue"
+    v-bind="mergedNumberAttrs"
+  >
+    <template #actions><slot name="actions" /></template>
+    <template #meta><slot name="meta" /></template>
+    <slot />
+  </ConfigSliderField>
 
   <ConfigInputField
     v-else
