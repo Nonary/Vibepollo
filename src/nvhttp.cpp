@@ -3419,6 +3419,85 @@ namespace nvhttp {
     return;
   }
 
+  void setBitrate(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    pt::ptree tree;
+    auto g = util::fail_guard([&]() {
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      response->write(data.str());
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
+      log_permission_denied("SetBitrate"sv, "View stream"sv, named_cert_p);
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", permission_denied_status_message(named_cert_p, "View stream"sv));
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    const int requested = (int) util::from_view(get_arg(args, "bitrate", "0"));
+    if (requested <= 0) {
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Missing or invalid bitrate parameter");
+      return;
+    }
+
+    // Clamp to the host bitrate ceiling. max_bitrate == 0 means "unlimited" in config, so also
+    // enforce an absolute ceiling to keep the value sane and avoid overflow downstream
+    // (bitrate_kbps * 1000 must fit the encoder's 32-bit rate-control fields).
+    constexpr int absolute_max_bitrate_kbps = 500000;  // 500 Mbps
+    int applied = requested;
+    if (config::video.max_bitrate > 0 && applied > config::video.max_bitrate) {
+      applied = config::video.max_bitrate;
+    }
+    if (applied > absolute_max_bitrate_kbps) {
+      applied = absolute_max_bitrate_kbps;
+    }
+    if (applied != requested) {
+      BOOST_LOG(info) << "Clamped requested bitrate "sv << requested << " kbps to "sv << applied << " kbps"sv;
+    }
+
+    const int updated = stream::set_bitrate_for_sessions(named_cert_p->uuid, applied);
+    if (updated <= 0) {
+      BOOST_LOG(warning) << "Bitrate change requested by ["sv << named_cert_p->name << "] but no matching active session was found"sv;
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 404);
+      tree.put("root.<xmlattr>.status_message", "No active session for this client");
+      return;
+    }
+
+    BOOST_LOG(info) << "Client ["sv << named_cert_p->name << "] set runtime bitrate to "sv << applied << " kbps ("sv << updated << " session(s))"sv;
+    tree.put("root.bitrate", applied);
+    tree.put("root.<xmlattr>.status_code", 200);
+  }
+
+  void getAbrCapabilities(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
+      log_permission_denied("AbrCapabilities"sv, "View stream"sv, named_cert_p, true);
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    // Server-side adaptive bitrate decisioning is not implemented. Reporting it unsupported makes
+    // Foundation-compatible clients (e.g. Moonlight V+) drive their own local ABR controller, which
+    // applies decisions through the runtime /bitrate endpoint above.
+    const std::string body = R"({"supported":false,"version":1,"features":["runtime_bitrate"]})";
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json");
+    response->write(SimpleWeb::StatusCode::success_ok, body, headers);
+    response->close_connection_after_response = true;
+  }
+
   void setup(const std::string &pkey, const std::string &cert) {
     conf_intern.pkey = pkey;
     conf_intern.servercert = cert;
@@ -3558,6 +3637,8 @@ namespace nvhttp {
     https_server.resource["^/cancel$"]["GET"] = cancel;
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
+    https_server.resource["^/bitrate$"]["GET"] = setBitrate;
+    https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);

@@ -765,6 +765,13 @@ namespace video {
       }
     }
 
+    bool set_bitrate(int bitrate_kbps) override {
+      if (!device || !device->nvenc) {
+        return false;
+      }
+      return device->nvenc->set_bitrate(bitrate_kbps);
+    }
+
     nvenc::nvenc_encoded_frame encode_frame(uint64_t frame_index) {
       if (!device || !device->nvenc) {
         return {};
@@ -787,6 +794,7 @@ namespace video {
     safe::mail_raw_t::event_t<bool> idr_events;
     safe::mail_raw_t::event_t<hdr_info_t> hdr_events;
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events;
+    safe::mail_raw_t::event_t<int> bitrate_events;
 
     config_t config;
     int frame_nr;
@@ -2661,7 +2669,7 @@ namespace video {
     int &frame_nr,  // Store progress of the frame number
     safe::mail_t mail,
     img_event_t images,
-    config_t config,
+    config_t &config,
     std::shared_ptr<platf::display_t> disp,
     std::unique_ptr<platf::encode_device_t> encode_device,
     safe::signal_t &reinit_event,
@@ -2758,6 +2766,7 @@ namespace video {
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+    auto bitrate_events = mail->event<int>(mail::dynamic_bitrate);
 
     {
       // Load a dummy image into the AVFrame to ensure we have something to encode
@@ -2828,6 +2837,27 @@ namespace video {
       if (shutdown_event->peek() || !images->running() || reinit_pending) {
         force_sync_teardown = reinit_pending;
         break;
+      }
+
+      // Apply any runtime bitrate change, coalescing rapid ABR updates to the latest value so a
+      // burst of requests causes at most one reconfigure/rebuild. NVENC reconfigures the live
+      // encoder seamlessly; encoders that cannot (avcodec-based) report failure and we rebuild this
+      // session by breaking out, so capture_async re-enters with config (held by reference) anew.
+      std::optional<int> latest_bitrate;
+      while (bitrate_events->peek()) {
+        if (auto new_bitrate = bitrate_events->pop(0ms)) {
+          latest_bitrate = *new_bitrate;
+        }
+      }
+      if (latest_bitrate) {
+        config.bitrate = *latest_bitrate;
+        config.client_requested_bitrate = *latest_bitrate;
+        if (session->set_bitrate(*latest_bitrate)) {
+          BOOST_LOG(info) << "Applied runtime bitrate "sv << *latest_bitrate << " kbps (live)"sv;
+        } else if (frame_nr > 1) {
+          BOOST_LOG(info) << "Rebuilding encoder to apply runtime bitrate "sv << *latest_bitrate << " kbps"sv;
+          break;
+        }
       }
 
       bool requested_idr_frame = false;
@@ -3227,6 +3257,27 @@ namespace video {
             pos->session->request_idr_frame();
             ctx->idr_events->pop();
           }
+          if (ctx->bitrate_events->peek()) {
+            // Coalesce rapid ABR updates to the latest requested value.
+            std::optional<int> latest_bitrate;
+            while (ctx->bitrate_events->peek()) {
+              if (auto new_bitrate = ctx->bitrate_events->pop(0ms)) {
+                latest_bitrate = *new_bitrate;
+              }
+            }
+            if (latest_bitrate) {
+              ctx->config.bitrate = *latest_bitrate;
+              ctx->config.client_requested_bitrate = *latest_bitrate;
+              if (pos->session->set_bitrate(*latest_bitrate)) {
+                BOOST_LOG(info) << "Applied runtime bitrate "sv << *latest_bitrate << " kbps (live, sync)"sv;
+              } else {
+                // avcodec encoder: rebuild synced sessions from their (now-updated) ctx config.
+                BOOST_LOG(info) << "Rebuilding encoder to apply runtime bitrate "sv << *latest_bitrate << " kbps (sync)"sv;
+                ec = platf::capture_e::reinit;
+                return false;
+              }
+            }
+          }
 
           std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
           std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
@@ -3455,6 +3506,7 @@ namespace video {
         std::move(idr_events),
         mail->event<hdr_info_t>(mail::hdr),
         mail->event<input::touch_port_t>(mail::touch_port),
+        mail->event<int>(mail::dynamic_bitrate),
         config,
         1,
         channel_data,

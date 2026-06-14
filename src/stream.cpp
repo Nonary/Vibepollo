@@ -500,6 +500,7 @@ namespace stream {
 
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
+      safe::mail_raw_t::event_t<int> bitrate_events;
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -680,6 +681,33 @@ namespace stream {
       }
       session->video.idr_events->raise(true);
     }
+  }
+
+  int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
+    if (bitrate_kbps <= 0) {
+      return 0;
+    }
+    auto ref = broadcast.ref();
+    if (!ref) {
+      return 0;
+    }
+    int updated = 0;
+    auto lg = ref->control_server._sessions.lock();
+    for (auto *session : *ref->control_server._sessions) {
+      if (!session || !session->video.bitrate_events) {
+        continue;
+      }
+      if (!client_uuid.empty() && session->device_uuid != client_uuid) {
+        continue;
+      }
+      // Keep the session metadata (runtime sessions API, history, stats) in sync with the
+      // value the encoder thread will adopt from the event below.
+      session->config.monitor.bitrate = bitrate_kbps;
+      session->config.monitor.client_requested_bitrate = bitrate_kbps;
+      session->video.bitrate_events->raise(bitrate_kbps);
+      ++updated;
+    }
+    return updated;
   }
 
   static const char *state_name(session::state_e st) {
@@ -2957,6 +2985,7 @@ namespace stream {
 
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+      session->video.bitrate_events = mail->event<int>(mail::dynamic_bitrate);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
