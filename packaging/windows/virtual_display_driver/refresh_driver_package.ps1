@@ -318,7 +318,7 @@ if ($Build -and -not $prebuiltPackageRoot) {
     $vsDevCmd = Resolve-VsDevCmd
     $cmake = Resolve-Tool -Name 'cmake.exe'
     $ninja = Resolve-Tool -Name 'ninja.exe'
-    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DCMAKE_BUILD_TYPE=Release && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe -j 10"
+    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=ON -DCMAKE_BUILD_TYPE=Release && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe vk_layer_sunshine_hdr -j 10"
     Invoke-Cmd -Command $buildCommand
 }
 
@@ -326,6 +326,8 @@ $driverBuildDir = Join-Path $BuildDir 'src\driver\windows_driver'
 $driverBuildDll = Join-Path $driverBuildDir 'SunshineVirtualDisplayDriver.dll'
 $driverBuildInf = Join-Path $driverBuildDir 'SunshineVirtualDisplayDriver.inf'
 $probeBuildExe = Join-Path $BuildDir 'src\driver\virtualdisplay_probe.exe'
+$vulkanLayerBuildDll = Join-Path $BuildDir 'src\driver\VkLayer_sunshine_hdr.dll'
+$vulkanLayerBuildJson = Join-Path $BuildDir 'src\driver\VkLayer_sunshine_hdr.json'
 
 $driverPackageDir = @(Get-ChildItem -LiteralPath $driverBuildDir -Recurse -Directory -Filter 'driver-package' -ErrorAction SilentlyContinue |
     Sort-Object -Property FullName |
@@ -346,11 +348,16 @@ $packageCat = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.cat'
 $packageCer = Join-Path $packageRoot 'SunshineVirtualDisplayDriver.cer'
 $packageProbe = Join-Path $packageRoot 'virtualdisplay_probe.exe'
 $packageInstaller = Join-Path $packageRoot 'install.ps1'
+$packageVulkanLayerDir = Join-Path $packageRoot 'vulkan-layer'
+$packageVulkanLayerDll = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr.dll'
+$packageVulkanLayerJson = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $expectedPackageDll = ''
 $expectedPackageInf = ''
 $expectedPackageCat = ''
 $expectedPackageCer = ''
 $expectedPackageProbe = ''
+$expectedPackageVulkanLayerDll = ''
+$expectedPackageVulkanLayerJson = ''
 
 if ($prebuiltPackageRoot) {
     $expectedPackageDll = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.dll'
@@ -358,15 +365,20 @@ if ($prebuiltPackageRoot) {
     $expectedPackageCat = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.cat'
     $expectedPackageCer = Join-Path $prebuiltPackageRoot 'driver\SunshineVirtualDisplayDriver.cer'
     $expectedPackageProbe = Join-Path $prebuiltPackageRoot 'tools\virtualdisplay_probe.exe'
+    $expectedPackageVulkanLayerDll = Join-Path $prebuiltPackageRoot 'vulkan-layer\VkLayer_sunshine_hdr.dll'
+    $expectedPackageVulkanLayerJson = Join-Path $prebuiltPackageRoot 'vulkan-layer\VkLayer_sunshine_hdr.json'
 }
 
 if ($Build) {
+    New-Item -ItemType Directory -Path $packageVulkanLayerDir -Force | Out-Null
     if ($prebuiltPackageRoot) {
         Write-Host "[SunshineVirtualDisplay] Refreshing staged driver assets from prebuilt package: $prebuiltPackageRoot"
         Assert-File -Path $expectedPackageDll
         Assert-File -Path $expectedPackageInf
         Assert-File -Path $expectedPackageCat
         Assert-File -Path $expectedPackageProbe
+        Assert-File -Path $expectedPackageVulkanLayerDll
+        Assert-File -Path $expectedPackageVulkanLayerJson
         Copy-Item -Force -LiteralPath $expectedPackageDll -Destination $packageDll
         Copy-Item -Force -LiteralPath $expectedPackageInf -Destination $packageInf
         Copy-Item -Force -LiteralPath $expectedPackageCat -Destination $packageCat
@@ -377,16 +389,24 @@ if ($Build) {
             $expectedPackageCer = ''
         }
         Copy-Item -Force -LiteralPath $expectedPackageProbe -Destination $packageProbe
+        Copy-Item -Force -LiteralPath $expectedPackageVulkanLayerDll -Destination $packageVulkanLayerDll
+        Copy-Item -Force -LiteralPath $expectedPackageVulkanLayerJson -Destination $packageVulkanLayerJson
     } else {
         Assert-File -Path $driverBuildDll
         Assert-File -Path $driverBuildInf
         Assert-File -Path $probeBuildExe
+        Assert-File -Path $vulkanLayerBuildDll
+        Assert-File -Path $vulkanLayerBuildJson
         Copy-Item -Force -LiteralPath $driverBuildDll -Destination $packageDll
         Copy-Item -Force -LiteralPath $driverBuildInf -Destination $packageInf
         Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe
+        Copy-Item -Force -LiteralPath $vulkanLayerBuildDll -Destination $packageVulkanLayerDll
+        Copy-Item -Force -LiteralPath $vulkanLayerBuildJson -Destination $packageVulkanLayerJson
         $expectedPackageDll = $driverBuildDll
         $expectedPackageInf = $driverBuildInf
         $expectedPackageProbe = $probeBuildExe
+        $expectedPackageVulkanLayerDll = $vulkanLayerBuildDll
+        $expectedPackageVulkanLayerJson = $vulkanLayerBuildJson
 
         $inf2Cat = Resolve-Tool -Name 'Inf2Cat.exe'
         & $inf2Cat /driver:$packageRoot /os:10_X64,10_RS5_X64,10_GE_X64,Server10_X64
@@ -427,7 +447,9 @@ foreach ($artifact in @(
     $packageDll,
     $packageInf,
     $packageCat,
-    $packageProbe
+    $packageProbe,
+    $packageVulkanLayerDll,
+    $packageVulkanLayerJson
 )) {
     Assert-File -Path $artifact
 }
@@ -466,6 +488,12 @@ if ($expectedPackageCer) {
 }
 if ($expectedPackageProbe) {
     Assert-SameFile -Expected $expectedPackageProbe -Actual $packageProbe
+}
+if ($expectedPackageVulkanLayerDll) {
+    Assert-SameFile -Expected $expectedPackageVulkanLayerDll -Actual $packageVulkanLayerDll
+}
+if ($expectedPackageVulkanLayerJson) {
+    Assert-SameFile -Expected $expectedPackageVulkanLayerJson -Actual $packageVulkanLayerJson
 }
 
 & powershell.exe -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File $packageInstaller -ValidateOnly

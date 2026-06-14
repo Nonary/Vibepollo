@@ -102,6 +102,10 @@ set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/nefconc.exe"
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/virtualdisplay_probe.exe"
 )
+set(SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.dll"
+    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.json"
+)
 foreach(_sunshine_driver_optional_file IN ITEMS
         "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cer")
     if(EXISTS "${_sunshine_driver_optional_file}")
@@ -154,6 +158,9 @@ endif()
 
 install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
         DESTINATION "drivers/sunshine"
+        COMPONENT virtual_display_driver)
+install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}
+        DESTINATION "drivers/sunshine/vulkan-layer"
         COMPONENT virtual_display_driver)
 
 # Mandatory scripts

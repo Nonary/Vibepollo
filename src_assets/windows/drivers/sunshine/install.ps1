@@ -14,6 +14,10 @@ $dllPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.dll'
 $catPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cat'
 $certPath = Join-Path $scriptDir 'SunshineVirtualDisplayDriver.cer'
 $probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'
+$vulkanLayerDir = Join-Path $scriptDir 'vulkan-layer'
+$vulkanLayerDllPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.dll'
+$vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
+$vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 
 function Assert-Administrator {
@@ -110,7 +114,7 @@ function Assert-InfContent {
 }
 
 function Assert-Package {
-    foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath)) {
+    foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath, $vulkanLayerDllPath, $vulkanLayerJsonPath)) {
         Assert-Artifact -Path $artifact
     }
     if (Test-Path -LiteralPath $certPath -PathType Leaf) {
@@ -118,6 +122,48 @@ function Assert-Package {
     }
 
     Assert-InfContent
+}
+
+function Get-VulkanLayerJsonFullPath {
+    return (Resolve-Path -LiteralPath $vulkanLayerJsonPath).Path
+}
+
+function Register-VulkanLayer {
+    $jsonFullPath = Get-VulkanLayerJsonFullPath
+    $key = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($vulkanImplicitLayersSubKey, $true)
+    if (-not $key) {
+        throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey."
+    }
+
+    try {
+        $key.SetValue($jsonFullPath, 0, [Microsoft.Win32.RegistryValueKind]::DWord)
+        Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registered: $jsonFullPath"
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Unregister-VulkanLayer {
+    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($vulkanImplicitLayersSubKey, $true)
+    if (-not $key) {
+        return
+    }
+
+    try {
+        $removed = 0
+        foreach ($valueName in @($key.GetValueNames())) {
+            if ([System.IO.Path]::GetFileName($valueName) -eq 'VkLayer_sunshine_hdr.json') {
+                $key.DeleteValue($valueName, $false)
+                $removed++
+            }
+        }
+
+        if ($removed -gt 0) {
+            Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registrations removed: $removed"
+        }
+    } finally {
+        $key.Dispose()
+    }
 }
 
 function Install-CertificateIfPresent {
@@ -403,6 +449,7 @@ if ($Uninstall) {
     Write-Host '[SunshineVirtualDisplay] Removing device node.'
     # Let PnP removal unload the UMDF host. Forcing WUDFHost.exe closed records
     # a critical user-mode driver crash event even when the install succeeds.
+    Unregister-VulkanLayer
     Remove-DeviceNode
     Remove-DriverPackage
     Remove-CertificateIfPresent -StoreName 'TrustedPublisher'
@@ -413,6 +460,7 @@ if ($Uninstall) {
 
 Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
+Register-VulkanLayer
 
 if (-not (Test-DriverPackageRefreshNeeded)) {
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
