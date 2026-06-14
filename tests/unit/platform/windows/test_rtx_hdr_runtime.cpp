@@ -151,7 +151,7 @@ TEST(RtxHdrProfileResolution, ApplicationProfileSettingsActivateConversion) {
   EXPECT_EQ(values.source, profile_source_e::application);
 }
 
-TEST(RtxHdrProfileResolution, EmptyApplicationProfileFallsBackToConfig) {
+TEST(RtxHdrProfileResolution, EmptyApplicationProfileDoesNotActivateConversion) {
   rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
@@ -166,15 +166,11 @@ TEST(RtxHdrProfileResolution, EmptyApplicationProfileFallsBackToConfig) {
 
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
-  EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.contrast, 130);
-  EXPECT_EQ(values.saturation, 130);
-  EXPECT_EQ(values.middle_gray, 60);
-  EXPECT_EQ(values.peak_brightness, 1500);
-  EXPECT_EQ(values.source, profile_source_e::config);
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::none);
 }
 
-TEST(RtxHdrProfileResolution, GlobalProfileSettingsActivateAndFillMissingApplicationValues) {
+TEST(RtxHdrProfileResolution, GlobalProfileEnabledActivatesAndApplicationProfileRefines) {
   rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
@@ -192,8 +188,9 @@ TEST(RtxHdrProfileResolution, GlobalProfileSettingsActivateAndFillMissingApplica
   config.peak_brightness = 1500;
   config.source = profile_source_e::config;
 
+  // Driver global RTX HDR on => auto-apply even to a game with no profile of its own,
+  // using the global profile's dial values.
   const auto values = materialize_runtime_values_for_tests(resolved, config);
-
   EXPECT_TRUE(values.enabled);
   EXPECT_EQ(values.contrast, 95);
   EXPECT_EQ(values.saturation, 105);
@@ -201,6 +198,7 @@ TEST(RtxHdrProfileResolution, GlobalProfileSettingsActivateAndFillMissingApplica
   EXPECT_EQ(values.peak_brightness, 900);
   EXPECT_EQ(values.source, profile_source_e::global);
 
+  // A per-game application profile wins for the values it sets, falling back to global.
   resolved.application.enabled = true;
   resolved.application.contrast = 140;
   const auto app_values = materialize_runtime_values_for_tests(resolved, config);
@@ -210,6 +208,46 @@ TEST(RtxHdrProfileResolution, GlobalProfileSettingsActivateAndFillMissingApplica
   EXPECT_EQ(app_values.middle_gray, 55);
   EXPECT_EQ(app_values.peak_brightness, 900);
   EXPECT_EQ(app_values.source, profile_source_e::application);
+}
+
+TEST(RtxHdrProfileResolution, ApplicationProfileDisableWinsOverGlobalEnable) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.global.enabled = true;
+  resolved.global.contrast = 120;
+  resolved.application.enabled = false;
+  resolved.application.contrast = 175;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.source = profile_source_e::config;
+
+  // NVIDIA inheritance: a per-game profile that disables RTX HDR overrides the global "on".
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::application);
+}
+
+TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesEvenWhenApplicationProfileDisables) {
+  rtx_hdr_config_guard_t config_guard;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+  });
+
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.application.enabled = false;
+  resolved.application.contrast = 175;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.source = profile_source_e::config;
+
+  // An explicit Sunshine launch override forces RTX HDR on even past an app-profile disable.
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+  EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::config);
 }
 
 TEST(RtxHdrProfileResolution, RuntimeOverridesTakePriorityOverApplicationProfileSettings) {
@@ -320,6 +358,108 @@ TEST(RtxHdrProfileResolution, DisabledApplicationProfilePreventsConversion) {
 
   EXPECT_FALSE(values.enabled);
   EXPECT_EQ(values.source, profile_source_e::application);
+}
+
+TEST(RtxHdrProfileResolution, ApplicationProfileDialsWithoutEnableDoNotActivate) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.application.contrast = 160;  // dial present, but no explicit enable in any profile
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::none);
+}
+
+TEST(RtxHdrProfileResolution, NvidiaAppEnableBitActivatesWithApplicationDials) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.application.enabled = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, 1);
+  resolved.application.contrast = 150;
+  resolved.application.saturation = 151;
+  resolved.application.middle_gray = 64;
+  resolved.application.peak_brightness = 1499;
+  resolved.global.contrast = 112;
+  resolved.global.saturation = 200;
+  resolved.global.peak_brightness = 400;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.contrast = 180;
+  config.saturation = 150;
+  config.middle_gray = 82;
+  config.peak_brightness = 2000;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::application);
+  EXPECT_EQ(values.contrast, 150);
+  EXPECT_EQ(values.saturation, 151);
+  EXPECT_EQ(values.middle_gray, 64);
+  EXPECT_EQ(values.peak_brightness, 1499);
+}
+
+TEST(RtxHdrProfileResolution, NvidiaAppEnableBitOffDisablesApplicationProfile) {
+  rtx_hdr_config_guard_t config_guard;
+  resolved_profile_t resolved;
+  resolved.lookup_available = true;
+  resolved.global.enabled = true;
+  resolved.application.enabled = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, 0);
+  resolved.application.contrast = 150;
+
+  runtime_values_t config;
+  config.enabled = true;
+  config.source = profile_source_e::config;
+
+  const auto values = materialize_runtime_values_for_tests(resolved, config);
+
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::application);
+}
+
+TEST(RtxHdrProfileResolution, RtxHdrActivationDecodeUsesEitherNvidiaSignal) {
+  auto values = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(0x06, std::nullopt);
+  ASSERT_TRUE(values.has_value());
+  EXPECT_TRUE(*values);
+
+  values = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, 1);
+  ASSERT_TRUE(values.has_value());
+  EXPECT_TRUE(*values);
+
+  values = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(0, std::nullopt);
+  ASSERT_TRUE(values.has_value());
+  EXPECT_FALSE(*values);
+
+  values = platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, 0);
+  ASSERT_TRUE(values.has_value());
+  EXPECT_FALSE(*values);
+
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, std::nullopt).has_value());
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_activation_for_tests(std::nullopt, 2).has_value());
+}
+
+TEST(RtxHdrProfileResolution, ContrastDecodeIsRawSdkUnits) {
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_contrast_units_for_tests(100), 100);  // neutral
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_contrast_units_for_tests(0), 0);
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_contrast_units_for_tests(200), 200);
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_contrast_units_for_tests(201).has_value());
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_contrast_units_for_tests(0xFFFFFFE7u).has_value());
+}
+
+TEST(RtxHdrProfileResolution, SaturationDecodeIsRawSdkUnits) {
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(100), 100);  // neutral
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(0), 0);
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(151), 151);
+  EXPECT_EQ(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(200), 200);
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(201).has_value());
+  EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(0xFFFFFFE7u).has_value());
 }
 
 TEST(RtxHdrForegroundMatching, PlayniteExecutableAndInstallDirMatch) {
@@ -474,7 +614,7 @@ TEST(RtxHdrRuntimeScheduler, StaleProfileResultIgnoredAfterIdentityChange) {
   EXPECT_EQ(fake.resolve_calls, 2);
 }
 
-TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileFallsBackToConfigAfterLookup) {
+TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileBypassesAfterLookup) {
   rtx_hdr_config_guard_t config_guard;
   config::video.rtx_hdr.contrast = 23;
   config::video.rtx_hdr.saturation = 24;
@@ -490,12 +630,8 @@ TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileFallsBackToConfigAfterLook
   fake.runtime.poll_foreground_for_tests();
   ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
   auto frame = fake.runtime.update_for_frame(std::nullopt);
-  EXPECT_TRUE(frame.enabled);
-  EXPECT_EQ(frame.contrast, 123);
-  EXPECT_EQ(frame.saturation, 124);
-  EXPECT_EQ(frame.middle_gray, 52);
-  EXPECT_EQ(frame.peak_brightness, 1100);
-  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_EQ(frame.source, profile_source_e::none);
   EXPECT_FALSE(frame.lookup_available);
 
   fake.foreground = matching_foreground("C:/Games/Bar/bar.exe", "Bar");
@@ -506,8 +642,8 @@ TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileFallsBackToConfigAfterLook
   fake.runtime.poll_foreground_for_tests();
   ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
   frame = fake.runtime.update_for_frame(std::nullopt);
-  EXPECT_TRUE(frame.enabled);
-  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_EQ(frame.source, profile_source_e::none);
   EXPECT_TRUE(frame.lookup_available);
 }
 
@@ -531,6 +667,33 @@ TEST(RtxHdrRuntimeScheduler, SlowOrFailingLookupsBackOffAndIdentityChangeResetsI
   fake.profiles[second_exe] = enabled_profile(second_exe);
   fake.runtime.poll_foreground_for_tests();
   EXPECT_EQ(fake.runtime.profile_refresh_interval_for_tests(), std::chrono::seconds(5));
+}
+
+TEST(RtxHdrRuntimeScheduler, TransientLookupFailureKeepsLastKnownGood) {
+  rtx_hdr_config_guard_t config_guard;
+  fake_runtime_t fake;
+  const std::string exe = "C:/Games/Foo/foo.exe";
+  fake.foreground = matching_foreground(exe);
+  fake.profiles[exe] = enabled_profile(exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 150);
+
+  // A later refresh transiently fails (NvAPI unavailable). The active conversion should keep
+  // streaming the last-known-good profile instead of flickering off for one cycle.
+  resolved_profile_t unavailable;
+  unavailable.executable = exe;
+  fake.profiles[exe] = unavailable;
+  fake.now += std::chrono::seconds(60);  // advance past next_profile_refresh
+  fake.runtime.poll_foreground_for_tests();  // same identity -> schedules a refresh
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 150);
+  EXPECT_EQ(frame.source, profile_source_e::application);
 }
 
 #endif

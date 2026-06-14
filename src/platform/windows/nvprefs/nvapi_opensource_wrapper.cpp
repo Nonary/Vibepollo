@@ -19,6 +19,16 @@ namespace {
   HMODULE dll = nullptr;
 
   constexpr NvU32 NVAPI_DRS_SETSETTING_NEW_ID = 0x8A2CF5F5;
+  constexpr NvU32 NVAPI_DRS_GETSETTING_NEW_ID = 0xEA99498D;
+  constexpr NvU32 NVAPI_DRS_ENUMSETTINGS_NEW_ID = 0xCFD6983E;
+
+  using drs_set_setting_new_fn = NvAPI_Status(__cdecl *) (NvDRSSessionHandle, NvDRSProfileHandle, NVDRS_SETTING *, NvU32, NvU32);
+  using drs_get_setting_new_fn = NvAPI_Status(__cdecl *) (NvDRSSessionHandle, NvDRSProfileHandle, NvU32, NVDRS_SETTING *, NvU32 *);
+  using drs_enum_settings_fn = NvAPI_Status(__cdecl *) (NvDRSSessionHandle, NvDRSProfileHandle, NvU32, NvU32 *, NVDRS_SETTING *);
+
+  drs_set_setting_new_fn drs_set_setting_new = nullptr;
+  drs_get_setting_new_fn drs_get_setting_new = nullptr;
+  drs_enum_settings_fn drs_enum_settings_new = nullptr;
 
   template<typename Func, typename... Args>
   NvAPI_Status call_interface(const char *name, Args... args) {
@@ -60,10 +70,14 @@ NvAPI_Initialize() {
         void *resolved = nullptr;
 
         if (std::strcmp(item.func, "NvAPI_DRS_SetSetting") == 0) {
-          resolved = query_interface(NVAPI_DRS_SETSETTING_NEW_ID);
-          if (!resolved) {
-            resolved = query_interface(item.id);
-          }
+          drs_set_setting_new = reinterpret_cast<drs_set_setting_new_fn>(query_interface(NVAPI_DRS_SETSETTING_NEW_ID));
+          resolved = drs_set_setting_new ? reinterpret_cast<void *>(drs_set_setting_new) : query_interface(item.id);
+        } else if (std::strcmp(item.func, "NvAPI_DRS_GetSetting") == 0) {
+          drs_get_setting_new = reinterpret_cast<drs_get_setting_new_fn>(query_interface(NVAPI_DRS_GETSETTING_NEW_ID));
+          resolved = drs_get_setting_new ? reinterpret_cast<void *>(drs_get_setting_new) : query_interface(item.id);
+        } else if (std::strcmp(item.func, "NvAPI_DRS_EnumSettings") == 0) {
+          drs_enum_settings_new = reinterpret_cast<drs_enum_settings_fn>(query_interface(NVAPI_DRS_ENUMSETTINGS_NEW_ID));
+          resolved = drs_enum_settings_new ? reinterpret_cast<void *>(drs_enum_settings_new) : query_interface(item.id);
         } else {
           resolved = query_interface(item.id);
         }
@@ -81,6 +95,9 @@ NvAPI_Initialize() {
 NVAPI_INTERFACE NvAPI_Unload() {
   if (dll) {
     interfaces.clear();
+    drs_set_setting_new = nullptr;
+    drs_get_setting_new = nullptr;
+    drs_enum_settings_new = nullptr;
     FreeLibrary(dll);
     dll = nullptr;
   }
@@ -142,11 +159,25 @@ NVAPI_INTERFACE NvAPI_DRS_FindApplicationByName(NvDRSSessionHandle hSession, NvA
 }
 
 NVAPI_INTERFACE NvAPI_DRS_SetSetting(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NVDRS_SETTING *pSetting) {
+  if (drs_set_setting_new) {
+    return drs_set_setting_new(hSession, hProfile, pSetting, 0, 0);
+  }
   return call_interface<decltype(NvAPI_DRS_SetSetting)>("NvAPI_DRS_SetSetting", hSession, hProfile, pSetting);
 }
 
 NVAPI_INTERFACE NvAPI_DRS_GetSetting(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvU32 settingId, NVDRS_SETTING *pSetting) {
+  if (drs_get_setting_new) {
+    NvU32 flags = 0;
+    return drs_get_setting_new(hSession, hProfile, settingId, pSetting, &flags);
+  }
   return call_interface<decltype(NvAPI_DRS_GetSetting)>("NvAPI_DRS_GetSetting", hSession, hProfile, settingId, pSetting);
+}
+
+NVAPI_INTERFACE NvAPI_DRS_EnumSettings(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvU32 startIndex, NvU32 *settingsCount, NVDRS_SETTING *pSetting) {
+  if (drs_enum_settings_new) {
+    return drs_enum_settings_new(hSession, hProfile, startIndex, settingsCount, pSetting);
+  }
+  return call_interface<decltype(NvAPI_DRS_EnumSettings)>("NvAPI_DRS_EnumSettings", hSession, hProfile, startIndex, settingsCount, pSetting);
 }
 
 NVAPI_INTERFACE NvAPI_DRS_DeleteProfileSetting(NvDRSSessionHandle hSession, NvDRSProfileHandle hProfile, NvU32 settingId) {

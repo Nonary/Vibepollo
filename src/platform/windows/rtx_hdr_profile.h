@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -53,6 +54,13 @@ namespace platf::rtx_hdr {
     const resolved_profile_t &resolved,
     const runtime_values_t &config_fallback
   );
+
+  std::optional<bool> decode_rtx_hdr_activation_for_tests(
+    std::optional<std::uint32_t> driver_flags,
+    std::optional<std::uint32_t> profile_enable
+  );
+  std::optional<int> decode_rtx_hdr_contrast_units_for_tests(std::uint32_t raw);
+  std::optional<int> decode_rtx_hdr_saturation_units_for_tests(std::uint32_t raw);
 
   const char *source_name(profile_source_e source);
 

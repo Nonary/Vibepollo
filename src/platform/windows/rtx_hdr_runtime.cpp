@@ -168,6 +168,17 @@ namespace platf::rtx_hdr {
         return;
       }
 
+      if (foreground.source != state->cached_frame_state.foreground_source ||
+          foreground.matches_active_app != state->cached_frame_state.foreground_matches) {
+        BOOST_LOG(debug) << "RTX HDR: foreground '" << foreground.source << "'"
+                         << " matches=" << (foreground.matches_active_app ? "1" : "0")
+                         << " fg_exe='" << foreground.foreground_exe << "'"
+                         << " active='" << foreground.active_app_name << "'"
+                         << " active_exe='" << foreground.active_app_exe << "'"
+                         << " playnite=" << (foreground.uses_playnite ? "1" : "0")
+                         << " fullscreen=" << (foreground.fullscreen_on_capture_display ? "1" : "0");
+      }
+
       if (!foreground.matches_active_app) {
         if (!state->current_identity_key.empty()) {
           ++state->current_generation;
@@ -257,6 +268,15 @@ namespace platf::rtx_hdr {
       } else {
         state->consecutive_slow_or_failed_lookups = 0;
         state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
+      }
+
+      // A transient driver read failure (NvAPI unavailable for one refresh) should not flicker an
+      // already-active conversion off and back on; keep the last-known-good state until a lookup
+      // succeeds. This only applies to the lookup-unavailable path -- an empty profile on a
+      // successful lookup is a deliberate "no activating profile -> bypass" decision.
+      if (failed && state->cached_frame_state.enabled) {
+        state->next_profile_refresh = finish + state->profile_refresh_interval;
+        return true;
       }
 
       const auto values = materialize_runtime_values_for_tests(resolved, config_runtime_values());
