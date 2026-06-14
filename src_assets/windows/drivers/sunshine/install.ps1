@@ -1,6 +1,8 @@
 param(
     [switch]$Uninstall,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$RegisterVulkanLayerOnly,
+    [switch]$UnregisterVulkanLayerOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -114,25 +116,61 @@ function Assert-InfContent {
 }
 
 function Assert-Package {
-    foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath, $vulkanLayerDllPath, $vulkanLayerJsonPath)) {
+    foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath)) {
         Assert-Artifact -Path $artifact
     }
     if (Test-Path -LiteralPath $certPath -PathType Leaf) {
         Assert-Artifact -Path $certPath
     }
 
+    Assert-VulkanLayerPackage
     Assert-InfContent
+}
+
+function Assert-VulkanLayerPackage {
+    foreach ($artifact in @($vulkanLayerDllPath, $vulkanLayerJsonPath)) {
+        Assert-Artifact -Path $artifact
+    }
 }
 
 function Get-VulkanLayerJsonFullPath {
     return (Resolve-Path -LiteralPath $vulkanLayerJsonPath).Path
 }
 
+function Open-LocalMachineRegistryKey {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Microsoft.Win32.RegistryView]$View,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SubKey,
+
+        [bool]$Writable = $false,
+        [bool]$Create = $false
+    )
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $View)
+    try {
+        if ($Create) {
+            return $baseKey.CreateSubKey($SubKey, $Writable)
+        }
+
+        return $baseKey.OpenSubKey($SubKey, $Writable)
+    } finally {
+        $baseKey.Dispose()
+    }
+}
+
 function Register-VulkanLayer {
+    Unregister-VulkanLayer
     $jsonFullPath = Get-VulkanLayerJsonFullPath
-    $key = [Microsoft.Win32.Registry]::LocalMachine.CreateSubKey($vulkanImplicitLayersSubKey, $true)
+    $key = Open-LocalMachineRegistryKey `
+        -View ([Microsoft.Win32.RegistryView]::Registry64) `
+        -SubKey $vulkanImplicitLayersSubKey `
+        -Writable $true `
+        -Create $true
     if (-not $key) {
-        throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey."
+        throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey in the 64-bit registry view."
     }
 
     try {
@@ -144,25 +182,30 @@ function Register-VulkanLayer {
 }
 
 function Unregister-VulkanLayer {
-    $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($vulkanImplicitLayersSubKey, $true)
-    if (-not $key) {
-        return
-    }
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $key = Open-LocalMachineRegistryKey `
+            -View $view `
+            -SubKey $vulkanImplicitLayersSubKey `
+            -Writable $true
+        if (-not $key) {
+            continue
+        }
 
-    try {
-        $removed = 0
-        foreach ($valueName in @($key.GetValueNames())) {
-            if ([System.IO.Path]::GetFileName($valueName) -eq 'VkLayer_sunshine_hdr.json') {
-                $key.DeleteValue($valueName, $false)
-                $removed++
+        try {
+            $removed = 0
+            foreach ($valueName in @($key.GetValueNames())) {
+                if ([System.IO.Path]::GetFileName($valueName) -eq 'VkLayer_sunshine_hdr.json') {
+                    $key.DeleteValue($valueName, $false)
+                    $removed++
+                }
             }
-        }
 
-        if ($removed -gt 0) {
-            Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registrations removed: $removed"
+            if ($removed -gt 0) {
+                Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registrations removed from ${view}: $removed"
+            }
+        } finally {
+            $key.Dispose()
         }
-    } finally {
-        $key.Dispose()
     }
 }
 
@@ -434,9 +477,38 @@ function Remove-DeviceNode {
     Remove-DeviceNodeForHardwareId -HardwareId $hardwareId -Label 'Sunshine virtual display'
 }
 
-$pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
+if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
+    throw '[SunshineVirtualDisplay] RegisterVulkanLayerOnly and UnregisterVulkanLayerOnly cannot be used together.'
+}
+
+if ($RegisterVulkanLayerOnly) {
+    Assert-VulkanLayerPackage
+    if ($ValidateOnly) {
+        Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer package validated.'
+        exit 0
+    }
+
+    Assert-Administrator
+    Register-VulkanLayer
+    Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer registration complete.'
+    exit 0
+}
+
+if ($UnregisterVulkanLayerOnly) {
+    if ($ValidateOnly) {
+        Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer unregister action validated.'
+        exit 0
+    }
+
+    Assert-Administrator
+    Unregister-VulkanLayer
+    Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer unregister complete.'
+    exit 0
+}
 
 Assert-Package
+
+$pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
 
 if ($ValidateOnly) {
     Write-Host '[SunshineVirtualDisplay] Driver installer package validated.'

@@ -106,15 +106,20 @@ set(SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.dll"
     "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.json"
 )
+set(SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES
+    ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
+    ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}
+)
 foreach(_sunshine_driver_optional_file IN ITEMS
         "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cer")
     if(EXISTS "${_sunshine_driver_optional_file}")
         list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES "${_sunshine_driver_optional_file}")
+        list(APPEND SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES "${_sunshine_driver_optional_file}")
     endif()
 endforeach()
 unset(_sunshine_driver_optional_file)
 
-foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES)
+foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES)
     if (NOT EXISTS "${_sunshine_driver_file}")
         message(FATAL_ERROR "Required Vibepollo Display Driver artifact missing: ${_sunshine_driver_file}")
     endif()
@@ -135,7 +140,7 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
                 -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}"
                 -PackageDir "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}"
         DEPENDS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}"
-                ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
+                ${SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES}
         COMMENT "Validating Vibepollo Display Driver package assets"
         VERBATIM)
 

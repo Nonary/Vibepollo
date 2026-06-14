@@ -64,7 +64,9 @@
       <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
       <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
       <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
-      <Custom Action="SetMigrateConfig" After="InstallVirtualDisplayDriver">NOT REMOVE</Custom>
+      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallVirtualDisplayDriver">NOT REMOVE</Custom>
+      <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
+      <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
       <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT REMOVE</Custom>
       <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT REMOVE</Custom>
@@ -76,7 +78,9 @@
       <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
 
       <!-- Remove Virtual Display Driver only when explicitly requested by uninstall properties. -->
-      <Custom Action="SetUninstallSudovda" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
+      <Custom Action="SetUnregisterVulkanHdrLayer" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="UnregisterVulkanHdrLayer" After="SetUnregisterVulkanHdrLayer">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="SetUninstallSudovda" After="UnregisterVulkanHdrLayer">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallSudovda" After="SetUninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="SetUninstallVirtualDisplayDriver" After="UninstallSudovda">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>
       <Custom Action="UninstallVirtualDisplayDriver" After="SetUninstallVirtualDisplayDriver">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = "1"</Custom>

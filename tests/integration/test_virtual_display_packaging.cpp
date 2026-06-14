@@ -43,6 +43,24 @@ TEST(SunshineVirtualDisplayPackaging, PackageTargetRefreshesDriverAssetsFromSour
   );
 }
 
+TEST(SunshineVirtualDisplayPackaging, VulkanHdrLayerPayloadIsRequiredAndInstalled) {
+  const auto cmake = read_source_file("cmake/packaging/windows.cmake");
+  const auto layer_json = read_source_file("src_assets/windows/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.json");
+  const auto layer_dll_path = std::filesystem::path {SUNSHINE_SOURCE_DIR} /
+                              "src_assets/windows/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll";
+
+  expect_contains(cmake, "SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES");
+  expect_contains(cmake, "SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES");
+  expect_contains(cmake, "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.dll");
+  expect_contains(cmake, "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.json");
+  expect_contains(cmake, "foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES)");
+  expect_contains(cmake, "install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}");
+  expect_contains(layer_json, "\"name\": \"VK_LAYER_SUNSHINE_virtual_hdr\"");
+  expect_contains(layer_json, "\"library_path\": \".\\\\VkLayer_sunshine_hdr.dll\"");
+  ASSERT_TRUE(std::filesystem::exists(layer_dll_path)) << layer_dll_path.string();
+  EXPECT_GT(std::filesystem::file_size(layer_dll_path), 0u);
+}
+
 TEST(SunshineVirtualDisplayPackaging, RefreshScriptBuildsDriverProbeAndValidatesControlInterface) {
   const auto script = read_source_file("packaging/windows/virtual_display_driver/refresh_driver_package.ps1");
 
@@ -53,19 +71,35 @@ TEST(SunshineVirtualDisplayPackaging, RefreshScriptBuildsDriverProbeAndValidates
   expect_contains(script, "Export-PackageCertificate");
   expect_contains(script, "-DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON");
   expect_contains(script, "-DBUILD_VIRTUALDISPLAY_PROBE=ON");
-  expect_contains(script, "--target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe");
+  expect_contains(script, "-DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=ON");
+  expect_contains(script, "--target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe vk_layer_sunshine_hdr");
   expect_contains(script, "Get-ChildItem -LiteralPath $driverBuildDir -Recurse -Directory -Filter 'driver-package'");
   expect_contains(script, "$probeBuildExe = Join-Path $BuildDir 'src\\driver\\virtualdisplay_probe.exe'");
   expect_contains(script, "$packageProbe = Join-Path $packageRoot 'virtualdisplay_probe.exe'");
+  expect_contains(script, "$vulkanLayerBuildDll = Join-Path $BuildDir 'src\\driver\\VkLayer_sunshine_hdr.dll'");
+  expect_contains(script, "$vulkanLayerBuildJson = Join-Path $BuildDir 'src\\driver\\VkLayer_sunshine_hdr.json'");
+  expect_contains(script, "$packageVulkanLayerDir = Join-Path $packageRoot 'vulkan-layer'");
   expect_contains(script, "Copy-Item -Force -LiteralPath $probeBuildExe -Destination $packageProbe");
+  expect_contains(script, "Copy-Item -Force -LiteralPath $vulkanLayerBuildDll -Destination $packageVulkanLayerDll");
+  expect_contains(script, "Copy-Item -Force -LiteralPath $vulkanLayerBuildJson -Destination $packageVulkanLayerJson");
   expect_contains(script, "Assert-SameFile -Expected $expectedPackageProbe -Actual $packageProbe");
+  expect_contains(script, "Assert-SameFile -Expected $expectedPackageVulkanLayerDll -Actual $packageVulkanLayerDll");
+  expect_contains(script, "Assert-SameFile -Expected $expectedPackageVulkanLayerJson -Actual $packageVulkanLayerJson");
 }
 
 TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotRunRuntimeQa) {
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 
   expect_contains(installer, "$probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'");
+  expect_contains(installer, "$vulkanLayerDllPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.dll'");
+  expect_contains(installer, "$vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'");
   expect_contains(installer, "foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath))");
+  expect_contains(installer, "function Assert-VulkanLayerPackage");
+  expect_contains(installer, "foreach ($artifact in @($vulkanLayerDllPath, $vulkanLayerJsonPath))");
+  expect_contains(installer, "function Open-LocalMachineRegistryKey");
+  expect_contains(installer, "[Microsoft.Win32.RegistryView]::Registry64");
+  expect_contains(installer, "[Microsoft.Win32.RegistryView]::Registry32");
+  expect_contains(installer, "Vulkan HDR implicit layer registrations removed from ${view}");
   EXPECT_EQ(installer.find("Assert-DriverControlInterface"), std::string::npos);
   EXPECT_EQ(installer.find("Assert-DriverHdrTemporaryDisplay"), std::string::npos);
   EXPECT_EQ(installer.find("--self-test-hdr"), std::string::npos);
@@ -113,7 +147,15 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
 
   expect_contains(
     actions,
-    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
+    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
+  );
+  expect_contains(
+    actions,
+    "<CustomAction Id=\"RegisterVulkanHdrLayer\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
+  );
+  expect_contains(
+    actions,
+    "<CustomAction Id=\"UnregisterVulkanHdrLayer\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
   );
   expect_contains(
     actions,
@@ -121,11 +163,27 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
   );
   expect_contains(
     actions,
+    "Property=\"RegisterVulkanHdrLayer\""
+  );
+  expect_contains(
+    actions,
+    "Property=\"UnregisterVulkanHdrLayer\""
+  );
+  expect_contains(
+    actions,
     "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot;"
   );
   expect_contains(
     actions,
+    "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot; -RegisterVulkanLayerOnly"
+  );
+  expect_contains(
+    actions,
     "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot; -Uninstall"
+  );
+  expect_contains(
+    actions,
+    "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot; -UnregisterVulkanLayerOnly"
   );
   expect_contains(
     actions,
@@ -156,11 +214,27 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetMigrateConfig\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE</Custom>"
+    "<Custom Action=\"SetRegisterVulkanHdrLayer\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetUninstallSudovda\" After=\"RestoreNvPrefsUndo\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
+    "<Custom Action=\"RegisterVulkanHdrLayer\" After=\"SetRegisterVulkanHdrLayer\">NOT REMOVE</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetMigrateConfig\" After=\"RegisterVulkanHdrLayer\">NOT REMOVE</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetUnregisterVulkanHdrLayer\" After=\"RestoreNvPrefsUndo\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"UnregisterVulkanHdrLayer\" After=\"SetUnregisterVulkanHdrLayer\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetUninstallSudovda\" After=\"UnregisterVulkanHdrLayer\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE AND REMOVEVIRTUALDISPLAYDRIVER = \"1\"</Custom>"
   );
   expect_contains(
     patch,
