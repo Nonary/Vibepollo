@@ -2140,7 +2140,8 @@ namespace webrtc_stream {
     }
 
     void apply_rtx_hdr_stream_policy(video::config_t &config) {
-      config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
+      const bool app_rtx_hdr_enabled = config::has_runtime_config_override("rtx_hdr") && config::video.rtx_hdr.enabled;
+      config.rtx_hdr_active = app_rtx_hdr_enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
     }
 
     audio::config_t build_audio_config(const SessionOptions &options) {

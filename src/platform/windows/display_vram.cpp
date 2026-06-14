@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 // platform includes
 #include <winsock2.h>
@@ -140,6 +142,51 @@ namespace platf::dxgi {
   blob_t cursor_ps_hlsl;
   blob_t cursor_ps_normalize_white_hlsl;
   blob_t cursor_vs_hlsl;
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  namespace {
+    constexpr UINT TRUEHDR_NATIVE_HDR_GRID_SIZE = 4;
+    constexpr UINT TRUEHDR_NATIVE_HDR_PATCH_SIZE = 2;
+    constexpr UINT TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH = TRUEHDR_NATIVE_HDR_GRID_SIZE * TRUEHDR_NATIVE_HDR_PATCH_SIZE;
+    constexpr UINT TRUEHDR_NATIVE_HDR_SAMPLE_HEIGHT = TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH;
+    constexpr float TRUEHDR_NATIVE_HDR_SDR_WHITE_THRESHOLD = 1.25f;
+    constexpr unsigned TRUEHDR_NATIVE_HDR_MIN_BRIGHT_PIXELS = 3;
+    constexpr unsigned TRUEHDR_NATIVE_HDR_CONFIRMATION_FRAMES = 5;
+
+    bool truehdr_native_hdr_detectable_format(DXGI_FORMAT format) {
+      return format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    }
+
+    float half_to_float(std::uint16_t half) {
+      const std::uint32_t sign = static_cast<std::uint32_t>(half & 0x8000u) << 16;
+      int exponent = (half & 0x7C00u) >> 10;
+      std::uint32_t mantissa = half & 0x03FFu;
+
+      std::uint32_t bits = 0;
+      if (exponent == 0) {
+        if (mantissa == 0) {
+          bits = sign;
+        } else {
+          while ((mantissa & 0x0400u) == 0) {
+            mantissa <<= 1;
+            --exponent;
+          }
+          ++exponent;
+          mantissa &= ~0x0400u;
+          bits = sign | (static_cast<std::uint32_t>(exponent + 127 - 15) << 23) | (mantissa << 13);
+        }
+      } else if (exponent == 31) {
+        bits = sign | 0x7F800000u | (mantissa << 13);
+      } else {
+        bits = sign | (static_cast<std::uint32_t>(exponent + 127 - 15) << 23) | (mantissa << 13);
+      }
+
+      float value = 0.0f;
+      std::memcpy(&value, &bits, sizeof(value));
+      return value;
+    }
+  }  // namespace
+#endif
 
   struct texture_lock_helper {
     keyed_mutex_t _mutex;
@@ -491,6 +538,7 @@ namespace platf::dxgi {
         img.format == DXGI_FORMAT_R10G10B10A2_UNORM;
       platf::rtx_hdr::frame_state_t truehdr_frame_state;
       bool truehdr_should_convert = false;
+      bool truehdr_native_hdr_bypass = false;
       if (truehdr_active && truehdr_output_hdr) {
         const RECT capture_rect {
           display->offset_x,
@@ -500,12 +548,23 @@ namespace platf::dxgi {
         };
         truehdr_frame_state = rtx_hdr_runtime.update_for_frame(capture_rect);
         truehdr_should_convert = truehdr_frame_state.enabled;
+        if (truehdr_should_convert && update_truehdr_native_hdr_detector(img_ctx.encoder_texture.get(), img.format)) {
+          truehdr_should_convert = false;
+          truehdr_native_hdr_bypass = true;
+        } else if (!truehdr_should_convert) {
+          reset_truehdr_native_hdr_detector();
+        }
         const auto transition_key = std::string(platf::rtx_hdr::source_name(truehdr_frame_state.source)) +
-                                    (truehdr_should_convert ? ":convert" : ":bypass") +
+                                    (truehdr_native_hdr_bypass ? ":native-hdr" : (truehdr_should_convert ? ":convert" : ":bypass")) +
                                     ":" + truehdr_frame_state.foreground_source;
         if (transition_key != truehdr_last_transition_key) {
           truehdr_last_transition_key = transition_key;
-          if (truehdr_should_convert) {
+          if (truehdr_native_hdr_bypass) {
+            if (!truehdr_native_hdr_logged) {
+              BOOST_LOG(info) << "RTX HDR: native HDR content detected; not enabling RTX HDR because the source is not SDR.";
+              truehdr_native_hdr_logged = true;
+            }
+          } else if (truehdr_should_convert) {
             BOOST_LOG(info) << "RTX HDR: applying " << platf::rtx_hdr::source_name(truehdr_frame_state.source)
                             << " TrueHDR conversion"
                             << " (contrast=" << truehdr_frame_state.contrast
@@ -1114,6 +1173,137 @@ namespace platf::dxgi {
 
       return true;
     }
+
+    bool ensure_truehdr_native_hdr_readback(DXGI_FORMAT format) {
+      if (truehdr_native_hdr_readback_texture) {
+        D3D11_TEXTURE2D_DESC existing_desc {};
+        truehdr_native_hdr_readback_texture->GetDesc(&existing_desc);
+        if (existing_desc.Width == TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH &&
+            existing_desc.Height == TRUEHDR_NATIVE_HDR_SAMPLE_HEIGHT &&
+            existing_desc.Format == format) {
+          return true;
+        }
+      }
+
+      truehdr_native_hdr_readback_texture.reset();
+
+      D3D11_TEXTURE2D_DESC desc {};
+      desc.Width = TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH;
+      desc.Height = TRUEHDR_NATIVE_HDR_SAMPLE_HEIGHT;
+      desc.MipLevels = 1;
+      desc.ArraySize = 1;
+      desc.Format = format;
+      desc.SampleDesc.Count = 1;
+      desc.Usage = D3D11_USAGE_STAGING;
+      desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+      auto status = device->CreateTexture2D(&desc, nullptr, &truehdr_native_hdr_readback_texture);
+      if (FAILED(status)) {
+        if (!truehdr_native_hdr_readback_failure_logged) {
+          BOOST_LOG(warning) << "RTX HDR: failed to create native HDR detector readback texture [0x"sv << util::hex(status).to_string_view() << ']';
+          truehdr_native_hdr_readback_failure_logged = true;
+        }
+        return false;
+      }
+
+      return true;
+    }
+
+    void reset_truehdr_native_hdr_detector() {
+      truehdr_native_hdr_confirmed = false;
+      truehdr_native_hdr_confirmation_count = 0;
+    }
+
+    bool update_truehdr_native_hdr_detector(ID3D11Texture2D *texture, DXGI_FORMAT format) {
+      if (!texture || !truehdr_native_hdr_detectable_format(format)) {
+        reset_truehdr_native_hdr_detector();
+        return false;
+      }
+
+      D3D11_TEXTURE2D_DESC src_desc {};
+      texture->GetDesc(&src_desc);
+      if (src_desc.Width < TRUEHDR_NATIVE_HDR_PATCH_SIZE ||
+          src_desc.Height < TRUEHDR_NATIVE_HDR_PATCH_SIZE ||
+          src_desc.SampleDesc.Count != 1 ||
+          !ensure_truehdr_native_hdr_readback(format)) {
+        reset_truehdr_native_hdr_detector();
+        return false;
+      }
+
+      for (UINT y = 0; y < TRUEHDR_NATIVE_HDR_GRID_SIZE; ++y) {
+        const UINT center_y = ((y + 1) * src_desc.Height) / (TRUEHDR_NATIVE_HDR_GRID_SIZE + 1);
+        const UINT src_y = std::min(
+          src_desc.Height - TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+          center_y > TRUEHDR_NATIVE_HDR_PATCH_SIZE / 2 ? center_y - TRUEHDR_NATIVE_HDR_PATCH_SIZE / 2 : 0
+        );
+        for (UINT x = 0; x < TRUEHDR_NATIVE_HDR_GRID_SIZE; ++x) {
+          const UINT center_x = ((x + 1) * src_desc.Width) / (TRUEHDR_NATIVE_HDR_GRID_SIZE + 1);
+          const UINT src_x = std::min(
+            src_desc.Width - TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+            center_x > TRUEHDR_NATIVE_HDR_PATCH_SIZE / 2 ? center_x - TRUEHDR_NATIVE_HDR_PATCH_SIZE / 2 : 0
+          );
+          const D3D11_BOX box {
+            src_x,
+            src_y,
+            0,
+            src_x + TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+            src_y + TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+            1
+          };
+          device_ctx->CopySubresourceRegion(
+            truehdr_native_hdr_readback_texture.get(),
+            0,
+            x * TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+            y * TRUEHDR_NATIVE_HDR_PATCH_SIZE,
+            0,
+            texture,
+            0,
+            &box
+          );
+        }
+      }
+
+      D3D11_MAPPED_SUBRESOURCE mapped {};
+      const auto status = device_ctx->Map(truehdr_native_hdr_readback_texture.get(), 0, D3D11_MAP_READ, 0, &mapped);
+      if (FAILED(status)) {
+        if (!truehdr_native_hdr_readback_failure_logged) {
+          BOOST_LOG(warning) << "RTX HDR: failed to read native HDR detector samples [0x"sv << util::hex(status).to_string_view() << ']';
+          truehdr_native_hdr_readback_failure_logged = true;
+        }
+        reset_truehdr_native_hdr_detector();
+        return false;
+      }
+
+      unsigned bright_pixels = 0;
+      for (UINT y = 0; y < TRUEHDR_NATIVE_HDR_SAMPLE_HEIGHT; ++y) {
+        const auto *row = static_cast<const std::uint8_t *>(mapped.pData) + mapped.RowPitch * y;
+        for (UINT x = 0; x < TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH; ++x) {
+          const auto *pixel = reinterpret_cast<const std::uint16_t *>(row + x * sizeof(std::uint16_t) * 4);
+          const float r = half_to_float(pixel[0]);
+          const float g = half_to_float(pixel[1]);
+          const float b = half_to_float(pixel[2]);
+          if (r > TRUEHDR_NATIVE_HDR_SDR_WHITE_THRESHOLD ||
+              g > TRUEHDR_NATIVE_HDR_SDR_WHITE_THRESHOLD ||
+              b > TRUEHDR_NATIVE_HDR_SDR_WHITE_THRESHOLD) {
+            ++bright_pixels;
+          }
+        }
+      }
+      device_ctx->Unmap(truehdr_native_hdr_readback_texture.get(), 0);
+
+      if (bright_pixels >= TRUEHDR_NATIVE_HDR_MIN_BRIGHT_PIXELS) {
+        truehdr_native_hdr_confirmation_count = std::min(
+          TRUEHDR_NATIVE_HDR_CONFIRMATION_FRAMES,
+          truehdr_native_hdr_confirmation_count + 1
+        );
+      } else {
+        reset_truehdr_native_hdr_detector();
+        return false;
+      }
+
+      truehdr_native_hdr_confirmed = truehdr_native_hdr_confirmation_count >= TRUEHDR_NATIVE_HDR_CONFIRMATION_FRAMES;
+      return truehdr_native_hdr_confirmed;
+    }
 #endif
 
     bool ensure_black_texture_for_rtv_clear() {
@@ -1185,6 +1375,11 @@ namespace platf::dxgi {
     bool truehdr_not_hdr_stream_logged = false;
     std::string truehdr_last_transition_key;
     platf::rtx_hdr::runtime_t rtx_hdr_runtime;
+    texture2d_t truehdr_native_hdr_readback_texture;
+    unsigned truehdr_native_hdr_confirmation_count = 0;
+    bool truehdr_native_hdr_confirmed = false;
+    bool truehdr_native_hdr_logged = false;
+    bool truehdr_native_hdr_readback_failure_logged = false;
 #endif
 
     texture2d_t output_texture;

@@ -362,9 +362,9 @@ namespace display_device {
 
       switch (video_config.dd.hdr_option) {
         case hdr_option_e::automatic:
-          if (session.enable_hdr && video_config.rtx_hdr.enabled && video_config.rtx_hdr.force_sdr &&
+          if (session.enable_hdr && config::has_runtime_config_override("rtx_hdr") && video_config.rtx_hdr.enabled &&
               video_config.dd.hdr_request_override == hdr_request_override_e::automatic) {
-            BOOST_LOG(info) << "RTX HDR: force SDR source is enabled; keeping source display in SDR while the stream remains HDR.";
+            BOOST_LOG(info) << "RTX HDR: app-enabled conversion is active; keeping source display in SDR while the stream remains HDR.";
             return HdrState::Disabled;
           }
           return session.enable_hdr ? HdrState::Enabled : HdrState::Disabled;

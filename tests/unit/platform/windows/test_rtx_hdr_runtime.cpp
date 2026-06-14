@@ -81,6 +81,12 @@ namespace {
     return resolved;
   }
 
+  void enable_rtx_hdr_app_override() {
+    config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+      {"rtx_hdr", "true"},
+    });
+  }
+
   class fake_runtime_t {
   public:
     fake_runtime_t():
@@ -125,7 +131,7 @@ namespace {
   };
 }  // namespace
 
-TEST(RtxHdrProfileResolution, ApplicationProfileSettingsActivateConversion) {
+TEST(RtxHdrProfileResolution, ApplicationProfileSettingsDoNotActivateConversion) {
   rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
@@ -143,12 +149,8 @@ TEST(RtxHdrProfileResolution, ApplicationProfileSettingsActivateConversion) {
 
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
-  EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.contrast, 140);
-  EXPECT_EQ(values.saturation, 100);
-  EXPECT_EQ(values.middle_gray, 50);
-  EXPECT_EQ(values.peak_brightness, 1200);
-  EXPECT_EQ(values.source, profile_source_e::application);
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::none);
 }
 
 TEST(RtxHdrProfileResolution, EmptyApplicationProfileDoesNotActivateConversion) {
@@ -170,8 +172,9 @@ TEST(RtxHdrProfileResolution, EmptyApplicationProfileDoesNotActivateConversion) 
   EXPECT_EQ(values.source, profile_source_e::none);
 }
 
-TEST(RtxHdrProfileResolution, GlobalProfileEnabledActivatesAndApplicationProfileRefines) {
+TEST(RtxHdrProfileResolution, AppOverrideInheritsGlobalAndApplicationProfileDials) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   resolved_profile_t resolved;
   resolved.lookup_available = true;
   resolved.global.enabled = true;
@@ -188,8 +191,7 @@ TEST(RtxHdrProfileResolution, GlobalProfileEnabledActivatesAndApplicationProfile
   config.peak_brightness = 1500;
   config.source = profile_source_e::config;
 
-  // Driver global RTX HDR on => auto-apply even to a game with no profile of its own,
-  // using the global profile's dial values.
+  // The app override activates conversion; global profile values only fill tuning dials.
   const auto values = materialize_runtime_values_for_tests(resolved, config);
   EXPECT_TRUE(values.enabled);
   EXPECT_EQ(values.contrast, 95);
@@ -210,7 +212,7 @@ TEST(RtxHdrProfileResolution, GlobalProfileEnabledActivatesAndApplicationProfile
   EXPECT_EQ(app_values.source, profile_source_e::application);
 }
 
-TEST(RtxHdrProfileResolution, ApplicationProfileDisableWinsOverGlobalEnable) {
+TEST(RtxHdrProfileResolution, NvidiaProfileEnableStateDoesNotActivateConversion) {
   rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
@@ -223,10 +225,10 @@ TEST(RtxHdrProfileResolution, ApplicationProfileDisableWinsOverGlobalEnable) {
   config.enabled = true;
   config.source = profile_source_e::config;
 
-  // NVIDIA inheritance: a per-game profile that disables RTX HDR overrides the global "on".
+  // NVIDIA profile activation state is ignored without a Sunshine app override.
   const auto values = materialize_runtime_values_for_tests(resolved, config);
   EXPECT_FALSE(values.enabled);
-  EXPECT_EQ(values.source, profile_source_e::application);
+  EXPECT_EQ(values.source, profile_source_e::none);
 }
 
 TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesEvenWhenApplicationProfileDisables) {
@@ -247,7 +249,7 @@ TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesEvenWhenApplicationProfile
   // An explicit Sunshine launch override forces RTX HDR on even past an app-profile disable.
   const auto values = materialize_runtime_values_for_tests(resolved, config);
   EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.source, profile_source_e::config);
+  EXPECT_EQ(values.source, profile_source_e::application);
 }
 
 TEST(RtxHdrProfileResolution, RuntimeOverridesTakePriorityOverApplicationProfileSettings) {
@@ -257,6 +259,7 @@ TEST(RtxHdrProfileResolution, RuntimeOverridesTakePriorityOverApplicationProfile
   config::video.rtx_hdr.middle_gray = 82;
   config::video.rtx_hdr.peak_brightness = 1500;
   config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
     {"rtx_hdr_contrast", "80"},
     {"rtx_hdr_saturation", "81"},
     {"rtx_hdr_middle_gray", "82"},
@@ -286,7 +289,7 @@ TEST(RtxHdrProfileResolution, RuntimeOverridesTakePriorityOverApplicationProfile
   EXPECT_EQ(values.saturation, 181);
   EXPECT_EQ(values.middle_gray, 82);
   EXPECT_EQ(values.peak_brightness, 1500);
-  EXPECT_EQ(values.source, profile_source_e::application);
+  EXPECT_EQ(values.source, profile_source_e::config);
 }
 
 TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesWithoutApplicationProfileSettings) {
@@ -322,6 +325,9 @@ TEST(RtxHdrProfileResolution, RuntimeOverrideActivatesWithoutApplicationProfileS
 
 TEST(RtxHdrProfileResolution, RtxHdrFalseDisablesConversion) {
   rtx_hdr_config_guard_t config_guard;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "false"},
+  });
   resolved_profile_t resolved;
   resolved.lookup_available = true;
   resolved.application.enabled = true;
@@ -341,8 +347,9 @@ TEST(RtxHdrProfileResolution, RtxHdrFalseDisablesConversion) {
   EXPECT_EQ(values.source, profile_source_e::config);
 }
 
-TEST(RtxHdrProfileResolution, DisabledApplicationProfilePreventsConversion) {
+TEST(RtxHdrProfileResolution, DisabledApplicationProfileDoesNotBlockAppOverride) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   resolved_profile_t resolved;
   resolved.lookup_available = true;
   resolved.application.enabled = false;
@@ -356,7 +363,10 @@ TEST(RtxHdrProfileResolution, DisabledApplicationProfilePreventsConversion) {
 
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
-  EXPECT_FALSE(values.enabled);
+  EXPECT_TRUE(values.enabled);
+  EXPECT_EQ(values.contrast, 180);
+  EXPECT_EQ(values.saturation, 180);
+  EXPECT_EQ(values.peak_brightness, 1600);
   EXPECT_EQ(values.source, profile_source_e::application);
 }
 
@@ -375,7 +385,7 @@ TEST(RtxHdrProfileResolution, ApplicationProfileDialsWithoutEnableDoNotActivate)
   EXPECT_EQ(values.source, profile_source_e::none);
 }
 
-TEST(RtxHdrProfileResolution, NvidiaAppEnableBitActivatesWithApplicationDials) {
+TEST(RtxHdrProfileResolution, NvidiaAppEnableBitDoesNotActivateConversion) {
   rtx_hdr_config_guard_t config_guard;
   resolved_profile_t resolved;
   resolved.lookup_available = true;
@@ -398,12 +408,8 @@ TEST(RtxHdrProfileResolution, NvidiaAppEnableBitActivatesWithApplicationDials) {
 
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
-  EXPECT_TRUE(values.enabled);
-  EXPECT_EQ(values.source, profile_source_e::application);
-  EXPECT_EQ(values.contrast, 150);
-  EXPECT_EQ(values.saturation, 151);
-  EXPECT_EQ(values.middle_gray, 64);
-  EXPECT_EQ(values.peak_brightness, 1499);
+  EXPECT_FALSE(values.enabled);
+  EXPECT_EQ(values.source, profile_source_e::none);
 }
 
 TEST(RtxHdrProfileResolution, NvidiaAppEnableBitOffDisablesApplicationProfile) {
@@ -421,7 +427,7 @@ TEST(RtxHdrProfileResolution, NvidiaAppEnableBitOffDisablesApplicationProfile) {
   const auto values = materialize_runtime_values_for_tests(resolved, config);
 
   EXPECT_FALSE(values.enabled);
-  EXPECT_EQ(values.source, profile_source_e::application);
+  EXPECT_EQ(values.source, profile_source_e::none);
 }
 
 TEST(RtxHdrProfileResolution, RtxHdrActivationDecodeUsesEitherNvidiaSignal) {
@@ -511,6 +517,7 @@ TEST(RtxHdrRuntimeScheduler, UpdateForFrameReturnsCachedStateWithoutInlineLookup
 
 TEST(RtxHdrRuntimeScheduler, ForegroundMismatchDisablesWithoutProfileLookup) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   fake_runtime_t fake;
   fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
   fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe);
@@ -561,6 +568,7 @@ TEST(RtxHdrRuntimeScheduler, RuntimeOverrideDoesNotActivateDuringForegroundMisma
 
 TEST(RtxHdrRuntimeScheduler, IdentityChangeBypassesUntilProfileLookupCompletes) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   fake_runtime_t fake;
   fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
   fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe, 150);
@@ -581,6 +589,7 @@ TEST(RtxHdrRuntimeScheduler, IdentityChangeBypassesUntilProfileLookupCompletes) 
 
 TEST(RtxHdrRuntimeScheduler, StaleProfileResultIgnoredAfterIdentityChange) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   fake_runtime_t fake;
   const std::string first_exe = "C:/Games/First/first.exe";
   const std::string second_exe = "C:/Games/Second/second.exe";
@@ -671,6 +680,7 @@ TEST(RtxHdrRuntimeScheduler, SlowOrFailingLookupsBackOffAndIdentityChangeResetsI
 
 TEST(RtxHdrRuntimeScheduler, TransientLookupFailureKeepsLastKnownGood) {
   rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   fake_runtime_t fake;
   const std::string exe = "C:/Games/Foo/foo.exe";
   fake.foreground = matching_foreground(exe);

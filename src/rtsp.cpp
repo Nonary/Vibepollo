@@ -91,7 +91,8 @@ namespace rtsp_stream {
   void respond(tcp::socket &sock, launch_session_t &session, POPTION_ITEM options, int statuscode, const char *status_msg, int seqn, const std::string_view &payload);
 
   void apply_rtx_hdr_stream_policy(video::config_t &config) {
-    config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
+    const bool app_rtx_hdr_enabled = config::has_runtime_config_override("rtx_hdr") && config::video.rtx_hdr.enabled;
+    config.rtx_hdr_active = app_rtx_hdr_enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
   }
 
   class socket_t: public std::enable_shared_from_this<socket_t> {

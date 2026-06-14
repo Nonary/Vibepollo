@@ -303,13 +303,36 @@ namespace platf::rtx_hdr {
       return has_override("rtx_hdr");
     }
 
+    bool has_runtime_tuning_override() {
+      return has_override("rtx_hdr_contrast") ||
+             has_override("rtx_hdr_saturation") ||
+             has_override("rtx_hdr_middle_gray") ||
+             has_override("rtx_hdr_peak_brightness");
+    }
+
+    bool has_tuning_values(const profile_values_t &values) {
+      return values.contrast || values.saturation || values.middle_gray || values.peak_brightness;
+    }
+
+    profile_source_e tuning_source(const resolved_profile_t &resolved) {
+      if (has_runtime_tuning_override()) {
+        return profile_source_e::config;
+      }
+      if (has_tuning_values(resolved.application)) {
+        return profile_source_e::application;
+      }
+      if (has_tuning_values(resolved.global)) {
+        return profile_source_e::global;
+      }
+      return profile_source_e::config;
+    }
+
     // Build the active tuning dials with the effective precedence:
     //   per-app Sunshine dial override > NVIDIA application profile > NVIDIA global profile >
     //   Sunshine config default.
     runtime_values_t active_values(
       const resolved_profile_t &resolved,
-      const runtime_values_t &config_fallback,
-      profile_source_e source
+      const runtime_values_t &config_fallback
     ) {
       runtime_values_t values;
       values.enabled = true;
@@ -325,52 +348,25 @@ namespace platf::rtx_hdr {
       values.peak_brightness = has_override("rtx_hdr_peak_brightness") ?
                                  config_fallback.peak_brightness :
                                  resolved.application.peak_brightness.value_or(resolved.global.peak_brightness.value_or(config_fallback.peak_brightness));
-      values.source = source;
+      values.source = tuning_source(resolved);
       return values;
     }
 
     runtime_values_t merge_runtime_values(const resolved_profile_t &resolved, const runtime_values_t &config_fallback) {
       runtime_values_t disabled;
 
-      // Permission gate: Sunshine's effective config (the Web UI global toggle, with any per-app
-      // launch override already merged in). When off, RTX HDR is never captured -- regardless of
-      // the NVIDIA driver state. A per-app launch override that turns it ON will have raised
-      // config_fallback.enabled, so "an override wins over a disabled global toggle" is honored
-      // here rather than blocked.
+      // RTX HDR conversion is application opt-in only. NVIDIA profile enable bits are read for
+      // compatibility diagnostics, but they never activate or block conversion.
+      if (!has_runtime_enable_override()) {
+        return disabled;
+      }
+
       if (!config_fallback.enabled) {
         disabled.source = profile_source_e::config;
         return disabled;
       }
 
-      // An explicit per-app launch override forces RTX HDR on independent of the driver. The
-      // override may only set the enable flag, so the dials still follow the normal precedence.
-      if (has_runtime_enable_override()) {
-        return active_values(resolved, config_fallback, profile_source_e::config);
-      }
-
-      // Without an override, activation is driven entirely by the NVIDIA driver. Never
-      // auto-activate on a guess: if the driver settings could not be read, stay disabled.
-      if (!resolved.lookup_available) {
-        return disabled;
-      }
-
-      // Effective NVIDIA enable, honoring the driver's own inheritance: a per-game application
-      // profile value wins over the global/base profile, and if neither sets it RTX HDR stays
-      // off. This makes an app profile that disables RTX HDR win over a global "on", and lets a
-      // global "on" auto-apply to games that have no profile of their own.
-      const std::optional<bool> driver_enabled =
-        resolved.application.enabled.has_value() ? resolved.application.enabled : resolved.global.enabled;
-      if (!driver_enabled.value_or(false)) {
-        disabled.source = resolved.application.enabled.has_value() ?
-                            profile_source_e::application :
-                            (resolved.global.enabled.has_value() ? profile_source_e::global : profile_source_e::none);
-        return disabled;
-      }
-
-      const profile_source_e source = resolved.application.enabled == true ?
-                                        profile_source_e::application :
-                                        profile_source_e::global;
-      return active_values(resolved, config_fallback, source);
+      return active_values(resolved, config_fallback);
     }
 
   }  // namespace

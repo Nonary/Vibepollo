@@ -93,6 +93,7 @@ export interface AppForm {
   losslessScalingProfiles: Record<LosslessProfileKey, LosslessProfileOverrides>;
   losslessScalingLaunchDelay: number | null;
   rtxHdrMode: RtxHdrMode;
+  rtxHdrValuesOverride: boolean;
   rtxHdrForceSdr: boolean;
   rtxHdrPeakBrightness: number;
   rtxHdrMiddleGray: number;

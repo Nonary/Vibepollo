@@ -611,6 +611,7 @@ function fresh(): AppForm {
     losslessScalingProfiles: emptyLosslessProfileState(),
     losslessScalingLaunchDelay: null,
     rtxHdrMode: 'inherit',
+    rtxHdrValuesOverride: false,
     rtxHdrForceSdr: false,
     rtxHdrPeakBrightness: 1000,
     rtxHdrMiddleGray: 50,
@@ -674,7 +675,13 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>) {
   const hasRtxHdrOverride = RTX_HDR_OVERRIDE_KEYS.some((key) =>
     Object.prototype.hasOwnProperty.call(rest, key),
   );
-  const rawEnabled = rest.rtx_hdr;
+  const hasRtxHdrValueOverride = [
+    'rtx_hdr_peak_brightness',
+    'rtx_hdr_middle_gray',
+    'rtx_hdr_contrast',
+    'rtx_hdr_saturation',
+  ].some((key) => Object.prototype.hasOwnProperty.call(rest, key));
+  const rawEnabled = rest['rtx_hdr'];
   let mode: RtxHdrMode = 'inherit';
   if (hasRtxHdrOverride) {
     mode = parseBooleanOverride(rawEnabled, true) ? 'enabled' : 'disabled';
@@ -686,11 +693,12 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>) {
   return {
     rest,
     mode,
-    forceSdr: parseBooleanOverride(overrides.rtx_hdr_force_sdr, false),
-    peakBrightness: parseNumberOverride(overrides.rtx_hdr_peak_brightness, 1000, 400, 2000),
-    middleGray: parseNumberOverride(overrides.rtx_hdr_middle_gray, 50, 10, 100),
-    contrast: parseNumberOverride(overrides.rtx_hdr_contrast, 0, -100, 100),
-    saturation: parseNumberOverride(overrides.rtx_hdr_saturation, 0, -100, 100),
+    valuesOverride: hasRtxHdrValueOverride,
+    forceSdr: parseBooleanOverride(overrides['rtx_hdr_force_sdr'], false),
+    peakBrightness: parseNumberOverride(overrides['rtx_hdr_peak_brightness'], 1000, 400, 2000),
+    middleGray: parseNumberOverride(overrides['rtx_hdr_middle_gray'], 50, 10, 100),
+    contrast: parseNumberOverride(overrides['rtx_hdr_contrast'], 0, -100, 100),
+    saturation: parseNumberOverride(overrides['rtx_hdr_saturation'], 0, -100, 100),
   };
 }
 
@@ -700,14 +708,15 @@ function buildConfigOverridesPayload(f: AppForm): Record<string, unknown> {
     delete overrides[key];
   }
   if (f.rtxHdrMode === 'enabled') {
-    overrides.rtx_hdr = true;
-    overrides.rtx_hdr_force_sdr = !!f.rtxHdrForceSdr;
-    overrides.rtx_hdr_peak_brightness = f.rtxHdrPeakBrightness;
-    overrides.rtx_hdr_middle_gray = f.rtxHdrMiddleGray;
-    overrides.rtx_hdr_contrast = f.rtxHdrContrast;
-    overrides.rtx_hdr_saturation = f.rtxHdrSaturation;
+    overrides['rtx_hdr'] = true;
+    if (f.rtxHdrValuesOverride) {
+      overrides['rtx_hdr_peak_brightness'] = f.rtxHdrPeakBrightness;
+      overrides['rtx_hdr_middle_gray'] = f.rtxHdrMiddleGray;
+      overrides['rtx_hdr_contrast'] = f.rtxHdrContrast;
+      overrides['rtx_hdr_saturation'] = f.rtxHdrSaturation;
+    }
   } else if (f.rtxHdrMode === 'disabled') {
-    overrides.rtx_hdr = false;
+    overrides['rtx_hdr'] = false;
   }
   return Object.fromEntries(
     Object.entries(overrides).filter(
@@ -929,6 +938,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     losslessScalingProfiles: losslessProfiles,
     losslessScalingLaunchDelay: lsLaunchDelay,
     rtxHdrMode: rtxHdrOverrides.mode,
+    rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
     rtxHdrForceSdr: rtxHdrOverrides.forceSdr,
     rtxHdrPeakBrightness: rtxHdrOverrides.peakBrightness,
     rtxHdrMiddleGray: rtxHdrOverrides.middleGray,

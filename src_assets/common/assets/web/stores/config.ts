@@ -158,7 +158,7 @@ const defaultGroups = [
       },
       dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
-      rtx_hdr: true,
+      rtx_hdr: false,
       rtx_hdr_force_sdr: false,
       rtx_hdr_peak_brightness: 1000,
       rtx_hdr_middle_gray: 50,

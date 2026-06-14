@@ -5,6 +5,7 @@
 #include "../tests_common.h"
 
 #include <format>
+#include <unordered_map>
 #include <src/config.h>
 #include <src/display_device.h>
 #include <src/rtsp.h>
@@ -29,6 +30,16 @@ namespace {
   struct no_refresh_rate_tag_t {};
 
   struct no_resolution_tag_t {};
+
+  struct runtime_config_overrides_guard_t {
+    runtime_config_overrides_guard_t() {
+      config::clear_runtime_config_overrides();
+    }
+
+    ~runtime_config_overrides_guard_t() {
+      config::clear_runtime_config_overrides();
+    }
+  };
 
   struct client_resolution_t {
     int width;
@@ -137,12 +148,17 @@ TEST(DisplayDeviceConfig, DummyPlugHdrWorkaroundForcesHdrEnabled) {
   EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
 
-TEST(DisplayDeviceConfig, RtxHdrForceSdrKeepsSourceDisplaySdr) {
+TEST(DisplayDeviceConfig, RtxHdrAppOverrideKeepsSourceDisplaySdr) {
+  runtime_config_overrides_guard_t overrides_guard;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+  });
+
   config::video_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
   video_config.rtx_hdr.enabled = true;
-  video_config.rtx_hdr.force_sdr = true;
+  video_config.rtx_hdr.force_sdr = false;
 
   rtsp_stream::launch_session_t session {};
   session.enable_hdr = true;
@@ -151,6 +167,25 @@ TEST(DisplayDeviceConfig, RtxHdrForceSdrKeepsSourceDisplaySdr) {
   auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
+}
+
+TEST(DisplayDeviceConfig, RtxHdrGlobalTuningDoesNotKeepSourceDisplaySdr) {
+  runtime_config_overrides_guard_t overrides_guard;
+
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::automatic;
+  video_config.rtx_hdr.enabled = true;
+  video_config.rtx_hdr.force_sdr = true;
+  video_config.rtx_hdr.peak_brightness = 1400;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
 
 using ParseResolutionOption = DisplayDeviceConfigTest<std::pair<std::tuple<resolution_option_e, sops_enabled_t, std::variant<client_resolution_t, std::string>>, std::variant<failed_to_parse_resolution_tag_t, no_resolution_tag_t, resolution_t>>>;

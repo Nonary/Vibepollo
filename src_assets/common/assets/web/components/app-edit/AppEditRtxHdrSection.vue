@@ -6,37 +6,40 @@
       <div class="space-y-1">
         <h3 class="text-base font-semibold text-dark dark:text-light">RTX HDR</h3>
         <p class="text-[12px] leading-relaxed opacity-70">
-          Choose how this application participates in RTX HDR streams. These app choices are saved
-          with the app and applied only while it is running.
+          Enable RTX HDR conversion for this app. By default, Vibepollo uses the game's existing
+          NVIDIA RTX HDR profile values when one is configured, then falls back to the global
+          defaults. The host is intentionally kept in SDR so the game does not apply its own HDR on
+          top of RTX HDR.
         </p>
       </div>
-      <n-tag v-if="form.rtxHdrMode !== 'inherit'" size="small" type="primary">
-        App-specific
-      </n-tag>
+      <n-tag v-if="rtxHdrEnabled" size="small" type="primary"> Enabled </n-tag>
     </div>
 
-    <n-radio-group v-model:value="form.rtxHdrMode" class="grid gap-3">
-      <label
-        v-for="option in modeOptions"
-        :key="option.value"
-        :class="cardClass(form.rtxHdrMode === option.value)"
-      >
-        <n-radio :value="option.value" />
+    <label :class="cardClass(rtxHdrEnabled)">
+      <n-switch v-model:value="rtxHdrEnabled" />
+      <div class="min-w-0 space-y-1">
+        <div class="text-sm font-semibold leading-snug">Enable RTX HDR for this app</div>
+        <p class="text-[12px] leading-relaxed opacity-70">
+          Converts SDR frames to HDR while this application is streamed. When enabled, Vibepollo
+          forces the host/game into SDR first to prevent oversaturation from native game HDR and RTX
+          HDR running at the same time.
+        </p>
+      </div>
+    </label>
+
+    <div v-if="rtxHdrEnabled" class="space-y-4">
+      <label :class="cardClass(form.rtxHdrValuesOverride)">
+        <n-switch v-model:value="form.rtxHdrValuesOverride" />
         <div class="min-w-0 space-y-1">
-          <div class="text-sm font-semibold leading-snug">{{ option.label }}</div>
-          <p class="text-[12px] leading-relaxed opacity-70">{{ option.desc }}</p>
+          <div class="text-sm font-semibold leading-snug">Override HDR values directly</div>
+          <p class="text-[12px] leading-relaxed opacity-70">
+            Use these sliders instead of inheriting the NVIDIA RTX HDR profile or global default
+            values.
+          </p>
         </div>
       </label>
-    </n-radio-group>
 
-    <div v-if="form.rtxHdrMode === 'enabled'" class="space-y-4">
-      <ConfigFieldRenderer
-        setting-key="rtx_hdr_force_sdr"
-        v-model="form.rtxHdrForceSdr"
-        size="small"
-        :desc="t('config.rtx_hdr_force_sdr_desc')"
-      />
-      <div class="grid gap-3 md:grid-cols-2">
+      <div v-if="form.rtxHdrValuesOverride" class="grid gap-3 md:grid-cols-2">
         <ConfigFieldRenderer
           setting-key="rtx_hdr_peak_brightness"
           v-model="form.rtxHdrPeakBrightness"
@@ -68,30 +71,23 @@
 
 <script setup lang="ts">
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NRadio, NRadioGroup, NTag } from 'naive-ui';
-import type { AppForm, RtxHdrMode } from './types';
+import { NSwitch, NTag } from 'naive-ui';
+import type { AppForm } from './types';
 
 const form = defineModel<AppForm>('form', { required: true });
 const { t } = useI18n();
 
-const modeOptions: Array<{ value: RtxHdrMode; label: string; desc: string }> = [
-  {
-    value: 'inherit',
-    label: 'Inherit global behavior',
-    desc: 'Use the global Capture setting and any NVIDIA application profile values.',
+const rtxHdrEnabled = computed({
+  get: () => form.value.rtxHdrMode === 'enabled',
+  set: (enabled: boolean) => {
+    form.value.rtxHdrMode = enabled ? 'enabled' : 'disabled';
+    if (!enabled) {
+      form.value.rtxHdrValuesOverride = false;
+    }
   },
-  {
-    value: 'enabled',
-    label: 'Enable RTX HDR for this app',
-    desc: 'Apply app-specific RTX HDR values while this application is streamed.',
-  },
-  {
-    value: 'disabled',
-    label: 'Disable RTX HDR for this app',
-    desc: 'Prevent RTX HDR conversion for this application even when global RTX HDR is enabled.',
-  },
-];
+});
 
 function cardClass(active: boolean): string[] {
   return [
