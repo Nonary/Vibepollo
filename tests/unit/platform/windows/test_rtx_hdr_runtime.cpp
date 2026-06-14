@@ -706,4 +706,98 @@ TEST(RtxHdrRuntimeScheduler, TransientLookupFailureKeepsLastKnownGood) {
   EXPECT_EQ(frame.source, profile_source_e::application);
 }
 
+TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLookup) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
+  fake_runtime_t fake;
+  const std::string exe = "C:/Games/Foo/foo.exe";
+  fake.foreground = matching_foreground(exe);
+  fake.profiles[exe] = enabled_profile(exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 150);
+  ASSERT_EQ(fake.resolve_calls, 1);
+
+  config::video.rtx_hdr.contrast = 80;
+  config::video.rtx_hdr.saturation = 81;
+  config::video.rtx_hdr.middle_gray = 82;
+  config::video.rtx_hdr.peak_brightness = 1700;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+    {"rtx_hdr_contrast", "80"},
+    {"rtx_hdr_saturation", "81"},
+    {"rtx_hdr_middle_gray", "82"},
+    {"rtx_hdr_peak_brightness", "1700"},
+  });
+
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 180);
+  EXPECT_EQ(frame.saturation, 181);
+  EXPECT_EQ(frame.middle_gray, 82);
+  EXPECT_EQ(frame.peak_brightness, 1700);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_EQ(fake.resolve_calls, 1);
+}
+
+TEST(RtxHdrRuntimeScheduler, LiveTuningDoesNotEnableDisabledFrame) {
+  rtx_hdr_config_guard_t config_guard;
+  fake_runtime_t fake;
+  const std::string exe = "C:/Games/Foo/foo.exe";
+  fake.foreground = matching_foreground(exe);
+  fake.profiles[exe] = enabled_profile(exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_FALSE(frame.enabled);
+  ASSERT_EQ(fake.resolve_calls, 1);
+
+  config::video.rtx_hdr.contrast = 80;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+    {"rtx_hdr_contrast", "80"},
+  });
+
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 180);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_EQ(fake.resolve_calls, 1);
+}
+
+TEST(RtxHdrRuntimeScheduler, LiveTuningRemovalFallsBackToCachedProfile) {
+  rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.contrast = 80;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+    {"rtx_hdr_contrast", "80"},
+  });
+  fake_runtime_t fake;
+  const std::string exe = "C:/Games/Foo/foo.exe";
+  fake.foreground = matching_foreground(exe);
+  fake.profiles[exe] = enabled_profile(exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 180);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+
+  config::video.rtx_hdr.contrast = 0;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "true"},
+  });
+
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 150);
+  EXPECT_EQ(frame.source, profile_source_e::application);
+  EXPECT_EQ(fake.resolve_calls, 1);
+}
+
 #endif

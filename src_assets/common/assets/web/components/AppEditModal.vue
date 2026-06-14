@@ -3,7 +3,7 @@
     :show="open"
     :mask-closable="true"
     :trap-focus="!overridesPickerOpen"
-    @update:show="(v) => emit('update:modelValue', v)"
+    @update:show="handleModalShowUpdate"
   >
     <n-card
       :bordered="false"
@@ -499,7 +499,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
 import { NModal, NCard, NButton, NCheckbox, NRadioGroup, NRadio, NSelect } from 'naive-ui';
@@ -641,6 +641,13 @@ const RTX_HDR_OVERRIDE_KEYS = [
   'rtx_hdr_contrast',
   'rtx_hdr_saturation',
 ] as const;
+const RTX_HDR_LIVE_TUNING_KEYS = [
+  'rtx_hdr_peak_brightness',
+  'rtx_hdr_middle_gray',
+  'rtx_hdr_contrast',
+  'rtx_hdr_saturation',
+] as const;
+const RTX_HDR_LIVE_DEBOUNCE_MS = 200;
 
 function clonePlainRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -723,6 +730,40 @@ function buildConfigOverridesPayload(f: AppForm): Record<string, unknown> {
       ([key, value]) => typeof key === 'string' && key.length > 0 && value !== undefined && value !== null,
     ),
   );
+}
+
+function buildRtxHdrLiveOverridesPayload(f: AppForm): Record<string, unknown> {
+  if (f.rtxHdrMode !== 'enabled' || !f.rtxHdrValuesOverride) {
+    return {};
+  }
+
+  return {
+    rtx_hdr_peak_brightness: f.rtxHdrPeakBrightness,
+    rtx_hdr_middle_gray: f.rtxHdrMiddleGray,
+    rtx_hdr_contrast: f.rtxHdrContrast,
+    rtx_hdr_saturation: f.rtxHdrSaturation,
+  };
+}
+
+function extractRtxHdrLiveOverrides(src?: ServerApp | null): Record<string, unknown> {
+  const rawConfigOverrides = clonePlainRecord((src as any)?.['config-overrides']);
+  const result: Record<string, unknown> = {};
+  for (const key of RTX_HDR_LIVE_TUNING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(rawConfigOverrides, key)) {
+      result[key] = rawConfigOverrides[key];
+    }
+  }
+  return result;
+}
+
+function stableStringify(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return JSON.stringify(value);
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return JSON.stringify(Object.fromEntries(entries));
 }
 
 function parseAppVirtualDisplayMode(value: unknown): AppVirtualDisplayMode | null {
@@ -1098,7 +1139,14 @@ watch(
   () => props.app,
   (val) => {
     if (!open.value) return;
+    liveRtxHdrSuppress = true;
     form.value = fromServerApp(val as ServerApp | undefined, props.index ?? -1);
+    primeLiveRtxHdrState();
+    nextTick(() => {
+      liveRtxHdrSuppress = false;
+    }).catch(() => {
+      liveRtxHdrSuppress = false;
+    });
   },
   { immediate: true },
 );
@@ -1149,6 +1197,101 @@ const hasHeaderArtwork = computed(
 watch(headerArtworkKey, () => {
   headerArtworkFailed.value = false;
 });
+
+const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
+let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
+let liveRtxHdrSuppress = false;
+let liveRtxHdrLastSentKey = '';
+let liveRtxHdrQueue: Promise<void> = Promise.resolve();
+let liveRtxHdrProgrammaticClose = false;
+
+function activeAppUuid(): string {
+  return String((props.app as ServerApp | null | undefined)?.uuid || '');
+}
+
+function currentRtxHdrLiveKey(): string {
+  return stableStringify(buildRtxHdrLiveOverridesPayload(form.value));
+}
+
+function clearLiveRtxHdrTimer() {
+  if (liveRtxHdrTimer) {
+    clearTimeout(liveRtxHdrTimer);
+    liveRtxHdrTimer = null;
+  }
+}
+
+function primeLiveRtxHdrState() {
+  originalRtxHdrLiveOverrides.value = extractRtxHdrLiveOverrides(props.app ?? undefined);
+  liveRtxHdrLastSentKey = currentRtxHdrLiveKey();
+  clearLiveRtxHdrTimer();
+}
+
+async function postRtxHdrLiveOverrides(overrides: Record<string, unknown>, key: string): Promise<void> {
+  const uuid = activeAppUuid();
+  if (!uuid) {
+    return;
+  }
+
+  const response = await http.post(
+    './api/apps/rtx_hdr/live',
+    {
+      uuid,
+      'config-overrides': overrides,
+    },
+    {
+      headers: { 'Content-Type': 'application/json' },
+      validateStatus: () => true,
+    },
+  );
+  const okStatus = response.status >= 200 && response.status < 300;
+  const responseData = response?.data as any;
+  if (!okStatus || (responseData && responseData.status === false)) {
+    return;
+  }
+  liveRtxHdrLastSentKey = key;
+}
+
+function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string): Promise<void> {
+  liveRtxHdrQueue = liveRtxHdrQueue
+    .catch(() => {})
+    .then(() => postRtxHdrLiveOverrides(overrides, key))
+    .catch(() => {});
+  return liveRtxHdrQueue;
+}
+
+function scheduleRtxHdrLiveUpdate() {
+  if (liveRtxHdrSuppress || !open.value || form.value.index === -1 || !activeAppUuid()) {
+    return;
+  }
+
+  const key = currentRtxHdrLiveKey();
+  if (key === liveRtxHdrLastSentKey) {
+    clearLiveRtxHdrTimer();
+    return;
+  }
+
+  clearLiveRtxHdrTimer();
+  liveRtxHdrTimer = setTimeout(() => {
+    liveRtxHdrTimer = null;
+    const overrides = buildRtxHdrLiveOverridesPayload(form.value);
+    void enqueueRtxHdrLivePost(overrides, stableStringify(overrides));
+  }, RTX_HDR_LIVE_DEBOUNCE_MS);
+}
+
+async function restoreOriginalRtxHdrLiveOverrides() {
+  if (form.value.index === -1 || !activeAppUuid()) {
+    return;
+  }
+
+  clearLiveRtxHdrTimer();
+  await liveRtxHdrQueue.catch(() => {});
+  const original = clonePlainRecord(originalRtxHdrLiveOverrides.value);
+  const originalKey = stableStringify(original);
+  if (originalKey === liveRtxHdrLastSentKey) {
+    return;
+  }
+  await enqueueRtxHdrLivePost(original, originalKey);
+}
 
 const losslessExecutableStatus = ref<any | null>(null);
 const losslessExecutableCheckComplete = ref(false);
@@ -1536,9 +1679,30 @@ function ensureNameSelectionFromForm() {
   nameOptions.value = opts;
   nameSelectValue.value = pid ? String(pid) : currentName ? `__custom__:${currentName}` : '';
 }
-function close() {
+
+async function close(options: { rollbackLiveRtxHdr?: boolean } = {}) {
+  const rollbackLiveRtxHdr = options.rollbackLiveRtxHdr !== false;
+  if (rollbackLiveRtxHdr) {
+    await restoreOriginalRtxHdrLiveOverrides();
+  } else {
+    clearLiveRtxHdrTimer();
+  }
+  liveRtxHdrProgrammaticClose = true;
   emit('update:modelValue', false);
 }
+
+function handleModalShowUpdate(visible: boolean) {
+  if (visible) {
+    liveRtxHdrProgrammaticClose = false;
+    emit('update:modelValue', true);
+    return;
+  }
+  if (liveRtxHdrProgrammaticClose) {
+    return;
+  }
+  void close();
+}
+
 function addPrep() {
   form.value.prepCmd.push({
     do: '',
@@ -2002,7 +2166,15 @@ let frameGenHealthPromise: Promise<void> | null = null;
 
 watch(open, (o) => {
   if (o) {
+    liveRtxHdrProgrammaticClose = false;
+    liveRtxHdrSuppress = true;
     form.value = fromServerApp(props.app ?? undefined, props.index ?? -1);
+    primeLiveRtxHdrState();
+    nextTick(() => {
+      liveRtxHdrSuppress = false;
+    }).catch(() => {
+      liveRtxHdrSuppress = false;
+    });
     selectedPlayniteId.value = '';
     lockPlaynite.value = false;
     newAppSource.value = 'custom';
@@ -2024,11 +2196,24 @@ watch(open, (o) => {
       }
     }
   } else {
+    clearLiveRtxHdrTimer();
     overridesPickerOpen.value = false;
     frameGenHealth.value = null;
     frameGenHealthError.value = null;
   }
 });
+
+watch(
+  () => [
+    form.value.rtxHdrMode,
+    form.value.rtxHdrValuesOverride,
+    form.value.rtxHdrPeakBrightness,
+    form.value.rtxHdrMiddleGray,
+    form.value.rtxHdrContrast,
+    form.value.rtxHdrSaturation,
+  ],
+  () => scheduleRtxHdrLiveUpdate(),
+);
 
 watch(
   () => (configStore.config as any)?.lossless_scaling_path,
@@ -2914,7 +3099,7 @@ async function save() {
       return;
     }
     emit('saved');
-    close();
+    await close({ rollbackLiveRtxHdr: false });
   } finally {
     saving.value = false;
   }

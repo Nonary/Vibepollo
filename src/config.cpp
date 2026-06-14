@@ -53,6 +53,7 @@
   #include <Windows.h>
   #include "platform/windows/hotkey_manager.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/rtx_hdr_runtime.h"
 
   #include <shellapi.h>
   #include <Windows.h>
@@ -2218,6 +2219,30 @@ namespace config {
     std::mutex g_runtime_overrides_mutex;
     std::unordered_map<std::string, std::string> g_runtime_config_overrides;
 
+    bool is_rtx_hdr_live_tuning_key(std::string_view key) {
+      return key == "rtx_hdr_contrast" ||
+             key == "rtx_hdr_saturation" ||
+             key == "rtx_hdr_middle_gray" ||
+             key == "rtx_hdr_peak_brightness";
+    }
+
+    bool rtx_hdr_live_tuning_overrides_changed(
+      const std::unordered_map<std::string, std::string> &before,
+      const std::unordered_map<std::string, std::string> &after
+    ) {
+      for (const auto key : {"rtx_hdr_contrast"sv, "rtx_hdr_saturation"sv, "rtx_hdr_middle_gray"sv, "rtx_hdr_peak_brightness"sv}) {
+        const auto before_it = before.find(std::string(key));
+        const auto after_it = after.find(std::string(key));
+        if (before_it == before.end() && after_it == after.end()) {
+          continue;
+        }
+        if (before_it == before.end() || after_it == after.end() || before_it->second != after_it->second) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     bool is_valid_override_key(const std::string_view key) {
       if (key.empty() || key.size() > 128) {
         return false;
@@ -2522,6 +2547,10 @@ namespace config {
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
+      const auto prev_rtx_hdr_contrast = video.rtx_hdr.contrast;
+      const auto prev_rtx_hdr_saturation = video.rtx_hdr.saturation;
+      const auto prev_rtx_hdr_middle_gray = video.rtx_hdr.middle_gray;
+      const auto prev_rtx_hdr_peak_brightness = video.rtx_hdr.peak_brightness;
       const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
@@ -2551,6 +2580,17 @@ namespace config {
       if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
         logging::reconfigure_min_log_level(sunshine.min_log_level);
       }
+
+#ifdef _WIN32
+      const bool rtx_hdr_live_tuning_changed =
+        prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
+        prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
+        prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
+        prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
+      if (rtx_hdr_live_tuning_changed) {
+        platf::rtx_hdr::notify_live_tuning_changed();
+      }
+#endif
 
       // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
       // can read them directly without depending on IPC from Sunshine.
@@ -2609,13 +2649,38 @@ namespace config {
       filtered.emplace(std::move(normalized_key), std::move(v));
     }
 
-    std::scoped_lock lk(g_runtime_overrides_mutex);
-    g_runtime_config_overrides = std::move(filtered);
+    bool rtx_hdr_tuning_changed = false;
+    {
+      std::scoped_lock lk(g_runtime_overrides_mutex);
+      rtx_hdr_tuning_changed = rtx_hdr_live_tuning_overrides_changed(g_runtime_config_overrides, filtered);
+      g_runtime_config_overrides = std::move(filtered);
+    }
+#ifdef _WIN32
+    if (rtx_hdr_tuning_changed) {
+      platf::rtx_hdr::notify_live_tuning_changed();
+    }
+#endif
   }
 
   void clear_runtime_config_overrides() {
+    bool rtx_hdr_tuning_changed = false;
+    {
+      std::scoped_lock lk(g_runtime_overrides_mutex);
+      rtx_hdr_tuning_changed = std::ranges::any_of(g_runtime_config_overrides, [](const auto &entry) {
+        return is_rtx_hdr_live_tuning_key(entry.first);
+      });
+      g_runtime_config_overrides.clear();
+    }
+#ifdef _WIN32
+    if (rtx_hdr_tuning_changed) {
+      platf::rtx_hdr::notify_live_tuning_changed();
+    }
+#endif
+  }
+
+  std::unordered_map<std::string, std::string> runtime_config_overrides_snapshot() {
     std::scoped_lock lk(g_runtime_overrides_mutex);
-    g_runtime_config_overrides.clear();
+    return g_runtime_config_overrides;
   }
 
   bool has_runtime_config_override(std::string_view key) {

@@ -217,6 +217,13 @@ namespace proc {
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
+#ifdef _WIN32
+    bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
+    bool update_active_app_live_rtx_hdr_overrides(
+      const std::string &app_uuid,
+      const std::unordered_map<std::string, std::string> &rtx_hdr_overrides
+    );
+#endif
 
     // Helpers for parse/refresh to extract newly parsed state without exposing internals
     std::vector<ctx_t> release_apps();

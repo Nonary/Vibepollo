@@ -21,6 +21,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -116,6 +117,12 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
+    constexpr std::array<std::string_view, 4> RTX_HDR_LIVE_TUNING_KEYS {
+      "rtx_hdr_contrast"sv,
+      "rtx_hdr_saturation"sv,
+      "rtx_hdr_middle_gray"sv,
+      "rtx_hdr_peak_brightness"sv,
+    };
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
@@ -3555,6 +3562,140 @@ namespace proc {
       }
     }
   }
+
+#ifdef _WIN32
+  bool proc_t::update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid) {
+    if (app_uuid.empty()) {
+      return false;
+    }
+
+    std::unordered_map<std::string, std::string> runtime_overrides;
+    bool changed = false;
+    {
+      std::scoped_lock lk(_apps_mutex);
+      if (_app_id <= 0 || _app.uuid != app_uuid) {
+        return false;
+      }
+
+      const auto updated = std::find_if(_apps.begin(), _apps.end(), [&](const auto &app) {
+        return app.uuid == app_uuid;
+      });
+      if (updated == _apps.end()) {
+        return false;
+      }
+
+      runtime_overrides = config::runtime_config_overrides_snapshot();
+      for (const auto key_view : RTX_HDR_LIVE_TUNING_KEYS) {
+        const std::string key {key_view};
+        const auto old_app_value = _app.config_overrides.find(key);
+        const auto new_app_value = updated->config_overrides.find(key);
+        const auto runtime_value = runtime_overrides.find(key);
+
+        if (old_app_value == _app.config_overrides.end()) {
+          if (runtime_value != runtime_overrides.end()) {
+            continue;
+          }
+          if (new_app_value != updated->config_overrides.end()) {
+            runtime_overrides.emplace(key, new_app_value->second);
+            _app.config_overrides[key] = new_app_value->second;
+            changed = true;
+          }
+          continue;
+        }
+
+        if (runtime_value != runtime_overrides.end() && runtime_value->second != old_app_value->second) {
+          continue;
+        }
+
+        if (new_app_value != updated->config_overrides.end()) {
+          if (runtime_value == runtime_overrides.end() || runtime_value->second != new_app_value->second) {
+            runtime_overrides[key] = new_app_value->second;
+            changed = true;
+          }
+          _app.config_overrides[key] = new_app_value->second;
+        } else {
+          if (runtime_value != runtime_overrides.end()) {
+            runtime_overrides.erase(key);
+            changed = true;
+          }
+          _app.config_overrides.erase(key);
+        }
+      }
+    }
+
+    if (!changed) {
+      return false;
+    }
+
+    config::set_runtime_config_overrides(std::move(runtime_overrides));
+    config::apply_config_now();
+    return true;
+  }
+
+  bool proc_t::update_active_app_live_rtx_hdr_overrides(
+    const std::string &app_uuid,
+    const std::unordered_map<std::string, std::string> &rtx_hdr_overrides
+  ) {
+    if (app_uuid.empty()) {
+      return false;
+    }
+
+    std::unordered_map<std::string, std::string> runtime_overrides;
+    bool changed = false;
+    {
+      std::scoped_lock lk(_apps_mutex);
+      if (_app_id <= 0 || _app.uuid != app_uuid) {
+        return false;
+      }
+
+      runtime_overrides = config::runtime_config_overrides_snapshot();
+      for (const auto key_view : RTX_HDR_LIVE_TUNING_KEYS) {
+        const std::string key {key_view};
+        const auto old_app_value = _app.config_overrides.find(key);
+        const auto new_app_value = rtx_hdr_overrides.find(key);
+        const auto runtime_value = runtime_overrides.find(key);
+
+        if (old_app_value == _app.config_overrides.end()) {
+          if (runtime_value != runtime_overrides.end()) {
+            continue;
+          }
+          if (new_app_value != rtx_hdr_overrides.end()) {
+            runtime_overrides.emplace(key, new_app_value->second);
+            _app.config_overrides[key] = new_app_value->second;
+            changed = true;
+          }
+          continue;
+        }
+
+        if (runtime_value != runtime_overrides.end() && runtime_value->second != old_app_value->second) {
+          continue;
+        }
+
+        if (new_app_value != rtx_hdr_overrides.end()) {
+          if (runtime_value == runtime_overrides.end() || runtime_value->second != new_app_value->second) {
+            runtime_overrides[key] = new_app_value->second;
+            changed = true;
+          }
+          _app.config_overrides[key] = new_app_value->second;
+        } else {
+          if (runtime_value != runtime_overrides.end()) {
+            runtime_overrides.erase(key);
+            changed = true;
+          }
+          _app.config_overrides.erase(key);
+        }
+      }
+    }
+
+    if (!changed) {
+      return false;
+    }
+
+    config::set_runtime_config_overrides(std::move(runtime_overrides));
+    config::apply_config_now();
+    return true;
+  }
+#endif
 
   std::vector<ctx_t> proc_t::release_apps() {
     return std::move(_apps);

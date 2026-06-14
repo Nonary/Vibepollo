@@ -33,8 +33,9 @@
         <div class="min-w-0 space-y-1">
           <div class="text-sm font-semibold leading-snug">Override HDR values directly</div>
           <p class="text-[12px] leading-relaxed opacity-70">
-            Use these sliders instead of inheriting the NVIDIA RTX HDR profile or global default
-            values.
+            Use these sliders instead of inheriting NVIDIA RTX HDR profile or global default values.
+            The tuning values update live during an active stream, so you can open this page from
+            another device and fine-tune HDR while watching.
           </p>
         </div>
       </label>

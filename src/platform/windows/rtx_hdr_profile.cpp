@@ -392,6 +392,16 @@ namespace platf::rtx_hdr {
     return merge_runtime_values(resolved, config_fallback);
   }
 
+  runtime_values_t materialize_live_tuning_values(
+    const resolved_profile_t &resolved,
+    const runtime_values_t &config_fallback,
+    bool enabled
+  ) {
+    auto values = active_values(resolved, config_fallback);
+    values.enabled = enabled;
+    return values;
+  }
+
   std::optional<bool> decode_rtx_hdr_activation_for_tests(std::optional<std::uint32_t> driver_flags, std::optional<std::uint32_t> profile_enable) {
     return decode_activation_state(driver_flags, profile_enable);
   }

@@ -365,6 +365,20 @@ namespace confighttp {
       return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
     }
 
+    bool is_rtx_hdr_live_tuning_key(std::string_view key) {
+      return key == "rtx_hdr_contrast" ||
+             key == "rtx_hdr_saturation" ||
+             key == "rtx_hdr_middle_gray" ||
+             key == "rtx_hdr_peak_brightness";
+    }
+
+    std::string encode_config_override_value(const nlohmann::json &value) {
+      if (value.is_string()) {
+        return value.get<std::string>();
+      }
+      return value.dump();
+    }
+
     bool can_hot_apply_during_session(const std::set<std::string> &keys) {
       if (keys.empty()) {
         return false;
@@ -376,6 +390,10 @@ namespace confighttp {
         }
 
         if (key.rfind("realtime_stats_", 0) == 0) {
+          continue;
+        }
+
+        if (is_rtx_hdr_live_tuning_key(key)) {
           continue;
         }
 
@@ -1778,6 +1796,12 @@ namespace confighttp {
 
       // Update apps file and refresh client cache
       confighttp::refresh_client_apps_cache(file_tree);
+#ifdef _WIN32
+      const auto edited_uuid = input_tree.value("uuid", ""s);
+      if (!edited_uuid.empty()) {
+        (void) proc::proc.update_active_app_live_rtx_hdr_overrides(edited_uuid);
+      }
+#endif
 
       // Prepare and send the output response.
       nlohmann::json outputTree;
@@ -1788,6 +1812,60 @@ namespace confighttp {
       bad_request(response, request, e.what());
     }
   }
+
+#ifdef _WIN32
+  void updateAppRtxHdrLive(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+    try {
+      nlohmann::json input_tree = nlohmann::json::parse(ss);
+      if (!input_tree.is_object()) {
+        bad_request(response, request, "Request body must be a JSON object");
+        return;
+      }
+
+      const std::string uuid = input_tree.value("uuid", "");
+      if (uuid.empty()) {
+        bad_request(response, request, "Missing application UUID");
+        return;
+      }
+
+      std::unordered_map<std::string, std::string> rtx_hdr_overrides;
+      const auto overrides_it = input_tree.find("config-overrides");
+      if (overrides_it != input_tree.end()) {
+        if (!overrides_it->is_object()) {
+          bad_request(response, request, "config-overrides must be an object");
+          return;
+        }
+
+        for (const auto &item : overrides_it->items()) {
+          const std::string key = item.key();
+          if (!is_rtx_hdr_live_tuning_key(key) || item.value().is_null()) {
+            continue;
+          }
+          rtx_hdr_overrides[key] = encode_config_override_value(item.value());
+        }
+      }
+
+      nlohmann::json output_tree;
+      output_tree["status"] = true;
+      output_tree["applied"] = proc::proc.update_active_app_live_rtx_hdr_overrides(uuid, rtx_hdr_overrides);
+      send_response(response, output_tree);
+    } catch (std::exception &e) {
+      BOOST_LOG(warning) << "UpdateAppRtxHdrLive: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+#endif
 
   /**
    * @brief Serve a specific application's cover image by UUID.
@@ -5222,6 +5300,9 @@ namespace confighttp {
     register_api_route("^/api/apps/delete$", "POST", deleteApp);
     register_api_route("^/api/apps/launch$", "POST", launchApp);
     register_api_route("^/api/apps/close$", "POST", closeApp);
+#ifdef _WIN32
+    register_api_route("^/api/apps/rtx_hdr/live$", "POST", updateAppRtxHdrLive);
+#endif
     register_api_route("^/api/logs$", "GET", getLogs);
     register_api_route("^/api/config$", "GET", getConfig);
     register_api_route("^/api/config$", "POST", saveConfig);

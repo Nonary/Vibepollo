@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -28,6 +29,9 @@ namespace platf::rtx_hdr {
     std::string active_app_exe;
     std::string foreground_source;
   };
+
+  void notify_live_tuning_changed();
+  std::uint64_t live_tuning_generation();
 
 #ifdef SUNSHINE_TESTS
   struct runtime_test_hooks_t {
