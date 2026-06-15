@@ -2140,8 +2140,11 @@ namespace webrtc_stream {
     }
 
     void apply_rtx_hdr_stream_policy(video::config_t &config) {
-      const bool app_rtx_hdr_enabled = config::has_runtime_config_override("rtx_hdr") && config::video.rtx_hdr.enabled;
-      config.rtx_hdr_active = app_rtx_hdr_enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
+      // Keep the stream in a TrueHDR-capable HDR pipeline for the whole session. The
+      // per-frame RTX HDR runtime still bypasses conversion while the foreground is
+      // desktop or any non-matching app, so we can turn RTX HDR off without changing
+      // WGC capture format or reinitializing the encoder.
+      config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
     }
 
     audio::config_t build_audio_config(const SessionOptions &options) {

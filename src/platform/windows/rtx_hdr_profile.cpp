@@ -20,7 +20,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_set>
-#include <vector>
 
 namespace platf::rtx_hdr {
   namespace {
@@ -129,42 +128,6 @@ namespace platf::rtx_hdr {
         return std::nullopt;
       }
       return setting.u32CurrentValue;
-    }
-
-    // Diagnostic: dump every setting actually present in a profile, once per profile name per
-    // process, so we can see exactly what (and where) the NVIDIA App stored RTX HDR.
-    void log_profile_settings_once(NvDRSSessionHandle session, NvDRSProfileHandle profile, const std::string &profile_name) {
-      static std::mutex mtx;
-      static std::unordered_set<std::string> logged;
-      {
-        std::scoped_lock lk(mtx);
-        if (!logged.insert(profile_name).second) {
-          return;
-        }
-      }
-
-      NvU32 total = 512;
-      std::vector<NVDRS_SETTING> settings(total);
-      for (auto &setting : settings) {
-        setting.version = NVDRS_SETTING_VER;
-      }
-
-      const auto status = NvAPI_DRS_EnumSettings(session, profile, 0, &total, settings.data());
-      if (status != NVAPI_OK || total == 0) {
-        BOOST_LOG(debug) << "RTX HDR: enum '" << profile_name << "' status=" << static_cast<int>(status)
-                         << " count=" << total;
-        return;
-      }
-
-      settings.resize(total);
-      for (const auto &setting : settings) {
-        BOOST_LOG(debug) << "RTX HDR:   [" << profile_name << "] id=0x" << std::hex << setting.settingId << std::dec
-                         << " type=" << static_cast<int>(setting.settingType)
-                         << " loc=" << static_cast<int>(setting.settingLocation)
-                         << " predef=" << (setting.isCurrentPredefined ? 1 : 0)
-                         << " u32=" << setting.u32CurrentValue;
-      }
-      BOOST_LOG(debug) << "RTX HDR: enum '" << profile_name << "' enumerated " << total << " setting(s)";
     }
 
     std::optional<bool> decode_activation_state(std::optional<NvU32> driver_flags, std::optional<NvU32> profile_enable) {
@@ -458,14 +421,12 @@ namespace platf::rtx_hdr {
         resolved.source = profile_source_e::application;
         resolved.profile_name = app_profile->second;
         resolved.application = read_profile_values(session, app_profile->first, app_profile->second, true);
-        log_profile_settings_once(session, app_profile->first, app_profile->second);
       }
     }
 
     NvDRSProfileHandle base_profile = nullptr;
     if (NvAPI_DRS_GetBaseProfile(session, &base_profile) == NVAPI_OK && base_profile) {
       resolved.global = read_profile_values(session, base_profile, "global", false);
-      log_profile_settings_once(session, base_profile, "global");
       if (resolved.source == profile_source_e::none && resolved.global.has_any()) {
         resolved.source = profile_source_e::global;
       }

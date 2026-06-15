@@ -49,8 +49,9 @@ namespace video {
     // Set when we bumped dynamicRange to 10-bit for SDR-only encoding (prefer_10bit_sdr)
     bool prefer_sdr_10bit;
 
-    // Stream-scoped RTX HDR enable. Runtime foreground-window checks can still
-    // bypass conversion while this remains true.
+    // Stream-scoped TrueHDR-capable pipeline enable. Runtime foreground-window
+    // checks can still bypass per-frame conversion while this remains true, which
+    // keeps capture and encoder format stable across desktop/app focus changes.
     bool rtx_hdr_active = false;
 
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
