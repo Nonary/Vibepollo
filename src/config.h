@@ -125,7 +125,7 @@ namespace config {
       int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
       int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
       int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)
-      int peak_brightness;  ///< 400..2000 nits (overlay "Peak Brightness", default 1000)
+      int peak_brightness;  ///< 400..1500 nits (overlay "Peak Brightness", default 1000)
     } rtx_hdr;
 
     std::string capture;
