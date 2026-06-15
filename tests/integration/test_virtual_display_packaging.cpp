@@ -108,6 +108,10 @@ TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotR
   expect_contains(installer, "[Microsoft.Win32.RegistryView]::Registry64");
   expect_contains(installer, "[Microsoft.Win32.RegistryView]::Registry32");
   expect_contains(installer, "Vulkan HDR implicit layer registrations removed from ${view}");
+  expect_contains(installer, "function Assert-CatalogSignature");
+  expect_contains(installer, "Get-AuthenticodeSignature -LiteralPath $catPath");
+  expect_contains(installer, "Driver catalog is not signed");
+  expect_contains(installer, "Assert-CatalogSignature");
   EXPECT_EQ(installer.find("Assert-DriverControlInterface"), std::string::npos);
   EXPECT_EQ(installer.find("Assert-DriverHdrTemporaryDisplay"), std::string::npos);
   EXPECT_EQ(installer.find("--self-test-hdr"), std::string::npos);

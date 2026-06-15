@@ -115,6 +115,13 @@ function Assert-InfContent {
     }
 }
 
+function Assert-CatalogSignature {
+    $signature = Get-AuthenticodeSignature -LiteralPath $catPath
+    if (-not $signature.SignerCertificate) {
+        throw "[SunshineVirtualDisplay] Driver catalog is not signed: $catPath"
+    }
+}
+
 function Assert-Package {
     foreach ($artifact in @($infPath, $dllPath, $catPath, $nefConc, $probePath)) {
         Assert-Artifact -Path $artifact
@@ -125,6 +132,7 @@ function Assert-Package {
 
     Assert-VulkanLayerPackage
     Assert-InfContent
+    Assert-CatalogSignature
 }
 
 function Assert-VulkanLayerPackage {
