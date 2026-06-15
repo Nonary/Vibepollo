@@ -87,6 +87,14 @@ TEST(SunshineVirtualDisplayPackaging, RefreshScriptBuildsDriverProbeAndValidates
   expect_contains(script, "Assert-SameFile -Expected $expectedPackageVulkanLayerJson -Actual $packageVulkanLayerJson");
 }
 
+TEST(SunshineVirtualDisplayPackaging, LocalPackageRefreshSignsDriverCatalog) {
+  const auto cmake = read_source_file("cmake/packaging/windows.cmake");
+
+  expect_contains(cmake, "SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS");
+  expect_contains(cmake, "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS}");
+  EXPECT_EQ(cmake.find("list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)"), std::string::npos);
+}
+
 TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotRunRuntimeQa) {
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 

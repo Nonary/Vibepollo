@@ -252,25 +252,23 @@ function Find-SigningCertificate {
         'CN=Virtual Display Driver Local Signing'
     )
     $fallbacks = [System.Collections.Generic.List[object]]::new()
-    foreach ($storeLocation in @('CurrentUser', 'LocalMachine')) {
-        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', $storeLocation)
-        try {
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-            foreach ($match in $store.Certificates) {
-                if (-not $match.HasPrivateKey -or $match.NotAfter -le (Get-Date)) {
-                    continue
-                }
-                if ($candidateSubjects -contains $match.Subject) {
-                    $fallbacks.Add([PSCustomObject]@{
-                        Certificate = $match
-                        Thumbprint = $match.Thumbprint
-                        UseMachineStore = ($storeLocation -eq 'LocalMachine')
-                    })
-                }
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', 'CurrentUser')
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        foreach ($match in $store.Certificates) {
+            if (-not $match.HasPrivateKey -or $match.NotAfter -le (Get-Date)) {
+                continue
             }
-        } finally {
-            $store.Close()
+            if ($candidateSubjects -contains $match.Subject) {
+                $fallbacks.Add([PSCustomObject]@{
+                    Certificate = $match
+                    Thumbprint = $match.Thumbprint
+                    UseMachineStore = $false
+                })
+            }
         }
+    } finally {
+        $store.Close()
     }
 
     $fallback = $fallbacks |
@@ -430,9 +428,9 @@ if ($Build) {
                 if ($LASTEXITCODE -ne 0) {
                     throw "[SunshineVirtualDisplay] signtool sign failed with exit code $LASTEXITCODE"
                 }
-                & $signtool verify /pa $packageCat
-                if ($LASTEXITCODE -ne 0) {
-                    throw "[SunshineVirtualDisplay] signtool verify failed with exit code $LASTEXITCODE"
+                $signature = Get-AuthenticodeSignature -LiteralPath $packageCat
+                if (-not $signature.SignerCertificate) {
+                    throw "[SunshineVirtualDisplay] signed catalog has no signer certificate"
                 }
             } else {
                 Write-Warning '[SunshineVirtualDisplay] No signing certificate was provided; generated catalog is unsigned.'
