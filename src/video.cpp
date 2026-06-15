@@ -48,10 +48,6 @@ extern "C" {
 #ifdef _WIN32
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
-  #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
-    #include "src/platform/windows/foreground_app.h"
-    #include "src/platform/windows/rtx_hdr_profile.h"
-  #endif
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
@@ -2254,6 +2250,35 @@ namespace video {
     return -1;
   }
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  // The NGX TrueHDR model's output tops out around 1500 nits, so we advertise that as the HDR
+  // volume regardless of the per-app peak-brightness dial. The dial varies the actual rendered
+  // luminance (which never exceeds this ceiling), so a fixed honest ceiling keeps the client's
+  // tone-mapping stable and means we never have to re-send metadata when the dial is tuned live.
+  constexpr uint16_t RTX_HDR_PEAK_NITS = 1500;
+
+  /**
+   * @brief Synthesize Rec.2020/D65 HDR10 metadata for an RTX HDR (SDR->HDR) stream.
+   *
+   * RTX HDR captures an SDR source and post-processes it to HDR, so the capture display's own
+   * luminance metadata is irrelevant -- the client (and the encoded SEI) must advertise the HDR
+   * volume the TrueHDR conversion targets, not whatever the panel reports. Shared by every
+   * HDR-metadata producer so the bitstream SEI and the control-channel metadata stay consistent.
+   */
+  SS_HDR_METADATA synthesize_rtx_hdr_metadata() {
+    SS_HDR_METADATA m {};
+    m.displayPrimaries[0] = {35400, 14600};  // R (Rec.2020, normalized to 50000)
+    m.displayPrimaries[1] = {8500, 39850};  // G
+    m.displayPrimaries[2] = {6550, 2300};  // B
+    m.whitePoint = {15635, 16450};  // D65
+    m.maxDisplayLuminance = RTX_HDR_PEAK_NITS;  // nits
+    m.minDisplayLuminance = 1;  // 1/10000th nit (~0)
+    m.maxContentLightLevel = RTX_HDR_PEAK_NITS;  // nits
+    m.maxFrameAverageLightLevel = RTX_HDR_PEAK_NITS / 4;  // nits
+    return m;
+  }
+#endif
+
   std::unique_ptr<avcodec_encode_session_t> make_avcodec_encode_session(
     platf::display_t *disp,
     const encoder_t &encoder,
@@ -2575,7 +2600,21 @@ namespace video {
     // Attach HDR metadata to the AVFrame
     if (colorspace_is_hdr(colorspace)) {
       SS_HDR_METADATA hdr_metadata;
+      bool have_hdr_metadata = false;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (config.rtx_hdr_active) {
+        // SDR source + TrueHDR: synthesize from the conversion's target peak so the encoded
+        // mastering-display/content-light SEI matches the control-channel metadata, instead of
+        // embedding the (irrelevant) capture panel's luminance.
+        hdr_metadata = synthesize_rtx_hdr_metadata();
+        have_hdr_metadata = true;
+      } else
+#endif
       if (disp->get_hdr_metadata(hdr_metadata)) {
+        have_hdr_metadata = true;
+      }
+
+      if (have_hdr_metadata) {
         auto mdm = av_mastering_display_metadata_create_side_data(frame.get());
 
         mdm->display_primaries[0][0] = av_make_q(hdr_metadata.displayPrimaries[0].x, 50000);
@@ -3050,38 +3089,19 @@ namespace video {
     // Update client with our current HDR display state
     hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
     if (colorspace_is_hdr(encode_device->colorspace)) {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (ctx.config.rtx_hdr_active) {
+        // SDR source + TrueHDR: ignore the capture display's metadata entirely and report the
+        // peak the TrueHDR conversion targets -- otherwise get_hdr_metadata() succeeds for the
+        // (SDR-forced) panel and the client tone-maps against the panel cap instead of the dial.
+        hdr_info->metadata = synthesize_rtx_hdr_metadata();
+        hdr_info->enabled = true;
+        BOOST_LOG(info) << "RTX HDR: synthesized HDR10 metadata (peak " << hdr_info->metadata.maxDisplayLuminance << " nits) for SDR source";
+      } else
+#endif
       if (disp->get_hdr_metadata(hdr_info->metadata)) {
         hdr_info->enabled = true;
-      }
-#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
-      else if (ctx.config.rtx_hdr_active) {
-        // SDR source + TrueHDR: the display has no HDR metadata, so synthesize Rec.2020
-        // HDR10 metadata from the dials (primaries/white normalized to 50000).
-        int rtx_hdr_peak_brightness = config::video.rtx_hdr.peak_brightness;
-#ifdef _WIN32
-        std::string rtx_hdr_foreground_exe;
-        const auto rtx_hdr_foreground = platf::foreground_app::snapshot();
-        if (rtx_hdr_foreground.matches_active_app) {
-          rtx_hdr_foreground_exe = rtx_hdr_foreground.active_app_exe.empty() ? rtx_hdr_foreground.foreground_exe : rtx_hdr_foreground.active_app_exe;
-        }
-        if (auto resolved_peak = platf::rtx_hdr::resolve_session_peak_brightness(rtx_hdr_foreground_exe)) {
-          rtx_hdr_peak_brightness = *resolved_peak;
-        }
-#endif
-        auto &m = hdr_info->metadata;
-        m.displayPrimaries[0] = {35400, 14600};  // R (Rec.2020)
-        m.displayPrimaries[1] = {8500, 39850};  // G
-        m.displayPrimaries[2] = {6550, 2300};  // B
-        m.whitePoint = {15635, 16450};  // D65
-        m.maxDisplayLuminance = (uint16_t) rtx_hdr_peak_brightness;  // nits
-        m.minDisplayLuminance = 1;  // 1/10000th nit (~0)
-        m.maxContentLightLevel = (uint16_t) rtx_hdr_peak_brightness;
-        m.maxFrameAverageLightLevel = (uint16_t) (rtx_hdr_peak_brightness / 4);
-        hdr_info->enabled = true;
-        BOOST_LOG(info) << "RTX HDR: synthesized HDR10 metadata (peak " << rtx_hdr_peak_brightness << " nits) for SDR source";
-      }
-#endif
-      else {
+      } else {
         BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
       }
     }
@@ -3406,6 +3426,16 @@ namespace video {
       // Update client with our current HDR display state
       hdr_info_t hdr_info = std::make_unique<hdr_info_raw_t>(false);
       if (colorspace_is_hdr(encode_device->colorspace)) {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+        if (config.rtx_hdr_active) {
+          // SDR source + TrueHDR: report the conversion's target peak, not the capture panel's.
+          // This is the path NVENC (PARALLEL_ENCODING) actually takes, so without it the RTX HDR
+          // peak-brightness dial is dropped and the client is pinned to the panel's metadata.
+          hdr_info->metadata = synthesize_rtx_hdr_metadata();
+          hdr_info->enabled = true;
+          BOOST_LOG(info) << "RTX HDR: synthesized HDR10 metadata (peak " << hdr_info->metadata.maxDisplayLuminance << " nits) for SDR source";
+        } else
+#endif
         if (display->get_hdr_metadata(hdr_info->metadata)) {
           hdr_info->enabled = true;
         } else {
