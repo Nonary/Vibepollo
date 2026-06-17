@@ -64,9 +64,9 @@
           :key="appKey(app, i)"
           type="button"
           class="apps-row"
-          @click="openEdit(app, i)"
-          @keydown.enter.prevent="openEdit(app, i)"
-          @keydown.space.prevent="openEdit(app, i)"
+          @click="openEdit(app)"
+          @keydown.enter.prevent="openEdit(app)"
+          @keydown.space.prevent="openEdit(app)"
         >
           <div class="apps-row__art" aria-hidden="true">
             <img
@@ -134,14 +134,7 @@
     <AppEditModal
       v-model="showModal"
       :app="currentApp"
-      :index="currentIndex"
-      :key="
-        modalKey +
-        '|' +
-        (currentIndex ?? -1) +
-        '|' +
-        (currentApp?.uuid || currentApp?.name || 'new')
-      "
+      :key="modalKey + '|' + (currentApp?.uuid || currentApp?.name || 'new')"
       @saved="reload"
       @deleted="reload"
     />
@@ -149,8 +142,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, defineAsyncComponent } from 'vue';
-const AppEditModal = defineAsyncComponent(() => import('@/components/AppEditModal.vue'));
+import { ref, onMounted, computed } from 'vue';
+import AppEditModal from '@/components/AppEditModal.vue';
 import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import { NButton } from 'naive-ui';
@@ -178,7 +171,6 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 const showModal = ref(false);
 const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
-const currentIndex = ref(-1);
 const failedPlayniteIconKeys = ref<Set<string>>(new Set());
 
 async function reload(): Promise<void> {
@@ -187,13 +179,11 @@ async function reload(): Promise<void> {
 
 function openAdd(): void {
   currentApp.value = null;
-  currentIndex.value = -1;
   showModal.value = true;
 }
 
-function openEdit(app: App, i: number): void {
+function openEdit(app: App): void {
   currentApp.value = app;
-  currentIndex.value = i;
   showModal.value = true;
 }
 

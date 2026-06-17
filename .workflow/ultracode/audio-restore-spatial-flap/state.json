@@ -1,0 +1,64 @@
+{
+  "title": "Audio Restore Spatial Flap",
+  "slug": "audio-restore-spatial-flap",
+  "created_at": "2026-06-16T18:34:07.2721993-05:00",
+  "updated_at": "2026-06-16T18:41:09.6814103-05:00",
+  "status": "complete",
+  "mode": "delegated",
+  "baseline_ref": "58ac1d386e4c7e186547919c4989cdcff0a2f224",
+  "risk_level": "medium",
+  "eval_contract": {
+    "level": "inline",
+    "path": null,
+    "status": "ready"
+  },
+  "approval": {
+    "required": false,
+    "granted": null,
+    "notes": "Local source inspection, source edits, and targeted build only."
+  },
+  "delegation": {
+    "native_agent_available": true,
+    "native_agent_planned": true,
+    "native_agent_used": true,
+    "agent_count": 2,
+    "wave_count": 1,
+    "no_delegation_reason": "",
+    "notes": "Two read-only explorer agents planned for independent audio-path discovery."
+  },
+  "packets": [
+    {
+      "id": "01-audio-restore-flow",
+      "status": "complete",
+      "owner": "read-only-agent",
+      "write_scope": [],
+      "result_path": "results/01-audio-restore-flow.md"
+    },
+    {
+      "id": "02-spatial-flap-hypothesis",
+      "status": "complete",
+      "owner": "read-only-agent",
+      "write_scope": [],
+      "result_path": "results/02-spatial-flap-hypothesis.md"
+    },
+    {
+      "id": "03-implementation",
+      "status": "complete",
+      "owner": "parent",
+      "write_scope": [],
+      "result_path": "results/03-implementation.md"
+    }
+  ],
+  "verification": {
+    "status": "complete",
+    "checks": [
+      {
+        "name": "native debug build",
+        "command": "$env:PATH = \"D:/Software/MSYS2/ucrt64/bin;$env:PATH\"; cmake --build d:/sources/sunshine/build --config Debug --target all -j 10",
+        "required": true,
+        "status": "pass",
+        "evidence": "Passed on 2026-06-16: built src/platform/windows/audio.cpp, tests/test_sunshine.exe, sunshine.exe, and web assets."
+      }
+    ]
+  }
+}

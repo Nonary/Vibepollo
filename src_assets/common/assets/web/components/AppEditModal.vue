@@ -3135,7 +3135,15 @@ async function del() {
       }
     }
 
-    const r = await http.delete(`./api/apps/${form.value.index}`, { validateStatus: () => true });
+    const target = form.value.uuid || String(form.value.index);
+    if (!target || target === '-1') {
+      message?.error('Cannot delete an application without a UUID.');
+      return;
+    }
+
+    const r = await http.delete(`./api/apps/${encodeURIComponent(target)}`, {
+      validateStatus: () => true,
+    });
     try {
       if (r && (r as any).data && (r as any).data.playniteFullscreenDisabled) {
         try {

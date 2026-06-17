@@ -140,7 +140,39 @@ namespace confighttp {
     } catch (...) {}
   }
 
-  bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name) {
+  std::optional<size_t> find_app_index_by_uuid(const nlohmann::json &apps_node, const std::string &uuid) {
+    if (uuid.empty() || !apps_node.is_array()) {
+      return std::nullopt;
+    }
+    for (size_t i = 0; i < apps_node.size(); ++i) {
+      const auto &app = apps_node[i];
+      if (app.is_object() && app.contains("uuid") && app["uuid"].is_string() && app["uuid"].get<std::string>() == uuid) {
+        return i;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<size_t> resolve_app_index_token(const nlohmann::json &apps_node, const std::string &token) {
+    if (auto uuid_index = find_app_index_by_uuid(apps_node, token)) {
+      return uuid_index;
+    }
+    if (token.empty() || !std::ranges::all_of(token, [](unsigned char ch) {
+          return std::isdigit(ch) != 0;
+        })) {
+      return std::nullopt;
+    }
+    try {
+      const auto index = static_cast<size_t>(std::stoull(token));
+      if (apps_node.is_array() && index < apps_node.size()) {
+        return index;
+      }
+    } catch (...) {
+    }
+    return std::nullopt;
+  }
+
+  bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name = false) {
     try {
       if (sort_by_name) {
         sort_apps_by_name(file_tree);
@@ -2147,10 +2179,12 @@ namespace confighttp {
     print_req(request);
 
     const bool is_delete_method = request->method == "DELETE";
+    std::optional<std::string> token_from_path;
     std::optional<size_t> index_from_path;
     if (request->path_match.size() > 1) {
+      token_from_path = request->path_match[1];
       try {
-        index_from_path = static_cast<size_t>(std::stoul(request->path_match[1]));
+        index_from_path = static_cast<size_t>(std::stoul(*token_from_path));
       } catch (...) {
       }
     }
@@ -2216,6 +2250,19 @@ namespace confighttp {
       }
 
       auto &apps_node = file_tree["apps"];
+      if (!uuid && !index_from_body && token_from_path) {
+        if (auto resolved_index = resolve_app_index_token(apps_node, *token_from_path)) {
+          target_index = resolved_index;
+          const auto &app_entry = apps_node[*resolved_index];
+          if (app_entry.is_object() && app_entry.contains("uuid") && app_entry["uuid"].is_string()) {
+            uuid = app_entry["uuid"].get<std::string>();
+          }
+        } else {
+          bad_request(response, request, std::format("Application '{}' not found", *token_from_path));
+          return;
+        }
+      }
+
       nlohmann::json::array_t new_apps;
       new_apps.reserve(apps_node.size());
 
@@ -5328,6 +5375,7 @@ namespace confighttp {
 #endif
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/cover$", "GET", getAppCover);
     register_api_route("^/api/apps/([A-Fa-f0-9-]+)/icon$", "GET", getAppIcon);
+    register_api_route("^/api/apps/([A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$", "DELETE", deleteApp);
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);

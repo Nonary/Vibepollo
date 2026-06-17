@@ -1102,18 +1102,16 @@ async function purgePlayniteGames() {
   try {
     await refreshAppsSnapshotStrict();
     const snapshot = getAppsSnapshot();
-    const indexes = snapshot
-      .map((app, index) => ({ app, index }))
-      .filter((item) => isPlayniteApp(item.app))
-      .map((item) => item.index)
-      .sort((a, b) => b - a);
-    if (!indexes.length) {
+    const playniteApps = snapshot.filter((app) => isPlayniteApp(app) && !!app.uuid);
+    if (!playniteApps.length) {
       message.info('No Playnite apps found to purge.');
       await refreshPlayniteAndApps();
       return;
     }
-    for (const index of indexes) {
-      const r = await http.delete(`./api/apps/${index}`, { validateStatus: () => true });
+    for (const app of playniteApps) {
+      const r = await http.delete(`./api/apps/${encodeURIComponent(String(app.uuid))}`, {
+        validateStatus: () => true,
+      });
       const body = r.data as any;
       const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
       if (!ok) {
@@ -1125,7 +1123,7 @@ async function purgePlayniteGames() {
       await configStore.fetchConfig(true);
     } catch {}
     await refreshPlayniteAndApps();
-    const removed = indexes.length;
+    const removed = playniteApps.length;
     message.success(`Removed ${removed} Playnite app${removed === 1 ? '' : 's'}.`);
   } catch (e: any) {
     message.error(`Failed to purge Playnite apps: ${e?.message || 'Request failed'}`);
