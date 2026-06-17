@@ -34,6 +34,7 @@ extern "C" {
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
+#include "thread_pool.h"
 #include "video.h"
 
 namespace asio = boost::asio;
@@ -82,12 +83,13 @@ namespace rtsp_stream {
 #pragma pack(pop)
 
   class rtsp_server_t;
+  class socket_t;
 
   using msg_t = util::safe_ptr<RTSP_MESSAGE, free_msg>;
-  using cmd_func_t = std::function<void(rtsp_server_t *server, tcp::socket &, launch_session_t &, msg_t &&)>;
+  using cmd_func_t = std::function<bool(rtsp_server_t *server, std::shared_ptr<socket_t>, std::shared_ptr<launch_session_t>, msg_t &&)>;
 
   void print_msg(PRTSP_MESSAGE msg);
-  void cmd_not_found(tcp::socket &sock, launch_session_t &, msg_t &&req);
+  bool cmd_not_found(rtsp_server_t *server, std::shared_ptr<socket_t>, std::shared_ptr<launch_session_t>, msg_t &&req);
   void respond(tcp::socket &sock, launch_session_t &session, POPTION_ITEM options, int statuscode, const char *status_msg, int seqn, const std::string_view &payload);
 
   void apply_rtx_hdr_stream_policy(video::config_t &config) {
@@ -98,9 +100,35 @@ namespace rtsp_stream {
     config.rtx_hdr_active = config::video.rtx_hdr.enabled && config.dynamicRange > 0 && !config.prefer_sdr_10bit;
   }
 
+  std::shared_ptr<launch_session_t> make_startup_launch_session_snapshot(const launch_session_t &source) {
+    auto snapshot = std::make_shared<launch_session_t>();
+
+    snapshot->id = source.id;
+    snapshot->gcm_key = source.gcm_key;
+    snapshot->iv = source.iv;
+    snapshot->av_ping_payload = source.av_ping_payload;
+    snapshot->control_connect_data = source.control_connect_data;
+    snapshot->unique_id = source.unique_id;
+    snapshot->client_uuid = source.client_uuid;
+    snapshot->device_name = source.device_name;
+    snapshot->virtual_display = source.virtual_display;
+    snapshot->virtual_display_guid_bytes = source.virtual_display_guid_bytes;
+    snapshot->gen1_framegen_fix = source.gen1_framegen_fix;
+    snapshot->gen2_framegen_fix = source.gen2_framegen_fix;
+    snapshot->lossless_scaling_framegen = source.lossless_scaling_framegen;
+    snapshot->frame_generation_provider = source.frame_generation_provider;
+    snapshot->lossless_scaling_target_fps = source.lossless_scaling_target_fps;
+    snapshot->lossless_scaling_rtss_limit = source.lossless_scaling_rtss_limit;
+#ifdef _WIN32
+    snapshot->display_helper_gate = source.display_helper_gate;
+#endif
+
+    return snapshot;
+  }
+
   class socket_t: public std::enable_shared_from_this<socket_t> {
   public:
-    socket_t(boost::asio::io_context &io_context, std::function<void(tcp::socket &sock, launch_session_t &, msg_t &&)> &&handle_data_fn):
+    socket_t(boost::asio::io_context &io_context, std::function<void(std::shared_ptr<socket_t>, msg_t &&)> &&handle_data_fn):
         handle_data_fn {std::move(handle_data_fn)},
         sock {io_context} {
     }
@@ -395,10 +423,10 @@ namespace rtsp_stream {
     }
 
     void handle_data(msg_t &&req) {
-      handle_data_fn(sock, *session, std::move(req));
+      handle_data_fn(shared_from_this(), std::move(req));
     }
 
-    std::function<void(tcp::socket &sock, launch_session_t &, msg_t &&)> handle_data_fn;
+    std::function<void(std::shared_ptr<socket_t>, msg_t &&)> handle_data_fn;
 
     tcp::socket sock;
 
@@ -441,8 +469,10 @@ namespace rtsp_stream {
         return -1;
       }
 
-      next_socket = std::make_shared<socket_t>(io_context, [this](tcp::socket &sock, launch_session_t &session, msg_t &&msg) {
-        handle_msg(sock, session, std::move(msg));
+      startup_pool.start(1);
+
+      next_socket = std::make_shared<socket_t>(io_context, [this](std::shared_ptr<socket_t> socket, msg_t &&msg) {
+        handle_msg(std::move(socket), std::move(msg));
       });
 
       acceptor.async_accept(next_socket->sock, [this](const auto &ec) {
@@ -452,16 +482,19 @@ namespace rtsp_stream {
       return 0;
     }
 
-    void handle_msg(tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+    void handle_msg(std::shared_ptr<socket_t> socket, msg_t &&req) {
+      auto session = socket->session;
       auto func = _map_cmd_cb.find(req->message.request.command);
+      bool defer_socket_shutdown = false;
       if (func != std::end(_map_cmd_cb)) {
-        func->second(this, sock, session, std::move(req));
+        defer_socket_shutdown = func->second(this, socket, session, std::move(req));
       } else {
-        cmd_not_found(sock, session, std::move(req));
+        cmd_not_found(this, socket, session, std::move(req));
       }
 
-      boost::system::error_code ec;
-      sock.shutdown(boost::asio::socket_base::shutdown_type::shutdown_both, ec);
+      if (!defer_socket_shutdown) {
+        shutdown_socket(*socket);
+      }
     }
 
     void handle_accept(const boost::system::error_code &ec) {
@@ -493,8 +526,8 @@ namespace rtsp_stream {
       }
 
       // Queue another asynchronous accept for the next incoming connection
-      next_socket = std::make_shared<socket_t>(io_context, [this](tcp::socket &sock, launch_session_t &session, msg_t &&msg) {
-        handle_msg(sock, session, std::move(msg));
+      next_socket = std::make_shared<socket_t>(io_context, [this](std::shared_ptr<socket_t> socket, msg_t &&msg) {
+        handle_msg(std::move(socket), std::move(msg));
       });
       acceptor.async_accept(next_socket->sock, [this](const auto &ec) {
         handle_accept(ec);
@@ -503,6 +536,46 @@ namespace rtsp_stream {
 
     void map(const std::string_view &type, cmd_func_t cb) {
       _map_cmd_cb.emplace(type, std::move(cb));
+    }
+
+    template<class Function>
+    void post(Function &&fn) {
+      boost::asio::post(io_context, std::forward<Function>(fn));
+    }
+
+    template<class Function>
+    void run_startup(Function &&fn) {
+      if (stopping.load(std::memory_order_acquire)) {
+        throw std::runtime_error("RTSP server is stopping");
+      }
+
+      startup_tasks.fetch_add(1, std::memory_order_acq_rel);
+      try {
+        startup_pool.push([this, task = std::forward<Function>(fn)]() mutable {
+          try {
+            task();
+          } catch (...) {
+            startup_tasks.fetch_sub(1, std::memory_order_acq_rel);
+            throw;
+          }
+        });
+      } catch (...) {
+        startup_tasks.fetch_sub(1, std::memory_order_acq_rel);
+        throw;
+      }
+    }
+
+    void finish_startup() {
+      startup_tasks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    int startup_count() const {
+      return startup_tasks.load(std::memory_order_acquire);
+    }
+
+    void shutdown_socket(socket_t &socket) {
+      boost::system::error_code ec;
+      socket.sock.shutdown(boost::asio::socket_base::shutdown_type::shutdown_both, ec);
     }
 
     /**
@@ -697,8 +770,15 @@ namespace rtsp_stream {
     /**
      * @brief Stop the RTSP server.
      */
+    void stop_startup_pool() {
+      stopping.store(true, std::memory_order_release);
+      boost::system::error_code ec;
+      acceptor.close(ec);
+      startup_pool.stop();
+      startup_pool.join();
+    }
+
     void stop() {
-      acceptor.close();
       io_context.stop();
       clear();
     }
@@ -838,6 +918,9 @@ namespace rtsp_stream {
     boost::asio::io_context io_context;
     tcp::acceptor acceptor {io_context};
     boost::asio::steady_timer raised_timer {io_context};
+    thread_pool_util::ThreadPool startup_pool;
+    std::atomic_int startup_tasks {0};
+    std::atomic_bool stopping {false};
 
     std::shared_ptr<socket_t> next_socket;
   };
@@ -986,11 +1069,12 @@ namespace rtsp_stream {
     respond(sock, session, resp);
   }
 
-  void cmd_not_found(tcp::socket &sock, launch_session_t &session, msg_t &&req) {
-    respond(sock, session, nullptr, 404, "NOT FOUND", req->sequenceNumber, {});
+  bool cmd_not_found(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
+    respond(socket->sock, *session, nullptr, 404, "NOT FOUND", req->sequenceNumber, {});
+    return false;
   }
 
-  void cmd_option(rtsp_server_t *server, tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+  bool cmd_option(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
     OPTION_ITEM option {};
 
     // I know these string literals will not be modified
@@ -999,10 +1083,11 @@ namespace rtsp_stream {
     auto seqn_str = std::to_string(req->sequenceNumber);
     option.content = const_cast<char *>(seqn_str.c_str());
 
-    respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
+    respond(socket->sock, *session, &option, 200, "OK", req->sequenceNumber, {});
+    return false;
   }
 
-  void cmd_describe(rtsp_server_t *server, tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+  bool cmd_describe(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
     OPTION_ITEM option {};
 
     // I know these string literals will not be modified
@@ -1021,7 +1106,7 @@ namespace rtsp_stream {
     uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;
 
     // Determine the encryption desired for this remote endpoint
-    auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
+    auto encryption_mode = net::encryption_mode_for_address(socket->sock.remote_endpoint().address());
     if (encryption_mode != config::ENCRYPTION_MODE_NEVER) {
       // Advertise support for video encryption if it's not disabled
       encryption_flags_supported |= SS_ENC_VIDEO;
@@ -1049,10 +1134,10 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
-    if (!session.surround_params.empty()) {
+    if (!session->surround_params.empty()) {
       // If we have our own surround parameters, advertise them twice first
-      ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
-      ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
+      ss << "a=fmtp:97 surround-params="sv << session->surround_params << std::endl;
+      ss << "a=fmtp:97 surround-params="sv << session->surround_params << std::endl;
     }
 
     for (int x = 0; x < audio::MAX_STREAM_CONFIG; ++x) {
@@ -1082,10 +1167,11 @@ namespace rtsp_stream {
       ss << std::endl;
     }
 
-    respond(sock, session, &option, 200, "OK", req->sequenceNumber, ss.str());
+    respond(socket->sock, *session, &option, 200, "OK", req->sequenceNumber, ss.str());
+    return false;
   }
 
-  void cmd_setup(rtsp_server_t *server, tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+  bool cmd_setup(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
     OPTION_ITEM options[4] {};
 
     auto &seqn = options[0];
@@ -1111,9 +1197,8 @@ namespace rtsp_stream {
     } else if (type == "control"sv) {
       port = net::map_port(stream::CONTROL_PORT);
     } else {
-      cmd_not_found(sock, session, std::move(req));
-
-      return;
+      cmd_not_found(server, socket, session, std::move(req));
+      return false;
     }
 
     seqn.next = &session_option;
@@ -1130,21 +1215,22 @@ namespace rtsp_stream {
     port_option.content = port_value.data();
 
     // Send identifiers that will be echoed in the other connections
-    auto connect_data = std::to_string(session.control_connect_data);
+    auto connect_data = std::to_string(session->control_connect_data);
     if (type == "control"sv) {
       payload_option.option = const_cast<char *>("X-SS-Connect-Data");
       payload_option.content = connect_data.data();
     } else {
       payload_option.option = const_cast<char *>("X-SS-Ping-Payload");
-      payload_option.content = session.av_ping_payload.data();
+      payload_option.content = session->av_ping_payload.data();
     }
 
     port_option.next = &payload_option;
 
-    respond(sock, session, &seqn, 200, "OK", req->sequenceNumber, {});
+    respond(socket->sock, *session, &seqn, 200, "OK", req->sequenceNumber, {});
+    return false;
   }
 
-  void cmd_announce(rtsp_server_t *server, tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+  bool cmd_announce(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
     OPTION_ITEM option {};
 
     // I know these string literals will not be modified
@@ -1218,7 +1304,7 @@ namespace rtsp_stream {
     config.gen2_framegen_fix = false;
 
     std::int64_t configuredBitrateKbps;
-    config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
+    config.audio.flags[audio::config_t::HOST_AUDIO] = session->host_audio;
     try {
       config.audio.channels = (int) util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
       config.audio.mask = (int) util::from_view(args.at("x-nv-audio.surround.channelMask"sv));
@@ -1311,8 +1397,8 @@ namespace rtsp_stream {
       }
 
     } catch (std::out_of_range &) {
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
+      respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return false;
     }
 
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
@@ -1326,21 +1412,21 @@ namespace rtsp_stream {
           config.audio.flags[audio::config_t::HIGH_QUALITY] = (content.find("0.0.0.0"sv) == std::string::npos);
         }
       }
-    } else if (session.surround_params.length() > 3) {
+    } else if (session->surround_params.length() > 3) {
       // Channels
-      std::uint8_t c = session.surround_params[0] - '0';
+      std::uint8_t c = session->surround_params[0] - '0';
       // Streams
-      std::uint8_t n = session.surround_params[1] - '0';
+      std::uint8_t n = session->surround_params[1] - '0';
       // Coupled streams
-      std::uint8_t m = session.surround_params[2] - '0';
+      std::uint8_t m = session->surround_params[2] - '0';
       auto valid = false;
-      if ((c == 6 || c == 8) && c == config.audio.channels && n + m == c && session.surround_params.length() == c + 3) {
+      if ((c == 6 || c == 8) && c == config.audio.channels && n + m == c && session->surround_params.length() == c + 3) {
         config.audio.customStreamParams.channelCount = c;
         config.audio.customStreamParams.streams = n;
         config.audio.customStreamParams.coupledStreams = m;
         valid = true;
         for (std::uint8_t i = 0; i < c; i++) {
-          config.audio.customStreamParams.mapping[i] = session.surround_params[i + 3] - '0';
+          config.audio.customStreamParams.mapping[i] = session->surround_params[i + 3] - '0';
           if (config.audio.customStreamParams.mapping[i] >= c) {
             valid = false;
             break;
@@ -1349,24 +1435,24 @@ namespace rtsp_stream {
       }
       config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
     }
-    if (session.continuous_audio) {
+    if (session->continuous_audio) {
       BOOST_LOG(info) << "Client requested continuous audio"sv;
       config.audio.flags[audio::config_t::CONTINUOUS_AUDIO] = true;
     }
 
-    config.audio.input_only = session.input_only;
-    
+    config.audio.input_only = session->input_only;
+
     // Prefer 10-bit SDR encoding when enabled globally or overridden per-client.
-    const auto client_prefer_10bit_sdr_override = nvhttp::get_client_prefer_10bit_sdr_override(session.client_uuid);
+    const auto client_prefer_10bit_sdr_override = nvhttp::get_client_prefer_10bit_sdr_override(session->client_uuid);
     const bool prefer_10bit_sdr = client_prefer_10bit_sdr_override.value_or(config::video.prefer_10bit_sdr);
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
     const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
     if (config.monitor.dynamicRange == 0) {
-      if (session.enable_hdr && supports_10bit_dynamic_range) {
+      if (session->enable_hdr && supports_10bit_dynamic_range) {
         BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
         config.monitor.dynamicRange = 1;
-      } else if (prefer_10bit_sdr && !session.enable_hdr && supports_10bit_dynamic_range) {
+      } else if (prefer_10bit_sdr && !session->enable_hdr && supports_10bit_dynamic_range) {
         BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;
@@ -1407,56 +1493,105 @@ namespace rtsp_stream {
     if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
       BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
 
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
+      respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return false;
     }
 
     if (config.monitor.videoFormat == 2 && video::active_av1_mode == 1) {
       BOOST_LOG(warning) << "AV1 is disabled, yet the client requested AV1"sv;
 
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
+      respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+      return false;
     }
 
     // Check that any required encryption is enabled
-    auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
+    auto encryption_mode = net::encryption_mode_for_address(socket->sock.remote_endpoint().address());
     if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
         (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {
       BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
 
-      respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
-      return;
+      respond(socket->sock, *session, &option, 403, "Forbidden", req->sequenceNumber, {});
+      return false;
     }
 
-    // Before starting a new session, apply any deferred config updates now
-    // (e.g., capture method changes like switching to WGC). This ensures
-    // the next session reflects the latest settings without requiring a restart.
-    config::maybe_apply_deferred();
-
-    // Prevent interleaving with hot-apply while we allocate/start a session from RTSP
-    auto _hot_apply_gate = config::acquire_apply_read_gate();
-
-    config.gen1_framegen_fix = session.gen1_framegen_fix;
-    config.gen2_framegen_fix = session.gen2_framegen_fix;
-    config.lossless_scaling_framegen = session.lossless_scaling_framegen;
-    config.frame_generation_provider = session.frame_generation_provider;
-    config.lossless_scaling_target_fps = session.lossless_scaling_target_fps;
-    config.lossless_scaling_rtss_limit = session.lossless_scaling_rtss_limit;
-    auto stream_session = stream::session::alloc(config, session);
-    server->insert(stream_session, session.client_uuid);
-
-    if (stream::session::start(*stream_session, sock.remote_endpoint().address().to_string())) {
-      BOOST_LOG(error) << "Failed to start a streaming session"sv;
-
-      server->remove(stream_session);
-      respond(sock, session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
-      return;
+    boost::system::error_code remote_ec;
+    auto remote_endpoint = socket->sock.remote_endpoint(remote_ec);
+    if (remote_ec) {
+      BOOST_LOG(error) << "Failed to query RTSP remote endpoint: "sv << remote_ec.message();
+      respond(socket->sock, *session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
+      return false;
     }
 
-    respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
+    auto remote_address = remote_endpoint.address().to_string();
+
+    const int sequence_number = req->sequenceNumber;
+    const std::string client_uuid = session->client_uuid;
+    auto launch_session = make_startup_launch_session_snapshot(*session);
+    try {
+      server->run_startup([server, socket = std::move(socket), session = std::move(session), launch_session, config = std::move(config), remote_address = std::move(remote_address), client_uuid, sequence_number]() mutable {
+        // Apply deferred updates and take the hot-apply gate on the startup worker so
+        // display/config churn cannot stall the RTSP io_context.
+        config::maybe_apply_deferred();
+        auto _hot_apply_gate = config::acquire_apply_read_gate();
+
+        config.gen1_framegen_fix = launch_session->gen1_framegen_fix;
+        config.gen2_framegen_fix = launch_session->gen2_framegen_fix;
+        config.lossless_scaling_framegen = launch_session->lossless_scaling_framegen;
+        config.frame_generation_provider = launch_session->frame_generation_provider;
+        config.lossless_scaling_target_fps = launch_session->lossless_scaling_target_fps;
+        config.lossless_scaling_rtss_limit = launch_session->lossless_scaling_rtss_limit;
+
+        std::shared_ptr<stream::session_t> stream_session;
+        bool startup_failed = true;
+        std::string startup_error;
+
+        try {
+          stream_session = stream::session::alloc(config, *launch_session);
+          startup_failed = stream::session::start(*stream_session, remote_address) != 0;
+        } catch (const std::exception &e) {
+          startup_error = e.what();
+        } catch (...) {
+          startup_error = "unknown exception";
+        }
+
+        server->post([server, socket = std::move(socket), session = std::move(session), stream_session = std::move(stream_session), client_uuid, sequence_number, startup_failed, startup_error = std::move(startup_error)]() mutable {
+          auto fg = util::fail_guard([server]() {
+            server->finish_startup();
+          });
+          OPTION_ITEM completion_option {};
+          completion_option.option = const_cast<char *>("CSeq");
+          auto completion_seqn = std::to_string(sequence_number);
+          completion_option.content = const_cast<char *>(completion_seqn.c_str());
+
+          if (startup_failed) {
+            if (startup_error.empty()) {
+              BOOST_LOG(error) << "Failed to start a streaming session"sv;
+            } else {
+              BOOST_LOG(error) << "Failed to start a streaming session: "sv << startup_error;
+            }
+            respond(socket->sock, *session, &completion_option, 500, "Internal Server Error", sequence_number, {});
+          } else {
+            server->insert(stream_session, client_uuid);
+            respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
+          }
+
+          server->shutdown_socket(*socket);
+        });
+      });
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "Failed to queue RTSP ANNOUNCE startup task: "sv << e.what();
+      respond(socket->sock, *session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
+      return false;
+    } catch (...) {
+      BOOST_LOG(error) << "Failed to queue RTSP ANNOUNCE startup task with an unknown exception"sv;
+      respond(socket->sock, *session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
+      return false;
+    }
+
+    return true;
   }
 
-  void cmd_play(rtsp_server_t *server, tcp::socket &sock, launch_session_t &session, msg_t &&req) {
+  bool cmd_play(rtsp_server_t *server, std::shared_ptr<socket_t> socket, std::shared_ptr<launch_session_t> session, msg_t &&req) {
     OPTION_ITEM option {};
 
     // I know these string literals will not be modified
@@ -1465,7 +1600,8 @@ namespace rtsp_stream {
     auto seqn_str = std::to_string(req->sequenceNumber);
     option.content = const_cast<char *>(seqn_str.c_str());
 
-    respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
+    respond(socket->sock, *session, &option, 200, "OK", req->sequenceNumber, {});
+    return false;
   }
 
   void start() {
@@ -1490,7 +1626,7 @@ namespace rtsp_stream {
       platf::set_thread_name("rtsp::handler");
       auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
 
-      while (!shutdown_event->peek()) {
+      while (!shutdown_event->peek() || server.startup_count() > 0) {
         server.iterate();
 
         if (broadcast_shutdown_event->peek()) {
@@ -1507,6 +1643,9 @@ namespace rtsp_stream {
     // Wait for shutdown
     shutdown_event->view();
 
+    // Drain startup workers before stopping the io_context so any posted ANNOUNCE
+    // completion can run on the RTSP loop instead of being abandoned during shutdown.
+    server.stop_startup_pool();
     // Stop the server and join the server thread
     server.stop();
     rtsp_thread.join();

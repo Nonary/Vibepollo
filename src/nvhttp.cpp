@@ -1256,6 +1256,8 @@ namespace nvhttp {
       return it->second;
     }
 
+    std::mutex launch_request_mutex;
+
     std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
       if (launch_unique_id.empty()) {
         return {};
@@ -3448,6 +3450,8 @@ namespace nvhttp {
 
     https_server_t https_server {config::nvhttp.cert, config::nvhttp.pkey};
     http_server_t http_server;
+    thread_pool_util::ThreadPool blocking_route_pool;
+    blocking_route_pool.start(1);
 
     // Verify certificates after establishing connection
     https_server.verify = [](req_https_t req, SSL *ssl) {
@@ -3540,22 +3544,53 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message"s, "The client is not authorized. Certificate verification failed."s);
     };
 
+    auto run_blocking_nvhttp = [&blocking_route_pool](auto task) {
+      blocking_route_pool.push([task = std::move(task)]() mutable {
+        try {
+          task();
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Blocking NVHTTP handler failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Blocking NVHTTP handler failed with an unknown exception";
+        }
+      });
+    };
+
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.default_resource["POST"] = not_found<SunshineHTTPS>;
-    https_server.resource["^/serverinfo$"]["GET"] = serverinfo<SunshineHTTPS>;
+    https_server.resource["^/serverinfo$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+        serverinfo<SunshineHTTPS>(std::move(resp), std::move(req));
+      });
+    };
     https_server.resource["^/pair/?$"]["GET"] = pair<SunshineHTTPS>;
     https_server.resource["^/pair/?$"]["POST"] = pair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["GET"] = unpair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["POST"] = unpair<SunshineHTTPS>;
-    https_server.resource["^/applist$"]["GET"] = applist;
+    https_server.resource["^/applist$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+        applist(std::move(resp), std::move(req));
+      });
+    };
     https_server.resource["^/appasset$"]["GET"] = appasset;
-    https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
-      launch(host_audio, resp, req);
+    https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
+        std::lock_guard lock {launch_request_mutex};
+        launch(host_audio, std::move(resp), std::move(req));
+      });
     };
-    https_server.resource["^/resume$"]["GET"] = [&host_audio](auto resp, auto req) {
-      resume(host_audio, resp, req);
+    https_server.resource["^/resume$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
+        std::lock_guard lock {launch_request_mutex};
+        resume(host_audio, std::move(resp), std::move(req));
+      });
     };
-    https_server.resource["^/cancel$"]["GET"] = cancel;
+    https_server.resource["^/cancel$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+        std::lock_guard lock {launch_request_mutex};
+        cancel(std::move(resp), std::move(req));
+      });
+    };
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
 
@@ -3565,7 +3600,11 @@ namespace nvhttp {
 
     http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
     http_server.default_resource["POST"] = not_found<SimpleWeb::HTTP>;
-    http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
+    http_server.resource["^/serverinfo$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
+      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+        serverinfo<SimpleWeb::HTTP>(std::move(resp), std::move(req));
+      });
+    };
     http_server.resource["^/pair/?$"]["GET"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/pair/?$"]["POST"] = pair<SimpleWeb::HTTP>;
     http_server.resource["^/unpair/?$"]["GET"] = unpair<SimpleWeb::HTTP>;
@@ -3604,6 +3643,8 @@ namespace nvhttp {
 
     ssl.join();
     tcp.join();
+    blocking_route_pool.stop();
+    blocking_route_pool.join();
   }
 
   std::string request_otp(const std::string &passphrase, const std::string &deviceName) {

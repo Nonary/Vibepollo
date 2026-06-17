@@ -5323,6 +5323,8 @@ namespace confighttp {
     server.resource["^/welcome/?$"]["GET"] = getSpaEntry;
     server.resource["^/login/?$"]["GET"] = getSpaEntry;
     server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
+    thread_pool_util::ThreadPool blocking_route_pool;
+    blocking_route_pool.start(1);
     clear_token_route_catalog();
     auto register_api_route = [&](const char *pattern, const char *method, const auto &handler) {
       server.resource[pattern][method] = [method, handler](resp_https_t response, req_https_t request) {
@@ -5337,6 +5339,25 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler) {
+      register_api_route(pattern, method, [&blocking_route_pool, handler](resp_https_t response, req_https_t request) {
+        if (!authenticate(response, request)) {
+          return;
+        }
+        blocking_route_pool.push([handler, response = std::move(response), request = std::move(request)]() mutable {
+          try {
+            handler(response, request);
+          } catch (const std::exception &e) {
+            BOOST_LOG(error) << "Blocking config API handler failed: " << e.what();
+            bad_request(response, request, "Internal server error");
+          } catch (...) {
+            BOOST_LOG(error) << "Blocking config API handler failed with an unknown exception";
+            bad_request(response, request, "Internal server error");
+          }
+        });
+      });
+    };
+
     register_api_route("^/api/pin$", "POST", savePin);
     register_api_route("^/api/otp$", "POST", getOTP);
     register_api_route("^/api/apps$", "GET", getApps);
@@ -5362,15 +5383,16 @@ namespace confighttp {
     register_api_route("^/api/configLocale$", "GET", getLocale);
     register_api_route("^/api/restart$", "POST", restart);
     register_api_route("^/api/quit$", "POST", quit);
+    register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
-    register_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
+    register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
     register_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
 #endif
     register_api_route("^/api/password$", "POST", savePassword);
-    register_api_route("^/api/display-devices$", "GET", getDisplayDevices);
+    register_blocking_api_route("^/api/display-devices$", "GET", getDisplayDevices);
 #ifdef _WIN32
-    register_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
+    register_blocking_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
     register_api_route("^/api/health/vigem$", "GET", getVigemHealth);
     register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
@@ -5395,7 +5417,7 @@ namespace confighttp {
     register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);
     register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "GET", getSessionHistoryDetail);
     register_api_route("^/api/history/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteSessionHistory);
-    register_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
+    register_blocking_api_route("^/api/webrtc/sessions$", "POST", createWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "GET", getWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)$", "DELETE", deleteWebRTCSession);
     register_api_route("^/api/webrtc/sessions/([A-Fa-f0-9-]+)/offer$", "POST", postWebRTCOffer);
@@ -5480,6 +5502,8 @@ namespace confighttp {
     server.stop();
 
     tcp.join();
+    blocking_route_pool.stop();
+    blocking_route_pool.join();
     // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 

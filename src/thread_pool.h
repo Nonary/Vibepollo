@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <atomic>
 #include <thread>
 
 // local includes
@@ -25,7 +26,7 @@ namespace thread_pool_util {
     std::condition_variable _cv;
     std::mutex _lock;
 
-    bool _continue;
+    std::atomic_bool _continue;
 
   public:
     ThreadPool():
@@ -41,7 +42,7 @@ namespace thread_pool_util {
     }
 
     ~ThreadPool() noexcept {
-      if (!_continue) {
+      if (!_continue.load(std::memory_order_acquire)) {
         return;
       }
 
@@ -75,7 +76,7 @@ namespace thread_pool_util {
     }
 
     void start(int threads) {
-      _continue = true;
+      _continue.store(true, std::memory_order_release);
 
       _thread.resize(threads);
 
@@ -87,7 +88,7 @@ namespace thread_pool_util {
     void stop() {
       std::lock_guard lg(_lock);
 
-      _continue = false;
+      _continue.store(false, std::memory_order_release);
       _cv.notify_all();
     }
 
@@ -100,7 +101,7 @@ namespace thread_pool_util {
   public:
     void _main() {
       platf::set_thread_name("TaskPool::worker");
-      while (_continue) {
+      while (_continue.load(std::memory_order_acquire)) {
         if (auto task = this->pop()) {
           (*task)->run();
         } else {
@@ -110,7 +111,7 @@ namespace thread_pool_util {
             continue;
           }
 
-          if (!_continue) {
+          if (!_continue.load(std::memory_order_acquire)) {
             break;
           }
 
