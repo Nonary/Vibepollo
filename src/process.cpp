@@ -117,7 +117,8 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
-    constexpr std::array<std::string_view, 4> RTX_HDR_LIVE_TUNING_KEYS {
+    constexpr std::array<std::string_view, 5> RTX_HDR_LIVE_KEYS {
+      "rtx_hdr"sv,
       "rtx_hdr_contrast"sv,
       "rtx_hdr_saturation"sv,
       "rtx_hdr_middle_gray"sv,
@@ -3585,7 +3586,7 @@ namespace proc {
       }
 
       runtime_overrides = config::runtime_config_overrides_snapshot();
-      for (const auto key_view : RTX_HDR_LIVE_TUNING_KEYS) {
+      for (const auto key_view : RTX_HDR_LIVE_KEYS) {
         const std::string key {key_view};
         const auto old_app_value = _app.config_overrides.find(key);
         const auto new_app_value = updated->config_overrides.find(key);
@@ -3649,7 +3650,7 @@ namespace proc {
       }
 
       runtime_overrides = config::runtime_config_overrides_snapshot();
-      for (const auto key_view : RTX_HDR_LIVE_TUNING_KEYS) {
+      for (const auto key_view : RTX_HDR_LIVE_KEYS) {
         const std::string key {key_view};
         const auto old_app_value = _app.config_overrides.find(key);
         const auto new_app_value = rtx_hdr_overrides.find(key);

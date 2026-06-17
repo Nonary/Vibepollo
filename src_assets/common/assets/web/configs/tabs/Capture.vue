@@ -363,7 +363,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
       <ConfigFieldRenderer setting-key="prefer_10bit_sdr" v-model="config.prefer_10bit_sdr" />
 
       <section
-        v-if="platform === 'windows'"
+        v-if="platform === 'windows' && hasNvidia"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
       >
         <div class="space-y-1">

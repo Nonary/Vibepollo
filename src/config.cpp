@@ -2219,18 +2219,19 @@ namespace config {
     std::mutex g_runtime_overrides_mutex;
     std::unordered_map<std::string, std::string> g_runtime_config_overrides;
 
-    bool is_rtx_hdr_live_tuning_key(std::string_view key) {
-      return key == "rtx_hdr_contrast" ||
+    bool is_rtx_hdr_live_key(std::string_view key) {
+      return key == "rtx_hdr" ||
+             key == "rtx_hdr_contrast" ||
              key == "rtx_hdr_saturation" ||
              key == "rtx_hdr_middle_gray" ||
              key == "rtx_hdr_peak_brightness";
     }
 
-    bool rtx_hdr_live_tuning_overrides_changed(
+    bool rtx_hdr_live_overrides_changed(
       const std::unordered_map<std::string, std::string> &before,
       const std::unordered_map<std::string, std::string> &after
     ) {
-      for (const auto key : {"rtx_hdr_contrast"sv, "rtx_hdr_saturation"sv, "rtx_hdr_middle_gray"sv, "rtx_hdr_peak_brightness"sv}) {
+      for (const auto key : {"rtx_hdr"sv, "rtx_hdr_contrast"sv, "rtx_hdr_saturation"sv, "rtx_hdr_middle_gray"sv, "rtx_hdr_peak_brightness"sv}) {
         const auto before_it = before.find(std::string(key));
         const auto after_it = after.find(std::string(key));
         if (before_it == before.end() && after_it == after.end()) {
@@ -2547,6 +2548,7 @@ namespace config {
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
+      const auto prev_rtx_hdr_enabled = video.rtx_hdr.enabled;
       const auto prev_rtx_hdr_contrast = video.rtx_hdr.contrast;
       const auto prev_rtx_hdr_saturation = video.rtx_hdr.saturation;
       const auto prev_rtx_hdr_middle_gray = video.rtx_hdr.middle_gray;
@@ -2582,13 +2584,14 @@ namespace config {
       }
 
 #ifdef _WIN32
-      const bool rtx_hdr_live_tuning_changed =
+      const bool rtx_hdr_live_changed =
+        prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
         prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
         prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
         prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
         prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
-      if (rtx_hdr_live_tuning_changed) {
-        platf::rtx_hdr::notify_live_tuning_changed();
+      if (rtx_hdr_live_changed) {
+        platf::rtx_hdr::notify_live_settings_changed();
       }
 #endif
 
@@ -2649,31 +2652,31 @@ namespace config {
       filtered.emplace(std::move(normalized_key), std::move(v));
     }
 
-    bool rtx_hdr_tuning_changed = false;
+    bool rtx_hdr_live_changed = false;
     {
       std::scoped_lock lk(g_runtime_overrides_mutex);
-      rtx_hdr_tuning_changed = rtx_hdr_live_tuning_overrides_changed(g_runtime_config_overrides, filtered);
+      rtx_hdr_live_changed = rtx_hdr_live_overrides_changed(g_runtime_config_overrides, filtered);
       g_runtime_config_overrides = std::move(filtered);
     }
 #ifdef _WIN32
-    if (rtx_hdr_tuning_changed) {
-      platf::rtx_hdr::notify_live_tuning_changed();
+    if (rtx_hdr_live_changed) {
+      platf::rtx_hdr::notify_live_settings_changed();
     }
 #endif
   }
 
   void clear_runtime_config_overrides() {
-    bool rtx_hdr_tuning_changed = false;
+    bool rtx_hdr_live_changed = false;
     {
       std::scoped_lock lk(g_runtime_overrides_mutex);
-      rtx_hdr_tuning_changed = std::ranges::any_of(g_runtime_config_overrides, [](const auto &entry) {
-        return is_rtx_hdr_live_tuning_key(entry.first);
+      rtx_hdr_live_changed = std::ranges::any_of(g_runtime_config_overrides, [](const auto &entry) {
+        return is_rtx_hdr_live_key(entry.first);
       });
       g_runtime_config_overrides.clear();
     }
 #ifdef _WIN32
-    if (rtx_hdr_tuning_changed) {
-      platf::rtx_hdr::notify_live_tuning_changed();
+    if (rtx_hdr_live_changed) {
+      platf::rtx_hdr::notify_live_settings_changed();
     }
 #endif
   }

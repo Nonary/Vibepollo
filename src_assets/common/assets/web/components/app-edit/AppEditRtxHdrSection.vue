@@ -12,8 +12,17 @@
           top of RTX HDR.
         </p>
       </div>
-      <n-tag v-if="rtxHdrEnabled" size="small" type="primary"> Enabled </n-tag>
+      <div class="flex flex-wrap items-center gap-2">
+        <n-tag v-if="rtxHdrEnabled" size="small" type="primary">Enabled</n-tag>
+        <n-tag v-if="liveStatus !== 'idle'" size="small" :type="liveStatusTagType">
+          {{ liveStatusLabel }}
+        </n-tag>
+      </div>
     </div>
+
+    <n-alert v-if="liveStatus === 'error'" type="error" size="small" :bordered="false">
+      {{ liveError || 'Unable to apply RTX HDR changes to the active stream.' }}
+    </n-alert>
 
     <label :class="cardClass(rtxHdrEnabled)">
       <n-switch v-model:value="rtxHdrEnabled" />
@@ -34,7 +43,7 @@
           <div class="text-sm font-semibold leading-snug">Override HDR values directly</div>
           <p class="text-[12px] leading-relaxed opacity-70">
             Use these sliders instead of inheriting NVIDIA RTX HDR profile or global default values.
-            The tuning values update live during an active stream, so you can open this page from
+            RTX HDR and its tuning values update live during an active stream, so you can open this page from
             another device and fine-tune HDR while watching.
           </p>
         </div>
@@ -74,10 +83,20 @@
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { NSwitch, NTag } from 'naive-ui';
+import { NAlert, NSwitch, NTag } from 'naive-ui';
 import type { AppForm } from './types';
 
 const form = defineModel<AppForm>('form', { required: true });
+const props = withDefaults(
+  defineProps<{
+    liveStatus?: 'idle' | 'queued' | 'applying' | 'applied' | 'error';
+    liveError?: string;
+  }>(),
+  {
+    liveStatus: 'idle',
+    liveError: '',
+  },
+);
 const { t } = useI18n();
 
 const rtxHdrEnabled = computed({
@@ -88,6 +107,35 @@ const rtxHdrEnabled = computed({
       form.value.rtxHdrValuesOverride = false;
     }
   },
+});
+
+const liveStatusLabel = computed(() => {
+  switch (props.liveStatus) {
+    case 'queued':
+      return 'Queued';
+    case 'applying':
+      return 'Applying live';
+    case 'applied':
+      return 'Applied live';
+    case 'error':
+      return 'Live update failed';
+    default:
+      return '';
+  }
+});
+
+const liveStatusTagType = computed(() => {
+  switch (props.liveStatus) {
+    case 'error':
+      return 'error';
+    case 'applied':
+      return 'success';
+    case 'queued':
+    case 'applying':
+      return 'info';
+    default:
+      return 'default';
+  }
 });
 
 function cardClass(active: boolean): string[] {

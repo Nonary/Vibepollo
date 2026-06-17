@@ -353,8 +353,10 @@
           </div>
 
           <AppEditRtxHdrSection
-            v-if="isWindows"
+            v-if="isWindows && hasNvidia"
             v-model:form="form"
+            :live-status="liveRtxHdrStatus"
+            :live-error="liveRtxHdrError"
           />
 
           <AppEditConfigOverridesSection
@@ -641,7 +643,8 @@ const RTX_HDR_OVERRIDE_KEYS = [
   'rtx_hdr_contrast',
   'rtx_hdr_saturation',
 ] as const;
-const RTX_HDR_LIVE_TUNING_KEYS = [
+const RTX_HDR_LIVE_KEYS = [
+  'rtx_hdr',
   'rtx_hdr_peak_brightness',
   'rtx_hdr_middle_gray',
   'rtx_hdr_contrast',
@@ -733,22 +736,28 @@ function buildConfigOverridesPayload(f: AppForm): Record<string, unknown> {
 }
 
 function buildRtxHdrLiveOverridesPayload(f: AppForm): Record<string, unknown> {
-  if (f.rtxHdrMode !== 'enabled' || !f.rtxHdrValuesOverride) {
+  if (f.rtxHdrMode === 'inherit') {
     return {};
   }
 
-  return {
-    rtx_hdr_peak_brightness: f.rtxHdrPeakBrightness,
-    rtx_hdr_middle_gray: f.rtxHdrMiddleGray,
-    rtx_hdr_contrast: f.rtxHdrContrast,
-    rtx_hdr_saturation: f.rtxHdrSaturation,
-  };
+  if (f.rtxHdrMode === 'disabled') {
+    return { rtx_hdr: false };
+  }
+
+  const overrides: Record<string, unknown> = { rtx_hdr: true };
+  if (f.rtxHdrValuesOverride) {
+    overrides.rtx_hdr_peak_brightness = f.rtxHdrPeakBrightness;
+    overrides.rtx_hdr_middle_gray = f.rtxHdrMiddleGray;
+    overrides.rtx_hdr_contrast = f.rtxHdrContrast;
+    overrides.rtx_hdr_saturation = f.rtxHdrSaturation;
+  }
+  return overrides;
 }
 
 function extractRtxHdrLiveOverrides(src?: ServerApp | null): Record<string, unknown> {
   const rawConfigOverrides = clonePlainRecord((src as any)?.['config-overrides']);
   const result: Record<string, unknown> = {};
-  for (const key of RTX_HDR_LIVE_TUNING_KEYS) {
+  for (const key of RTX_HDR_LIVE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(rawConfigOverrides, key)) {
       result[key] = rawConfigOverrides[key];
     }
@@ -1199,6 +1208,9 @@ watch(headerArtworkKey, () => {
 });
 
 const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
+type RtxHdrLiveStatus = 'idle' | 'queued' | 'applying' | 'applied' | 'error';
+const liveRtxHdrStatus = ref<RtxHdrLiveStatus>('idle');
+const liveRtxHdrError = ref('');
 let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
 let liveRtxHdrSuppress = false;
 let liveRtxHdrLastSentKey = '';
@@ -1223,6 +1235,8 @@ function clearLiveRtxHdrTimer() {
 function primeLiveRtxHdrState() {
   originalRtxHdrLiveOverrides.value = extractRtxHdrLiveOverrides(props.app ?? undefined);
   liveRtxHdrLastSentKey = currentRtxHdrLiveKey();
+  liveRtxHdrStatus.value = 'idle';
+  liveRtxHdrError.value = '';
   clearLiveRtxHdrTimer();
 }
 
@@ -1232,6 +1246,8 @@ async function postRtxHdrLiveOverrides(overrides: Record<string, unknown>, key: 
     return;
   }
 
+  liveRtxHdrStatus.value = 'applying';
+  liveRtxHdrError.value = '';
   const response = await http.post(
     './api/apps/rtx_hdr/live',
     {
@@ -1246,16 +1262,29 @@ async function postRtxHdrLiveOverrides(overrides: Record<string, unknown>, key: 
   const okStatus = response.status >= 200 && response.status < 300;
   const responseData = response?.data as any;
   if (!okStatus || (responseData && responseData.status === false)) {
-    return;
+    const errorMessage =
+      typeof responseData?.error === 'string'
+        ? responseData.error
+        : `Live RTX HDR update failed with HTTP ${response.status}.`;
+    liveRtxHdrStatus.value = 'error';
+    liveRtxHdrError.value = errorMessage;
+    throw new Error(errorMessage);
   }
   liveRtxHdrLastSentKey = key;
+  liveRtxHdrStatus.value = 'applied';
 }
 
 function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string): Promise<void> {
   liveRtxHdrQueue = liveRtxHdrQueue
     .catch(() => {})
     .then(() => postRtxHdrLiveOverrides(overrides, key))
-    .catch(() => {});
+    .catch((error) => {
+      liveRtxHdrStatus.value = 'error';
+      liveRtxHdrError.value =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Unable to apply RTX HDR changes to the active stream.';
+    });
   return liveRtxHdrQueue;
 }
 
@@ -1267,10 +1296,15 @@ function scheduleRtxHdrLiveUpdate() {
   const key = currentRtxHdrLiveKey();
   if (key === liveRtxHdrLastSentKey) {
     clearLiveRtxHdrTimer();
+    if (liveRtxHdrStatus.value === 'queued') {
+      liveRtxHdrStatus.value = 'idle';
+    }
     return;
   }
 
   clearLiveRtxHdrTimer();
+  liveRtxHdrStatus.value = 'queued';
+  liveRtxHdrError.value = '';
   liveRtxHdrTimer = setTimeout(() => {
     liveRtxHdrTimer = null;
     const overrides = buildRtxHdrLiveOverridesPayload(form.value);
@@ -1832,6 +1866,20 @@ const gamepadOptions = computed(() => {
     options.push({ label: 'DualShock 4', value: 'ds4' }, { label: 'Xbox 360', value: 'x360' });
   }
   return options;
+});
+const gpuList = computed(() => {
+  const raw = (configStore.metadata as any)?.gpus;
+  return Array.isArray(raw) ? raw : [];
+});
+const hasNvidia = computed(() => {
+  const metaFlag = (configStore.metadata as any)?.has_nvidia_gpu;
+  if (typeof metaFlag === 'boolean') return metaFlag;
+  if (gpuList.value.length) {
+    return gpuList.value.some(
+      (gpu: any) => Number(gpu?.vendor_id ?? gpu?.vendorId ?? 0) === 0x10de,
+    );
+  }
+  return true;
 });
 const ddConfigOption = computed(
   () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',

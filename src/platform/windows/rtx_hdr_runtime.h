@@ -30,8 +30,8 @@ namespace platf::rtx_hdr {
     std::string foreground_source;
   };
 
-  void notify_live_tuning_changed();
-  std::uint64_t live_tuning_generation();
+  void notify_live_settings_changed();
+  std::uint64_t live_settings_generation();
 
 #ifdef SUNSHINE_TESTS
   struct runtime_test_hooks_t {

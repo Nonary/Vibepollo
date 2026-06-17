@@ -21,7 +21,7 @@ namespace platf::rtx_hdr {
     constexpr auto PROFILE_REFRESH_MAX_INTERVAL = std::chrono::seconds(30);
     constexpr auto SLOW_PROFILE_LOOKUP_THRESHOLD = std::chrono::milliseconds(100);
 
-    std::atomic<std::uint64_t> g_live_tuning_generation {0};
+    std::atomic<std::uint64_t> g_live_settings_generation {0};
 
     runtime_values_t config_runtime_values() {
       runtime_values_t values;
@@ -47,14 +47,6 @@ namespace platf::rtx_hdr {
 
     void apply_values(frame_state_t &frame, const runtime_values_t &values) {
       frame.enabled = values.enabled;
-      frame.contrast = values.contrast;
-      frame.saturation = values.saturation;
-      frame.middle_gray = values.middle_gray;
-      frame.peak_brightness = values.peak_brightness;
-      frame.source = values.source;
-    }
-
-    void apply_live_tuning_values(frame_state_t &frame, const runtime_values_t &values) {
       frame.contrast = values.contrast;
       frame.saturation = values.saturation;
       frame.middle_gray = values.middle_gray;
@@ -101,7 +93,7 @@ namespace platf::rtx_hdr {
     std::optional<RECT> latest_capture_rect;
     frame_state_t cached_frame_state;
     std::optional<resolved_profile_t> last_successful_profile;
-    std::uint64_t cached_live_tuning_generation {live_tuning_generation()};
+    std::uint64_t cached_live_settings_generation {live_settings_generation()};
 
     std::string current_identity_key;
     std::uint64_t current_generation {0};
@@ -138,17 +130,16 @@ namespace platf::rtx_hdr {
       state.cached_frame_state = std::move(frame);
     }
 
-    void recompute_live_tuning_locked(runtime_t::shared_state_t &state) {
+    void recompute_live_settings_locked(runtime_t::shared_state_t &state) {
       if (!state.last_successful_profile || !state.cached_frame_state.foreground_matches) {
         return;
       }
 
-      const auto values = materialize_live_tuning_values(
+      const auto values = materialize_live_values(
         *state.last_successful_profile,
-        config_runtime_values(),
-        state.cached_frame_state.enabled
+        config_runtime_values()
       );
-      apply_live_tuning_values(state.cached_frame_state, values);
+      apply_values(state.cached_frame_state, values);
     }
 
     void enqueue_profile_lookup_locked(
@@ -396,12 +387,12 @@ namespace platf::rtx_hdr {
     }
   }
 
-  void notify_live_tuning_changed() {
-    g_live_tuning_generation.fetch_add(1, std::memory_order_acq_rel);
+  void notify_live_settings_changed() {
+    g_live_settings_generation.fetch_add(1, std::memory_order_acq_rel);
   }
 
-  std::uint64_t live_tuning_generation() {
-    return g_live_tuning_generation.load(std::memory_order_acquire);
+  std::uint64_t live_settings_generation() {
+    return g_live_settings_generation.load(std::memory_order_acquire);
   }
 
   frame_state_t runtime_t::update_for_frame(const std::optional<RECT> &capture_rect) {
@@ -409,10 +400,10 @@ namespace platf::rtx_hdr {
     {
       std::scoped_lock lk(state->mutex);
       state->latest_capture_rect = capture_rect;
-      const auto tuning_generation = live_tuning_generation();
-      if (state->cached_live_tuning_generation != tuning_generation) {
-        state->cached_live_tuning_generation = tuning_generation;
-        recompute_live_tuning_locked(*state);
+      const auto settings_generation = live_settings_generation();
+      if (state->cached_live_settings_generation != settings_generation) {
+        state->cached_live_settings_generation = settings_generation;
+        recompute_live_settings_locked(*state);
       }
       frame = state->cached_frame_state;
     }

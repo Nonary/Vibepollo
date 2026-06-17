@@ -743,7 +743,7 @@ TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLook
   EXPECT_EQ(fake.resolve_calls, 1);
 }
 
-TEST(RtxHdrRuntimeScheduler, LiveTuningDoesNotEnableDisabledFrame) {
+TEST(RtxHdrRuntimeScheduler, LiveSettingsCanEnableDisabledFrame) {
   rtx_hdr_config_guard_t config_guard;
   fake_runtime_t fake;
   const std::string exe = "C:/Games/Foo/foo.exe";
@@ -757,14 +757,40 @@ TEST(RtxHdrRuntimeScheduler, LiveTuningDoesNotEnableDisabledFrame) {
   ASSERT_EQ(fake.resolve_calls, 1);
 
   config::video.rtx_hdr.contrast = 80;
+  config::video.rtx_hdr.enabled = true;
   config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
     {"rtx_hdr", "true"},
     {"rtx_hdr_contrast", "80"},
   });
 
   frame = fake.runtime.update_for_frame(std::nullopt);
-  EXPECT_FALSE(frame.enabled);
+  EXPECT_TRUE(frame.enabled);
   EXPECT_EQ(frame.contrast, 180);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_EQ(fake.resolve_calls, 1);
+}
+
+TEST(RtxHdrRuntimeScheduler, LiveSettingsCanDisableActiveFrame) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
+  fake_runtime_t fake;
+  const std::string exe = "C:/Games/Foo/foo.exe";
+  fake.foreground = matching_foreground(exe);
+  fake.profiles[exe] = enabled_profile(exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  ASSERT_EQ(fake.resolve_calls, 1);
+
+  config::video.rtx_hdr.enabled = false;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "false"},
+  });
+
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_FALSE(frame.enabled);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 1);
 }

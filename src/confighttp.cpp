@@ -397,8 +397,9 @@ namespace confighttp {
       return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
     }
 
-    bool is_rtx_hdr_live_tuning_key(std::string_view key) {
-      return key == "rtx_hdr_contrast" ||
+    bool is_rtx_hdr_live_key(std::string_view key) {
+      return key == "rtx_hdr" ||
+             key == "rtx_hdr_contrast" ||
              key == "rtx_hdr_saturation" ||
              key == "rtx_hdr_middle_gray" ||
              key == "rtx_hdr_peak_brightness";
@@ -425,7 +426,7 @@ namespace confighttp {
           continue;
         }
 
-        if (is_rtx_hdr_live_tuning_key(key)) {
+        if (is_rtx_hdr_live_key(key)) {
           continue;
         }
 
@@ -1881,7 +1882,7 @@ namespace confighttp {
 
         for (const auto &item : overrides_it->items()) {
           const std::string key = item.key();
-          if (!is_rtx_hdr_live_tuning_key(key) || item.value().is_null()) {
+          if (!is_rtx_hdr_live_key(key) || item.value().is_null()) {
             continue;
           }
           rtx_hdr_overrides[key] = encode_config_override_value(item.value());
