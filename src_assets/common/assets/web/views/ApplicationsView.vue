@@ -134,7 +134,6 @@
     <AppEditModal
       v-model="showModal"
       :app="currentApp"
-      :key="modalKey + '|' + (currentApp?.uuid || currentApp?.name || 'new')"
       @saved="reload"
       @deleted="reload"
     />
@@ -169,7 +168,6 @@ const playniteStatusReady = ref(false);
 const playniteEnabled = computed(() => playniteInstalled.value);
 
 const showModal = ref(false);
-const modalKey = ref(0);
 const currentApp = ref<App | null>(null);
 const failedPlayniteIconKeys = ref<Set<string>>(new Set());
 

@@ -2773,7 +2773,9 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
 }
 
 const playniteInstalled = ref(false);
-const isNew = computed(() => form.value.index === -1);
+const APP_UUID_RE =
+  /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
+const isNew = computed(() => !form.value.uuid && form.value.index < 0);
 // New app source: 'custom' or 'playnite' (Windows only)
 const newAppSource = ref<'custom' | 'playnite'>('custom');
 const showPlaynitePicker = computed(
@@ -2785,6 +2787,17 @@ const gamesLoading = ref(false);
 const playniteOptions = ref<{ label: string; value: string }[]>([]);
 const selectedPlayniteId = ref('');
 const lockPlaynite = ref(false);
+
+function deleteTargetForForm(f: AppForm): string {
+  const uuid = String(f.uuid || '').trim();
+  if (APP_UUID_RE.test(uuid)) {
+    return uuid;
+  }
+  if (Number.isInteger(f.index) && f.index >= 0) {
+    return String(f.index);
+  }
+  return '';
+}
 
 async function loadPlayniteGames() {
   if (!isWindows.value || gamesLoading.value || playniteOptions.value.length) return;
@@ -3135,17 +3148,27 @@ async function del() {
       }
     }
 
-    const target = form.value.uuid || String(form.value.index);
-    if (!target || target === '-1') {
-      message?.error('Cannot delete an application without a UUID.');
+    const target = deleteTargetForForm(form.value);
+    if (!target) {
+      message?.error('Cannot delete an application without a valid UUID or index.');
       return;
     }
 
     const r = await http.delete(`./api/apps/${encodeURIComponent(target)}`, {
       validateStatus: () => true,
     });
+    const responseData = r?.data as any;
+    const ok = r.status >= 200 && r.status < 300 && responseData?.status === true;
+    if (!ok) {
+      const errMessage =
+        responseData && typeof responseData === 'object' && 'error' in responseData
+          ? String(responseData.error ?? 'Failed to delete application.')
+          : `Failed to delete application. HTTP ${r.status}`;
+      message?.error(errMessage);
+      return;
+    }
     try {
-      if (r && (r as any).data && (r as any).data.playniteFullscreenDisabled) {
+      if (responseData?.playniteFullscreenDisabled) {
         try {
           configStore.updateOption('playnite_fullscreen_entry_enabled', false);
         } catch {}
@@ -3161,7 +3184,7 @@ async function del() {
       await http.post('./api/playnite/force_sync', {}, { validateStatus: () => true });
     } catch (_) {}
     emit('deleted');
-    close();
+    await close();
   } finally {
     saving.value = false;
   }
