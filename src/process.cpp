@@ -117,8 +117,9 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
-    constexpr std::array<std::string_view, 5> RTX_HDR_LIVE_KEYS {
+    constexpr std::array<std::string_view, 6> RTX_HDR_LIVE_KEYS {
       "rtx_hdr"sv,
+      "rtx_hdr_sdr_brightness"sv,
       "rtx_hdr_contrast"sv,
       "rtx_hdr_saturation"sv,
       "rtx_hdr_middle_gray"sv,

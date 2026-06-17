@@ -23,6 +23,7 @@
 namespace platf::rtx_hdr {
 
   struct frame_state_t: runtime_values_t {
+    bool has_active_app {false};
     bool foreground_matches {false};
     bool lookup_available {false};
     std::string foreground_exe;

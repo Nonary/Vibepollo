@@ -72,6 +72,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   minimum_fps_target: { min: 0, max: 1000, placeholder: '0' },
   rtx_hdr_contrast: { min: -100, max: 100, step: 1, placeholder: '0' },
   rtx_hdr_saturation: { min: -100, max: 100, step: 1, placeholder: '0' },
+  rtx_hdr_sdr_brightness: { min: 10, max: 100, step: 1, placeholder: '50' },
   rtx_hdr_middle_gray: { min: 10, max: 100, step: 1, placeholder: '50' },
   rtx_hdr_peak_brightness: { min: 400, max: 1500, step: 1, placeholder: '1000' },
   dd_virtual_display_permanent_count: { min: 0, max: 4, step: 1, precision: 0, placeholder: '0' },
@@ -82,6 +83,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
 const SLIDER_KEYS = new Set<string>([
   'rtx_hdr_contrast',
   'rtx_hdr_saturation',
+  'rtx_hdr_sdr_brightness',
   'rtx_hdr_middle_gray',
   'rtx_hdr_peak_brightness',
 ]);

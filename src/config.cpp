@@ -816,6 +816,7 @@ namespace config {
     {
       false,  // rtx_hdr.enabled
       false,  // rtx_hdr.force_sdr
+      50,  // rtx_hdr.sdr_brightness
       0,  // rtx_hdr.contrast
       0,  // rtx_hdr.saturation
       50,  // rtx_hdr.middle_gray
@@ -1654,6 +1655,7 @@ namespace config {
 
     bool_f(vars, "rtx_hdr", video.rtx_hdr.enabled);
     bool_f(vars, "rtx_hdr_force_sdr", video.rtx_hdr.force_sdr);
+    int_between_f(vars, "rtx_hdr_sdr_brightness", video.rtx_hdr.sdr_brightness, {10, 100});
     int_between_f(vars, "rtx_hdr_contrast", video.rtx_hdr.contrast, {-100, 100});
     int_between_f(vars, "rtx_hdr_saturation", video.rtx_hdr.saturation, {-100, 100});
     int_between_f(vars, "rtx_hdr_middle_gray", video.rtx_hdr.middle_gray, {10, 100});
@@ -2221,6 +2223,7 @@ namespace config {
 
     bool is_rtx_hdr_live_key(std::string_view key) {
       return key == "rtx_hdr" ||
+             key == "rtx_hdr_sdr_brightness" ||
              key == "rtx_hdr_contrast" ||
              key == "rtx_hdr_saturation" ||
              key == "rtx_hdr_middle_gray" ||
@@ -2231,7 +2234,7 @@ namespace config {
       const std::unordered_map<std::string, std::string> &before,
       const std::unordered_map<std::string, std::string> &after
     ) {
-      for (const auto key : {"rtx_hdr"sv, "rtx_hdr_contrast"sv, "rtx_hdr_saturation"sv, "rtx_hdr_middle_gray"sv, "rtx_hdr_peak_brightness"sv}) {
+      for (const auto key : {"rtx_hdr"sv, "rtx_hdr_sdr_brightness"sv, "rtx_hdr_contrast"sv, "rtx_hdr_saturation"sv, "rtx_hdr_middle_gray"sv, "rtx_hdr_peak_brightness"sv}) {
         const auto before_it = before.find(std::string(key));
         const auto after_it = after.find(std::string(key));
         if (before_it == before.end() && after_it == after.end()) {
@@ -2360,6 +2363,7 @@ namespace config {
         "vk_rc_mode",
         "rtx_hdr",
         "rtx_hdr_force_sdr",
+        "rtx_hdr_sdr_brightness",
         "rtx_hdr_contrast",
         "rtx_hdr_saturation",
         "rtx_hdr_middle_gray",
@@ -2549,6 +2553,7 @@ namespace config {
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
       const auto prev_rtx_hdr_enabled = video.rtx_hdr.enabled;
+      const auto prev_rtx_hdr_sdr_brightness = video.rtx_hdr.sdr_brightness;
       const auto prev_rtx_hdr_contrast = video.rtx_hdr.contrast;
       const auto prev_rtx_hdr_saturation = video.rtx_hdr.saturation;
       const auto prev_rtx_hdr_middle_gray = video.rtx_hdr.middle_gray;
@@ -2586,6 +2591,7 @@ namespace config {
 #ifdef _WIN32
       const bool rtx_hdr_live_changed =
         prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
+        prev_rtx_hdr_sdr_brightness != video.rtx_hdr.sdr_brightness ||
         prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
         prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
         prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||

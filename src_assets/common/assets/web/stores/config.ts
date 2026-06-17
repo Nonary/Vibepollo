@@ -161,6 +161,7 @@ const defaultGroups = [
       rtx_hdr: false,
       rtx_hdr_force_sdr: false,
       rtx_hdr_peak_brightness: 1000,
+      rtx_hdr_sdr_brightness: 50,
       rtx_hdr_middle_gray: 50,
       rtx_hdr_contrast: 0,
       rtx_hdr_saturation: 0,

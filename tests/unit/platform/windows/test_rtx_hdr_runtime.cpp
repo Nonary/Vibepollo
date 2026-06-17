@@ -29,6 +29,7 @@ namespace {
       config::clear_runtime_config_overrides();
       config::video.rtx_hdr.enabled = true;
       config::video.rtx_hdr.force_sdr = false;
+      config::video.rtx_hdr.sdr_brightness = 50;
       config::video.rtx_hdr.contrast = 0;
       config::video.rtx_hdr.saturation = 0;
       config::video.rtx_hdr.middle_gray = 50;
@@ -64,6 +65,19 @@ namespace {
     state.active_app_name = "Game";
     state.active_app_exe = "C:/Games/Game/game.exe";
     state.source = "foreground-mismatch";
+    return state;
+  }
+
+  platf::foreground_app::state_t desktop_fullscreen_foreground(const std::string &executable = "C:/Games/Foo/foo.exe") {
+    platf::foreground_app::state_t state;
+    state.valid_window = true;
+    state.fullscreen_on_capture_display = true;
+    state.has_active_app = false;
+    state.matches_active_app = true;
+    state.foreground_pid = 101;
+    state.foreground_exe = executable;
+    state.active_app_exe = executable;
+    state.source = "fullscreen-foreground";
     return state;
   }
 
@@ -515,9 +529,14 @@ TEST(RtxHdrRuntimeScheduler, UpdateForFrameReturnsCachedStateWithoutInlineLookup
   EXPECT_EQ(fake.resolve_calls, 0);
 }
 
-TEST(RtxHdrRuntimeScheduler, ForegroundMismatchDisablesWithoutProfileLookup) {
+TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesNeutralDesktopSettingsWithoutProfileLookup) {
   rtx_hdr_config_guard_t config_guard;
   enable_rtx_hdr_app_override();
+  config::video.rtx_hdr.sdr_brightness = 67;
+  config::video.rtx_hdr.contrast = 25;
+  config::video.rtx_hdr.saturation = 26;
+  config::video.rtx_hdr.middle_gray = 54;
+  config::video.rtx_hdr.peak_brightness = 1300;
   fake_runtime_t fake;
   fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
   fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe);
@@ -531,9 +550,13 @@ TEST(RtxHdrRuntimeScheduler, ForegroundMismatchDisablesWithoutProfileLookup) {
   fake.runtime.poll_foreground_for_tests();
   const auto frame = fake.runtime.update_for_frame(std::nullopt);
 
-  EXPECT_FALSE(frame.enabled);
   EXPECT_FALSE(frame.foreground_matches);
-  EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 100);
+  EXPECT_EQ(frame.saturation, 100);
+  EXPECT_EQ(frame.middle_gray, 67);
+  EXPECT_EQ(frame.peak_brightness, 1300);
+  EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 1);
 
   fake.foreground = matching_foreground("C:/Games/Bar/bar.exe", "Bar");
@@ -544,15 +567,14 @@ TEST(RtxHdrRuntimeScheduler, ForegroundMismatchDisablesWithoutProfileLookup) {
   EXPECT_EQ(fake.resolve_calls, 1);
 }
 
-TEST(RtxHdrRuntimeScheduler, RuntimeOverrideDoesNotActivateDuringForegroundMismatch) {
+TEST(RtxHdrRuntimeScheduler, DisabledRtxHdrStillBypassesDuringForegroundMismatch) {
   rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.enabled = false;
+  config::video.rtx_hdr.sdr_brightness = 67;
   config::video.rtx_hdr.contrast = 25;
   config::video.rtx_hdr.saturation = 26;
   config::video.rtx_hdr.middle_gray = 54;
   config::video.rtx_hdr.peak_brightness = 1300;
-  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
-    {"rtx_hdr", "true"},
-  });
 
   fake_runtime_t fake;
   fake.foreground = mismatched_foreground();
@@ -563,6 +585,65 @@ TEST(RtxHdrRuntimeScheduler, RuntimeOverrideDoesNotActivateDuringForegroundMisma
   EXPECT_FALSE(frame.enabled);
   EXPECT_FALSE(frame.foreground_matches);
   EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_EQ(fake.resolve_calls, 0);
+}
+
+TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesNeutralSettingsWithoutProfileLookup) {
+  rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.sdr_brightness = 61;
+  config::video.rtx_hdr.contrast = 30;
+  config::video.rtx_hdr.saturation = 31;
+  config::video.rtx_hdr.middle_gray = 62;
+  config::video.rtx_hdr.peak_brightness = 1250;
+
+  fake_runtime_t fake;
+  fake.foreground = desktop_fullscreen_foreground();
+  fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe);
+
+  fake.runtime.poll_foreground_for_tests();
+  const auto frame = fake.runtime.update_for_frame(std::nullopt);
+
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_TRUE(frame.foreground_matches);
+  EXPECT_FALSE(frame.has_active_app);
+  EXPECT_EQ(frame.contrast, 100);
+  EXPECT_EQ(frame.saturation, 100);
+  EXPECT_EQ(frame.middle_gray, 61);
+  EXPECT_EQ(frame.peak_brightness, 1250);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_EQ(fake.resolve_calls, 0);
+
+  config::video.rtx_hdr.sdr_brightness = 74;
+  platf::rtx_hdr::notify_live_settings_changed();
+  const auto refreshed = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(refreshed.enabled);
+  EXPECT_EQ(refreshed.middle_gray, 74);
+  EXPECT_EQ(refreshed.source, profile_source_e::config);
+}
+
+TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopSdrBrightness) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
+  config::video.rtx_hdr.sdr_brightness = 45;
+
+  fake_runtime_t fake;
+  fake.foreground = mismatched_foreground();
+
+  fake.runtime.poll_foreground_for_tests();
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.middle_gray, 45);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+
+  config::video.rtx_hdr.sdr_brightness = 72;
+  platf::rtx_hdr::notify_live_settings_changed();
+  frame = fake.runtime.update_for_frame(std::nullopt);
+
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 100);
+  EXPECT_EQ(frame.saturation, 100);
+  EXPECT_EQ(frame.middle_gray, 72);
+  EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 0);
 }
 

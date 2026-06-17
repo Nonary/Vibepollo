@@ -399,6 +399,7 @@ namespace confighttp {
 
     bool is_rtx_hdr_live_key(std::string_view key) {
       return key == "rtx_hdr" ||
+             key == "rtx_hdr_sdr_brightness" ||
              key == "rtx_hdr_contrast" ||
              key == "rtx_hdr_saturation" ||
              key == "rtx_hdr_middle_gray" ||

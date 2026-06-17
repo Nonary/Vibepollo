@@ -117,11 +117,13 @@ namespace config {
     } vk;
 
     // NVIDIA TrueHDR (RTX HDR) SDR->HDR synthesis. Conversion is opt-in per app via
-    // runtime overrides. Global values are retained as tuning defaults, and dials mirror
-    // the NVIDIA App RTX HDR overlay. Per-app overrides live in apps.json (see proc::ctx_t).
+    // runtime overrides, while desktop/default capture can use the global neutral fallback.
+    // Tuning dials mirror the NVIDIA App RTX HDR overlay. Per-app overrides live in apps.json
+    // (see proc::ctx_t).
     struct rtx_hdr_t {
-      bool enabled;  ///< Legacy global flag; only runtime app overrides can activate conversion.
+      bool enabled;  ///< Enables desktop/default fallback; runtime app overrides activate app conversion.
       bool force_sdr;  ///< Legacy compatibility setting; app-enabled RTX HDR always forces SDR source.
+      int sdr_brightness;  ///< 10..100 (desktop/default SDR brightness, mapped to middle gray, default 50)
       int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
       int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
       int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)

@@ -34,6 +34,17 @@ namespace platf::rtx_hdr {
       return values;
     }
 
+    runtime_values_t desktop_runtime_values() {
+      runtime_values_t values;
+      values.enabled = config::video.rtx_hdr.enabled;
+      values.contrast = 100;
+      values.saturation = 100;
+      values.middle_gray = config::video.rtx_hdr.sdr_brightness;
+      values.peak_brightness = config::video.rtx_hdr.peak_brightness;
+      values.source = values.enabled ? profile_source_e::config : profile_source_e::none;
+      return values;
+    }
+
     std::string identity_key(const platf::foreground_app::state_t &foreground) {
       return foreground.active_app_exe + "\n" +
              foreground.foreground_exe + "\n" +
@@ -55,6 +66,7 @@ namespace platf::rtx_hdr {
     }
 
     void copy_foreground(frame_state_t &frame, const platf::foreground_app::state_t &foreground) {
+      frame.has_active_app = foreground.has_active_app;
       frame.foreground_matches = foreground.matches_active_app;
       frame.foreground_exe = foreground.foreground_exe;
       frame.active_app_exe = foreground.active_app_exe;
@@ -131,7 +143,12 @@ namespace platf::rtx_hdr {
     }
 
     void recompute_live_settings_locked(runtime_t::shared_state_t &state) {
-      if (!state.last_successful_profile || !state.cached_frame_state.foreground_matches) {
+      if (!state.cached_frame_state.has_active_app || !state.cached_frame_state.foreground_matches) {
+        apply_values(state.cached_frame_state, desktop_runtime_values());
+        return;
+      }
+
+      if (!state.last_successful_profile) {
         return;
       }
 
@@ -196,7 +213,7 @@ namespace platf::rtx_hdr {
                          << " fullscreen=" << (foreground.fullscreen_on_capture_display ? "1" : "0");
       }
 
-      if (!foreground.matches_active_app) {
+      if (!foreground.has_active_app || !foreground.matches_active_app) {
         if (!state->current_identity_key.empty()) {
           ++state->current_generation;
           state->current_identity_key.clear();
@@ -209,8 +226,7 @@ namespace platf::rtx_hdr {
 
         frame_state_t frame;
         copy_foreground(frame, foreground);
-        frame.enabled = false;
-        frame.source = profile_source_e::none;
+        apply_values(frame, desktop_runtime_values());
         frame.lookup_available = false;
         state->cached_frame_state = std::move(frame);
         return;

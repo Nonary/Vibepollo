@@ -378,6 +378,11 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
               :desc="t('config.rtx_hdr_peak_brightness_desc')"
             />
             <ConfigFieldRenderer
+              setting-key="rtx_hdr_sdr_brightness"
+              v-model="config.rtx_hdr_sdr_brightness"
+              :desc="t('config.rtx_hdr_sdr_brightness_desc')"
+            />
+            <ConfigFieldRenderer
               setting-key="rtx_hdr_middle_gray"
               v-model="config.rtx_hdr_middle_gray"
               :desc="t('config.rtx_hdr_middle_gray_desc')"
