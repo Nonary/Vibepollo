@@ -1012,8 +1012,16 @@ namespace input {
       return std::nullopt;
     }
 
+    // Linux client_to_touchport() returns desktop-relative coordinates for
+    // inputtino. Windows keeps monitor-local coordinates here and applies the
+    // monitor offset when injecting the pointer.
+#ifdef __linux__
     coords.first = (coords.first - touch_port.offset_x) / monitor_logical_w;
     coords.second = (coords.second - touch_port.offset_y) / monitor_logical_h;
+#else
+    coords.first = coords.first / monitor_logical_w;
+    coords.second = coords.second / monitor_logical_h;
+#endif
 
     return platf::touch_port_t {
       touch_port.offset_x,
@@ -1811,6 +1819,10 @@ namespace input {
 #ifdef SUNSHINE_TESTS
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data) {
     return validate_packet(input_data).has_value();
+  }
+
+  std::optional<platf::touch_port_t> monitor_touch_port_for_tests(const input::touch_port_t &touch_port, std::pair<float, float> &coords) {
+    return monitor_touch_port(touch_port, coords);
   }
 #endif
 

@@ -60,3 +60,39 @@ TEST(InputValidation, RejectsUnknownMagic) {
   auto bytes = packet_bytes(packet);
   EXPECT_FALSE(input::validate_packet_for_tests(bytes));
 }
+
+TEST(InputTouchMapping, NormalizesUsingPlatformOffsetContract) {
+  input::touch_port_t touch_port {
+    {
+      1920,
+      0,
+      1920,
+      1080,
+      1920,
+      1080,
+    },
+    3840,
+    1080,
+    0.0f,
+    0.0f,
+    1.0f,
+    1.0f,
+    3840,
+    1080,
+  };
+  std::pair<float, float> coords {960.0f, 540.0f};
+
+  auto monitor_port = input::monitor_touch_port_for_tests(touch_port, coords);
+
+  ASSERT_TRUE(monitor_port.has_value());
+  EXPECT_EQ(monitor_port->offset_x, 1920);
+  EXPECT_EQ(monitor_port->offset_y, 0);
+  EXPECT_EQ(monitor_port->width, 1920);
+  EXPECT_EQ(monitor_port->height, 1080);
+#ifdef __linux__
+  EXPECT_FLOAT_EQ(coords.first, -0.5f);
+#else
+  EXPECT_FLOAT_EQ(coords.first, 0.5f);
+#endif
+  EXPECT_FLOAT_EQ(coords.second, 0.5f);
+}

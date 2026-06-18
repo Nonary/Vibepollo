@@ -128,6 +128,52 @@ TEST(DisplayHelperRequestHelpers, SkipsPhysicalOutputWhenDisplayConfigurationDis
   EXPECT_FALSE(request.has_value());
 }
 
+TEST(DisplayHelperRequestHelpers, AppliesExclusiveVirtualDisplayWhenDisplayConfigurationDisabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::disabled;
+  video_config.output_name = "{virtual-device}";
+  video_config.virtual_display_layout = config::video_t::virtual_display_layout_e::exclusive;
+
+  rtsp_stream::launch_session_t session {};
+  session.virtual_display = true;
+  session.virtual_display_device_id = "{virtual-device}";
+  session.width = 1920;
+  session.height = 1080;
+  session.fps = 60;
+
+  display_helper_integration::helpers::SessionDisplayConfigurationHelper helper(video_config, session);
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  ASSERT_TRUE(request.has_value());
+  ASSERT_TRUE(request->configuration.has_value());
+  EXPECT_EQ(
+    request->configuration->m_device_prep,
+    display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay
+  );
+}
+
+TEST(DisplayHelperRequestHelpers, SkipsExtendedVirtualDisplayWhenDisplayConfigurationDisabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::disabled;
+  video_config.output_name = "{virtual-device}";
+  video_config.virtual_display_layout = config::video_t::virtual_display_layout_e::extended;
+
+  rtsp_stream::launch_session_t session {};
+  session.virtual_display = true;
+  session.virtual_display_device_id = "{virtual-device}";
+  session.width = 1920;
+  session.height = 1080;
+  session.fps = 60;
+
+  display_helper_integration::helpers::SessionDisplayConfigurationHelper helper(video_config, session);
+  EXPECT_FALSE(helper.initial_virtual_display_resolution().has_value());
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  EXPECT_FALSE(request.has_value());
+}
+
 TEST(DisplayHelperRequestHelpers, PhysicalOutputDoesNotPinSingleDisplayTopology) {
   config::video_t video_config {};
   video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;

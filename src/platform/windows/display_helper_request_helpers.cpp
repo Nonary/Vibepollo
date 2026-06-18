@@ -255,10 +255,12 @@ namespace display_helper_integration::helpers {
     if (auto runtime_output_override = config::runtime_output_name_override()) {
       effective_video_config_.output_name = *runtime_output_override;
     }
+    const auto effective_layout =
+      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
     if (session_.virtual_display &&
         effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
-        !effective_video_config_.output_name.empty()) {
-      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+        effective_layout == config::video_t::virtual_display_layout_e::exclusive) {
+      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
     }
   }
 
@@ -509,10 +511,12 @@ namespace display_helper_integration::helpers {
     if (auto runtime_output_override = config::runtime_output_name_override()) {
       effective_video_config_.output_name = *runtime_output_override;
     }
+    const auto effective_layout =
+      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
     if (session_.virtual_display &&
         effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
-        !effective_video_config_.output_name.empty()) {
-      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+        effective_layout == config::video_t::virtual_display_layout_e::exclusive) {
+      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
     }
   }
 
