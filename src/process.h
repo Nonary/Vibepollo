@@ -289,6 +289,7 @@ namespace proc {
    */
   std::tuple<std::string, std::string> calculate_app_id(const std::string &app_name, const std::string &app_uuid, std::string app_image_path, int index);
 
+  bool should_enable_vulkan_hdr_layer_for_launch(bool session_hdr_enabled, bool vulkan_hdr_layer_enabled);
   bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
