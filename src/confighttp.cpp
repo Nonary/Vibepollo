@@ -1109,6 +1109,49 @@ namespace confighttp {
       bad_request(response, request, "Failed to evaluate ViGEm health");
     }
   }
+
+  /**
+   * @brief Health check for the Sunshine Vulkan HDR implicit layer (virtual-display HDR support).
+   * @details `installed` reflects the actual HKLM registration; `enabled` reflects the configured
+   *          desired state. The web UI warns when the layer is desired but not installed.
+   * @api_examples{/api/health/vulkan-hdr-layer| GET| {"installed":true,"enabled":true}}
+   */
+  void getVulkanHdrLayerHealth(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      nlohmann::json out;
+      out["installed"] = platf::is_vulkan_hdr_layer_registered();
+      out["enabled"] = config::video.dd.vulkan_hdr_layer;
+      send_response(response, out);
+    } catch (...) {
+      bad_request(response, request, "Failed to evaluate Vulkan HDR layer health");
+    }
+  }
+
+  /**
+   * @brief (Re)register the Sunshine Vulkan HDR implicit layer (repair action for the warning banner).
+   * @details Forces registration regardless of current state; used when the installer's best-effort
+   *          registration was skipped/failed. Requires SYSTEM/admin rights (Sunshine's service runs
+   *          as SYSTEM). Does not change the configured enable/disable preference.
+   * @api_examples{/api/health/vulkan-hdr-layer/register| POST| {"status":true,"installed":true,"enabled":true}}
+   */
+  void postVulkanHdrLayerRegister(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    try {
+      const bool ok = platf::set_vulkan_hdr_layer_enabled(true);
+      nlohmann::json out;
+      out["status"] = ok;
+      out["installed"] = platf::is_vulkan_hdr_layer_registered();
+      out["enabled"] = config::video.dd.vulkan_hdr_layer;
+      send_response(response, out);
+    } catch (...) {
+      bad_request(response, request, "Failed to register Vulkan HDR layer");
+    }
+  }
 #endif
 
   /**
@@ -2843,6 +2886,38 @@ namespace confighttp {
    *
    * @api_examples{/api/config| POST| {"key":"value"}}
    */
+#ifdef _WIN32
+  /**
+   * @brief Apply a changed `vulkan_hdr_layer` preference to the system Vulkan implicit-layer
+   *        registration immediately, so the Web UI toggle takes effect without a restart.
+   * @details Best-effort: registering/unregistering the HKLM implicit layer requires SYSTEM/admin
+   *          rights (Sunshine's service runs as SYSTEM). No-op when the key is not in the body.
+   */
+  void reconcile_vulkan_hdr_layer_from_body(const nlohmann::json &body) {
+    if (!body.is_object()) {
+      return;
+    }
+    const auto it = body.find("vulkan_hdr_layer");
+    if (it == body.end()) {
+      return;
+    }
+    const nlohmann::json &v = *it;
+    bool enabled = true;
+    if (v.is_boolean()) {
+      enabled = v.get<bool>();
+    } else if (v.is_number()) {
+      enabled = v.get<double>() != 0.0;
+    } else if (v.is_string()) {
+      std::string s = v.get<std::string>();
+      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return (char) std::tolower(c);
+      });
+      enabled = !(s.empty() || s == "false" || s == "disabled" || s == "0" || s == "off" || s == "no");
+    }
+    platf::set_vulkan_hdr_layer_enabled(enabled);
+  }
+#endif
+
   void saveConfig(resp_https_t response, req_https_t request) {
     if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
       return;
@@ -2869,6 +2944,10 @@ namespace confighttp {
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
       file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+
+#ifdef _WIN32
+      reconcile_vulkan_hdr_layer_from_body(input_tree);
+#endif
 
       // Detect restart-required keys
       static const std::set<std::string> restart_required_keys = {
@@ -2973,6 +3052,10 @@ namespace confighttp {
         config_stream << kv.first << " = " << kv.second << std::endl;
       }
       file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+
+#ifdef _WIN32
+      reconcile_vulkan_hdr_layer_from_body(patch_tree);
+#endif
 
       // Detect restart-required keys
       static const std::set<std::string> restart_required_keys = {
@@ -5394,6 +5477,8 @@ namespace confighttp {
 #ifdef _WIN32
     register_blocking_api_route("^/api/framegen/edid-refresh$", "GET", getFramegenEdidRefresh);
     register_api_route("^/api/health/vigem$", "GET", getVigemHealth);
+    register_api_route("^/api/health/vulkan-hdr-layer$", "GET", getVulkanHdrLayerHealth);
+    register_api_route("^/api/health/vulkan-hdr-layer/register$", "POST", postVulkanHdrLayerRegister);
     register_api_route("^/api/health/crashdump$", "GET", getCrashDumpStatus);
     register_api_route("^/api/health/crashdump/dismiss$", "POST", postCrashDumpDismiss);
 #endif

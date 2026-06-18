@@ -151,6 +151,25 @@ namespace platf {
   bool is_vigem_installed(std::string *version_out = nullptr);
 
   /**
+   * @brief Check whether the Sunshine Vulkan HDR implicit layer is registered for the system.
+   * @details Reads HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers (64-bit view) and confirms a value
+   *          pointing at VkLayer_sunshine_hdr.json whose manifest still exists on disk.
+   * @return true if the implicit layer is registered and its manifest is present, false otherwise.
+   */
+  bool is_vulkan_hdr_layer_registered();
+
+  /**
+   * @brief Register or unregister the Sunshine Vulkan HDR implicit layer (system-wide, HKLM).
+   * @details Registering writes the manifest path (shipped under drivers\sunshine\vulkan-layer) into
+   *          the 64-bit ImplicitLayers key; unregistering removes our manifest from both registry
+   *          views. Requires administrative/SYSTEM rights (best-effort otherwise). No-op when the
+   *          layer is already in the requested state.
+   * @param enabled true to register the layer, false to unregister it.
+   * @return true on success (or when already in the desired state), false on failure.
+   */
+  bool set_vulkan_hdr_layer_enabled(bool enabled);
+
+  /**
    * @brief Get file version information from a Windows executable or driver file.
    * @param file_path Path to the file to query.
    * @param version_str Output parameter for version string in format "major.minor.build.revision".

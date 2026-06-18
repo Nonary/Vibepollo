@@ -99,6 +99,15 @@ const sunshineVirtualDriverEnabled = computed<boolean>({
     store.updateOption('dd_use_sunshine_virtual_display_driver', enabled);
   },
 });
+const vulkanHdrLayerEnabled = computed<boolean>({
+  get() {
+    return config.value?.vulkan_hdr_layer !== false;
+  },
+  set(enabled) {
+    if (!config.value) return;
+    store.updateOption('vulkan_hdr_layer', enabled);
+  },
+});
 const selectedVirtualDisplayDriverName = computed(() =>
   sunshineVirtualDriverEnabled.value
     ? t('config.virtual_display_driver_vibeshine_name')
@@ -299,10 +308,7 @@ function selectVirtualDisplayLayout(v: unknown) {
             <p class="text-[11px] opacity-70 mt-2 leading-snug">
               {{ $t('config.virtual_display_mode_step_hint') }}
             </p>
-            <n-radio-group
-              v-model:value="virtualDisplayMode"
-              class="grid gap-2 sm:grid-cols-3"
-            >
+            <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
               <n-radio value="disabled">
                 {{ $t('config.virtual_display_mode_disabled') }}
               </n-radio>
@@ -425,6 +431,18 @@ function selectVirtualDisplayLayout(v: unknown) {
                       </span>
                       <span class="mt-1 text-[11px] leading-snug opacity-70">
                         {{ $t('config.dd_use_sunshine_virtual_display_driver_desc') }}
+                      </span>
+                    </div>
+                  </n-checkbox>
+                </div>
+                <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
+                  <n-checkbox v-model:checked="vulkanHdrLayerEnabled">
+                    <div class="flex flex-col">
+                      <span class="text-sm font-medium">
+                        {{ $t('config.vulkan_hdr_layer') }}
+                      </span>
+                      <span class="mt-1 text-[11px] leading-snug opacity-70">
+                        {{ $t('config.vulkan_hdr_layer_desc') }}
                       </span>
                     </div>
                   </n-checkbox>

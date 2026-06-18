@@ -856,7 +856,8 @@ namespace config {
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
-      {false, true}  // wa
+      {false, true},  // wa
+      true  // vulkan_hdr_layer
     },  // display_device
 
     0,  // max_bitrate
@@ -1693,6 +1694,7 @@ namespace config {
     generic_f(vars, "dd_display_helper_engine", video.dd.display_helper_engine, dd::helper_engine_from_view);
     bool_f(vars, "dd_use_sunshine_virtual_display_driver", video.dd.use_sunshine_virtual_display_driver);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
+    bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
     {
       auto it = vars.find("dd_virtual_display_permanent_count");
       if (it == std::end(vars)) {

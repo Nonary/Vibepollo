@@ -42,7 +42,9 @@
       <div class="min-w-0">
         <n-card v-if="installedVersion" :segmented="{ content: true, footer: true }">
           <template #header>
-            <h2 class="text-xl sm:text-2xl font-semibold tracking-tight mx-auto text-center break-words">
+            <h2
+              class="text-xl sm:text-2xl font-semibold tracking-tight mx-auto text-center break-words"
+            >
               {{ 'Version ' + displayVersion }}
             </h2>
           </template>
@@ -177,7 +179,12 @@
                       }}
                     </span>
                   </n-button>
-                  <n-button tertiary size="small" class="w-full justify-center sm:w-auto" @click="dismissCrashBundle">
+                  <n-button
+                    tertiary
+                    size="small"
+                    class="w-full justify-center sm:w-auto"
+                    @click="dismissCrashBundle"
+                  >
                     <i class="fas fa-xmark" />
                     <span>{{ $t('config.crash_dump_dismiss') || 'Dismiss' }}</span>
                   </n-button>
@@ -218,6 +225,52 @@
                   >
                     <i class="fas fa-download" />
                     <span>{{ $t('config.vigem_install') || 'Download ViGEmBus' }}</span>
+                  </n-button>
+                </div>
+              </div>
+            </n-alert>
+            <!-- Vulkan HDR layer not installed warning on Windows -->
+            <n-alert
+              v-if="showVulkanHdrLayerBanner"
+              type="warning"
+              :show-icon="true"
+              class="rounded-xl"
+            >
+              <div
+                class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 w-full"
+              >
+                <div class="min-w-0">
+                  <p class="text-sm m-0 font-medium">
+                    {{ $t('vulkan_hdr.not_installed_title') || 'Vulkan HDR layer not installed' }}
+                  </p>
+                  <p class="text-xs opacity-80 m-0">
+                    {{
+                      $t('vulkan_hdr.not_installed_desc') ||
+                      "The Vulkan HDR layer for virtual displays isn't registered, so HDR may not work on virtual displays. You can install it now, or disable this feature in Settings if it's causing app crashes."
+                    }}
+                  </p>
+                </div>
+                <div class="grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
+                  <n-button
+                    type="primary"
+                    strong
+                    size="small"
+                    class="w-full justify-center sm:w-auto"
+                    :loading="vulkanHdrLayerInstalling"
+                    :disabled="vulkanHdrLayerInstalling"
+                    @click="installVulkanHdrLayer"
+                  >
+                    <i class="fas fa-download" />
+                    <span>{{ $t('vulkan_hdr.install') || 'Install' }}</span>
+                  </n-button>
+                  <n-button
+                    tertiary
+                    size="small"
+                    class="w-full justify-center sm:w-auto"
+                    @click="dismissVulkanHdrLayerBanner"
+                  >
+                    <i class="fas fa-xmark" />
+                    <span>{{ $t('vulkan_hdr.dismiss') || 'Dismiss' }}</span>
                   </n-button>
                 </div>
               </div>
@@ -268,7 +321,10 @@
                       >
                         <i class="fas fa-rotate-right" />
                         <span>{{
-                          translate('config.golden_snapshot_outdated_action', 'Open Display Settings')
+                          translate(
+                            'config.golden_snapshot_outdated_action',
+                            'Open Display Settings',
+                          )
                         }}</span>
                       </n-button>
                     </a>
@@ -348,7 +404,9 @@
                       </p>
                     </div>
                   </div>
-                  <div class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
+                  <div
+                    class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0"
+                  >
                     <n-button
                       type="default"
                       strong
@@ -409,7 +467,9 @@
                       </p>
                     </div>
                   </div>
-                  <div class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0">
+                  <div
+                    class="dashboard-release-alert__actions grid gap-2 sm:flex sm:flex-wrap sm:items-center shrink-0"
+                  >
                     <n-button
                       type="default"
                       strong
@@ -513,6 +573,16 @@ const installedIsPrerelease = ref(false);
 // ViGEm health
 const vigemInstalled = ref<boolean | null>(null);
 const vigemVersion = ref('');
+// Vulkan HDR layer health (Windows only)
+const vulkanHdrLayer = ref<{ installed: boolean; enabled: boolean } | null>(null);
+const vulkanHdrLayerInstalling = ref(false);
+const vulkanHdrLayerBannerDismissed = ref(false);
+if (typeof window !== 'undefined') {
+  try {
+    vulkanHdrLayerBannerDismissed.value =
+      window.localStorage.getItem('vulkanHdrLayerBannerDismissed') === '1';
+  } catch {}
+}
 // Playnite extension status
 type PlayniteStatus = {
   installed: boolean | null;
@@ -717,6 +787,7 @@ async function runVersionChecks() {
     } catch (e) {
       vigemInstalled.value = null;
     }
+    await refreshVulkanHdrLayerStatus(plat);
     await refreshCrashDumpStatus(plat);
     await refreshGoldenStatus(plat);
     // Playnite status for extension version/update check
@@ -851,6 +922,71 @@ async function refreshGoldenStatus(platformOverride?: string) {
     }
   } catch {
     goldenStatus.value = null;
+  }
+}
+
+async function refreshVulkanHdrLayerStatus(platformOverride?: string) {
+  const platform = ((platformOverride ?? configStore.metadata?.platform) || '').toLowerCase();
+  if (platform !== 'windows') {
+    vulkanHdrLayer.value = null;
+    return;
+  }
+  try {
+    const r = await http.get('/api/health/vulkan-hdr-layer', { validateStatus: () => true });
+    if (r.status === 200 && r.data) {
+      vulkanHdrLayer.value = {
+        installed: !!r.data.installed,
+        enabled: r.data.enabled !== false,
+      };
+    } else {
+      vulkanHdrLayer.value = null;
+    }
+  } catch {
+    vulkanHdrLayer.value = null;
+  }
+}
+
+async function installVulkanHdrLayer() {
+  if (vulkanHdrLayerInstalling.value) return;
+  vulkanHdrLayerInstalling.value = true;
+  try {
+    const r = await http.post(
+      '/api/health/vulkan-hdr-layer/register',
+      {},
+      { validateStatus: () => true },
+    );
+    const ok =
+      r.status >= 200 && r.status < 300 && (r.data?.status === true || r.data?.installed === true);
+    await refreshVulkanHdrLayerStatus();
+    if (ok && vulkanHdrLayer.value?.installed) {
+      message.success(translate('vulkan_hdr.install_success', 'Vulkan HDR layer installed.'));
+    } else {
+      message.error(
+        translate(
+          'vulkan_hdr.install_error',
+          'Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges.',
+        ),
+      );
+    }
+  } catch {
+    await refreshVulkanHdrLayerStatus();
+    message.error(
+      translate(
+        'vulkan_hdr.install_error',
+        'Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges.',
+      ),
+    );
+  } finally {
+    vulkanHdrLayerInstalling.value = false;
+  }
+}
+
+function dismissVulkanHdrLayerBanner() {
+  vulkanHdrLayerBannerDismissed.value = true;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem('vulkanHdrLayerBannerDismissed', '1');
+    } catch {}
   }
 }
 
@@ -1029,13 +1165,19 @@ const showVigemBanner = computed(() => {
   return plat === 'windows' && controllerEnabled && vigemInstalled.value === false;
 });
 
+const showVulkanHdrLayerBanner = computed(() => {
+  const plat = (configStore.metadata?.platform || '').toLowerCase();
+  if (plat !== 'windows') return false;
+  if (vulkanHdrLayerBannerDismissed.value) return false;
+  return vulkanHdrLayer.value?.enabled !== false && vulkanHdrLayer.value?.installed === false;
+});
+
 const showGoldenSnapshotOutOfDateBanner = computed(() => {
   const plat = (configStore.metadata?.platform || '').toLowerCase();
   if (plat !== 'windows') return false;
   return (
     goldenStatus.value?.exists === true &&
-    (goldenStatus.value?.needs_layout_upgrade === true ||
-      goldenStatus.value?.out_of_date === true)
+    (goldenStatus.value?.needs_layout_upgrade === true || goldenStatus.value?.out_of_date === true)
   );
 });
 

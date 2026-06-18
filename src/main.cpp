@@ -447,6 +447,16 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+#ifdef _WIN32
+  // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
+  // the Web UI toggle authoritative over the installer's unconditional registration and self-heals
+  // when the installer's (now best-effort) registration was skipped or failed. Only attempt when
+  // running as SYSTEM, since it writes HKLM; the call short-circuits when already in the desired state.
+  if (platf::is_running_as_system()) {
+    platf::set_vulkan_hdr_layer_enabled(config::video.dd.vulkan_hdr_layer);
+  }
+#endif
+
   auto host_stats_deinit_guard = host_stats::start();
 
   if (shutdown_event->peek()) {

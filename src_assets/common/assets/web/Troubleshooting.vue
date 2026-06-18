@@ -65,6 +65,52 @@
         </div>
       </section>
 
+      <section v-if="platform === 'windows'" class="troubleshoot-card">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 class="text-base font-semibold text-dark dark:text-light">
+              {{ $t('vulkan_hdr.troubleshooting_title') || 'Vulkan HDR layer' }}
+            </h2>
+            <p class="text-xs opacity-70 leading-snug">
+              <template v-if="vulkanHdrLayer?.installed">
+                {{ $t('vulkan_hdr.installed') || 'Vulkan HDR layer is installed.' }}
+              </template>
+              <template v-else>
+                {{
+                  $t('vulkan_hdr.not_installed_desc') ||
+                  "The Vulkan HDR layer for virtual displays isn't registered, so HDR may not work on virtual displays. You can install it now, or disable this feature in Settings if it's causing app crashes."
+                }}
+              </template>
+            </p>
+            <p class="text-[11px] opacity-60 leading-snug mt-1">
+              {{
+                $t('vulkan_hdr.settings_hint') ||
+                'You can enable or disable this layer in Settings (Audio/Video).'
+              }}
+            </p>
+          </div>
+          <n-button
+            v-if="!vulkanHdrLayer?.installed"
+            type="primary"
+            strong
+            :loading="vulkanHdrLayerInstalling"
+            :disabled="vulkanHdrLayerInstalling"
+            @click="installVulkanHdrLayer"
+          >
+            {{ $t('vulkan_hdr.install') || 'Install' }}
+          </n-button>
+        </div>
+        <n-alert v-if="vulkanHdrLayerStatus === true" type="success" class="mt-3">
+          {{ $t('vulkan_hdr.install_success') || 'Vulkan HDR layer installed.' }}
+        </n-alert>
+        <n-alert v-else-if="vulkanHdrLayerStatus === false" type="error" class="mt-3">
+          {{
+            $t('vulkan_hdr.install_error') ||
+            'Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges.'
+          }}
+        </n-alert>
+      </section>
+
       <section v-if="platform === 'windows' && crashDumpAvailable" class="troubleshoot-card">
         <div class="flex items-start justify-between gap-4 flex-wrap">
           <div>
@@ -318,6 +364,10 @@ const platform = computed(() => store.metadata.platform);
 const crashDump = ref<CrashDumpStatus | null>(null);
 const crashDumpAvailable = computed(() => isCrashDumpEligible(crashDump.value));
 const exportCrashPending = ref(false);
+
+const vulkanHdrLayer = ref<{ installed: boolean; enabled: boolean } | null>(null);
+const vulkanHdrLayerInstalling = ref(false);
+const vulkanHdrLayerStatus = ref(null as null | boolean);
 
 const closeAppPressed = ref(false);
 const closeAppStatus = ref(null as null | boolean);
@@ -858,6 +908,49 @@ async function refreshCrashDumpStatus() {
   }
 }
 
+async function refreshVulkanHdrLayerStatus() {
+  try {
+    if (platform.value === 'windows') {
+      const r = await http.get('/api/health/vulkan-hdr-layer', { validateStatus: () => true });
+      if (r.status === 200 && r.data) {
+        vulkanHdrLayer.value = {
+          installed: !!r.data.installed,
+          enabled: r.data.enabled !== false,
+        };
+      } else {
+        vulkanHdrLayer.value = null;
+      }
+    } else {
+      vulkanHdrLayer.value = null;
+    }
+  } catch {
+    vulkanHdrLayer.value = null;
+  }
+}
+
+async function installVulkanHdrLayer() {
+  if (vulkanHdrLayerInstalling.value) return;
+  vulkanHdrLayerInstalling.value = true;
+  vulkanHdrLayerStatus.value = null;
+  try {
+    const r = await http.post(
+      '/api/health/vulkan-hdr-layer/register',
+      {},
+      { validateStatus: () => true },
+    );
+    const ok =
+      r.status >= 200 && r.status < 300 && (r.data?.status === true || r.data?.installed === true);
+    await refreshVulkanHdrLayerStatus();
+    vulkanHdrLayerStatus.value = ok && vulkanHdrLayer.value?.installed === true;
+  } catch {
+    await refreshVulkanHdrLayerStatus();
+    vulkanHdrLayerStatus.value = false;
+  } finally {
+    vulkanHdrLayerInstalling.value = false;
+    setTimeout(() => (vulkanHdrLayerStatus.value = null), 5000);
+  }
+}
+
 function exportCrashBundle() {
   return void exportCrashBundleAsync();
 }
@@ -956,11 +1049,13 @@ onMounted(async () => {
   loginDisposer = authStore.onLogin(() => {
     void refreshLogs();
     void refreshCrashDumpStatus();
+    void refreshVulkanHdrLayerStatus();
   });
 
   await authStore.waitForAuthentication();
 
   await refreshCrashDumpStatus();
+  await refreshVulkanHdrLayerStatus();
 
   nextTick(() => {
     if (getLogContainer()) scrollToBottom();

@@ -434,6 +434,8 @@
     "vt_software": "Codificación de software VideoToolbox",
     "vt_software_allowed": "Permitido",
     "vt_software_forced": "Forzado",
+    "vulkan_hdr_layer": "Capa HDR de Vulkan para pantallas virtuales",
+    "vulkan_hdr_layer_desc": "Registra una capa de Vulkan a nivel de sistema que expone formatos de superficie HDR en pantallas virtuales. Desactívala si los juegos o aplicaciones de Vulkan se bloquean con una infracción de acceso (access violation) tras instalar el controlador de pantalla.",
     "wan_encryption_mode": "Modo de cifrado WAN",
     "wan_encryption_mode_1": "Activado para clientes compatibles (por defecto)",
     "wan_encryption_mode_2": "Requerido para todos los clientes",
@@ -850,6 +852,17 @@
     "restart_apollo": "Restart Apollo",
     "restart_apollo_desc": "Restart the Apollo service. Active sessions will be disconnected.",
     "restart_apollo_success": "Apollo restart request sent."
+  },
+  "vulkan_hdr": {
+    "dismiss": "Descartar",
+    "install": "Instalar",
+    "install_error": "No se pudo instalar la capa HDR de Vulkan. Asegúrate de que Sunshine se esté ejecutando con privilegios de administrador.",
+    "install_success": "Capa HDR de Vulkan instalada.",
+    "installed": "La capa HDR de Vulkan está instalada.",
+    "not_installed_desc": "La capa HDR de Vulkan para pantallas virtuales no está registrada, por lo que es posible que el HDR no funcione en las pantallas virtuales. Puedes instalarla ahora o desactivar esta función en Ajustes si está provocando bloqueos en las aplicaciones.",
+    "not_installed_title": "La capa HDR de Vulkan no está instalada",
+    "settings_hint": "Puedes activar o desactivar esta capa en Ajustes (Audio/Vídeo).",
+    "troubleshooting_title": "Capa HDR de Vulkan"
   },
   "featured": {
     "categories": {

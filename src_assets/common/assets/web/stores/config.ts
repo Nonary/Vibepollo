@@ -149,6 +149,7 @@ const defaultGroups = [
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_use_sunshine_virtual_display_driver: false,
+      vulkan_hdr_layer: true,
       dd_activate_virtual_display: false,
       dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
@@ -570,6 +571,7 @@ export const useConfigStore = defineStore('config', () => {
       'frame_limiter_enable',
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
+      'vulkan_hdr_layer',
       'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
       'realtime_stats_enabled',
