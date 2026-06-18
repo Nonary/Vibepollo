@@ -270,10 +270,3 @@ TEST_F(ProcessPNGTest, ValidateAppImagePath_OldSteamDefault) {
   const std::string result = proc::validate_app_image_path("./assets/steam.png");
   EXPECT_EQ(result, SUNSHINE_ASSETS_DIR "/steam.png");
 }
-
-TEST(ProcessLaunchEnvironment, EnablesVulkanHdrLayerOnlyForHdrSessionsWhenConfigured) {
-  EXPECT_TRUE(proc::should_enable_vulkan_hdr_layer_for_launch(true, true));
-  EXPECT_FALSE(proc::should_enable_vulkan_hdr_layer_for_launch(true, false));
-  EXPECT_FALSE(proc::should_enable_vulkan_hdr_layer_for_launch(false, true));
-  EXPECT_FALSE(proc::should_enable_vulkan_hdr_layer_for_launch(false, false));
-}

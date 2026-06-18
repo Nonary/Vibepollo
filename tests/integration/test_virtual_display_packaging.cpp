@@ -60,7 +60,7 @@ TEST(SunshineVirtualDisplayPackaging, VulkanHdrLayerPayloadIsRequiredAndInstalle
   expect_contains(layer_json, "\"library_path\": \".\\\\VkLayer_sunshine_hdr.dll\"");
   const auto manifest = nlohmann::json::parse(layer_json);
   ASSERT_TRUE(manifest.contains("layer"));
-  EXPECT_EQ(manifest["layer"]["enable_environment"]["ENABLE_SUNSHINE_VIRTUAL_HDR"], "1");
+  EXPECT_FALSE(manifest["layer"].contains("enable_environment"));
   EXPECT_EQ(manifest["layer"]["disable_environment"]["DISABLE_SUNSHINE_VIRTUAL_HDR"], "1");
   ASSERT_TRUE(std::filesystem::exists(layer_dll_path)) << layer_dll_path.string();
   EXPECT_GT(std::filesystem::file_size(layer_dll_path), 0u);

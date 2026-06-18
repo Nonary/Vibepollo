@@ -10,9 +10,6 @@
     "functions": {
       "vkGetInstanceProcAddr": "vkGetInstanceProcAddr"
     },
-    "enable_environment": {
-      "ENABLE_SUNSHINE_VIRTUAL_HDR": "1"
-    },
     "disable_environment": {
       "DISABLE_SUNSHINE_VIRTUAL_HDR": "1"
     }

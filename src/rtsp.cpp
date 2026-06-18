@@ -14,15 +14,21 @@ extern "C" {
 #include <array>
 #include <cctype>
 #include <format>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 // lib includes
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
+#ifdef _WIN32
+  #include <sddl.h>
+  #include <windows.h>
+#endif
 
 // local includes
 #include "config.h"
@@ -43,6 +49,71 @@ using asio::ip::tcp;
 using asio::ip::udp;
 
 using namespace std::literals;
+
+#ifdef _WIN32
+namespace {
+  constexpr wchar_t kVulkanHdrLayerGlobalActiveEventName[] = L"Global\\SunshineVirtualHdrActive";
+  constexpr wchar_t kVulkanHdrLayerLocalActiveEventName[] = L"Local\\SunshineVirtualHdrActive";
+
+  std::mutex g_vulkan_hdr_layer_event_mutex;
+  HANDLE g_vulkan_hdr_layer_global_event = nullptr;
+  HANDLE g_vulkan_hdr_layer_local_event = nullptr;
+
+  HANDLE create_vulkan_hdr_active_event(const wchar_t *name) {
+    PSECURITY_DESCRIPTOR security_descriptor = nullptr;
+    SECURITY_ATTRIBUTES security_attributes {};
+    security_attributes.nLength = sizeof(security_attributes);
+    security_attributes.bInheritHandle = FALSE;
+
+    SECURITY_ATTRIBUTES *security_attributes_ptr = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"D:P(A;;GA;;;WD)",
+          SDDL_REVISION_1,
+          &security_descriptor,
+          nullptr
+        )) {
+      security_attributes.lpSecurityDescriptor = security_descriptor;
+      security_attributes_ptr = &security_attributes;
+    }
+
+    HANDLE event = CreateEventW(security_attributes_ptr, TRUE, FALSE, name);
+    if (security_descriptor) {
+      LocalFree(security_descriptor);
+    }
+    return event;
+  }
+
+  void ensure_vulkan_hdr_active_events() {
+    if (!g_vulkan_hdr_layer_global_event) {
+      g_vulkan_hdr_layer_global_event = create_vulkan_hdr_active_event(kVulkanHdrLayerGlobalActiveEventName);
+    }
+    if (!g_vulkan_hdr_layer_local_event) {
+      g_vulkan_hdr_layer_local_event = create_vulkan_hdr_active_event(kVulkanHdrLayerLocalActiveEventName);
+    }
+  }
+
+  void set_vulkan_hdr_layer_streaming_active(bool active) {
+    std::scoped_lock lock {g_vulkan_hdr_layer_event_mutex};
+    ensure_vulkan_hdr_active_events();
+
+    bool signaled = false;
+    for (HANDLE event : {g_vulkan_hdr_layer_global_event, g_vulkan_hdr_layer_local_event}) {
+      if (!event) {
+        continue;
+      }
+      if (active) {
+        signaled = SetEvent(event) || signaled;
+      } else {
+        signaled = ResetEvent(event) || signaled;
+      }
+    }
+
+    if (active && !signaled) {
+      BOOST_LOG(warning) << "Failed to signal Vulkan HDR layer streaming state.";
+    }
+  }
+}  // namespace
+#endif
 
 namespace rtsp_stream {
   void free_msg(PRTSP_MESSAGE msg) {
@@ -649,6 +720,7 @@ namespace rtsp_stream {
       // but perform the potentially blocking join() outside of the lock to
       // avoid deadlocks (join() may indirectly query session_count()).
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      bool vulkan_hdr_layer_active = false;
 
       {
         auto lg = _session_state.lock();
@@ -662,12 +734,17 @@ namespace rtsp_stream {
 
             // Remove from the active set now so counts reflect pending removal
             _session_state->client_uuids.erase(session.get());
+            _session_state->vulkan_hdr_layer_sessions.erase(session.get());
             i = _session_state->sessions.erase(i);
           } else {
             ++i;
           }
         }
+        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
       }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
 
       if (all) {
         clear_launch_sessions();
@@ -685,17 +762,26 @@ namespace rtsp_stream {
      * @param session The session to remove.
      */
     void remove(const std::shared_ptr<stream::session_t> &session) {
-      auto lg = _session_state.lock();
-      _session_state->sessions.erase(session);
-      _session_state->client_uuids.erase(session.get());
+      bool vulkan_hdr_layer_active = false;
+      {
+        auto lg = _session_state.lock();
+        _session_state->sessions.erase(session);
+        _session_state->client_uuids.erase(session.get());
+        _session_state->vulkan_hdr_layer_sessions.erase(session.get());
+        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
+      }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
     }
 
     /**
      * @brief Inserts the provided session into the set of sessions.
      * @param session The session to insert.
      */
-    void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid) {
+    void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid, bool hdr_enabled) {
       const bool has_uuid = !client_uuid.empty();
+      bool vulkan_hdr_layer_active = false;
       {
         auto lg = _session_state.lock();
         _session_state->sessions.emplace(session);
@@ -704,7 +790,16 @@ namespace rtsp_stream {
         } else {
           _session_state->client_uuids.erase(session.get());
         }
+        if (hdr_enabled) {
+          _session_state->vulkan_hdr_layer_sessions.emplace(session.get());
+        } else {
+          _session_state->vulkan_hdr_layer_sessions.erase(session.get());
+        }
+        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
       }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
       if (has_uuid) {
         nvhttp::mark_client_last_seen(client_uuid);
       }
@@ -728,6 +823,7 @@ namespace rtsp_stream {
       }
 
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      bool vulkan_hdr_layer_active = false;
       {
         auto lg = _session_state.lock();
         for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
@@ -736,12 +832,17 @@ namespace rtsp_stream {
           if (it_uuid != _session_state->client_uuids.end() && it_uuid->second == client_uuid) {
             to_cleanup.emplace_back(session);
             _session_state->client_uuids.erase(session.get());
+            _session_state->vulkan_hdr_layer_sessions.erase(session.get());
             i = _session_state->sessions.erase(i);
           } else {
             ++i;
           }
         }
+        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
       }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
 
       for (auto &slot : to_cleanup) {
         stream::session::stop(*slot);
@@ -909,6 +1010,7 @@ namespace rtsp_stream {
     struct session_state_t {
       std::set<std::shared_ptr<stream::session_t>> sessions;
       std::unordered_map<const stream::session_t *, std::string> client_uuids;
+      std::unordered_set<const stream::session_t *> vulkan_hdr_layer_sessions;
     };
 
     sync_util::sync_t<session_state_t> _session_state;
@@ -1554,7 +1656,8 @@ namespace rtsp_stream {
           startup_error = "unknown exception";
         }
 
-        server->post([server, socket = std::move(socket), session = std::move(session), stream_session = std::move(stream_session), client_uuid, sequence_number, startup_failed, startup_error = std::move(startup_error)]() mutable {
+        const bool stream_hdr_enabled = launch_session->enable_hdr;
+        server->post([server, socket = std::move(socket), session = std::move(session), stream_session = std::move(stream_session), client_uuid, sequence_number, startup_failed, startup_error = std::move(startup_error), stream_hdr_enabled]() mutable {
           auto fg = util::fail_guard([server]() {
             server->finish_startup();
           });
@@ -1571,7 +1674,7 @@ namespace rtsp_stream {
             }
             respond(socket->sock, *session, &completion_option, 500, "Internal Server Error", sequence_number, {});
           } else {
-            server->insert(stream_session, client_uuid);
+            server->insert(stream_session, client_uuid, stream_session && stream_hdr_enabled);
             respond(socket->sock, *session, &completion_option, 200, "OK", sequence_number, {});
           }
 
