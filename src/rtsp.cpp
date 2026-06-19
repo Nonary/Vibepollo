@@ -174,6 +174,10 @@ namespace rtsp_stream {
                             !config.prefer_sdr_10bit;
   }
 
+  bool activates_vulkan_hdr_layer_for_stream(const video::config_t &config) {
+    return config.dynamicRange != 0 && !config.prefer_sdr_10bit;
+  }
+
   std::shared_ptr<launch_session_t> make_startup_launch_session_snapshot(const launch_session_t &source) {
     auto snapshot = std::make_shared<launch_session_t>();
 
@@ -684,6 +688,7 @@ namespace rtsp_stream {
      */
     void session_clear(uint32_t launch_session_id) {
       bool removed = false;
+      bool pending_launches_remain = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
         const auto before = _launch_sessions.size();
@@ -691,10 +696,13 @@ namespace rtsp_stream {
           return entry.session && entry.session->id == launch_session_id;
         });
         removed = before != _launch_sessions.size();
+        pending_launches_remain = !_launch_sessions.empty();
       }
 
       if (!removed) {
         BOOST_LOG(debug) << "Attempted to clear unknown RTSP launch session: "sv << launch_session_id;
+      } else if (!pending_launches_remain) {
+        set_pending_vulkan_hdr_layer_stream(false);
       }
 
       asio::post(io_context, [this]() {
@@ -709,6 +717,23 @@ namespace rtsp_stream {
     int session_count() {
       auto lg = _session_state.lock();
       return static_cast<int>(_session_state->sessions.size());
+    }
+
+    bool vulkan_hdr_layer_active_locked() {
+      return config::video.dd.vulkan_hdr_layer &&
+             (_session_state->vulkan_hdr_layer_pending_stream || !_session_state->vulkan_hdr_layer_sessions.empty());
+    }
+
+    void set_pending_vulkan_hdr_layer_stream(bool active) {
+      bool vulkan_hdr_layer_active = false;
+      {
+        auto lg = _session_state.lock();
+        _session_state->vulkan_hdr_layer_pending_stream = active;
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
+      }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
     }
 
     /**
@@ -743,7 +768,10 @@ namespace rtsp_stream {
             ++i;
           }
         }
-        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
+        if (all) {
+          _session_state->vulkan_hdr_layer_pending_stream = false;
+        }
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
@@ -771,7 +799,7 @@ namespace rtsp_stream {
         _session_state->sessions.erase(session);
         _session_state->client_uuids.erase(session.get());
         _session_state->vulkan_hdr_layer_sessions.erase(session.get());
-        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
@@ -798,7 +826,8 @@ namespace rtsp_stream {
         } else {
           _session_state->vulkan_hdr_layer_sessions.erase(session.get());
         }
-        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
+        _session_state->vulkan_hdr_layer_pending_stream = false;
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
@@ -841,7 +870,7 @@ namespace rtsp_stream {
             ++i;
           }
         }
-        vulkan_hdr_layer_active = !_session_state->vulkan_hdr_layer_sessions.empty() && config::video.dd.vulkan_hdr_layer;
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
       }
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
@@ -960,9 +989,14 @@ namespace rtsp_stream {
     }
 
     void clear_launch_sessions() {
+      bool cleared = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        cleared = !_launch_sessions.empty();
         _launch_sessions.clear();
+      }
+      if (cleared) {
+        set_pending_vulkan_hdr_layer_stream(false);
       }
       raised_timer.cancel();
     }
@@ -974,6 +1008,7 @@ namespace rtsp_stream {
     }
 
     void expire_launch_sessions_locked(std::chrono::steady_clock::time_point now) {
+      const auto before = _launch_sessions.size();
       std::erase_if(_launch_sessions, [now](const launch_session_entry_t &entry) {
         if (entry.expires_at > now) {
           return false;
@@ -984,6 +1019,9 @@ namespace rtsp_stream {
         }
         return true;
       });
+      if (before != _launch_sessions.size() && _launch_sessions.empty()) {
+        set_pending_vulkan_hdr_layer_stream(false);
+      }
     }
 
     void arm_launch_timer_locked() {
@@ -1014,6 +1052,7 @@ namespace rtsp_stream {
       std::set<std::shared_ptr<stream::session_t>> sessions;
       std::unordered_map<const stream::session_t *, std::string> client_uuids;
       std::unordered_set<const stream::session_t *> vulkan_hdr_layer_sessions;
+      bool vulkan_hdr_layer_pending_stream = false;
     };
 
     sync_util::sync_t<session_state_t> _session_state;
@@ -1038,6 +1077,10 @@ namespace rtsp_stream {
 
   void launch_session_clear(uint32_t launch_session_id) {
     server.session_clear(launch_session_id);
+  }
+
+  void set_vulkan_hdr_layer_pending_stream(bool active) {
+    server.set_pending_vulkan_hdr_layer_stream(active);
   }
 
   int session_count() {
@@ -1659,7 +1702,7 @@ namespace rtsp_stream {
           startup_error = "unknown exception";
         }
 
-        const bool stream_hdr_enabled = launch_session->enable_hdr;
+        const bool stream_hdr_enabled = activates_vulkan_hdr_layer_for_stream(config.monitor);
         server->post([server, socket = std::move(socket), session = std::move(session), stream_session = std::move(stream_session), client_uuid, sequence_number, startup_failed, startup_error = std::move(startup_error), stream_hdr_enabled]() mutable {
           auto fg = util::fail_guard([server]() {
             server->finish_startup();
@@ -1670,6 +1713,7 @@ namespace rtsp_stream {
           completion_option.content = const_cast<char *>(completion_seqn.c_str());
 
           if (startup_failed) {
+            server->set_pending_vulkan_hdr_layer_stream(false);
             if (startup_error.empty()) {
               BOOST_LOG(error) << "Failed to start a streaming session"sv;
             } else {

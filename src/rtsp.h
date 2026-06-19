@@ -134,6 +134,15 @@ namespace rtsp_stream {
    */
   void launch_session_clear(uint32_t launch_session_id);
   /**
+   * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
+   *
+   * Vulkan applications can query swapchain formats immediately at process startup. The Vulkan HDR
+   * implicit layer therefore needs HDR stream intent before the launched app reaches the RTSP
+   * ANNOUNCE path that creates the active streaming session.
+   */
+  void set_vulkan_hdr_layer_pending_stream(bool active);
+
+  /**
    * @brief Get the number of active sessions.
    * @return Count of active sessions.
    */

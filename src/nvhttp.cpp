@@ -2864,12 +2864,17 @@ namespace nvhttp {
 
       no_active_sessions = !has_active_or_stopping_stream_session();
 
+#ifdef _WIN32
+      auto pending_vulkan_hdr_layer_guard = util::fail_guard([]() {
+        rtsp_stream::set_vulkan_hdr_layer_pending_stream(false);
+      });
+#endif
+
       if (is_input_only) {
         BOOST_LOG(info) << "Launching input only session..."sv;
 
         launch_session->client_do_cmds.clear();
         launch_session->client_undo_cmds.clear();
-
 
         // Still probe encoders once, if input only session is launched first
         // But we're ignoring if it's successful or not
@@ -2920,6 +2925,9 @@ namespace nvhttp {
             launch_session->client_undo_cmds.clear();
           }
 
+#ifdef _WIN32
+          rtsp_stream::set_vulkan_hdr_layer_pending_stream(launch_session->enable_hdr);
+#endif
           auto err = proc::proc.execute(*app_iter, launch_session);
           if (err) {
             tree.put("root.<xmlattr>.status_code", err);
@@ -2954,6 +2962,9 @@ namespace nvhttp {
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
 #else
       tree.put("root.VirtualDisplayDriverReady", false);
+#endif
+#ifdef _WIN32
+      pending_vulkan_hdr_layer_guard.disable();
 #endif
 
       rtsp_stream::launch_session_raise(launch_session);
