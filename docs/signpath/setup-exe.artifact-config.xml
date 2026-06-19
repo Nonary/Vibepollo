@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  REVIEW COPY of the SignPath portal artifact configuration for slug "setup-exe".
+  The portal is the source of truth; editing this file does NOT change signing.
+  See docs/signpath/README.md.
+
+  Slug:    setup-exe
+  Used by: .github/workflows/ci-windows.yml (setup-EXE signing request, the
+           second of the two origin-verified requests)
+  Purpose: Authenticode-sign the outer VibeshineSetup.exe.
+
+  The setup EXE embeds the MSI as a .NET managed resource (Payload.msi). That
+  MSI is ALREADY deep-signed by the "msi-file" request before it is embedded,
+  and SignPath cannot (and must not) re-open a managed resource. So this config
+  only signs the outer PE.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <pe-file>
+    <authenticode-sign/>
+  </pe-file>
+</artifact-configuration>

@@ -193,6 +193,7 @@ jobs:
       - release-candidate
     if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
     permissions:
+      actions: read
       contents: read
     uses: ./.github/workflows/ci-windows.yml
     with:
@@ -203,6 +204,7 @@ jobs:
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       symbol_release_draft: true
       symbol_release_prefix: polo
+      require_signpath_signing: ${{ needs.release-candidate.outputs.should_release == 'true' }}
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}

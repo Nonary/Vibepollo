@@ -41,6 +41,34 @@ on:
         required: false
         type: boolean
         default: false
+      require_signpath_signing:
+        required: false
+        type: boolean
+        default: false
+      signpath_organization_id:
+        required: false
+        type: string
+        default: 1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15
+      signpath_project_slug:
+        required: false
+        type: string
+        default: Vibepollo
+      signpath_signing_policy_slug:
+        required: false
+        type: string
+        default: test-signing
+      signpath_artifact_configuration_slug:
+        required: false
+        type: string
+        # Setup-EXE (outer VibeshineSetup.exe) artifact configuration slug.
+        # See docs/signpath/setup-exe.artifact-config.xml.
+        default: setup-exe
+      signpath_msi_artifact_configuration_slug:
+        required: false
+        type: string
+        # Deep-signs first-party PEs inside the MSI, then the MSI container.
+        # See docs/signpath/msi-file.artifact-config.xml.
+        default: msi-file
     secrets:
       symbol_token:
         required: false
@@ -53,12 +81,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       NODE_VERSION: 22.22.2
+      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
+      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
+      SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
+      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
       VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
       WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
     defaults:
       run:
         shell: msys2 {0}
     permissions:
+      actions: read
       contents: read
     strategy:
       fail-fast: false
@@ -472,46 +507,326 @@ jobs:
 
       # WiX already installed before configure so env:WIX is available
 
-      - name: Package Windows
-        id: package-windows
+      - name: Validate SignPath configuration
         shell: msys2 {0}
         env:
-          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
-          SIGNPATH_API_TOKEN: ${{ secrets.signpath_api_token }}
-          SIGNPATH_ORGANIZATION_ID: 1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15
-          SIGNPATH_PROJECT_SLUG: Vibepollo
-          SIGNPATH_SIGNING_POLICY_SLUG: test-signing
+          REQUIRE_SIGNPATH_SIGNING: ${{ inputs.require_signpath_signing }}
         run: |
-          mkdir -p artifacts
+          set -euo pipefail
+
+          if [[ "${REQUIRE_SIGNPATH_SIGNING}" == "true" && "${SIGNPATH_ENABLED}" != "true" ]]; then
+            echo "SignPath signing is required for this run, but signpath_api_token was not provided." >&2
+            exit 1
+          fi
+
+          if [[ "${SIGNPATH_ENABLED}" == "true" ]]; then
+            echo "Windows installer will be submitted to SignPath after GitHub artifact upload."
+            echo "SignPath project: ${SIGNPATH_PROJECT_SLUG} / ${SIGNPATH_SIGNING_POLICY_SLUG}"
+            echo "Two origin-verified requests: (1) MSI deep-sign '${SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG}', (2) setup EXE '${SIGNPATH_ARTIFACT_CONFIGURATION_SLUG}'."
+            echo "Both artifact configurations must exist in the SignPath portal (see docs/signpath/)."
+            if [[ -z "${SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG}" ]]; then
+              echo "signpath_msi_artifact_configuration_slug is required so SignPath can deep-sign the MSI payload (sunshine.exe, tools, uninstall.exe, DLLs)." >&2
+              exit 1
+            fi
+            if [[ -z "${SIGNPATH_ARTIFACT_CONFIGURATION_SLUG}" ]]; then
+              echo "signpath_artifact_configuration_slug is required so SignPath can sign the outer setup EXE with an explicit PE configuration." >&2
+              exit 1
+            fi
+          else
+            echo "signpath_api_token was not provided; Windows installer artifact will remain unsigned."
+          fi
+
+      - name: Package Windows MSI
+        id: package-windows-msi
+        shell: msys2 {0}
+        run: |
+          mkdir -p unsigned-signpath-msi
           cd build
 
           set -euo pipefail
 
-          if [[ -z "${SIGNPATH_API_TOKEN:-}" ]]; then
-            echo "SIGNPATH_API_TOKEN was not provided; Windows artifacts will not be submitted to SignPath."
+          # Build only the MSI first. SignPath credentials stay out of this
+          # step so the MSI is signed from a GitHub artifact with origin
+          # verification, including nested files such as uninstall.exe.
+          cmake --build . --target package_msi -j "$(nproc)"
+
+          msi_path=$(ls -t ./cpack_artifacts/*.msi 2>/dev/null | head -n 1 || true)
+          if [[ -z "${msi_path}" ]]; then
+            echo "Expected MSI was not produced." >&2
+            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
           fi
 
-          # Build the MSI and custom setup executable through CMake so packaging
-          # dependencies, including the virtual display driver refresh, run in CI.
-          cmake --build . --target package_installer -j "$(nproc)"
+          msi_name="$(basename "${msi_path}")"
+          cp "${msi_path}" "../unsigned-signpath-msi/${msi_name}"
+          echo "msi_name=${msi_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload unsigned MSI for SignPath
+        if: env.SIGNPATH_ENABLED == 'true'
+        id: upload-unsigned-msi
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signpath-unsigned-msi-${{ matrix.name }}
+          path: unsigned-signpath-msi/${{ steps.package-windows-msi.outputs.msi_name }}
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+
+      - name: Submit SignPath MSI signing request
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd  # v2
+        with:
+          api-token: ${{ secrets.signpath_api_token }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: signed-signpath-msi
+          skip-decompress: true
+
+      - name: Stage signed Windows MSI
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $signedRoot = Join-Path $PWD 'signed-signpath-msi'
+          if (-not (Test-Path -LiteralPath $signedRoot)) {
+            throw "SignPath MSI output directory was not created: $signedRoot"
+          }
+
+          $matches = @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter $env:MSI_NAME)
+          if ($matches.Count -ne 1) {
+            Get-ChildItem -LiteralPath $signedRoot -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw "Expected exactly one signed MSI named '$($env:MSI_NAME)', found $($matches.Count)."
+          }
+
+          $msiDir = Join-Path $PWD 'signed-msi'
+          New-Item -ItemType Directory -Path $msiDir -Force | Out-Null
+          Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $msiDir $env:MSI_NAME) -Force
+
+      - name: Stage unsigned Windows MSI
+        if: env.SIGNPATH_ENABLED != 'true'
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $unsignedMsi = Join-Path (Join-Path $PWD 'unsigned-signpath-msi') $env:MSI_NAME
+          if (-not (Test-Path -LiteralPath $unsignedMsi)) {
+            throw "Unsigned MSI was not staged: $unsignedMsi"
+          }
+
+          $msiDir = Join-Path $PWD 'signed-msi'
+          New-Item -ItemType Directory -Path $msiDir -Force | Out-Null
+          Copy-Item -LiteralPath $unsignedMsi -Destination (Join-Path $msiDir $env:MSI_NAME) -Force
+
+      - name: Package Windows
+        id: package-windows
+        shell: msys2 {0}
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
+        run: |
+          mkdir -p unsigned-signpath
+
+          set -euo pipefail
 
           installer_name="${SYMBOL_PRODUCT_NAME}Setup.exe"
-          installer_exe="./cpack_artifacts/${installer_name}"
+          signed_msi="../signed-msi/${MSI_NAME}"
 
+          cd build
+          powershell -NoProfile -ExecutionPolicy Bypass \
+            -File "$(cygpath -w "../packaging/windows/bootstrapper/build_bootstrapper.ps1")" \
+            -BuildDir "$(cygpath -w ".")" \
+            -MsiPath "$(cygpath -w "${signed_msi}")" \
+            -OutputName "${installer_name}" \
+            -DisableSignPath
+
+          installer_exe="./cpack_artifacts/${installer_name}"
           if [[ ! -f "${installer_exe}" ]]; then
-            fallback_installer=$(find ./cpack_artifacts -maxdepth 1 -type f -name '*Setup.exe' | sort | head -n 1)
-            if [[ -z "${fallback_installer}" ]]; then
-              echo "Expected setup executable was not produced: ${installer_exe}" >&2
-              find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
-              exit 1
-            fi
-            installer_exe="${fallback_installer}"
-            installer_name="$(basename "${installer_exe}")"
+            echo "Expected setup executable was not produced: ${installer_exe}" >&2
+            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
+            exit 1
           fi
 
           # Keep generated package names intact. In particular, do not rename
-          # ${SYMBOL_PRODUCT_NAME}Setup.exe; downstream release/install docs expect that name.
-          cp "${installer_exe}" "../artifacts/${installer_name}"
+          # VibeshineSetup.exe/VibepolloSetup.exe; downstream release/install
+          # docs expect those names.
+          cp "${installer_exe}" "../unsigned-signpath/${installer_name}"
+          echo "installer_name=${installer_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload unsigned installer for SignPath
+        if: env.SIGNPATH_ENABLED == 'true'
+        id: upload-unsigned-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signpath-unsigned-${{ matrix.name }}
+          path: unsigned-signpath/${{ steps.package-windows.outputs.installer_name }}
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+
+      - name: Submit SignPath installer signing request
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd  # v2
+        with:
+          api-token: ${{ secrets.signpath_api_token }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: signed-signpath
+          skip-decompress: true
+
+      - name: Stage signed Windows installer
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $signedRoot = Join-Path $PWD 'signed-signpath'
+          if (-not (Test-Path -LiteralPath $signedRoot)) {
+            throw "SignPath output directory was not created: $signedRoot"
+          }
+
+          $matches = @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter $env:INSTALLER_NAME)
+          if ($matches.Count -ne 1) {
+            Get-ChildItem -LiteralPath $signedRoot -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw "Expected exactly one signed installer named '$($env:INSTALLER_NAME)', found $($matches.Count)."
+          }
+
+          $artifactDir = Join-Path $PWD 'artifacts'
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+          Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $artifactDir $env:INSTALLER_NAME) -Force
+
+      - name: Verify SignPath signatures
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Proves the SignPath portal config actually signed the whole package.
+          # "Signed" here means a signature is present (SignerCertificate set); we
+          # do NOT assert a trusted chain because test-signing policies use
+          # certificates that won't chain to a trusted root on the runner.
+          function Test-Signed([string]$Path) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $Path
+            return ($sig.Status -ne 'NotSigned' -and $null -ne $sig.SignerCertificate)
+          }
+
+          $failures = New-Object System.Collections.Generic.List[string]
+
+          # 1) Outer setup EXE (the shipped artifact)
+          $installer = Join-Path (Join-Path $PWD 'artifacts') $env:INSTALLER_NAME
+          if (-not (Test-Path -LiteralPath $installer)) { throw "Signed installer not found: $installer" }
+          if (Test-Signed $installer) {
+            $subj = (Get-AuthenticodeSignature -LiteralPath $installer).SignerCertificate.Subject
+            Write-Host "[verify] OK   setup EXE signed: $($env:INSTALLER_NAME)  ($subj)"
+          } else {
+            $failures.Add("setup EXE is UNSIGNED: $($env:INSTALLER_NAME)")
+          }
+
+          # 2) The deep-signed MSI container (embedded into the setup EXE)
+          $signedMsi = Join-Path (Join-Path $PWD 'signed-msi') $env:MSI_NAME
+          if (-not (Test-Path -LiteralPath $signedMsi)) { throw "Signed MSI not found: $signedMsi" }
+          if (Test-Signed $signedMsi) {
+            Write-Host "[verify] OK   MSI container signed: $($env:MSI_NAME)"
+          } else {
+            $failures.Add("MSI container is UNSIGNED: $($env:MSI_NAME)")
+          }
+
+          # 3) Nested first-party PEs inside the MSI (the G1 risk: these are only
+          #    signed if the 'msi-file' artifact configuration deep-signs them).
+          $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("msi-verify-" + [System.Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+          $log = Join-Path $extractDir 'admin-extract.log'
+          $argLine = '/a "{0}" /qn TARGETDIR="{1}" /l*v "{2}"' -f $signedMsi, $extractDir, $log
+          $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argLine -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | ForEach-Object { Write-Host $_ } }
+            throw "Administrative MSI extraction failed (exit $($proc.ExitCode))."
+          }
+
+          $firstParty = @(
+            'sunshine.exe','uninstall.exe','libwebrtc.dll','zlib1.dll',
+            'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
+            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe'
+          )
+          # Vendor / catalog-bound files: origin-signed upstream; we must NOT
+          # re-sign them (breaks .cat hashes). Reported only, never failed on.
+          $vendorSkip = @(
+            'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
+            'VkLayer_sunshine_hdr.dll','nvngx_truehdr.dll','vibeshine_truehdr.dll','nvngx_vsr.dll'
+          )
+
+          $allPe = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.dll' })
+
+          foreach ($name in $firstParty) {
+            $hits = @($allPe | Where-Object { $_.Name -ieq $name })
+            if ($hits.Count -eq 0) {
+              $failures.Add("first-party PE missing from MSI: $name")
+              continue
+            }
+            foreach ($f in $hits) {
+              if (Test-Signed $f.FullName) {
+                Write-Host "[verify] OK   nested signed: $($f.Name)"
+              } else {
+                $failures.Add("nested first-party PE is UNSIGNED: $($f.FullName)")
+              }
+            }
+          }
+
+          foreach ($f in $allPe) {
+            if ($vendorSkip -contains $f.Name) {
+              $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+              Write-Host "[verify] skip vendor/catalog file: $($f.Name) (status=$($sig.Status), signer=$($sig.SignerCertificate.Subject))"
+            }
+          }
+
+          Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+
+          if ($failures.Count -gt 0) {
+            Write-Host "::error::SignPath nested-signing verification failed ($($failures.Count) issue(s))."
+            $failures | ForEach-Object { Write-Host "::error:: - $_" }
+            throw "SignPath verification failed. Confirm the 'msi-file' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
+          }
+
+          Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."
+
+      - name: Stage unsigned Windows installer
+        if: env.SIGNPATH_ENABLED != 'true'
+        shell: pwsh
+        env:
+          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $unsignedInstaller = Join-Path (Join-Path $PWD 'unsigned-signpath') $env:INSTALLER_NAME
+          if (-not (Test-Path -LiteralPath $unsignedInstaller)) {
+            throw "Unsigned installer was not staged: $unsignedInstaller"
+          }
+
+          $artifactDir = Join-Path $PWD 'artifacts'
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+          Copy-Item -LiteralPath $unsignedInstaller -Destination (Join-Path $artifactDir $env:INSTALLER_NAME) -Force
 
       - name: Include symbols in build artifact
         if: inputs.upload_symbols_artifact
@@ -536,7 +851,7 @@ jobs:
           Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
 
       - name: Debug wix
-        if: always() && steps.package-windows.outcome == 'failure'
+        if: always() && (steps.package-windows-msi.outcome == 'failure' || steps.package-windows.outcome == 'failure')
         shell: pwsh
         run: |
           $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'

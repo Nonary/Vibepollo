@@ -125,6 +125,13 @@ if (-not [string]::IsNullOrWhiteSpace($Description)) {
     $requestArgs.Description = $Description
 }
 
+Write-Warning "[signpath] This runner-local Submit-SigningRequest path is NON-ORIGIN-VERIFIED (test/dev only). Release artifacts are signed via SignPath GitHub origin verification in CI; see docs/signpath/."
+
+$inputExtension = [System.IO.Path]::GetExtension($inputPath).ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($resolvedArtifactConfigurationSlug) -and $inputExtension -eq ".exe") {
+    Write-Warning "[signpath] No PE artifact-configuration slug resolved for $inputPath; relying on the SignPath project default. Set -PeArtifactConfigurationSlug or SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG to pin one."
+}
+
 Write-Host "[signpath] Submitting signing request..."
 Write-Host "[signpath] Input:  $inputPath"
 Write-Host "[signpath] Output: $outputPath"

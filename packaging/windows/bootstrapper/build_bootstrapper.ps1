@@ -284,10 +284,15 @@ $assemblyInfoContent = @(
 )
 Set-Content -Path $assemblyInfoPath -Value $assemblyInfoContent -Encoding UTF8
 
-$shouldSignWithSignPath = -not $DisableSignPath -and (
-    $SignWithSignPath -or
-    -not [string]::IsNullOrWhiteSpace($SignPathApiToken)
-)
+# Only sign when explicitly requested with -SignWithSignPath. Mere token
+# presence must NOT trigger signing: release artifacts are signed by SignPath
+# origin verification in CI (docs/signpath/), and a runner-local signature
+# cannot satisfy origin verification. -DisableSignPath always wins.
+$shouldSignWithSignPath = -not $DisableSignPath -and $SignWithSignPath
+
+if (-not $shouldSignWithSignPath) {
+    Write-Host "[bootstrapper] SignPath signing disabled; output will be unsigned (CI signs release artifacts via SignPath origin verification)."
+}
 
 if ($shouldSignWithSignPath -and -not $UninstallOnly) {
     Invoke-SignPathForArtifact `

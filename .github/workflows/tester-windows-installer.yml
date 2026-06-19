@@ -32,6 +32,7 @@ jobs:
       symbol_release_prefix: polo
       publish_symbols: false
       upload_symbols_artifact: false
+      require_signpath_signing: true
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  REVIEW COPY of the SignPath portal artifact configuration for slug "msi-file".
+  The portal is the source of truth; editing this file does NOT change signing.
+  See docs/signpath/README.md.
+
+  Slug:    msi-file
+  Used by: .github/workflows/ci-windows.yml (MSI signing request),
+           scripts/signpath_sign.ps1 (.msi branch)
+  Purpose: deep-sign every FIRST-PARTY PE inside the MSI, then sign the MSI
+           container itself. Order matters: nested PEs first, the
+           <authenticode-sign/> directly under <msi-file> signs the container LAST.
+
+  STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
+  This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
+  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
+  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll, vibeshine_truehdr.dll)
+  whose .cat catalog hashes would be invalidated by re-signing.
+
+  NOTE: the path= values are the file's logical path inside the MSI (install
+  layout). Confirm against a built MSI's File table if an entry reports 0 matches.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <msi-file>
+    <!-- install root (".") -->
+    <pe-file path="sunshine.exe"><authenticode-sign/></pe-file>
+    <pe-file path="uninstall.exe"><authenticode-sign/></pe-file>
+    <pe-file path="libwebrtc.dll"><authenticode-sign/></pe-file>
+    <pe-file path="zlib1.dll"><authenticode-sign/></pe-file>
+
+    <!-- tools\ -->
+    <pe-file path="tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
+    <pe-file path="tools/dxgi-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="tools/audio-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="tools/playnite-launcher.exe"><authenticode-sign/></pe-file>
+    <pe-file path="tools/sunshine_wgc_capture.exe"><authenticode-sign/></pe-file>
+    <pe-file path="tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
+
+    <!--
+      DO NOT add the vendor / catalog-bound files below: they are origin-signed
+      upstream and re-signing breaks their .cat catalog hashes (driver install
+      fails). Keep them out of this configuration:
+        drivers/sudovda/SudoVDA.dll
+        drivers/sudovda/nefconc.exe
+        drivers/sunshine/SunshineVirtualDisplayDriver.dll  (+ .cat)
+        drivers/sunshine/virtualdisplay_probe.exe
+        drivers/sunshine/nefconc.exe
+        drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
+        nvngx_truehdr.dll, vibeshine_truehdr.dll   (optional, not shipped by CI)
+    -->
+
+    <!-- sign the MSI container LAST -->
+    <authenticode-sign/>
+  </msi-file>
+</artifact-configuration>
+
+<!--
+  STRATEGY 2 (alternative): scoped wildcards. Only use after confirming no
+  catalog-bound driver DLLs live under the matched roots. Scope includes to "."
+  and "tools" so the drivers\ subtree is NOT swept in. min-matches/max-matches
+  default to 1, so always set them or a wildcard matching any other count fails
+  the whole request.
+
+  <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+    <msi-file>
+      <pe-file-set>
+        <include path="*.exe"       min-matches="0" max-matches="unbounded"/>
+        <include path="*.dll"       min-matches="0" max-matches="unbounded"/>
+        <include path="tools/*.exe" min-matches="0" max-matches="unbounded"/>
+        <include path="tools/*.dll" min-matches="0" max-matches="unbounded"/>
+        <for-each><authenticode-sign/></for-each>
+      </pe-file-set>
+      <authenticode-sign/>
+    </msi-file>
+  </artifact-configuration>
+-->

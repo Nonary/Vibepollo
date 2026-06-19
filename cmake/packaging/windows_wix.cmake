@@ -58,14 +58,11 @@ set(CPACK_WIX_EXTRA_SOURCES
 # failures in transactional upgrade flows.
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
-# Plain `cpack -G WIX` invocations should also sign the uninstaller that is
-# embedded into the MSI whenever SignPath is configured.
-configure_file(
-  "${CMAKE_SOURCE_DIR}/packaging/windows/wix/sign_uninstaller_for_cpack.cmake.in"
-  "${CMAKE_BINARY_DIR}/sign_uninstaller_for_cpack.cmake"
-  @ONLY
-)
-set(CPACK_PRE_BUILD_SCRIPTS "${CMAKE_BINARY_DIR}/sign_uninstaller_for_cpack.cmake")
+# uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the
+# SignPath "msi-file" deep-sign (see docs/signpath/). There is intentionally no
+# CPACK_PRE_BUILD_SCRIPTS uninstaller-signing hook: a runner-local signature is
+# non-origin-verified and was a no-op in CI anyway (the token is deliberately
+# withheld from the MSI build step).
 
 
 # ----------------------------------------------------------------------------
