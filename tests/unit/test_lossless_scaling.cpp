@@ -74,5 +74,25 @@ namespace {
     fs::remove_all(temp_dir, ec);
   }
 
+  TEST(LosslessScalingLaunchExe, ExplicitPathOverridesRuntimePath) {
+    auto temp_dir = fs::temp_directory_path() / ("sunshine-lossless-launch-" + std::to_string(GetCurrentProcessId()));
+    fs::create_directories(temp_dir);
+
+    auto explicit_exe = temp_dir / "custom-lossless.exe";
+    auto runtime_exe = temp_dir / "runtime-lossless.exe";
+    std::ofstream(explicit_exe).put('\n');
+    std::ofstream(runtime_exe).put('\n');
+
+    lossless_scaling_runtime_state state;
+    state.exe_path = runtime_exe.wstring();
+
+    auto selected = playnite_launcher::lossless::select_lossless_launch_exe_for_tests(state, explicit_exe.string());
+    ASSERT_TRUE(selected.has_value());
+    EXPECT_EQ(fs::path(*selected).filename().wstring(), explicit_exe.filename().wstring());
+
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+  }
+
 }  // namespace
 #endif

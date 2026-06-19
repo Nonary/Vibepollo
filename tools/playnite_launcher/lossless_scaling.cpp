@@ -57,6 +57,7 @@ namespace playnite_launcher::lossless {
     constexpr int k_max_frame_latency = 1;
 
     std::filesystem::path lossless_scaling_settings_path();
+    std::optional<std::filesystem::path> resolve_explicit_executable(const std::string &exe_path_utf8);
 
     template<typename Fn>
     auto run_with_user_context(Fn &&fn) -> decltype(fn()) {
@@ -694,6 +695,14 @@ namespace playnite_launcher::lossless {
       return std::nullopt;
     }
 
+    std::optional<std::wstring> exe_from_explicit_path(const std::string &exe_path_utf8) {
+      auto exe_path = resolve_explicit_executable(exe_path_utf8);
+      if (!exe_path) {
+        return std::nullopt;
+      }
+      return exe_path->wstring();
+    }
+
     void strip_xml_whitespace(boost::property_tree::ptree &node) {
       for (auto it = node.begin(); it != node.end();) {
         if (it->first == "<xmltext>") {
@@ -703,6 +712,15 @@ namespace playnite_launcher::lossless {
           ++it;
         }
       }
+    }
+
+    std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state);
+
+    std::optional<std::wstring> select_lossless_launch_exe(const lossless_scaling_runtime_state &state, const std::string &exe_path_utf8) {
+      if (auto path = exe_from_explicit_path(exe_path_utf8)) {
+        return path;
+      }
+      return discover_lossless_scaling_exe(state);
     }
 
     std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state) {
@@ -1886,6 +1904,10 @@ namespace playnite_launcher::lossless {
     return should_accept_focus_candidate(has_filter, path_matches, has_main_window);
   }
 
+  std::optional<std::wstring> select_lossless_launch_exe_for_tests(const lossless_scaling_runtime_state &state, const std::string &exe_path_utf8) {
+    return select_lossless_launch_exe(state, exe_path_utf8);
+  }
+
   std::string build_executable_filter_for_tests(const std::optional<std::filesystem::path> &base_dir, const std::optional<std::filesystem::path> &explicit_exe) {
     return build_executable_filter(base_dir, explicit_exe);
   }
@@ -2157,7 +2179,7 @@ namespace playnite_launcher::lossless {
     }
 
     if (should_launch) {
-      auto exe = discover_lossless_scaling_exe(state);
+      auto exe = select_lossless_launch_exe(state, exe_path_utf8);
       if (!exe || exe->empty() || !std::filesystem::exists(*exe)) {
         BOOST_LOG(debug) << "Lossless Scaling: executable path not resolved for relaunch";
         return;

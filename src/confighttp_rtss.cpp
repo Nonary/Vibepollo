@@ -45,6 +45,31 @@ namespace confighttp {
   namespace {
     constexpr auto k_lossless_default_hint = "C:\\\\Program Files (x86)\\\\Steam\\\\steamapps\\\\common\\\\Lossless Scaling\\\\LosslessScaling.exe";
 
+    bool is_regular_exe(const std::optional<std::filesystem::path> &path) {
+      if (!path) {
+        return false;
+      }
+      std::error_code ec;
+      auto ext = path->extension().wstring();
+      std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) {
+        return std::towlower(ch);
+      });
+      return ext == L".exe" && std::filesystem::is_regular_file(*path, ec);
+    }
+
+    std::optional<std::filesystem::path> resolve_explicit_lossless_path(const std::optional<std::filesystem::path> &path) {
+      if (!path) {
+        return std::nullopt;
+      }
+      if (auto resolved = resolve_lossless_candidate(*path)) {
+        return resolved;
+      }
+      if (is_regular_exe(path)) {
+        return path->lexically_normal();
+      }
+      return std::nullopt;
+    }
+
     nlohmann::json make_lossless_status_unavailable_response() {
       return {
         {"configured_path", config::lossless_scaling.exe_path},
@@ -246,9 +271,10 @@ namespace confighttp {
     const auto configured_path = to_path(configured_utf8);
     const auto checked_path = to_path(check_utf8);
     const auto default_path = to_path(default_hint);
+    const bool has_explicit_path = !check_utf8.empty();
 
-    auto resolved_configured = configured_path ? resolve_lossless_candidate(*configured_path) : std::optional<std::filesystem::path>();
-    auto resolved_checked = checked_path ? resolve_lossless_candidate(*checked_path) : std::optional<std::filesystem::path>();
+    auto resolved_configured = resolve_explicit_lossless_path(configured_path);
+    auto resolved_checked = resolve_explicit_lossless_path(checked_path);
     auto resolved_default = default_path ? resolve_lossless_candidate(*default_path) : std::optional<std::filesystem::path>();
 
     std::error_code configured_ec;
@@ -270,6 +296,7 @@ namespace confighttp {
     out["default_path"] = default_hint;
     out["default_exists"] = resolved_default.has_value() || default_exists;
     out["default_is_directory"] = default_is_directory;
+    out["using_configured_path"] = has_explicit_path;
 
     std::string suggested_utf8 = configured_utf8;
     if (!suggested_utf8.empty()) {
@@ -286,7 +313,7 @@ namespace confighttp {
       out["resolved_path"] = path_to_utf8(*resolved_checked);
     }
 
-    auto candidates = discover_lossless_candidates(configured_path, checked_path, default_path);
+    auto candidates = discover_lossless_candidates(configured_path, checked_path, has_explicit_path ? std::nullopt : default_path);
     if (!candidates.empty()) {
       nlohmann::json arr = nlohmann::json::array();
       for (const auto &candidate : candidates) {
@@ -306,7 +333,7 @@ namespace confighttp {
       } else {
         message = "Lossless Scaling executable not configured.";
       }
-      if (resolved_default) {
+      if (!has_explicit_path && resolved_default) {
         message += " Detected installation at \"" + path_to_utf8(*resolved_default) + "\".";
       } else {
         message += " Please locate LosslessScaling.exe manually.";

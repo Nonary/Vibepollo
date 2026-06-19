@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
-import { NAlert, NButton, NModal, NRadio, NRadioGroup } from 'naive-ui';
+import { NAlert, NButton, NInput, NModal, NRadio, NRadioGroup } from 'naive-ui';
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import ConfigSwitchField from '@/ConfigSwitchField.vue';
 import NvidiaNvencEncoder from '@/configs/tabs/encoders/NvidiaNvencEncoder.vue';
@@ -62,6 +62,11 @@ const losslessLoading = ref(false);
 const losslessError = ref<string | null>(null);
 const losslessBrowseVisible = ref(false);
 const losslessBrowseSelection = ref('');
+const losslessBrowsePath = ref('');
+const losslessBrowseDirectory = ref('');
+const losslessBrowseEntries = ref<Array<{ name: string; path: string; type: string }>>([]);
+const losslessBrowseLoading = ref(false);
+const losslessBrowseError = ref<string | null>(null);
 
 const losslessResolvedPath = computed(() => {
   const raw = losslessStatus.value?.resolved_path;
@@ -106,6 +111,7 @@ const hasAmd = computed(() => {
 });
 
 const losslessConfiguredPath = computed(() => (config.value as any)?.lossless_scaling_path ?? '');
+const losslessHasConfiguredPath = computed(() => !!normalizeWindowsPath(losslessConfiguredPath.value));
 const losslessLegacyAutoDetect = computed<boolean>({
   get: () => !!(config.value as any)?.lossless_scaling_legacy_auto_detect,
   set: (value) => {
@@ -134,6 +140,7 @@ const losslessDetected = computed(() => {
   if (losslessStatus.value.configured_exists && !losslessStatus.value.configured_is_directory) {
     return true;
   }
+  if (losslessHasConfiguredPath.value) return false;
   if (losslessStatus.value.default_exists) return true;
   if (losslessCandidates.value.length > 0) return true;
   return false;
@@ -172,6 +179,9 @@ const losslessActivePath = computed(() => {
   ) {
     return normalizeWindowsPath(losslessStatus.value.configured_path);
   }
+  if (losslessHasConfiguredPath.value) {
+    return normalizeWindowsPath(losslessConfiguredPath.value);
+  }
   if (losslessStatus.value.default_exists && losslessDefaultPath.value) {
     return losslessDefaultPath.value;
   }
@@ -190,6 +200,9 @@ const losslessStatusText = computed(() => {
   if (losslessDetected.value) {
     return `Lossless Scaling is Ready`;
   }
+  if (losslessHasConfiguredPath.value) {
+    return 'Custom Lossless Scaling path needs attention';
+  }
   if (losslessStatus.value?.message) {
     return losslessStatus.value.message;
   }
@@ -203,7 +216,16 @@ const losslessStatusHint = computed(() => {
     return '';
   }
   if (losslessDetected.value) {
-    return `Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.`;
+    if (losslessHasConfiguredPath.value) {
+      return 'The configured executable path will be launched when Lossless Scaling is selected for an application.';
+    }
+    return 'Lossless Scaling is detected and will be launched when selected as the primary frame generation in any application.';
+  }
+  if (losslessHasConfiguredPath.value) {
+    return (
+      losslessStatus.value?.message ||
+      'The configured path could not be resolved. Choose an executable path or clear the override to use auto-detection.'
+    );
   }
   return 'Vibeshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
 });
@@ -268,7 +290,7 @@ function applyLosslessSuggestion() {
 
 function applyLosslessBrowseSelection() {
   if (!config.value) return;
-  const selected = normalizeWindowsPath(losslessBrowseSelection.value);
+  const selected = normalizeWindowsPath(losslessBrowsePath.value || losslessBrowseSelection.value);
   if (!selected) return;
   (config.value as any).lossless_scaling_path = selected;
   losslessBrowseVisible.value = false;
@@ -294,6 +316,8 @@ async function openLosslessBrowse() {
     losslessSuggestedPath.value ||
     '';
   losslessBrowseSelection.value = initial;
+  losslessBrowsePath.value = initial;
+  await loadLosslessBrowseDirectory(initial);
   losslessBrowseVisible.value = true;
 }
 
@@ -307,7 +331,54 @@ async function rescanLosslessCandidates() {
   const first = losslessCandidates.value[0];
   if (first) {
     losslessBrowseSelection.value = first;
+    losslessBrowsePath.value = first;
   }
+  await loadLosslessBrowseDirectory(losslessBrowsePath.value);
+}
+
+async function loadLosslessBrowseDirectory(path: string) {
+  losslessBrowseLoading.value = true;
+  losslessBrowseError.value = null;
+  try {
+    const response = await http.get('/api/browse', {
+      params: { type: 'executable', path: normalizeWindowsPath(path) },
+      validateStatus: () => true,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      losslessBrowseDirectory.value = normalizeWindowsPath(response.data?.path ?? '');
+      const entries = Array.isArray(response.data?.entries) ? response.data.entries : [];
+      losslessBrowseEntries.value = entries
+        .map((entry: any) => ({
+          name: String(entry?.name ?? ''),
+          path: normalizeWindowsPath(entry?.path ?? ''),
+          type: String(entry?.type ?? ''),
+        }))
+        .filter(
+          (entry: { name: string; path: string; type: string }) =>
+            !!entry.name && !!entry.path,
+        );
+    } else {
+      losslessBrowseError.value = 'Unable to browse this folder.';
+      losslessBrowseEntries.value = [];
+    }
+  } catch (err) {
+    losslessBrowseError.value = 'Unable to browse this folder.';
+    losslessBrowseEntries.value = [];
+  } finally {
+    losslessBrowseLoading.value = false;
+  }
+}
+
+async function selectLosslessBrowseEntry(entry: { path: string; type: string }) {
+  const path = normalizeWindowsPath(entry.path);
+  if (!path) return;
+  if (entry.type === 'directory') {
+    losslessBrowsePath.value = path;
+    await loadLosslessBrowseDirectory(path);
+    return;
+  }
+  losslessBrowseSelection.value = path;
+  losslessBrowsePath.value = path;
 }
 
 onMounted(() => {
@@ -486,7 +557,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
                 <n-button size="tiny" tertiary @click="applyLosslessSuggestion">
                   Use Suggested
                 </n-button>
-                <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse…</n-button>
+                <n-button size="tiny" tertiary @click="openLosslessBrowse">Browse...</n-button>
               </div>
             </template>
             Default installation: {{ LOSSLESS_DEFAULT_PATH }}
@@ -523,11 +594,24 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
           Vibeshine searched common Steam and program directories but could not locate
           LosslessScaling.exe. Install Lossless Scaling from Steam or set the full path manually.
         </n-alert>
-        <div v-else class="space-y-2">
+        <div class="space-y-2">
+          <div class="text-xs font-semibold uppercase tracking-wide opacity-70">Executable path</div>
+          <n-input
+            v-model:value="losslessBrowsePath"
+            placeholder="C:\Program Files (x86)\Steam\steamapps\common\Lossless Scaling\LosslessScaling.exe"
+            clearable
+            @keyup.enter="applyLosslessBrowseSelection"
+          />
+        </div>
+        <div v-if="losslessCandidates.length" class="space-y-2">
           <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
             Detected installations
           </div>
-          <n-radio-group v-model:value="losslessBrowseSelection" class="space-y-2">
+          <n-radio-group
+            v-model:value="losslessBrowseSelection"
+            class="space-y-2"
+            @update:value="losslessBrowsePath = String($event ?? '')"
+          >
             <div
               v-for="candidate in losslessCandidates"
               :key="candidate"
@@ -536,6 +620,45 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
               <n-radio :value="candidate">{{ candidate }}</n-radio>
             </div>
           </n-radio-group>
+        </div>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+              Browse executables
+            </div>
+            <n-button
+              size="tiny"
+              tertiary
+              :loading="losslessBrowseLoading"
+              @click="loadLosslessBrowseDirectory(losslessBrowsePath)"
+            >
+              Open Folder
+            </n-button>
+          </div>
+          <div class="truncate text-xs opacity-60">{{ losslessBrowseDirectory || 'Computer' }}</div>
+          <n-alert v-if="losslessBrowseError" type="warning" size="small">
+            {{ losslessBrowseError }}
+          </n-alert>
+          <div class="max-h-64 overflow-auto rounded-md border border-dark/10 dark:border-light/10">
+            <button
+              v-for="entry in losslessBrowseEntries"
+              :key="entry.path"
+              type="button"
+              class="flex w-full items-center justify-between gap-3 border-b border-dark/5 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-dark/5 dark:border-light/10 dark:hover:bg-light/10"
+              @click="selectLosslessBrowseEntry(entry)"
+            >
+              <span class="min-w-0 truncate">{{ entry.name }}</span>
+              <span class="shrink-0 opacity-60">
+                {{ entry.type === 'directory' ? 'Folder' : 'Executable' }}
+              </span>
+            </button>
+            <div
+              v-if="!losslessBrowseLoading && !losslessBrowseEntries.length"
+              class="px-3 py-3 text-xs opacity-60"
+            >
+              No executable entries found in this folder.
+            </div>
+          </div>
         </div>
         <n-alert
           v-if="losslessCheckedIsDirectory && !losslessPathExists"
@@ -558,10 +681,10 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
             <n-button
               size="small"
               type="primary"
-              :disabled="!losslessBrowseSelection"
+              :disabled="!losslessBrowsePath && !losslessBrowseSelection"
               @click="applyLosslessBrowseSelection"
             >
-              Use Selected Path
+              Use Path
             </n-button>
           </div>
         </div>

@@ -157,6 +157,26 @@ namespace proc {
 
     std::optional<std::filesystem::path> resolve_lossless_executable_path() {
       auto configured_path = lossless_to_path(config::lossless_scaling.exe_path);
+      if (configured_path) {
+        auto resolved_configured = lossless_paths::resolve_lossless_candidate(*configured_path);
+        if (resolved_configured) {
+          return resolved_configured;
+        }
+
+        std::error_code ec;
+        auto ext = configured_path->extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t ch) {
+          return std::towlower(ch);
+        });
+        if (ext == L".exe" && std::filesystem::is_regular_file(*configured_path, ec)) {
+          return configured_path->lexically_normal();
+        }
+
+        BOOST_LOG(warning) << "Lossless Scaling: configured executable path is invalid, not falling back to default: "
+                           << config::lossless_scaling.exe_path;
+        return std::nullopt;
+      }
+
       auto default_path = lossless_paths::default_steam_lossless_path();
       std::optional<std::filesystem::path> default_opt;
       if (!default_path.empty()) {
