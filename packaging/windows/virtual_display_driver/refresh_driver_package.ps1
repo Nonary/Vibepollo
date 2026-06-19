@@ -494,7 +494,11 @@ if ($expectedPackageVulkanLayerJson) {
     Assert-SameFile -Expected $expectedPackageVulkanLayerJson -Actual $packageVulkanLayerJson
 }
 
-& powershell.exe -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File $packageInstaller -ValidateOnly
+$validateArgs = @('-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $packageInstaller, '-ValidateOnly')
+if ($SkipSigning) {
+    $validateArgs += '-AllowUnsignedCatalogForValidation'
+}
+& powershell.exe @validateArgs
 if ($LASTEXITCODE -ne 0) {
     throw "[SunshineVirtualDisplay] Driver installer validation failed with exit code $LASTEXITCODE"
 }

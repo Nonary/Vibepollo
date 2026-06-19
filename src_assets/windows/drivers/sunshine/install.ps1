@@ -1,6 +1,7 @@
 param(
     [switch]$Uninstall,
     [switch]$ValidateOnly,
+    [switch]$AllowUnsignedCatalogForValidation,
     [switch]$RegisterVulkanLayerOnly,
     [switch]$UnregisterVulkanLayerOnly
 )
@@ -118,6 +119,10 @@ function Assert-InfContent {
 function Assert-CatalogSignature {
     $signature = Get-AuthenticodeSignature -LiteralPath $catPath
     if (-not $signature.SignerCertificate) {
+        if ($ValidateOnly -and $AllowUnsignedCatalogForValidation) {
+            Write-Warning "[SunshineVirtualDisplay] Driver catalog is unsigned; validation allowed this local package state: $catPath"
+            return
+        }
         throw "[SunshineVirtualDisplay] Driver catalog is not signed: $catPath"
     }
 }
