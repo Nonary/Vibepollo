@@ -529,7 +529,7 @@ TEST(RtxHdrRuntimeScheduler, UpdateForFrameReturnsCachedStateWithoutInlineLookup
   EXPECT_EQ(fake.resolve_calls, 0);
 }
 
-TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesNeutralDesktopSettingsWithoutProfileLookup) {
+TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesDesktopBrightnessForRtxStreamWithoutProfileLookup) {
   rtx_hdr_config_guard_t config_guard;
   enable_rtx_hdr_app_override();
   config::video.rtx_hdr.sdr_brightness = 67;
@@ -588,8 +588,42 @@ TEST(RtxHdrRuntimeScheduler, DisabledRtxHdrStillBypassesDuringForegroundMismatch
   EXPECT_EQ(fake.resolve_calls, 0);
 }
 
-TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesNeutralSettingsWithoutProfileLookup) {
+TEST(RtxHdrRuntimeScheduler, DesktopFullscreenBypassesWithoutRtxOverride) {
   rtx_hdr_config_guard_t config_guard;
+  config::video.rtx_hdr.sdr_brightness = 61;
+  config::video.rtx_hdr.contrast = 30;
+  config::video.rtx_hdr.saturation = 31;
+  config::video.rtx_hdr.middle_gray = 62;
+  config::video.rtx_hdr.peak_brightness = 1250;
+
+  fake_runtime_t fake;
+  fake.foreground = desktop_fullscreen_foreground();
+  fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe);
+
+  fake.runtime.poll_foreground_for_tests();
+  const auto frame = fake.runtime.update_for_frame(std::nullopt);
+
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_TRUE(frame.foreground_matches);
+  EXPECT_FALSE(frame.has_active_app);
+  EXPECT_EQ(frame.contrast, 100);
+  EXPECT_EQ(frame.saturation, 100);
+  EXPECT_EQ(frame.middle_gray, 50);
+  EXPECT_EQ(frame.peak_brightness, 1000);
+  EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_EQ(fake.resolve_calls, 0);
+
+  config::video.rtx_hdr.sdr_brightness = 74;
+  platf::rtx_hdr::notify_live_settings_changed();
+  const auto refreshed = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_FALSE(refreshed.enabled);
+  EXPECT_EQ(refreshed.middle_gray, 50);
+  EXPECT_EQ(refreshed.source, profile_source_e::none);
+}
+
+TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesDesktopBrightnessForRtxStreamWithoutProfileLookup) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
   config::video.rtx_hdr.sdr_brightness = 61;
   config::video.rtx_hdr.contrast = 30;
   config::video.rtx_hdr.saturation = 31;
@@ -612,16 +646,9 @@ TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesNeutralSettingsWithoutProfileL
   EXPECT_EQ(frame.peak_brightness, 1250);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 0);
-
-  config::video.rtx_hdr.sdr_brightness = 74;
-  platf::rtx_hdr::notify_live_settings_changed();
-  const auto refreshed = fake.runtime.update_for_frame(std::nullopt);
-  EXPECT_TRUE(refreshed.enabled);
-  EXPECT_EQ(refreshed.middle_gray, 74);
-  EXPECT_EQ(refreshed.source, profile_source_e::config);
 }
 
-TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopSdrBrightness) {
+TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopBrightnessForRtxStream) {
   rtx_hdr_config_guard_t config_guard;
   enable_rtx_hdr_app_override();
   config::video.rtx_hdr.sdr_brightness = 45;

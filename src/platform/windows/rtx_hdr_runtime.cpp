@@ -36,12 +36,16 @@ namespace platf::rtx_hdr {
 
     runtime_values_t desktop_runtime_values() {
       runtime_values_t values;
-      values.enabled = config::video.rtx_hdr.enabled;
+      values.enabled = config::has_runtime_config_override("rtx_hdr") && config::video.rtx_hdr.enabled;
       values.contrast = 100;
       values.saturation = 100;
+      if (!values.enabled) {
+        return values;
+      }
+
       values.middle_gray = config::video.rtx_hdr.sdr_brightness;
       values.peak_brightness = config::video.rtx_hdr.peak_brightness;
-      values.source = values.enabled ? profile_source_e::config : profile_source_e::none;
+      values.source = profile_source_e::config;
       return values;
     }
 
