@@ -583,7 +583,9 @@ namespace display_helper_integration::helpers {
       }
     }
 
-    if (!topology_overridden && topology.topology.empty() && !default_device_id.empty()) {
+    if (!topology_overridden &&
+        layout_flags.arrangement == display_helper_integration::VirtualDisplayArrangement::Exclusive &&
+        topology.topology.empty() && !default_device_id.empty()) {
       topology.topology = {{default_device_id}};
     }
 

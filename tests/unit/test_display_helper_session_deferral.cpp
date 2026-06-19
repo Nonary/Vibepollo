@@ -29,6 +29,16 @@ namespace {
     request.configuration = display_device::SingleDisplayConfiguration {};
     return request;
   }
+
+  rtsp_stream::launch_session_t make_virtual_display_session() {
+    rtsp_stream::launch_session_t session {};
+    session.virtual_display = true;
+    session.virtual_display_device_id = "{virtual-device}";
+    session.width = 1920;
+    session.height = 1080;
+    session.fps = 60;
+    return session;
+  }
 }  // namespace
 
 TEST(DisplayHelperSessionDeferral, DelaysAndRestoresSessionSnapshot) {
@@ -200,6 +210,63 @@ TEST(DisplayHelperRequestHelpers, PhysicalOutputEnsureOnlyDisplayPinsTopology) {
 
   ASSERT_TRUE(request.has_value());
   const std::vector<std::vector<std::string>> expected_topology {{"{physical-monitor-guid}"}};
+  EXPECT_EQ(request->topology.topology, expected_topology);
+}
+
+TEST(DisplayHelperRequestHelpers, ExclusiveVirtualDisplayWithoutSnapshotPinsSingleDisplayTopology) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+  video_config.output_name = "{virtual-device}";
+  video_config.virtual_display_layout = config::video_t::virtual_display_layout_e::exclusive;
+
+  auto session = make_virtual_display_session();
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  ASSERT_TRUE(request.has_value());
+  const std::vector<std::vector<std::string>> expected_topology {{"{virtual-device}"}};
+  EXPECT_EQ(request->topology.topology, expected_topology);
+}
+
+TEST(DisplayHelperRequestHelpers, ExtendedVirtualDisplayWithoutSnapshotDoesNotPinSingleDisplayTopology) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+  video_config.output_name = "{virtual-device}";
+
+  const config::video_t::virtual_display_layout_e layouts[] = {
+    config::video_t::virtual_display_layout_e::extended,
+    config::video_t::virtual_display_layout_e::extended_primary,
+    config::video_t::virtual_display_layout_e::extended_isolated,
+    config::video_t::virtual_display_layout_e::extended_primary_isolated,
+  };
+
+  for (const auto layout : layouts) {
+    video_config.virtual_display_layout = layout;
+    auto session = make_virtual_display_session();
+
+    auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+    ASSERT_TRUE(request.has_value());
+    EXPECT_TRUE(request->topology.topology.empty()) << "layout=" << static_cast<int>(layout);
+  }
+}
+
+TEST(DisplayHelperRequestHelpers, ExtendedVirtualDisplayMergesSnapshotWithVirtualDisplay) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
+  video_config.output_name = "{virtual-device}";
+  video_config.virtual_display_layout = config::video_t::virtual_display_layout_e::extended;
+
+  auto session = make_virtual_display_session();
+  session.virtual_display_topology_snapshot = std::vector<std::vector<std::string>> {{"{physical-monitor-guid}"}};
+
+  auto request = display_helper_integration::helpers::build_request_from_session(video_config, session);
+
+  ASSERT_TRUE(request.has_value());
+  const std::vector<std::vector<std::string>> expected_topology {
+    {"{physical-monitor-guid}"},
+    {"{virtual-device}"},
+  };
   EXPECT_EQ(request->topology.topology, expected_topology);
 }
 
