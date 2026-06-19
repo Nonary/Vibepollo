@@ -214,7 +214,15 @@ function applyCodecPreferences(
       filteredPreferred = packetizationMode1;
     }
   }
-  const rest = caps.codecs.filter((codec) => !mimes.includes(codec.mimeType.toLowerCase()));
+  // Keep every offered codec in the preference list, just reordered. Dropping
+  // codecs here (e.g. the no-packetization-mode H264 variants) makes Firefox
+  // emit an offer whose m=video line omits those payload types while still
+  // carrying their orphaned a=fmtp/a=rtcp-fb lines, which libwebrtc rejects with
+  // "Failed to parse codecs correctly." (vibeshine#201). Reordering instead of
+  // removing preserves the preferred-codec intent without producing that
+  // inconsistency.
+  const preferredSet = new Set(filteredPreferred);
+  const rest = caps.codecs.filter((codec) => !preferredSet.has(codec));
   try {
     transceiver.setCodecPreferences([...filteredPreferred, ...rest]);
   } catch {
