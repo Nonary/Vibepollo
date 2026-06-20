@@ -124,6 +124,22 @@ namespace rtsp_stream {
     /// verification so the first frames aren't grabbed mid-modeset.
     std::shared_future<display_helper_gate_status_e> display_helper_gate;
 #endif
+
+    /**
+     * @brief Build an isolated copy for the background RTSP startup worker.
+     *
+     * stream::session::alloc()/start() run on the startup thread while the io_context
+     * thread still owns and reuses the original launch session (reserve_launch_session,
+     * respond() cipher/IV, expiry). The worker must therefore operate on this clone
+     * rather than the live original. launch_session_t is non-copyable (the move-only
+     * rtsp_cipher), so the fields are copied explicitly.
+     *
+     * Contract: copy every field that stream::session::alloc() or the cmd_announce()
+     * startup lambda reads. If you add such a field, copy it here too -- the
+     * RtspStartupSnapshot tests guard this (a dropped `perm` caused Vibepollo #280,
+     * where streaming sessions ran at PERM::_no and silently discarded all input).
+     */
+    [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);

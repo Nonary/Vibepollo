@@ -178,27 +178,33 @@ namespace rtsp_stream {
     return config.dynamicRange != 0 && !config.prefer_sdr_10bit;
   }
 
-  std::shared_ptr<launch_session_t> make_startup_launch_session_snapshot(const launch_session_t &source) {
+  std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
     auto snapshot = std::make_shared<launch_session_t>();
 
-    snapshot->id = source.id;
-    snapshot->gcm_key = source.gcm_key;
-    snapshot->iv = source.iv;
-    snapshot->av_ping_payload = source.av_ping_payload;
-    snapshot->control_connect_data = source.control_connect_data;
-    snapshot->unique_id = source.unique_id;
-    snapshot->client_uuid = source.client_uuid;
-    snapshot->device_name = source.device_name;
-    snapshot->virtual_display = source.virtual_display;
-    snapshot->virtual_display_guid_bytes = source.virtual_display_guid_bytes;
-    snapshot->gen1_framegen_fix = source.gen1_framegen_fix;
-    snapshot->gen2_framegen_fix = source.gen2_framegen_fix;
-    snapshot->lossless_scaling_framegen = source.lossless_scaling_framegen;
-    snapshot->frame_generation_provider = source.frame_generation_provider;
-    snapshot->lossless_scaling_target_fps = source.lossless_scaling_target_fps;
-    snapshot->lossless_scaling_rtss_limit = source.lossless_scaling_rtss_limit;
+    snapshot->id = id;
+    snapshot->gcm_key = gcm_key;
+    snapshot->iv = iv;
+    snapshot->av_ping_payload = av_ping_payload;
+    snapshot->control_connect_data = control_connect_data;
+    snapshot->unique_id = unique_id;
+    snapshot->client_uuid = client_uuid;
+    snapshot->device_name = device_name;
+    snapshot->perm = perm;
+    snapshot->fps = fps;
+    // Copied, not moved: the io_context thread still owns the original session.
+    // stream::session::alloc() moves these out of the clone on the startup worker.
+    snapshot->client_do_cmds = client_do_cmds;
+    snapshot->client_undo_cmds = client_undo_cmds;
+    snapshot->virtual_display = virtual_display;
+    snapshot->virtual_display_guid_bytes = virtual_display_guid_bytes;
+    snapshot->gen1_framegen_fix = gen1_framegen_fix;
+    snapshot->gen2_framegen_fix = gen2_framegen_fix;
+    snapshot->lossless_scaling_framegen = lossless_scaling_framegen;
+    snapshot->frame_generation_provider = frame_generation_provider;
+    snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
+    snapshot->lossless_scaling_rtss_limit = lossless_scaling_rtss_limit;
 #ifdef _WIN32
-    snapshot->display_helper_gate = source.display_helper_gate;
+    snapshot->display_helper_gate = display_helper_gate;
 #endif
 
     return snapshot;
@@ -1674,7 +1680,7 @@ namespace rtsp_stream {
 
     const int sequence_number = req->sequenceNumber;
     const std::string client_uuid = session->client_uuid;
-    auto launch_session = make_startup_launch_session_snapshot(*session);
+    auto launch_session = session->clone_for_startup();
     try {
       server->run_startup([server, socket = std::move(socket), session = std::move(session), launch_session, config = std::move(config), remote_address = std::move(remote_address), client_uuid, sequence_number]() mutable {
         // Apply deferred updates and take the hot-apply gate on the startup worker so
