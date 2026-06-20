@@ -1283,7 +1283,7 @@ async function postRtxHdrLiveOverrides(overrides: Record<string, unknown>, key: 
     throw new Error(errorMessage);
   }
   liveRtxHdrLastSentKey = key;
-  liveRtxHdrStatus.value = 'applied';
+  liveRtxHdrStatus.value = responseData?.applied === false ? 'idle' : 'applied';
 }
 
 function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string): Promise<void> {

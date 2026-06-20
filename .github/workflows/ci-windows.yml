@@ -60,7 +60,7 @@ on:
       signpath_artifact_configuration_slug:
         required: false
         type: string
-        # Setup-EXE (outer VibeshineSetup.exe) artifact configuration slug.
+        # Setup-EXE (outer VibepolloSetup.exe) artifact configuration slug.
         # See docs/signpath/setup-exe.artifact-config.xml.
         default: setup-exe
       signpath_msi_artifact_configuration_slug:
@@ -658,7 +658,7 @@ jobs:
           fi
 
           # Keep generated package names intact. In particular, do not rename
-          # VibeshineSetup.exe/VibepolloSetup.exe; downstream release/install
+          # VibepolloSetup.exe; downstream release/install
           # docs expect those names.
           cp "${installer_exe}" "../unsigned-signpath/${installer_name}"
           echo "installer_name=${installer_name}" >> "${GITHUB_OUTPUT}"

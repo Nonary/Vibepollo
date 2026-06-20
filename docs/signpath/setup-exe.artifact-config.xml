@@ -7,7 +7,7 @@
   Slug:    setup-exe
   Used by: .github/workflows/ci-windows.yml (setup-EXE signing request, the
            second of the two origin-verified requests)
-  Purpose: Authenticode-sign the outer VibeshineSetup.exe.
+  Purpose: Authenticode-sign the outer VibepolloSetup.exe.
 
   The setup EXE embeds the MSI as a .NET managed resource (Payload.msi). That
   MSI is ALREADY deep-signed by the "msi-file" request before it is embedded,

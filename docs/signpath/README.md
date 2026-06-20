@@ -11,8 +11,8 @@ artifact-configuration XML so the signing rules are auditable in version control
 
 ## Why two signing requests ("the whole package, setup and all")
 
-The shipped artifact is a single self-contained `VibeshineSetup.exe`. It is a
-**custom C# bootstrapper** (`packaging/windows/bootstrapper/VibeshineInstaller.cs`)
+The shipped artifact is a single self-contained `VibepolloSetup.exe`. It is a
+**custom C# bootstrapper** (`packaging/windows/bootstrapper/VibepolloInstaller.cs`)
 that embeds the MSI as a **.NET managed manifest resource** named `Payload.msi`
 (`build_bootstrapper.ps1` compiles with `csc /resource:<msi>,Payload.msi`; the
 installer reads it back via `Assembly.GetManifestResourceStream("Payload.msi")`).
@@ -45,7 +45,7 @@ UX. That is intentionally out of scope.
 | Slug | File | Used by | Purpose |
 | --- | --- | --- | --- |
 | `msi-file` | [`msi-file.artifact-config.xml`](msi-file.artifact-config.xml) | `ci-windows.yml` (MSI request), `scripts/signpath_sign.ps1` | Deep-sign nested first-party PEs, then the MSI |
-| `setup-exe` | [`setup-exe.artifact-config.xml`](setup-exe.artifact-config.xml) | `ci-windows.yml` (setup-EXE request) | Authenticode-sign the outer `VibeshineSetup.exe` |
+| `setup-exe` | [`setup-exe.artifact-config.xml`](setup-exe.artifact-config.xml) | `ci-windows.yml` (setup-EXE request) | Authenticode-sign the outer `VibepolloSetup.exe` |
 
 Slugs and project/org/policy are passed as reusable-workflow inputs in
 `ci-windows.yml` (`signpath_msi_artifact_configuration_slug`,
@@ -111,7 +111,7 @@ stripped in CI and never signed on the runner). The `msi-file` config is the
 `ci-windows.yml` runs a post-sign verification step (when SignPath is enabled)
 that fails the build if any first-party PE is unsigned. It:
 
-1. confirms the outer `VibeshineSetup.exe` is signed,
+1. confirms the outer `VibepolloSetup.exe` is signed,
 2. confirms the signed MSI is signed,
 3. administratively extracts the MSI and confirms every first-party PE carries a
    signature, while **skipping** the vendor/catalog files above.

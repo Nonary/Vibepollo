@@ -134,6 +134,7 @@
     <AppEditModal
       v-model="showModal"
       :app="currentApp"
+      :index="currentAppIndex"
       @saved="reload"
       @deleted="reload"
     />
@@ -169,6 +170,7 @@ const playniteEnabled = computed(() => playniteInstalled.value);
 
 const showModal = ref(false);
 const currentApp = ref<App | null>(null);
+const currentAppIndex = ref(-1);
 const failedPlayniteIconKeys = ref<Set<string>>(new Set());
 
 async function reload(): Promise<void> {
@@ -177,11 +179,13 @@ async function reload(): Promise<void> {
 
 function openAdd(): void {
   currentApp.value = null;
+  currentAppIndex.value = -1;
   showModal.value = true;
 }
 
 function openEdit(app: App): void {
   currentApp.value = app;
+  currentAppIndex.value = apps.value.findIndex((candidate) => candidate === app);
   showModal.value = true;
 }
 

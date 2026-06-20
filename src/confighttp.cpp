@@ -1761,7 +1761,7 @@ namespace confighttp {
 
       // Read the input JSON from the request body.
       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
-      const int index = input_tree.at("index").get<int>();  // intentionally throws if the provided value is missing or the wrong type
+      int index = input_tree.value("index", -1);
 
       // Read the existing apps file.
       std::string content = file_handler::read_file(config::stream.file_apps.c_str());
@@ -1769,14 +1769,6 @@ namespace confighttp {
 
       // Migrate/merge the new app into the file tree.
       proc::migrate_apps(&file_tree, &input_tree);
-
-      if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
-        auto &overrides = input_tree["config-overrides"];
-        if (overrides.contains("nvenc_force_split_encode") && !overrides.contains("nvenc_split_encode")) {
-          overrides["nvenc_split_encode"] = overrides["nvenc_force_split_encode"];
-        }
-        overrides.erase("nvenc_force_split_encode");
-      }
 
       if (input_tree.contains("config-overrides") && input_tree["config-overrides"].is_object()) {
         auto &overrides = input_tree["config-overrides"];
@@ -1823,7 +1815,6 @@ namespace confighttp {
       if (!apps_node.is_array()) {
         apps_node = nlohmann::json::array();
       }
-      input_tree.erase("index");
 
       std::string input_uuid;
       try {
@@ -1832,27 +1823,17 @@ namespace confighttp {
         }
       } catch (...) {}
 
-      bool replaced = false;
-      if (!input_uuid.empty()) {
-        for (auto it = apps_node.begin(); it != apps_node.end(); ++it) {
-          try {
-            if (it->contains("uuid") && (*it)["uuid"].is_string() && (*it)["uuid"].get<std::string>() == input_uuid) {
-              *it = input_tree;
-              replaced = true;
-              break;
-            }
-          } catch (...) {}
-        }
+      if (auto uuid_index = find_app_index_by_uuid(apps_node, input_uuid)) {
+        index = static_cast<int>(*uuid_index);
       }
+      input_tree.erase("index");
 
       if (index == -1) {
         if (input_uuid.empty()) {
           input_uuid = uuid_util::uuid_t::generate().string();
           input_tree["uuid"] = input_uuid;
         }
-        if (!replaced) {
-          apps_node.push_back(input_tree);
-        }
+        apps_node.push_back(input_tree);
       } else {
         nlohmann::json newApps = nlohmann::json::array();
         for (size_t i = 0; i < apps_node.size(); ++i) {

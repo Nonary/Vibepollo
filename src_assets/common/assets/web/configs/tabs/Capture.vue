@@ -227,7 +227,7 @@ const losslessStatusHint = computed(() => {
       'The configured path could not be resolved. Choose an executable path or clear the override to use auto-detection.'
     );
   }
-  return 'Vibeshine could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
+  return 'Vibepollo could not find Lossless Scaling. Scan for an installation or provide the executable path below.';
 });
 
 async function refreshLosslessStatus() {
@@ -591,7 +591,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
     >
       <div class="space-y-4">
         <n-alert type="info" size="small" v-if="!losslessCandidates.length">
-          Vibeshine searched common Steam and program directories but could not locate
+          Vibepollo searched common Steam and program directories but could not locate
           LosslessScaling.exe. Install Lossless Scaling from Steam or set the full path manually.
         </n-alert>
         <div class="space-y-2">
