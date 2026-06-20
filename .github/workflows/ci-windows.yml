@@ -83,7 +83,8 @@ jobs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
       symbols_artifact_id: ${{ steps.upload-windows-symbols.outputs.artifact-id }}
-      unsigned_msi_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
+      unsigned_msi_artifact_id: ${{ steps.upload-unsigned-msi-for-package.outputs.artifact-id }}
+      unsigned_msi_signpath_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
       versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
     env:
       NODE_VERSION: 22.22.2
@@ -580,6 +581,16 @@ jobs:
           archive: false
           overwrite: true
 
+      - name: Upload unsigned MSI for package job
+        id: upload-unsigned-msi-for-package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsigned-msi-package-${{ matrix.name }}
+          path: unsigned-signpath-msi/${{ steps.package-windows-msi.outputs.msi_name }}
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
       - name: Upload Windows symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         id: upload-windows-symbols
@@ -589,7 +600,6 @@ jobs:
           path: symbols/${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
           if-no-files-found: error
           retention-days: 7
-          archive: false
           overwrite: true
 
       - name: Upload Windows version metadata
@@ -600,7 +610,6 @@ jobs:
           path: build/generated_versioninfo/windows_versioninfo_generated.h
           if-no-files-found: error
           retention-days: 1
-          archive: false
           overwrite: true
 
       - name: Debug wix
@@ -641,7 +650,7 @@ jobs:
           project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ env.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.build_windows.outputs.unsigned_msi_artifact_id }}
+          github-artifact-id: ${{ needs.build_windows.outputs.unsigned_msi_signpath_artifact_id }}
           github-token: ${{ github.token }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 1800
@@ -680,7 +689,6 @@ jobs:
           path: signed-msi/${{ needs.build_windows.outputs.msi_name }}
           if-no-files-found: error
           retention-days: 1
-          archive: false
           overwrite: true
 
       - name: SignPath disabled
@@ -696,7 +704,8 @@ jobs:
     runs-on: windows-2022
     outputs:
       installer_name: ${{ steps.package-windows.outputs.installer_name }}
-      unsigned_installer_artifact_id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+      unsigned_installer_artifact_id: ${{ steps.upload-unsigned-installer-for-finalize.outputs.artifact-id }}
+      unsigned_installer_signpath_artifact_id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
     env:
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
     permissions:
@@ -773,6 +782,16 @@ jobs:
           archive: false
           overwrite: true
 
+      - name: Upload unsigned installer for finalize job
+        id: upload-unsigned-installer-for-finalize
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsigned-installer-finalize-Windows
+          path: unsigned-signpath/${{ steps.package-windows.outputs.installer_name }}
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
   sign_windows_installer:
     name: Sign Windows installer
     needs:
@@ -800,7 +819,7 @@ jobs:
           project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.package_windows.outputs.unsigned_installer_artifact_id }}
+          github-artifact-id: ${{ needs.package_windows.outputs.unsigned_installer_signpath_artifact_id }}
           github-token: ${{ github.token }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 1800
@@ -839,7 +858,6 @@ jobs:
           path: signed-installer/${{ needs.package_windows.outputs.installer_name }}
           if-no-files-found: error
           retention-days: 1
-          archive: false
           overwrite: true
 
       - name: SignPath disabled
