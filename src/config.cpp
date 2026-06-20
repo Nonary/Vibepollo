@@ -816,7 +816,7 @@ namespace config {
     {
       false,  // rtx_hdr.enabled
       false,  // rtx_hdr.force_sdr
-      50,  // rtx_hdr.sdr_brightness
+      0,  // rtx_hdr.sdr_brightness
       0,  // rtx_hdr.contrast
       0,  // rtx_hdr.saturation
       50,  // rtx_hdr.middle_gray
@@ -1656,7 +1656,7 @@ namespace config {
 
     bool_f(vars, "rtx_hdr", video.rtx_hdr.enabled);
     bool_f(vars, "rtx_hdr_force_sdr", video.rtx_hdr.force_sdr);
-    int_between_f(vars, "rtx_hdr_sdr_brightness", video.rtx_hdr.sdr_brightness, {10, 100});
+    int_between_f(vars, "rtx_hdr_sdr_brightness", video.rtx_hdr.sdr_brightness, {0, 100});
     int_between_f(vars, "rtx_hdr_contrast", video.rtx_hdr.contrast, {-100, 100});
     int_between_f(vars, "rtx_hdr_saturation", video.rtx_hdr.saturation, {-100, 100});
     int_between_f(vars, "rtx_hdr_middle_gray", video.rtx_hdr.middle_gray, {10, 100});

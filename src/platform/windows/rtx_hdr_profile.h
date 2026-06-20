@@ -43,6 +43,7 @@ namespace platf::rtx_hdr {
     int contrast {100};
     int saturation {100};
     int middle_gray {50};
+    int sdr_brightness {0};
     int peak_brightness {1000};
     profile_source_e source {profile_source_e::none};
   };

@@ -123,7 +123,7 @@ namespace config {
     struct rtx_hdr_t {
       bool enabled;  ///< Enables conversion when an app/client runtime override opts the stream in.
       bool force_sdr;  ///< Legacy compatibility setting; app-enabled RTX HDR always forces SDR source.
-      int sdr_brightness;  ///< 10..100 (desktop/non-matching fallback brightness for RTX HDR streams)
+      int sdr_brightness;  ///< 0..100 brightness boost for desktop/non-matching RTX HDR fallback frames
       int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
       int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
       int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)

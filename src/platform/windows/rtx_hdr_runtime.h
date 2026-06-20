@@ -33,6 +33,7 @@ namespace platf::rtx_hdr {
 
   void notify_live_settings_changed();
   std::uint64_t live_settings_generation();
+  float sdr_brightness_to_white_nits(int brightness);
 
 #ifdef SUNSHINE_TESTS
   struct runtime_test_hooks_t {

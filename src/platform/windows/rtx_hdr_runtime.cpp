@@ -20,6 +20,8 @@ namespace platf::rtx_hdr {
     constexpr auto PROFILE_REFRESH_SLOW_INTERVAL = std::chrono::seconds(15);
     constexpr auto PROFILE_REFRESH_MAX_INTERVAL = std::chrono::seconds(30);
     constexpr auto SLOW_PROFILE_LOOKUP_THRESHOLD = std::chrono::milliseconds(100);
+    constexpr float SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS = 100.0f;
+    constexpr float SDR_BRIGHTNESS_MAX_WHITE_NITS = 200.0f;
 
     std::atomic<std::uint64_t> g_live_settings_generation {0};
 
@@ -29,6 +31,7 @@ namespace platf::rtx_hdr {
       values.contrast = std::clamp(config::video.rtx_hdr.contrast + 100, 0, 200);
       values.saturation = std::clamp(config::video.rtx_hdr.saturation + 100, 0, 200);
       values.middle_gray = config::video.rtx_hdr.middle_gray;
+      values.sdr_brightness = config::video.rtx_hdr.sdr_brightness;
       values.peak_brightness = config::video.rtx_hdr.peak_brightness;
       values.source = profile_source_e::config;
       return values;
@@ -36,14 +39,16 @@ namespace platf::rtx_hdr {
 
     runtime_values_t desktop_runtime_values() {
       runtime_values_t values;
-      values.enabled = config::has_runtime_config_override("rtx_hdr") && config::video.rtx_hdr.enabled;
       values.contrast = 100;
       values.saturation = 100;
-      if (!values.enabled) {
+      if (!config::has_runtime_config_override("rtx_hdr") || !config::video.rtx_hdr.enabled) {
         return values;
       }
 
-      values.middle_gray = config::video.rtx_hdr.sdr_brightness;
+      // Desktop/non-matching content should stay in the neutral SDR-to-PQ path.
+      // Carry the configured SDR brightness boost for the encoder fallback,
+      // but do not enable NVIDIA TrueHDR conversion for desktop frames.
+      values.sdr_brightness = config::video.rtx_hdr.sdr_brightness;
       values.peak_brightness = config::video.rtx_hdr.peak_brightness;
       values.source = profile_source_e::config;
       return values;
@@ -65,6 +70,7 @@ namespace platf::rtx_hdr {
       frame.contrast = values.contrast;
       frame.saturation = values.saturation;
       frame.middle_gray = values.middle_gray;
+      frame.sdr_brightness = values.sdr_brightness;
       frame.peak_brightness = values.peak_brightness;
       frame.source = values.source;
     }
@@ -81,6 +87,13 @@ namespace platf::rtx_hdr {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     }
   }  // namespace
+
+  float sdr_brightness_to_white_nits(int brightness) {
+    const auto clamped_brightness = static_cast<float>(std::clamp(brightness, 0, 100));
+    const auto t = clamped_brightness / 100.0f;
+    return SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS +
+           (SDR_BRIGHTNESS_MAX_WHITE_NITS - SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS) * t;
+  }
 
   struct runtime_t::backend_t {
     std::function<std::chrono::steady_clock::time_point()> now;

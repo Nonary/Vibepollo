@@ -480,7 +480,7 @@
     "rtx_hdr_peak_brightness": "Peak Brightness (nits)",
     "rtx_hdr_peak_brightness_desc": "Target display peak luminance in nits (400–1500, default 1000). Match your client display's HDR peak for best results.",
     "rtx_hdr_sdr_brightness": "SDR Brightness",
-    "rtx_hdr_sdr_brightness_desc": "Desktop/non-matching fallback brightness for RTX HDR streams (10–100, default 50). HDR streams that are not opted into RTX HDR are unchanged.",
+    "rtx_hdr_sdr_brightness_desc": "Brightness boost for desktop/non-matching frames in RTX HDR streams (0–100, 0 = neutral). HDR streams that are not opted into RTX HDR are unchanged.",
     "rtx_hdr_middle_gray": "Middle Gray",
     "rtx_hdr_middle_gray_desc": "Mid-tone brightness target (10–100, default 50). Higher values brighten the overall image.",
     "rtx_hdr_contrast": "Contrast",

@@ -78,6 +78,11 @@ namespace platf::dxgi {
     return buf_t {buf_p};
   }
 
+  struct alignas(16) sdr_to_pq_params_t {
+    float sdr_white_nits;
+    float padding[3];
+  };
+
   blend_t make_blend(device_t::pointer device, bool enable, bool invert) {
     D3D11_BLEND_DESC bdesc {};
     auto &rt = bdesc.RenderTarget[0];
@@ -432,6 +437,8 @@ namespace platf::dxgi {
       auto &img = (img_d3d_t &) img_base;
       auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport, DXGI_FORMAT input_format, bool sdr_to_pq) {
         device_ctx->PSSetShaderResources(0, 1, &input);
+        ID3D11Buffer *sdr_to_pq_buffer = sdr_to_pq ? sdr_to_pq_params.get() : nullptr;
+        device_ctx->PSSetConstantBuffers(1, 1, &sdr_to_pq_buffer);
 
         // Draw Y/YUV
         device_ctx->OMSetRenderTargets(1, &out_Y_or_YUV_rtv, nullptr);
@@ -530,6 +537,7 @@ namespace platf::dxgi {
       auto *encode_input_res = &img_ctx.encoder_input_res;
       DXGI_FORMAT encode_input_format = img.format;
       bool encode_input_sdr_to_pq = false;
+      float encode_input_sdr_white_nits = 100.0f;
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
       ID3D11Texture2D *truehdr_input_texture = img_ctx.encoder_texture.get();
       const bool truehdr_supported_sdr_input =
@@ -547,6 +555,7 @@ namespace platf::dxgi {
           display->offset_y + display->height
         };
         truehdr_frame_state = rtx_hdr_runtime.update_for_frame(capture_rect);
+        encode_input_sdr_white_nits = platf::rtx_hdr::sdr_brightness_to_white_nits(truehdr_frame_state.sdr_brightness);
         truehdr_should_convert = truehdr_frame_state.enabled;
         if (truehdr_should_convert && update_truehdr_native_hdr_detector(img_ctx.encoder_texture.get(), img.format)) {
           truehdr_should_convert = false;
@@ -575,7 +584,8 @@ namespace platf::dxgi {
           } else {
             BOOST_LOG(info) << "RTX HDR: bypassing TrueHDR conversion"
                             << (truehdr_frame_state.foreground_matches ? " because NVIDIA RTX HDR is disabled for the focused app." : " because the foreground window does not match the streamed app.")
-                            << " Encoding through neutral SDR-to-PQ path.";
+                            << " Encoding through neutral SDR-to-PQ path"
+                            << " (SDR white=" << encode_input_sdr_white_nits << " nits).";
           }
         }
       }
@@ -646,6 +656,9 @@ namespace platf::dxgi {
         truehdr_not_hdr_stream_logged = true;
       }
 #endif
+      if (encode_input_sdr_to_pq) {
+        ensure_sdr_to_pq_params(encode_input_sdr_white_nits);
+      }
       draw(*encode_input_res, out_Y_or_YUV_viewports, out_UV_viewport, encode_input_format, encode_input_sdr_to_pq);
 
       // Release encoder mutex to allow capture code to reuse this image
@@ -656,6 +669,18 @@ namespace platf::dxgi {
       unbind_shader_resource();
 
       return 0;
+    }
+
+    void ensure_sdr_to_pq_params(float sdr_white_nits) {
+      if (sdr_to_pq_params && std::abs(sdr_to_pq_white_nits - sdr_white_nits) < 0.5f) {
+        return;
+      }
+
+      sdr_to_pq_params_t params {sdr_white_nits, {}};
+      if (auto buffer = make_buffer(device.get(), params)) {
+        sdr_to_pq_params = std::move(buffer);
+        sdr_to_pq_white_nits = sdr_white_nits;
+      }
     }
 
     void apply_colorspace(const ::video::sunshine_colorspace_t &colorspace, bool rtx_hdr_active) {
@@ -1023,6 +1048,11 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "Failed to create color matrix buffer"sv;
         return -1;
       }
+      ensure_sdr_to_pq_params(100.0f);
+      if (!sdr_to_pq_params) {
+        BOOST_LOG(error) << "Failed to create SDR-to-PQ parameter buffer"sv;
+        return -1;
+      }
       device_ctx->VSSetConstantBuffers(3, 1, &color_matrix);
       device_ctx->PSSetConstantBuffers(0, 1, &color_matrix);
 
@@ -1388,6 +1418,8 @@ namespace platf::dxgi {
 
     buf_t subsample_offset;
     buf_t color_matrix;
+    buf_t sdr_to_pq_params;
+    float sdr_to_pq_white_nits = 100.0f;
 
     blend_t blend_disable;
     sampler_state_t sampler_linear;

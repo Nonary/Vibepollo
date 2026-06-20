@@ -245,6 +245,7 @@ namespace platf::rtx_hdr {
       values.contrast = std::clamp(config::video.rtx_hdr.contrast + 100, 0, 200);
       values.saturation = std::clamp(config::video.rtx_hdr.saturation + 100, 0, 200);
       values.middle_gray = config::video.rtx_hdr.middle_gray;
+      values.sdr_brightness = config::video.rtx_hdr.sdr_brightness;
       values.peak_brightness = config::video.rtx_hdr.peak_brightness;
       values.source = profile_source_e::config;
       return values;
@@ -308,6 +309,7 @@ namespace platf::rtx_hdr {
       values.middle_gray = has_override("rtx_hdr_middle_gray") ?
                              config_fallback.middle_gray :
                              resolved.application.middle_gray.value_or(resolved.global.middle_gray.value_or(config_fallback.middle_gray));
+      values.sdr_brightness = config_fallback.sdr_brightness;
       values.peak_brightness = has_override("rtx_hdr_peak_brightness") ?
                                  config_fallback.peak_brightness :
                                  resolved.application.peak_brightness.value_or(resolved.global.peak_brightness.value_or(config_fallback.peak_brightness));

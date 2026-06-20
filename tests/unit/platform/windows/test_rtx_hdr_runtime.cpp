@@ -29,7 +29,7 @@ namespace {
       config::clear_runtime_config_overrides();
       config::video.rtx_hdr.enabled = true;
       config::video.rtx_hdr.force_sdr = false;
-      config::video.rtx_hdr.sdr_brightness = 50;
+      config::video.rtx_hdr.sdr_brightness = 0;
       config::video.rtx_hdr.contrast = 0;
       config::video.rtx_hdr.saturation = 0;
       config::video.rtx_hdr.middle_gray = 50;
@@ -482,6 +482,14 @@ TEST(RtxHdrProfileResolution, SaturationDecodeIsRawSdkUnits) {
   EXPECT_FALSE(platf::rtx_hdr::decode_rtx_hdr_saturation_units_for_tests(0xFFFFFFE7u).has_value());
 }
 
+TEST(RtxHdrProfileResolution, SdrBrightnessBoostMapsZeroToNeutralWhite) {
+  EXPECT_FLOAT_EQ(platf::rtx_hdr::sdr_brightness_to_white_nits(-1), 100.0f);
+  EXPECT_FLOAT_EQ(platf::rtx_hdr::sdr_brightness_to_white_nits(0), 100.0f);
+  EXPECT_FLOAT_EQ(platf::rtx_hdr::sdr_brightness_to_white_nits(50), 150.0f);
+  EXPECT_FLOAT_EQ(platf::rtx_hdr::sdr_brightness_to_white_nits(100), 200.0f);
+  EXPECT_FLOAT_EQ(platf::rtx_hdr::sdr_brightness_to_white_nits(101), 200.0f);
+}
+
 TEST(RtxHdrForegroundMatching, PlayniteExecutableAndInstallDirMatch) {
   EXPECT_TRUE(platf::foreground_app::playnite_foreground_matches_for_tests(
     "game-id",
@@ -551,10 +559,10 @@ TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesDesktopBrightnessForRtxStream
   const auto frame = fake.runtime.update_for_frame(std::nullopt);
 
   EXPECT_FALSE(frame.foreground_matches);
-  EXPECT_TRUE(frame.enabled);
+  EXPECT_FALSE(frame.enabled);
   EXPECT_EQ(frame.contrast, 100);
   EXPECT_EQ(frame.saturation, 100);
-  EXPECT_EQ(frame.middle_gray, 67);
+  EXPECT_EQ(frame.sdr_brightness, 67);
   EXPECT_EQ(frame.peak_brightness, 1300);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 1);
@@ -608,7 +616,7 @@ TEST(RtxHdrRuntimeScheduler, DesktopFullscreenBypassesWithoutRtxOverride) {
   EXPECT_FALSE(frame.has_active_app);
   EXPECT_EQ(frame.contrast, 100);
   EXPECT_EQ(frame.saturation, 100);
-  EXPECT_EQ(frame.middle_gray, 50);
+  EXPECT_EQ(frame.sdr_brightness, 0);
   EXPECT_EQ(frame.peak_brightness, 1000);
   EXPECT_EQ(frame.source, profile_source_e::none);
   EXPECT_EQ(fake.resolve_calls, 0);
@@ -617,7 +625,7 @@ TEST(RtxHdrRuntimeScheduler, DesktopFullscreenBypassesWithoutRtxOverride) {
   platf::rtx_hdr::notify_live_settings_changed();
   const auto refreshed = fake.runtime.update_for_frame(std::nullopt);
   EXPECT_FALSE(refreshed.enabled);
-  EXPECT_EQ(refreshed.middle_gray, 50);
+  EXPECT_EQ(refreshed.sdr_brightness, 0);
   EXPECT_EQ(refreshed.source, profile_source_e::none);
 }
 
@@ -637,12 +645,12 @@ TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesDesktopBrightnessForRtxStreamW
   fake.runtime.poll_foreground_for_tests();
   const auto frame = fake.runtime.update_for_frame(std::nullopt);
 
-  EXPECT_TRUE(frame.enabled);
+  EXPECT_FALSE(frame.enabled);
   EXPECT_TRUE(frame.foreground_matches);
   EXPECT_FALSE(frame.has_active_app);
   EXPECT_EQ(frame.contrast, 100);
   EXPECT_EQ(frame.saturation, 100);
-  EXPECT_EQ(frame.middle_gray, 61);
+  EXPECT_EQ(frame.sdr_brightness, 61);
   EXPECT_EQ(frame.peak_brightness, 1250);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 0);
@@ -658,18 +666,18 @@ TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopBrightnessForRtxStream) {
 
   fake.runtime.poll_foreground_for_tests();
   auto frame = fake.runtime.update_for_frame(std::nullopt);
-  ASSERT_TRUE(frame.enabled);
-  EXPECT_EQ(frame.middle_gray, 45);
+  EXPECT_FALSE(frame.enabled);
+  EXPECT_EQ(frame.sdr_brightness, 45);
   EXPECT_EQ(frame.source, profile_source_e::config);
 
   config::video.rtx_hdr.sdr_brightness = 72;
   platf::rtx_hdr::notify_live_settings_changed();
   frame = fake.runtime.update_for_frame(std::nullopt);
 
-  EXPECT_TRUE(frame.enabled);
+  EXPECT_FALSE(frame.enabled);
   EXPECT_EQ(frame.contrast, 100);
   EXPECT_EQ(frame.saturation, 100);
-  EXPECT_EQ(frame.middle_gray, 72);
+  EXPECT_EQ(frame.sdr_brightness, 72);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 0);
 }
