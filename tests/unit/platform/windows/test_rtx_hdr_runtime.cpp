@@ -682,9 +682,10 @@ TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopBrightnessForRtxStream) {
   EXPECT_EQ(fake.resolve_calls, 0);
 }
 
-TEST(RtxHdrRuntimeScheduler, IdentityChangeBypassesUntilProfileLookupCompletes) {
+TEST(RtxHdrRuntimeScheduler, IdentityChangeUsesConfigUntilProfileLookupCompletes) {
   rtx_hdr_config_guard_t config_guard;
   enable_rtx_hdr_app_override();
+  config::video.rtx_hdr.contrast = 25;
   fake_runtime_t fake;
   fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
   fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe, 150);
@@ -692,8 +693,9 @@ TEST(RtxHdrRuntimeScheduler, IdentityChangeBypassesUntilProfileLookupCompletes) 
   fake.runtime.poll_foreground_for_tests();
   auto frame = fake.runtime.update_for_frame(std::nullopt);
   EXPECT_TRUE(frame.foreground_matches);
-  EXPECT_FALSE(frame.enabled);
-  EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 125);
+  EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 0);
 
   ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
@@ -727,9 +729,9 @@ TEST(RtxHdrRuntimeScheduler, StaleProfileResultIgnoredAfterIdentityChange) {
   ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
   auto frame = fake.runtime.update_for_frame(std::nullopt);
   EXPECT_TRUE(frame.foreground_matches);
-  EXPECT_FALSE(frame.enabled);
+  EXPECT_TRUE(frame.enabled);
   EXPECT_EQ(frame.active_app_exe, second_exe);
-  EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_EQ(frame.source, profile_source_e::config);
 
   ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
   frame = fake.runtime.update_for_frame(std::nullopt);
@@ -769,6 +771,51 @@ TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileBypassesAfterLookup) {
   frame = fake.runtime.update_for_frame(std::nullopt);
   EXPECT_FALSE(frame.enabled);
   EXPECT_EQ(frame.source, profile_source_e::none);
+  EXPECT_TRUE(frame.lookup_available);
+}
+
+TEST(RtxHdrRuntimeScheduler, AppOverrideDoesNotRequireNvidiaProfileLookup) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
+  config::video.rtx_hdr.contrast = 23;
+  config::video.rtx_hdr.saturation = 24;
+  config::video.rtx_hdr.middle_gray = 52;
+  config::video.rtx_hdr.peak_brightness = 1100;
+
+  fake_runtime_t fake;
+  fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
+  resolved_profile_t unavailable;
+  unavailable.executable = fake.foreground.active_app_exe;
+  fake.profiles[fake.foreground.active_app_exe] = unavailable;
+
+  fake.runtime.poll_foreground_for_tests();
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 123);
+  EXPECT_EQ(frame.saturation, 124);
+  EXPECT_EQ(frame.middle_gray, 52);
+  EXPECT_EQ(frame.peak_brightness, 1100);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_FALSE(frame.lookup_available);
+
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 123);
+  EXPECT_EQ(frame.source, profile_source_e::config);
+  EXPECT_FALSE(frame.lookup_available);
+
+  fake.foreground = matching_foreground("C:/Games/Bar/bar.exe", "Bar");
+  resolved_profile_t empty;
+  empty.lookup_available = true;
+  empty.executable = fake.foreground.active_app_exe;
+  fake.profiles[fake.foreground.active_app_exe] = empty;
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_EQ(frame.contrast, 123);
+  EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_TRUE(frame.lookup_available);
 }
 

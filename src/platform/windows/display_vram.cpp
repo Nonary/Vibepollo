@@ -583,7 +583,7 @@ namespace platf::dxgi {
                             << " nits, foreground=" << truehdr_frame_state.foreground_source << ").";
           } else {
             BOOST_LOG(info) << "RTX HDR: bypassing TrueHDR conversion"
-                            << (truehdr_frame_state.foreground_matches ? " because NVIDIA RTX HDR is disabled for the focused app." : " because the foreground window does not match the streamed app.")
+                            << (truehdr_frame_state.foreground_matches ? " because RTX HDR is disabled for the focused app/runtime override." : " because the foreground window does not match the streamed app.")
                             << " Encoding through neutral SDR-to-PQ path"
                             << " (SDR white=" << encode_input_sdr_white_nits << " nits).";
           }

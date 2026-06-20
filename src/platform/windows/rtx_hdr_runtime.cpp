@@ -150,11 +150,11 @@ namespace platf::rtx_hdr {
       return backend;
     }
 
-    void publish_pending_bypass_locked(runtime_t::shared_state_t &state, const platf::foreground_app::state_t &foreground) {
+    void publish_initial_app_values_locked(runtime_t::shared_state_t &state, const platf::foreground_app::state_t &foreground) {
       frame_state_t frame;
       copy_foreground(frame, foreground);
-      frame.enabled = false;
-      frame.source = profile_source_e::none;
+      resolved_profile_t no_profile;
+      apply_values(frame, materialize_runtime_values_for_tests(no_profile, config_runtime_values()));
       frame.lookup_available = false;
       state.cached_frame_state = std::move(frame);
     }
@@ -165,12 +165,9 @@ namespace platf::rtx_hdr {
         return;
       }
 
-      if (!state.last_successful_profile) {
-        return;
-      }
-
+      resolved_profile_t no_profile;
       const auto values = materialize_live_values(
-        *state.last_successful_profile,
+        state.last_successful_profile.value_or(no_profile),
         config_runtime_values()
       );
       apply_values(state.cached_frame_state, values);
@@ -259,7 +256,7 @@ namespace platf::rtx_hdr {
         state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
         state->consecutive_slow_or_failed_lookups = 0;
         state->next_profile_refresh = now;
-        publish_pending_bypass_locked(*state, foreground);
+        publish_initial_app_values_locked(*state, foreground);
       } else {
         auto frame = state->cached_frame_state;
         copy_foreground(frame, foreground);
