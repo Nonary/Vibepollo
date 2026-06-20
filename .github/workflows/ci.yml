@@ -158,6 +158,11 @@ jobs:
               print(f"Skipping {tag}: not newer than the current release.")
               continue
             release_commit = run("git", "rev-list", "-n", "1", tag)
+            if event_name == "push":
+              head_commit = run("git", "rev-parse", "HEAD")
+              if release_commit != head_commit:
+                print(f"Skipping {tag}: tag commit {release_commit} is not the pushed HEAD.")
+                continue
             if subprocess.run(
               ["git", "merge-base", "--is-ancestor", release_commit, "HEAD"],
               text=True,
