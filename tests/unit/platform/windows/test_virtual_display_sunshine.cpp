@@ -160,6 +160,32 @@ TEST(SunshineVirtualDisplay, EncoderProbeEnsureDisplaySkippedForPerClientVirtual
   expect_contains(webrtc_source, "if (!launch_session->virtual_display) {");
 }
 
+TEST(SunshineVirtualDisplay, EnsureDisplayAppliesConfiguredRenderAdapterBeforeTemporaryCreation) {
+  const auto sunshine_source = read_virtual_display_source();
+  const auto sunshine_ensure_pos = sunshine_source.find("VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display()");
+  ASSERT_NE(sunshine_ensure_pos, std::string::npos);
+  const auto sunshine_ensure_body = sunshine_source.substr(sunshine_ensure_pos, sunshine_source.find("void VDISPLAY_SUNSHINE::cleanup_ensure_display", sunshine_ensure_pos) - sunshine_ensure_pos);
+  const auto sunshine_preference_pos = sunshine_ensure_body.find("apply_configured_render_adapter_preference();");
+  const auto sunshine_create_pos = sunshine_ensure_body.find("createVirtualDisplay(");
+  ASSERT_NE(sunshine_preference_pos, std::string::npos);
+  ASSERT_NE(sunshine_create_pos, std::string::npos);
+  EXPECT_LT(sunshine_preference_pos, sunshine_create_pos);
+  expect_contains(sunshine_source, "if (!config::video.adapter_name.empty())");
+  expect_contains(sunshine_source, "setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))");
+
+  const auto sudo_source = read_source("src/platform/windows/virtual_display_sudovda.cpp");
+  const auto sudo_ensure_pos = sudo_source.find("VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display()");
+  ASSERT_NE(sudo_ensure_pos, std::string::npos);
+  const auto sudo_ensure_body = sudo_source.substr(sudo_ensure_pos, sudo_source.find("void VDISPLAY_SUDOVDA::cleanup_ensure_display", sudo_ensure_pos) - sudo_ensure_pos);
+  const auto sudo_preference_pos = sudo_ensure_body.find("apply_configured_render_adapter_preference();");
+  const auto sudo_create_pos = sudo_ensure_body.find("createVirtualDisplay(");
+  ASSERT_NE(sudo_preference_pos, std::string::npos);
+  ASSERT_NE(sudo_create_pos, std::string::npos);
+  EXPECT_LT(sudo_preference_pos, sudo_create_pos);
+  expect_contains(sudo_source, "if (!config::video.adapter_name.empty())");
+  expect_contains(sudo_source, "setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))");
+}
+
 TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
   const auto rtsp_source = read_source("src/nvhttp.cpp");
   expect_contains(

@@ -3831,6 +3831,18 @@ namespace VDISPLAY_SUNSHINE {
     return set_render_adapter_luid(best_luid, best_name, best_dedicated, best_shared);
   }
 
+  void apply_configured_render_adapter_preference() {
+    if (!config::video.adapter_name.empty()) {
+      if (!setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))) {
+        BOOST_LOG(warning) << "Sunshine virtual display could not use configured render adapter '"
+                           << config::video.adapter_name << "' for display ensure.";
+      }
+      return;
+    }
+
+    (void) setRenderAdapterWithMostDedicatedMemory();
+  }
+
   bool wait_for_virtual_display_ready(
     const std::optional<std::wstring> &display_name,
     std::optional<std::string> &device_id,
@@ -5122,6 +5134,8 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
     result.success = true;
     return result;
   }
+
+  apply_configured_render_adapter_preference();
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
   auto display_info = createVirtualDisplay(
