@@ -293,6 +293,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "Parancs előkészítések",
     "global_prep_cmd_desc": "Konfigurálj egy listát parancsokról, amiket bármely alkalmazás futtatása előtt vagy után végre kell hajtani. Ha bármelyik megadott előkészítő parancs meghiúsul, az alkalmazásindítási folyamat megszakad.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "HEVC támogatás",
     "hevc_mode_0": "A Sunshine a kódoló képességek alapján hirdeti a HEVC támogatást (ajánlott)",
     "hevc_mode_1": "A Sunshine nem hirdeti a HEVC támogatást",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

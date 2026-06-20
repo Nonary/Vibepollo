@@ -286,6 +286,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "Komut Hazırlıkları",
     "global_prep_cmd_desc": "Herhangi bir uygulamayı çalıştırmadan önce veya sonra yürütülecek komutların bir listesini yapılandırın. Belirtilen hazırlık komutlarından herhangi biri başarısız olursa, uygulama başlatma işlemi iptal edilir.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "HEVC Desteği",
     "hevc_mode_0": "Vibepollo, kodlayıcı yeteneklerine göre HEVC desteğini yayınlayacak (önerilir)",
     "hevc_mode_1": "Vibepollo HEVC desteğinin reklamını yapmayacak",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

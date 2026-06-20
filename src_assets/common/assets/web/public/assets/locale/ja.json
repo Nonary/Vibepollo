@@ -286,6 +286,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "コマンドの準備",
     "global_prep_cmd_desc": "アプリケーションの実行前または実行後に実行されるコマンドのリストを構成します。 指定された preparation コマンドのいずれかに失敗すると、アプリケーションの起動プロセスは中断されます。",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "HEVC サポート",
     "hevc_mode_0": "サンシャインはエンコーダ機能に基づいてHEVCのサポートを宣伝します(推奨)",
     "hevc_mode_1": "サンシャインはHEVCのサポートを宣伝しません",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

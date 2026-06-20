@@ -293,6 +293,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "Chuẩn bị lệnh",
     "global_prep_cmd_desc": "Cấu hình danh sách các lệnh cần thực thi trước hoặc sau khi chạy bất kỳ ứng dụng nào. Nếu bất kỳ lệnh chuẩn bị nào trong danh sách bị thất bại, quá trình khởi chạy ứng dụng sẽ bị hủy bỏ.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "Hỗ trợ HEVC",
     "hevc_mode_0": "Sunshine sẽ quảng cáo hỗ trợ cho HEVC dựa trên khả năng của bộ mã hóa (được khuyến nghị)",
     "hevc_mode_1": "Sunshine sẽ không quảng cáo hỗ trợ cho HEVC.",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

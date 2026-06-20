@@ -286,6 +286,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "명령 준비",
     "global_prep_cmd_desc": "애플리케이션 실행 전 또는 실행 후에 실행할 명령 목록을 구성합니다. 지정된 준비 명령 중 하나라도 실패하면 애플리케이션 실행 프로세스가 중단됩니다.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "HEVC 지원",
     "hevc_mode_0": "Vibepollo은 인코더 기능에 따라 HEVC 지원을 광고합니다(권장).",
     "hevc_mode_1": "Vibepollo은 HEVC 지원을 광고하지 않습니다.",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

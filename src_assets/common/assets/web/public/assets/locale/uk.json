@@ -282,6 +282,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "Підготовчі Команди",
     "global_prep_cmd_desc": "Налаштуйте список команд, які потрібно виконати до або після запуску будь-якої програми. Якщо будь-яка із зазначених команд підготовки не спрацює, процес запуску програми буде перервано.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "Підтримка HEVC",
     "hevc_mode_0": "Vibepollo буде рекламувати підтримку HEVC на основі можливостей кодера (рекомендовано)",
     "hevc_mode_1": "Vibepollo не буде пропонувати підтримку HEVC",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

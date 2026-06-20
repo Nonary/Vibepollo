@@ -282,6 +282,8 @@
     "gamepad_xone": "XOne (Xbox One)",
     "global_prep_cmd": "命令准备工作",
     "global_prep_cmd_desc": "任何应用运行前/后要运行的命令列表。如果任何前置命令失败，应用的启动过程将被中止。",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "HEVC 支持",
     "hevc_mode_0": "Vibepollo 将根据编码器能力通告对 HEVC 的支持（推荐）",
     "hevc_mode_1": "Vibepollo 将不会通告对 HEVC 的支持",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",

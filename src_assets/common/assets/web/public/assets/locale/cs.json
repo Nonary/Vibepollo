@@ -416,6 +416,8 @@
     "crash_dump_dismiss_error": "Oznámení o selhání se nepodařilo zavřít.",
     "global_prep_cmd": "Příprava příkazů",
     "global_prep_cmd_desc": "Konfigurace seznamu příkazů, které se mají spustit před nebo po spuštění libovolné aplikace. Pokud některý ze zadaných přípravných příkazů selže, proces spuštění aplikace se přeruší.",
+    "global_state_cmd": "State Commands",
+    "global_state_cmd_desc": "Configure a list of commands to be executed when any application changes state. These commands run alongside app-specific state commands.",
     "hevc_mode": "Podpora HEVC",
     "hevc_mode_0": "Vibepollo bude propagovat podporu pro HEVC na základě možností enkodéru (doporučeno)",
     "hevc_mode_1": "Vibepollo nebude inzerovat podporu HEVC",
@@ -1595,6 +1597,12 @@
     "login": "Log in"
   },
   "permissions": {
+    "group_action": "Actions",
+    "group_operation": "Operations",
+    "group_input": "Inputs",
+    "list": "List applications",
+    "view": "View stream",
+    "launch": "Launch applications",
     "clipboard_set": "Set clipboard",
     "clipboard_read": "Read clipboard",
     "server_cmd": "Run server commands",
