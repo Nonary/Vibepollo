@@ -12,7 +12,7 @@ artifact-configuration XML so the signing rules are auditable in version control
 ## Why two signing requests ("the whole package, setup and all")
 
 The shipped artifact is a single self-contained `VibepolloSetup.exe`. It is a
-**custom C# bootstrapper** (`packaging/windows/bootstrapper/VibepolloInstaller.cs`)
+**custom C# bootstrapper** (`packaging/windows/bootstrapper/VibeshineInstaller.cs`)
 that embeds the MSI as a **.NET managed manifest resource** named `Payload.msi`
 (`build_bootstrapper.ps1` compiles with `csc /resource:<msi>,Payload.msi`; the
 installer reads it back via `Assembly.GetManifestResourceStream("Payload.msi")`).

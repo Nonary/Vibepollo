@@ -483,6 +483,31 @@ TEST(SunshineVirtualDisplayPackaging, WindowsCiUsesPinnedLibvirtualdisplayReleas
   EXPECT_EQ(workflow.find("gh release list --repo Nonary/libvirtualdisplay"), std::string::npos);
 }
 
+TEST(SunshineVirtualDisplayPackaging, WindowsCiRequiresPinnedTruehdrRuntimeForReleasePackaging) {
+  const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
+  const auto cmake = read_source_file("cmake/packaging/windows.cmake");
+  const auto downloader = read_source_file("scripts/download_truehdr_runtime_release.ps1");
+
+  expect_contains(workflow, "require_truehdr_runtime:");
+  expect_contains(workflow, "default: Nonary/vibeshine_truehdr_runtime");
+  expect_contains(workflow, R"(TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime)");
+  expect_contains(workflow, "Download pinned TrueHDR runtime");
+  expect_contains(workflow, R"(.\scripts\download_truehdr_runtime_release.ps1 @args)");
+  expect_contains(workflow, "\"SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT\" >> $env:GITHUB_ENV");
+  expect_contains(workflow, "-DSUNSHINE_REQUIRE_TRUEHDR_RUNTIME=ON");
+  expect_contains(workflow, "$optionalFirstParty = @('vibeshine_truehdr.dll')");
+  expect_contains(workflow, "required TrueHDR first-party PE missing from MSI");
+
+  expect_contains(cmake, "option(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME");
+  expect_contains(cmake, "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/vibeshine_truehdr.dll");
+  expect_contains(cmake, "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/nvngx_truehdr.dll");
+  expect_contains(cmake, "install(FILES ${SUNSHINE_TRUEHDR_RUNTIME_FILES}");
+
+  expect_contains(downloader, "[string]$Repository = \"Nonary/vibeshine_truehdr_runtime\"");
+  expect_contains(downloader, R"(Join-Path $scriptRoot ".vibeshine-deps\truehdr-runtime")");
+  expect_contains(downloader, "$requiredDlls = @(\"vibeshine_truehdr.dll\", \"nvngx_truehdr.dll\")");
+}
+
 TEST(SunshineVirtualDisplayPackaging, RtspLaunchIgnoresUnmatchedUniqueIdForPerClientDisplayIdentity) {
   const auto nvhttp = read_source_file("src/nvhttp.cpp");
 
