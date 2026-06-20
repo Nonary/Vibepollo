@@ -82,7 +82,9 @@ jobs:
     outputs:
       msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
       symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
+      symbols_artifact_id: ${{ steps.upload-windows-symbols.outputs.artifact-id }}
       unsigned_msi_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
+      versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
     env:
       NODE_VERSION: 22.22.2
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
@@ -580,6 +582,7 @@ jobs:
 
       - name: Upload Windows symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        id: upload-windows-symbols
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-symbols-${{ matrix.name }}
@@ -590,6 +593,7 @@ jobs:
           overwrite: true
 
       - name: Upload Windows version metadata
+        id: upload-windows-version-metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: windows-versioninfo-${{ matrix.name }}
@@ -616,6 +620,8 @@ jobs:
       - build_windows
     if: needs.build_windows.result == 'success'
     runs-on: windows-2022
+    outputs:
+      signed_msi_artifact_id: ${{ steps.upload-signed-msi.outputs.artifact-id }}
     env:
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
       SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
@@ -667,6 +673,7 @@ jobs:
 
       - name: Upload signed MSI
         if: env.SIGNPATH_ENABLED == 'true'
+        id: upload-signed-msi
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: signed-msi-Windows
@@ -706,20 +713,20 @@ jobs:
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: signed-msi-Windows
+          artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
           path: signed-msi
 
       - name: Download unsigned MSI
         if: env.SIGNPATH_ENABLED != 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: unsigned-msi-Windows
+          artifact-ids: ${{ needs.build_windows.outputs.unsigned_msi_artifact_id }}
           path: signed-msi
 
       - name: Download Windows version metadata
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: windows-versioninfo-Windows
+          artifact-ids: ${{ needs.build_windows.outputs.versioninfo_artifact_id }}
           path: build/generated_versioninfo
 
       - name: Package Windows
@@ -772,6 +779,8 @@ jobs:
       - package_windows
     if: needs.package_windows.result == 'success'
     runs-on: windows-2022
+    outputs:
+      signed_installer_artifact_id: ${{ steps.upload-signed-installer.outputs.artifact-id }}
     env:
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
       SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
@@ -823,6 +832,7 @@ jobs:
 
       - name: Upload signed installer
         if: env.SIGNPATH_ENABLED == 'true'
+        id: upload-signed-installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: signed-installer-Windows
@@ -855,28 +865,28 @@ jobs:
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: signed-installer-Windows
+          artifact-ids: ${{ needs.sign_windows_installer.outputs.signed_installer_artifact_id }}
           path: artifacts
 
       - name: Download unsigned installer
         if: env.SIGNPATH_ENABLED != 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: unsigned-installer-Windows
+          artifact-ids: ${{ needs.package_windows.outputs.unsigned_installer_artifact_id }}
           path: artifacts
 
       - name: Download signed MSI
         if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: signed-msi-Windows
+          artifact-ids: ${{ needs.sign_windows_msi.outputs.signed_msi_artifact_id }}
           path: signed-msi
 
       - name: Download symbols package
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
-          name: windows-symbols-Windows
+          artifact-ids: ${{ needs.build_windows.outputs.symbols_artifact_id }}
           path: symbols
 
       - name: Include symbols in build artifact
