@@ -45,6 +45,22 @@ on:
         required: false
         type: boolean
         default: false
+      require_truehdr_runtime:
+        required: false
+        type: boolean
+        default: false
+      truehdr_runtime_release_repo:
+        required: false
+        type: string
+        default: Nonary/vibeshine_truehdr_runtime
+      truehdr_runtime_release_tag:
+        required: false
+        type: string
+        default: v1.0.0
+      truehdr_runtime_asset_name:
+        required: false
+        type: string
+        default: ''
       signpath_organization_id:
         required: false
         type: string
@@ -74,6 +90,8 @@ on:
         required: false
       signpath_api_token:
         required: false
+      truehdr_runtime_token:
+        required: false
 
 jobs:
   build_windows:
@@ -96,6 +114,7 @@ jobs:
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
       VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
       WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
+      TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibepollo-deps\truehdr-runtime
     defaults:
       run:
         shell: msys2 {0}
@@ -352,6 +371,30 @@ jobs:
             -OutDir $env:WEBRTC_ROOT `
             -GitHubToken $env:GH_TOKEN
 
+      - name: Download pinned TrueHDR runtime
+        if: inputs.require_truehdr_runtime
+        shell: pwsh
+        env:
+          TRUEHDR_RUNTIME_TOKEN: ${{ secrets.truehdr_runtime_token || github.token }}
+          TRUEHDR_RUNTIME_RELEASE_REPO: ${{ inputs.truehdr_runtime_release_repo }}
+          TRUEHDR_RUNTIME_RELEASE_TAG: ${{ inputs.truehdr_runtime_release_tag }}
+          TRUEHDR_RUNTIME_ASSET_NAME: ${{ inputs.truehdr_runtime_asset_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $args = @{
+            Repository = $env:TRUEHDR_RUNTIME_RELEASE_REPO
+            Tag = $env:TRUEHDR_RUNTIME_RELEASE_TAG
+            OutDir = $env:TRUEHDR_RUNTIME_ROOT
+            GitHubToken = $env:TRUEHDR_RUNTIME_TOKEN
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:TRUEHDR_RUNTIME_ASSET_NAME)) {
+            $args.AssetName = $env:TRUEHDR_RUNTIME_ASSET_NAME
+          }
+
+          .\scripts\download_truehdr_runtime_release.ps1 @args
+          "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
+
       - name: Build Windows
         shell: msys2 {0}
         env:
@@ -360,6 +403,7 @@ jobs:
           MATRIX_MSYSTEM: ${{ matrix.msystem }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           COMMIT: ${{ inputs.release_commit }}
+          REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
@@ -373,6 +417,14 @@ jobs:
           if [[ -n "${VDD_PREBUILT_PACKAGE_DIR:-}" ]]; then
             vdd_prebuilt_arg=(-DSUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR="$(cygpath -u "${VDD_PREBUILT_PACKAGE_DIR}")")
             echo "Using prebuilt virtual display driver package: ${VDD_PREBUILT_PACKAGE_DIR}"
+          fi
+          truehdr_runtime_arg=()
+          if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
+            truehdr_runtime_arg=(
+              -DSUNSHINE_TRUEHDR_RUNTIME_DIR="$(cygpath -u "${SUNSHINE_TRUEHDR_RUNTIME_DIR}")"
+              -DSUNSHINE_REQUIRE_TRUEHDR_RUNTIME=ON
+            )
+            echo "Using pinned TrueHDR runtime: ${SUNSHINE_TRUEHDR_RUNTIME_DIR}"
           fi
 
           mkdir -p build
@@ -396,7 +448,8 @@ jobs:
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
             -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support" \
-            "${vdd_prebuilt_arg[@]}"
+            "${vdd_prebuilt_arg[@]}" \
+            "${truehdr_runtime_arg[@]}"
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build --target all -j "$(nproc)"
           echo "::remove-matcher owner=gcc::"
@@ -928,6 +981,7 @@ jobs:
         env:
           INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
           MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
+          REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -970,9 +1024,10 @@ jobs:
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
             'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe'
           )
+          $optionalFirstParty = @('vibeshine_truehdr.dll')
           $vendorSkip = @(
             'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
-            'VkLayer_sunshine_hdr.dll','nvngx_truehdr.dll','vibeshine_truehdr.dll','nvngx_vsr.dll'
+            'VkLayer_sunshine_hdr.dll','nvngx_truehdr.dll','nvngx_vsr.dll'
           )
 
           $allPe = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File |
@@ -989,6 +1044,23 @@ jobs:
                 Write-Host "[verify] OK   nested signed: $($f.Name)"
               } else {
                 $failures.Add("nested first-party PE is UNSIGNED: $($f.FullName)")
+              }
+            }
+          }
+
+          foreach ($name in $optionalFirstParty) {
+            $hits = @($allPe | Where-Object { $_.Name -ieq $name })
+            if ($hits.Count -eq 0) {
+              if ($env:REQUIRE_TRUEHDR_RUNTIME -eq 'true') {
+                $failures.Add("required TrueHDR first-party PE missing from MSI: $name")
+              }
+              continue
+            }
+            foreach ($f in $hits) {
+              if (Test-Signed $f.FullName) {
+                Write-Host "[verify] OK   nested signed: $($f.Name)"
+              } else {
+                $failures.Add("nested TrueHDR first-party PE is UNSIGNED: $($f.FullName)")
               }
             }
           }

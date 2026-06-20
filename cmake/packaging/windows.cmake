@@ -17,15 +17,36 @@ if(WEBRTC_RUNTIME_DLL)
     install(FILES "${WEBRTC_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
 endif()
 
-# Optional NVIDIA TrueHDR runtime. Local/release builders must place these files in this
-# directory before packaging. Only the TrueHDR feature DLL is bundled; VSR is not used.
+# Optional NVIDIA TrueHDR runtime. Release builders download a pinned runtime
+# bundle before configure; local builders may place these files in this
+# directory before packaging. Only the TrueHDR feature DLL is bundled; VSR is not
+# used.
+option(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME "Fail Windows packaging when the TrueHDR runtime DLLs are missing." OFF)
 set(SUNSHINE_TRUEHDR_RUNTIME_DIR "${CMAKE_BINARY_DIR}" CACHE PATH "Directory containing vibeshine_truehdr.dll and the NVIDIA NGX TrueHDR runtime DLL")
-install(FILES
+set(SUNSHINE_TRUEHDR_RUNTIME_FILES
         "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/vibeshine_truehdr.dll"
-        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/nvngx_truehdr.dll"
+        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/nvngx_truehdr.dll")
+if(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME)
+    foreach(_truehdr_runtime_file IN LISTS SUNSHINE_TRUEHDR_RUNTIME_FILES)
+        if(NOT EXISTS "${_truehdr_runtime_file}")
+            message(FATAL_ERROR "Required TrueHDR runtime file missing: ${_truehdr_runtime_file}")
+        endif()
+        file(SIZE "${_truehdr_runtime_file}" _truehdr_runtime_file_size)
+        if(_truehdr_runtime_file_size EQUAL 0)
+            message(FATAL_ERROR "Required TrueHDR runtime file is empty (0 bytes): ${_truehdr_runtime_file}")
+        endif()
+    endforeach()
+    unset(_truehdr_runtime_file_size)
+    unset(_truehdr_runtime_file)
+    install(FILES ${SUNSHINE_TRUEHDR_RUNTIME_FILES}
+        DESTINATION "."
+        COMPONENT application)
+else()
+    install(FILES ${SUNSHINE_TRUEHDR_RUNTIME_FILES}
         DESTINATION "."
         COMPONENT application
         OPTIONAL)
+endif()
 
 # ARM64: include minhook-detours DLL (shared library for ARM64)
 if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)

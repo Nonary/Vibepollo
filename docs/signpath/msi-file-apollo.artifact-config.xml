@@ -14,7 +14,7 @@
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
   This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
   SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
-  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll, vibeshine_truehdr.dll)
+  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll)
   whose .cat catalog hashes would be invalidated by re-signing.
 
   NOTE: the path= values are the file's logical path inside the MSI (install
@@ -29,6 +29,7 @@
     <pe-file path="Apollo/uninstall.exe"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/libwebrtc.dll"><authenticode-sign/></pe-file>
     <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/vibeshine_truehdr.dll"><authenticode-sign/></pe-file>
 
     <!-- Apollo/tools\ -->
     <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
@@ -48,7 +49,7 @@
         Apollo/drivers/sunshine/virtualdisplay_probe.exe
         Apollo/drivers/sunshine/nefconc.exe
         Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
-        nvngx_truehdr.dll, vibeshine_truehdr.dll   (optional, not shipped by CI)
+        nvngx_truehdr.dll   (NVIDIA RTX Video SDK runtime)
     -->
 
     <!-- sign the MSI container LAST -->

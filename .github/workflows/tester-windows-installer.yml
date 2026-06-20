@@ -33,9 +33,11 @@ jobs:
       publish_symbols: false
       upload_symbols_artifact: false
       require_signpath_signing: true
+      require_truehdr_runtime: true
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
 
   artifact-link:
     name: Installer artifact link

@@ -210,9 +210,11 @@ jobs:
       symbol_release_draft: true
       symbol_release_prefix: polo
       require_signpath_signing: ${{ needs.release-candidate.outputs.should_release == 'true' }}
+      require_truehdr_runtime: ${{ needs.release-candidate.outputs.should_release == 'true' }}
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
 
   release:
     name: Release
