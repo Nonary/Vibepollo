@@ -172,7 +172,7 @@ namespace confighttp {
     return std::nullopt;
   }
 
-  bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name = false) {
+  bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name) {
     try {
       if (sort_by_name) {
         sort_apps_by_name(file_tree);
