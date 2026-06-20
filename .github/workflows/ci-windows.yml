@@ -481,6 +481,7 @@ jobs:
           SIGNPATH_ORGANIZATION_ID: 1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15
           SIGNPATH_PROJECT_SLUG: Vibepollo
           SIGNPATH_SIGNING_POLICY_SLUG: test-signing
+          SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: msi-file-apollo
         run: |
           mkdir -p artifacts
           cd build
