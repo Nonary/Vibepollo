@@ -2482,7 +2482,7 @@ namespace nvhttp {
           visible_apps.push_back(&app);
         }
 
-        bool enable_legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering;
+        const bool enable_legacy_ordering = true;
         size_t bits = 0;
         if (enable_legacy_ordering && !visible_apps.empty()) {
           bits = zwpad::pad_width_for_count(visible_apps.size());
