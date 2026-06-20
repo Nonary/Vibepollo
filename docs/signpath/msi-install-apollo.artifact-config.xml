@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  REVIEW COPY of the SignPath portal artifact configuration for slug "msi-install-apollo".
+  The portal is the source of truth; editing this file does NOT change signing.
+  See docs/signpath/README.md.
+
+  Slug:    msi-install-apollo
+  Used by: .github/workflows/ci-windows.yml (MSI signing request),
+           scripts/signpath_sign.ps1 (.msi branch)
+  Purpose: deep-sign every FIRST-PARTY PE inside the MSI, then sign the MSI
+           container itself. Order matters: nested PEs first, the
+           <authenticode-sign/> directly under <msi-file> signs the container LAST.
+
+  STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
+  This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
+  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
+  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll, vibeshine_truehdr.dll)
+  whose .cat catalog hashes would be invalidated by re-signing.
+
+  NOTE: the path= values are the file's logical path inside the MSI (install
+  layout). The WiX package installs under the Apollo directory, so top-level
+  app files use the "Apollo/" prefix. Confirm against a built MSI's File table
+  if an entry reports 0 matches.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <msi-file>
+    <!-- install root ("Apollo/") -->
+    <pe-file path="Apollo/sunshine.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/uninstall.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/libwebrtc.dll"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/zlib1.dll"><authenticode-sign/></pe-file>
+
+    <!-- Apollo/tools\ -->
+    <pe-file path="Apollo/tools/sunshinesvc.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/dxgi-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/audio-info.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/playnite-launcher.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/sunshine_wgc_capture.exe"><authenticode-sign/></pe-file>
+    <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
+
+    <!--
+      DO NOT add the vendor / catalog-bound files below: they are origin-signed
+      upstream and re-signing breaks their .cat catalog hashes (driver install
+      fails). Keep them out of this configuration:
+        Apollo/drivers/sudovda/SudoVDA.dll
+        Apollo/drivers/sudovda/nefconc.exe
+        Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll  (+ .cat)
+        Apollo/drivers/sunshine/virtualdisplay_probe.exe
+        Apollo/drivers/sunshine/nefconc.exe
+        Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
+        nvngx_truehdr.dll, vibeshine_truehdr.dll   (optional, not shipped by CI)
+    -->
+
+    <!-- sign the MSI container LAST -->
+    <authenticode-sign/>
+  </msi-file>
+</artifact-configuration>
+
+<!--
+  STRATEGY 2 (alternative): scoped wildcards. Only use after confirming no
+  catalog-bound driver DLLs live under the matched roots. Scope includes to
+  "Apollo/" and "Apollo/tools" so the drivers\ subtree is NOT swept in.
+  min-matches/max-matches
+  default to 1, so always set them or a wildcard matching any other count fails
+  the whole request.
+
+  <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+    <msi-file>
+      <pe-file-set>
+        <include path="Apollo/*.exe"       min-matches="0" max-matches="unbounded"/>
+        <include path="Apollo/*.dll"       min-matches="0" max-matches="unbounded"/>
+        <include path="Apollo/tools/*.exe" min-matches="0" max-matches="unbounded"/>
+        <include path="Apollo/tools/*.dll" min-matches="0" max-matches="unbounded"/>
+        <for-each><authenticode-sign/></for-each>
+      </pe-file-set>
+      <authenticode-sign/>
+    </msi-file>
+  </artifact-configuration>
+-->

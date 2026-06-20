@@ -14,7 +14,7 @@ param(
     [string]$SignPathProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
     [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
     [string]$SignPathPeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
-    [string]$SignPathMsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG })
+    [string]$SignPathMsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-install-apollo" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG })
 )
 
 $ErrorActionPreference = "Stop"

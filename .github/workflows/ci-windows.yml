@@ -67,8 +67,8 @@ on:
         required: false
         type: string
         # Deep-signs first-party PEs inside the MSI, then the MSI container.
-        # See docs/signpath/msi-file.artifact-config.xml.
-        default: msi-file
+        # See docs/signpath/msi-install-apollo.artifact-config.xml.
+        default: msi-install-apollo
     secrets:
       symbol_token:
         required: false
@@ -79,6 +79,10 @@ jobs:
   build_windows:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    outputs:
+      msi_name: ${{ steps.package-windows-msi.outputs.msi_name }}
+      symbol_pack_name: ${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
+      unsigned_msi_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
     env:
       NODE_VERSION: 22.22.2
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
@@ -395,7 +399,7 @@ jobs:
           echo "::remove-matcher owner=gcc::"
 
       - name: Install cv2pdb
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         shell: pwsh
         env:
           CV2PDB_VERSION: "0.54"
@@ -414,7 +418,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $cv2pdbExe.FullName -Parent)
 
       - name: Generate Windows PDB
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -442,7 +446,8 @@ jobs:
           }
 
       - name: Package Windows Symbols
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        id: package-windows-symbols
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
@@ -458,6 +463,7 @@ jobs:
           $symbolsRoot = Join-Path $PWD 'symbols'
           $artifactName = "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
           $artifactPath = Join-Path $symbolsRoot $artifactName
+          "symbol_pack_name=$artifactName" >> $env:GITHUB_OUTPUT
 
           New-Item -ItemType Directory -Force -Path $symbolsRoot | Out-Null
 
@@ -562,16 +568,64 @@ jobs:
           echo "msi_name=${msi_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload unsigned MSI for SignPath
-        if: env.SIGNPATH_ENABLED == 'true'
         id: upload-unsigned-msi
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: signpath-unsigned-msi-${{ matrix.name }}
+          name: unsigned-msi-${{ matrix.name }}
           path: unsigned-signpath-msi/${{ steps.package-windows-msi.outputs.msi_name }}
           if-no-files-found: error
           retention-days: 1
           archive: false
+          overwrite: true
 
+      - name: Upload Windows symbols package
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-symbols-${{ matrix.name }}
+          path: symbols/${{ steps.package-windows-symbols.outputs.symbol_pack_name }}
+          if-no-files-found: error
+          retention-days: 7
+          archive: false
+          overwrite: true
+
+      - name: Upload Windows version metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: windows-versioninfo-${{ matrix.name }}
+          path: build/generated_versioninfo/windows_versioninfo_generated.h
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+          overwrite: true
+
+      - name: Debug wix
+        if: always() && steps.package-windows-msi.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+          } else {
+            Write-Host "WiX log was not found: $log"
+          }
+
+  sign_windows_msi:
+    name: Sign Windows MSI
+    needs:
+      - build_windows
+    if: needs.build_windows.result == 'success'
+    runs-on: windows-2022
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
+      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
+      SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_msi_artifact_configuration_slug }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
       - name: Submit SignPath MSI signing request
         if: env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd  # v2
@@ -581,7 +635,7 @@ jobs:
           project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ env.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
+          github-artifact-id: ${{ needs.build_windows.outputs.unsigned_msi_artifact_id }}
           github-token: ${{ github.token }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 1800
@@ -592,7 +646,7 @@ jobs:
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         env:
-          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -611,69 +665,123 @@ jobs:
           New-Item -ItemType Directory -Path $msiDir -Force | Out-Null
           Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $msiDir $env:MSI_NAME) -Force
 
-      - name: Stage unsigned Windows MSI
+      - name: Upload signed MSI
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signed-msi-Windows
+          path: signed-msi/${{ needs.build_windows.outputs.msi_name }}
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+          overwrite: true
+
+      - name: SignPath disabled
         if: env.SIGNPATH_ENABLED != 'true'
-        shell: pwsh
-        env:
-          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
-        run: |
-          $ErrorActionPreference = 'Stop'
+        run: Write-Host "SignPath token was not provided; MSI will remain unsigned."
 
-          $unsignedMsi = Join-Path (Join-Path $PWD 'unsigned-signpath-msi') $env:MSI_NAME
-          if (-not (Test-Path -LiteralPath $unsignedMsi)) {
-            throw "Unsigned MSI was not staged: $unsignedMsi"
-          }
+  package_windows:
+    name: Package Windows
+    needs:
+      - build_windows
+      - sign_windows_msi
+    if: needs.build_windows.result == 'success' && needs.sign_windows_msi.result == 'success'
+    runs-on: windows-2022
+    outputs:
+      installer_name: ${{ steps.package-windows.outputs.installer_name }}
+      unsigned_installer_artifact_id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 0
 
-          $msiDir = Join-Path $PWD 'signed-msi'
-          New-Item -ItemType Directory -Path $msiDir -Force | Out-Null
-          Copy-Item -LiteralPath $unsignedMsi -Destination (Join-Path $msiDir $env:MSI_NAME) -Force
+      - name: Download signed MSI
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: signed-msi-Windows
+          path: signed-msi
+
+      - name: Download unsigned MSI
+        if: env.SIGNPATH_ENABLED != 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: unsigned-msi-Windows
+          path: signed-msi
+
+      - name: Download Windows version metadata
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: windows-versioninfo-Windows
+          path: build/generated_versioninfo
 
       - name: Package Windows
         id: package-windows
-        shell: msys2 {0}
+        shell: pwsh
         env:
-          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
           SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
         run: |
-          mkdir -p unsigned-signpath
+          $ErrorActionPreference = 'Stop'
 
-          set -euo pipefail
+          $installerName = "$($env:SYMBOL_PRODUCT_NAME)Setup.exe"
+          $signedMsi = Join-Path (Join-Path $PWD 'signed-msi') $env:MSI_NAME
+          if (-not (Test-Path -LiteralPath $signedMsi)) {
+            throw "MSI artifact was not downloaded: $signedMsi"
+          }
 
-          installer_name="${SYMBOL_PRODUCT_NAME}Setup.exe"
-          signed_msi="../signed-msi/${MSI_NAME}"
-
-          cd build
-          powershell -NoProfile -ExecutionPolicy Bypass \
-            -File "$(cygpath -w "../packaging/windows/bootstrapper/build_bootstrapper.ps1")" \
-            -BuildDir "$(cygpath -w ".")" \
-            -MsiPath "$(cygpath -w "${signed_msi}")" \
-            -OutputName "${installer_name}" \
+          New-Item -ItemType Directory -Path (Join-Path $PWD 'build') -Force | Out-Null
+          & (Join-Path $PWD 'packaging/windows/bootstrapper/build_bootstrapper.ps1') `
+            -BuildDir (Join-Path $PWD 'build') `
+            -MsiPath $signedMsi `
+            -OutputName $installerName `
             -DisableSignPath
 
-          installer_exe="./cpack_artifacts/${installer_name}"
-          if [[ ! -f "${installer_exe}" ]]; then
-            echo "Expected setup executable was not produced: ${installer_exe}" >&2
-            find ./cpack_artifacts -maxdepth 2 -type f -print >&2 || true
-            exit 1
-          fi
+          $installerExe = Join-Path (Join-Path $PWD 'build/cpack_artifacts') $installerName
+          if (-not (Test-Path -LiteralPath $installerExe)) {
+            Get-ChildItem -Path (Join-Path $PWD 'build/cpack_artifacts') -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            throw "Expected setup executable was not produced: $installerExe"
+          }
 
-          # Keep generated package names intact. In particular, do not rename
-          # VibepolloSetup.exe; downstream release/install
-          # docs expect those names.
-          cp "${installer_exe}" "../unsigned-signpath/${installer_name}"
-          echo "installer_name=${installer_name}" >> "${GITHUB_OUTPUT}"
+          $unsignedDir = Join-Path $PWD 'unsigned-signpath'
+          New-Item -ItemType Directory -Path $unsignedDir -Force | Out-Null
+          Copy-Item -LiteralPath $installerExe -Destination (Join-Path $unsignedDir $installerName) -Force
+          "installer_name=$installerName" >> $env:GITHUB_OUTPUT
 
-      - name: Upload unsigned installer for SignPath
-        if: env.SIGNPATH_ENABLED == 'true'
+      - name: Upload unsigned installer
         id: upload-unsigned-installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: signpath-unsigned-${{ matrix.name }}
+          name: unsigned-installer-Windows
           path: unsigned-signpath/${{ steps.package-windows.outputs.installer_name }}
           if-no-files-found: error
           retention-days: 1
           archive: false
+          overwrite: true
 
+  sign_windows_installer:
+    name: Sign Windows installer
+    needs:
+      - package_windows
+    if: needs.package_windows.result == 'success'
+    runs-on: windows-2022
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
+      SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
+      SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
+      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
       - name: Submit SignPath installer signing request
         if: env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd  # v2
@@ -683,7 +791,7 @@ jobs:
           project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          github-artifact-id: ${{ needs.package_windows.outputs.unsigned_installer_artifact_id }}
           github-token: ${{ github.token }}
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 1800
@@ -694,7 +802,7 @@ jobs:
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         env:
-          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
+          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
@@ -709,23 +817,92 @@ jobs:
             throw "Expected exactly one signed installer named '$($env:INSTALLER_NAME)', found $($matches.Count)."
           }
 
-          $artifactDir = Join-Path $PWD 'artifacts'
+          $artifactDir = Join-Path $PWD 'signed-installer'
           New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
           Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $artifactDir $env:INSTALLER_NAME) -Force
+
+      - name: Upload signed installer
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: signed-installer-Windows
+          path: signed-installer/${{ needs.package_windows.outputs.installer_name }}
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+          overwrite: true
+
+      - name: SignPath disabled
+        if: env.SIGNPATH_ENABLED != 'true'
+        run: Write-Host "SignPath token was not provided; installer will remain unsigned."
+
+  finalize_windows:
+    name: Finalize Windows artifacts
+    needs:
+      - build_windows
+      - sign_windows_msi
+      - package_windows
+      - sign_windows_installer
+    if: needs.build_windows.result == 'success' && needs.sign_windows_msi.result == 'success' && needs.package_windows.result == 'success' && needs.sign_windows_installer.result == 'success'
+    runs-on: windows-2022
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download signed installer
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: signed-installer-Windows
+          path: artifacts
+
+      - name: Download unsigned installer
+        if: env.SIGNPATH_ENABLED != 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: unsigned-installer-Windows
+          path: artifacts
+
+      - name: Download signed MSI
+        if: env.SIGNPATH_ENABLED == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: signed-msi-Windows
+          path: signed-msi
+
+      - name: Download symbols package
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: windows-symbols-Windows
+          path: symbols
+
+      - name: Include symbols in build artifact
+        if: inputs.upload_symbols_artifact
+        shell: pwsh
+        env:
+          SYMBOL_PACK_NAME: ${{ needs.build_windows.outputs.symbol_pack_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $symbolPack = Join-Path (Join-Path $PWD 'symbols') $env:SYMBOL_PACK_NAME
+          if (-not (Test-Path -LiteralPath $symbolPack)) {
+            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+            throw "Private symbol pack not found: $symbolPack"
+          }
+          New-Item -ItemType Directory -Path (Join-Path $PWD 'artifacts') -Force | Out-Null
+          Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
 
       - name: Verify SignPath signatures
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         env:
-          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
-          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+          INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
+          MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Proves the SignPath portal config actually signed the whole package.
-          # "Signed" here means a signature is present (SignerCertificate set); we
-          # do NOT assert a trusted chain because test-signing policies use
-          # certificates that won't chain to a trusted root on the runner.
           function Test-Signed([string]$Path) {
             $sig = Get-AuthenticodeSignature -LiteralPath $Path
             return ($sig.Status -ne 'NotSigned' -and $null -ne $sig.SignerCertificate)
@@ -733,7 +910,6 @@ jobs:
 
           $failures = New-Object System.Collections.Generic.List[string]
 
-          # 1) Outer setup EXE (the shipped artifact)
           $installer = Join-Path (Join-Path $PWD 'artifacts') $env:INSTALLER_NAME
           if (-not (Test-Path -LiteralPath $installer)) { throw "Signed installer not found: $installer" }
           if (Test-Signed $installer) {
@@ -743,7 +919,6 @@ jobs:
             $failures.Add("setup EXE is UNSIGNED: $($env:INSTALLER_NAME)")
           }
 
-          # 2) The deep-signed MSI container (embedded into the setup EXE)
           $signedMsi = Join-Path (Join-Path $PWD 'signed-msi') $env:MSI_NAME
           if (-not (Test-Path -LiteralPath $signedMsi)) { throw "Signed MSI not found: $signedMsi" }
           if (Test-Signed $signedMsi) {
@@ -752,8 +927,6 @@ jobs:
             $failures.Add("MSI container is UNSIGNED: $($env:MSI_NAME)")
           }
 
-          # 3) Nested first-party PEs inside the MSI (the G1 risk: these are only
-          #    signed if the 'msi-file' artifact configuration deep-signs them).
           $extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("msi-verify-" + [System.Guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
           $log = Join-Path $extractDir 'admin-extract.log'
@@ -769,8 +942,6 @@ jobs:
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
             'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe'
           )
-          # Vendor / catalog-bound files: origin-signed upstream; we must NOT
-          # re-sign them (breaks .cat hashes). Reported only, never failed on.
           $vendorSkip = @(
             'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
             'VkLayer_sunshine_hdr.dll','nvngx_truehdr.dll','vibeshine_truehdr.dll','nvngx_vsr.dll'
@@ -806,67 +977,18 @@ jobs:
           if ($failures.Count -gt 0) {
             Write-Host "::error::SignPath nested-signing verification failed ($($failures.Count) issue(s))."
             $failures | ForEach-Object { Write-Host "::error:: - $_" }
-            throw "SignPath verification failed. Confirm the 'msi-file' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
+            throw "SignPath verification failed. Confirm the 'msi-install-apollo' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
           }
 
           Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."
 
-      - name: Stage unsigned Windows installer
-        if: env.SIGNPATH_ENABLED != 'true'
-        shell: pwsh
-        env:
-          INSTALLER_NAME: ${{ steps.package-windows.outputs.installer_name }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $unsignedInstaller = Join-Path (Join-Path $PWD 'unsigned-signpath') $env:INSTALLER_NAME
-          if (-not (Test-Path -LiteralPath $unsignedInstaller)) {
-            throw "Unsigned installer was not staged: $unsignedInstaller"
-          }
-
-          $artifactDir = Join-Path $PWD 'artifacts'
-          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
-          Copy-Item -LiteralPath $unsignedInstaller -Destination (Join-Path $artifactDir $env:INSTALLER_NAME) -Force
-
-      - name: Include symbols in build artifact
-        if: inputs.upload_symbols_artifact
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          SYMBOL_PRODUCT_NAME: ${{ inputs.symbol_product_name }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $releaseVersion = $env:RELEASE_VERSION
-          if ($releaseVersion -match '^v(.+)$') {
-            $releaseVersion = $Matches[1]
-          }
-
-          $symbolPack = Join-Path (Join-Path $PWD 'symbols') "$($env:SYMBOL_PRODUCT_NAME)Symbols-$releaseVersion-windows-x64.7z"
-          if (-not (Test-Path -LiteralPath $symbolPack)) {
-            Get-ChildItem -Path symbols -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-            throw "Private symbol pack not found: $symbolPack"
-          }
-
-          Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
-
-      - name: Debug wix
-        if: always() && (steps.package-windows-msi.outcome == 'failure' || steps.package-windows.outcome == 'failure')
-        shell: pwsh
-        run: |
-          $log = Join-Path $PWD 'build\cpack_artifacts\_CPack_Packages\win64\WIX\wix.log'
-          if (Test-Path -LiteralPath $log) {
-            Get-Content -LiteralPath $log
-          } else {
-            Write-Host "WiX log was not found: $log"
-          }
-
       - name: Upload Artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: build-${{ matrix.name }}
+          name: build-Windows
           path: artifacts/
           if-no-files-found: error
+          overwrite: true
 
       - name: Publish private symbols release
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols

@@ -11,7 +11,7 @@ param(
     [string]$SigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
     [string]$ArtifactConfigurationSlug = "",
     [string]$PeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
-    [string]$MsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }),
+    [string]$MsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-install-apollo" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }),
     [string]$Description = "",
     [int]$WaitForCompletionTimeoutInSeconds = 1800,
     [switch]$InstallModuleIfMissing,
