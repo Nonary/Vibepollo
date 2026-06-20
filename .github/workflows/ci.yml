@@ -44,7 +44,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -309,7 +309,7 @@ jobs:
         env:
           BASE_VERSION: ${{ steps.release-metadata.outputs.base_version }}
           CHANNEL: ${{ steps.release-metadata.outputs.channel }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           MAKE_LATEST: ${{ steps.release-metadata.outputs.make_latest }}
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
@@ -421,7 +421,7 @@ jobs:
 
       - name: Close fixed issues for release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.create-release.outputs.release_id }}
           RELEASE_NAME: ${{ steps.create-release.outputs.release_name }}
           RELEASE_URL: ${{ steps.create-release.outputs.release_url }}
