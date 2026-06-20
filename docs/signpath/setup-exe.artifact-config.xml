@@ -10,7 +10,7 @@
   Purpose: Authenticode-sign the outer VibepolloSetup.exe.
 
   The setup EXE embeds the MSI as a .NET managed resource (Payload.msi). That
-  MSI is ALREADY deep-signed by the "msi-install-apollo" request before it is embedded,
+  MSI is ALREADY deep-signed by the "msi-file-apollo" request before it is embedded,
   and SignPath cannot (and must not) re-open a managed resource. So this config
   only signs the outer PE.
 -->

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  REVIEW COPY of the SignPath portal artifact configuration for slug "msi-install-apollo".
+  REVIEW COPY of the SignPath portal artifact configuration for slug "msi-file-apollo".
   The portal is the source of truth; editing this file does NOT change signing.
   See docs/signpath/README.md.
 
-  Slug:    msi-install-apollo
+  Slug:    msi-file-apollo
   Used by: .github/workflows/ci-windows.yml (MSI signing request),
            scripts/signpath_sign.ps1 (.msi branch)
   Purpose: deep-sign every FIRST-PARTY PE inside the MSI, then sign the MSI

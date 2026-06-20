@@ -25,7 +25,7 @@ MSI or the binaries inside it.
 
 So the whole package is signed with **two origin-verified requests**, in order:
 
-1. **Deep-sign the MSI** (slug `msi-install-apollo`): signs every first-party PE *inside*
+1. **Deep-sign the MSI** (slug `msi-file-apollo`): signs every first-party PE *inside*
    the MSI (`Apollo\sunshine.exe`, `Apollo\uninstall.exe`, the
    `Apollo\tools\` executables, bundled DLLs), then signs the MSI container
    itself.
@@ -45,7 +45,7 @@ UX. That is intentionally out of scope.
 
 | Slug | File | Used by | Purpose |
 | --- | --- | --- | --- |
-| `msi-install-apollo` | [`msi-install-apollo.artifact-config.xml`](msi-install-apollo.artifact-config.xml) | `ci-windows.yml` (MSI request), `scripts/signpath_sign.ps1` | Deep-sign nested first-party PEs, then the MSI |
+| `msi-file-apollo` | [`msi-file-apollo.artifact-config.xml`](msi-file-apollo.artifact-config.xml) | `ci-windows.yml` (MSI request), `scripts/signpath_sign.ps1` | Deep-sign nested first-party PEs, then the MSI |
 | `setup-exe` | [`setup-exe.artifact-config.xml`](setup-exe.artifact-config.xml) | `ci-windows.yml` (setup-EXE request) | Authenticode-sign the outer `VibepolloSetup.exe` |
 
 Slugs and project/org/policy are passed as reusable-workflow inputs in
@@ -57,7 +57,7 @@ Slugs and project/org/policy are passed as reusable-workflow inputs in
 Several files in the MSI are already signed by their upstream vendors and are
 bound to a Windows **catalog** (`.cat`). Re-Authenticode-signing a driver DLL
 invalidates the catalog hash and **breaks driver installation**. These must be
-**excluded** from the `msi-install-apollo` deep-sign:
+**excluded** from the `msi-file-apollo` deep-sign:
 
 - `Apollo\drivers\sudovda\SudoVDA.dll`, `Apollo\drivers\sudovda\nefconc.exe` (CN=sudovda / Nefarius)
 - `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (+ `.cat`),
@@ -73,7 +73,7 @@ first-party files explicitly.
 ## First-party PEs that MUST be signed
 
 These are produced by this project and ship unsigned into the MSI (they are
-stripped in CI and never signed on the runner). The `msi-install-apollo` config is the
+stripped in CI and never signed on the runner). The `msi-file-apollo` config is the
 **only** thing that signs them:
 
 | File | Install location in MSI |
@@ -93,13 +93,13 @@ stripped in CI and never signed on the runner). The `msi-install-apollo` config 
 > directory layout. Confirm the exact in-MSI paths against a built MSI's File
 > table if a `<pe-file>` entry reports zero matches.
 
-## Two ways to write the `msi-install-apollo` config
+## Two ways to write the `msi-file-apollo` config
 
 - **Strategy 1 — explicit enumeration (recommended).** List each first-party PE
   with an explicit `<pe-file>`. Never touches vendor/catalog files. Must be kept
   in sync when a new shipping binary is added — the CI verification gate (below)
   is the backstop that catches drift. This is what
-  [`msi-install-apollo.artifact-config.xml`](msi-install-apollo.artifact-config.xml) ships.
+  [`msi-file-apollo.artifact-config.xml`](msi-file-apollo.artifact-config.xml) ships.
 - **Strategy 2 — scoped wildcards.** Use `<pe-file-set>` with `*`/`**` includes
   scoped to `Apollo\` and `Apollo\tools\` so the `drivers\` subtree is never swept in. Set
   `min-matches="0" max-matches="unbounded"` (the defaults are `1`, so a wildcard
@@ -117,13 +117,13 @@ that fails the build if any first-party PE is unsigned. It:
 3. administratively extracts the MSI and confirms every first-party PE carries a
    signature, while **skipping** the vendor/catalog files above.
 
-This catches a portal misconfiguration (e.g. a container-only `msi-install-apollo` config,
+This catches a portal misconfiguration (e.g. a container-only `msi-file-apollo` config,
 or a newly added binary missing from Strategy-1 enumeration) before release.
 
 ## Portal setup checklist
 
-1. Create/confirm the `msi-install-apollo` artifact configuration matches
-   `msi-install-apollo.artifact-config.xml` (deep-signs first-party PEs, excludes vendors).
+1. Create/confirm the `msi-file-apollo` artifact configuration matches
+   `msi-file-apollo.artifact-config.xml` (deep-signs first-party PEs, excludes vendors).
 2. Create/confirm the `setup-exe` artifact configuration matches
    `setup-exe.artifact-config.xml` (PE Authenticode).
 3. Confirm the GitHub trusted-build system is linked to project `Vibepollo`.

@@ -67,8 +67,8 @@ on:
         required: false
         type: string
         # Deep-signs first-party PEs inside the MSI, then the MSI container.
-        # See docs/signpath/msi-install-apollo.artifact-config.xml.
-        default: msi-install-apollo
+        # See docs/signpath/msi-file-apollo.artifact-config.xml.
+        default: msi-file-apollo
     secrets:
       symbol_token:
         required: false
@@ -987,7 +987,7 @@ jobs:
           if ($failures.Count -gt 0) {
             Write-Host "::error::SignPath nested-signing verification failed ($($failures.Count) issue(s))."
             $failures | ForEach-Object { Write-Host "::error:: - $_" }
-            throw "SignPath verification failed. Confirm the 'msi-install-apollo' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
+            throw "SignPath verification failed. Confirm the 'msi-file-apollo' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
           }
 
           Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."
