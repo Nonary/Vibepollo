@@ -114,7 +114,7 @@ jobs:
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ inputs.signpath_artifact_configuration_slug }}
       VIBEPOLLO_DEPS_DIR: ${{ github.workspace }}\.vibepollo-deps
       WEBRTC_ROOT: ${{ github.workspace }}\.vibepollo-deps\libwebrtc\out
-      TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibepollo-deps\truehdr-runtime
+      TRUEHDR_RUNTIME_ROOT: ${{ github.workspace }}\.vibeshine-deps\truehdr-runtime
     defaults:
       run:
         shell: msys2 {0}
@@ -312,7 +312,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.4.0
+          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.4.3
         run: |
           $ErrorActionPreference = 'Stop'
 

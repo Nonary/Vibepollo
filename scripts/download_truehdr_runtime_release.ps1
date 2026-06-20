@@ -41,7 +41,7 @@ if (-not $OutDir) {
   $OutDir = if ($env:SUNSHINE_TRUEHDR_RUNTIME_DIR) {
     $env:SUNSHINE_TRUEHDR_RUNTIME_DIR
   } else {
-    Join-Path $scriptRoot ".vibepollo-deps\truehdr-runtime"
+    Join-Path $scriptRoot ".vibeshine-deps\truehdr-runtime"
   }
 }
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
