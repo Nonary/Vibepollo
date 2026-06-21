@@ -102,12 +102,28 @@ namespace platf::dxgi {
   }
 
   void nv_truehdr_t::release() {
-    std::scoped_lock lock {g_truehdr_mutex};
-    if (initialized && shim_handle && g_destroy) {
-      g_destroy(shim_handle);
+    // Snapshot+clear the handle under the lock, then call the shim destroy WITHOUT g_truehdr_mutex
+    // held. VBSTrueHDR_Destroy releases the encoder's D3D11 device, and on a virtual display whose
+    // mode is mid-change (alt-tab) or that is being removed (disconnect), that device's
+    // DestroyDriverInstance -> D3DKMTDestroyHwQueue can block in the kernel indefinitely. Holding
+    // the process-global mutex across that hang froze every other client's init()/convert(). This
+    // is still only ever reached from ~nv_truehdr_t on the single owning thread (nv_truehdr_t is a
+    // copy-deleted unique_ptr member), so the snapshot cannot race a concurrent release() of the
+    // same object, and the NGX same-thread shutdown constraint (nv_truehdr.h) is preserved.
+    void *local_handle = nullptr;
+    destroy_fn local_destroy = nullptr;
+    {
+      std::scoped_lock lock {g_truehdr_mutex};
+      if (initialized && shim_handle && g_destroy) {
+        local_handle = shim_handle;
+        local_destroy = g_destroy;
+      }
+      shim_handle = nullptr;
+      initialized = false;
     }
-    shim_handle = nullptr;
-    initialized = false;
+    if (local_handle && local_destroy) {
+      local_destroy(local_handle);
+    }
   }
 
 }  // namespace platf::dxgi

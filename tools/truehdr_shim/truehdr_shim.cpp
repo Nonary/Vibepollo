@@ -60,7 +60,14 @@ namespace {
     return true;
   }
 
-  void release_ngx_runtime_locked(ID3D11Device *device) {
+  // Decrements the runtime ref for `device`. When no tracked device has active refs, shuts down the
+  // NGX runtime for every tracked device -- still serialized under g_ngx_mutex so NGX Init/Shutdown1
+  // can never race -- but DEFERS the D3D11 device Release()es into `deferred_releases`. Releasing a
+  // device whose virtual display is mid-mode-change (alt-tab) or mid-removal wedges in the kernel
+  // (final Release -> DestroyDriverInstance -> D3DKMTDestroyHwQueue); holding g_ngx_mutex across that
+  // hang froze every other client's Create/Convert and permanently poisoned the lock. The caller
+  // performs these Release()es after dropping the lock.
+  void release_ngx_runtime_locked(ID3D11Device *device, std::vector<ID3D11Device *> &deferred_releases) {
     auto it = std::find_if(g_ngx_devices.begin(), g_ngx_devices.end(), [&](const auto &entry) {
       return entry.device == device;
     });
@@ -77,7 +84,7 @@ namespace {
     for (auto &entry : g_ngx_devices) {
       if (entry.device) {
         NVSDK_NGX_D3D11_Shutdown1(entry.device);
-        entry.device->Release();
+        deferred_releases.push_back(entry.device);  // Release()d by the caller after g_ngx_mutex drops
       }
     }
     g_ngx_devices.clear();
@@ -92,8 +99,20 @@ namespace {
       if (!acquire_ngx_runtime_locked(device)) {
         return false;
       }
+      // init runs on a freshly created, healthy device, so a failure-path device Release here cannot
+      // wedge; drain the deferred releases inline (still under g_ngx_mutex) rather than after the lock.
+      std::vector<ID3D11Device *> deferred;
+      auto drain = [&deferred]() {
+        for (auto *d : deferred) {
+          if (d) {
+            d->Release();
+          }
+        }
+        deferred.clear();
+      };
       if (NVSDK_NGX_FAILED(NVSDK_NGX_D3D11_GetCapabilityParameters(&params)) || !params) {
-        release_ngx_runtime_locked(device);
+        release_ngx_runtime_locked(device, deferred);
+        drain();
         return false;
       }
       int available = 0;
@@ -101,7 +120,8 @@ namespace {
       if (!available) {
         NVSDK_NGX_D3D11_DestroyParameters(params);
         params = nullptr;
-        release_ngx_runtime_locked(device);
+        release_ngx_runtime_locked(device, deferred);
+        drain();
         return false;
       }
 
@@ -119,7 +139,8 @@ namespace {
         multithread->Leave();
       }
       if (NVSDK_NGX_FAILED(r)) {
-        release_locked();
+        release_locked(deferred);
+        drain();
         return false;
       }
       initialized = true;
@@ -163,7 +184,12 @@ namespace {
       return NVSDK_NGX_FAILED(r) ? nullptr : output;
     }
 
-    void release_locked() {
+    // Releases everything EXCEPT the final D3D11 device Release()es, which are appended to
+    // `deferred_releases` for the caller to perform after dropping g_ngx_mutex. The final device
+    // Release is the call that wedges in the kernel on a mid-mode-change/removing virtual display,
+    // and must not run while holding the process-global lock (it would freeze all other clients).
+    // NGX ReleaseFeature/DestroyParameters/Shutdown1 stay under the lock so Init/Shutdown1 never race.
+    void release_locked(std::vector<ID3D11Device *> &deferred_releases) {
       if (output) {
         output->Release();
         output = nullptr;
@@ -178,7 +204,7 @@ namespace {
         params = nullptr;
       }
       if (device) {
-        release_ngx_runtime_locked(device);
+        release_ngx_runtime_locked(device, deferred_releases);
       }
       if (multithread) {
         multithread->Release();
@@ -189,7 +215,7 @@ namespace {
         context = nullptr;
       }
       if (device) {
-        device->Release();
+        deferred_releases.push_back(device);  // wedging final Release; performed after the lock drops
         device = nullptr;
       }
       initialized = false;
@@ -257,9 +283,21 @@ extern "C" {
 
   __declspec(dllexport) void __cdecl VBSTrueHDR_Destroy(void *handle) {
     if (handle) {
-      std::scoped_lock lock(g_ngx_mutex);
       auto *impl = static_cast<truehdr_impl *>(handle);
-      impl->release_locked();
+      std::vector<ID3D11Device *> deferred_releases;
+      {
+        std::scoped_lock lock(g_ngx_mutex);
+        impl->release_locked(deferred_releases);
+      }
+      // Perform the wedging final device Release()es WITHOUT g_ngx_mutex held. On a virtual display
+      // that is mid-mode-change (alt-tab) or being removed, the final ID3D11Device Release blocks in
+      // the kernel (DestroyDriverInstance -> D3DKMTDestroyHwQueue); holding the process-global lock
+      // across that hang is what froze every other client's Create/Convert and poisoned the lock.
+      for (auto *d : deferred_releases) {
+        if (d) {
+          d->Release();
+        }
+      }
       delete impl;
     }
   }

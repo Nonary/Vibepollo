@@ -140,9 +140,39 @@ namespace video {
     // shared-resource dependency cleanup (DestroyDriverInstance) is not safe against a concurrent
     // teardown of the other device: it faults walking freed dependency entries. Funnel all
     // encoder teardown through this mutex so only one device is ever mid-destruction.
-    std::mutex encode_session_teardown_mutex;
+    // timed_mutex (not plain mutex) because a wedged encoder teardown (TrueHDR/NVENC D3D11 device
+    // destruction stuck in the kernel during a virtual-display mode change) is abandoned while still
+    // holding this lock. Serializing producers (the teardown helpers) must still block on it, but
+    // the consumers that only free shared surfaces must be able to step aside with try_lock_for and
+    // quarantine instead, so an abandoned holder can never wedge the capture/reinit path.
+    std::timed_mutex encode_session_teardown_mutex;
 
 #ifdef _WIN32
+    // Process-lifetime quarantine for D3D capture surfaces that may still be (indirectly) pinned by a
+    // wedged/abandoned encoder teardown across an alt-tab / VD-removal reinit. NEVER cleared.
+    //
+    // SAFETY RATIONALE: freeing a shared cross-device keyed-mutex capture surface
+    // (img_d3d_t::capture_texture) while a device still references it or while it is still queued for
+    // GPU eviction during the mode change is exactly what bugchecks the kernel video memory manager
+    // (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e). When a teardown is abandoned (wedged in the kernel),
+    // the encoder's capture device stays alive forever behind the wedge, so these surfaces' backing
+    // store stays referenced; we must therefore NEVER free them. Quarantining = leaking on purpose.
+    // Guarded by its OWN mutex so a wedged encode_session_teardown_mutex holder can never block an
+    // insert here. Do not "optimize" this to free later -- by the time a wedge is observed the safe
+    // free point has already passed.
+    std::mutex quarantine_mutex;
+    std::vector<std::shared_ptr<platf::img_t>> quarantined_capture_surfaces;
+
+    void quarantine_capture_images(std::vector<std::shared_ptr<platf::img_t>> images) {
+      if (images.empty()) {
+        return;
+      }
+      std::lock_guard qlg {quarantine_mutex};
+      for (auto &img : images) {
+        quarantined_capture_surfaces.emplace_back(std::move(img));
+      }
+    }
+
     void release_d3d_capture_images_async(std::vector<std::shared_ptr<platf::img_t>> images) {
       if (images.empty()) {
         return;
@@ -151,8 +181,14 @@ namespace video {
       try {
         std::thread {[images = std::move(images)]() mutable {
           platf::set_thread_name("video::d3dRelease");
-          std::lock_guard lg {encode_session_teardown_mutex};
-          images.clear();
+          // Step aside (rather than block forever) if an abandoned/wedged teardown holds the mutex;
+          // quarantine instead of freeing so we never free a surface a wedged device may still back.
+          std::unique_lock lk {encode_session_teardown_mutex, std::defer_lock};
+          if (lk.try_lock_for(std::chrono::seconds(2))) {
+            images.clear();
+          } else {
+            quarantine_capture_images(std::move(images));
+          }
         }}.detach();
       } catch (const std::system_error &err) {
         BOOST_LOG(warning) << "Failed to start async D3D image release thread: " << err.what();
@@ -2000,6 +2036,14 @@ namespace video {
             // display_wp is modified in this thread only
             // Wait for the other shared_ptr's of display to be destroyed.
             // New displays will only be created in this thread.
+            //
+            // Bound this wait: a wedged encoder teardown (the RTX HDR TrueHDR / NVENC D3D11 device
+            // destruction stuck in the kernel during the virtual-display mode change) never drops
+            // its display reference, so an unbounded spin here is exactly the alt-tab deadlock. On
+            // timeout we stop waiting, quarantine the deferred surfaces (never freeing them, since a
+            // surface a still-alive wedged device backs must not be freed -- 0x10e), and proceed.
+            const auto barrier_start = std::chrono::steady_clock::now();
+            [[maybe_unused]] bool barrier_timed_out = false;
             while (display_wp->use_count() != 1) {
               // If capture is being torn down (stream/session ending), stop waiting on
               // encoder threads that may still hold a display reference while blocked in a
@@ -2031,25 +2075,54 @@ namespace video {
                 ++capture_ctx;
               });
 
+              if (std::chrono::steady_clock::now() - barrier_start > 8s) {
+                BOOST_LOG(error) << "Capture reinit barrier timed out after 8s; display use_count="
+                                 << display_wp->use_count()
+                                 << " (>=2 confirms a wedged encoder still holds the display -- a real "
+                                    "teardown wedge, not a slow teardown). Quarantining capture surfaces "
+                                    "and proceeding with reinit.";
+                barrier_timed_out = true;
+                break;
+              }
+
               std::this_thread::sleep_for(20ms);
             }
 
 #ifdef _WIN32
-            // Every encoder device has now released the shared capture surfaces (their
-            // display references reached zero above), so it is safe to free them. Done
-            // synchronously on this thread rather than on a detached thread, so no surface
-            // is freed while another device still references it or while it is still queued
-            // for GPU eviction during the mode change. Take the teardown mutex so this free
-            // cannot overlap an async d3dRelease thread still draining a previous generation.
-            {
-              std::lock_guard lg {encode_session_teardown_mutex};
-              deferred_d3d_images.clear();
+            if (barrier_timed_out) {
+              // A wedged/abandoned encoder teardown still pins the capture device (its display ref
+              // never dropped), so the backing store of these shared surfaces stays referenced. We
+              // must NEVER free them (freeing a surface a live device still backs is the 0x10e
+              // bugcheck) and must NOT take encode_session_teardown_mutex (the abandoned teardown
+              // holds it wedged in the kernel -> we'd deadlock). Quarantine = leak on purpose.
+              quarantine_capture_images(std::move(deferred_d3d_images));
+            } else {
+              // Normal path: use_count()==1 means every encoder dropped its display reference (and,
+              // by destruction order, already closed its cross-device shared-surface handles), so no
+              // live device references these -- the existing proven-safe synchronous free. try (not
+              // block) for the teardown mutex so a stuck holder can never wedge us; on contention,
+              // quarantine rather than free under uncertainty.
+              std::unique_lock lk {encode_session_teardown_mutex, std::defer_lock};
+              if (lk.try_lock_for(2s)) {
+                deferred_d3d_images.clear();
+              } else {
+                quarantine_capture_images(std::move(deferred_d3d_images));
+              }
             }
 #endif
 
+            // Result published by the bounded re-create helper below.
+            struct recreate_result_t {
+              std::shared_ptr<platf::display_t> disp;
+              std::vector<std::string> display_names;
+              int display_p = 0;
+            };
+
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
-              // only support a single display session per device/application.
+              // only support a single display session per device/application. In the wedge case an
+              // abandoned encoder still holds a reference, so this only decrements (no blocking
+              // destructor); in the clean case it destroys the prior display.
               disp.reset();
 
 #ifdef _WIN32
@@ -2067,28 +2140,70 @@ namespace video {
               }
 #endif
 
-              // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
-
-              if (!ensure_virtual_display_ready(display_names, display_p)) {
-                std::this_thread::sleep_for(50ms);
-                continue;
-              }
-
-              // Process any pending display switch with the new list of displays.
-              // Negative values mean "reinit only; keep display selection logic intact".
+              // Pop any pending display switch on this thread (captureThread owns the mail event);
+              // the re-create itself runs on a helper so a blocked platf::display() can be abandoned.
+              bool switch_requested = false;
+              int switch_value = 0;
               if (switch_display_event->peek()) {
-                const int requested = *switch_display_event->pop();
-                if (requested >= 0) {
-                  display_p = std::clamp(requested, 0, (int) display_names.size() - 1);
+                if (auto requested = switch_display_event->pop()) {
+                  switch_requested = true;
+                  switch_value = *requested;
                 }
               }
 
-              // reset_display() will sleep between retries
-              reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
-              if (disp) {
-                proc::proc.display_name = display_names[display_p];
-                break;
+              // Bound the re-create: refresh_displays()/reset_display()->platf::display() open fresh
+              // DXGI duplication, which can block in win32u/dxgkrnl on a still-kernel-wedged virtual
+              // display (the same alt-tab / VD-removal wedge that hangs teardown). This live reinit
+              // path has no host watchdog, so run the attempt on a helper thread that captures
+              // everything by value and publishes its result through a promise; abandon a blocked
+              // attempt and retry once the VD recovery monitor brings the display back. A detached
+              // helper only touches its own locals, so abandoning it cannot race captureThread state.
+              const auto reinit_dev_type = encoder.platform_formats->dev_type;
+              const auto reinit_config = capture_ctxs.front().config;
+              const auto preferred_display_name = proc::proc.display_name;
+              std::promise<std::optional<recreate_result_t>> recreate_promise;
+              auto recreate_future = recreate_promise.get_future();
+              std::thread recreate_thread {
+                [reinit_dev_type, reinit_config, switch_requested, switch_value,
+                 preferred_display_name,
+                 names = display_names, p = display_p,
+                 promise = std::move(recreate_promise)]() mutable {
+                  platf::set_thread_name("video::reinit");
+                  auto preferred = preferred_display_name;
+                  refresh_displays(reinit_dev_type, names, p, preferred);
+                  if (!ensure_virtual_display_ready(names, p)) {
+                    promise.set_value(std::nullopt);
+                    return;
+                  }
+                  if (switch_requested && switch_value >= 0) {
+                    p = std::clamp(switch_value, 0, (int) names.size() - 1);
+                  }
+                  std::shared_ptr<platf::display_t> new_disp;
+                  // reset_display() will sleep between retries.
+                  reset_display(new_disp, reinit_dev_type, names[p], reinit_config);
+                  if (!new_disp) {
+                    promise.set_value(std::nullopt);
+                    return;
+                  }
+                  promise.set_value(recreate_result_t {std::move(new_disp), std::move(names), p});
+                }};
+
+              if (recreate_future.wait_for(8s) == std::future_status::ready) {
+                recreate_thread.join();
+                if (auto result = recreate_future.get()) {
+                  disp = std::move(result->disp);
+                  display_names = std::move(result->display_names);
+                  display_p = result->display_p;
+                  proc::proc.display_name = display_names[display_p];
+                  break;
+                }
+                // VD not ready / display() returned null -- retry.
+                std::this_thread::sleep_for(50ms);
+              } else {
+                BOOST_LOG(error) << "Display re-create blocked >8s on a wedged virtual display; "
+                                    "abandoning this attempt and retrying once the virtual display recovers.";
+                recreate_thread.detach();
+                std::this_thread::sleep_for(1s);
               }
             }
             if (!disp) {
@@ -2747,35 +2862,35 @@ namespace video {
                            << (shutdown_teardown ? "shutdown"sv : "capture reinit"sv);
         }
 
-        // Destroy the session here, under the teardown mutex, rather than letting it die at
-        // scope exit. During a capture reinit both video threads reach this point at the same
-        // moment; unserialized concurrent NVENC/D3D11 device destruction crashes the NVIDIA UMD
-        // (access violation in nvwgf2umx during cross-device shared-resource dependency cleanup).
-        if (dynamic_cast<avcodec_encode_session_t *>(session.get())) {
-          // A wedged driver can block avcodec session destruction indefinitely (vibeshine#187:
-          // AMF teardown stuck inside amfrtdrv64). On the shutdown path that blocks
-          // videoThread.join() until the 10-second session watchdog kills the whole host, so
-          // run the destruction on a helper thread and abandon it if it overruns. An abandoned
-          // session leaks (and keeps the teardown mutex held), but the stream host survives.
-          // NVENC keeps the fully synchronous teardown: its driver waits are already bounded
-          // (nvenc_base) and its teardown-vs-surface-free ordering is load-bearing
-          // (VIDEO_MEMORY_MANAGEMENT_INTERNAL 0x10e bugcheck).
-          std::promise<void> done;
-          auto done_future = done.get_future();
-          std::thread teardown_thread {[session = std::move(session), done = std::move(done)]() mutable {
-            std::lock_guard lg {encode_session_teardown_mutex};
-            session.reset();
-            done.set_value();
-          }};
-          if (done_future.wait_for(5s) == std::future_status::ready) {
-            teardown_thread.join();
-          } else {
-            BOOST_LOG(error) << "Encoder teardown did not finish within 5 seconds; abandoning the session to keep the stream host alive"sv;
-            teardown_thread.detach();
-          }
-        } else {
+        // Destroy the session under the teardown mutex -- serializing concurrent NVENC/D3D11 device
+        // destruction is load-bearing (unserialized cross-device teardown AVs the NVIDIA UMD in
+        // nvwgf2umx) -- but run it on a helper thread bounded by a timeout and ABANDON it on overrun.
+        //
+        // A wedged driver can block session destruction indefinitely. Two known causes: AMF stuck
+        // inside amfrtdrv64 (vibeshine#187), and -- the real recurring cause of the virtual-display
+        // alt-tab deadlock/BSOD -- the RTX HDR TrueHDR D3D11 device teardown (VBSTrueHDR_Destroy ->
+        // D3DKMTDestroyHwQueue) wedged in the kernel while the virtual display is mid-mode-change
+        // (alt-tab) or being removed (disconnect). A fully synchronous reset() there hangs this
+        // thread forever: on shutdown it blocks videoThread.join() until the 10s session watchdog
+        // kills the host; on a live reinit it never releases the display shared_ptr, so the capture
+        // thread's use_count() barrier deadlocks with no watchdog at all. NVENC used to take the
+        // synchronous path on the (disproven) assumption its driver waits were bounded -- the hang is
+        // in the TrueHDR device dtor inside that reset(), so ALL session types now get the bounded
+        // teardown. The abandoned session leaks and keeps the (timed) teardown mutex held; the
+        // surface-free consumers use try_lock_for to step aside, and the capture-reinit barrier and
+        // display re-create are independently bounded, so nothing waits on it forever.
+        std::promise<void> done;
+        auto done_future = done.get_future();
+        std::thread teardown_thread {[session = std::move(session), done = std::move(done)]() mutable {
           std::lock_guard lg {encode_session_teardown_mutex};
           session.reset();
+          done.set_value();
+        }};
+        if (done_future.wait_for(5s) == std::future_status::ready) {
+          teardown_thread.join();
+        } else {
+          BOOST_LOG(error) << "Encoder teardown did not finish within 5 seconds; abandoning the session to keep the stream host alive"sv;
+          teardown_thread.detach();
         }
       }
     });
