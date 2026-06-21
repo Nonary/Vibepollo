@@ -165,6 +165,21 @@ const platform = computed(() =>
       v-model="config.enable_input_only_mode"
       class="mb-3"
     />
+
+    <template v-if="platform === 'windows'">
+      <hr />
+
+      <h3 class="text-sm font-medium">{{ $t('config.ctm_bridge_title') }}</h3>
+      <p class="text-[11px] opacity-70 mb-3">{{ $t('config.ctm_bridge_intro') }}</p>
+
+      <ConfigFieldRenderer setting-key="ctm_enable" v-model="config.ctm_enable" class="mb-3" />
+
+      <template v-if="config.ctm_enable">
+        <ConfigFieldRenderer setting-key="ctm_path" v-model="config.ctm_path" class="mb-3" />
+        <ConfigFieldRenderer setting-key="ctm_port" v-model="config.ctm_port" class="mb-3" />
+        <ConfigFieldRenderer setting-key="ctm_enet" v-model="config.ctm_enet" class="mb-3" />
+      </template>
+    </template>
   </div>
 </template>
 

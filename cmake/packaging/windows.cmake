@@ -55,6 +55,21 @@ endif()
 
 # ViGEmBus installer is no longer bundled or managed by the installer
 
+# CTM bridge agent (ctm-usbip.exe) — OPTIONAL out-of-tree prebuilt.
+# We do NOT vendor any CTM source (upstream has no license); the agent is treated
+# as an opaque artifact. Point SUNSHINE_CTM_AGENT_DIR at an unpacked CTM-USBIP
+# release folder (containing ctm-usbip.exe plus its DLLs/maps/profiles) to stage it
+# into "<install>/tools/ctm/", which is the default path the supervisor looks up.
+# When unset/missing, packaging proceeds without it and the user can instead point
+# the `ctm_path` config key at an external install.
+set(SUNSHINE_CTM_AGENT_DIR "" CACHE PATH "Optional unpacked CTM-USBIP release dir to bundle under tools/ctm")
+if(SUNSHINE_CTM_AGENT_DIR AND EXISTS "${SUNSHINE_CTM_AGENT_DIR}/ctm-usbip.exe")
+    install(DIRECTORY "${SUNSHINE_CTM_AGENT_DIR}/"
+        DESTINATION "tools/ctm"
+        COMPONENT application
+        USE_SOURCE_PERMISSIONS)
+endif()
+
 # Adding tools
 install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
 install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)

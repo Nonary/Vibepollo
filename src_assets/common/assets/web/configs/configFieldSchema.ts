@@ -43,6 +43,8 @@ const SWITCH_KEYS = new Set<string>([
   'frame_limiter_disable_vsync',
   'rtx_hdr',
   'rtx_hdr_force_sdr',
+  'ctm_enable',
+  'ctm_enet',
 ]);
 
 const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
@@ -78,6 +80,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   dd_virtual_display_permanent_count: { min: 0, max: 4, step: 1, precision: 0, placeholder: '0' },
   nvenc_vbv_increase: { min: 0, max: 400, placeholder: '0' },
   frame_limiter_fps_limit: { min: 0, max: 1000, step: 1, precision: 0, placeholder: '0' },
+  ctm_port: { min: 1, max: 65535, step: 1, precision: 0, placeholder: '48054' },
 };
 
 const SLIDER_KEYS = new Set<string>([
