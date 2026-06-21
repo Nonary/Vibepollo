@@ -9,6 +9,8 @@ param(
     [switch]$ValidateOnly,
     [string]$BuildDir,
     [string]$PrebuiltPackageDir,
+    [string]$PackageVersion,
+    [string]$DriverVerDate,
     [string]$VsDevCmdPath,
     [string]$SigningThumbprint,
     [switch]$SkipSigning
@@ -172,6 +174,128 @@ function Resolve-PrebuiltPackageRoot {
     throw "[SunshineVirtualDisplay] Unable to locate prebuilt driver/tools package layout under $resolved"
 }
 
+function Resolve-PackageVersionFromGit {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) {
+        return ''
+    }
+
+    $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($describe)) {
+        return ''
+    }
+
+    if ($describe -match '^v?([0-9]+\.[0-9]+\.[0-9]+)(?:-([0-9]+)-g[0-9a-f]+)?(?:-.+)?$') {
+        $baseVersion = $Matches[1]
+        $commitsSinceTag = if ($Matches.Count -gt 2 -and $Matches[2]) { [int]$Matches[2] } else { 0 }
+        $dirty = & $git.Source -C $Path status --porcelain 2>$null
+        if ($LASTEXITCODE -eq 0 -and $dirty) {
+            $commitsSinceTag++
+        }
+        if ($commitsSinceTag -gt 0) {
+            return "$baseVersion.$commitsSinceTag"
+        }
+        return $baseVersion
+    }
+
+    return ''
+}
+
+function Resolve-PackageVersionFromPrebuiltRoot {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    $current = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    while ($current) {
+        if ($current.Name -match '^libvirtualdisplay-([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)-windows-[^-]+$') {
+            return $Matches[1]
+        }
+        $parent = Split-Path -Parent $current.FullName
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current.FullName) {
+            break
+        }
+        $current = Get-Item -LiteralPath $parent -ErrorAction SilentlyContinue
+    }
+
+    return ''
+}
+
+function Resolve-DriverVerDateFromGit {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($DriverVerDate) {
+        return $DriverVerDate
+    }
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git) {
+        $date = & $git.Source -C $Path log -1 '--format=%cd' '--date=format:%m/%d/%Y' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $date -match '^[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]$') {
+            return $date
+        }
+    }
+
+    return (Get-Date).ToUniversalTime().ToString('MM/dd/yyyy', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Resolve-PackageVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$LibRoot,
+        [string]$PrebuiltRoot
+    )
+
+    if ($PackageVersion) {
+        return $PackageVersion.TrimStart('v')
+    }
+
+    $fromPrebuilt = Resolve-PackageVersionFromPrebuiltRoot -Path $PrebuiltRoot
+    if ($fromPrebuilt) {
+        return $fromPrebuilt
+    }
+
+    $fromGit = Resolve-PackageVersionFromGit -Path $LibRoot
+    if ($fromGit) {
+        return $fromGit
+    }
+
+    return '0.0.0'
+}
+
+function ConvertTo-DriverVerVersion {
+    param([Parameter(Mandatory = $true)][string]$Version)
+
+    $numericVersion = ($Version.TrimStart('v') -replace '[-+].*$', '')
+    if ($numericVersion -match '^([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+    }
+    if ($numericVersion -match '^([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+        return $numericVersion
+    }
+
+    throw "[SunshineVirtualDisplay] Package version is not usable as a Windows DriverVer version: $Version"
+}
+
+function Assert-DriverVer {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+
+    $infText = Get-Content -LiteralPath $InfPath -Raw
+    if ($infText -notmatch '(?m)^\s*DriverVer\s*=\s*([0-9]{2}/[0-9]{2}/[0-9]{4})\s*,\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s*$') {
+        throw "[SunshineVirtualDisplay] INF is missing a valid DriverVer line: $InfPath"
+    }
+
+    if ($Matches[2] -ne $ExpectedVersion) {
+        throw "[SunshineVirtualDisplay] INF DriverVer version $($Matches[2]) does not match expected driver version $ExpectedVersion."
+    }
+}
+
 function Invoke-Cmd {
     param([Parameter(Mandatory = $true)][string]$Command)
 
@@ -307,6 +431,9 @@ $packageRoot = Resolve-RequiredPath -Path $PackageDir
 $driverSourceInf = Join-Path $libRoot 'src\driver\windows_driver\SunshineVirtualDisplayDriver.inf'
 Resolve-RequiredPath -Path $driverSourceInf -Leaf | Out-Null
 $prebuiltPackageRoot = Resolve-PrebuiltPackageRoot -Path $PrebuiltPackageDir
+$resolvedPackageVersion = Resolve-PackageVersion -LibRoot $libRoot -PrebuiltRoot $prebuiltPackageRoot
+$resolvedDriverVersion = ConvertTo-DriverVerVersion -Version $resolvedPackageVersion
+$resolvedDriverDate = Resolve-DriverVerDateFromGit -Path $libRoot
 
 if (-not $BuildDir) {
     $BuildDir = Join-Path $libRoot 'build-driver'
@@ -316,7 +443,8 @@ if ($Build -and -not $prebuiltPackageRoot) {
     $vsDevCmd = Resolve-VsDevCmd
     $cmake = Resolve-Tool -Name 'cmake.exe'
     $ninja = Resolve-Tool -Name 'ninja.exe'
-    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=ON -DCMAKE_BUILD_TYPE=Release && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe vk_layer_sunshine_hdr -j 10"
+    Write-Host "[SunshineVirtualDisplay] Building local driver package version $resolvedPackageVersion (DriverVer $resolvedDriverDate,$resolvedDriverVersion)."
+    $buildCommand = "`"$vsDevCmd`" -arch=x64 -host_arch=x64 && `"$cmake`" -S `"$libRoot`" -B `"$BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DBUILD_TESTS=OFF -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=ON -DBUILD_VIRTUALDISPLAY_PROBE=ON -DBUILD_VIRTUALDISPLAY_VULKAN_LAYER=ON -DCMAKE_BUILD_TYPE=Release -DLIBVIRTUALDISPLAY_PACKAGE_VERSION=`"$resolvedPackageVersion`" -DLIBVIRTUALDISPLAY_DRIVER_VERSION=`"$resolvedDriverVersion`" -DLIBVIRTUALDISPLAY_DRIVER_DATE=`"$resolvedDriverDate`" && `"$cmake`" --build `"$BuildDir`" --target SunshineVirtualDisplayDriverPackageFiles virtualdisplay_probe vk_layer_sunshine_hdr -j 10"
     Invoke-Cmd -Command $buildCommand
 }
 
@@ -469,6 +597,15 @@ foreach ($required in @(
 )) {
     if ($infText -notlike "*$required*") {
         throw "[SunshineVirtualDisplay] INF is missing expected content: $required"
+    }
+}
+if (-not $prebuiltPackageRoot -or $PackageVersion) {
+    Assert-DriverVer -InfPath $packageInf -ExpectedVersion $resolvedDriverVersion
+} else {
+    try {
+        Assert-DriverVer -InfPath $packageInf -ExpectedVersion $resolvedDriverVersion
+    } catch {
+        Write-Warning $_.Exception.Message
     }
 }
 
