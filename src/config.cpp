@@ -886,6 +886,9 @@ namespace config {
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
+
+    0,  // pacing_max_bitrate_kbps (0 = legacy 1 Gbps Ethernet assumption)
+    0,  // packetsize (0 = off)
   };
 
   nvhttp_t nvhttp {
@@ -1593,6 +1596,7 @@ namespace config {
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
+    bool_f(vars, "nvenc_temporal_aq", video.nv.temporal_aq);
     generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
@@ -1837,6 +1841,8 @@ namespace config {
 #endif
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
+    int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
+    int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
@@ -2341,6 +2347,7 @@ namespace config {
         "nvenc_preset",
         "nvenc_twopass",
         "nvenc_spatial_aq",
+        "nvenc_temporal_aq",
         "nvenc_split_encode",
         "nvenc_vbv_increase",
         "nvenc_realtime_hags",
