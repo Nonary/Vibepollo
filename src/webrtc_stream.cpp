@@ -4383,7 +4383,6 @@ namespace webrtc_stream {
             return;
           }
 
-          stop_webrtc_capture_if_idle();
           reset_webrtc_factory();
         },
         grace_period
@@ -4844,6 +4843,7 @@ namespace webrtc_stream {
       if (!rtsp_sessions_active.load(std::memory_order_relaxed)) {
         platf::streaming_will_stop();
       }
+      stop_webrtc_capture_if_idle();
       schedule_webrtc_idle_shutdown();
     }
 #endif
