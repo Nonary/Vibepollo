@@ -2703,6 +2703,20 @@ namespace config {
     return g_runtime_config_overrides.find(normalized_key) != g_runtime_config_overrides.end();
   }
 
+  bool runtime_config_override_enabled(std::string_view key) {
+    const auto normalized_key = nv::normalize_split_encode_key(std::string(key));
+    if (!is_valid_override_key(normalized_key)) {
+      return false;
+    }
+    std::scoped_lock lk(g_runtime_overrides_mutex);
+    const auto it = g_runtime_config_overrides.find(normalized_key);
+    if (it == g_runtime_config_overrides.end()) {
+      return false;
+    }
+    auto value = it->second;
+    return to_bool(value);
+  }
+
   bool has_runtime_config_overrides() {
     std::scoped_lock lk(g_runtime_overrides_mutex);
     return !g_runtime_config_overrides.empty();

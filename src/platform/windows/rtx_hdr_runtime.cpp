@@ -41,7 +41,7 @@ namespace platf::rtx_hdr {
       runtime_values_t values;
       values.contrast = 100;
       values.saturation = 100;
-      if (!config::has_runtime_config_override("rtx_hdr") || !config::video.rtx_hdr.enabled) {
+      if (!config::runtime_config_override_enabled("rtx_hdr") || !config::video.rtx_hdr.enabled) {
         return values;
       }
 

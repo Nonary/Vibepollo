@@ -264,7 +264,7 @@ namespace platf::rtx_hdr {
     }
 
     bool has_runtime_enable_override() {
-      return has_override("rtx_hdr");
+      return config::runtime_config_override_enabled("rtx_hdr");
     }
 
     bool has_runtime_tuning_override() {

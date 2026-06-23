@@ -169,6 +169,26 @@ TEST(DisplayDeviceConfig, RtxHdrAppOverrideKeepsSourceDisplaySdr) {
   EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
 }
 
+TEST(DisplayDeviceConfig, RtxHdrDisabledAppOverrideAllowsHdrDisplay) {
+  runtime_config_overrides_guard_t overrides_guard;
+  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
+    {"rtx_hdr", "false"},
+  });
+
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::automatic;
+  video_config.rtx_hdr.enabled = true;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
+}
+
 TEST(DisplayDeviceConfig, RtxHdrGlobalTuningDoesNotKeepSourceDisplaySdr) {
   runtime_config_overrides_guard_t overrides_guard;
 

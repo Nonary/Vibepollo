@@ -348,7 +348,7 @@ TEST(RtxHdrProfileResolution, RtxHdrFalseDisablesConversion) {
   resolved.application.contrast = 140;
 
   runtime_values_t config;
-  config.enabled = false;
+  config.enabled = true;
   config.contrast = 111;
   config.saturation = 112;
   config.middle_gray = 53;
