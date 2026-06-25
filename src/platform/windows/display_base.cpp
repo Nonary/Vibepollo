@@ -389,6 +389,31 @@ namespace platf::dxgi {
     std::optional<std::chrono::steady_clock::time_point> frame_pacing_group_start;
     uint32_t frame_pacing_group_frames = 0;
 
+    // Phase-preserving re-anchor + bust-mix diagnostics.
+    //
+    // Reflex (and any low-latency in-game cap) is *source* jitter: it paces the CPU frame-start to
+    // minimize render-queue latency and lets the present land whenever the GPU finishes, so presents
+    // arrive a little early/late around the target interval. When a present lands past the slot's
+    // grace, the zero-timeout snapshot finds nothing, the pacing group busts, and today's re-anchor
+    // seeds the new metronome anchor on the *late frame's* processing timestamp -- re-rolling the grid
+    // phase to wherever the jittery frame landed. Repeated phase re-rolls are the visible micro-stutter.
+    //
+    // last_pacing_slot remembers the grid slot we were targeting at the moment the group busted. On
+    // re-anchor, if the new frame lands within a tight window of that prior grid we keep the phase
+    // (snap the anchor onto the projected grid line) instead of taking the raw arrival time. We never
+    // skip a capture -- only the anchor *value* changes -- so this cannot drop fresh frames or fail to
+    // converge the way slot-skipping re-anchors did. Outside the window (a genuine rate change / idle
+    // resume / long stall) it falls through to the exact legacy raw re-anchor. Gated by
+    // config::video.wgc_pacing_smoothing; the diagnostics below run regardless so the path-a/path-b
+    // bust mix and the re-anchor phase error can be measured with smoothing on *and* off.
+    std::optional<std::chrono::steady_clock::time_point> last_pacing_slot;
+    uint64_t pacing_bust_woke_late = 0;      // path (a): woke past the slot deadline
+    uint64_t pacing_bust_snapshot_miss = 0;  // path (b): zero-timeout snapshot found no fresh frame
+    uint64_t pacing_phase_preserved = 0;     // re-anchor snapped back onto the prior grid
+    uint64_t pacing_phase_reanchored = 0;    // re-anchor fell back to the raw arrival phase
+    auto pacing_diag_last_log = std::chrono::steady_clock::now();
+    logging::min_max_avg_periodic_logger<double> pacing_phase_error_logger(debug, "WGC pacing re-anchor phase error", "ms");
+
     // Keep the display awake during capture. If the display goes to sleep during
     // capture, best case is that capture stops until it powers back on. However,
     // worst case it will trigger us to reinit DD, waking the display back up in
@@ -408,6 +433,21 @@ namespace platf::dxgi {
         return platf::capture_e::reinit;
       }
 
+      if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
+        if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored) {
+          BOOST_LOG(debug) << "WGC pacing bust mix: woke_late(a)=" << pacing_bust_woke_late
+                           << " snapshot_miss(b)=" << pacing_bust_snapshot_miss
+                           << " phase_preserved=" << pacing_phase_preserved
+                           << " phase_reanchored=" << pacing_phase_reanchored
+                           << " smoothing=" << (config::video.wgc_pacing_smoothing ? "on" : "off");
+        }
+        pacing_bust_woke_late = 0;
+        pacing_bust_snapshot_miss = 0;
+        pacing_phase_preserved = 0;
+        pacing_phase_reanchored = 0;
+        pacing_diag_last_log = diag_now;
+      }
+
       platf::capture_e status = capture_e::ok;
       std::shared_ptr<img_t> img_out;
 
@@ -416,6 +456,7 @@ namespace platf::dxgi {
         if (client_frame_rate_adjusted.Numerator == 0) {
           frame_pacing_group_start = std::nullopt;
           frame_pacing_group_frames = 0;
+          last_pacing_slot = std::nullopt;
         } else {
           const uint32_t seconds = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
           const uint32_t remainder = (uint64_t) frame_pacing_group_frames * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
@@ -426,6 +467,8 @@ namespace platf::dxgi {
 
           if (sleep_period <= 0ns) {
             // We missed next frame time, invalidating current frame pacing group
+            last_pacing_slot = sleep_target;
+            ++pacing_bust_woke_late;
             frame_pacing_group_start = std::nullopt;
             frame_pacing_group_frames = 0;
             status = capture_e::timeout;
@@ -439,6 +482,8 @@ namespace platf::dxgi {
             if (status == capture_e::ok && img_out) {
               frame_pacing_group_frames += 1;
             } else {
+              last_pacing_slot = sleep_target;
+              ++pacing_bust_snapshot_miss;
               frame_pacing_group_start = std::nullopt;
               frame_pacing_group_frames = 0;
             }
@@ -451,14 +496,54 @@ namespace platf::dxgi {
         status = snapshot(pull_free_image_cb, img_out, 200ms, *cursor);
 
         if (status == capture_e::ok && img_out) {
-          frame_pacing_group_start = img_out->capture_pacing_timestamp ? img_out->capture_pacing_timestamp : img_out->frame_timestamp;
+          auto raw_anchor = img_out->capture_pacing_timestamp ? img_out->capture_pacing_timestamp : img_out->frame_timestamp;
 
-          if (!frame_pacing_group_start) {
+          if (!raw_anchor) {
             BOOST_LOG(warning) << "snapshot() provided image without pacing timestamp";
-            frame_pacing_group_start = std::chrono::steady_clock::now();
+            raw_anchor = std::chrono::steady_clock::now();
+          }
+
+          // Phase-preserving re-anchor: if the freshly-blocked frame lands within a tight window of
+          // the grid the busted group was running, keep that grid's phase instead of re-rolling to the
+          // jittery arrival time. The snap target is the prior slot projected forward by the (rounded)
+          // number of intervals between it and the arrival, so a single late Reflex present costs only
+          // a phase the metronome already owned. Falls through to the exact legacy raw re-anchor when
+          // smoothing is off, when there is no prior grid, or when the arrival is too far off-grid /
+          // too long after the stall to trust (rate change, idle resume, VFR source).
+          std::optional<std::chrono::steady_clock::time_point> snapped_anchor;
+          if (last_pacing_slot && client_frame_rate_adjusted.Numerator != 0) {
+            const int64_t interval_ns = (int64_t) 1000000000LL * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
+            const auto delta_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(*raw_anchor - *last_pacing_slot).count();
+            if (interval_ns > 0 && delta_ns >= 0) {
+              const int64_t m = (delta_ns + interval_ns / 2) / interval_ns;  // extra slots past the missed one
+              const uint32_t seconds = (uint64_t) m * client_frame_rate_adjusted.Denominator / client_frame_rate_adjusted.Numerator;
+              const uint32_t remainder = (uint64_t) m * client_frame_rate_adjusted.Denominator % client_frame_rate_adjusted.Numerator;
+              const auto grid_ts = *last_pacing_slot +
+                                   std::chrono::nanoseconds(1s) * seconds +
+                                   std::chrono::nanoseconds(1s) * remainder / client_frame_rate_adjusted.Numerator;
+              const auto phase_err = grid_ts > *raw_anchor ? (grid_ts - *raw_anchor) : (*raw_anchor - grid_ts);
+              pacing_phase_error_logger.collect_and_log(std::chrono::duration<double, std::milli>(phase_err).count());
+
+              const auto snap_window = (std::min) (std::chrono::nanoseconds(2ms), std::chrono::nanoseconds(interval_ns) / 4);
+              const auto hold_limit = std::chrono::nanoseconds(interval_ns) * (m + 1);
+              if (config::video.wgc_pacing_smoothing && phase_err <= snap_window && hold_limit <= std::chrono::nanoseconds(200ms)) {
+                snapped_anchor = grid_ts;
+              }
+            }
+          }
+
+          if (snapped_anchor) {
+            frame_pacing_group_start = snapped_anchor;
+            ++pacing_phase_preserved;
+          } else {
+            frame_pacing_group_start = raw_anchor;
+            if (last_pacing_slot) {
+              ++pacing_phase_reanchored;
+            }
           }
 
           frame_pacing_group_frames = 1;
+          last_pacing_slot = std::nullopt;
         } else if (status == platf::capture_e::timeout) {
           // The D3D11 device is protected by an unfair lock that is held the entire time that
           // IDXGIOutputDuplication::AcquireNextFrame() is running. This is normally harmless,
