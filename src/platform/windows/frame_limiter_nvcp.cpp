@@ -391,6 +391,32 @@ namespace platf::frame_limiter_nvcp {
       return status;
     }
 
+    void log_setting_readback(NvU32 setting_id, const char *label) {
+      std::optional<NvU32> profile_value;
+      bool had_override = false;
+      NvU32 current_value = 0;
+      NvAPI_Status status = get_current_setting(setting_id, profile_value, &had_override, &current_value);
+      if (status != NVAPI_OK) {
+        log_nvapi_error(status, label);
+        return;
+      }
+
+      BOOST_LOG(debug) << "NVIDIA Control Panel readback " << label
+                       << ": current=" << current_value
+                       << " profile_override=" << had_override
+                       << " stored=" << (profile_value ? std::to_string(*profile_value) : "<default>");
+    }
+
+    void log_streaming_readback() {
+      log_setting_readback(FRL_FPS_ID, "FRL_FPS");
+      log_setting_readback(VSYNCMODE_ID, "VSYNCMODE");
+      log_setting_readback(PRERENDERLIMIT_ID, "PRERENDERLIMIT");
+      log_setting_readback(ULTRA_LOW_LATENCY_CPL_STATE_ID, "ULL_CPL_STATE");
+      log_setting_readback(ULTRA_LOW_LATENCY_ENABLED_ID, "ULL_ENABLED");
+      log_setting_readback(SMOOTH_MOTION_ENABLE_ID, "SMOOTH_MOTION");
+      log_setting_readback(SMOOTH_MOTION_API_MASK_ID, "SMOOTH_MOTION_MASK");
+    }
+
     NvDRSProfileHandle resolve_profile(NvDRSSessionHandle session, bool *is_global) {
       if (is_global) {
         *is_global = false;
@@ -812,20 +838,26 @@ namespace platf::frame_limiter_nvcp {
           return true;
         };
 
-        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, const char *restore_label, const char *restore_default_label) -> bool {
+        auto delete_profile_setting = [&](NvDRSProfileHandle target_profile, NvU32 setting_id, const char *label) -> bool {
+          NvAPI_Status s = drs_delete_profile_setting(session, target_profile, setting_id);
+          if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
+            log_nvapi_error(s, label);
+            return false;
+          }
+          return true;
+        };
+
+        auto restore_setting = [&](NvU32 setting_id, bool had_override, const std::optional<NvU32> &value, const std::optional<NvU32> &fallback, bool delete_default_override, const char *restore_label, const char *restore_default_label, const char *delete_label) -> bool {
           if (had_override) {
             const std::optional<NvU32> restore_value = value.has_value() ? value : fallback;
             if (restore_value) {
               return set_setting_value(profile, setting_id, *restore_value, restore_label);
             }
           }
-          return restore_profile_default(profile, setting_id, restore_default_label);
-        };
-
-        auto delete_profile_setting = [&](NvDRSProfileHandle target_profile, NvU32 setting_id, const char *label) -> bool {
-          NvAPI_Status s = drs_delete_profile_setting(session, target_profile, setting_id);
-          if (s != NVAPI_OK && s != NVAPI_SETTING_NOT_FOUND) {
-            log_nvapi_error(s, label);
+          if (!restore_profile_default(profile, setting_id, restore_default_label)) {
+            return false;
+          }
+          if (delete_default_override && !delete_profile_setting(profile, setting_id, delete_label)) {
             return false;
           }
           return true;
@@ -904,21 +936,21 @@ namespace platf::frame_limiter_nvcp {
         }
 
         if (restore_data.frame_limit_applied) {
-          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value.has_value(), restore_data.frame_limit_value, std::nullopt, "DRS_SetSetting(FRL_FPS restore)", "DRS_RestoreProfileDefaultSetting(FRL_FPS)")) {
+          if (!restore_setting(FRL_FPS_ID, restore_data.frame_limit_value.has_value(), restore_data.frame_limit_value, std::nullopt, false, "DRS_SetSetting(FRL_FPS restore)", "DRS_RestoreProfileDefaultSetting(FRL_FPS)", "DRS_DeleteProfileSetting(FRL_FPS)")) {
             result = NVAPI_ERROR;
             break;
           }
         }
 
         if (restore_data.vsync_applied) {
-          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value.has_value(), restore_data.vsync_value, std::nullopt, "DRS_SetSetting(VSYNCMODE restore)", "DRS_RestoreProfileDefaultSetting(VSYNCMODE)")) {
+          if (!restore_setting(VSYNCMODE_ID, restore_data.vsync_value.has_value(), restore_data.vsync_value, std::nullopt, true, "DRS_SetSetting(VSYNCMODE restore)", "DRS_RestoreProfileDefaultSetting(VSYNCMODE)", "DRS_DeleteProfileSetting(VSYNCMODE)")) {
             result = NVAPI_ERROR;
             break;
           }
         }
 
         if (restore_data.llm_applied) {
-          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value.has_value(), restore_data.prerender_value, std::nullopt, "DRS_SetSetting(PRERENDERLIMIT restore)", "DRS_RestoreProfileDefaultSetting(PRERENDERLIMIT)")) {
+          if (!restore_setting(PRERENDERLIMIT_ID, restore_data.prerender_value.has_value(), restore_data.prerender_value, std::nullopt, false, "DRS_SetSetting(PRERENDERLIMIT restore)", "DRS_RestoreProfileDefaultSetting(PRERENDERLIMIT)", "DRS_DeleteProfileSetting(PRERENDERLIMIT)")) {
             result = NVAPI_ERROR;
             break;
           }
@@ -1320,6 +1352,7 @@ namespace platf::frame_limiter_nvcp {
       if (status != NVAPI_OK) {
         log_nvapi_error(status, "DRS_SaveSettings(stream)");
       } else {
+        log_streaming_readback();
         restore_info_t info {
           g_state.frame_limit_applied,
           g_state.original_frame_limit,

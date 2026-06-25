@@ -207,6 +207,20 @@ namespace platf {
       }
     }
 
+    BOOST_LOG(debug) << "Frame limiter decision: configured_provider="
+                     << frame_limiter_provider_to_string(parse_provider(config::frame_limiter.provider))
+                     << " effective_limit=" << effective_limit
+                     << " capture_fix=" << capture_fix_enabled
+                     << " gen1_fix=" << gen1_framegen_fix
+                     << " gen2_fix=" << gen2_framegen_fix
+                     << " lossless_rtss_limit=" << (lossless_rtss_limit ? *lossless_rtss_limit : 0)
+                     << " frame_generation_provider=" << frame_generation_provider
+                     << " nvidia_gpu=" << nvidia_gpu_present
+                     << " amd_gpu=" << amd_gpu_present
+                     << " nvcp_ready=" << nvcp_ready
+                     << " want_nv_vsync_override=" << want_nv_vsync_override
+                     << " want_smooth_motion=" << want_smooth_motion;
+
     if (frame_limit_enabled) {
       auto configured = parse_provider(config::frame_limiter.provider);
       std::vector<frame_limiter_provider> order;
