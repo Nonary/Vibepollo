@@ -417,8 +417,13 @@ namespace webrtc_stream {
       }
       const bool framegen_refresh_active =
         session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
-      if (base_vd_fps_millihz > 0 && (config::video.dd.wa.virtual_double_refresh || framegen_refresh_active)) {
-        vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
+      const int refresh_multiplier = std::max(
+        config::video.dd.wa.virtual_double_refresh ? 2 : 1,
+        framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1
+      );
+      if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
+        const uint64_t minimum = static_cast<uint64_t>(base_vd_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
+        vd_fps = std::max(vd_fps, static_cast<uint32_t>(std::min<uint64_t>(minimum, std::numeric_limits<uint32_t>::max())));
       }
 
       std::string client_label = session->client_name;
@@ -440,6 +445,7 @@ namespace webrtc_stream {
         virtual_display_guid,
         base_vd_fps_millihz,
         framegen_refresh_active,
+        refresh_multiplier,
         session->enable_hdr,
         false,
         !shared_mode
@@ -467,6 +473,7 @@ namespace webrtc_stream {
         recovery_params.fps = vd_fps;
         recovery_params.base_fps_millihz = base_vd_fps_millihz;
         recovery_params.framegen_refresh_active = framegen_refresh_active;
+        recovery_params.framegen_refresh_multiplier = refresh_multiplier;
         recovery_params.hdr_requested = session->enable_hdr;
         recovery_params.client_uid = session->unique_id;
         recovery_params.client_name = client_label;
@@ -2383,15 +2390,9 @@ namespace webrtc_stream {
       };
 
       if (launch_session->fps > 0) {
-        const auto saturating_double = [](int value) -> int {
-          if (value > std::numeric_limits<int>::max() / 2) {
-            return std::numeric_limits<int>::max();
-          }
-          return value * 2;
-        };
-
-        if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-          apply_refresh_override(saturating_double(launch_session->fps));
+        const int multiplier = rtsp_stream::framegen_refresh_multiplier(*launch_session);
+        if (multiplier > 1) {
+          apply_refresh_override(rtsp_stream::saturating_refresh_fps(launch_session->fps, multiplier));
         }
       }
 

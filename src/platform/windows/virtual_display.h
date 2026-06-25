@@ -51,6 +51,7 @@ namespace VDISPLAY {
     uint32_t fps;
     uint32_t base_fps_millihz = 0;
     bool framegen_refresh_active = false;
+    int framegen_refresh_multiplier = 1;
     bool hdr_requested = false;
     std::string client_uid;
     std::string client_name;
@@ -73,6 +74,7 @@ namespace VDISPLAY {
     const GUID &guid,
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
+    int framegen_refresh_multiplier = 1,
     bool hdr_requested = false,
     bool allow_pending_enumeration = false,
     bool replace_existing = true

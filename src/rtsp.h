@@ -15,6 +15,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -141,6 +142,27 @@ namespace rtsp_stream {
      */
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
+
+  inline bool framegen_capture_fix_enabled(const launch_session_t &session) {
+    return session.gen1_framegen_fix || session.gen2_framegen_fix;
+  }
+
+  inline int framegen_refresh_multiplier(const launch_session_t &session) {
+    if (!framegen_capture_fix_enabled(session)) {
+      return 1;
+    }
+    return session.frame_generation_provider == "game-provided" ? 4 : 2;
+  }
+
+  inline int saturating_refresh_fps(int fps, int multiplier) {
+    if (fps <= 0 || multiplier <= 1) {
+      return fps;
+    }
+    if (fps > std::numeric_limits<int>::max() / multiplier) {
+      return std::numeric_limits<int>::max();
+    }
+    return fps * multiplier;
+  }
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
 

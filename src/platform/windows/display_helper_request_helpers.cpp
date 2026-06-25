@@ -15,6 +15,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+  #include "src/rtsp.h"
 
   #include <algorithm>
   #include <boost/algorithm/string/predicate.hpp>
@@ -194,16 +195,6 @@ namespace display_helper_integration::helpers {
       }
     }
 
-    int safe_double_int(int value) {
-      if (value <= 0) {
-        return value;
-      }
-      if (value > std::numeric_limits<int>::max() / 2) {
-        return std::numeric_limits<int>::max();
-      }
-      return value * 2;
-    }
-
     std::optional<int> positive_dimension_to_int(unsigned int value) {
       if (value == 0) {
         return std::nullopt;
@@ -329,15 +320,17 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
     const bool double_virtual_refresh =
       session_requests_virtual &&
-      effective_video_config_.double_refreshrate &&
+      effective_video_config_.dd.wa.virtual_double_refresh &&
       !display_device::refresh_rate_override_active(effective_video_config_, session_);
-    // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
-    const bool needs_double_minimum = double_virtual_refresh || framegen_active;
-    const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;
-    // Use the higher of display_fps (which may already be doubled by framegen) or the minimum
+    const int refresh_multiplier = std::max(
+      double_virtual_refresh ? 2 : 1,
+      framegen_active ? rtsp_stream::framegen_refresh_multiplier(session_) : 1
+    );
+    const int minimum_fps = refresh_multiplier > 1 ? rtsp_stream::saturating_refresh_fps(base_fps, refresh_multiplier) : base_fps;
+    // Use the higher of display_fps (which may already be raised by framegen) or the minimum
     const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
     BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
-    BOOST_LOG(debug) << "needs_double_minimum: " << needs_double_minimum;
+    BOOST_LOG(debug) << "refresh_multiplier: " << refresh_multiplier;
     BOOST_LOG(debug) << "minimum_fps: " << minimum_fps;
     BOOST_LOG(debug) << "effective_display_fps: "
                      << (session_requests_virtual ? effective_virtual_display_fps : display_fps);

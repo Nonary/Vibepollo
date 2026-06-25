@@ -96,6 +96,7 @@ namespace VDISPLAY_SUDOVDA {
     const GUID &guid,
     uint32_t base_fps_millihz = 0,
     bool framegen_refresh_active = false,
+    int framegen_refresh_multiplier = 1,
     bool hdr_requested = false,
     bool replace_existing = true
   );
@@ -390,7 +391,7 @@ namespace VDISPLAY_SUDOVDA {
       return max_hz;
     }
 
-    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, bool framegen_refresh_active = false) {
+    uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, int framegen_refresh_multiplier = 1) {
       constexpr uint64_t scale = 1000ull;
       using dd_t = config::video_t::dd_t;
       // Manual refresh rate override takes priority over everything, including doubled refresh rates.
@@ -402,10 +403,9 @@ namespace VDISPLAY_SUDOVDA {
           );
         }
       }
-      // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
-      const bool needs_double_minimum = config::video.dd.wa.virtual_double_refresh || framegen_refresh_active;
-      if (needs_double_minimum && base_fps_millihz > 0) {
-        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * 2ull;
+      const int refresh_multiplier = std::max(config::video.dd.wa.virtual_double_refresh ? 2 : 1, framegen_refresh_multiplier);
+      if (refresh_multiplier > 1 && base_fps_millihz > 0) {
+        const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
         const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
         // Ensure we're at least at the minimum, but never lower if already higher
         if (fps_millihz < safe_minimum) {
@@ -2376,6 +2376,7 @@ namespace VDISPLAY_SUDOVDA {
         state.params.guid,
         state.params.base_fps_millihz,
         state.params.framegen_refresh_active,
+        state.params.framegen_refresh_multiplier,
         state.params.hdr_requested
       );
       if (!recreation) {
@@ -3344,6 +3345,7 @@ namespace VDISPLAY_SUDOVDA {
       const GUID &guid,
       uint32_t base_fps_millihz,
       bool framegen_refresh_active,
+      int framegen_refresh_multiplier,
       bool replace_existing
     ) {
       if (SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
@@ -3364,7 +3366,7 @@ namespace VDISPLAY_SUDOVDA {
       BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
       enforce_teardown_cooldown_if_needed();
 
-      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active);
+      const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1);
       VIRTUAL_DISPLAY_ADD_OUT output {};
       BOOST_LOG(debug) << "Calling AddVirtualDisplay (driver handle present).";
       if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, requested_fps, guid, s_client_name, s_client_uid, output)) {
@@ -3579,6 +3581,7 @@ namespace VDISPLAY_SUDOVDA {
     const GUID &guid,
     uint32_t base_fps_millihz,
     bool framegen_refresh_active,
+    int framegen_refresh_multiplier,
     bool hdr_requested,
     bool replace_existing
   ) {
@@ -3604,6 +3607,7 @@ namespace VDISPLAY_SUDOVDA {
         guid,
         base_fps_millihz,
         framegen_refresh_active,
+        framegen_refresh_multiplier,
         replace_existing
       );
       if (!result) {
@@ -4229,6 +4233,7 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
     result.temporary_guid,
     60000u,
     false,
+    1,
     false,
     false
   );

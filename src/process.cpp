@@ -1281,15 +1281,9 @@ namespace proc {
 
     launch_session->framegen_refresh_rate.reset();
     if (launch_session->fps > 0) {
-      const auto saturating_double = [](int value) -> int {
-        if (value > std::numeric_limits<int>::max() / 2) {
-          return std::numeric_limits<int>::max();
-        }
-        return value * 2;
-      };
-
-      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-        apply_refresh_override(saturating_double(launch_session->fps));
+      const int multiplier = rtsp_stream::framegen_refresh_multiplier(*launch_session);
+      if (multiplier > 1) {
+        apply_refresh_override(rtsp_stream::saturating_refresh_fps(launch_session->fps, multiplier));
       }
     }
     _app_prep_begin = std::begin(_app.prep_cmds);
