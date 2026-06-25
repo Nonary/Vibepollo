@@ -766,6 +766,10 @@ namespace stream {
     return true;
   }
 
+  bool stream_start_actions_still_needed() {
+    return session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_sessions();
+  }
+
   void defer_stream_start_actions(deferred_stream_start_t deferred) {
     std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
     deferred_stream_start_state() = std::move(deferred);
@@ -792,6 +796,11 @@ namespace stream {
     {
       std::lock_guard<std::mutex> lock(deferred_stream_start_mutex());
       if (!deferred_stream_start_state()) {
+        return false;
+      }
+      if (!stream_start_actions_still_needed()) {
+        deferred_stream_start_state().reset();
+        BOOST_LOG(debug) << "Stream-start actions skipped because no active stream remains.";
         return false;
       }
       deferred = std::move(*deferred_stream_start_state());
@@ -1816,6 +1825,12 @@ namespace stream {
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
     logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
+    logging::min_max_avg_periodic_logger<double> frame_capture_interval_logger(debug, "Frame capture interval", "ms");
+    logging::min_max_avg_periodic_logger<double> packet_queue_latency_logger(debug, "Video packet queue latency", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_sleep_logger(debug, "Network: rate control sleep", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_late_logger(debug, "Network: rate control late", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_frame_packets_logger(debug, "Network: frame packets sent", "packets");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_batch_packets_logger(debug, "Network: send_batch packet count", "packets");
 
     logging::time_delta_periodic_logger frame_send_batch_latency_logger(debug, "Network: each send_batch() latency");
     logging::time_delta_periodic_logger frame_fec_latency_logger(debug, "Network: each FEC block latency");
@@ -1830,6 +1845,7 @@ namespace stream {
     }
 
     auto ratecontrol_next_frame_start = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> last_frame_timestamp;
 
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
@@ -1842,6 +1858,15 @@ namespace stream {
       if (!session) {
         continue;
       }
+      const auto packet_pop_timestamp = std::chrono::steady_clock::now();
+      packet_queue_latency_logger.collect_and_log(std::chrono::duration<double, std::milli>(packet_pop_timestamp - packet->packet_enqueue_timestamp).count());
+      if (packet->frame_timestamp) {
+        if (last_frame_timestamp) {
+          frame_capture_interval_logger.collect_and_log(std::chrono::duration<double, std::milli>(*packet->frame_timestamp - *last_frame_timestamp).count());
+        }
+        last_frame_timestamp = *packet->frame_timestamp;
+      }
+
       auto lowseq = session->video.lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
@@ -2077,13 +2102,18 @@ namespace stream {
 
                 auto now = std::chrono::steady_clock::now();
                 if (now < due) {
-                  timer->sleep_for(due - now);
+                  auto sleep_time = due - now;
+                  ratecontrol_sleep_logger.collect_and_log(std::chrono::duration<double, std::milli>(sleep_time).count());
+                  timer->sleep_for(sleep_time);
+                } else {
+                  ratecontrol_late_logger.collect_and_log(std::chrono::duration<double, std::milli>(now - due).count());
                 }
 
                 ratecontrol_group_packets_sent = 0;
               }
 
               size_t current_batch_size = x - next_shard_to_send + 1;
+              ratecontrol_batch_packets_logger.collect_and_log((double) current_batch_size);
               batch_info.block_offset = next_shard_to_send;
               batch_info.block_count = current_batch_size;
 
@@ -2119,6 +2149,7 @@ namespace stream {
           ratecontrol_next_frame_start = ratecontrol_frame_start +
                                          std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
                                            ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+          ratecontrol_frame_packets_logger.collect_and_log((double) ratecontrol_frame_packets_sent);
 
           frame_network_latency_logger.second_point_now_and_log();
 

@@ -292,6 +292,7 @@ namespace video {
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+    std::chrono::steady_clock::time_point packet_enqueue_timestamp = std::chrono::steady_clock::now();
   };
 
   struct packet_raw_avcodec: packet_raw_t {
