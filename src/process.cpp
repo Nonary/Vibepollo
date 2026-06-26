@@ -1442,6 +1442,16 @@ namespace proc {
           target_fps *= 1000;
         }
 
+        uint32_t base_fps_millihz = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
+        if (base_fps_millihz > 0 && base_fps_millihz < 1000u) {
+          base_fps_millihz *= 1000u;
+        }
+        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+        const int refresh_multiplier = std::max(
+          config::video.dd.wa.virtual_double_refresh ? 2 : 1,
+          framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1
+        );
+
         const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
         auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
@@ -1450,7 +1460,10 @@ namespace proc {
           render_width,
           render_height,
           target_fps,
-          display_guid
+          display_guid,
+          base_fps_millihz,
+          framegen_refresh_active,
+          refresh_multiplier
         );
 
         if (display_info) {
