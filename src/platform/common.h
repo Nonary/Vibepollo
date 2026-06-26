@@ -360,6 +360,7 @@ namespace platf {
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
     std::optional<std::chrono::steady_clock::time_point> capture_pacing_timestamp;
+    bool repeated_frame {};
 
     virtual ~img_t() = default;
   };

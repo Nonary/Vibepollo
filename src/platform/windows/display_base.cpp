@@ -434,9 +434,11 @@ namespace platf::dxgi {
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
-        if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored) {
+        const auto normal_wgc_repeated_frames = consume_normal_wgc_repeated_frames();
+        if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored || normal_wgc_repeated_frames) {
           BOOST_LOG(debug) << "WGC pacing bust mix: woke_late(a)=" << pacing_bust_woke_late
                            << " snapshot_miss(b)=" << pacing_bust_snapshot_miss
+                           << " bounded_repeats=" << normal_wgc_repeated_frames
                            << " phase_preserved=" << pacing_phase_preserved
                            << " phase_reanchored=" << pacing_phase_reanchored
                            << " smoothing=" << (config::video.wgc_pacing_smoothing ? "on" : "off");
@@ -480,6 +482,10 @@ namespace platf::dxgi {
             status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
 
             if (status == capture_e::ok && img_out) {
+              if (img_out->repeated_frame) {
+                img_out->frame_timestamp = sleep_target;
+                img_out->capture_pacing_timestamp = sleep_target;
+              }
               frame_pacing_group_frames += 1;
             } else {
               last_pacing_slot = sleep_target;
