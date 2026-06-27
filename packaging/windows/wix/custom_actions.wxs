@@ -121,9 +121,17 @@
   </Fragment>
 
   <Fragment>
-    <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <!-- Post-install chores (ACL reset, config migration, installer migrations) run
+         AFTER InstallFiles. They are best-effort housekeeping, not prerequisites for
+         the app to boot: a failure here must NOT roll back / brick an otherwise complete
+         upgrade. Use Return="ignore" like the driver/Vulkan-layer actions below; Vibepollo
+         re-repairs config ACLs AND re-hardens the private credentials directory at startup
+         (statefile::repair_config_permissions / secure_private_directory, and create_creds
+         hardens it before writing the key), and the legacy config-key migrations are
+         idempotent on the next successful install. -->
+    <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- The Vulkan HDR layer is an optional enhancement for virtual displays. A failure here

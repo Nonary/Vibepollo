@@ -34,15 +34,41 @@ namespace file_handler {
 
     bool replace_file(const std::filesystem::path &tmp, const std::filesystem::path &target) {
 #ifdef _WIN32
-      if (!MoveFileExW(
-            tmp.wstring().c_str(),
-            target.wstring().c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-          )) {
-        BOOST_LOG(error) << "Failed to replace " << target.string() << " with " << tmp.string() << ": " << GetLastError();
-        return false;
+      const auto tmp_w = tmp.wstring();
+      const auto target_w = target.wstring();
+      const auto try_move = [&]() {
+        return MoveFileExW(
+                 tmp_w.c_str(),
+                 target_w.c_str(),
+                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+               ) != 0;
+      };
+
+      if (try_move()) {
+        return true;
       }
-      return true;
+
+      // A read-only attribute on the existing target makes MoveFileEx replace fail
+      // with ERROR_ACCESS_DENIED even for SYSTEM. Clearing it (it is not an ACL) and
+      // retrying recovers config/state files left read-only by a botched upgrade or
+      // a backup-restore, instead of permanently failing every write.
+      if (GetLastError() == ERROR_ACCESS_DENIED) {
+        const DWORD attrs = GetFileAttributesW(target_w.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
+          if (SetFileAttributesW(target_w.c_str(), attrs & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY))) {
+            BOOST_LOG(warning) << "Cleared read-only attribute on " << target.string() << " to allow update";
+            if (try_move()) {
+              return true;
+            }
+            // Replace still failed for another reason; restore the attribute we
+            // cleared so a failed write does not silently weaken the file.
+            SetFileAttributesW(target_w.c_str(), attrs);
+          }
+        }
+      }
+
+      BOOST_LOG(error) << "Failed to replace " << target.string() << " with " << tmp.string() << ": " << GetLastError();
+      return false;
 #else
       std::error_code ec;
       std::filesystem::rename(tmp, target, ec);

@@ -27,9 +27,15 @@ namespace statefile {
   /**
    * @brief Load an existing JSON file before a read/modify/write update.
    *
-   * Missing files are treated as an empty tree and return true. Existing files
-   * that cannot be inspected or parsed return false so callers do not overwrite
-   * the last on-disk state with a partial replacement.
+   * Returns true (with @p tree populated, or empty when there is nothing usable to
+   * preserve) when it is safe for the caller to proceed and rewrite the file:
+   *   - Missing or blank files yield an empty tree.
+   *   - A readable-but-malformed file is quarantined (renamed aside) and yields an
+   *     empty tree, so a single corrupt file can no longer permanently wedge a
+   *     writer (the bad content was already unrecoverable).
+   *
+   * Returns false only when the file cannot be inspected or opened (I/O, permission,
+   * or a non-regular path) so the caller does not overwrite state it could not read.
    */
   bool load_json_for_update(const std::string &path, boost::property_tree::ptree &tree);
 
@@ -44,6 +50,16 @@ namespace statefile {
   void repair_config_permissions();
 
   void migrate_recent_state_keys();
+
+  /**
+   * @brief Apply a restrictive, non-inherited ACL to a directory holding private key
+   *        material (LocalSystem + Administrators full control, inheritance disabled).
+   *
+   * This is the runtime backstop for the credentials directory: it ensures the host
+   * TLS private key is never left world-readable even if the installer's ACL-hardening
+   * step is skipped or fails. Best-effort; no-op on non-Windows.
+   */
+  void secure_private_directory(const std::string &path);
 
   /**
    * @brief Persist the snapshot exclusion device list to vibeshine_state.json.
