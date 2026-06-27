@@ -1,56 +1,78 @@
 import { describe, expect, it } from 'vitest';
 import {
   frameGenDisplayHealthMessage,
+  frameGenDisplayNotice,
+  physicalFrameGenDisplayWarning,
   resolvesToVirtualDisplay,
-  shouldAutoEnableCaptureFixForFrameGeneration,
-  shouldPersistFrameGenerationCaptureFix,
 } from '@web/components/app-edit/frameGenDisplayPolicy';
 
+const PHYSICAL_WARNING =
+  'Physical displays cannot capture DLSS/FSR generated frames. If you use DLSS/FSR frame generation with an RTSS frame limiter on a physical screen, latency can increase by 50 ms or more. Without suitable frame pacing, it may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.';
+const VIRTUAL_GAME_PROVIDED =
+  'Virtual display captures DLSS/FSR generated frames reliably and paces them automatically.';
+const VIRTUAL_GENERIC = 'Virtual display uses automatic frame pacing for smoother frame generation.';
+
 describe('app edit frame generation display policy', () => {
-  it('treats global virtual-display inheritance as virtual and clears persisted capture fix', () => {
-    const usesVirtual = resolvesToVirtualDisplay({
-      displaySelection: 'global',
-      appVirtualDisplayMode: null,
-      globalVirtualDisplayMode: 'per_client',
-      globalOutputName: '',
-    });
-
-    expect(usesVirtual).toBe(true);
-    expect(shouldPersistFrameGenerationCaptureFix(true, usesVirtual)).toBe(false);
+  it('treats global virtual-display inheritance as virtual', () => {
+    expect(
+      resolvesToVirtualDisplay({
+        displaySelection: 'global',
+        appVirtualDisplayMode: null,
+        globalVirtualDisplayMode: 'per_client',
+        globalOutputName: '',
+      }),
+    ).toBe(true);
   });
 
-  it('clears persisted capture fix for physical-display apps', () => {
-    const usesVirtual = resolvesToVirtualDisplay({
-      displaySelection: 'physical',
-      appVirtualDisplayMode: 'disabled',
-      globalVirtualDisplayMode: 'per_client',
-      globalOutputName: '',
-    });
-
-    expect(usesVirtual).toBe(false);
-    expect(shouldPersistFrameGenerationCaptureFix(true, usesVirtual)).toBe(false);
+  it('treats explicit physical-display apps as not virtual', () => {
+    expect(
+      resolvesToVirtualDisplay({
+        displaySelection: 'physical',
+        appVirtualDisplayMode: 'disabled',
+        globalVirtualDisplayMode: 'per_client',
+        globalOutputName: '',
+      }),
+    ).toBe(false);
   });
 
-  it('does not auto-enable capture fix for frame generation', () => {
-    expect(shouldAutoEnableCaptureFixForFrameGeneration(true)).toBe(false);
-    expect(shouldAutoEnableCaptureFixForFrameGeneration(false)).toBe(false);
+  it('exposes the shared physical-display warning', () => {
+    expect(physicalFrameGenDisplayWarning()).toBe(PHYSICAL_WARNING);
+  });
+
+  it('returns no app-edit banner when frame generation is off', () => {
+    expect(frameGenDisplayNotice(true, 'off')).toBeNull();
+    expect(frameGenDisplayNotice(false, 'off')).toBeNull();
+  });
+
+  it('affirms virtual-display capture for game-provided frame generation', () => {
+    expect(frameGenDisplayNotice(true, 'game-provided')).toEqual({
+      type: 'info',
+      message: VIRTUAL_GAME_PROVIDED,
+    });
+  });
+
+  it('describes automatic pacing for other virtual-display frame generation', () => {
+    expect(frameGenDisplayNotice(true, 'lossless-scaling')).toEqual({
+      type: 'info',
+      message: VIRTUAL_GENERIC,
+    });
+  });
+
+  it('warns about high latency for physical-display frame generation', () => {
+    expect(frameGenDisplayNotice(false, 'game-provided')).toEqual({
+      type: 'warning',
+      message: PHYSICAL_WARNING,
+    });
+    expect(frameGenDisplayNotice(false, 'lossless-scaling')).toEqual({
+      type: 'warning',
+      message: PHYSICAL_WARNING,
+    });
   });
 
   it('returns the redesigned display health messages', () => {
-    expect(frameGenDisplayHealthMessage(true, 'game-provided')).toBe(
-      'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.',
-    );
-    expect(frameGenDisplayHealthMessage(false, 'game-provided')).toBe(
-      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
-    );
-    expect(frameGenDisplayHealthMessage(false, 'lossless-scaling')).toBe(
-      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
-    );
-    expect(frameGenDisplayHealthMessage(false, 'nvidia-smooth-motion')).toBe(
-      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
-    );
-    expect(frameGenDisplayHealthMessage(false, 'off')).toBe(
-      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
-    );
+    expect(frameGenDisplayHealthMessage(true, 'game-provided')).toBe(VIRTUAL_GAME_PROVIDED);
+    expect(frameGenDisplayHealthMessage(true, 'nvidia-smooth-motion')).toBe(VIRTUAL_GENERIC);
+    expect(frameGenDisplayHealthMessage(false, 'game-provided')).toBe(PHYSICAL_WARNING);
+    expect(frameGenDisplayHealthMessage(false, 'off')).toBe(PHYSICAL_WARNING);
   });
 });

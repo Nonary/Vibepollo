@@ -17,7 +17,7 @@ import type {
   LosslessProfileKey,
 } from './types';
 import { FRAME_GENERATION_PROVIDERS, LOSSLESS_FLOW_MIN, LOSSLESS_FLOW_MAX } from './lossless';
-import { physicalFrameGenDisplayWarning } from './frameGenDisplayPolicy';
+import { frameGenDisplayNotice } from './frameGenDisplayPolicy';
 
 const modeModel = defineModel<FrameGenerationMode>('mode', { default: 'off' });
 const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', {
@@ -53,29 +53,9 @@ const frameGenOptions = computed(() => [
   ...FRAME_GENERATION_PROVIDERS,
 ]);
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
-const hasFrameGenSelection = computed(() => modeModel.value !== 'off');
-const frameGenDisplayAlert = computed(() => {
-  if (props.usingVirtualDisplay) {
-    if (!hasFrameGenSelection.value) {
-      return null;
-    }
-    if (modeModel.value === 'game-provided') {
-      return {
-        type: 'info' as const,
-        message:
-          'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.',
-      };
-    }
-    return {
-      type: 'info' as const,
-      message: 'Virtual display uses automatic frame pacing for smoother frame generation.',
-    };
-  }
-  return {
-    type: 'warning' as const,
-    message: physicalFrameGenDisplayWarning(props.health?.rtss.installed ?? null),
-  };
-});
+const frameGenDisplayAlert = computed(() =>
+  frameGenDisplayNotice(props.usingVirtualDisplay, modeModel.value),
+);
 const losslessAdvancedTargets = ref(
   losslessTargetModel.value !== null || losslessRtssModel.value !== null,
 );

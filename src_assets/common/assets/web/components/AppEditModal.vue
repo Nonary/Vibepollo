@@ -545,9 +545,8 @@ import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue'
 import {
   VIRTUAL_DISPLAY_SELECTION,
   frameGenDisplayHealthMessage,
-  physicalGameFrameGenCaptureWarning,
+  physicalFrameGenDisplayWarning,
   resolvesToVirtualDisplay,
-  shouldAutoEnableCaptureFixForFrameGeneration,
   type DisplaySelection,
 } from './app-edit/frameGenDisplayPolicy';
 
@@ -606,8 +605,6 @@ function fresh(): AppForm {
     stateCmd: [],
     detached: [],
     virtualScreen: false,
-    gen1FramegenFix: false,
-    gen2FramegenFix: false,
     output: '',
     frameGenerationProvider: 'game-provided',
     frameGenerationMode: 'off',
@@ -984,8 +981,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
-    gen1FramegenFix: false,
-    gen2FramegenFix: false,
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
     frameGenerationProvider,
@@ -2049,7 +2044,6 @@ const usingVirtualDisplay = computed(() => {
     globalOutputName: globalOutputName.value,
   });
 });
-const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
@@ -2232,12 +2226,9 @@ watch(open, (o) => {
     });
     requestAnimationFrame(() => updateShadows());
     ensureNameSelectionFromForm();
-    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
-    } else {
-      frameGenHealth.value = null;
-      frameGenHealthError.value = null;
-    }
+    // Frame-gen health is only meaningful after an explicit check; start clean on open.
+    frameGenHealth.value = null;
+    frameGenHealthError.value = null;
     if (isWindows.value) {
       refreshLosslessExecutableStatus().catch(() => {});
       if (displaySelection.value === 'physical' && displayDevices.value.length === 0) {
@@ -2481,7 +2472,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
           ? 'RTSS frame limiting with DLSS/FSR frame generation on a physical display can increase latency by 50 ms or more. Use a virtual display for low-latency, smooth capture.'
           : 'No RTSS frame limiter was detected. DLSS/FSR frame generation on a physical display may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.';
         captureStatus = 'warn';
-        captureMessage = physicalGameFrameGenCaptureWarning(rtssInstalled);
+        captureMessage = physicalFrameGenDisplayWarning();
       } else if (!usingVirtual) {
         captureStatus = 'pass';
         captureMessage =
@@ -2801,85 +2792,6 @@ function handleEnableVirtualScreen() {
   refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
 }
 
-function warnIfHealthIssues(reason: FrameGenHealthReason) {
-  if (
-    reason === 'auto' ||
-    reason === 'virtual-toggle' ||
-    reason === 'capture-change' ||
-    reason === 'output-change' ||
-    reason === 'open'
-  ) {
-    return;
-  }
-  if (!message) return;
-  const health = frameGenHealth.value;
-  if (!health) return;
-  if (health.capture.status === 'warn' || health.capture.status === 'fail') {
-    message.warning(
-      form.value.frameGenerationMode === 'game-provided' && !usingVirtualDisplay.value
-        ? physicalGameFrameGenCaptureWarning(health.rtss.installed)
-        : 'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.',
-      { duration: 8000 },
-    );
-  }
-  if (
-    (health.rtss.status === 'warn' || health.rtss.status === 'fail') &&
-    !(form.value.frameGenerationMode === 'game-provided' && !usingVirtualDisplay.value)
-  ) {
-    message.warning(
-      'RTSS is required for this fix. Install and launch RTSS to avoid microstutter.',
-      { duration: 8000 },
-    );
-  }
-  if (
-    !skipDisplayWarnings.value &&
-    !health.display.virtualActive &&
-    form.value.frameGenerationMode === 'game-provided'
-  ) {
-    const requiresHigh = health.display.targets.some(
-      (target) => target.fps < 144 && target.supported === false,
-    );
-    if (requiresHigh) {
-      message.warning(
-        physicalGameFrameGenCaptureWarning(health.rtss.installed),
-        { duration: 8000 },
-      );
-    }
-  }
-}
-
-function setAutoCaptureFixFlag(enabled: boolean) {
-  autoEnablingCaptureFix = true;
-  form.value.gen1FramegenFix = enabled;
-  if (!enabled) {
-    form.value.gen2FramegenFix = false;
-  }
-  setTimeout(() => {
-    autoEnablingCaptureFix = false;
-  }, 100);
-}
-
-function autoSyncCaptureFixForFrameGen(
-  mode: FrameGenerationMode,
-  previousMode?: FrameGenerationMode,
-) {
-  if (formHydratingFromServer) {
-    return;
-  }
-  const anyFrameGenEnabled = mode !== 'off';
-  const wasFrameGenEnabled = previousMode !== undefined && previousMode !== 'off';
-  const shouldEnable =
-    anyFrameGenEnabled && shouldAutoEnableCaptureFixForFrameGeneration(usingVirtualDisplay.value);
-  if (anyFrameGenEnabled && !shouldEnable) {
-    if (usingVirtualDisplay.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      setAutoCaptureFixFlag(false);
-    }
-    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
-  } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
-    setAutoCaptureFixFlag(false);
-  }
-}
-
 const playniteInstalled = ref(false);
 const APP_UUID_RE =
   /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
@@ -2964,47 +2876,11 @@ watch(newAppSource, (v) => {
     selectedPlayniteId.value = '';
   }
 });
-// Track if the unified capture fix is being auto-enabled to prevent alert spam
-let autoEnablingCaptureFix = false;
-
-watch(
-  () => form.value.gen1FramegenFix,
-  async (enabled) => {
-    if (!enabled) {
-      return;
-    }
-    // Collapse any Gen2 state into the unified capture fix.
-    if (form.value.gen2FramegenFix) {
-      form.value.gen2FramegenFix = false;
-    }
-    if (autoEnablingCaptureFix) {
-      return;
-    }
-    message?.info(
-      frameGenDisplayHealthMessage(usingVirtualDisplay.value, form.value.frameGenerationMode),
-      { duration: 8000 },
-    );
-    await refreshFrameGenHealth({ reason: 'gen1' });
-    warnIfHealthIssues('gen1');
-  },
-);
-
-watch(
-  () => form.value.gen2FramegenFix,
-  (enabled) => {
-    if (!enabled) {
-      return;
-    }
-    form.value.gen1FramegenFix = true;
-    form.value.gen2FramegenFix = false;
-  },
-);
-
 watch(
   () => displaySelection.value,
   (selection, prev) => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     if (selection === prev) return;
     const reason: FrameGenHealthReason =
       selection === 'virtual' || prev === 'virtual' ? 'virtual-toggle' : 'output-change';
@@ -3016,13 +2892,6 @@ watch(
   () => usingVirtualDisplay.value,
   (usesVirtual, previous) => {
     if (!isWindows.value) return;
-    if (usesVirtual) {
-      if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
-        setAutoCaptureFixFlag(false);
-      }
-    } else if (previous === true) {
-      autoSyncCaptureFixForFrameGen(frameGenerationSelection.value);
-    }
     if (open.value && (previous !== usesVirtual || frameGenHealth.value)) {
       refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
     }
@@ -3034,7 +2903,7 @@ watch(
   () => captureMethod.value,
   () => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
@@ -3044,7 +2913,7 @@ watch(
   (enabled, prev) => {
     if (enabled === prev) return;
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
@@ -3053,16 +2922,19 @@ watch(
   () => [form.value.output, globalOutputName.value],
   () => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'output-change', silent: true }).catch(() => {});
   },
 );
 
-// Automatically enable Gen1 Frame Generation fix when Frame Generation is enabled
+// Re-run the frame-generation health check whenever frame generation is turned on.
 watch(
   () => frameGenerationSelection.value,
-  (mode, prevMode) => {
-    autoSyncCaptureFixForFrameGen(mode, prevMode);
+  (mode) => {
+    if (!isWindows.value) return;
+    if (formHydratingFromServer) return;
+    if (mode === 'off') return;
+    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
   },
 );
 // Scroll affordance logic for modal body

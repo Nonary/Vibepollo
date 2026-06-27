@@ -26,30 +26,39 @@ export function resolvesToVirtualDisplay(input: FrameGenDisplayResolutionInput):
   return input.globalOutputName === VIRTUAL_DISPLAY_SELECTION;
 }
 
-export function shouldPersistFrameGenerationCaptureFix(
-  captureFixEnabled: boolean,
-  usesVirtualDisplay: boolean,
-): boolean {
-  void captureFixEnabled;
-  void usesVirtualDisplay;
-  return false;
+// Single source of truth for the physical-display frame-generation warning.
+// Mirrors config.physical_display_framegen_warning shown on the Audio/Video tab so
+// both screens tell users the same thing about capture limits and latency.
+export function physicalFrameGenDisplayWarning(): string {
+  return 'Physical displays cannot capture DLSS/FSR generated frames. If you use DLSS/FSR frame generation with an RTSS frame limiter on a physical screen, latency can increase by 50 ms or more. Without suitable frame pacing, it may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.';
 }
 
-export function shouldAutoEnableCaptureFixForFrameGeneration(usesVirtualDisplay: boolean): boolean {
-  void usesVirtualDisplay;
-  return false;
-}
-
-export function physicalFrameGenDisplayWarning(rtssInstalled?: boolean | null): string {
-  if (rtssInstalled === true) {
-    return 'Frame generation on a physical display can add latency with RTSS frame limiting. Use a virtual display for low-latency, smooth capture.';
+function virtualFrameGenDisplayMessage(mode: FrameGenerationMode): string {
+  if (mode === 'game-provided') {
+    return 'Virtual display captures DLSS/FSR generated frames reliably and paces them automatically.';
   }
-
-  return 'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.';
+  return 'Virtual display uses automatic frame pacing for smoother frame generation.';
 }
 
-export function physicalGameFrameGenCaptureWarning(rtssInstalled?: boolean | null): string {
-  return physicalFrameGenDisplayWarning(rtssInstalled);
+export interface FrameGenDisplayNotice {
+  type: 'info' | 'warning';
+  message: string;
+}
+
+// Resolves the banner shown in the app editor's Frame Generation section.
+// Returns null when no frame generation is selected so we never warn about a
+// feature the app is not using.
+export function frameGenDisplayNotice(
+  usesVirtualDisplay: boolean,
+  mode: FrameGenerationMode,
+): FrameGenDisplayNotice | null {
+  if (mode === 'off') {
+    return null;
+  }
+  if (usesVirtualDisplay) {
+    return { type: 'info', message: virtualFrameGenDisplayMessage(mode) };
+  }
+  return { type: 'warning', message: physicalFrameGenDisplayWarning() };
 }
 
 export function frameGenDisplayHealthMessage(
@@ -57,11 +66,7 @@ export function frameGenDisplayHealthMessage(
   mode: FrameGenerationMode = 'off',
 ): string {
   if (usesVirtualDisplay) {
-    if (mode === 'game-provided') {
-      return 'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.';
-    }
-    return 'Virtual display uses automatic frame pacing for smoother frame generation.';
+    return virtualFrameGenDisplayMessage(mode);
   }
-  void mode;
   return physicalFrameGenDisplayWarning();
 }

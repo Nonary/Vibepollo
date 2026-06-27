@@ -79,8 +79,6 @@ export interface AppForm {
   stateCmd: PrepCmd[];
   detached: string[];
   virtualScreen: boolean;
-  gen1FramegenFix: boolean;
-  gen2FramegenFix: boolean;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   frameGenerationProvider: FrameGenerationProvider;
