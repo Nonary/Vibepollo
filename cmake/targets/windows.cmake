@@ -98,7 +98,7 @@ set(SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS -DisableSignPath)
 
 # Build custom elevated installer EXE that wraps the generated MSI
 add_custom_target(package_installer
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}" -MsiPath "${CMAKE_BINARY_DIR}/cpack_artifacts/${CPACK_PACKAGE_FILE_NAME}.msi" ${SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS}
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/packaging/windows/bootstrapper/build_bootstrapper.ps1" -BuildDir "${CMAKE_BINARY_DIR}" -MsiPath "${CMAKE_BINARY_DIR}/cpack_artifacts/Vibeshine.msi" ${SUNSHINE_BOOTSTRAPPER_SIGNPATH_ARGS}
     DEPENDS package_msi
     COMMENT "Building custom installer executable"
 )

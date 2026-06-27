@@ -2209,6 +2209,8 @@ namespace VibepolloInstaller {
   }
 
   internal static class InstallerRunner {
+    private const int MsiExecTimeoutMilliseconds = 30 * 60 * 1000;
+    private const int MsiExecTimeoutExitCode = 258;
     private static readonly string[] OperationTokens = {
       "/i",
       "/package",
@@ -6327,10 +6329,28 @@ namespace VibepolloInstaller {
     }
 
     private static int RunMsiexec(IReadOnlyList<string> arguments, bool hiddenWindow, bool requestElevationIfNeeded) {
-      return RunProcess(ResolveMsiexecPath(), BuildCommandLine(arguments), hiddenWindow, requestElevationIfNeeded);
+      return RunProcess(
+        ResolveMsiexecPath(),
+        BuildCommandLine(arguments),
+        hiddenWindow,
+        requestElevationIfNeeded,
+        MsiExecTimeoutMilliseconds,
+        MsiExecTimeoutExitCode,
+        TryGetMsiLogPath(arguments == null ? new List<string>() : arguments.ToList()));
     }
 
     private static int RunProcess(string executablePath, string arguments, bool hiddenWindow, bool requestElevationIfNeeded) {
+      return RunProcess(executablePath, arguments, hiddenWindow, requestElevationIfNeeded, 0, 0, null);
+    }
+
+    private static int RunProcess(
+      string executablePath,
+      string arguments,
+      bool hiddenWindow,
+      bool requestElevationIfNeeded,
+      int timeoutMilliseconds,
+      int timeoutExitCode,
+      string timeoutLogPath) {
       var shouldElevate = requestElevationIfNeeded && !IsProcessElevated();
       var workingDirectory = AppDomain.CurrentDomain.BaseDirectory;
       try {
@@ -6358,6 +6378,22 @@ namespace VibepolloInstaller {
         using (var process = Process.Start(startInfo)) {
           if (process == null) {
             return 1;
+          }
+          if (timeoutMilliseconds > 0 && !process.WaitForExit(timeoutMilliseconds)) {
+            AppendInstallerLogMessage(
+              timeoutLogPath,
+              Path.GetFileName(executablePath) + " did not exit within "
+              + TimeSpan.FromMilliseconds(timeoutMilliseconds).TotalMinutes.ToString("0")
+              + " minutes; terminating process " + process.Id + ".");
+            try {
+              process.Kill();
+            } catch {
+            }
+            try {
+              process.WaitForExit(10000);
+            } catch {
+            }
+            return timeoutExitCode;
           }
           process.WaitForExit();
           return process.ExitCode;
