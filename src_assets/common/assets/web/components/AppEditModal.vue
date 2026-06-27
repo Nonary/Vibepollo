@@ -544,6 +544,15 @@ import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
 import AppEditRtxHdrSection from './app-edit/AppEditRtxHdrSection.vue';
 import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
+import {
+  VIRTUAL_DISPLAY_SELECTION,
+  frameGenDisplayHealthMessage,
+  resolvesToVirtualDisplay,
+  shouldAutoEnableCaptureFixForFrameGeneration,
+  shouldPersistFrameGenerationCaptureFix,
+  type DisplaySelection,
+} from './app-edit/frameGenDisplayPolicy';
+
 type DisplayDevice = {
   device_id?: string;
   display_name?: string;
@@ -552,7 +561,6 @@ type DisplayDevice = {
     active?: boolean;
   };
 };
-type DisplaySelection = 'global' | 'virtual' | 'physical';
 type AppVirtualDisplayModeSelection = AppVirtualDisplayMode | 'global';
 
 interface AppEditModalProps {
@@ -1011,7 +1019,15 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 
 function toServerPayload(f: AppForm): Record<string, any> {
   const selection = displaySelection.value;
-  const captureFixEnabled = !!(f.gen1FramegenFix || f.gen2FramegenFix);
+  const captureFixEnabled = shouldPersistFrameGenerationCaptureFix(
+    !!(f.gen1FramegenFix || f.gen2FramegenFix),
+    resolvesToVirtualDisplay({
+      displaySelection: selection,
+      appVirtualDisplayMode: f.virtualDisplayMode,
+      globalVirtualDisplayMode: globalVirtualDisplayMode.value,
+      globalOutputName: globalOutputName.value,
+    }),
+  );
   const configOverridesPayload = buildConfigOverridesPayload(f);
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
@@ -1081,7 +1097,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   } else if (mode === 'game-provided') {
     resolvedProvider = 'game-provided';
   } else {
-    resolvedProvider = provider;
+    resolvedProvider = 'lossless-scaling';
   }
   payload['frame-generation-provider'] = resolvedProvider;
   payload['frame-generation-mode'] = mode;
@@ -1896,26 +1912,19 @@ const hasNvidia = computed(() => {
   }
   return true;
 });
-const ddConfigOption = computed(
-  () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
-);
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
-const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
 const globalOutputName = computed(() => {
   const name = (configStore.config as any)?.output_name;
   return typeof name === 'string' ? name : '';
 });
 const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() => {
   const mode = (configStore.config as any)?.virtual_display_mode;
-  return parseAppVirtualDisplayMode(mode) ?? 'disabled';
+  return parseAppVirtualDisplayMode(mode) ?? 'per_client';
 });
 const globalVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() => {
   const layout = (configStore.config as any)?.virtual_display_layout;
   return parseAppVirtualDisplayLayout(layout) ?? 'exclusive';
 });
-const resolvedVirtualDisplayMode = computed<AppVirtualDisplayMode>(
-  () => form.value.virtualDisplayMode ?? globalVirtualDisplayMode.value,
-);
 const resolvedVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(
   () => form.value.virtualDisplayLayout ?? globalVirtualDisplayLayout.value,
 );
@@ -2049,22 +2058,13 @@ const autoCaptureUsesWgc = computed(() => {
   }
   return false;
 });
-const virtualOutputName = computed(() => {
-  const outputName = (configStore.config as any)?.output_name;
-  return typeof outputName === 'string' ? outputName : '';
-});
 const usingVirtualDisplay = computed(() => {
-  const selection = displaySelection.value;
-  if (selection === 'virtual') return true;
-  if (selection === 'physical') return false;
-  const mode = resolvedVirtualDisplayMode.value;
-  if (mode === 'per_client' || mode === 'shared') {
-    return true;
-  }
-  if (mode === 'disabled') {
-    return virtualOutputName.value === VIRTUAL_DISPLAY_SELECTION;
-  }
-  return false;
+  return resolvesToVirtualDisplay({
+    displaySelection: displaySelection.value,
+    appVirtualDisplayMode: form.value.virtualDisplayMode,
+    globalVirtualDisplayMode: globalVirtualDisplayMode.value,
+    globalOutputName: globalOutputName.value,
+  });
 });
 const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
 const displayDevices = ref<DisplayDevice[]>([]);
@@ -2438,6 +2438,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         http.get('/api/display-devices?detail=full', { validateStatus: () => true }),
       ]);
 
+      const usingVirtual = usingVirtualDisplay.value;
       const captureValue = (captureMethod.value || '').toString().toLowerCase();
       let captureStatus: FrameGenHealth['capture']['status'];
       let captureMessage: string;
@@ -2455,6 +2456,17 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         captureStatus = 'fail';
         captureMessage =
           'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
+      }
+      if (!usingVirtual) {
+        if (captureValue === '' || captureValue === 'ddx') {
+          captureStatus = 'pass';
+          captureMessage =
+            'Physical-display frame generation uses the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
+        } else {
+          captureStatus = 'warn';
+          captureMessage =
+            'Physical-display frame generation is less reliable outside DXGI capture. Use a virtual display for best DLSS/FSR capture.';
+        }
       }
 
       let rtssInstalled = false;
@@ -2490,7 +2502,6 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         rtssMessage = 'Unable to reach the RTSS status endpoint.';
       }
 
-      const usingVirtual = usingVirtualDisplay.value;
       const fpsTargets = [60, 90, 120, 144];
       const tolerance = 0.5;
       let displayStatus: FrameGenHealth['display']['status'] = 'unknown';
@@ -2501,7 +2512,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       let displayError: string | null = null;
       let displayTargets = fpsTargets.map((fps) => ({
         fps,
-        requiredHz: fps * 2,
+        requiredHz: usingVirtual ? fps * 4 : fps,
         supported: usingVirtual ? true : null,
       }));
       let highestFailUnder144: number | null = null;
@@ -2719,16 +2730,24 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         }
       } else {
         displayStatus = 'pass';
-        displayMessage =
-          'Vibepollo virtual screen guarantees a high refresh surface for frame generation.';
+        displayMessage = frameGenDisplayHealthMessage(true);
       }
 
       if (usingVirtual) {
         displayTargets = fpsTargets.map((fps) => ({
           fps,
-          requiredHz: fps * 2,
+          requiredHz: fps * 4,
           supported: true,
         }));
+      } else {
+        displayStatus = 'warn';
+        displayMessage = frameGenDisplayHealthMessage(false);
+        displayTargets = fpsTargets.map((fps) => ({
+          fps,
+          requiredHz: fps,
+          supported: null,
+        }));
+        highestFailUnder144 = null;
       }
 
       const health: FrameGenHealth = {
@@ -2939,22 +2958,11 @@ watch(
       return;
     }
     message?.info(
-      "Frame Generation Capture Fix requires Windows Graphics Capture (WGC), RTSS, and a display capable of 240 Hz or higher. Vibepollo's virtual screen or any display that satisfies the doubled refresh requirement will work.",
+      usingVirtualDisplay.value
+        ? 'Virtual-display frame generation uses 4x refresh with the Reflex limiter path.'
+        : 'Physical-display frame generation stays at 1x refresh and is not recommended for DLSS/FSR capture. Use the virtual display for best pacing.',
       { duration: 8000 },
     );
-    if (!skipDisplayWarnings.value) {
-      if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
-        message?.warning(
-          'Configure Step 1 for Vibepollo\'s virtual screen or enable Display Device and set it to "Deactivate all other displays" so the doubled refresh requirement is met during the stream.',
-          { duration: 8000 },
-        );
-      } else if (ddConfigOption.value !== 'ensure_only_display') {
-        message?.warning(
-          'Set Step 1 to use Vibepollo\'s virtual screen or adjust Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active.',
-          { duration: 8000 },
-        );
-      }
-    }
     await refreshFrameGenHealth({ reason: 'gen1' });
     warnIfHealthIssues('gen1');
   },
@@ -2981,6 +2989,26 @@ watch(
       selection === 'virtual' || prev === 'virtual' ? 'virtual-toggle' : 'output-change';
     refreshFrameGenHealth({ reason, silent: true }).catch(() => {});
   },
+);
+
+watch(
+  () => usingVirtualDisplay.value,
+  (usesVirtual, previous) => {
+    if (!isWindows.value) return;
+    if (!usesVirtual) return;
+    if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
+      autoEnablingCaptureFix = true;
+      form.value.gen1FramegenFix = false;
+      form.value.gen2FramegenFix = false;
+      setTimeout(() => {
+        autoEnablingCaptureFix = false;
+      }, 100);
+    }
+    if (open.value && (previous !== usesVirtual || frameGenHealth.value)) {
+      refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
+    }
+  },
+  { immediate: true },
 );
 
 watch(
@@ -3020,7 +3048,17 @@ watch(
     }
     const anyFrameGenEnabled = mode !== 'off';
     const wasFrameGenEnabled = prevMode !== 'off';
-    if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
+    if (anyFrameGenEnabled && !shouldAutoEnableCaptureFixForFrameGeneration(usingVirtualDisplay.value)) {
+      if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
+        autoEnablingCaptureFix = true;
+        form.value.gen1FramegenFix = false;
+        form.value.gen2FramegenFix = false;
+        setTimeout(() => {
+          autoEnablingCaptureFix = false;
+        }, 100);
+      }
+      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
+    } else if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
       autoEnablingCaptureFix = true;
       form.value.gen1FramegenFix = true;
       if (mode === 'nvidia-smooth-motion') {

@@ -6,6 +6,7 @@
 
 // standard includes
 #include "config.h"
+#include "framegen_policy.h"
 
 #include <array>
 #include <atomic>
@@ -99,6 +100,7 @@ namespace rtsp_stream {
     std::optional<std::map<std::string, std::pair<unsigned int, unsigned int>>> pre_virtual_display_refresh_rates;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
+    bool frame_generation_enabled = false;
     bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
     std::string frame_generation_provider;
@@ -148,20 +150,36 @@ namespace rtsp_stream {
   }
 
   inline int framegen_refresh_multiplier(const launch_session_t &session) {
-    if (!framegen_capture_fix_enabled(session)) {
+    if (!session.framegen_refresh_rate || *session.framegen_refresh_rate <= 0) {
       return 1;
     }
-    return session.frame_generation_provider == "game-provided" ? 4 : 2;
+    return 4;
   }
 
   inline int saturating_refresh_fps(int fps, int multiplier) {
-    if (fps <= 0 || multiplier <= 1) {
-      return fps;
-    }
-    if (fps > std::numeric_limits<int>::max() / multiplier) {
-      return std::numeric_limits<int>::max();
-    }
-    return fps * multiplier;
+    return framegen::saturating_refresh_fps(fps, multiplier);
+  }
+
+  inline framegen::stream_start_policy_t make_framegen_stream_start_policy(
+    const launch_session_t &session,
+    std::optional<int> lossless_rtss_limit,
+    std::string_view capture_mode,
+    bool auto_capture_uses_wgc,
+    bool auto_virtual_framegen_limiter
+  ) {
+    return framegen::make_stream_start_policy({
+      .fps = session.fps,
+      .frame_generation_enabled = session.frame_generation_enabled,
+      .gen1_framegen_fix = session.gen1_framegen_fix,
+      .gen2_framegen_fix = session.gen2_framegen_fix,
+      .lossless_scaling_framegen = session.lossless_scaling_framegen,
+      .lossless_rtss_limit = lossless_rtss_limit,
+      .frame_generation_provider = session.frame_generation_provider,
+      .uses_virtual_display = session.virtual_display,
+      .capture_mode = std::string(capture_mode),
+      .auto_capture_uses_wgc = auto_capture_uses_wgc,
+      .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
+    });
   }
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);

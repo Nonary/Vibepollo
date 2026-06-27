@@ -319,6 +319,13 @@ onMounted(() => {
       />
 
       <ConfigFieldRenderer
+        setting-key="frame_limiter_auto_virtual_framegen"
+        v-model="config.frame_limiter_auto_virtual_framegen"
+        :label="t('frameLimiter.autoVirtualFramegenLabel')"
+        :desc="t('frameLimiter.autoVirtualFramegenHint')"
+      />
+
+      <ConfigFieldRenderer
         setting-key="frame_limiter_disable_vsync"
         v-model="config.frame_limiter_disable_vsync"
         :label="t('frameLimiter.vsyncUllmLabel')"

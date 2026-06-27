@@ -309,6 +309,10 @@ namespace config {
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
+
+    // Automatically apply the virtual-display frame-generation pacing policy: 4x virtual refresh
+    // plus a matching frame limit when the effective capture path is WGC.
+    bool auto_virtual_framegen {true};
   };
 
   // Windows-only: RTSS integration settings

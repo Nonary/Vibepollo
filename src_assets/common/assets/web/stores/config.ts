@@ -131,7 +131,7 @@ const defaultGroups = [
       auto_capture_sink: 'enabled',
       adapter_name: '',
       output_name: '',
-      virtual_display_mode: 'disabled',
+      virtual_display_mode: 'per_client',
       virtual_display_layout: 'exclusive',
       dd_configuration_option: 'verify_only',
       dd_resolution_option: 'auto',
@@ -252,6 +252,7 @@ const defaultGroups = [
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
       frame_limiter_fps_limit: 0,
+      frame_limiter_auto_virtual_framegen: true,
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
       frame_limiter_disable_vsync: false,
@@ -544,6 +545,9 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
+      if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_auto_virtual_framegen')) {
+        (data as Record<string, unknown>)['frame_limiter_auto_virtual_framegen'] = true;
+      }
       const legacyVsync = Object.prototype.hasOwnProperty.call(data, 'rtss_disable_vsync_ullm');
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
       if (legacyVsync) {
@@ -569,6 +573,7 @@ export const useConfigStore = defineStore('config', () => {
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [
       'frame_limiter_enable',
+      'frame_limiter_auto_virtual_framegen',
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
       'vulkan_hdr_layer',

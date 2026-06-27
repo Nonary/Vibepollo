@@ -927,6 +927,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'frame_limiter_enable',
   'frame_limiter_provider',
   'frame_limiter_fps_limit',
+  'frame_limiter_auto_virtual_framegen',
   'rtss_frame_limit_type',
   'frame_limiter_disable_vsync',
 

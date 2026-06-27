@@ -29,6 +29,7 @@ namespace platf {
     bool g_nvcp_started = false;
     bool g_gen1_framegen_fix_active = false;
     bool g_gen2_framegen_fix_active = false;
+    bool g_stream_policy_overrides_active = false;
     int g_last_effective_limit = 0;
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
@@ -36,6 +37,8 @@ namespace platf {
     bool g_prev_disable_vsync = false;
     std::string g_prev_rtss_frame_limit_type;
     bool g_prev_rtss_frame_limit_type_set = false;
+    std::string g_prev_capture_mode;
+    bool g_prev_capture_mode_set = false;
 
     frame_limiter_provider parse_provider(const std::string &value) {
       std::string normalized;
@@ -92,8 +95,11 @@ namespace platf {
       return normalized;
     }
 
-    std::string select_capture_fix_sync_limiter(const std::string &frame_generation_provider, bool nvidia_gpu_present, bool amd_gpu_present) {
-      const auto normalized_provider = normalize_frame_generation_provider(frame_generation_provider);
+    std::string select_framegen_sync_limiter(const framegen::stream_start_policy_t &policy, bool nvidia_gpu_present, bool amd_gpu_present) {
+      if ((policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture) && nvidia_gpu_present && !amd_gpu_present) {
+        return "nvidia reflex";
+      }
+      const auto normalized_provider = normalize_frame_generation_provider(policy.frame_generation_provider);
       if (normalized_provider == "gameprovided" && nvidia_gpu_present && !amd_gpu_present) {
         return "nvidia reflex";
       }
@@ -117,7 +123,7 @@ namespace platf {
     }
   }
 
-  void frame_limiter_streaming_start(int fps, int fps_scaled, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, const std::string &frame_generation_provider, bool smooth_motion) {
+  void frame_limiter_streaming_start(const framegen::stream_start_policy_t &policy) {
     if (g_stream_owner_count > 0) {
       ++g_stream_owner_count;
       BOOST_LOG(debug) << "Frame limiter start requested while already active; reusing existing overrides (owners=" << g_stream_owner_count << ")";
@@ -127,36 +133,41 @@ namespace platf {
 
     g_active_provider = frame_limiter_provider::none;
     g_nvcp_started = false;
-    g_gen1_framegen_fix_active = gen1_framegen_fix;
-    g_gen2_framegen_fix_active = gen2_framegen_fix;
+    g_gen1_framegen_fix_active = policy.capture_fix_enabled;
+    g_gen2_framegen_fix_active = false;
 
-    const bool capture_fix_enabled = gen1_framegen_fix || gen2_framegen_fix;
-    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || (lossless_rtss_limit && *lossless_rtss_limit > 0);
+    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture;
+    const bool capture_fix_enabled = policy.capture_fix_enabled;
+    const bool policy_overrides_enabled = capture_fix_enabled || auto_framegen_policy_enabled;
+    const bool frame_limit_enabled = config::frame_limiter.enable || policy_overrides_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool amd_gpu_present = has_amd_gpu();
     const bool nvcp_ready = frame_limiter_nvcp::is_available();
-    const bool want_smooth_motion = smooth_motion && nvidia_gpu_present;
+    const bool want_smooth_motion = policy.smooth_motion && nvidia_gpu_present;
 
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
     const bool rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
     const auto configured_provider = parse_provider(config::frame_limiter.provider);
-    const bool provider_explicit = configured_provider != frame_limiter_provider::auto_detect;
-    const bool allow_capture_fix_rtss_override = !(provider_overridden && provider_explicit);
+    const bool allow_framegen_default_provider = !provider_overridden && configured_provider == frame_limiter_provider::auto_detect;
+    const bool default_policy_can_use_rtss =
+      configured_provider == frame_limiter_provider::auto_detect || configured_provider == frame_limiter_provider::rtss;
 
-    // Frame generation capture fix: force RTSS unless the user explicitly selected a provider.
-    if (capture_fix_enabled) {
+    // Frame generation policy: enable limiter/vsync defaults and tune RTSS sync unless explicitly overridden.
+    if (policy_overrides_enabled) {
       g_prev_frame_limiter_enabled = config::frame_limiter.enable;
       g_prev_frame_limiter_provider = config::frame_limiter.provider;
       g_prev_frame_limiter_provider_set = true;
       g_prev_disable_vsync = config::frame_limiter.disable_vsync;
       config::frame_limiter.enable = true;
       config::frame_limiter.disable_vsync = true;
-      if (allow_capture_fix_rtss_override) {
+      if (capture_fix_enabled && allow_framegen_default_provider) {
         config::frame_limiter.provider = "rtss";
+      }
+      if (default_policy_can_use_rtss) {
         if (!rtss_sync_overridden) {
           g_prev_rtss_frame_limit_type = config::rtss.frame_limit_type;
           g_prev_rtss_frame_limit_type_set = true;
-          config::rtss.frame_limit_type = select_capture_fix_sync_limiter(frame_generation_provider, nvidia_gpu_present, amd_gpu_present);
+          config::rtss.frame_limit_type = select_framegen_sync_limiter(policy, nvidia_gpu_present, amd_gpu_present);
         } else {
           g_prev_rtss_frame_limit_type_set = false;
         }
@@ -167,11 +178,20 @@ namespace platf {
       g_prev_frame_limiter_provider_set = false;
       g_prev_rtss_frame_limit_type_set = false;
     }
+    g_stream_policy_overrides_active = policy_overrides_enabled;
 
-    const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || capture_fix_enabled) && nvidia_gpu_present && nvcp_ready;
+    if (policy.physical_framegen_capture && config::video.capture.empty()) {
+      g_prev_capture_mode = config::video.capture;
+      g_prev_capture_mode_set = true;
+      config::video.capture = "ddx";
+    } else {
+      g_prev_capture_mode_set = false;
+    }
+
+    const bool want_nv_vsync_override = (config::frame_limiter.disable_vsync || policy_overrides_enabled) && nvidia_gpu_present && nvcp_ready;
 
     bool nvcp_already_invoked = false;
-    int effective_limit = (lossless_rtss_limit && *lossless_rtss_limit > 0) ? *lossless_rtss_limit : fps;
+    int effective_limit = (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0) ? *policy.lossless_rtss_limit : policy.fps;
     if (config::frame_limiter.fps_limit > 0) {
       effective_limit = config::frame_limiter.fps_limit;
     }
@@ -180,9 +200,9 @@ namespace platf {
     int rtss_limit_value = effective_limit;
     int rtss_limit_denominator = 1;
 
-    if ((!lossless_rtss_limit || *lossless_rtss_limit <= 0) && config::frame_limiter.fps_limit <= 0) {
-      if (fps_scaled > 0) {
-        rtss_limit_value = fps_scaled;
+    if ((!policy.lossless_rtss_limit || *policy.lossless_rtss_limit <= 0) && config::frame_limiter.fps_limit <= 0) {
+      if (policy.fps_scaled > 0) {
+        rtss_limit_value = policy.fps_scaled;
         rtss_limit_denominator = 1000;
 
         if (rtss_limit_value % 1000 == 0) {
@@ -211,10 +231,13 @@ namespace platf {
                      << frame_limiter_provider_to_string(parse_provider(config::frame_limiter.provider))
                      << " effective_limit=" << effective_limit
                      << " capture_fix=" << capture_fix_enabled
-                     << " gen1_fix=" << gen1_framegen_fix
-                     << " gen2_fix=" << gen2_framegen_fix
-                     << " lossless_rtss_limit=" << (lossless_rtss_limit ? *lossless_rtss_limit : 0)
-                     << " frame_generation_provider=" << frame_generation_provider
+                     << " lossless_rtss_limit=" << (policy.lossless_rtss_limit ? *policy.lossless_rtss_limit : 0)
+                     << " frame_generation_provider=" << policy.frame_generation_provider
+                     << " frame_generation_enabled=" << policy.frame_generation_enabled
+                     << " uses_virtual_display=" << policy.uses_virtual_display
+                     << " effective_wgc_capture=" << policy.effective_wgc_capture
+                     << " physical_framegen_capture=" << policy.physical_framegen_capture
+                     << " auto_virtual_framegen_limiter=" << policy.auto_virtual_framegen_limiter
                      << " nvidia_gpu=" << nvidia_gpu_present
                      << " amd_gpu=" << amd_gpu_present
                      << " nvcp_ready=" << nvcp_ready
@@ -307,9 +330,10 @@ namespace platf {
     }
   }
 
-  bool frame_limiter_prepare_launch(bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit) {
-    const bool capture_fix_enabled = gen1_framegen_fix || gen2_framegen_fix;
-    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || (lossless_rtss_limit && *lossless_rtss_limit > 0);
+  bool frame_limiter_prepare_launch(const framegen::stream_start_policy_t &policy) {
+    const bool capture_fix_enabled = policy.capture_fix_enabled;
+    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture;
+    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || auto_framegen_policy_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
     if (!frame_limit_enabled) {
       return false;
     }
@@ -318,7 +342,7 @@ namespace platf {
     bool want_rtss = false;
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
 
-    if (capture_fix_enabled) {
+    if (capture_fix_enabled || auto_framegen_policy_enabled) {
       if (provider_overridden) {
         auto configured = parse_provider(config::frame_limiter.provider);
         switch (configured) {
@@ -364,7 +388,7 @@ namespace platf {
       return;
     }
 
-    if (g_gen1_framegen_fix_active || g_gen2_framegen_fix_active) {
+    if (g_stream_policy_overrides_active) {
       config::frame_limiter.enable = g_prev_frame_limiter_enabled;
       if (g_prev_frame_limiter_provider_set) {
         config::frame_limiter.provider = g_prev_frame_limiter_provider;
@@ -375,8 +399,15 @@ namespace platf {
       }
       g_gen1_framegen_fix_active = false;
       g_gen2_framegen_fix_active = false;
+      g_stream_policy_overrides_active = false;
       g_prev_frame_limiter_provider_set = false;
       g_prev_rtss_frame_limit_type_set = false;
+    }
+
+    if (g_prev_capture_mode_set) {
+      config::video.capture = g_prev_capture_mode;
+      g_prev_capture_mode.clear();
+      g_prev_capture_mode_set = false;
     }
 
     if (g_active_provider == frame_limiter_provider::rtss) {

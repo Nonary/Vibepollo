@@ -738,13 +738,7 @@ namespace stream {
 
 #ifdef _WIN32
   struct deferred_stream_start_t {
-    int fps = 0;
-    int fps_scaled = 0;
-    bool gen1_framegen_fix = false;
-    bool gen2_framegen_fix = false;
-    std::optional<int> lossless_rtss_limit;
-    std::string frame_generation_provider;
-    bool smooth_motion = false;
+    framegen::stream_start_policy_t policy;
   };
 
   std::mutex &deferred_stream_start_mutex() {
@@ -808,15 +802,7 @@ namespace stream {
     }
 
     BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    platf::frame_limiter_streaming_start(
-      deferred->fps,
-      deferred->fps_scaled,
-      deferred->gen1_framegen_fix,
-      deferred->gen2_framegen_fix,
-      deferred->lossless_rtss_limit,
-      deferred->frame_generation_provider,
-      deferred->smooth_motion
-    );
+    platf::frame_limiter_streaming_start(deferred->policy);
     platf::streaming_will_start();
     return true;
   }
@@ -2854,8 +2840,6 @@ namespace stream {
           std::optional<int> lossless_rtss_limit;
           const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
                                                boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
-          const bool using_smooth_motion =
-            boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
           if (using_lossless_provider) {
             if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
               lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
@@ -2868,29 +2852,27 @@ namespace stream {
           }
           // Frame limiter should follow the stream FPS the user/client selected (NVHTTP "mode" fps),
           // not the capture display refresh rate.
+          const auto policy = framegen::make_stream_start_policy({
+            .fps = session.stream_fps,
+            .fps_scaled = session.stream_fps_scaled,
+            .frame_generation_enabled = session.config.frame_generation_enabled,
+            .gen1_framegen_fix = session.config.gen1_framegen_fix,
+            .gen2_framegen_fix = session.config.gen2_framegen_fix,
+            .lossless_scaling_framegen = session.config.lossless_scaling_framegen,
+            .lossless_rtss_limit = lossless_rtss_limit,
+            .frame_generation_provider = session.config.frame_generation_provider,
+            .uses_virtual_display = session.virtual_display.active,
+            .capture_mode = config::video.capture,
+            .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+            .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+          });
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
           if (defer_stream_start) {
-            deferred_stream_start_t deferred {
-              .fps = session.stream_fps,
-              .fps_scaled = session.stream_fps_scaled,
-              .gen1_framegen_fix = session.config.gen1_framegen_fix,
-              .gen2_framegen_fix = session.config.gen2_framegen_fix,
-              .lossless_rtss_limit = lossless_rtss_limit,
-              .frame_generation_provider = session.config.frame_generation_provider,
-              .smooth_motion = using_smooth_motion,
-            };
+            deferred_stream_start_t deferred {.policy = policy};
             defer_stream_start_actions(std::move(deferred));
             BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
           } else {
-            platf::frame_limiter_streaming_start(
-              session.stream_fps,
-              session.stream_fps_scaled,
-              session.config.gen1_framegen_fix,
-              session.config.gen2_framegen_fix,
-              lossless_rtss_limit,
-              session.config.frame_generation_provider,
-              using_smooth_motion
-            );
+            platf::frame_limiter_streaming_start(policy);
             platf::streaming_will_start();
           }
         } else {

@@ -48,6 +48,7 @@
 #ifdef _WIN32
   #include "display_helper_integration.h"
   #include "config_playnite.h"
+  #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
@@ -1243,6 +1244,7 @@ namespace proc {
     allow_client_commands = app.allow_client_commands;
     launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
     launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
+    launch_session->frame_generation_enabled = _app.frame_generation_enabled;
     launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
@@ -1270,22 +1272,6 @@ namespace proc {
     }
     launch_session->lossless_scaling_rtss_limit = effective_lossless_rtss;
 
-    const auto apply_refresh_override = [&](int candidate) {
-      if (candidate <= 0) {
-        return;
-      }
-      if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
-        launch_session->framegen_refresh_rate = candidate;
-      }
-    };
-
-    launch_session->framegen_refresh_rate.reset();
-    if (launch_session->fps > 0) {
-      const int multiplier = rtsp_stream::framegen_refresh_multiplier(*launch_session);
-      if (multiplier > 1) {
-        apply_refresh_override(rtsp_stream::saturating_refresh_fps(launch_session->fps, multiplier));
-      }
-    }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -1602,7 +1588,7 @@ namespace proc {
 
     const bool lossless_scaling_enabled = _app.lossless_scaling_enabled || _app.lossless_scaling_framegen;
     _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] =
-      _app.lossless_scaling_framegen ? _app.frame_generation_provider : "";
+      _app.frame_generation_enabled ? _app.frame_generation_provider : "";
 
     const bool using_lossless_provider = _app.lossless_scaling_framegen &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
@@ -1663,7 +1649,14 @@ namespace proc {
         if (effective_lossless_rtss && *effective_lossless_rtss > 0) {
           rtss_warmup_limit = *effective_lossless_rtss;
         }
-        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
+        const auto warmup_policy = rtsp_stream::make_framegen_stream_start_policy(
+          *launch_session,
+          rtss_warmup_limit,
+          config::video.capture,
+          platf::dxgi::should_use_wgc_default(),
+          config::frame_limiter.auto_virtual_framegen
+        );
+        platf::frame_limiter_prepare_launch(warmup_policy);
       }
 #endif
 
@@ -2114,15 +2107,38 @@ namespace proc {
         rtss_warmup_limit = *_lossless_metadata.rtss_limit;
       }
       const bool wants_frame_limit = config::frame_limiter.enable ||
+                                     _app.frame_generation_enabled ||
                                      _app.gen1_framegen_fix ||
                                      _app.gen2_framegen_fix ||
                                      (rtss_warmup_limit && *rtss_warmup_limit > 0);
       if (wants_frame_limit) {
-        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
+        bool warmup_uses_virtual =
+          _app.virtual_screen ||
+          config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+        if (_app.virtual_display_mode_override) {
+          warmup_uses_virtual = *_app.virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
+        }
+        if (_app.output_name_override && !_app.output_name_override->empty() && !VDISPLAY::is_virtual_display_selection(*_app.output_name_override)) {
+          warmup_uses_virtual = false;
+        }
+        const auto warmup_policy = framegen::make_stream_start_policy({
+          .fps = 0,
+          .frame_generation_enabled = _app.frame_generation_enabled,
+          .gen1_framegen_fix = _app.gen1_framegen_fix,
+          .gen2_framegen_fix = _app.gen2_framegen_fix,
+          .lossless_scaling_framegen = _app.lossless_scaling_framegen,
+          .lossless_rtss_limit = rtss_warmup_limit,
+          .frame_generation_provider = _app.frame_generation_provider,
+          .uses_virtual_display = warmup_uses_virtual,
+          .capture_mode = config::video.capture,
+          .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+          .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+        });
+        platf::frame_limiter_prepare_launch(warmup_policy);
         const bool provider_auto = config::frame_limiter.provider.empty() ||
                                    boost::iequals(config::frame_limiter.provider, "auto");
         const bool provider_rtss = boost::iequals(config::frame_limiter.provider, "rtss");
-        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.gen1_framegen_fix || _app.gen2_framegen_fix);
+        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.frame_generation_enabled || _app.gen1_framegen_fix || _app.gen2_framegen_fix);
         if (should_wait_rtss) {
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
           bool running = false;
@@ -3313,6 +3329,25 @@ namespace proc {
         ctx.frame_generation_provider = "lossless-scaling";
         if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
           ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
+        }
+        if (auto it = app_node.find("frame-generation-mode"); it != app_node.end() && it->is_string()) {
+          const auto trimmed_mode = boost::algorithm::trim_copy(it->get<std::string>());
+          if (boost::iequals(trimmed_mode, "off") || boost::iequals(trimmed_mode, "none") || boost::iequals(trimmed_mode, "disabled")) {
+            ctx.frame_generation_enabled = false;
+            ctx.lossless_scaling_framegen = false;
+            ctx.frame_generation_provider = "lossless-scaling";
+          } else {
+            ctx.frame_generation_provider = normalize_frame_generation_provider(trimmed_mode);
+            ctx.frame_generation_enabled = true;
+            ctx.lossless_scaling_framegen = ctx.frame_generation_provider == "lossless-scaling";
+          }
+        } else {
+          ctx.frame_generation_enabled =
+            ctx.lossless_scaling_framegen ||
+            ctx.frame_generation_provider == "game-provided" ||
+            ctx.frame_generation_provider == "nvidia-smooth-motion" ||
+            ctx.gen1_framegen_fix ||
+            ctx.gen2_framegen_fix;
         }
         ctx.lossless_scaling_target_fps.reset();
         double lossless_target_fps = util::get_non_string_json_value<double>(app_node, "lossless-scaling-target-fps", 0.0);

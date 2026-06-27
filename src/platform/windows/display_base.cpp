@@ -117,10 +117,11 @@ namespace platf::dxgi {
       return is_modern;
     }
 
-    bool should_use_wgc_default() {
-      return is_windows_23h2_or_later();
-    }
   }  // namespace
+
+  bool should_use_wgc_default() {
+    return is_windows_23h2_or_later();
+  }
 
   /**
    * DDAPI-specific initialization goes here.

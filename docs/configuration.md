@@ -605,7 +605,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
+            per_client
             @endcode</td>
     </tr>
     <tr>
@@ -2775,6 +2775,27 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Example</td>
         <td colspan="2">@code{}
             frame_limiter_fps_limit = 120
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_limiter_auto_virtual_framegen
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Automatically apply the virtual-display frame-generation stream-start policy. When enabled, virtual-display frame-generation streams using WGC run the display at 4x refresh and apply a matching FPS cap for stable pacing. Disable this only if you manage the frame cap yourself.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_limiter_auto_virtual_framegen = disabled
             @endcode</td>
     </tr>
 </table>

@@ -736,7 +736,7 @@ namespace config {
     _CONVERT_(per_client);
     _CONVERT_(shared);
 #undef _CONVERT_
-    return video_t::virtual_display_mode_e::disabled;  // Default to primary display when unspecified
+    return video_t::virtual_display_mode_e::per_client;  // Default to virtual display when unspecified
   }
 
   video_t::virtual_display_layout_e virtual_display_layout_from_view(const ::std::string_view value) {
@@ -828,7 +828,7 @@ namespace config {
     {},  // adapter_name
     {},  // output_name
 
-    video_t::virtual_display_mode_e::disabled,  // virtual_display_mode
+    video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
     {
@@ -933,7 +933,8 @@ namespace config {
     false,  // enable
     "auto",  // provider
     0,  // fps_limit
-    false  // disable_vsync
+    false,  // disable_vsync
+    true  // auto_virtual_framegen
   };
 
   // Windows-only: RTSS defaults
@@ -1752,6 +1753,7 @@ namespace config {
     int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
+    bool_f(vars, "frame_limiter_auto_virtual_framegen", frame_limiter.auto_virtual_framegen);
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
     if (video.dd.wa.dummy_plug_hdr10 && !frame_limiter.disable_vsync) {
@@ -2335,6 +2337,7 @@ namespace config {
         "frame_limiter_enable",
         "frame_limiter_provider",
         "frame_limiter_fps_limit",
+        "frame_limiter_auto_virtual_framegen",
         "rtss_frame_limit_type",
         "frame_limiter_disable_vsync",
 

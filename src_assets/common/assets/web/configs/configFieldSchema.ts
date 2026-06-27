@@ -40,6 +40,7 @@ export type ConfigFieldSchemaContext = ConfigSelectOptionsContext & {
 
 const SWITCH_KEYS = new Set<string>([
   'frame_limiter_enable',
+  'frame_limiter_auto_virtual_framegen',
   'frame_limiter_disable_vsync',
   'rtx_hdr',
   'rtx_hdr_force_sdr',

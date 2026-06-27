@@ -381,8 +381,28 @@ const displayTargets = computed(() => props.health?.display.targets || []);
         </div>
       </div>
 
+      <n-alert
+        v-if="hasFrameGenSelection && props.usingVirtualDisplay"
+        type="success"
+        size="small"
+        :bordered="false"
+      >
+        4x refresh + Reflex path.
+      </n-alert>
+      <n-alert
+        v-else-if="hasFrameGenSelection"
+        type="warning"
+        size="small"
+        :bordered="false"
+      >
+        DLSS/FSR frame generation is not captured properly on physical displays. Physical capture
+        is less smooth than the virtual display. Lossless Scaling and NVIDIA Smooth Motion can
+        still work acceptably.
+      </n-alert>
+
       <div class="grid gap-3">
         <div
+          v-if="!props.usingVirtualDisplay"
           class="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-dark/10 dark:border-light/10 bg-white/50 dark:bg-white/5 px-3 py-3"
         >
           <div class="space-y-1">

@@ -149,6 +149,7 @@ namespace proc {
     std::chrono::seconds exit_timeout;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
+    bool frame_generation_enabled {false};
     bool lossless_scaling_enabled {false};
     bool lossless_scaling_framegen {false};
     std::string frame_generation_provider {"lossless-scaling"};

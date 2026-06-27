@@ -49,6 +49,7 @@ namespace platf::dxgi {
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
   std::optional<LUID> get_dxgi_adapter_luid_override();
   std::uint64_t consume_normal_wgc_repeated_frames();
+  bool should_use_wgc_default();
   std::string current_display_adapter_name();
   using dxgi1_t = util::safe_ptr<IDXGIDevice1, Release<IDXGIDevice1>>;
   using device_t = util::safe_ptr<ID3D11Device, Release<ID3D11Device>>;
