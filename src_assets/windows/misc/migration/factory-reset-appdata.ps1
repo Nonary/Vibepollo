@@ -5,6 +5,32 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Test-SafeInstallRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $false
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath).TrimEnd('\', '/')
+    if ([string]::Equals($fullPath, $pathRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    foreach ($sentinel in @(
+        (Join-Path -Path $fullPath -ChildPath 'sunshine.exe'),
+        (Join-Path -Path $fullPath -ChildPath 'uninstall.exe'),
+        (Join-Path -Path (Join-Path -Path $fullPath -ChildPath 'scripts') -ChildPath 'factory-reset-appdata.ps1')
+    )) {
+        if (Test-Path -LiteralPath $sentinel -PathType Leaf) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Remove-KnownItem {
     param(
         [Parameter(Mandatory = $true)]
@@ -40,6 +66,11 @@ function Remove-DirectoryIfEmpty {
 }
 
 $root = [System.IO.Path]::GetFullPath($InstallRoot)
+if (-not (Test-SafeInstallRoot -Path $root)) {
+    Write-Warning "Refusing factory reset for unsafe install root: $root"
+    exit 0
+}
+
 $config = Join-Path -Path $root -ChildPath 'config'
 
 # Factory reset removes only known Vibepollo data. It intentionally does not
@@ -54,6 +85,7 @@ $knownConfigItems = @(
     'virtual_display_cache.json',
     'nvprefs_undo.json',
     'sunshine_playnite.log',
+    'session_history',
     'credentials',
     'covers',
     'logs'

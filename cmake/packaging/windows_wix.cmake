@@ -53,9 +53,8 @@ set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
 )
 
-# Override CPack's default WiX template to control MajorUpgrade scheduling.
-# We schedule after InstallValidate to avoid RemoveExistingProducts 2613
-# failures in transactional upgrade flows.
+# Override CPack's default WiX template to keep RemoveExistingProducts inside
+# the MSI transaction. A failed upgrade must roll back to the previous install.
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 # uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the

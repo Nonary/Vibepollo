@@ -987,7 +987,7 @@ jobs:
 
           function Test-Signed([string]$Path) {
             $sig = Get-AuthenticodeSignature -LiteralPath $Path
-            return ($sig.Status -ne 'NotSigned' -and $null -ne $sig.SignerCertificate)
+            return ($sig.Status -eq 'Valid' -and $null -ne $sig.SignerCertificate)
           }
 
           $failures = New-Object System.Collections.Generic.List[string]
