@@ -1891,8 +1891,8 @@
     "sync_limiter_desc": "Csak haladó felhasználóknak. A Vibepollo ezt tükrözi az RTSS-be. Módosítás előtt nézd át az alábbi összehasonlítást.",
     "sync_limiter_do_not_change": "Változatlanul hagyás",
     "sync_limiter_async": "Async (ajánlott, megszünteti a mikroakadozást)",
-    "sync_limiter_front_edge": "Front edge sync",
-    "sync_limiter_back_edge": "Back edge sync",
+    "sync_limiter_front_edge": "Front edge szinkron",
+    "sync_limiter_back_edge": "Back edge szinkron",
     "sync_limiter_reflex": "NVIDIA Reflex (mikroakadozást okozhat)",
     "sync_limiter_help_heading": "SyncLimiter módok áttekintése",
     "sync_limiter_help_blurb": "Az Async ajánlott. Kis mértékű késleltetést ad hozzá, de szinte teljesen megszünteti a mikroakadozást, amely a nézőknek általában feltűnőbb.",
@@ -1952,8 +1952,8 @@
     "syncLimiter": {
       "keep": "Változatlanul hagyás",
       "async": "Async",
-      "front": "Front edge sync",
-      "back": "Back edge sync",
+      "front": "Front edge szinkron",
+      "back": "Back edge szinkron",
       "reflex": "NVIDIA Reflex"
     },
     "vsyncUllmLabel": "VSYNC letiltása streamelés közben",
