@@ -2457,16 +2457,20 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         captureMessage =
           'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
       }
-      if (!usingVirtual) {
+      if (!usingVirtual && form.value.frameGenerationMode === 'game-provided') {
         if (captureValue === '' || captureValue === 'ddx') {
           captureStatus = 'pass';
           captureMessage =
-            'Physical-display frame generation uses the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
+            'Physical-display game-provided frame generation uses the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
         } else {
           captureStatus = 'warn';
           captureMessage =
-            'Physical-display frame generation is less reliable outside DXGI capture. Use a virtual display for best DLSS/FSR capture.';
+            'Physical-display game-provided frame generation needs the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
         }
+      } else if (!usingVirtual) {
+        captureStatus = 'pass';
+        captureMessage =
+          'Physical display is supported for this frame generation mode. Keep the capture method that works best for the app.';
       }
 
       let rtssInstalled = false;
@@ -2512,7 +2516,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       let displayError: string | null = null;
       let displayTargets = fpsTargets.map((fps) => ({
         fps,
-        requiredHz: usingVirtual ? fps * 4 : fps,
+        requiredHz: usingVirtual ? fps * 4 : fps * 2,
         supported: usingVirtual ? true : null,
       }));
       let highestFailUnder144: number | null = null;
@@ -2730,7 +2734,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         }
       } else {
         displayStatus = 'pass';
-        displayMessage = frameGenDisplayHealthMessage(true);
+        displayMessage = frameGenDisplayHealthMessage(true, form.value.frameGenerationMode);
       }
 
       if (usingVirtual) {
@@ -2739,15 +2743,6 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
           requiredHz: fps * 4,
           supported: true,
         }));
-      } else {
-        displayStatus = 'warn';
-        displayMessage = frameGenDisplayHealthMessage(false);
-        displayTargets = fpsTargets.map((fps) => ({
-          fps,
-          requiredHz: fps,
-          supported: null,
-        }));
-        highestFailUnder144 = null;
       }
 
       const health: FrameGenHealth = {
@@ -2844,7 +2839,11 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
       { duration: 8000 },
     );
   }
-  if (!skipDisplayWarnings.value && !health.display.virtualActive) {
+  if (
+    !skipDisplayWarnings.value &&
+    !health.display.virtualActive &&
+    form.value.frameGenerationMode === 'game-provided'
+  ) {
     const requiresHigh = health.display.targets.some(
       (target) => target.fps < 144 && target.supported === false,
     );
@@ -2854,6 +2853,57 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
         { duration: 8000 },
       );
     }
+  }
+}
+
+function setAutoCaptureFixFlag(enabled: boolean) {
+  autoEnablingCaptureFix = true;
+  form.value.gen1FramegenFix = enabled;
+  if (!enabled) {
+    form.value.gen2FramegenFix = false;
+  }
+  setTimeout(() => {
+    autoEnablingCaptureFix = false;
+  }, 100);
+}
+
+function autoSyncCaptureFixForFrameGen(
+  mode: FrameGenerationMode,
+  previousMode?: FrameGenerationMode,
+) {
+  if (formHydratingFromServer) {
+    return;
+  }
+  const anyFrameGenEnabled = mode !== 'off';
+  const wasFrameGenEnabled = previousMode !== undefined && previousMode !== 'off';
+  const shouldEnable =
+    anyFrameGenEnabled && shouldAutoEnableCaptureFixForFrameGeneration(usingVirtualDisplay.value);
+  if (anyFrameGenEnabled && !shouldEnable) {
+    if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
+      setAutoCaptureFixFlag(false);
+    }
+    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
+  } else if (shouldEnable && !form.value.gen1FramegenFix) {
+    setAutoCaptureFixFlag(true);
+    if (mode === 'nvidia-smooth-motion') {
+      message?.info(
+        'Frame Generation Capture Fix has been automatically enabled. NVIDIA Smooth Motion uses RTSS Front Edge Sync during streams.',
+        { duration: 8000 },
+      );
+    } else if (mode === 'lossless-scaling') {
+      message?.info(
+        'Frame Generation Capture Fix has been automatically enabled because Lossless Scaling frame generation uses RTSS Front Edge Sync.',
+        { duration: 8000 },
+      );
+    } else if (mode === 'game-provided') {
+      message?.info(
+        'Frame Generation Capture Fix has been automatically enabled. Game-provided frame generation uses NVIDIA Reflex on NVIDIA systems and Front Edge Sync on AMD systems.',
+        { duration: 8000 },
+      );
+    }
+    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
+  } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
+    setAutoCaptureFixFlag(false);
   }
 }
 
@@ -2958,9 +3008,7 @@ watch(
       return;
     }
     message?.info(
-      usingVirtualDisplay.value
-        ? 'Virtual-display frame generation uses 4x refresh with the Reflex limiter path.'
-        : 'Physical-display frame generation stays at 1x refresh and is not recommended for DLSS/FSR capture. Use the virtual display for best pacing.',
+      frameGenDisplayHealthMessage(usingVirtualDisplay.value, form.value.frameGenerationMode),
       { duration: 8000 },
     );
     await refreshFrameGenHealth({ reason: 'gen1' });
@@ -2995,14 +3043,12 @@ watch(
   () => usingVirtualDisplay.value,
   (usesVirtual, previous) => {
     if (!isWindows.value) return;
-    if (!usesVirtual) return;
-    if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
-      autoEnablingCaptureFix = true;
-      form.value.gen1FramegenFix = false;
-      form.value.gen2FramegenFix = false;
-      setTimeout(() => {
-        autoEnablingCaptureFix = false;
-      }, 100);
+    if (usesVirtual) {
+      if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
+        setAutoCaptureFixFlag(false);
+      }
+    } else if (previous === true) {
+      autoSyncCaptureFixForFrameGen(frameGenerationSelection.value);
     }
     if (open.value && (previous !== usesVirtual || frameGenHealth.value)) {
       refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
@@ -3043,51 +3089,7 @@ watch(
 watch(
   () => frameGenerationSelection.value,
   (mode, prevMode) => {
-    if (formHydratingFromServer) {
-      return;
-    }
-    const anyFrameGenEnabled = mode !== 'off';
-    const wasFrameGenEnabled = prevMode !== 'off';
-    if (anyFrameGenEnabled && !shouldAutoEnableCaptureFixForFrameGeneration(usingVirtualDisplay.value)) {
-      if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
-        autoEnablingCaptureFix = true;
-        form.value.gen1FramegenFix = false;
-        form.value.gen2FramegenFix = false;
-        setTimeout(() => {
-          autoEnablingCaptureFix = false;
-        }, 100);
-      }
-      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
-    } else if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
-      autoEnablingCaptureFix = true;
-      form.value.gen1FramegenFix = true;
-      if (mode === 'nvidia-smooth-motion') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled. NVIDIA Smooth Motion uses RTSS Front Edge Sync during streams.',
-          { duration: 8000 },
-        );
-      } else if (mode === 'lossless-scaling') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled because Lossless Scaling frame generation uses RTSS Front Edge Sync.',
-          { duration: 8000 },
-        );
-      } else if (mode === 'game-provided') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled. Game-provided frame generation uses NVIDIA Reflex on NVIDIA systems and Front Edge Sync on AMD systems.',
-          { duration: 8000 },
-        );
-      }
-      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
-      setTimeout(() => {
-        autoEnablingCaptureFix = false;
-      }, 100);
-    } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
-      autoEnablingCaptureFix = true;
-      form.value.gen1FramegenFix = false;
-      setTimeout(() => {
-        autoEnablingCaptureFix = false;
-      }, 100);
-    }
+    autoSyncCaptureFixForFrameGen(mode, prevMode);
   },
 );
 // Scroll affordance logic for modal body

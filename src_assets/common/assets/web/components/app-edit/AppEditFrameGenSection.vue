@@ -55,6 +55,39 @@ const frameGenOptions = computed(() => [
 ]);
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
 const hasFrameGenSelection = computed(() => modeModel.value !== 'off');
+const frameGenDisplayAlert = computed(() => {
+  if (!hasFrameGenSelection.value) {
+    return null;
+  }
+  if (props.usingVirtualDisplay) {
+    return {
+      type: 'info' as const,
+      message: 'Virtual display uses 4x refresh with automatic frame pacing.',
+    };
+  }
+  if (modeModel.value === 'game-provided') {
+    return {
+      type: 'warning' as const,
+      message:
+        'Game-provided DLSS/FSR frame generation captures best through the virtual display. Switch to virtual display for the 4x pacing path.',
+    };
+  }
+  if (modeModel.value === 'lossless-scaling') {
+    return {
+      type: 'info' as const,
+      message:
+        'Lossless Scaling frame generation works on physical displays. Use enough refresh headroom for the generated output.',
+    };
+  }
+  if (modeModel.value === 'nvidia-smooth-motion') {
+    return {
+      type: 'info' as const,
+      message:
+        'NVIDIA Smooth Motion works on physical displays. Use enough refresh headroom for the generated output.',
+    };
+  }
+  return null;
+});
 const captureFixModel = computed<boolean>({
   get: () => gen1Model.value || gen2Model.value,
   set: (enabled) => {
@@ -116,7 +149,9 @@ const requirementRows = computed(() => {
     {
       id: 'display',
       icon: 'fas fa-tv',
-      label: 'Display can double your stream FPS',
+      label: props.usingVirtualDisplay
+        ? 'Virtual display 4x refresh target'
+        : 'Physical display refresh headroom',
       status: props.health.display.status,
       message: props.health.display.message,
     },
@@ -382,22 +417,12 @@ const displayTargets = computed(() => props.health?.display.targets || []);
       </div>
 
       <n-alert
-        v-if="hasFrameGenSelection && props.usingVirtualDisplay"
-        type="success"
+        v-if="frameGenDisplayAlert"
+        :type="frameGenDisplayAlert.type"
         size="small"
         :bordered="false"
       >
-        4x refresh + Reflex path.
-      </n-alert>
-      <n-alert
-        v-else-if="hasFrameGenSelection"
-        type="warning"
-        size="small"
-        :bordered="false"
-      >
-        DLSS/FSR frame generation is not captured properly on physical displays. Physical capture
-        is less smooth than the virtual display. Lossless Scaling and NVIDIA Smooth Motion can
-        still work acceptably.
+        {{ frameGenDisplayAlert.message }}
       </n-alert>
 
       <div class="grid gap-3">
@@ -520,7 +545,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             type="primary"
             @click="emit('enable-virtual-screen')"
           >
-            Use Virtual Screen
+            Use Virtual Display
           </n-button>
         </div>
       </n-alert>

@@ -37,9 +37,17 @@ describe('app edit frame generation display policy', () => {
   });
 
   it('returns the redesigned display health messages', () => {
-    expect(frameGenDisplayHealthMessage(true)).toBe('4x refresh + Reflex path.');
-    expect(frameGenDisplayHealthMessage(false)).toBe(
-      '1x refresh; not recommended for frame generation; use virtual display for best pacing.',
+    expect(frameGenDisplayHealthMessage(true, 'game-provided')).toBe(
+      'Virtual display uses 4x refresh with automatic frame pacing.',
+    );
+    expect(frameGenDisplayHealthMessage(false, 'game-provided')).toBe(
+      'Physical display is not recommended for game-provided DLSS/FSR capture. Use the virtual display for the 4x pacing path.',
+    );
+    expect(frameGenDisplayHealthMessage(false, 'lossless-scaling')).toBe(
+      'Physical display is supported for Lossless Scaling frame generation. Use enough refresh headroom for the generated output.',
+    );
+    expect(frameGenDisplayHealthMessage(false, 'nvidia-smooth-motion')).toBe(
+      'Physical display is supported for NVIDIA Smooth Motion. Use enough refresh headroom for the generated output.',
     );
   });
 });

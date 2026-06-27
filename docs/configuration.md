@@ -605,7 +605,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            per_client
+            disabled
             @endcode</td>
     </tr>
     <tr>
@@ -1079,7 +1079,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
+            per_client
             @endcode</td>
     </tr>
     <tr>
