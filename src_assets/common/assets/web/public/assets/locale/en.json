@@ -1637,7 +1637,7 @@
     "limitHint": "Optional global FPS limit for NVIDIA or RTSS. Set to 0 to use the stream's requested FPS.",
     "limitPlaceholder": "0",
     "autoVirtualFramegenLabel": "Auto-limit virtual frame generation",
-    "autoVirtualFramegenHint": "When a virtual-display WGC stream uses frame generation, Vibeshine runs the display at 4x refresh and applies a matching FPS cap for pacing.",
+    "autoVirtualFramegenHint": "When a virtual-display WGC stream uses frame generation, Vibepollo runs the display at 4x refresh and applies a matching FPS cap for pacing.",
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
