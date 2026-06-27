@@ -281,6 +281,7 @@
     "dd_choose_display": "Choose the display",
     "dd_virtual_display_choice_virtual": "Use virtualised display",
     "dd_virtual_display_choice_physical": "Use my own display",
+    "physical_display_framegen_warning": "Physical displays cannot capture DLSS/FSR generated frames. If you use DLSS/FSR frame generation with an RTSS frame limiter on a physical screen, latency can increase by 50 ms or more. Without suitable frame pacing, it may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.",
     "app_virtual_display_mode_label": "App display preference",
     "app_virtual_display_mode_hint": "When this app runs on the Vibepollo virtual display, choose whether to use a per-client or shared virtual screen and configure the layout below. Reset to follow the global display configuration.",
     "app_virtual_display_mode_follow_global": "Following the global display configuration.",

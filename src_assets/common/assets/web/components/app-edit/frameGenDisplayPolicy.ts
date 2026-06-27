@@ -30,11 +30,26 @@ export function shouldPersistFrameGenerationCaptureFix(
   captureFixEnabled: boolean,
   usesVirtualDisplay: boolean,
 ): boolean {
-  return captureFixEnabled && !usesVirtualDisplay;
+  void captureFixEnabled;
+  void usesVirtualDisplay;
+  return false;
 }
 
 export function shouldAutoEnableCaptureFixForFrameGeneration(usesVirtualDisplay: boolean): boolean {
-  return !usesVirtualDisplay;
+  void usesVirtualDisplay;
+  return false;
+}
+
+export function physicalFrameGenDisplayWarning(rtssInstalled?: boolean | null): string {
+  if (rtssInstalled === true) {
+    return 'Frame generation on a physical display can add latency with RTSS frame limiting. Use a virtual display for low-latency, smooth capture.';
+  }
+
+  return 'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.';
+}
+
+export function physicalGameFrameGenCaptureWarning(rtssInstalled?: boolean | null): string {
+  return physicalFrameGenDisplayWarning(rtssInstalled);
 }
 
 export function frameGenDisplayHealthMessage(
@@ -42,16 +57,11 @@ export function frameGenDisplayHealthMessage(
   mode: FrameGenerationMode = 'off',
 ): string {
   if (usesVirtualDisplay) {
-    return 'Virtual display uses 4x refresh with automatic frame pacing.';
+    if (mode === 'game-provided') {
+      return 'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.';
+    }
+    return 'Virtual display uses automatic frame pacing for smoother frame generation.';
   }
-  if (mode === 'game-provided') {
-    return 'Physical display is not recommended for game-provided DLSS/FSR capture. Use the virtual display for the 4x pacing path.';
-  }
-  if (mode === 'lossless-scaling') {
-    return 'Physical display is supported for Lossless Scaling frame generation. Use enough refresh headroom for the generated output.';
-  }
-  if (mode === 'nvidia-smooth-motion') {
-    return 'Physical display is supported for NVIDIA Smooth Motion. Use enough refresh headroom for the generated output.';
-  }
-  return 'Physical display is supported for external frame generation. Use enough refresh headroom for the generated output.';
+  void mode;
+  return physicalFrameGenDisplayWarning();
 }

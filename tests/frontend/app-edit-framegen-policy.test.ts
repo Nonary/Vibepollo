@@ -19,7 +19,7 @@ describe('app edit frame generation display policy', () => {
     expect(shouldPersistFrameGenerationCaptureFix(true, usesVirtual)).toBe(false);
   });
 
-  it('keeps capture fix available for physical-display apps', () => {
+  it('clears persisted capture fix for physical-display apps', () => {
     const usesVirtual = resolvesToVirtualDisplay({
       displaySelection: 'physical',
       appVirtualDisplayMode: 'disabled',
@@ -28,26 +28,29 @@ describe('app edit frame generation display policy', () => {
     });
 
     expect(usesVirtual).toBe(false);
-    expect(shouldPersistFrameGenerationCaptureFix(true, usesVirtual)).toBe(true);
+    expect(shouldPersistFrameGenerationCaptureFix(true, usesVirtual)).toBe(false);
   });
 
-  it('does not auto-enable capture fix for virtual-display frame generation', () => {
+  it('does not auto-enable capture fix for frame generation', () => {
     expect(shouldAutoEnableCaptureFixForFrameGeneration(true)).toBe(false);
-    expect(shouldAutoEnableCaptureFixForFrameGeneration(false)).toBe(true);
+    expect(shouldAutoEnableCaptureFixForFrameGeneration(false)).toBe(false);
   });
 
   it('returns the redesigned display health messages', () => {
     expect(frameGenDisplayHealthMessage(true, 'game-provided')).toBe(
-      'Virtual display uses 4x refresh with automatic frame pacing.',
+      'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.',
     );
     expect(frameGenDisplayHealthMessage(false, 'game-provided')).toBe(
-      'Physical display is not recommended for game-provided DLSS/FSR capture. Use the virtual display for the 4x pacing path.',
+      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
     );
     expect(frameGenDisplayHealthMessage(false, 'lossless-scaling')).toBe(
-      'Physical display is supported for Lossless Scaling frame generation. Use enough refresh headroom for the generated output.',
+      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
     );
     expect(frameGenDisplayHealthMessage(false, 'nvidia-smooth-motion')).toBe(
-      'Physical display is supported for NVIDIA Smooth Motion. Use enough refresh headroom for the generated output.',
+      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
+    );
+    expect(frameGenDisplayHealthMessage(false, 'off')).toBe(
+      'Frame generation on a physical display may micro-stutter or judder without suitable frame pacing. Use a virtual display for low-latency, smooth capture.',
     );
   });
 });

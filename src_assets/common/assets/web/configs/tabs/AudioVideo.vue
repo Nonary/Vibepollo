@@ -334,6 +334,18 @@ function selectVirtualDisplayLayout(v: unknown) {
             </PlatformLayout>
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
+              <div
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.physical_display_framegen_warning') }}</span>
+                  </span>
+                </p>
+              </div>
             </div>
             <div v-else class="mt-3 space-y-2">
               <div class="text-sm font-medium">

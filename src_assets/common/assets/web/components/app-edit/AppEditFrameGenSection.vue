@@ -17,10 +17,9 @@ import type {
   LosslessProfileKey,
 } from './types';
 import { FRAME_GENERATION_PROVIDERS, LOSSLESS_FLOW_MIN, LOSSLESS_FLOW_MAX } from './lossless';
+import { physicalFrameGenDisplayWarning } from './frameGenDisplayPolicy';
 
 const modeModel = defineModel<FrameGenerationMode>('mode', { default: 'off' });
-const gen1Model = defineModel<boolean>('gen1', { default: false });
-const gen2Model = defineModel<boolean>('gen2', { default: false });
 const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', {
   default: 'recommended',
 });
@@ -56,56 +55,26 @@ const frameGenOptions = computed(() => [
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
 const hasFrameGenSelection = computed(() => modeModel.value !== 'off');
 const frameGenDisplayAlert = computed(() => {
-  if (!hasFrameGenSelection.value) {
-    return null;
-  }
   if (props.usingVirtualDisplay) {
+    if (!hasFrameGenSelection.value) {
+      return null;
+    }
+    if (modeModel.value === 'game-provided') {
+      return {
+        type: 'info' as const,
+        message:
+          'DLSS/FSR frame generation should use virtual display for reliable, smooth capture.',
+      };
+    }
     return {
       type: 'info' as const,
-      message: 'Virtual display uses 4x refresh with automatic frame pacing.',
+      message: 'Virtual display uses automatic frame pacing for smoother frame generation.',
     };
   }
-  if (modeModel.value === 'game-provided') {
-    return {
-      type: 'warning' as const,
-      message:
-        'Game-provided DLSS/FSR frame generation captures best through the virtual display. Switch to virtual display for the 4x pacing path.',
-    };
-  }
-  if (modeModel.value === 'lossless-scaling') {
-    return {
-      type: 'info' as const,
-      message:
-        'Lossless Scaling frame generation works on physical displays. Use enough refresh headroom for the generated output.',
-    };
-  }
-  if (modeModel.value === 'nvidia-smooth-motion') {
-    return {
-      type: 'info' as const,
-      message:
-        'NVIDIA Smooth Motion works on physical displays. Use enough refresh headroom for the generated output.',
-    };
-  }
-  return null;
-});
-const captureFixModel = computed<boolean>({
-  get: () => gen1Model.value || gen2Model.value,
-  set: (enabled) => {
-    gen1Model.value = enabled;
-    gen2Model.value = false;
-  },
-});
-const captureFixDescription = computed(() => {
-  if (modeModel.value === 'lossless-scaling') {
-    return 'Uses RTSS Front Edge Sync for Lossless Scaling frame generation. Not required for pure upscaling.';
-  }
-  if (modeModel.value === 'nvidia-smooth-motion') {
-    return 'Uses RTSS Front Edge Sync while NVIDIA Smooth Motion is active.';
-  }
-  if (modeModel.value === 'game-provided') {
-    return 'Uses NVIDIA Reflex for game-provided frame generation on NVIDIA systems, and falls back to RTSS Front Edge Sync on AMD systems.';
-  }
-  return 'Enable when the app uses frame generation. Lossless Scaling and NVIDIA Smooth Motion use RTSS Front Edge Sync, while Game Provided uses NVIDIA Reflex unless an AMD GPU is present.';
+  return {
+    type: 'warning' as const,
+    message: physicalFrameGenDisplayWarning(props.health?.rtss.installed ?? null),
+  };
 });
 const losslessAdvancedTargets = ref(
   losslessTargetModel.value !== null || losslessRtssModel.value !== null,
@@ -258,6 +227,25 @@ const displayTargets = computed(() => props.health?.display.targets || []);
       </div>
     </div>
 
+    <n-alert
+      v-if="frameGenDisplayAlert"
+      :type="frameGenDisplayAlert.type"
+      size="small"
+      :bordered="false"
+    >
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <span>{{ frameGenDisplayAlert.message }}</span>
+        <n-button
+          v-if="canEnableVirtualScreen"
+          size="small"
+          type="primary"
+          @click="emit('enable-virtual-screen')"
+        >
+          Use Virtual Display
+        </n-button>
+      </div>
+    </n-alert>
+
     <div class="space-y-4">
       <div class="space-y-2">
         <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
@@ -399,48 +387,23 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
               Lossless Launch Delay (seconds)
             </label>
-             <n-input-number
-               v-model:value="losslessLaunchDelayModel"
-               :min="0"
-               :max="600"
-               :step="1"
-               :precision="0"
-               placeholder="8"
-               size="small"
-             />
-             <p class="text-[12px] opacity-60 leading-relaxed">
-               Wait additional seconds after the game starts before opening Lossless Scaling.
-               Leave blank to use the default 8-second delay.
-             </p>
-           </div>
-        </div>
-      </div>
-
-      <n-alert
-        v-if="frameGenDisplayAlert"
-        :type="frameGenDisplayAlert.type"
-        size="small"
-        :bordered="false"
-      >
-        {{ frameGenDisplayAlert.message }}
-      </n-alert>
-
-      <div class="grid gap-3">
-        <div
-          v-if="!props.usingVirtualDisplay"
-          class="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-dark/10 dark:border-light/10 bg-white/50 dark:bg-white/5 px-3 py-3"
-        >
-          <div class="space-y-1">
-            <div class="font-medium text-sm">Frame Generation Capture Fix</div>
-            <p class="text-[12px] opacity-70 leading-relaxed">{{ captureFixDescription }}</p>
+            <n-input-number
+              v-model:value="losslessLaunchDelayModel"
+              :min="0"
+              :max="600"
+              :step="1"
+              :precision="0"
+              placeholder="8"
+              size="small"
+            />
+            <p class="text-[12px] opacity-60 leading-relaxed">
+              Wait additional seconds after the game starts before opening Lossless Scaling. Leave
+              blank to use the default 8-second delay.
+            </p>
           </div>
-          <n-switch
-            v-model:value="captureFixModel"
-            size="large"
-            :disabled="!hasFrameGenSelection"
-          />
         </div>
       </div>
+
       <div class="space-y-3">
         <n-alert v-if="healthError" type="error" size="small">
           {{ healthError }}
@@ -551,8 +514,8 @@ const displayTargets = computed(() => props.health?.display.targets || []);
       </n-alert>
 
       <p class="text-[12px] opacity-70 leading-relaxed">
-        Frame generation capture fixes are only needed when using frame generation technologies.
-        Upscaling alone can stay disabled.
+        Frame generation pacing is only needed when using frame generation technologies. Upscaling
+        alone can stay disabled.
       </p>
     </div>
   </section>

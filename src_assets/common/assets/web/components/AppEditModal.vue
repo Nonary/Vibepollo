@@ -367,8 +367,6 @@
           <AppEditFrameGenSection
             v-if="isWindows"
             v-model:mode="frameGenerationSelection"
-            v-model:gen1="form.gen1FramegenFix"
-            v-model:gen2="form.gen2FramegenFix"
             v-model:lossless-profile="form.losslessScalingProfile"
             v-model:lossless-target-fps="form.losslessScalingTargetFps"
             v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
@@ -547,9 +545,9 @@ import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue'
 import {
   VIRTUAL_DISPLAY_SELECTION,
   frameGenDisplayHealthMessage,
+  physicalGameFrameGenCaptureWarning,
   resolvesToVirtualDisplay,
   shouldAutoEnableCaptureFixForFrameGeneration,
-  shouldPersistFrameGenerationCaptureFix,
   type DisplaySelection,
 } from './app-edit/frameGenDisplayPolicy';
 
@@ -947,11 +945,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       ddConfigValue = normalized as AppForm['ddConfigurationOption'];
     }
   }
-  const captureFixEnabled = !!(
-    src['gen1-framegen-fix'] ||
-    src['dlss-framegen-capture-fix'] ||
-    src['gen2-framegen-fix']
-  );
   const rawConfigOverrides = clonePlainRecord((src as any)?.['config-overrides']);
   const rtxHdrOverrides = extractRtxHdrOverrides(rawConfigOverrides);
   return {
@@ -991,7 +984,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
-    gen1FramegenFix: captureFixEnabled,
+    gen1FramegenFix: false,
     gen2FramegenFix: false,
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
@@ -1018,16 +1011,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 }
 
 function toServerPayload(f: AppForm): Record<string, any> {
-  const selection = displaySelection.value;
-  const captureFixEnabled = shouldPersistFrameGenerationCaptureFix(
-    !!(f.gen1FramegenFix || f.gen2FramegenFix),
-    resolvesToVirtualDisplay({
-      displaySelection: selection,
-      appVirtualDisplayMode: f.virtualDisplayMode,
-      globalVirtualDisplayMode: globalVirtualDisplayMode.value,
-      globalOutputName: globalOutputName.value,
-    }),
-  );
   const configOverridesPayload = buildConfigOverridesPayload(f);
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
@@ -1052,7 +1035,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'scale-factor': clampScaleFactor(
       typeof f.scaleFactor === 'number' && Number.isFinite(f.scaleFactor) ? f.scaleFactor : null,
     ),
-    'gen1-framegen-fix': captureFixEnabled,
+    'gen1-framegen-fix': false,
     'gen2-framegen-fix': false,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
@@ -2457,22 +2440,6 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         captureMessage =
           'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
       }
-      if (!usingVirtual && form.value.frameGenerationMode === 'game-provided') {
-        if (captureValue === '' || captureValue === 'ddx') {
-          captureStatus = 'pass';
-          captureMessage =
-            'Physical-display game-provided frame generation uses the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
-        } else {
-          captureStatus = 'warn';
-          captureMessage =
-            'Physical-display game-provided frame generation needs the DXGI capture fallback. Use a virtual display for best DLSS/FSR capture.';
-        }
-      } else if (!usingVirtual) {
-        captureStatus = 'pass';
-        captureMessage =
-          'Physical display is supported for this frame generation mode. Keep the capture method that works best for the app.';
-      }
-
       let rtssInstalled = false;
       let rtssHooks = false;
       let rtssRunning = false;
@@ -2504,6 +2471,21 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       } else {
         rtssStatus = 'unknown';
         rtssMessage = 'Unable to reach the RTSS status endpoint.';
+      }
+
+      const physicalGameProvidedFrameGen =
+        !usingVirtual && form.value.frameGenerationMode === 'game-provided';
+      if (physicalGameProvidedFrameGen) {
+        rtssStatus = 'warn';
+        rtssMessage = rtssInstalled
+          ? 'RTSS frame limiting with DLSS/FSR frame generation on a physical display can increase latency by 50 ms or more. Use a virtual display for low-latency, smooth capture.'
+          : 'No RTSS frame limiter was detected. DLSS/FSR frame generation on a physical display may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.';
+        captureStatus = 'warn';
+        captureMessage = physicalGameFrameGenCaptureWarning(rtssInstalled);
+      } else if (!usingVirtual) {
+        captureStatus = 'pass';
+        captureMessage =
+          'Physical display is supported for this frame generation mode. Keep the capture method that works best for the app.';
       }
 
       const fpsTargets = [60, 90, 120, 144];
@@ -2774,13 +2756,18 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 
       if (highestFailUnder144 !== null) {
         health.suggestion = {
-          message: `Use the display override above to switch to the Vibepollo virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+          message:
+            form.value.frameGenerationMode === 'game-provided'
+              ? 'Use virtual display mode for low-latency, smooth DLSS/FSR capture.'
+              : `Use the display override above to switch to the Vibepollo virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
           emphasis: 'warning',
         };
       } else if (captureStatus === 'warn' || captureStatus === 'fail') {
         health.suggestion = {
           message:
-            'Set Capture -> Method to Windows Graphics Capture so frame generation stays stable.',
+            form.value.frameGenerationMode === 'game-provided'
+              ? 'Use virtual display mode for low-latency, smooth DLSS/FSR capture.'
+              : 'Set Capture -> Method to Windows Graphics Capture so frame generation stays stable.',
           emphasis: 'info',
         };
       }
@@ -2829,11 +2816,16 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
   if (!health) return;
   if (health.capture.status === 'warn' || health.capture.status === 'fail') {
     message.warning(
-      'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.',
+      form.value.frameGenerationMode === 'game-provided' && !usingVirtualDisplay.value
+        ? physicalGameFrameGenCaptureWarning(health.rtss.installed)
+        : 'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.',
       { duration: 8000 },
     );
   }
-  if (health.rtss.status === 'warn' || health.rtss.status === 'fail') {
+  if (
+    (health.rtss.status === 'warn' || health.rtss.status === 'fail') &&
+    !(form.value.frameGenerationMode === 'game-provided' && !usingVirtualDisplay.value)
+  ) {
     message.warning(
       'RTSS is required for this fix. Install and launch RTSS to avoid microstutter.',
       { duration: 8000 },
@@ -2849,7 +2841,7 @@ function warnIfHealthIssues(reason: FrameGenHealthReason) {
     );
     if (requiresHigh) {
       message.warning(
-        'Use the display override to switch to the Vibepollo virtual display or adjust Display Device Step 1 to keep only the high-refresh monitor active.',
+        physicalGameFrameGenCaptureWarning(health.rtss.installed),
         { duration: 8000 },
       );
     }
@@ -2879,27 +2871,8 @@ function autoSyncCaptureFixForFrameGen(
   const shouldEnable =
     anyFrameGenEnabled && shouldAutoEnableCaptureFixForFrameGeneration(usingVirtualDisplay.value);
   if (anyFrameGenEnabled && !shouldEnable) {
-    if (form.value.gen1FramegenFix || form.value.gen2FramegenFix) {
+    if (usingVirtualDisplay.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
       setAutoCaptureFixFlag(false);
-    }
-    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
-  } else if (shouldEnable && !form.value.gen1FramegenFix) {
-    setAutoCaptureFixFlag(true);
-    if (mode === 'nvidia-smooth-motion') {
-      message?.info(
-        'Frame Generation Capture Fix has been automatically enabled. NVIDIA Smooth Motion uses RTSS Front Edge Sync during streams.',
-        { duration: 8000 },
-      );
-    } else if (mode === 'lossless-scaling') {
-      message?.info(
-        'Frame Generation Capture Fix has been automatically enabled because Lossless Scaling frame generation uses RTSS Front Edge Sync.',
-        { duration: 8000 },
-      );
-    } else if (mode === 'game-provided') {
-      message?.info(
-        'Frame Generation Capture Fix has been automatically enabled. Game-provided frame generation uses NVIDIA Reflex on NVIDIA systems and Front Edge Sync on AMD systems.',
-        { duration: 8000 },
-      );
     }
     refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
   } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
