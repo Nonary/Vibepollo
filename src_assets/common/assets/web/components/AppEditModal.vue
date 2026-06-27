@@ -544,8 +544,8 @@ import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverM
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
 import {
   VIRTUAL_DISPLAY_SELECTION,
-  frameGenDisplayHealthMessage,
-  physicalFrameGenDisplayWarning,
+  frameGenDisplayHealthKey,
+  physicalFrameGenDisplayWarningKey,
   resolvesToVirtualDisplay,
   type DisplaySelection,
 } from './app-edit/frameGenDisplayPolicy';
@@ -2081,7 +2081,7 @@ async function loadDisplayDevices(): Promise<void> {
     displayDevices.value = devices;
     cacheDisplayNames(devices);
   } catch (e: any) {
-    displayDevicesError.value = e?.message || 'Failed to load display devices';
+    displayDevicesError.value = e?.message || t('apps.framegen.health_devices_error');
     displayDevices.value = [];
   } finally {
     displayDevicesLoading.value = false;
@@ -2420,22 +2420,20 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       if (captureValue === 'wgc' || captureValue === 'wgcc' || autoTreatsAsWgc) {
         captureStatus = 'pass';
         captureMessage = autoTreatsAsWgc
-          ? 'Automatic capture uses Windows Graphics Capture on this Windows build.'
-          : 'Windows Graphics Capture is active for this system.';
+          ? t('apps.framegen.health_capture_wgc_auto')
+          : t('apps.framegen.health_capture_wgc_active');
       } else if (captureValue === '') {
         captureStatus = 'warn';
-        captureMessage =
-          'Autodetect may fall back to Desktop Duplication. Select Windows Graphics Capture in Settings -> Capture.';
+        captureMessage = t('apps.framegen.health_capture_autodetect');
       } else {
         captureStatus = 'fail';
-        captureMessage =
-          'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
+        captureMessage = t('apps.framegen.health_capture_switch');
       }
       let rtssInstalled = false;
       let rtssHooks = false;
       let rtssRunning = false;
       let rtssStatus: FrameGenHealth['rtss']['status'] = 'unknown';
-      let rtssMessage = 'Unable to verify RTSS.';
+      let rtssMessage = t('apps.framegen.health_rtss_unverified');
       if (rtssResult.status === 'fulfilled') {
         const res = rtssResult.value;
         const ok = res.status >= 200 && res.status < 300;
@@ -2446,22 +2444,21 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
           rtssRunning = !!data?.process_running;
           if (rtssInstalled && rtssHooks) {
             rtssStatus = 'pass';
-            rtssMessage = 'RTSS hooks detected. Vibepollo can control the frame limiter.';
+            rtssMessage = t('apps.framegen.health_rtss_hooks');
           } else if (rtssInstalled) {
             rtssStatus = 'warn';
-            rtssMessage =
-              'RTSS is installed but hooks were not detected. Launch RTSS and ensure the Vibepollo profile is active.';
+            rtssMessage = t('apps.framegen.health_rtss_no_hooks');
           } else {
             rtssStatus = 'fail';
-            rtssMessage = 'Install RTSS to avoid microstutter when frame generation is enabled.';
+            rtssMessage = t('apps.framegen.health_rtss_install');
           }
         } else {
           rtssStatus = 'unknown';
-          rtssMessage = 'RTSS status endpoint returned an error.';
+          rtssMessage = t('apps.framegen.health_rtss_endpoint_error');
         }
       } else {
         rtssStatus = 'unknown';
-        rtssMessage = 'Unable to reach the RTSS status endpoint.';
+        rtssMessage = t('apps.framegen.health_rtss_unreachable');
       }
 
       const physicalGameProvidedFrameGen =
@@ -2469,21 +2466,22 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       if (physicalGameProvidedFrameGen) {
         rtssStatus = 'warn';
         rtssMessage = rtssInstalled
-          ? 'RTSS frame limiting with DLSS/FSR frame generation on a physical display can increase latency by 50 ms or more. Use a virtual display for low-latency, smooth capture.'
-          : 'No RTSS frame limiter was detected. DLSS/FSR frame generation on a physical display may micro-stutter or judder. Use a virtual display for low-latency, smooth capture.';
+          ? t('apps.framegen.health_physical_rtss_latency')
+          : t('apps.framegen.health_physical_no_rtss');
         captureStatus = 'warn';
-        captureMessage = physicalFrameGenDisplayWarning();
+        captureMessage = t(physicalFrameGenDisplayWarningKey());
       } else if (!usingVirtual) {
         captureStatus = 'pass';
-        captureMessage =
-          'Physical display is supported for this frame generation mode. Keep the capture method that works best for the app.';
+        captureMessage = t('apps.framegen.health_physical_supported');
       }
 
       const fpsTargets = [60, 90, 120, 144];
       const tolerance = 0.5;
       let displayStatus: FrameGenHealth['display']['status'] = 'unknown';
-      let displayMessage = 'Unable to determine display refresh capabilities.';
-      let displayLabel = usingVirtual ? 'Vibepollo Virtual Screen' : 'Active display';
+      let displayMessage = t('apps.framegen.health_display_unknown');
+      let displayLabel = usingVirtual
+        ? t('apps.framegen.health_display_virtual_label')
+        : t('apps.framegen.health_display_active_label');
       let displayId = usingVirtual ? VIRTUAL_DISPLAY_SELECTION : '';
       let displayHz: number | null = null;
       let displayError: string | null = null;
@@ -2638,8 +2636,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 
               if (evaluationHz === null) {
                 displayStatus = 'unknown';
-                displayMessage =
-                  'Unable to read the refresh rate from the configured display. Double-check Display Device Step 1.';
+                displayMessage = t('apps.framegen.health_display_refresh_unreadable');
               } else if (evaluationHz >= 240 - tolerance) {
                 displayStatus = 'pass';
                 if (only144Fails) {
@@ -2655,7 +2652,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                 } else if (deltaSupported && highestSupported !== null) {
                   displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Vibepollo can switch to ${Math.round(highestSupported)} Hz during streams to keep frame generation smooth.`;
                 } else {
-                  displayMessage = 'Display refresh is high enough to double 120 FPS streams.';
+                  displayMessage = t('apps.framegen.health_display_ok_120');
                 }
               } else if (evaluationHz >= 180 - tolerance) {
                 displayStatus = 'warn';
@@ -2671,8 +2668,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     displayMessage += ` Vibepollo can switch up to ${Math.round(highestSupported)} Hz if Display Device Step 1 keeps only that monitor active.`;
                   }
                 } else {
-                  displayMessage =
-                    'Unable to read the current refresh rate, but the display may not reach the required 240 Hz. Use the display override below to switch to the Vibepollo virtual display or move the stream to a higher-refresh monitor.';
+                  displayMessage = t('apps.framegen.health_display_maybe_low');
                 }
               } else {
                 displayStatus = 'fail';
@@ -2685,29 +2681,27 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     displayMessage += ` Vibepollo can switch up to ${Math.round(highestSupported)} Hz if configured in Display Device Step 1.`;
                   }
                 } else {
-                  displayMessage =
-                    'Display refresh information was unavailable. Use the display override below to switch to the Vibepollo virtual display or switch to a 240 Hz display for frame generation.';
+                  displayMessage = t('apps.framegen.health_display_unavailable_240');
                 }
               }
             } else {
               displayStatus = 'unknown';
-              displayMessage =
-                'No display devices were returned by Vibepollo’s helper. Frame generation may not be able to enforce refresh changes.';
-              displayError = 'Display helper returned no devices.';
+              displayMessage = t('apps.framegen.health_display_no_devices');
+              displayError = t('apps.framegen.health_display_no_devices_error');
             }
           } else {
             displayStatus = 'unknown';
-            displayMessage = 'Display helper did not respond with device information.';
-            displayError = 'Display device enumeration failed.';
+            displayMessage = t('apps.framegen.health_display_helper_silent');
+            displayError = t('apps.framegen.health_display_enum_failed');
           }
         } else {
           displayStatus = 'unknown';
-          displayMessage = 'Unable to reach the display helper.';
-          displayError = 'Display helper request failed.';
+          displayMessage = t('apps.framegen.health_display_helper_unreachable');
+          displayError = t('apps.framegen.health_display_helper_failed');
         }
       } else {
         displayStatus = 'pass';
-        displayMessage = frameGenDisplayHealthMessage(true, form.value.frameGenerationMode);
+        displayMessage = t(frameGenDisplayHealthKey(true, form.value.frameGenerationMode));
       }
 
       if (usingVirtual) {
@@ -2749,16 +2743,16 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         health.suggestion = {
           message:
             form.value.frameGenerationMode === 'game-provided'
-              ? 'Use virtual display mode for low-latency, smooth DLSS/FSR capture.'
-              : `Use the display override above to switch to the Vibepollo virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+              ? t('apps.framegen.health_suggestion_virtual')
+              : t('apps.framegen.health_suggestion_target', { fps: highestFailUnder144 }),
           emphasis: 'warning',
         };
       } else if (captureStatus === 'warn' || captureStatus === 'fail') {
         health.suggestion = {
           message:
             form.value.frameGenerationMode === 'game-provided'
-              ? 'Use virtual display mode for low-latency, smooth DLSS/FSR capture.'
-              : 'Set Capture -> Method to Windows Graphics Capture so frame generation stays stable.',
+              ? t('apps.framegen.health_suggestion_virtual')
+              : t('apps.framegen.health_suggestion_capture'),
           emphasis: 'info',
         };
       }
@@ -2768,9 +2762,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
     } catch (error) {
       frameGenHealth.value = null;
       frameGenHealthError.value =
-        error instanceof Error ? error.message : 'Unable to run frame generation health check.';
+        error instanceof Error ? error.message : t('apps.framegen.health_run_error');
       if (!options.silent) {
-        message?.error('Unable to run frame generation health check.');
+        message?.error(t('apps.framegen.health_run_error'));
       }
     } finally {
       frameGenHealthLoading.value = false;
