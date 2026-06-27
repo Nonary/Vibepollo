@@ -271,6 +271,27 @@ function Install-Certificate {
     }
 }
 
+function Assert-CertificateMatchesCatalog {
+    Assert-RequiredDriverArtifact -Path $certPath -DisplayName 'sudovda.cer'
+    Assert-RequiredDriverArtifact -Path $catPath -DisplayName 'sudovda.cat'
+
+    try {
+        $certBytes = [System.IO.File]::ReadAllBytes($certPath)
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certBytes)
+    }
+    catch {
+        throw "[SudoVDA] Failed to load certificate from $certPath. $($_.Exception.Message)"
+    }
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $catPath
+    if (-not $signature.SignerCertificate -or $signature.Status -eq 'HashMismatch') {
+        throw "[SudoVDA] Driver catalog signature is not valid ($($signature.Status)): $catPath"
+    }
+    if (-not [string]::Equals($signature.SignerCertificate.Thumbprint, $cert.Thumbprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "[SudoVDA] Driver catalog signer does not match bundled certificate."
+    }
+}
+
 function Get-TargetDriverVersion {
     try {
         $content = Get-Content -Path $infPath -ErrorAction Stop
@@ -535,6 +556,7 @@ if ($Uninstall) {
 }
 
 Assert-RequiredInstallArtifacts
+Assert-CertificateMatchesCatalog
 
 $targetVersion = Get-TargetDriverVersion
 $installedInfo = Get-InstalledDriverInfo

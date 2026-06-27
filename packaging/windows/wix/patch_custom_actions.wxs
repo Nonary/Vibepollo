@@ -3,7 +3,10 @@
   <CPackWiXFragment Id="#PRODUCT">
     <Property Id="ALLUSERS" Value="1"/>
     <Property Id="ARPSYSTEMCOMPONENT" Value="1"/>
-
+    <Property Id="VIBEPOLLO_INSTALLED_PRODUCT_VERSION" Secure="yes">
+      <RegistrySearch Id="SearchInstalledVibepolloVersion64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Vibepollo" Name="DisplayVersion" Type="raw" Win64="yes"/>
+      <RegistrySearch Id="SearchInstalledVibepolloVersion32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Vibepollo" Name="DisplayVersion" Type="raw"/>
+    </Property>
     <Property Id="LEGACY_SUNSHINE_PRESENT" Secure="yes">
       <RegistrySearch Id="SearchLegacySunshine64" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw" Win64="yes"/>
       <RegistrySearch Id="SearchLegacySunshine32" Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Sunshine" Name="DisplayName" Type="raw"/>
@@ -33,7 +36,7 @@
     </Feature>
     <InstallExecuteSequence>
       <!-- Remove conflicting products before installation starts. -->
-      <Custom Action="RemoveConflictingProducts" After="InstallInitialize">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
+      <Custom Action="RemoveConflictingProducts" Before="InstallValidate">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; "1"</Custom>
 
       <!-- Pre-validate stop/kill when UI can't prompt.  Major upgrades are
            not "Installed" from the incoming package's perspective, but they
@@ -48,7 +51,7 @@
       <Custom Action="StopSvcQuiet" After="SetStopSvcQuiet">((Installed OR WIX_UPGRADE_DETECTED) AND NOT REMOVE AND UILevel &lt; 5) OR (REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE)</Custom>
 
       <!-- Start quietly on repair with basic/silent UI -->
-      <Custom Action="SetStartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
+      <Custom Action="SetStartSvcQuiet" Before="StartSvcQuiet">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
       <Custom Action="StartSvcQuiet" Before="InstallFinalize">Installed AND NOT REMOVE AND UILevel &lt; 5</Custom>
 
       <!-- Manual uninstall: process/legacy service cleanup -->
@@ -64,18 +67,21 @@
       <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1"</Custom>
       <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
       <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = "1"</Custom>
+      <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
+           not just the opt-in virtual-display driver), so keep this gated only on NOT REMOVE. -->
       <Custom Action="SetRegisterVulkanHdrLayer" After="InstallVirtualDisplayDriver">NOT REMOVE</Custom>
       <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
-      <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT REMOVE</Custom>
-      <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT REMOVE</Custom>
-      <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT REMOVE</Custom>
+      <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
+      <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT Installed AND NOT REMOVE</Custom>
+      <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT Installed AND NOT REMOVE</Custom>
+      <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT Installed AND NOT REMOVE</Custom>
+      <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT Installed AND NOT REMOVE</Custom>
       <Custom Action="SetUpdatePathAdd" After="RunInstallerMigrations">NOT REMOVE</Custom>
       <Custom Action="UpdatePathAdd" After="SetUpdatePathAdd">NOT REMOVE</Custom>
 
       <!-- Uninstall before file removal -->
-      <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL"</Custom>
-      <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL"</Custom>
+      <Custom Action="SetRestoreNvPrefsUndo" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RestoreNvPrefsUndo" After="SetRestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 
       <!-- Remove Virtual Display Driver only when explicitly requested by uninstall properties. -->
       <Custom Action="SetUnregisterVulkanHdrLayer" After="RestoreNvPrefsUndo">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>

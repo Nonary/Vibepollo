@@ -4,13 +4,11 @@ Const HKEY_LOCAL_MACHINE = &H80000002
 Function RemoveConflictingProducts()
     On Error Resume Next
 
-    Dim shell, reg, processed
-    Set shell = CreateObject("WScript.Shell")
+    Dim reg
     Set reg = GetObject("winmgmts:\\.\root\default:StdRegProv")
-    Set processed = CreateObject("Scripting.Dictionary")
 
     If Err.Number <> 0 Then
-        LogMessage "RemoveConflictingProducts: failed to initialize objects: " & Err.Description
+        LogMessage "RemoveConflictingProducts: failed to initialize registry provider: " & Err.Description
         RemoveConflictingProducts = 3
         Exit Function
     End If
@@ -37,77 +35,26 @@ Function RemoveConflictingProducts()
 
                     If IsTargetProduct(displayName) Then
                         foundAny = True
-                        If Not UninstallConflict(reg, shell, hive, fullPath, subKeyName, displayName, processed) Then
-                            RemoveConflictingProducts = 3
-                            Exit Function
-                        End If
+                        LogMessage "RemoveConflictingProducts: blocking install because conflicting product remains installed: " & displayName & " (" & fullPath & ")"
                     End If
                 Next
             End If
         Next
     Next
 
-    If Not foundAny Then
-        LogMessage "RemoveConflictingProducts: no conflicting products detected."
-    End If
-
-    RemoveConflictingProducts = 1
-End Function
-
-Private Function UninstallConflict(reg, shell, hive, fullPath, subKeyName, displayName, processed)
-    UninstallConflict = False
-
-    Dim windowsInstaller, quietCmd, uninstallCmd, commandToRun, productCode
-    windowsInstaller = ReadDwordValue(reg, hive, fullPath, "WindowsInstaller")
-    quietCmd = Trim(ReadStringValue(reg, hive, fullPath, "QuietUninstallString"))
-    uninstallCmd = Trim(ReadStringValue(reg, hive, fullPath, "UninstallString"))
-    productCode = Trim(subKeyName)
-
-    If windowsInstaller = 1 And LooksLikeProductCode(productCode) Then
-        commandToRun = BuildMsiUninstallCommand(shell, productCode)
+    If foundAny Then
+        LogMessage "RemoveConflictingProducts: conflicting products must be removed by the bootstrapper or by the user before running the MSI."
+        RemoveConflictingProducts = 3
     Else
-        If Len(quietCmd) > 0 Then
-            commandToRun = quietCmd
-        Else
-            commandToRun = uninstallCmd
-        End If
-
-        If Len(commandToRun) = 0 Then
-            LogMessage "RemoveConflictingProducts: no uninstall command found for " & displayName
-            Exit Function
-        End If
-
-        If Len(quietCmd) = 0 And (Not CommandHasQuietSwitch(commandToRun)) And (Not CommandTargetsMsiexec(commandToRun)) Then
-            commandToRun = commandToRun & " /S"
-        End If
+        LogMessage "RemoveConflictingProducts: no conflicting products detected."
+        RemoveConflictingProducts = 1
     End If
-
-    Dim dedupeKey
-    dedupeKey = UCase(productCode & "|" & commandToRun)
-    If processed.Exists(dedupeKey) Then
-        UninstallConflict = True
-        Exit Function
-    End If
-    processed.Add dedupeKey, True
-
-    LogMessage "RemoveConflictingProducts: uninstalling " & displayName & " using: " & commandToRun
-
-    Dim exitCode
-    exitCode = shell.Run(commandToRun, 0, True)
-    LogMessage "RemoveConflictingProducts: uninstall exit code for " & displayName & ": " & CStr(exitCode)
-
-    If Not IsAcceptedExitCode(exitCode) Then
-        LogMessage "RemoveConflictingProducts: uninstall failed for " & displayName
-        Exit Function
-    End If
-
-    UninstallConflict = True
 End Function
 
 Private Function IsTargetProduct(displayName)
     Dim nameUpper
     nameUpper = UCase(Trim(displayName))
-    IsTargetProduct = (Left(nameUpper, 8) = "SUNSHINE") _
+    IsTargetProduct = (nameUpper = "SUNSHINE") _
         Or (nameUpper = "APOLLO") _
         Or (Left(nameUpper, 9) = "VIBESHINE")
 End Function
@@ -193,17 +140,6 @@ Private Function ReadStringValue(reg, hive, path, valueName)
         value = ""
     End If
     ReadStringValue = CStr(value)
-End Function
-
-Private Function ReadDwordValue(reg, hive, path, valueName)
-    On Error Resume Next
-    Dim value, rc
-    value = 0
-    rc = reg.GetDWORDValue(hive, path, valueName, value)
-    If rc <> 0 Or IsNull(value) Then
-        value = 0
-    End If
-    ReadDwordValue = CLng(value)
 End Function
 
 Private Sub LogMessage(message)

@@ -22,6 +22,7 @@ $vulkanLayerDllPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.dll'
 $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
+$script:rebootRequired = $false
 
 function Assert-Administrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -47,25 +48,73 @@ function Resolve-SystemToolPath {
     return Join-Path $systemRoot "System32\$ToolName"
 }
 
+function ConvertTo-ProcessArgumentString {
+    param([string[]]$ArgumentList = @())
+
+    $quoted = @()
+    foreach ($argument in $ArgumentList) {
+        $arg = [string]$argument
+        if ($arg.Length -eq 0) {
+            $quoted += '""'
+            continue
+        }
+        if ($arg -notmatch '[\s"]') {
+            $quoted += $arg
+            continue
+        }
+
+        $builder = [System.Text.StringBuilder]::new()
+        [void]$builder.Append('"')
+        $backslashes = 0
+        foreach ($ch in $arg.ToCharArray()) {
+            if ($ch -eq '\') {
+                $backslashes++
+                continue
+            }
+            if ($ch -eq '"') {
+                [void]$builder.Append(('\' * (($backslashes * 2) + 1)))
+                [void]$builder.Append('"')
+                $backslashes = 0
+                continue
+            }
+            if ($backslashes -gt 0) {
+                [void]$builder.Append(('\' * $backslashes))
+                $backslashes = 0
+            }
+            [void]$builder.Append($ch)
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append(('\' * ($backslashes * 2)))
+        }
+        [void]$builder.Append('"')
+        $quoted += $builder.ToString()
+    }
+
+    return ($quoted -join ' ')
+}
+
 function Invoke-DriverProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [int[]]$AllowedExitCodes = @(0, 259, 3010)
+        [int[]]$AllowedExitCodes = @(0, 259, 3010),
+        [int]$TimeoutSeconds = 300
     )
 
-    $quotedArgs = foreach ($argument in $ArgumentList) {
-        $arg = [string]$argument
-        if ($arg -notmatch '[\s"]') {
-            $arg
-        } else {
-            '"' + ($arg -replace '\\(?=")', '\' -replace '"', '\"') + '"'
+    $process = Start-Process -FilePath $FilePath -ArgumentList (ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList) -WorkingDirectory $scriptDir -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try {
+            $process.Kill()
+        } catch {
+            $null = $_
         }
+        throw "[SunshineVirtualDisplay] $FilePath timed out after $TimeoutSeconds seconds."
     }
-
-    $process = Start-Process -FilePath $FilePath -ArgumentList ($quotedArgs -join ' ') -WorkingDirectory $scriptDir -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -notin $AllowedExitCodes) {
         throw "[SunshineVirtualDisplay] $FilePath failed with exit code $($process.ExitCode)."
+    }
+    if ($process.ExitCode -eq 3010) {
+        $script:rebootRequired = $true
     }
 }
 
@@ -73,17 +122,49 @@ function Invoke-DriverProcessCapture {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
-        [int[]]$AllowedExitCodes = @(0)
+        [int[]]$AllowedExitCodes = @(0),
+        [int]$TimeoutSeconds = 120
     )
 
-    $output = & $FilePath @ArgumentList 2>&1
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -notin $AllowedExitCodes) {
-        $detail = ($output | ForEach-Object { [string]$_ }) -join "`n"
-        throw "[SunshineVirtualDisplay] $FilePath failed with exit code $exitCode. $detail"
-    }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList
+    $startInfo.WorkingDirectory = $scriptDir
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
 
-    return @($output | ForEach-Object { [string]$_ })
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                $process.Kill()
+            } catch {
+                $null = $_
+            }
+            throw "[SunshineVirtualDisplay] $FilePath timed out after $TimeoutSeconds seconds."
+        }
+
+        $process.WaitForExit()
+        $stdout = if ($stdoutTask.Wait(5000)) { $stdoutTask.Result } else { '' }
+        $stderr = if ($stderrTask.Wait(5000)) { $stderrTask.Result } else { '' }
+        $output = (@($stdout -split "`r?`n") + @($stderr -split "`r?`n")) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        if ($process.ExitCode -notin $AllowedExitCodes) {
+            $detail = ($output | ForEach-Object { [string]$_ }) -join "`n"
+            throw "[SunshineVirtualDisplay] $FilePath failed with exit code $($process.ExitCode). $detail"
+        }
+
+        return @($output | ForEach-Object { [string]$_ })
+    } finally {
+        $process.Dispose()
+    }
 }
 
 function Assert-Artifact {
@@ -118,12 +199,18 @@ function Assert-InfContent {
 
 function Assert-CatalogSignature {
     $signature = Get-AuthenticodeSignature -LiteralPath $catPath
-    if (-not $signature.SignerCertificate) {
+    $matchesBundledCertificate = $false
+    if ($signature.SignerCertificate -and (Test-Path -LiteralPath $certPath -PathType Leaf)) {
+        $bundledCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([System.IO.File]::ReadAllBytes($certPath))
+        $matchesBundledCertificate = [string]::Equals($signature.SignerCertificate.Thumbprint, $bundledCertificate.Thumbprint, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    if (-not $signature.SignerCertificate -or $signature.Status -eq 'HashMismatch' -or ((-not $matchesBundledCertificate) -and $signature.Status -ne 'Valid')) {
         if ($ValidateOnly -and $AllowUnsignedCatalogForValidation) {
-            Write-Warning "[SunshineVirtualDisplay] Driver catalog is unsigned; validation allowed this local package state: $catPath"
+            Write-Warning "[SunshineVirtualDisplay] Driver catalog signature is not valid ($($signature.Status)); validation allowed this local package state: $catPath"
             return
         }
-        throw "[SunshineVirtualDisplay] Driver catalog is not signed: $catPath"
+        throw "[SunshineVirtualDisplay] Driver catalog signature is not valid ($($signature.Status)): $catPath"
     }
 }
 
@@ -375,6 +462,22 @@ function Initialize-DriverStateRegistryAccess {
     throw '[SunshineVirtualDisplay] Unable to prepare driver state registry access.'
 }
 
+function Test-DeviceNodePresent {
+    $enumRoot = 'HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\DISPLAY'
+    if (-not (Test-Path -LiteralPath $enumRoot -PathType Container)) {
+        return $false
+    }
+
+    foreach ($deviceKey in @(Get-ChildItem -LiteralPath $enumRoot -ErrorAction SilentlyContinue)) {
+        $properties = Get-ItemProperty -LiteralPath $deviceKey.PSPath -ErrorAction SilentlyContinue
+        if ($properties -and ($properties.HardwareID -contains $hardwareId)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Get-DisplayDriverPublishedNamesByOriginalName {
     param([Parameter(Mandatory = $true)][string[]]$OriginalNames)
 
@@ -547,20 +650,28 @@ Install-CertificateIfPresent -StoreName 'Root'
 Install-CertificateIfPresent -StoreName 'TrustedPublisher'
 Register-VulkanLayer
 
-if (-not (Test-DriverPackageRefreshNeeded)) {
+$driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
+$deviceNodePresent = Test-DeviceNodePresent
+
+if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
     exit 0
 }
 
 Stop-SunshineForDriverInstall
-Remove-DeviceNode
-Remove-DriverPackage
 Install-DriverPackage
 
-Write-Host '[SunshineVirtualDisplay] Recreating device node.'
-Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
-Install-DriverPackage
+if (-not (Test-DeviceNodePresent)) {
+    Write-Host '[SunshineVirtualDisplay] Creating device node.'
+    Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+    Install-DriverPackage
+}
+
 Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
 Initialize-DriverStateRegistryAccess
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
+if ($script:rebootRequired) {
+    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+    exit 0
+}

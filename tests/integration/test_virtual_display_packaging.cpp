@@ -92,12 +92,12 @@ TEST(SunshineVirtualDisplayPackaging, RefreshScriptBuildsDriverProbeAndValidates
   expect_contains(script, "Assert-SameFile -Expected $expectedPackageVulkanLayerJson -Actual $packageVulkanLayerJson");
 }
 
-TEST(SunshineVirtualDisplayPackaging, LocalPackageRefreshSignsDriverCatalog) {
+TEST(SunshineVirtualDisplayPackaging, LocalPackageRefreshSkipsDriverCatalogSigning) {
   const auto cmake = read_source_file("cmake/packaging/windows.cmake");
 
   expect_contains(cmake, "SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS");
   expect_contains(cmake, "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS}");
-  EXPECT_EQ(cmake.find("list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)"), std::string::npos);
+  expect_contains(cmake, "list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)");
 }
 
 TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotRunRuntimeQa) {
@@ -115,7 +115,9 @@ TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotR
   expect_contains(installer, "Vulkan HDR implicit layer registrations removed from ${view}");
   expect_contains(installer, "function Assert-CatalogSignature");
   expect_contains(installer, "Get-AuthenticodeSignature -LiteralPath $catPath");
-  expect_contains(installer, "Driver catalog is not signed");
+  expect_contains(installer, "$signature.Status -eq 'HashMismatch'");
+  expect_contains(installer, "Driver catalog signature is not valid");
+  expect_contains(installer, "$matchesBundledCertificate");
   expect_contains(installer, "Assert-CatalogSignature");
   EXPECT_EQ(installer.find("Assert-DriverControlInterface"), std::string::npos);
   EXPECT_EQ(installer.find("Assert-DriverHdrTemporaryDisplay"), std::string::npos);
@@ -137,20 +139,26 @@ TEST(SunshineVirtualDisplayPackaging, InstallerReplacesOnlyExistingSunshineDrive
   expect_contains(installer, "Test-DriverPackageRefreshNeeded");
   expect_contains(installer, "Get-CurrentDriverStoreDllPaths");
   expect_contains(installer, "Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath");
+  expect_contains(installer, "$currentHashes.Count -eq 1");
   expect_contains(installer, "Installed driver package already matches packaged driver payload; skipping driver replacement.");
 
+  expect_contains(installer, "function Test-DeviceNodePresent");
+  expect_contains(installer, "timed out after $TimeoutSeconds seconds");
+
   const auto stop_sunshine = installer.find("Stop-SunshineForDriverInstall");
-  const auto remove_device = installer.find("Remove-DeviceNode", stop_sunshine);
-  const auto remove_package = installer.find("Remove-DriverPackage", remove_device);
-  const auto install_package = installer.find("Install-DriverPackage", remove_package);
+  const auto install_package = installer.find("Install-DriverPackage", stop_sunshine);
+  const auto create_device = installer.find("Creating device node.", install_package);
+  const auto scan_devices = installer.find("'/scan-devices'", install_package);
 
   ASSERT_NE(stop_sunshine, std::string::npos);
-  ASSERT_NE(remove_device, std::string::npos);
-  ASSERT_NE(remove_package, std::string::npos);
   ASSERT_NE(install_package, std::string::npos);
-  EXPECT_LT(stop_sunshine, remove_device);
-  EXPECT_LT(remove_device, remove_package);
-  EXPECT_LT(remove_package, install_package);
+  ASSERT_NE(create_device, std::string::npos);
+  ASSERT_NE(scan_devices, std::string::npos);
+  EXPECT_LT(stop_sunshine, install_package);
+  EXPECT_LT(install_package, create_device);
+  EXPECT_LT(create_device, scan_devices);
+  const auto install_flow = installer.substr(stop_sunshine, scan_devices - stop_sunshine);
+  EXPECT_EQ(install_flow.find("Remove-DriverPackage"), std::string::npos);
   expect_contains(installer, "Stop-Service -Name 'SunshineService' -Force");
   EXPECT_EQ(installer.find("Remove-LegacyVirtualDisplayDrivers"), std::string::npos);
   EXPECT_EQ(installer.find("SudoVDA"), std::string::npos);
@@ -164,7 +172,11 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
 
   expect_contains(
     actions,
-    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
+    "<CustomAction Id=\"InstallSudovda\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
+  );
+  expect_contains(
+    actions,
+    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
   );
   expect_contains(
     actions,
@@ -173,6 +185,10 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
   expect_contains(
     actions,
     "<CustomAction Id=\"UnregisterVulkanHdrLayer\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
+  );
+  expect_contains(
+    actions,
+    "<CustomAction Id=\"RestoreNvPrefsUndo\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
   );
   expect_contains(
     actions,
@@ -215,6 +231,10 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Value=\"0\" Secure=\"yes\"/>");
   expect_contains(
     patch,
+    "<Custom Action=\"SetResetAcls\" After=\"InstallFiles\">NOT REMOVE</Custom>"
+  );
+  expect_contains(
+    patch,
     "<Custom Action=\"SetInstallSudovda\" After=\"ResetAcls\">NOT REMOVE AND INSTALL_SUDOVDA = \"1\"</Custom>"
   );
   expect_contains(
@@ -231,15 +251,19 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetRegisterVulkanHdrLayer\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE</Custom>"
+    "<Custom Action=\"SetRegisterVulkanHdrLayer\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"RegisterVulkanHdrLayer\" After=\"SetRegisterVulkanHdrLayer\">NOT REMOVE</Custom>"
+    "<Custom Action=\"RegisterVulkanHdrLayer\" After=\"SetRegisterVulkanHdrLayer\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetMigrateConfig\" After=\"RegisterVulkanHdrLayer\">NOT REMOVE</Custom>"
+    "<Custom Action=\"SetMigrateConfig\" After=\"RegisterVulkanHdrLayer\">NOT Installed AND NOT REMOVE</Custom>"
+  );
+  expect_contains(
+    patch,
+    "<Custom Action=\"SetRestoreNvPrefsUndo\" Before=\"RemoveFiles\">REMOVE=\"ALL\" AND NOT UPGRADINGPRODUCTCODE</Custom>"
   );
   expect_contains(
     patch,
@@ -271,6 +295,125 @@ TEST(SunshineVirtualDisplayPackaging, CmakeUsesPrebuiltDriverPackageOnlyInGithub
   expect_contains(cmake, "NOT \"$ENV{GITHUB_ACTIONS}\" STREQUAL \"true\"");
   expect_contains(cmake, "Ignoring SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR outside GitHub Actions");
   expect_contains(cmake, "-PrebuiltPackageDir \"${SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR}\"");
+}
+
+TEST(SunshineVirtualDisplayPackaging, LocalInstallerPackagingUsesDeterministicMsiPayload) {
+  const auto targets = read_source_file("cmake/targets/windows.cmake");
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/build_bootstrapper.ps1");
+
+  expect_contains(targets, "-MsiPath \"${CMAKE_BINARY_DIR}/cpack_artifacts/${CPACK_PACKAGE_FILE_NAME}.msi\"");
+  expect_contains(bootstrapper, "function Find-LatestMsi");
+}
+
+TEST(SunshineVirtualDisplayPackaging, LocalDriverRefreshSkipsSigningByDefault) {
+  const auto cmake = read_source_file("cmake/packaging/windows.cmake");
+
+  expect_contains(
+    cmake,
+    "Local package builds must not require a driver signing private key."
+  );
+  expect_contains(cmake, "if(NOT \"$ENV{GITHUB_ACTIONS}\" STREQUAL \"true\")");
+  expect_contains(cmake, "list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)");
+  EXPECT_EQ(cmake.find("SUNSHINE_SKIP_LOCAL_VIRTUAL_DISPLAY_DRIVER_SIGNING"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplayPackaging, RawMsiBlocksSameVersionReplacement) {
+  const auto wix = read_source_file("packaging/windows/wix/WIX.template.in");
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  expect_contains(wix, "Schedule=\"afterInstallExecute\"");
+  EXPECT_EQ(wix.find("Schedule=\"afterInstallValidate\""), std::string::npos);
+  expect_contains(wix, "Property=\"VIBEPOLLO_SAME_VERSION_UPGRADE_DETECTED\"");
+  expect_contains(wix, "VIBEPOLLO_INSTALLED_PRODUCT_VERSION &lt;&gt; ProductVersion");
+  expect_contains(read_source_file("packaging/windows/wix/patch_custom_actions.wxs"), "SearchInstalledVibepolloVersion64");
+  expect_contains(bootstrapper, "cli_remove_vibeshine_same_or_downgrade");
+  expect_contains(bootstrapper, "vibeshineSourceRequiresRestart |= uninstallDowngradeSourceResult.ExitCode == 3010");
+  expect_contains(bootstrapper, "competingProductsRequireRestart || vibeshineSourceRequiresRestart");
+  expect_contains(bootstrapper, "ShouldPreUninstallVibeshineInstallSource(cliArgs)");
+  expect_contains(bootstrapper, "installedProduct.Version.CompareTo(payloadMsiInfo.Version) == 0");
+  expect_contains(bootstrapper, "HasDifferentProductCode(installedProduct.ProductCode, payloadMsiInfo.ProductCode)");
+}
+
+TEST(SunshineVirtualDisplayPackaging, DirectMsiConflictRemovalBlocksInsteadOfUninstalling) {
+  const auto actions = read_source_file("packaging/windows/wix/custom_actions.wxs");
+  const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
+  const auto script = read_source_file("packaging/windows/wix/remove_conflicting_products.vbs");
+
+  expect_contains(actions, "Id=\"RemoveConflictingProducts\" BinaryKey=\"RemoveConflictingProductsVbs\" VBScriptCall=\"RemoveConflictingProducts\" Execute=\"immediate\"");
+  expect_contains(patch, "<Custom Action=\"RemoveConflictingProducts\" Before=\"InstallValidate\">NOT Installed AND NOT REMOVE AND SKIP_REMOVE_CONFLICTING_PRODUCTS &lt;&gt; \"1\"</Custom>");
+  expect_contains(script, "HKEY_CURRENT_USER");
+  expect_contains(script, "conflicting products must be removed by the bootstrapper or by the user");
+  expect_contains(script, "nameUpper = \"SUNSHINE\"");
+  expect_contains(script, "nameUpper = \"APOLLO\"");
+  expect_contains(script, "nameUpper = \"VIBEPOLLO\"");
+  EXPECT_EQ(script.find("shell.Run"), std::string::npos);
+  EXPECT_EQ(script.find("Left(nameUpper"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperAdministrativeInstallDoesNotPreUninstall) {
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  const auto competing = bootstrapper.find("private static bool ShouldPreUninstallCompetingProducts");
+  ASSERT_NE(competing, std::string::npos);
+  const auto problematic = bootstrapper.find("private static bool ShouldPreUninstallProblematicUpgradeSource");
+  ASSERT_NE(problematic, std::string::npos);
+  const auto vibeshine = bootstrapper.find("private static bool ShouldPreUninstallVibeshineInstallSource");
+  ASSERT_NE(vibeshine, std::string::npos);
+
+  const auto competing_body = bootstrapper.substr(competing, problematic - competing);
+  const auto problematic_body = bootstrapper.substr(problematic, vibeshine - problematic);
+  EXPECT_EQ(competing_body.find("\"/a\""), std::string::npos);
+  EXPECT_EQ(problematic_body.find("\"/a\""), std::string::npos);
+  expect_contains(competing_body, "\"/i\"");
+  expect_contains(competing_body, "\"/package\"");
+  expect_contains(problematic_body, "\"/i\"");
+  expect_contains(problematic_body, "\"/package\"");
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperClassifiesConflictingProductsByExactName) {
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  const auto classifier = bootstrapper.find("private static InstalledProductKind GetInstalledProductKind");
+  ASSERT_NE(classifier, std::string::npos);
+  const auto next_function = bootstrapper.find("private static bool IsBrowserWebAppRegistration", classifier);
+  ASSERT_NE(next_function, std::string::npos);
+  const auto body = bootstrapper.substr(classifier, next_function - classifier);
+
+  expect_contains(body, "string.Equals(trimmedDisplayName, \"Vibeshine\"");
+  expect_contains(body, "string.Equals(trimmedDisplayName, \"Vibepollo\"");
+  expect_contains(body, "string.Equals(trimmedDisplayName, \"Apollo\"");
+  expect_contains(body, "string.Equals(trimmedDisplayName, \"Sunshine\"");
+  EXPECT_EQ(body.find("StartsWith(\"Sunshine\""), std::string::npos);
+  EXPECT_EQ(body.find("StartsWith(\"Vibepollo\""), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperQuotesForwardedArgumentsWithEmbeddedQuotes) {
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  expect_contains(bootstrapper, "private static string QuoteArgument(string argument)");
+  expect_contains(bootstrapper, "builder.Append('\\\\', backslashes * 2 + 1);");
+  expect_contains(bootstrapper, "builder.Append('\\\\', backslashes * 2);");
+  EXPECT_EQ(bootstrapper.find("if (argument.Contains(\"\\\"\"))"), std::string::npos);
+}
+
+TEST(SunshineVirtualDisplayPackaging, FactoryResetRequiresSafeInstallRootSentinel) {
+  const auto script = read_source_file("src_assets/windows/misc/migration/factory-reset-appdata.ps1");
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  expect_contains(script, "function Test-SafeInstallRoot");
+  expect_contains(script, "Refusing factory reset for unsafe install root");
+  expect_contains(script, "scripts");
+  expect_contains(script, "factory-reset-appdata.ps1");
+  expect_contains(script, "'session_history'");
+  expect_contains(bootstrapper, "private static bool IsSafeInstallRootForFactoryReset");
+  expect_contains(bootstrapper, "Path.Combine(fullRoot, \"scripts\", \"factory-reset-appdata.ps1\")");
+}
+
+TEST(SunshineVirtualDisplayPackaging, WindowsCiRequiresValidSignPathSignatures) {
+  const auto workflow = read_source_file(".github/workflows/ci-windows.yml");
+
+  expect_contains(workflow, "$sig.Status -eq 'Valid'");
+  EXPECT_EQ(workflow.find("$sig.Status -ne 'NotSigned'"), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, WindowsCiCanSelfSignDriverWithoutPersistentSecret) {
@@ -336,6 +479,8 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(migration, "Update-SunshineVirtualDriverPreference");
   expect_contains(migration, "dd_use_sunshine_virtual_display_driver");
   expect_contains(migration, "if ($null -eq $enabled -or -not $enabled)");
+  expect_contains(migration, "$isLegacySplitEncodeProperty = $property.Name -eq 'nvenc_force_split_encode'");
+  expect_contains(migration, "$targetName -eq 'nvenc_split_encode' -and -not $isLegacySplitEncodeProperty");
   expect_contains(migration, "Updated Vibepollo Display Driver preference from installer selection.");
   expect_contains(header, "use_sunshine_virtual_display_driver");
   expect_contains(config, "bool_f(vars, \"dd_use_sunshine_virtual_display_driver\", video.dd.use_sunshine_virtual_display_driver);");
@@ -551,6 +696,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDri
   const auto actions = read_source_file("packaging/windows/wix/custom_actions.wxs");
   const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
+  const auto sudoInstaller = read_source_file("src_assets/windows/drivers/sudovda/install.ps1");
 
   expect_contains(cmake, "drivers/sudovda");
   expect_contains(cmake, "drivers/sunshine");
@@ -568,6 +714,10 @@ TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDri
   EXPECT_EQ(patch.find("drivers\\vdd"), std::string::npos);
   EXPECT_EQ(installer.find("SudoVDA"), std::string::npos);
   EXPECT_EQ(installer.find("MttVDD"), std::string::npos);
+  expect_contains(sudoInstaller, "$_.OriginalName -match '^SudoVDA\\.inf$'");
+  expect_contains(sudoInstaller, "$_.ProviderName -match 'SudoMaker'");
+  expect_contains(sudoInstaller, "function Assert-CertificateMatchesCatalog");
+  expect_contains(sudoInstaller, "Driver catalog signer does not match bundled certificate.");
 }
 
 #endif

@@ -24,9 +24,22 @@
         <?endif?>
 
         <MajorUpgrade
-            Schedule="afterInstallValidate"
+            Schedule="afterInstallExecute"
             AllowSameVersionUpgrades="yes"
             DowngradeErrorMessage="A later version of [ProductName] is already installed. Setup will now exit."/>
+
+        <Upgrade Id="$(var.CPACK_WIX_UPGRADE_GUID)">
+            <UpgradeVersion
+                Minimum="$(var.CPACK_PACKAGE_VERSION)"
+                IncludeMinimum="yes"
+                Maximum="$(var.CPACK_PACKAGE_VERSION)"
+                IncludeMaximum="yes"
+                OnlyDetect="yes"
+                Property="VIBEPOLLO_SAME_VERSION_UPGRADE_DETECTED"/>
+        </Upgrade>
+        <Condition Message="A Vibepollo installation with this same installer version is already present. Use VibepolloSetup.exe to upgrade or reinstall, or uninstall the existing version first.">
+            Installed OR (NOT VIBEPOLLO_SAME_VERSION_UPGRADE_DETECTED AND VIBEPOLLO_INSTALLED_PRODUCT_VERSION &lt;&gt; ProductVersion)
+        </Condition>
 
         <WixVariable Id="WixUILicenseRtf" Value="$(var.CPACK_WIX_LICENSE_RTF)"/>
         <Property Id="WIXUI_INSTALLDIR" Value="INSTALL_ROOT"/>
