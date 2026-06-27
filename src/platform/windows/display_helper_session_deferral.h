@@ -22,6 +22,7 @@ namespace display_helper_integration {
       std::string virtual_display_device_id;
       std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
       std::optional<int> framegen_refresh_rate;
+      int framegen_refresh_multiplier = 1;
       bool gen1_framegen_fix = false;
       bool gen2_framegen_fix = false;
     };

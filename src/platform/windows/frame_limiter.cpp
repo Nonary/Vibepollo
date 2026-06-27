@@ -96,11 +96,12 @@ namespace platf {
     }
 
     std::string select_framegen_sync_limiter(const framegen::stream_start_policy_t &policy, bool nvidia_gpu_present, bool amd_gpu_present) {
-      if ((policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture) && nvidia_gpu_present && !amd_gpu_present) {
+      if (policy.auto_virtual_framegen_limiter && nvidia_gpu_present && !amd_gpu_present) {
         return "nvidia reflex";
       }
       const auto normalized_provider = normalize_frame_generation_provider(policy.frame_generation_provider);
-      if (normalized_provider == "gameprovided" && nvidia_gpu_present && !amd_gpu_present) {
+      const bool game_provided_framegen = normalized_provider == "gameprovided";
+      if (game_provided_framegen && nvidia_gpu_present && !amd_gpu_present) {
         return "nvidia reflex";
       }
       return "front edge sync";
@@ -136,9 +137,10 @@ namespace platf {
     g_gen1_framegen_fix_active = policy.capture_fix_enabled;
     g_gen2_framegen_fix_active = false;
 
-    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture;
+    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter;
     const bool capture_fix_enabled = policy.capture_fix_enabled;
-    const bool policy_overrides_enabled = capture_fix_enabled || auto_framegen_policy_enabled;
+    const bool physical_framegen_policy_enabled = policy.physical_framegen_capture;
+    const bool policy_overrides_enabled = capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled;
     const bool frame_limit_enabled = config::frame_limiter.enable || policy_overrides_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
     const bool nvidia_gpu_present = platf::has_nvidia_gpu();
     const bool amd_gpu_present = has_amd_gpu();
@@ -160,7 +162,7 @@ namespace platf {
       g_prev_disable_vsync = config::frame_limiter.disable_vsync;
       config::frame_limiter.enable = true;
       config::frame_limiter.disable_vsync = true;
-      if (capture_fix_enabled && allow_framegen_default_provider) {
+      if ((capture_fix_enabled || physical_framegen_policy_enabled) && allow_framegen_default_provider) {
         config::frame_limiter.provider = "rtss";
       }
       if (default_policy_can_use_rtss) {
@@ -180,7 +182,11 @@ namespace platf {
     }
     g_stream_policy_overrides_active = policy_overrides_enabled;
 
-    if (policy.physical_framegen_capture && config::video.capture.empty()) {
+    if (policy.requires_virtual_display && policy.effective_wgc_capture && !config::video.capture.starts_with("wgc")) {
+      g_prev_capture_mode = config::video.capture;
+      g_prev_capture_mode_set = true;
+      config::video.capture = "wgc";
+    } else if (policy.physical_framegen_capture && config::video.capture.empty()) {
       g_prev_capture_mode = config::video.capture;
       g_prev_capture_mode_set = true;
       config::video.capture = "ddx";
@@ -332,8 +338,9 @@ namespace platf {
 
   bool frame_limiter_prepare_launch(const framegen::stream_start_policy_t &policy) {
     const bool capture_fix_enabled = policy.capture_fix_enabled;
-    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter || policy.physical_framegen_capture;
-    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || auto_framegen_policy_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
+    const bool auto_framegen_policy_enabled = policy.auto_virtual_framegen_limiter;
+    const bool physical_framegen_policy_enabled = policy.physical_framegen_capture;
+    const bool frame_limit_enabled = config::frame_limiter.enable || capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled || (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0);
     if (!frame_limit_enabled) {
       return false;
     }
@@ -342,7 +349,7 @@ namespace platf {
     bool want_rtss = false;
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
 
-    if (capture_fix_enabled || auto_framegen_policy_enabled) {
+    if (capture_fix_enabled || auto_framegen_policy_enabled || physical_framegen_policy_enabled) {
       if (provider_overridden) {
         auto configured = parse_provider(config::frame_limiter.provider);
         switch (configured) {

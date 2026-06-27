@@ -103,6 +103,7 @@ namespace rtsp_stream {
     bool frame_generation_enabled = false;
     bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
+    int framegen_refresh_multiplier = 1;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
@@ -153,7 +154,7 @@ namespace rtsp_stream {
     if (!session.framegen_refresh_rate || *session.framegen_refresh_rate <= 0) {
       return 1;
     }
-    return 4;
+    return session.framegen_refresh_multiplier > 1 ? session.framegen_refresh_multiplier : 1;
   }
 
   inline int saturating_refresh_fps(int fps, int multiplier) {

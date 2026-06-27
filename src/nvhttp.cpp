@@ -337,9 +337,9 @@ namespace nvhttp {
         (!shared_virtual_display_mode && !launch_session->client_uuid.empty()) ?
           launch_session->client_uuid :
           launch_session->unique_id;
-      const bool has_app_output_override = app_output_override.has_value();
-      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
-        const auto framegen_policy = framegen::make_stream_start_policy({
+      bool has_app_output_override = app_output_override.has_value();
+      auto make_framegen_policy = [&](bool uses_virtual_display) {
+        return framegen::make_stream_start_policy({
           .fps = launch_session->fps,
           .frame_generation_enabled = launch_session->frame_generation_enabled,
           .gen1_framegen_fix = launch_session->gen1_framegen_fix,
@@ -352,12 +352,24 @@ namespace nvhttp {
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
           .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
         });
+      };
+      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
+      if (framegen_requires_virtual_display) {
+        request_virtual_display = true;
+        app_output_override.reset();
+        has_app_output_override = false;
+      }
+      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
+        const auto framegen_policy = make_framegen_policy(uses_virtual_display);
         launch_session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        launch_session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
       BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
                        << "' allow_display_changes=" << allow_display_changes
                        << " no_active_sessions=" << no_active_sessions
                        << " request_virtual_display=" << request_virtual_display
+                       << " framegen_requires_virtual_display=" << framegen_requires_virtual_display
                        << " previous_virtual_device_id='" << launch_session->virtual_display_device_id
                        << "' active_output='" << config::get_active_output_name()
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
@@ -375,7 +387,7 @@ namespace nvhttp {
         return;
       }
 
-      if (has_app_output_override && !client_requests_virtual) {
+      if (has_app_output_override && !client_requests_virtual && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         disable_virtual_display_request();
         if (!launch_session->virtual_display_mode_override) {
@@ -437,6 +449,7 @@ namespace nvhttp {
       BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
       BOOST_LOG(debug) << "client_requests_virtual: " << client_requests_virtual;
       BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+      BOOST_LOG(debug) << "framegen_requires_virtual_display: " << framegen_requires_virtual_display;
       BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
       const auto requested_output_name = app_output_override ? *app_output_override : config::get_active_output_name();
@@ -754,6 +767,8 @@ namespace nvhttp {
             launch_session->virtual_display_guid_bytes.fill(0);
             launch_session->virtual_display_device_id.clear();
             launch_session->virtual_display_ready_since.reset();
+            launch_session->framegen_refresh_rate.reset();
+            launch_session->framegen_refresh_multiplier = 1;
             BOOST_LOG(warning) << "Virtual display creation failed.";
           }
         };
@@ -1371,6 +1386,7 @@ namespace nvhttp {
       launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_multiplier = 1;
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
       launch_session->frame_generation_provider = "lossless-scaling";
@@ -1563,6 +1579,7 @@ namespace nvhttp {
       }
 
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_multiplier = 1;
       launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
       launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
       launch_session->surround_params = (get_arg(args, "surroundParams", ""));

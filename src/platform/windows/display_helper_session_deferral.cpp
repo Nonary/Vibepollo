@@ -126,6 +126,7 @@ namespace display_helper_integration {
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
     }

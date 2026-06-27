@@ -3336,6 +3336,8 @@ namespace proc {
             ctx.frame_generation_enabled = false;
             ctx.lossless_scaling_framegen = false;
             ctx.frame_generation_provider = "lossless-scaling";
+            // Frame generation explicitly off: legacy capture-fix flags must not re-enable it.
+            ctx.gen1_framegen_fix = false;
           } else {
             ctx.frame_generation_provider = normalize_frame_generation_provider(trimmed_mode);
             ctx.frame_generation_enabled = true;

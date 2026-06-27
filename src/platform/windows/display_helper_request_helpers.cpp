@@ -117,6 +117,7 @@ namespace display_helper_integration::helpers {
       snapshot.gen1_framegen_fix = session.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = session.gen2_framegen_fix;
       snapshot.framegen_refresh_rate = session.framegen_refresh_rate;
+      snapshot.framegen_refresh_multiplier = session.framegen_refresh_multiplier;
       return snapshot;
     }
 

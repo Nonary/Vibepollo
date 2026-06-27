@@ -254,9 +254,9 @@ namespace webrtc_stream {
         session->virtual_display || config_requests_virtual || metadata_requests_virtual;
       const std::string virtual_display_stable_id =
         !session->unique_id.empty() ? session->unique_id : session->client_uuid;
-      const bool has_app_output_override = app_output_override.has_value();
-      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
-        const auto framegen_policy = framegen::make_stream_start_policy({
+      bool has_app_output_override = app_output_override.has_value();
+      auto make_framegen_policy = [&](bool uses_virtual_display) {
+        return framegen::make_stream_start_policy({
           .fps = session->fps,
           .frame_generation_enabled = session->frame_generation_enabled,
           .gen1_framegen_fix = session->gen1_framegen_fix,
@@ -269,16 +269,28 @@ namespace webrtc_stream {
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
           .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
         });
+      };
+      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
+      if (framegen_requires_virtual_display) {
+        request_virtual_display = true;
+        app_output_override.reset();
+        has_app_output_override = false;
+      }
+      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
+        const auto framegen_policy = make_framegen_policy(uses_virtual_display);
         session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
                        << "' allow_display_changes=" << allow_display_changes
                        << " request_virtual_display=" << request_virtual_display
+                       << " framegen_requires_virtual_display=" << framegen_requires_virtual_display
                        << " previous_virtual_device_id='" << session->virtual_display_device_id
                        << "' active_output='" << config::get_active_output_name()
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
                        << "'.";
-      if (has_app_output_override) {
+      if (has_app_output_override && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         if (!session->virtual_display_mode_override) {
           session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
@@ -316,6 +328,7 @@ namespace webrtc_stream {
 
       if (!request_virtual_display) {
         session->framegen_refresh_rate.reset();
+        session->framegen_refresh_multiplier = 1;
         return;
       }
 
@@ -564,6 +577,8 @@ namespace webrtc_stream {
       session->virtual_display_guid_bytes.fill(0);
       session->virtual_display_device_id.clear();
       session->virtual_display_ready_since.reset();
+      session->framegen_refresh_rate.reset();
+      session->framegen_refresh_multiplier = 1;
     }
 #endif
 
@@ -2364,6 +2379,7 @@ namespace webrtc_stream {
       launch_session->virtual_display_ready_since.reset();
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_multiplier = 1;
       launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;
       launch_session->lossless_scaling_target_fps.reset();

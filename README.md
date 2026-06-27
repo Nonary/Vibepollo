@@ -30,7 +30,7 @@ Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming appl
   Vibepollo can manage RTSS to apply the correct frame limit and disable V‑Sync before streaming, significantly improving frame pacing and smoothness. The applied frame cap matches the client device’s requested FPS.
 
 * **Frame‑Generated Capture Fixes**
-  Vibepollo includes workarounds so DLSS/FSR frame‑generated games are captured at the game’s full frame rate without micro‑stutter. This requires a very high‑refresh‑rate display (physical or virtual) at **240 Hz**.
+  DLSS/FSR game-provided frame generation requires Vibepollo's virtual screen for reliable capture. The virtual display guarantees composed flip, allowing generated frames to be captured through WGC, and Vibepollo targets 4x virtual refresh for pacing.
 
 * **Lossless Scaling & NVIDIA Smooth Motion**
   Vibepollo can automatically apply optimal Lossless Scaling settings to generate frames for any application. On RTX 40‑series and newer GPUs, you can optionally enable **NVIDIA Smooth Motion** for better performance and image quality (while Lossless Scaling remains more customizable).

@@ -21,6 +21,7 @@ namespace framegen {
     bool smooth_motion = false;
     bool capture_fix_enabled = false;
     bool uses_virtual_display = false;
+    bool requires_virtual_display = false;
     bool effective_wgc_capture = false;
     bool physical_framegen_capture = false;
     bool auto_virtual_framegen_limiter = false;
@@ -100,21 +101,26 @@ namespace framegen {
     policy.frame_generation_provider = normalize_provider(input.frame_generation_provider);
     policy.lossless_rtss_limit = input.lossless_rtss_limit;
     policy.smooth_motion = policy.frame_generation_provider == "nvidia-smooth-motion";
-    policy.capture_fix_enabled = input.gen1_framegen_fix || input.gen2_framegen_fix;
+    // Legacy capture-fix flags are kept in config for compatibility, but no longer drive
+    // frame generation policy.
+    policy.capture_fix_enabled = false;
     policy.uses_virtual_display = input.uses_virtual_display;
+    const bool game_provided_framegen = policy.frame_generation_provider == "game-provided";
 
     const bool provider_enabled = provider_implies_frame_generation(
       policy.frame_generation_provider,
       input.lossless_scaling_framegen
     );
-    policy.frame_generation_enabled = input.frame_generation_enabled || provider_enabled || policy.capture_fix_enabled;
+    policy.frame_generation_enabled = input.frame_generation_enabled || provider_enabled;
+    policy.requires_virtual_display = false;
 
     const auto capture_mode = normalize_capture_mode(input.capture_mode);
-    const bool explicit_dxgi_capture = capture_mode == "ddx";
+    const bool hard_wgc_capture = policy.uses_virtual_display && game_provided_framegen;
+    const bool explicit_dxgi_capture = capture_mode == "ddx" && !hard_wgc_capture;
     const bool explicit_wgc_capture = capture_mode == "wgc" || capture_mode == "wgcc";
     const bool auto_wgc_capture = capture_mode.empty() && input.auto_capture_uses_wgc;
     policy.effective_wgc_capture =
-      policy.uses_virtual_display && !explicit_dxgi_capture && (explicit_wgc_capture || auto_wgc_capture);
+      policy.uses_virtual_display && !explicit_dxgi_capture && (explicit_wgc_capture || auto_wgc_capture || hard_wgc_capture);
 
     const bool effective_virtual_framegen =
       policy.frame_generation_enabled && policy.uses_virtual_display && policy.effective_wgc_capture;
