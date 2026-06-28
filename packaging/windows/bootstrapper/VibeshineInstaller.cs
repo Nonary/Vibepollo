@@ -6030,11 +6030,19 @@ namespace VibepolloInstaller {
         var virtualDisplayDriverFailed = lines.Any(line =>
           !string.IsNullOrWhiteSpace(line)
           && line.IndexOf("CustomAction InstallVirtualDisplayDriver returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
-        if (!virtualDisplayDriverFailed) {
+        var virtualDisplayDriverRestartRequired = lines.Any(line =>
+          !string.IsNullOrWhiteSpace(line)
+          && line.IndexOf("VIRTUAL_DISPLAY_RESTART_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0);
+        var virtualDisplayDriverWarning = lines.Any(line =>
+          !string.IsNullOrWhiteSpace(line)
+          && line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (!virtualDisplayDriverFailed && !virtualDisplayDriverRestartRequired && !virtualDisplayDriverWarning) {
           return failures;
         }
 
-        failures.Add("Virtual display driver setup failed. Virtual display may be unavailable.");
+        failures.Add(virtualDisplayDriverRestartRequired
+          ? "Virtual display driver installed, but Windows restart is required before virtual display can function."
+          : "Virtual display driver setup failed. Virtual display may be unavailable.");
         var detail = ExtractVirtualDisplayDriverFailureDetail(lines);
         if (!string.IsNullOrWhiteSpace(detail)) {
           failures.Add("Driver detail: " + detail);
@@ -6054,7 +6062,8 @@ namespace VibepolloInstaller {
       try {
         return File.ReadLines(installLogPath).Any(line =>
           !string.IsNullOrWhiteSpace(line)
-          && (line.IndexOf("[SunshineVirtualDisplay] A reboot is required", StringComparison.OrdinalIgnoreCase) >= 0
+          && (line.IndexOf("VIRTUAL_DISPLAY_RESTART_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0
+            || line.IndexOf("[SunshineVirtualDisplay] A reboot is required", StringComparison.OrdinalIgnoreCase) >= 0
             || line.IndexOf("[SudoVDA] A reboot is required", StringComparison.OrdinalIgnoreCase) >= 0));
       } catch {
         return false;

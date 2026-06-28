@@ -3,7 +3,8 @@ param(
     [switch]$ValidateOnly,
     [switch]$AllowUnsignedCatalogForValidation,
     [switch]$RegisterVulkanLayerOnly,
-    [switch]$UnregisterVulkanLayerOnly
+    [switch]$UnregisterVulkanLayerOnly,
+    [switch]$InstallerBestEffort
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,16 @@ $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 $script:rebootRequired = $false
+
+trap {
+    if ($InstallerBestEffort) {
+        Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Optional virtual display driver setup did not complete.'
+        Write-Warning "[SunshineVirtualDisplay] Installer best-effort driver action failed: $($_.Exception.Message)"
+        exit 0
+    }
+
+    throw
+}
 
 function Assert-Administrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -162,6 +173,56 @@ function Invoke-DriverProcessCapture {
         }
 
         return @($output | ForEach-Object { [string]$_ })
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Invoke-DriverHealthProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [int]$TimeoutSeconds = 120
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList
+    $startInfo.WorkingDirectory = $scriptDir
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try {
+                $process.Kill()
+            } catch {
+                $null = $_
+            }
+            return [pscustomobject]@{
+                ExitCode = -1
+                Output = "$FilePath timed out after $TimeoutSeconds seconds."
+            }
+        }
+
+        $process.WaitForExit()
+        $stdout = if ($stdoutTask.Wait(5000)) { $stdoutTask.Result } else { '' }
+        $stderr = if ($stderrTask.Wait(5000)) { $stderrTask.Result } else { '' }
+        $output = (@($stdout -split "`r?`n") + @($stderr -split "`r?`n")) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = (($output | ForEach-Object { [string]$_ }) -join "`n")
+        }
     } finally {
         $process.Dispose()
     }
@@ -593,6 +654,106 @@ function Remove-DeviceNode {
     Remove-DeviceNodeForHardwareId -HardwareId $hardwareId -Label 'Sunshine virtual display'
 }
 
+function Test-TemporaryVirtualDisplay {
+    Write-Host '[SunshineVirtualDisplay] Running temporary display self-test.'
+    $result = Invoke-DriverHealthProcess -FilePath $probePath -ArgumentList @('--self-test-temp', '1920', '1080', '60') -TimeoutSeconds 60
+    if ($result.ExitCode -eq 0) {
+        Write-Host '[SunshineVirtualDisplay] Temporary display self-test passed.'
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($result.Output)) {
+        Write-Warning "[SunshineVirtualDisplay] Temporary display self-test failed with exit code $($result.ExitCode): $($result.Output)"
+    } else {
+        Write-Warning "[SunshineVirtualDisplay] Temporary display self-test failed with exit code $($result.ExitCode)."
+    }
+    return $false
+}
+
+function Get-SunshineDeviceInstanceId {
+    try {
+        $output = Invoke-DriverProcessCapture -FilePath $pnputil -ArgumentList @('/enum-devices', '/deviceid', $hardwareId, '/deviceids', '/drivers') -AllowedExitCodes @(0) -TimeoutSeconds 120
+        foreach ($line in $output) {
+            if ($line -match '^\s*Instance ID\s*:\s*(.+?)\s*$') {
+                return $Matches[1].Trim()
+            }
+        }
+    } catch {
+        Write-Warning $_.Exception.Message
+    }
+
+    return $null
+}
+
+function Invoke-InstallerHealthCheck {
+    if (Test-TemporaryVirtualDisplay) {
+        return
+    }
+
+    $instanceId = Get-SunshineDeviceInstanceId
+    if ([string]::IsNullOrWhiteSpace($instanceId)) {
+        Write-Warning "[SunshineVirtualDisplay] Unable to resolve device instance ID for $hardwareId; restart is required."
+        $script:rebootRequired = $true
+    } else {
+        Write-Host "[SunshineVirtualDisplay] Restarting device instance after failed temporary display self-test: $instanceId"
+        $restart = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/restart-device', $instanceId) -TimeoutSeconds 120
+        if ($restart.ExitCode -eq 3010) {
+            $script:rebootRequired = $true
+        } elseif ($restart.ExitCode -ne 0) {
+            if (-not [string]::IsNullOrWhiteSpace($restart.Output)) {
+                Write-Warning "[SunshineVirtualDisplay] pnputil restart-device failed with exit code $($restart.ExitCode): $($restart.Output)"
+            } else {
+                Write-Warning "[SunshineVirtualDisplay] pnputil restart-device failed with exit code $($restart.ExitCode)."
+            }
+        }
+
+        try {
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+        if (Test-TemporaryVirtualDisplay) {
+            return
+        }
+
+        Write-Host "[SunshineVirtualDisplay] Disabling/enabling device instance after failed restart revive: $instanceId"
+        $disable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/disable-device', $instanceId, '/force') -TimeoutSeconds 120
+        if ($disable.ExitCode -eq 3010) {
+            $script:rebootRequired = $true
+        } elseif ($disable.ExitCode -ne 0) {
+            if (-not [string]::IsNullOrWhiteSpace($disable.Output)) {
+                Write-Warning "[SunshineVirtualDisplay] pnputil disable-device failed with exit code $($disable.ExitCode): $($disable.Output)"
+            } else {
+                Write-Warning "[SunshineVirtualDisplay] pnputil disable-device failed with exit code $($disable.ExitCode)."
+            }
+        }
+
+        $enable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/enable-device', $instanceId) -TimeoutSeconds 120
+        if ($enable.ExitCode -eq 3010) {
+            $script:rebootRequired = $true
+        } elseif ($enable.ExitCode -ne 0) {
+            if (-not [string]::IsNullOrWhiteSpace($enable.Output)) {
+                Write-Warning "[SunshineVirtualDisplay] pnputil enable-device failed with exit code $($enable.ExitCode): $($enable.Output)"
+            } else {
+                Write-Warning "[SunshineVirtualDisplay] pnputil enable-device failed with exit code $($enable.ExitCode)."
+            }
+        }
+
+        try {
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+        if (Test-TemporaryVirtualDisplay) {
+            return
+        }
+    }
+
+    $script:rebootRequired = $true
+    Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_RESTART_REQUIRED: Virtual display driver installed, but Windows restart is required before virtual display can function.'
+    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+}
+
 if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
     throw '[SunshineVirtualDisplay] RegisterVulkanLayerOnly and UnregisterVulkanLayerOnly cannot be used together.'
 }
@@ -669,6 +830,7 @@ if (-not (Test-DeviceNodePresent)) {
 
 Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
 Initialize-DriverStateRegistryAccess
+Invoke-InstallerHealthCheck
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
 if ($script:rebootRequired) {

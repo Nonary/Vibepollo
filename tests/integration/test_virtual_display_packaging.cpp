@@ -100,7 +100,7 @@ TEST(SunshineVirtualDisplayPackaging, LocalPackageRefreshSkipsDriverCatalogSigni
   expect_contains(cmake, "list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS -SkipSigning)");
 }
 
-TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotRunRuntimeQa) {
+TEST(SunshineVirtualDisplayPackaging, InstallerUsesBoundedTemporaryDisplayHealthCheck) {
   const auto installer = read_source_file("src_assets/windows/drivers/sunshine/install.ps1");
 
   expect_contains(installer, "$probePath = Join-Path $scriptDir 'virtualdisplay_probe.exe'");
@@ -119,10 +119,19 @@ TEST(SunshineVirtualDisplayPackaging, InstallerValidatesPackagedProbeButDoesNotR
   expect_contains(installer, "Driver catalog signature is not valid");
   expect_contains(installer, "$matchesBundledCertificate");
   expect_contains(installer, "Assert-CatalogSignature");
+  expect_contains(installer, "function Test-TemporaryVirtualDisplay");
+  expect_contains(installer, "'--self-test-temp', '1920', '1080', '60'");
+  expect_contains(installer, "function Invoke-InstallerHealthCheck");
+  expect_contains(installer, "'/restart-device', $instanceId");
+  expect_contains(installer, "'/disable-device', $instanceId, '/force'");
+  expect_contains(installer, "'/enable-device', $instanceId");
+  expect_contains(installer, "VIRTUAL_DISPLAY_RESTART_REQUIRED");
+  expect_contains(installer, "VIRTUAL_DISPLAY_DRIVER_WARNING");
   EXPECT_EQ(installer.find("Assert-DriverControlInterface"), std::string::npos);
   EXPECT_EQ(installer.find("Assert-DriverHdrTemporaryDisplay"), std::string::npos);
   EXPECT_EQ(installer.find("--self-test-hdr"), std::string::npos);
   EXPECT_EQ(installer.find("--query-permanent"), std::string::npos);
+  EXPECT_EQ(installer.find("'--check'"), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, InstallerDoesNotForceKillUmdfHosts) {
@@ -145,7 +154,10 @@ TEST(SunshineVirtualDisplayPackaging, InstallerReplacesOnlyExistingSunshineDrive
   expect_contains(installer, "function Test-DeviceNodePresent");
   expect_contains(installer, "timed out after $TimeoutSeconds seconds");
 
-  const auto stop_sunshine = installer.find("Stop-SunshineForDriverInstall");
+  const auto main_install = installer.find("$driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded");
+  ASSERT_NE(main_install, std::string::npos);
+
+  const auto stop_sunshine = installer.find("Stop-SunshineForDriverInstall", main_install);
   const auto install_package = installer.find("Install-DriverPackage", stop_sunshine);
   const auto create_device = installer.find("Creating device node.", install_package);
   const auto scan_devices = installer.find("'/scan-devices'", install_package);
@@ -157,7 +169,7 @@ TEST(SunshineVirtualDisplayPackaging, InstallerReplacesOnlyExistingSunshineDrive
   EXPECT_LT(stop_sunshine, install_package);
   EXPECT_LT(install_package, create_device);
   EXPECT_LT(create_device, scan_devices);
-  const auto install_flow = installer.substr(stop_sunshine, scan_devices - stop_sunshine);
+  const auto install_flow = installer.substr(main_install, scan_devices - main_install);
   EXPECT_EQ(install_flow.find("Remove-DriverPackage"), std::string::npos);
   expect_contains(installer, "Stop-Service -Name 'SunshineService' -Force");
   EXPECT_EQ(installer.find("Remove-LegacyVirtualDisplayDrivers"), std::string::npos);
@@ -176,11 +188,11 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
   );
   expect_contains(
     actions,
-    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
+    "<CustomAction Id=\"InstallVirtualDisplayDriver\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
   );
   expect_contains(
     actions,
-    "<CustomAction Id=\"RegisterVulkanHdrLayer\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"check\" Impersonate=\"no\" />"
+    "<CustomAction Id=\"RegisterVulkanHdrLayer\" BinaryKey=\"WixCA\" DllEntry=\"WixQuietExec\" Execute=\"deferred\" Return=\"ignore\" Impersonate=\"no\" />"
   );
   expect_contains(
     actions,
@@ -204,7 +216,7 @@ TEST(SunshineVirtualDisplayPackaging, WixRunsSunshineDriverInstallerWithSixtyFou
   );
   expect_contains(
     actions,
-    "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot;"
+    "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\\sunshine\\install.ps1&quot; -InstallerBestEffort"
   );
   expect_contains(
     actions,
@@ -455,6 +467,19 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
   expect_contains(bootstrapper, "\"INSTALL_VIRTUAL_DISPLAY_DRIVER=\" + (installVirtualDisplayDriver ? \"1\" : \"0\")");
   expect_contains(bootstrapper, "CollectInstallComponentFailures(logPath, installVirtualDisplayDriver)");
   expect_contains(bootstrapper, "elevatedArgs.AddRange(arguments.ForwardedArguments);");
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperReportsSunshineDriverRestartWarnings) {
+  const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
+
+  expect_contains(bootstrapper, "VIRTUAL_DISPLAY_RESTART_REQUIRED");
+  expect_contains(bootstrapper, "VIRTUAL_DISPLAY_DRIVER_WARNING");
+  expect_contains(
+    bootstrapper,
+    "Virtual display driver installed, but Windows restart is required before virtual display can function."
+  );
+  expect_contains(bootstrapper, "InstallLogIndicatesDriverRebootRequired(logPath)");
+  expect_contains(bootstrapper, "exitCode = 3010");
 }
 
 TEST(SunshineVirtualDisplayPackaging, BootstrapperShowsVirtualDisplayChoiceOnUpgrade) {
