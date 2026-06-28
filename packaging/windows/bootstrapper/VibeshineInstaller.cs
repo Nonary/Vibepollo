@@ -4525,8 +4525,7 @@ namespace VibepolloInstaller {
       var logPath = TryGetMsiLogPath(cliArgs);
       if (!HasLogSwitch(cliArgs)) {
         logPath = BuildLogPath("cli");
-        cliArgs.Add("/l*v");
-        cliArgs.Add(logPath);
+        InsertMsiSwitchAfterOperation(cliArgs, "/l*v", logPath);
       }
 
       var uninstallCompetingProducts = ShouldPreUninstallCompetingProducts(cliArgs);
@@ -5923,6 +5922,24 @@ namespace VibepolloInstaller {
         string.Equals(arg, "/log", StringComparison.OrdinalIgnoreCase));
     }
 
+    private static void InsertMsiSwitchAfterOperation(List<string> args, string switchName, string switchValue) {
+      if (args == null) {
+        return;
+      }
+
+      var insertIndex = 0;
+      var operationIndex = args.FindIndex(IsOperationSwitch);
+      if (operationIndex >= 0) {
+        insertIndex = operationIndex + 1;
+        if (insertIndex < args.Count && !LooksLikeSwitch(args[insertIndex])) {
+          insertIndex++;
+        }
+      }
+
+      args.Insert(insertIndex, switchName);
+      args.Insert(insertIndex + 1, switchValue);
+    }
+
     private static string TryGetMsiLogPath(List<string> args) {
       if (args == null) {
         return string.Empty;
@@ -6422,6 +6439,10 @@ namespace VibepolloInstaller {
       if (string.IsNullOrEmpty(argument)) {
         return "\"\"";
       }
+      string msiPropertyArgument;
+      if (TryQuoteMsiPropertyArgument(argument, out msiPropertyArgument)) {
+        return msiPropertyArgument;
+      }
       if (argument.IndexOfAny(new[] {' ', '\t', '"'}) < 0) {
         return argument;
       }
@@ -6457,8 +6478,46 @@ namespace VibepolloInstaller {
     }
 
     private static string CreatePropertyArgument(string propertyName, string propertyValue) {
-      var escaped = propertyValue.Replace("\"", "\"\"");
+      var escaped = (propertyValue ?? string.Empty).Replace("\"", "\"\"");
       return propertyName + "=\"" + escaped + "\"";
+    }
+
+    private static bool TryQuoteMsiPropertyArgument(string argument, out string quotedArgument) {
+      quotedArgument = null;
+      var splitIndex = string.IsNullOrEmpty(argument) ? -1 : argument.IndexOf('=');
+      if (splitIndex <= 0 || !IsMsiPropertyName(argument.Substring(0, splitIndex))) {
+        return false;
+      }
+
+      var propertyName = argument.Substring(0, splitIndex);
+      var propertyValue = argument.Substring(splitIndex + 1);
+      if (propertyValue.Length >= 2
+          && propertyValue[0] == '"'
+          && propertyValue[propertyValue.Length - 1] == '"') {
+        quotedArgument = argument;
+        return true;
+      }
+
+      if (propertyValue.IndexOfAny(new[] {' ', '\t', '"'}) < 0) {
+        return false;
+      }
+
+      quotedArgument = propertyName + "=\"" + propertyValue.Replace("\"", "\"\"") + "\"";
+      return true;
+    }
+
+    private static bool IsMsiPropertyName(string propertyName) {
+      if (string.IsNullOrEmpty(propertyName)) {
+        return false;
+      }
+
+      foreach (var ch in propertyName) {
+        if ((ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_') {
+          return false;
+        }
+      }
+
+      return true;
     }
 
     private static bool IsProcessElevated() {
