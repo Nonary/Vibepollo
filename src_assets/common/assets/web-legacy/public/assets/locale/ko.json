@@ -1321,7 +1321,7 @@
     "chart_range": "차트 범위",
     "chart_range_full": "전체 세션",
     "chart_range_full_title": "지금까지 전체 세션 표시",
-    "chart_range_recent_short": "{minutes}m",
+    "chart_range_recent_short": "{minutes}분",
     "chart_range_recent_title": "가장 최근 {minutes}분 표시",
     "chart_host_cpu": "CPU",
     "chart_host_gpu": "GPU",
