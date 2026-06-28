@@ -789,6 +789,7 @@ namespace nvhttp {
         } else {
           BOOST_LOG(debug) << "Display helper: skipping virtual display changes for resume.";
         }
+      }
     }
     }  // namespace
 #endif
