@@ -9,6 +9,8 @@
     "lint": "eslint --ext .js,.ts,.vue . --max-warnings 0",
     "lint:fix": "eslint --ext .js,.ts,.vue . --fix",
     "format": "prettier --write .",
+    "l10n:audit": "node scripts/l10n_static_audit.mjs --strict",
+    "test:l10n-audit": "vitest run ../../../../tests/frontend/l10n-static-audit.test.ts",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

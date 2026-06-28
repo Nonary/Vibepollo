@@ -29,6 +29,10 @@ jobs:
         if: always()
         run: cat "${HOME}/.npm/_logs/*-debug-0.log" || true
 
+      - name: Localization audit
+        working-directory: src_assets/common/assets/web
+        run: npm run l10n:audit
+
       - name: Build
         working-directory: src_assets/common/assets/web
         env:
