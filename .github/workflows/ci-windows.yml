@@ -982,12 +982,22 @@ jobs:
           INSTALLER_NAME: ${{ needs.package_windows.outputs.installer_name }}
           MSI_NAME: ${{ needs.build_windows.outputs.msi_name }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ inputs.signpath_signing_policy_slug }}
         run: |
           $ErrorActionPreference = 'Stop'
 
+          # Production signing must produce a fully trusted (Valid) Authenticode chain. The
+          # test-signing policy signs with an untrusted SignPath test certificate, whose chain
+          # is not Valid on the runner, so in that mode accept any present signature
+          # (Status != NotSigned) instead. Switching to a real production signing policy
+          # automatically re-enables the strict Valid requirement with no further edits.
+          $allowUntrustedSignatures = ($env:SIGNPATH_SIGNING_POLICY_SLUG -eq 'test-signing')
+
           function Test-Signed([string]$Path) {
             $sig = Get-AuthenticodeSignature -LiteralPath $Path
-            return ($sig.Status -eq 'Valid' -and $null -ne $sig.SignerCertificate)
+            if ($null -eq $sig.SignerCertificate) { return $false }
+            if ($allowUntrustedSignatures) { return ($sig.Status -ne 'NotSigned') }
+            return ($sig.Status -eq 'Valid')
           }
 
           $failures = New-Object System.Collections.Generic.List[string]
