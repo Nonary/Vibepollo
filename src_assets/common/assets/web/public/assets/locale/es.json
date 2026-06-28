@@ -207,8 +207,8 @@
       "health_rtss_install": "Instala RTSS para evitar microtirones cuando la generación de fotogramas está activada.",
       "health_rtss_endpoint_error": "El endpoint de estado de RTSS devolvió un error.",
       "health_rtss_unreachable": "No se puede acceder al endpoint de estado de RTSS.",
-      "health_physical_rtss_latency": "La limitación de fotogramas con RTSS junto con la generación de fotogramas de DLSS/FSR en una pantalla física puede aumentar la latencia en 50 ms o más. Usa una pantalla virtual para una captura fluida y de baja latencia.",
-      "health_physical_no_rtss": "No se detectó ningún limitador de fotogramas RTSS. La generación de fotogramas de DLSS/FSR en una pantalla física puede provocar microtirones o saltos. Usa una pantalla virtual para una captura fluida y de baja latencia.",
+      "health_physical_rtss_latency": "Las pantallas físicas no pueden capturar fotogramas generados por DLSS/FSR. Combinar un limitador de fotogramas con la generación de fotogramas en una pantalla física puede aumentar la latencia en 50 ms o más. Usa una pantalla virtual para una captura fluida y de baja latencia.",
+      "health_physical_no_rtss": "Las pantallas físicas no pueden capturar fotogramas generados por DLSS/FSR, por lo que la generación de fotogramas en una pantalla física puede provocar microtirones o saltos. Usa una pantalla virtual para una captura fluida y de baja latencia.",
       "health_physical_supported": "La pantalla física es compatible con este modo de generación de fotogramas. Mantén el método de captura que funcione mejor para la aplicación.",
       "health_display_unknown": "No se pueden determinar las capacidades de frecuencia de actualización de la pantalla.",
       "health_display_active_label": "Pantalla activa",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "Usar valor FPS proporcionado por el cliente (por defecto)",
     "dd_refresh_rate_option_disabled": "No cambiar la tasa de actualización",
     "dd_refresh_rate_option_manual": "Usar manualmente la tasa de actualización introducida",
-    "dd_refresh_rate_option_manual_desc": "Introduzca la tasa de actualización a utilizar",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Forzar una frecuencia de actualización manual obliga al host a usar esta frecuencia en todas las transmisiones, anulando las reglas de frecuencia de abajo y la frecuencia automática de 4× que se aplica a las pantallas virtuales.",
     "dd_resolution_option": "Resolución",
     "dd_resolution_option_auto": "Usar resolución proporcionada por el cliente (por defecto)",
     "dd_resolution_option_disabled": "No cambiar resolución",
@@ -752,7 +752,7 @@
     "dd_display_helper_engine_auto": "Automático (nuevo motor en compilaciones de versión preliminar)",
     "dd_display_helper_engine_v2": "Nuevo motor (v2)",
     "dd_display_helper_engine_legacy": "Motor heredado",
-    "physical_display_framegen_warning": "Las pantallas físicas no pueden capturar fotogramas generados por DLSS/FSR. Si usas la generación de fotogramas de DLSS/FSR con un limitador de fotogramas RTSS en una pantalla física, la latencia puede aumentar en 50 ms o más. Sin un ritmo de fotogramas adecuado, puede provocar microtirones o saltos. Usa una pantalla virtual para una captura fluida y de baja latencia.",
+    "physical_display_framegen_warning": "Las pantallas físicas no pueden capturar fotogramas generados por DLSS/FSR. Combinar un limitador de fotogramas con la generación de fotogramas en una pantalla física puede aumentar la latencia en 50 ms o más, y sin un ritmo de fotogramas adecuado puede provocar microtirones o saltos. Usa una pantalla virtual para una captura fluida y de baja latencia.",
     "frame_limiter_auto_virtual_framegen": "Limitar automáticamente la generación de fotogramas virtual",
     "frame_limiter_auto_virtual_framegen_desc": "Ejecuta la generación de fotogramas WGC en pantalla virtual a 4x la frecuencia de actualización y aplica un límite de fotogramas equivalente al iniciar la transmisión para un ritmo estable.",
     "rtx_hdr_title": "RTX HDR (IA SDR ? HDR)",
@@ -1613,11 +1613,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "La latencia más baja cuando se aplica",
+    "sync_limiter_reflex_stutter": "Fluido en pantallas virtuales; depende del juego y del controlador en pantallas físicas",
+    "sync_limiter_reflex_advantages": "La latencia de entrada más baja; se aplica automáticamente en pantallas virtuales; se integra con DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Requiere RTSS instalado; en pantallas físicas los resultados varían según el juego y el controlador",
+    "sync_limiter_reflex_use": "Predeterminado para pantallas virtuales; opcional en pantallas físicas",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1638,7 +1638,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1656,8 +1656,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Opcional: elige el modo SyncLimiter de RTSS que se usa en las transmisiones a pantallas físicas. Async es una opción predeterminada segura; consulta la comparación de arriba.",
+    "rtssMissing": "RTSS no está instalado. Es lo que activa el limitador automático de NVIDIA Reflex en las pantallas virtuales; instálalo o indica la ruta de abajo para que Vibepollo pueda aplicar Reflex. La transmisión sigue funcionando sin él, solo que sin límite de fotogramas.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1679,10 +1679,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Limitar automáticamente la generación de fotogramas virtual",
-    "autoVirtualFramegenHint": "Cuando una transmisión WGC en pantalla virtual usa generación de fotogramas, Vibepollo ejecuta la pantalla a 4x la frecuencia de actualización y aplica un límite de FPS equivalente para el ritmo."
+    "noticeTitle": "Ritmo de fotogramas fluido",
+    "noticeCopy": "Vibepollo aplica el limitador que elijas al iniciar la transmisión y restaura la configuración del controlador cuando esta termina. RTSS ofrece el ritmo más estable en pantallas físicas; el limitador del NVIDIA Control Panel es una alternativa de respaldo.",
+    "autoVirtualFramegenLabel": "Limitar automáticamente las pantallas virtuales",
+    "autoVirtualFramegenHint": "Al transmitir a una pantalla virtual, Vibepollo ejecuta la pantalla a 4× la frecuencia de actualización solicitada y aplica un límite de fotogramas equivalente —NVIDIA Reflex cuando está disponible— para un ritmo fluido y de baja latencia. Desactiva esto para dejar el limitador totalmente manual.",
+    "syncLimiterHintVirtual": "En las pantallas virtuales, Vibepollo aplica NVIDIA Reflex automáticamente para el ritmo de menor latencia, por lo que este ajuste solo afecta a las transmisiones a pantallas físicas.",
+    "noticeTitleVirtual": "NVIDIA Reflex se aplica automáticamente",
+    "noticeCopyVirtual": "Estás transmitiendo a una pantalla virtual, así que Vibepollo activa automáticamente el limitador de fotogramas, ejecuta la pantalla a 4× la frecuencia de actualización solicitada y aplica NVIDIA Reflex (cuando RTSS está instalado) para un ritmo fluido y de baja latencia. No requiere configuración manual."
   },
   "changelog": {
     "nav": "Changelog",

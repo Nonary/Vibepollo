@@ -207,8 +207,8 @@
       "health_rtss_install": "Installera RTSS för att undvika mikrostutter när frame generation är aktiverat.",
       "health_rtss_endpoint_error": "RTSS statusslutpunkt returnerade ett fel.",
       "health_rtss_unreachable": "Det går inte att nå RTSS statusslutpunkt.",
-      "health_physical_rtss_latency": "RTSS bildbegränsning med DLSS/FSR frame generation på en fysisk skärm kan öka latensen med 50 ms eller mer. Använd en virtuell skärm för smidig infångning med låg latens.",
-      "health_physical_no_rtss": "Ingen RTSS-bildbegränsare upptäcktes. DLSS/FSR frame generation på en fysisk skärm kan ge mikrostutter eller hackningar. Använd en virtuell skärm för smidig infångning med låg latens.",
+      "health_physical_rtss_latency": "Fysiska skärmar kan inte fånga in DLSS/FSR-genererade bildrutor. Att kombinera en bildbegränsare med frame generation på en fysisk skärm kan öka latensen med 50 ms eller mer. Använd en virtuell skärm för smidig infångning med låg latens.",
+      "health_physical_no_rtss": "Fysiska skärmar kan inte fånga in DLSS/FSR-genererade bildrutor, så frame generation på en fysisk skärm kan ge mikrostutter eller hackningar. Använd en virtuell skärm för smidig infångning med låg latens.",
       "health_physical_supported": "Fysisk skärm stöds för detta läge för frame generation. Behåll den infångningsmetod som fungerar bäst för appen.",
       "health_display_unknown": "Det går inte att fastställa skärmens uppdateringsförmåga.",
       "health_display_active_label": "Aktiv skärm",
@@ -329,7 +329,7 @@
     "dd_refresh_rate_option_auto": "Använd FPS värde som tillhandahålls av klienten (standard)",
     "dd_refresh_rate_option_disabled": "Ändra inte uppdateringshastighet",
     "dd_refresh_rate_option_manual": "Använd manuellt inmatad uppdateringsfrekvens",
-    "dd_refresh_rate_option_manual_desc": "Ange uppdateringshastighet som ska användas",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Att tvinga fram en manuell uppdateringsfrekvens låser värden till denna uppdateringsfrekvens för alla streams och åsidosätter både eventuella uppdateringsregler nedan och den automatiska 4×-uppdateringen som tillämpas på virtuella skärmar.",
     "dd_resolution_option": "Upplösning",
     "dd_resolution_option_auto": "Använda upplösning som tillhandahålls av klienten (standard)",
     "dd_resolution_option_disabled": "Ändra inte upplösning",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Automatisk (ny motor på förhandsutgåvor)",
     "dd_display_helper_engine_v2": "Ny motor (v2)",
     "dd_display_helper_engine_legacy": "Äldre motor",
-    "physical_display_framegen_warning": "Fysiska skärmar kan inte fånga in DLSS/FSR-genererade bildrutor. Om du använder DLSS/FSR frame generation med en RTSS-bildbegränsare på en fysisk skärm kan latensen öka med 50 ms eller mer. Utan lämplig frame pacing kan det ge mikrostutter eller hackningar. Använd en virtuell skärm för smidig infångning med låg latens.",
+    "physical_display_framegen_warning": "Fysiska skärmar kan inte fånga in DLSS/FSR-genererade bildrutor. Att kombinera en bildbegränsare med frame generation på en fysisk skärm kan öka latensen med 50 ms eller mer, och utan lämplig frame pacing kan det ge mikrostutter eller hackningar. Använd en virtuell skärm för smidig infångning med låg latens.",
     "vulkan_hdr_layer": "Vulkan HDR-lager för virtuella skärmar",
     "vulkan_hdr_layer_desc": "Registrerar ett systemomfattande Vulkan-lager som exponerar HDR-ytformat på virtuella skärmar. Inaktivera detta om Vulkan-spel eller -appar kraschar med en åtkomstöverträdelse efter att skärmdrivrutinen installerats.",
     "frame_limiter_auto_virtual_framegen": "Automatisk begränsning av virtuell frame generation",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Lägsta latens när den tillämpas",
+    "sync_limiter_reflex_stutter": "Smidig på virtuella skärmar; beror på spelet och drivrutinen på fysiska skärmar",
+    "sync_limiter_reflex_advantages": "Lägsta inmatningslatens; tillämpas automatiskt på virtuella skärmar; integreras med DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Kräver att RTSS är installerat; på fysiska skärmar varierar resultaten beroende på spel och drivrutin",
+    "sync_limiter_reflex_use": "Standard för virtuella skärmar; valfritt på fysiska skärmar",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Valfritt: välj det RTSS SyncLimiter-läge som används för streams på fysiska skärmar. Async är ett säkert standardval – se jämförelsen ovan.",
+    "rtssMissing": "RTSS är inte installerat. Det driver den automatiska NVIDIA Reflex-begränsaren på virtuella skärmar – installera det eller ange sökvägen nedan så att Vibepollo kan tillämpa Reflex. Streaming fungerar ändå utan det, bara utan en FPS-gräns.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Automatisk begränsning av virtuell frame generation",
-    "autoVirtualFramegenHint": "När en WGC-stream på virtuell skärm använder frame generation kör Vibepollo skärmen vid 4x uppdateringsfrekvens och tillämpar en matchande FPS-gräns för pacing."
+    "noticeTitle": "Smidig frame pacing",
+    "noticeCopy": "Vibepollo tillämpar den valda begränsaren vid stream-start och återställer dina drivrutinsinställningar när streamen slutar. RTSS ger den mest konsekventa pacingen på fysiska skärmar; NVIDIA Control Panel-begränsaren är en reservlösning.",
+    "autoVirtualFramegenLabel": "Begränsa virtuella skärmar automatiskt",
+    "autoVirtualFramegenHint": "När du streamar till en virtuell skärm kör Vibepollo skärmen vid 4× den begärda uppdateringsfrekvensen och tillämpar en matchande FPS-gräns – NVIDIA Reflex när det är tillgängligt – för smidig pacing med låg latens. Stäng av detta för att lämna begränsaren helt manuell.",
+    "syncLimiterHintVirtual": "På virtuella skärmar tillämpar Vibepollo NVIDIA Reflex automatiskt för pacing med lägsta latens, så denna inställning påverkar endast streams på fysiska skärmar.",
+    "noticeTitleVirtual": "NVIDIA Reflex tillämpas automatiskt",
+    "noticeCopyVirtual": "Du streamar till en virtuell skärm, så Vibepollo aktiverar automatiskt bildbegränsaren, kör skärmen vid 4× den begärda uppdateringsfrekvensen och tillämpar NVIDIA Reflex (när RTSS är installerat) för smidig pacing med låg latens. Ingen manuell konfiguration behövs."
   },
   "changelog": {
     "nav": "Changelog",

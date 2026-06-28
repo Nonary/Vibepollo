@@ -207,8 +207,8 @@
       "health_rtss_install": "請安裝 RTSS，以避免在啟用畫面生成時出現微頓挫。",
       "health_rtss_endpoint_error": "RTSS 狀態端點傳回錯誤。",
       "health_rtss_unreachable": "無法連線到 RTSS 狀態端點。",
-      "health_physical_rtss_latency": "在實體顯示器上搭配 DLSS/FSR 畫面生成使用 RTSS 畫面限制，可能會使延遲增加 50 ms 或更多。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
-      "health_physical_no_rtss": "未偵測到 RTSS 畫面限制器。在實體顯示器上使用 DLSS/FSR 畫面生成可能會出現微頓挫或抖動。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
+      "health_physical_rtss_latency": "實體顯示器無法擷取 DLSS/FSR 生成的畫面。在實體顯示器上將畫面限制器與畫面生成搭配使用，可能會使延遲增加 50 ms 或更多。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
+      "health_physical_no_rtss": "實體顯示器無法擷取 DLSS/FSR 生成的畫面，因此在實體顯示器上使用畫面生成可能會出現微頓挫或抖動。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
       "health_physical_supported": "此畫面生成模式支援實體顯示器。請保留最適合該應用程式的擷取方式。",
       "health_display_unknown": "無法判定顯示器更新率能力。",
       "health_display_active_label": "使用中的顯示器",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "使用用戶端提供的 FPS 值（預設）",
     "dd_refresh_rate_option_disabled": "不變更更新率",
     "dd_refresh_rate_option_manual": "使用手動輸入的更新率",
-    "dd_refresh_rate_option_manual_desc": "請輸入要使用的更新率",
+    "dd_refresh_rate_option_manual_desc": "⚠️ 強制使用手動更新率會讓主機對所有串流套用此更新率，覆寫下方任何更新率規則，以及虛擬顯示器自動套用的 4× 更新率。",
     "dd_resolution_option": "解析度",
     "dd_resolution_option_auto": "使用用戶端提供的解析度（預設）",
     "dd_resolution_option_disabled": "不更改解析度",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "自動（在預先發行版本上使用新引擎）",
     "dd_display_helper_engine_v2": "新引擎（v2）",
     "dd_display_helper_engine_legacy": "舊版引擎",
-    "physical_display_framegen_warning": "實體顯示器無法擷取 DLSS/FSR 生成的畫面。若您在實體螢幕上搭配 RTSS 畫面限制器使用 DLSS/FSR 畫面生成，延遲可能會增加 50 ms 或更多。若缺乏適當的畫面步調，可能會出現微頓挫或抖動。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
+    "physical_display_framegen_warning": "實體顯示器無法擷取 DLSS/FSR 生成的畫面。在實體顯示器上將畫面限制器與畫面生成搭配使用，可能會使延遲增加 50 ms 或更多，且若缺乏適當的畫面步調，可能會出現微頓挫或抖動。請使用虛擬顯示器以獲得低延遲、流暢的擷取。",
     "vulkan_hdr_layer": "虛擬顯示器的 Vulkan HDR 層",
     "vulkan_hdr_layer_desc": "註冊一個系統範圍的 Vulkan 層，以在虛擬顯示器上公開 HDR 表面格式。若 Vulkan 遊戲或應用程式在安裝顯示驅動程式後因存取違規而當機，請停用此項。",
     "frame_limiter_auto_virtual_framegen": "自動限制虛擬畫面生成",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "套用後可達最低延遲",
+    "sync_limiter_reflex_stutter": "在虛擬螢幕上流暢；在實體螢幕上則取決於遊戲與驅動程式",
+    "sync_limiter_reflex_advantages": "最低的輸入延遲；在虛擬螢幕上自動套用；可與 DLSS Frame Generation 整合",
+    "sync_limiter_reflex_disadvantages": "需要安裝 RTSS；在實體螢幕上的效果會因遊戲與驅動程式而異",
+    "sync_limiter_reflex_use": "虛擬螢幕的預設值；實體螢幕則為選用",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "選用：選擇用於實體螢幕串流的 RTSS SyncLimiter 模式。Async 是安全的預設值，請參閱上方的比較。",
+    "rtssMissing": "尚未安裝 RTSS。它為虛擬螢幕上的自動 NVIDIA Reflex 限制器提供支援，請安裝它或在下方設定路徑，讓 Vibepollo 能套用 Reflex。即使沒有它也能串流，只是不會有畫面上限。",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "自動限制虛擬畫面生成",
-    "autoVirtualFramegenHint": "當虛擬顯示器的 WGC 串流使用畫面生成時，Vibepollo 會以 4 倍更新率執行顯示器，並套用相符的 FPS 上限以調整步調。"
+    "noticeTitle": "流暢的畫面步調",
+    "noticeCopy": "Vibepollo 會在串流開始時套用您所選的限制器，並在串流結束時還原您的驅動程式設定。RTSS 在實體螢幕上提供最穩定的步調；NVIDIA Control Panel 限制器則為退而求其次的方案。",
+    "autoVirtualFramegenLabel": "自動限制虛擬螢幕",
+    "autoVirtualFramegenHint": "串流至虛擬螢幕時，Vibepollo 會以要求更新率的 4× 執行顯示器，並套用相符的畫面上限（可用時使用 NVIDIA Reflex），以獲得流暢、低延遲的步調。關閉此項則讓限制器完全由手動控制。",
+    "syncLimiterHintVirtual": "在虛擬螢幕上，Vibepollo 會自動套用 NVIDIA Reflex 以獲得最低延遲的步調，因此此設定僅影響實體螢幕的串流。",
+    "noticeTitleVirtual": "已自動套用 NVIDIA Reflex",
+    "noticeCopyVirtual": "您正在串流至虛擬螢幕，因此 Vibepollo 會自動啟用畫面限制器、以要求更新率的 4× 執行顯示器，並套用 NVIDIA Reflex（在已安裝 RTSS 時），以獲得流暢、低延遲的步調。無需任何手動設定。"
   },
   "changelog": {
     "nav": "Changelog",

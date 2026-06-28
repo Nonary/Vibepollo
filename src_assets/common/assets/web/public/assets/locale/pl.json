@@ -207,8 +207,8 @@
       "health_rtss_install": "Zainstaluj RTSS, aby uniknąć mikroprzycinania, gdy generowanie klatek jest włączone.",
       "health_rtss_endpoint_error": "Punkt końcowy stanu RTSS zwrócił błąd.",
       "health_rtss_unreachable": "Nie można połączyć się z punktem końcowym stanu RTSS.",
-      "health_physical_rtss_latency": "Ograniczanie klatek RTSS z generowaniem klatek DLSS/FSR na fizycznym ekranie może zwiększyć opóźnienie o 50 ms lub więcej. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
-      "health_physical_no_rtss": "Nie wykryto ogranicznika klatek RTSS. Generowanie klatek DLSS/FSR na fizycznym ekranie może powodować mikroprzycinanie lub szarpanie. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
+      "health_physical_rtss_latency": "Fizyczne ekrany nie mogą przechwytywać klatek generowanych przez DLSS/FSR. Połączenie ogranicznika klatek z generowaniem klatek na fizycznym ekranie może zwiększyć opóźnienie o 50 ms lub więcej. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
+      "health_physical_no_rtss": "Fizyczne ekrany nie mogą przechwytywać klatek generowanych przez DLSS/FSR, więc generowanie klatek na fizycznym ekranie może powodować mikroprzycinanie lub szarpanie. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
       "health_physical_supported": "Fizyczny ekran jest obsługiwany w tym trybie generowania klatek. Zachowaj metodę przechwytywania, która działa najlepiej dla danej aplikacji.",
       "health_display_unknown": "Nie można określić możliwości odświeżania ekranu.",
       "health_display_active_label": "Aktywny ekran",
@@ -334,7 +334,7 @@
     "dd_refresh_rate_option_auto": "Użyj wartości FPS podanej przez klienta (domyślnie)",
     "dd_refresh_rate_option_disabled": "Nie zmieniaj szybkości odświeżania",
     "dd_refresh_rate_option_manual": "Użyj ręcznie wprowadzonej częstotliwości odświeżania",
-    "dd_refresh_rate_option_manual_desc": "Wprowadź używaną częstotliwość odświeżania",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Wymuszenie ręcznej częstotliwości odświeżania ustawia host na tę częstotliwość dla wszystkich strumieni, zastępując wszelkie poniższe reguły odświeżania oraz automatyczne odświeżanie 4× stosowane dla wirtualnych ekranów.",
     "dd_resolution_option": "Rozdzielczość",
     "dd_resolution_option_auto": "Użyj rozdzielczości zapewnionej przez klienta (domyślnie)",
     "dd_resolution_option_disabled": "Nie zmieniaj rozdzielczości",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Automatyczny (nowy silnik w kompilacjach przedpremierowych)",
     "dd_display_helper_engine_v2": "Nowy silnik (v2)",
     "dd_display_helper_engine_legacy": "Starszy silnik",
-    "physical_display_framegen_warning": "Fizyczne ekrany nie mogą przechwytywać klatek generowanych przez DLSS/FSR. Jeśli używasz generowania klatek DLSS/FSR z ogranicznikiem klatek RTSS na fizycznym ekranie, opóźnienie może wzrosnąć o 50 ms lub więcej. Bez odpowiedniego tempa klatek może wystąpić mikroprzycinanie lub szarpanie. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
+    "physical_display_framegen_warning": "Fizyczne ekrany nie mogą przechwytywać klatek generowanych przez DLSS/FSR. Połączenie ogranicznika klatek z generowaniem klatek na fizycznym ekranie może zwiększyć opóźnienie o 50 ms lub więcej, a bez odpowiedniego tempa klatek może wystąpić mikroprzycinanie lub szarpanie. Użyj wirtualnego ekranu, aby uzyskać płynne przechwytywanie o niskim opóźnieniu.",
     "vulkan_hdr_layer": "Warstwa Vulkan HDR dla wirtualnych ekranów",
     "vulkan_hdr_layer_desc": "Rejestruje ogólnosystemową warstwę Vulkan, która udostępnia formaty powierzchni HDR na wirtualnych ekranach. Wyłącz to, jeśli gry lub aplikacje Vulkan ulegają awarii z naruszeniem dostępu po zainstalowaniu sterownika ekranu.",
     "frame_limiter_auto_virtual_framegen": "Automatycznie ogranicz wirtualne generowanie klatek",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Najniższe opóźnienie po zastosowaniu",
+    "sync_limiter_reflex_stutter": "Płynne na wirtualnych ekranach; na fizycznych ekranach zależy od gry i sterownika",
+    "sync_limiter_reflex_advantages": "Najniższe opóźnienie wejścia; stosowane automatycznie na wirtualnych ekranach; integruje się z DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Wymaga zainstalowanego RTSS; na fizycznych ekranach wyniki różnią się w zależności od gry i sterownika",
+    "sync_limiter_reflex_use": "Domyślne dla wirtualnych ekranów; opcjonalne na fizycznych ekranach",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Opcjonalnie: wybierz tryb RTSS SyncLimiter używany dla strumieni z fizycznych ekranów. Async jest bezpiecznym ustawieniem domyślnym — zobacz porównanie powyżej.",
+    "rtssMissing": "RTSS nie jest zainstalowany. Zasila on automatyczny ogranicznik NVIDIA Reflex na wirtualnych ekranach — zainstaluj go lub ustaw poniższą ścieżkę, aby Vibepollo mógł zastosować Reflex. Strumieniowanie nadal działa bez niego, tylko bez limitu klatek.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Automatycznie ogranicz wirtualne generowanie klatek",
-    "autoVirtualFramegenHint": "Gdy strumień WGC wirtualnego ekranu korzysta z generowania klatek, Vibepollo uruchamia ekran z 4x odświeżaniem i stosuje dopasowany limit FPS dla tempa."
+    "noticeTitle": "Płynne tempo klatek",
+    "noticeCopy": "Vibepollo stosuje wybrany ogranicznik na początku strumienia i przywraca ustawienia sterownika po jego zakończeniu. RTSS zapewnia najbardziej spójne tempo na fizycznych ekranach; ogranicznik NVIDIA Control Panel jest rozwiązaniem awaryjnym.",
+    "autoVirtualFramegenLabel": "Automatycznie ograniczaj wirtualne ekrany",
+    "autoVirtualFramegenHint": "Podczas strumieniowania na wirtualny ekran Vibepollo uruchamia ekran z 4× żądaną częstotliwością odświeżania i stosuje dopasowany limit klatek — NVIDIA Reflex, gdy jest dostępny — dla płynnego tempa o niskim opóźnieniu. Wyłącz tę opcję, aby ogranicznik pozostał w pełni ręczny.",
+    "syncLimiterHintVirtual": "Na wirtualnych ekranach Vibepollo stosuje NVIDIA Reflex automatycznie dla tempa o najniższym opóźnieniu, więc to ustawienie wpływa tylko na strumienie z fizycznych ekranów.",
+    "noticeTitleVirtual": "NVIDIA Reflex jest stosowany automatycznie",
+    "noticeCopyVirtual": "Strumieniujesz na wirtualny ekran, więc Vibepollo automatycznie włącza ogranicznik klatek, uruchamia ekran z 4× żądaną częstotliwością odświeżania i stosuje NVIDIA Reflex (gdy RTSS jest zainstalowany) dla płynnego tempa o niskim opóźnieniu. Nie jest wymagana żadna ręczna konfiguracja."
   },
   "changelog": {
     "nav": "Changelog",

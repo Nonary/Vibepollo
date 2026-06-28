@@ -207,8 +207,8 @@
       "health_rtss_install": "Installieren Sie RTSS, um Mikroruckler zu vermeiden, wenn Frame Generation aktiviert ist.",
       "health_rtss_endpoint_error": "Der RTSS-Statusendpunkt hat einen Fehler zurückgegeben.",
       "health_rtss_unreachable": "Der RTSS-Statusendpunkt ist nicht erreichbar.",
-      "health_physical_rtss_latency": "RTSS-Frame-Limiting mit DLSS/FSR Frame Generation auf einem physischen Display kann die Latenz um 50 ms oder mehr erhöhen. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
-      "health_physical_no_rtss": "Es wurde kein RTSS-Frame-Limiter erkannt. DLSS/FSR Frame Generation auf einem physischen Display kann mikroruckeln oder zittern. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
+      "health_physical_rtss_latency": "Physische Displays können keine von DLSS/FSR generierten Frames erfassen. Die Kombination aus einem Frame-Limiter und Frame Generation auf einem physischen Display kann 50 ms oder mehr Latenz hinzufügen. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
+      "health_physical_no_rtss": "Physische Displays können keine von DLSS/FSR generierten Frames erfassen, daher kann Frame Generation auf einem physischen Display mikroruckeln oder zittern. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
       "health_physical_supported": "Das physische Display wird für diesen Frame-Generation-Modus unterstützt. Behalten Sie die Capture-Methode bei, die für die App am besten funktioniert.",
       "health_display_unknown": "Die Fähigkeiten der Bildwiederholrate des Displays können nicht ermittelt werden.",
       "health_display_active_label": "Aktives Display",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "FPS Wert des Clients verwenden (Standard)",
     "dd_refresh_rate_option_disabled": "Aktualisierungsrate nicht ändern",
     "dd_refresh_rate_option_manual": "Manuell eingegebene Aktualisierungsrate verwenden",
-    "dd_refresh_rate_option_manual_desc": "Geben Sie die zu verwendende Aktualisierungsrate ein",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Das Erzwingen einer manuellen Aktualisierungsrate zwingt den Host für alle Streams auf diese Aktualisierungsrate und überschreibt sämtliche Aktualisierungsregeln weiter unten sowie die automatische 4×-Aktualisierung, die auf Virtual Displays angewendet wird.",
     "dd_resolution_option": "Auflösung",
     "dd_resolution_option_auto": "Auflösung des Clients verwenden (Standard)",
     "dd_resolution_option_disabled": "Auflösung nicht ändern",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Automatisch (neue Engine bei Vorabversionen)",
     "dd_display_helper_engine_v2": "Neue Engine (v2)",
     "dd_display_helper_engine_legacy": "Legacy-Engine",
-    "physical_display_framegen_warning": "Physische Displays können keine von DLSS/FSR generierten Frames erfassen. Wenn Sie DLSS/FSR Frame Generation mit einem RTSS-Frame-Limiter auf einem physischen Bildschirm verwenden, kann sich die Latenz um 50 ms oder mehr erhöhen. Ohne geeignetes Frame-Pacing kann es zu Mikrorucklern oder Zittern kommen. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
+    "physical_display_framegen_warning": "Physische Displays können keine von DLSS/FSR generierten Frames erfassen. Die Kombination aus einem Frame-Limiter und Frame Generation auf einem physischen Display kann 50 ms oder mehr Latenz hinzufügen, und ohne geeignetes Frame-Pacing kann es zu Mikrorucklern oder Zittern kommen. Verwenden Sie ein Virtual Display für eine latenzarme, flüssige Erfassung.",
     "vulkan_hdr_layer": "Vulkan HDR Layer für Virtual Displays",
     "vulkan_hdr_layer_desc": "Registriert einen systemweiten Vulkan Layer, der HDR-Surface-Formate auf Virtual Displays bereitstellt. Deaktivieren Sie dies, wenn Vulkan-Spiele oder -Apps nach der Installation des Display-Treibers mit einer Zugriffsverletzung abstürzen.",
     "frame_limiter_auto_virtual_framegen": "Virtuelle Frame Generation automatisch begrenzen",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Niedrigste Latenz, sobald angewendet",
+    "sync_limiter_reflex_stutter": "Flüssig auf virtuellen Bildschirmen; auf physischen Bildschirmen abhängig von Spiel und Treiber",
+    "sync_limiter_reflex_advantages": "Niedrigste Eingabelatenz; wird auf virtuellen Bildschirmen automatisch angewendet; integriert sich mit DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Erfordert installiertes RTSS; auf physischen Bildschirmen variieren die Ergebnisse je nach Spiel und Treiber",
+    "sync_limiter_reflex_use": "Standard für virtuelle Bildschirme; optional auf physischen Bildschirmen",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Optional: Wählen Sie den RTSS-SyncLimiter-Modus, der für Streams auf physischen Bildschirmen verwendet wird. Async ist eine sichere Standardeinstellung – siehe den Vergleich oben.",
+    "rtssMissing": "RTSS ist nicht installiert. Es steuert auf virtuellen Bildschirmen den automatischen Limiter mit NVIDIA Reflex – installieren Sie es oder legen Sie den Pfad unten fest, damit Vibepollo Reflex anwenden kann. Das Streaming funktioniert auch ohne, nur ohne Frame-Limit.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Virtuelle Frame Generation automatisch begrenzen",
-    "autoVirtualFramegenHint": "Wenn ein WGC-Stream auf einem Virtual Display Frame Generation verwendet, führt Vibepollo das Display mit 4-facher Bildwiederholrate aus und wendet für das Pacing ein passendes FPS-Limit an."
+    "noticeTitle": "Flüssiges Frame-Pacing",
+    "noticeCopy": "Vibepollo wendet den ausgewählten Limiter beim Stream-Start an und stellt Ihre Treibereinstellungen wieder her, wenn der Stream endet. RTSS liefert das gleichmäßigste Pacing auf physischen Bildschirmen; der Limiter des NVIDIA Control Panel dient als Ausweichlösung.",
+    "autoVirtualFramegenLabel": "Virtuelle Bildschirme automatisch begrenzen",
+    "autoVirtualFramegenHint": "Beim Streaming auf einen virtuellen Bildschirm führt Vibepollo das Display mit der 4×-fachen angeforderten Bildwiederholrate aus und wendet ein passendes Frame-Limit an – NVIDIA Reflex, sofern verfügbar –, um für flüssiges, latenzarmes Pacing zu sorgen. Deaktivieren Sie dies, um den Limiter vollständig manuell zu lassen.",
+    "syncLimiterHintVirtual": "Auf virtuellen Bildschirmen wendet Vibepollo NVIDIA Reflex automatisch für das latenzärmste Pacing an, sodass diese Einstellung nur Streams auf physischen Bildschirmen betrifft.",
+    "noticeTitleVirtual": "NVIDIA Reflex wird automatisch angewendet",
+    "noticeCopyVirtual": "Sie streamen auf einen virtuellen Bildschirm, daher aktiviert Vibepollo den Frame-Limiter automatisch, führt das Display mit der 4×-fachen angeforderten Bildwiederholrate aus und wendet NVIDIA Reflex an (sofern RTSS installiert ist), um für flüssiges, latenzarmes Pacing zu sorgen. Keine manuelle Einrichtung erforderlich."
   },
   "changelog": {
     "nav": "Changelog",

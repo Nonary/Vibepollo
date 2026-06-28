@@ -208,8 +208,8 @@
       "health_rtss_install": "Telepítsd az RTSS-t a mikroakadások elkerülése érdekében, ha a frame generation engedélyezve van.",
       "health_rtss_endpoint_error": "Az RTSS állapot-végpont hibát adott vissza.",
       "health_rtss_unreachable": "Az RTSS állapot-végpont nem érhető el.",
-      "health_physical_rtss_latency": "Az RTSS képkockakorlátozás DLSS/FSR frame generationnal fizikai kijelzőn 50 ms-mal vagy többel növelheti a késleltetést. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
-      "health_physical_no_rtss": "Nem észlelhető RTSS képkockakorlátozó. A DLSS/FSR frame generation fizikai kijelzőn mikroakadozhat vagy ránghat. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
+      "health_physical_rtss_latency": "A fizikai kijelzők nem tudják rögzíteni a DLSS/FSR által generált képkockákat. Ha képkockakorlátozót használsz frame generationnal fizikai kijelzőn, a késleltetés 50 ms-mal vagy többel nőhet. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
+      "health_physical_no_rtss": "A fizikai kijelzők nem tudják rögzíteni a DLSS/FSR által generált képkockákat, így a frame generation fizikai kijelzőn mikroakadozhat vagy ránghat. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
       "health_physical_supported": "A fizikai kijelző támogatott ehhez a frame generation módhoz. Tartsd meg az alkalmazáshoz legjobban illő rögzítési módszert.",
       "health_display_unknown": "A kijelző frissítési képességei nem állapíthatók meg.",
       "health_display_active_label": "Aktív kijelző",
@@ -646,7 +646,7 @@
     "dd_optional_adjustments": "Optional adjustments",
     "dd_advanced_remapping_title": "Advanced: Mode remapping",
     "dd_resolution_option_manual_desc": "⚠️ Enforcing a manual resolution disables all display overrides below. The host will always be set to this resolution regardless of any override rules.",
-    "dd_refresh_rate_option_manual_desc": "⚠️ Enforcing a manual refresh rate forces the host to this refresh for all streams, overriding any refresh rules below and the \"Double refresh rate for virtual displays\" option.",
+    "dd_refresh_rate_option_manual_desc": "⚠️ A kézi frissítési sebesség kikényszerítése minden streamre erre a frissítésre kényszeríti a gazdagépet, felülbírálva az alábbi frissítési szabályokat és a virtuális kijelzőkre alkalmazott automatikus 4× frissítést.",
     "dd_wa_hdr_toggle": "High-contrast workaround for HDR",
     "dd_wa_hdr_toggle_desc": "When using a virtual display device, HDR colors can be wrong. Vibepollo can toggle HDR off and back on to mitigate this. Enable only if you see HDR color issues.",
     "frame_limiter_fps_limit": "Frame limiter FPS limit",
@@ -751,7 +751,7 @@
     "dd_display_helper_engine_auto": "Automatikus (új motor a kiadás előtti buildeken)",
     "dd_display_helper_engine_v2": "Új motor (v2)",
     "dd_display_helper_engine_legacy": "Örökölt motor",
-    "physical_display_framegen_warning": "A fizikai kijelzők nem tudják rögzíteni a DLSS/FSR által generált képkockákat. Ha DLSS/FSR frame generationt használsz RTSS képkockakorlátozóval fizikai képernyőn, a késleltetés 50 ms-mal vagy többel nőhet. Megfelelő frame pacing nélkül mikroakadozhat vagy ránghat. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
+    "physical_display_framegen_warning": "A fizikai kijelzők nem tudják rögzíteni a DLSS/FSR által generált képkockákat. Ha képkockakorlátozót használsz frame generationnal fizikai kijelzőn, a késleltetés 50 ms-mal vagy többel nőhet, és megfelelő frame pacing nélkül mikroakadozhat vagy ránghat. Használj virtuális kijelzőt az alacsony késleltetésű, sima rögzítéshez.",
     "vulkan_hdr_layer": "Vulkan HDR réteg virtuális kijelzőkhöz",
     "vulkan_hdr_layer_desc": "Egy rendszerszintű Vulkan réteget regisztrál, amely HDR felületformátumokat tesz elérhetővé a virtuális kijelzőkön. Tiltsd le, ha a Vulkan játékok vagy alkalmazások hozzáférési hibával összeomlanak a kijelző-illesztőprogram telepítése után.",
     "frame_limiter_auto_virtual_framegen": "Virtuális frame generation automatikus korlátozása",
@@ -1603,11 +1603,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "A legalacsonyabb késleltetés, amikor alkalmazva van",
+    "sync_limiter_reflex_stutter": "Sima a virtuális képernyőkön; a fizikai képernyőkön a játéktól és az illesztőprogramtól függ",
+    "sync_limiter_reflex_advantages": "A legalacsonyabb bemeneti késleltetés; a virtuális képernyőkön automatikusan alkalmazva; integrálódik a DLSS Frame Generationnal",
+    "sync_limiter_reflex_disadvantages": "Telepített RTSS-t igényel; a fizikai képernyőkön az eredmények játéktól és illesztőprogramtól függően változnak",
+    "sync_limiter_reflex_use": "Alapértelmezett a virtuális képernyőkhöz; választható a fizikai képernyőkön",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1628,7 +1628,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1646,8 +1646,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Választható: válaszd ki a fizikai képernyős streamekhez használt RTSS SyncLimiter módot. Az Async egy biztonságos alapértelmezés — lásd a fenti összehasonlítást.",
+    "rtssMissing": "Az RTSS nincs telepítve. Ez működteti az automatikus NVIDIA Reflex korlátozót a virtuális képernyőkön — telepítsd, vagy állítsd be az alábbi útvonalat, hogy a Vibepollo alkalmazni tudja a Reflexet. A streamelés enélkül is működik, csak képkockakorlát nélkül.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1669,10 +1669,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Virtuális frame generation automatikus korlátozása",
-    "autoVirtualFramegenHint": "Amikor egy virtuális kijelzős WGC stream frame generationt használ, a Vibepollo 4x frissítésen futtatja a kijelzőt, és egy hozzá illő FPS-korlátot alkalmaz a pacinghez."
+    "noticeTitle": "Sima frame pacing",
+    "noticeCopy": "A Vibepollo a kiválasztott korlátozót a stream indításakor alkalmazza, és a stream végén visszaállítja az illesztőprogram-beállításaidat. Az RTSS adja a legkövetkezetesebb pacinget a fizikai képernyőkön; az NVIDIA Control Panel korlátozója csak tartalék.",
+    "autoVirtualFramegenLabel": "Virtuális képernyők automatikus korlátozása",
+    "autoVirtualFramegenHint": "Amikor virtuális képernyőre streamelsz, a Vibepollo a kért frissítés 4×-esén futtatja a kijelzőt, és egy hozzá illő képkockakorlátot alkalmaz — NVIDIA Reflexet, ha elérhető — a sima, alacsony késleltetésű pacing érdekében. Kapcsold ki, hogy a korlátozó teljesen kézi maradjon.",
+    "syncLimiterHintVirtual": "A virtuális képernyőkön a Vibepollo automatikusan alkalmazza az NVIDIA Reflexet a legalacsonyabb késleltetésű pacinghez, így ez a beállítás csak a fizikai képernyős streameket érinti.",
+    "noticeTitleVirtual": "Az NVIDIA Reflex automatikusan alkalmazva",
+    "noticeCopyVirtual": "Virtuális képernyőre streamelsz, ezért a Vibepollo automatikusan engedélyezi a képkockakorlátozót, a kért frissítés 4×-esén futtatja a kijelzőt, és alkalmazza az NVIDIA Reflexet (ha az RTSS telepítve van) a sima, alacsony késleltetésű pacing érdekében. Nincs szükség kézi beállításra."
   },
   "changelog": {
     "nav": "Changelog",

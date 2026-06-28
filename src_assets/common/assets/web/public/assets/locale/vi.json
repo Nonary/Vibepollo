@@ -208,8 +208,8 @@
       "health_rtss_install": "Cài đặt RTSS để tránh microstutter khi bật frame generation.",
       "health_rtss_endpoint_error": "Điểm cuối trạng thái RTSS trả về lỗi.",
       "health_rtss_unreachable": "Không thể truy cập điểm cuối trạng thái RTSS.",
-      "health_physical_rtss_latency": "Giới hạn khung hình RTSS với frame generation DLSS/FSR trên màn hình vật lý có thể làm tăng độ trễ 50 ms trở lên. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
-      "health_physical_no_rtss": "Không phát hiện bộ giới hạn khung hình RTSS. Frame generation DLSS/FSR trên màn hình vật lý có thể bị microstutter hoặc giật. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
+      "health_physical_rtss_latency": "Màn hình vật lý không thể thu các khung hình do DLSS/FSR tạo ra. Việc kết hợp bộ giới hạn khung hình với frame generation trên màn hình vật lý có thể làm tăng độ trễ 50 ms trở lên. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
+      "health_physical_no_rtss": "Màn hình vật lý không thể thu các khung hình do DLSS/FSR tạo ra, vì vậy frame generation trên màn hình vật lý có thể bị microstutter hoặc giật. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
       "health_physical_supported": "Màn hình vật lý được hỗ trợ cho chế độ frame generation này. Hãy giữ phương thức thu hình hoạt động tốt nhất cho ứng dụng.",
       "health_display_unknown": "Không thể xác định khả năng tần số quét của màn hình.",
       "health_display_active_label": "Màn hình đang hoạt động",
@@ -646,7 +646,7 @@
     "dd_optional_adjustments": "Optional adjustments",
     "dd_advanced_remapping_title": "Advanced: Mode remapping",
     "dd_resolution_option_manual_desc": "⚠️ Enforcing a manual resolution disables all display overrides below. The host will always be set to this resolution regardless of any override rules.",
-    "dd_refresh_rate_option_manual_desc": "⚠️ Enforcing a manual refresh rate forces the host to this refresh for all streams, overriding any refresh rules below and the \"Double refresh rate for virtual displays\" option.",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Việc áp đặt một tần số quét thủ công sẽ buộc host về tần số này cho tất cả các stream, ghi đè mọi quy tắc tần số quét bên dưới và tần số quét 4× tự động áp dụng cho màn hình ảo.",
     "dd_wa_hdr_toggle": "High-contrast workaround for HDR",
     "dd_wa_hdr_toggle_desc": "When using a virtual display device, HDR colors can be wrong. Vibepollo can toggle HDR off and back on to mitigate this. Enable only if you see HDR color issues.",
     "frame_limiter_fps_limit": "Frame limiter FPS limit",
@@ -751,7 +751,7 @@
     "dd_display_helper_engine_auto": "Tự động (engine mới trên các bản pre-release)",
     "dd_display_helper_engine_v2": "Engine mới (v2)",
     "dd_display_helper_engine_legacy": "Engine legacy",
-    "physical_display_framegen_warning": "Màn hình vật lý không thể thu các khung hình do DLSS/FSR tạo ra. Nếu bạn dùng frame generation DLSS/FSR với bộ giới hạn khung hình RTSS trên màn hình vật lý, độ trễ có thể tăng 50 ms trở lên. Nếu không có điều phối khung hình phù hợp, có thể bị microstutter hoặc giật. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
+    "physical_display_framegen_warning": "Màn hình vật lý không thể thu các khung hình do DLSS/FSR tạo ra. Việc kết hợp bộ giới hạn khung hình với frame generation trên màn hình vật lý có thể làm tăng độ trễ 50 ms trở lên, và nếu không có điều phối khung hình phù hợp, có thể bị microstutter hoặc giật. Hãy dùng màn hình ảo để thu hình mượt mà, độ trễ thấp.",
     "vulkan_hdr_layer": "Lớp Vulkan HDR cho màn hình ảo",
     "vulkan_hdr_layer_desc": "Đăng ký một lớp Vulkan trên toàn hệ thống để cung cấp các định dạng bề mặt HDR trên màn hình ảo. Hãy tắt mục này nếu các game hoặc ứng dụng Vulkan bị sập với lỗi access violation sau khi driver màn hình được cài đặt.",
     "frame_limiter_auto_virtual_framegen": "Tự động giới hạn frame generation ảo",
@@ -1603,11 +1603,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Độ trễ thấp nhất khi được áp dụng",
+    "sync_limiter_reflex_stutter": "Mượt trên màn hình ảo; phụ thuộc vào game và driver trên màn hình vật lý",
+    "sync_limiter_reflex_advantages": "Độ trễ nhập liệu thấp nhất; tự động áp dụng trên màn hình ảo; tích hợp với DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Cần cài đặt RTSS; trên màn hình vật lý kết quả thay đổi tùy theo game và driver",
+    "sync_limiter_reflex_use": "Mặc định cho màn hình ảo; tùy chọn trên màn hình vật lý",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1628,7 +1628,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1646,8 +1646,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Tùy chọn: chọn chế độ RTSS SyncLimiter dùng cho các stream trên màn hình vật lý. Async là mặc định an toàn — hãy xem bảng so sánh ở trên.",
+    "rtssMissing": "RTSS chưa được cài đặt. Nó cung cấp bộ giới hạn NVIDIA Reflex tự động trên màn hình ảo — hãy cài đặt nó hoặc đặt đường dẫn bên dưới để Vibepollo có thể áp dụng Reflex. Việc stream vẫn hoạt động khi không có nó, chỉ là không có giới hạn khung hình.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1669,10 +1669,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Tự động giới hạn frame generation ảo",
-    "autoVirtualFramegenHint": "Khi một stream WGC trên màn hình ảo dùng frame generation, Vibepollo chạy màn hình ở mức 4x tần số quét và áp dụng giới hạn FPS tương ứng để điều phối."
+    "noticeTitle": "Điều phối khung hình mượt mà",
+    "noticeCopy": "Vibepollo áp dụng bộ giới hạn bạn chọn khi bắt đầu stream và khôi phục thiết lập driver khi stream kết thúc. RTSS mang lại điều phối khung hình ổn định nhất trên màn hình vật lý; bộ giới hạn NVIDIA Control Panel là phương án dự phòng.",
+    "autoVirtualFramegenLabel": "Tự động giới hạn màn hình ảo",
+    "autoVirtualFramegenHint": "Khi stream tới một màn hình ảo, Vibepollo chạy màn hình ở mức 4× tần số quét được yêu cầu và áp dụng giới hạn khung hình tương ứng — NVIDIA Reflex khi khả dụng — để điều phối mượt mà, độ trễ thấp. Hãy tắt mục này để bộ giới hạn hoàn toàn thủ công.",
+    "syncLimiterHintVirtual": "Trên màn hình ảo, Vibepollo tự động áp dụng NVIDIA Reflex để điều phối với độ trễ thấp nhất, vì vậy thiết lập này chỉ ảnh hưởng đến các stream trên màn hình vật lý.",
+    "noticeTitleVirtual": "NVIDIA Reflex được áp dụng tự động",
+    "noticeCopyVirtual": "Bạn đang stream tới một màn hình ảo, nên Vibepollo tự động bật bộ giới hạn khung hình, chạy màn hình ở mức 4× tần số quét được yêu cầu và áp dụng NVIDIA Reflex (khi RTSS được cài đặt) để điều phối mượt mà, độ trễ thấp. Không cần thiết lập thủ công."
   },
   "changelog": {
     "nav": "Changelog",

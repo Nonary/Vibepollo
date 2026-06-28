@@ -207,8 +207,8 @@
       "health_rtss_install": "프레임 생성을 사용할 때 마이크로 스터터를 방지하려면 RTSS를 설치하세요.",
       "health_rtss_endpoint_error": "RTSS 상태 엔드포인트에서 오류가 반환되었습니다.",
       "health_rtss_unreachable": "RTSS 상태 엔드포인트에 연결할 수 없습니다.",
-      "health_physical_rtss_latency": "물리 디스플레이에서 DLSS/FSR 프레임 생성과 함께 RTSS 프레임 제한을 사용하면 지연 시간이 50 ms 이상 증가할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
-      "health_physical_no_rtss": "RTSS 프레임 제한기가 감지되지 않았습니다. 물리 디스플레이에서 DLSS/FSR 프레임 생성을 사용하면 마이크로 스터터나 끊김이 발생할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
+      "health_physical_rtss_latency": "물리 디스플레이는 DLSS/FSR로 생성된 프레임을 캡처할 수 없습니다. 물리 디스플레이에서 프레임 제한기를 프레임 생성과 함께 사용하면 지연 시간이 50 ms 이상 증가할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
+      "health_physical_no_rtss": "물리 디스플레이는 DLSS/FSR로 생성된 프레임을 캡처할 수 없으므로, 물리 디스플레이에서의 프레임 생성은 마이크로 스터터나 끊김이 발생할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
       "health_physical_supported": "이 프레임 생성 모드에서는 물리 디스플레이가 지원됩니다. 해당 앱에 가장 적합한 캡처 방식을 유지하세요.",
       "health_display_unknown": "디스플레이 새로 고침 성능을 확인할 수 없습니다.",
       "health_display_active_label": "활성 디스플레이",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "클라이언트에서 제공한 FPS 값 사용 (기본값)",
     "dd_refresh_rate_option_disabled": "새로 고침 빈도 변경하지 않기",
     "dd_refresh_rate_option_manual": "새로고침 빈도 수동 지정",
-    "dd_refresh_rate_option_manual_desc": "사용할 새로 고침 빈도를 입력합니다.",
+    "dd_refresh_rate_option_manual_desc": "⚠️ 수동 새로 고침 빈도를 강제하면 호스트가 모든 스트림에 대해 이 새로 고침 빈도를 사용하게 되며, 아래의 모든 새로 고침 규칙과 가상 디스플레이에 적용되는 자동 4× 새로 고침을 재정의합니다.",
     "dd_resolution_option": "해상도",
     "dd_resolution_option_auto": "클라이언트에서 제공한 해상도 사용(기본값)",
     "dd_resolution_option_disabled": "해상도 변경 금지",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "자동 (사전 릴리스 빌드에서 새 엔진)",
     "dd_display_helper_engine_v2": "새 엔진 (v2)",
     "dd_display_helper_engine_legacy": "레거시 엔진",
-    "physical_display_framegen_warning": "물리 디스플레이는 DLSS/FSR로 생성된 프레임을 캡처할 수 없습니다. 물리 화면에서 RTSS 프레임 제한기와 함께 DLSS/FSR 프레임 생성을 사용하면 지연 시간이 50 ms 이상 증가할 수 있습니다. 적절한 프레임 페이싱이 없으면 마이크로 스터터나 끊김이 발생할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
+    "physical_display_framegen_warning": "물리 디스플레이는 DLSS/FSR로 생성된 프레임을 캡처할 수 없습니다. 물리 디스플레이에서 프레임 제한기를 프레임 생성과 함께 사용하면 지연 시간이 50 ms 이상 증가할 수 있으며, 적절한 프레임 페이싱이 없으면 마이크로 스터터나 끊김이 발생할 수 있습니다. 저지연의 매끄러운 캡처를 위해 가상 디스플레이를 사용하세요.",
     "vulkan_hdr_layer": "가상 디스플레이용 Vulkan HDR 레이어",
     "vulkan_hdr_layer_desc": "가상 디스플레이에서 HDR 표면 형식을 노출하는 시스템 전역 Vulkan 레이어를 등록합니다. 디스플레이 드라이버 설치 후 Vulkan 게임이나 앱이 액세스 위반으로 충돌하는 경우 비활성화하세요.",
     "frame_limiter_auto_virtual_framegen": "가상 프레임 생성 자동 제한",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "적용 시 가장 낮은 지연 시간",
+    "sync_limiter_reflex_stutter": "가상 화면에서 매끄러움; 물리 화면에서는 게임과 드라이버에 따라 다름",
+    "sync_limiter_reflex_advantages": "가장 낮은 입력 지연 시간; 가상 화면에서 자동으로 적용됨; DLSS Frame Generation과 통합됨",
+    "sync_limiter_reflex_disadvantages": "RTSS 설치 필요; 물리 화면에서는 게임과 드라이버에 따라 결과가 다름",
+    "sync_limiter_reflex_use": "가상 화면에서는 기본값; 물리 화면에서는 선택 사항",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "선택 사항: 물리 화면 스트림에 사용되는 RTSS SyncLimiter 모드를 선택하세요. Async가 안전한 기본값입니다 — 위의 비교를 참고하세요.",
+    "rtssMissing": "RTSS가 설치되어 있지 않습니다. RTSS는 가상 화면에서 자동 NVIDIA Reflex 제한기를 구동합니다 — Vibepollo가 Reflex를 적용할 수 있도록 RTSS를 설치하거나 아래에 경로를 설정하세요. 없어도 스트리밍은 계속 작동하지만, 프레임 제한은 적용되지 않습니다.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "가상 프레임 생성 자동 제한",
-    "autoVirtualFramegenHint": "가상 디스플레이 WGC 스트림이 프레임 생성을 사용할 때 Vibepollo는 디스플레이를 4배 새로 고침으로 실행하고 페이싱을 위해 그에 맞는 FPS 제한을 적용합니다."
+    "noticeTitle": "매끄러운 프레임 페이싱",
+    "noticeCopy": "Vibepollo는 스트림 시작 시 선택한 제한기를 적용하고 스트림이 종료되면 드라이버 설정을 복원합니다. RTSS는 물리 화면에서 가장 일관된 페이싱을 제공하며; NVIDIA Control Panel 제한기는 대체 수단입니다.",
+    "autoVirtualFramegenLabel": "가상 화면 자동 제한",
+    "autoVirtualFramegenHint": "가상 화면으로 스트리밍할 때 Vibepollo는 디스플레이를 요청된 새로 고침 빈도의 4×로 실행하고, 매끄럽고 저지연의 페이싱을 위해 그에 맞는 프레임 제한(가능한 경우 NVIDIA Reflex)을 적용합니다. 제한기를 완전히 수동으로 두려면 이 옵션을 끄세요.",
+    "syncLimiterHintVirtual": "가상 화면에서는 Vibepollo가 가장 낮은 지연 시간의 페이싱을 위해 NVIDIA Reflex를 자동으로 적용하므로, 이 설정은 물리 화면 스트림에만 영향을 줍니다.",
+    "noticeTitleVirtual": "NVIDIA Reflex가 자동으로 적용됩니다",
+    "noticeCopyVirtual": "가상 화면으로 스트리밍 중이므로 Vibepollo가 프레임 제한기를 자동으로 활성화하고, 디스플레이를 요청된 새로 고침 빈도의 4×로 실행하며, 매끄럽고 저지연의 페이싱을 위해 NVIDIA Reflex(RTSS가 설치된 경우)를 적용합니다. 수동 설정이 필요 없습니다."
   },
   "changelog": {
     "nav": "Changelog",

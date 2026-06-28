@@ -207,8 +207,8 @@
       "health_rtss_install": "Installez RTSS pour éviter les micro-saccades lorsque la génération d'images est activée.",
       "health_rtss_endpoint_error": "Le point de terminaison d'état RTSS a renvoyé une erreur.",
       "health_rtss_unreachable": "Impossible de joindre le point de terminaison d'état RTSS.",
-      "health_physical_rtss_latency": "La limitation d'images RTSS avec la génération d'images DLSS/FSR sur un affichage physique peut augmenter la latence de 50 ms ou plus. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
-      "health_physical_no_rtss": "Aucun limiteur d'images RTSS n'a été détecté. La génération d'images DLSS/FSR sur un affichage physique peut produire des micro-saccades ou du tremblement. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
+      "health_physical_rtss_latency": "Les affichages physiques ne peuvent pas capturer les images générées par DLSS/FSR. L'association d'un limiteur d'images avec la génération d'images sur un affichage physique peut ajouter 50 ms ou plus de latence. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
+      "health_physical_no_rtss": "Les affichages physiques ne peuvent pas capturer les images générées par DLSS/FSR, donc la génération d'images sur un affichage physique peut produire des micro-saccades ou du tremblement. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
       "health_physical_supported": "L'affichage physique est pris en charge pour ce mode de génération d'images. Conservez la méthode de capture qui fonctionne le mieux pour l'application.",
       "health_display_unknown": "Impossible de déterminer les capacités de rafraîchissement de l'affichage.",
       "health_display_active_label": "Affichage actif",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "Utiliser la valeur FPS fournie par le client (par défaut)",
     "dd_refresh_rate_option_disabled": "Ne pas modifier le taux de rafraîchissement",
     "dd_refresh_rate_option_manual": "Utiliser la fréquence de rafraîchissement saisie manuellement",
-    "dd_refresh_rate_option_manual_desc": "Entrez le taux de rafraîchissement à utiliser",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Imposer une fréquence de rafraîchissement manuelle force l'hôte à utiliser cette fréquence pour tous les flux, ce qui remplace les règles de rafraîchissement ci-dessous ainsi que le rafraîchissement automatique 4× appliqué aux affichages virtuels.",
     "dd_resolution_option": "Résolution",
     "dd_resolution_option_auto": "Utiliser la résolution fournie par le client (par défaut)",
     "dd_resolution_option_disabled": "Ne pas modifier la résolution",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Automatique (nouveau moteur sur les versions préliminaires)",
     "dd_display_helper_engine_v2": "Nouveau moteur (v2)",
     "dd_display_helper_engine_legacy": "Moteur hérité",
-    "physical_display_framegen_warning": "Les affichages physiques ne peuvent pas capturer les images générées par DLSS/FSR. Si vous utilisez la génération d'images DLSS/FSR avec un limiteur d'images RTSS sur un écran physique, la latence peut augmenter de 50 ms ou plus. Sans une cadence d'images adaptée, des micro-saccades ou du tremblement peuvent apparaître. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
+    "physical_display_framegen_warning": "Les affichages physiques ne peuvent pas capturer les images générées par DLSS/FSR. L'association d'un limiteur d'images avec la génération d'images sur un affichage physique peut ajouter 50 ms ou plus de latence, et sans une cadence d'images adaptée, des micro-saccades ou du tremblement peuvent apparaître. Utilisez un affichage virtuel pour une capture fluide à faible latence.",
     "vulkan_hdr_layer": "Couche HDR Vulkan pour les affichages virtuels",
     "vulkan_hdr_layer_desc": "Enregistre une couche Vulkan à l'échelle du système qui expose les formats de surface HDR sur les affichages virtuels. Désactivez ceci si les jeux ou applications Vulkan plantent avec une violation d'accès après l'installation du pilote d'affichage.",
     "frame_limiter_auto_virtual_framegen": "Limiter automatiquement la génération d'images virtuelle",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Latence la plus faible lorsqu'il est appliqué",
+    "sync_limiter_reflex_stutter": "Fluide sur les écrans virtuels ; dépend du jeu et du pilote sur les écrans physiques",
+    "sync_limiter_reflex_advantages": "Latence d'entrée la plus faible ; appliqué automatiquement sur les écrans virtuels ; s'intègre à DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Nécessite l'installation de RTSS ; sur les écrans physiques, les résultats varient selon le jeu et le pilote",
+    "sync_limiter_reflex_use": "Par défaut pour les écrans virtuels ; facultatif sur les écrans physiques",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Facultatif : choisissez le mode SyncLimiter de RTSS utilisé pour les flux sur écran physique. Async est une valeur par défaut sûre — voir la comparaison ci-dessus.",
+    "rtssMissing": "RTSS n'est pas installé. Il alimente le limiteur NVIDIA Reflex automatique sur les écrans virtuels — installez-le ou indiquez le chemin ci-dessous afin que Vibepollo puisse appliquer Reflex. Le streaming fonctionne quand même sans lui, mais sans plafond FPS.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Limiter automatiquement la génération d'images virtuelle",
-    "autoVirtualFramegenHint": "Lorsqu'un stream WGC sur affichage virtuel utilise la génération d'images, Vibepollo exécute l'affichage à 4x la fréquence de rafraîchissement et applique un plafond FPS correspondant pour la cadence."
+    "noticeTitle": "Cadence d'images fluide",
+    "noticeCopy": "Vibepollo applique le limiteur sélectionné au démarrage du stream et restaure vos paramètres de pilote à la fin du stream. RTSS offre la cadence la plus stable sur les écrans physiques ; le limiteur du NVIDIA Control Panel sert de solution de repli.",
+    "autoVirtualFramegenLabel": "Limiter automatiquement les écrans virtuels",
+    "autoVirtualFramegenHint": "Lors d'un stream vers un écran virtuel, Vibepollo exécute l'affichage à 4× la fréquence de rafraîchissement demandée et applique un plafond FPS correspondant — NVIDIA Reflex lorsqu'il est disponible — pour une cadence fluide et à faible latence. Désactivez cette option pour laisser le limiteur entièrement manuel.",
+    "syncLimiterHintVirtual": "Sur les écrans virtuels, Vibepollo applique automatiquement NVIDIA Reflex pour une cadence à la latence la plus faible ; ce paramètre n'affecte donc que les flux sur écran physique.",
+    "noticeTitleVirtual": "NVIDIA Reflex est appliqué automatiquement",
+    "noticeCopyVirtual": "Vous diffusez vers un écran virtuel : Vibepollo active donc automatiquement le limiteur d'images, exécute l'affichage à 4× la fréquence de rafraîchissement demandée et applique NVIDIA Reflex (lorsque RTSS est installé) pour une cadence fluide et à faible latence. Aucune configuration manuelle n'est nécessaire."
   },
   "changelog": {
     "nav": "Changelog",

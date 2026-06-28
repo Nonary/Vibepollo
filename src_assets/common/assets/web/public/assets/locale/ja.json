@@ -207,8 +207,8 @@
       "health_rtss_install": "フレーム生成を有効にした際のマイクロスタッターを避けるため、RTSS をインストールしてください。",
       "health_rtss_endpoint_error": "RTSS ステータスエンドポイントがエラーを返しました。",
       "health_rtss_unreachable": "RTSS ステータスエンドポイントに到達できません。",
-      "health_physical_rtss_latency": "物理ディスプレイで DLSS/FSR フレーム生成を RTSS フレーム制限と併用すると、遅延が 50 ms 以上増加することがあります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
-      "health_physical_no_rtss": "RTSS フレームリミッターが検出されませんでした。物理ディスプレイでの DLSS/FSR フレーム生成は、マイクロスタッターやジャダーが発生する場合があります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
+      "health_physical_rtss_latency": "物理ディスプレイでは DLSS/FSR が生成したフレームをキャプチャできません。物理ディスプレイでフレームリミッターをフレーム生成と併用すると、遅延が 50 ms 以上増加することがあります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
+      "health_physical_no_rtss": "物理ディスプレイでは DLSS/FSR が生成したフレームをキャプチャできないため、物理ディスプレイでのフレーム生成はマイクロスタッターやジャダーが発生する場合があります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
       "health_physical_supported": "このフレーム生成モードでは物理ディスプレイに対応しています。アプリに最適なキャプチャ方式を維持してください。",
       "health_display_unknown": "ディスプレイのリフレッシュ性能を判定できません。",
       "health_display_active_label": "アクティブなディスプレイ",
@@ -333,7 +333,7 @@
     "dd_refresh_rate_option_auto": "クライアントから提供されたFPS値を使用 (デフォルト)",
     "dd_refresh_rate_option_disabled": "更新レートを変更しない",
     "dd_refresh_rate_option_manual": "手動で更新レートを使用する",
-    "dd_refresh_rate_option_manual_desc": "使用するリフレッシュレートを入力してください",
+    "dd_refresh_rate_option_manual_desc": "⚠️ 手動リフレッシュレートを強制すると、ホストはすべてのストリームでこのリフレッシュに固定され、以下のリフレッシュルールや仮想ディスプレイに自動適用される 4× リフレッシュよりも優先されます。",
     "dd_resolution_option": "解像度",
     "dd_resolution_option_auto": "クライアントから提供された解像度を使用します (デフォルト)",
     "dd_resolution_option_disabled": "解像度を変更しない",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "自動（プレリリースビルドでは新エンジン）",
     "dd_display_helper_engine_v2": "新エンジン (v2)",
     "dd_display_helper_engine_legacy": "レガシーエンジン",
-    "physical_display_framegen_warning": "物理ディスプレイでは DLSS/FSR が生成したフレームをキャプチャできません。物理画面で DLSS/FSR フレーム生成を RTSS フレームリミッターと併用すると、遅延が 50 ms 以上増加することがあります。適切なフレームペーシングがないと、マイクロスタッターやジャダーが発生する場合があります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
+    "physical_display_framegen_warning": "物理ディスプレイでは DLSS/FSR が生成したフレームをキャプチャできません。物理ディスプレイでフレームリミッターをフレーム生成と併用すると、遅延が 50 ms 以上増加することがあり、適切なフレームペーシングがないと、マイクロスタッターやジャダーが発生する場合があります。低遅延で滑らかなキャプチャには仮想ディスプレイを使用してください。",
     "vulkan_hdr_layer": "仮想ディスプレイ向け Vulkan HDR レイヤー",
     "vulkan_hdr_layer_desc": "仮想ディスプレイで HDR サーフェスフォーマットを公開する、システム全体の Vulkan レイヤーを登録します。ディスプレイドライバーのインストール後に Vulkan のゲームやアプリがアクセス違反でクラッシュする場合は、これを無効にしてください。",
     "frame_limiter_auto_virtual_framegen": "仮想フレーム生成を自動制限",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "適用時に最も低い遅延",
+    "sync_limiter_reflex_stutter": "仮想画面では滑らか。物理画面ではゲームとドライバーに依存",
+    "sync_limiter_reflex_advantages": "最も低い入力遅延。仮想画面では自動的に適用され、DLSS Frame Generation と連携",
+    "sync_limiter_reflex_disadvantages": "RTSS のインストールが必要。物理画面では結果がゲームとドライバーによって異なる",
+    "sync_limiter_reflex_use": "仮想画面ではデフォルト。物理画面では任意",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "任意: 物理画面のストリームで使用する RTSS SyncLimiter モードを選択します。Async は安全なデフォルトです。上の比較を参照してください。",
+    "rtssMissing": "RTSS がインストールされていません。仮想画面での自動 NVIDIA Reflex リミッターを支える機能です。Vibepollo が Reflex を適用できるよう、RTSS をインストールするか以下のパスを設定してください。なくてもストリーミングは動作しますが、フレームキャップは適用されません。",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "仮想フレーム生成を自動制限",
-    "autoVirtualFramegenHint": "仮想ディスプレイの WGC ストリームがフレーム生成を使用する場合、Vibepollo はディスプレイを 4 倍リフレッシュで動作させ、ペーシングのために対応する FPS キャップを適用します。"
+    "noticeTitle": "滑らかなフレームペーシング",
+    "noticeCopy": "Vibepollo はストリーム開始時に選択したリミッターを適用し、ストリーム終了時にドライバー設定を復元します。RTSS は物理画面で最も安定したペーシングを提供します。NVIDIA Control Panel のリミッターはフォールバックです。",
+    "autoVirtualFramegenLabel": "仮想画面を自動制限",
+    "autoVirtualFramegenHint": "仮想画面へストリーミングする際、Vibepollo はディスプレイを要求リフレッシュの 4× で動作させ、滑らかで低遅延なペーシングのために対応するフレームキャップ（利用可能な場合は NVIDIA Reflex）を適用します。これをオフにすると、リミッターは完全に手動のままになります。",
+    "syncLimiterHintVirtual": "仮想画面では Vibepollo が最も低遅延なペーシングのために NVIDIA Reflex を自動的に適用するため、この設定は物理画面のストリームにのみ影響します。",
+    "noticeTitleVirtual": "NVIDIA Reflex が自動的に適用されます",
+    "noticeCopyVirtual": "仮想画面へストリーミングしているため、Vibepollo はフレームリミッターを自動的に有効化し、ディスプレイを要求リフレッシュの 4× で動作させ、滑らかで低遅延なペーシングのために NVIDIA Reflex（RTSS がインストールされている場合）を適用します。手動設定は不要です。"
   },
   "changelog": {
     "nav": "Changelog",

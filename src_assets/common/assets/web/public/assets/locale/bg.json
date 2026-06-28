@@ -207,8 +207,8 @@
       "health_rtss_install": "Инсталирайте RTSS, за да избегнете микрозаекване, когато генерирането на кадри е включено.",
       "health_rtss_endpoint_error": "Крайната точка за състоянието на RTSS върна грешка.",
       "health_rtss_unreachable": "Крайната точка за състоянието на RTSS е недостъпна.",
-      "health_physical_rtss_latency": "Ограничаването на кадри чрез RTSS с генериране на кадри от DLSS/FSR на физически дисплей може да увеличи латентността с 50 ms или повече. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
-      "health_physical_no_rtss": "Не е открит ограничител на кадри от RTSS. Генерирането на кадри от DLSS/FSR на физически дисплей може да микрозаеква или да трепти. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
+      "health_physical_rtss_latency": "Физическите дисплеи не могат да заснемат кадри, генерирани от DLSS/FSR. Съчетаването на ограничител на кадри с генериране на кадри на физически дисплей може да увеличи латентността с 50 ms или повече. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
+      "health_physical_no_rtss": "Физическите дисплеи не могат да заснемат кадри, генерирани от DLSS/FSR, затова генерирането на кадри на физически дисплей може да микрозаеква или да трепти. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
       "health_physical_supported": "Физическият дисплей се поддържа за този режим на генериране на кадри. Запазете метода на заснемане, който работи най-добре за приложението.",
       "health_display_unknown": "Не може да се определят възможностите за опресняване на дисплея.",
       "health_display_active_label": "Активен дисплей",
@@ -332,7 +332,7 @@
     "dd_refresh_rate_option_auto": "Използване на стойността за кадри/сек зададена от клиента (по подразбиране)",
     "dd_refresh_rate_option_disabled": "Да не се променя честотата на опресняване",
     "dd_refresh_rate_option_manual": "Използване на ръчно зададена честота на опресняване",
-    "dd_refresh_rate_option_manual_desc": "Въведете честотата на опресняване, която да се ползва",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Налагането на ръчна честота на опресняване принуждава хоста да използва тази честота за всички потоци, заменяйки всички правила за опресняване по-долу и автоматичното 4× опресняване, прилагано към виртуалните дисплеи.",
     "dd_resolution_option": "Резолюция",
     "dd_resolution_option_auto": "Използване на резолюцията зададена от клиента (по подразбиране)",
     "dd_resolution_option_disabled": "Да не се променя резолюцията",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Автоматично (нова машина на предварителни версии)",
     "dd_display_helper_engine_v2": "Нова машина (v2)",
     "dd_display_helper_engine_legacy": "Наследена машина",
-    "physical_display_framegen_warning": "Физическите дисплеи не могат да заснемат кадри, генерирани от DLSS/FSR. Ако използвате генериране на кадри от DLSS/FSR с ограничител на кадри от RTSS на физически екран, латентността може да се увеличи с 50 ms или повече. Без подходящо темпо на кадрите може да микрозаеква или да трепти. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
+    "physical_display_framegen_warning": "Физическите дисплеи не могат да заснемат кадри, генерирани от DLSS/FSR. Съчетаването на ограничител на кадри с генериране на кадри на физически дисплей може да увеличи латентността с 50 ms или повече, а без подходящо темпо на кадрите може да микрозаеква или да трепти. Използвайте виртуален дисплей за плавно заснемане с ниска латентност.",
     "vulkan_hdr_layer": "Vulkan HDR слой за виртуални дисплеи",
     "vulkan_hdr_layer_desc": "Регистрира системен Vulkan слой, който излага HDR формати на повърхности на виртуални дисплеи. Изключете това, ако Vulkan игри или приложения се сриват с access violation след инсталиране на дисплейния драйвер.",
     "frame_limiter_auto_virtual_framegen": "Автоматично ограничаване на виртуалното генериране на кадри",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Най-ниска латентност, когато се прилага",
+    "sync_limiter_reflex_stutter": "Плавно на виртуални екрани; зависи от играта и драйвера на физически екрани",
+    "sync_limiter_reflex_advantages": "Най-ниска входна латентност; прилага се автоматично на виртуални екрани; интегрира се с DLSS Frame Generation",
+    "sync_limiter_reflex_disadvantages": "Изисква инсталиран RTSS; на физически екрани резултатите варират според играта и драйвера",
+    "sync_limiter_reflex_use": "По подразбиране за виртуални екрани; незадължително на физически екрани",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "Незадължително: изберете режима на RTSS SyncLimiter, използван за потоци към физически екрани. Async е безопасна стойност по подразбиране — вижте сравнението по-горе.",
+    "rtssMissing": "RTSS не е инсталиран. Той задвижва автоматичния ограничител NVIDIA Reflex на виртуални екрани — инсталирайте го или задайте пътя по-долу, за да може Vibepollo да приложи Reflex. Стриймингът работи и без него, просто без лимит на кадрите.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Автоматично ограничаване на виртуалното генериране на кадри",
-    "autoVirtualFramegenHint": "Когато WGC поток на виртуален дисплей използва генериране на кадри, Vibepollo стартира дисплея с 4x опресняване и прилага съответстващ лимит на FPS за темпо."
+    "noticeTitle": "Плавно темпо на кадрите",
+    "noticeCopy": "Vibepollo прилага избрания от вас ограничител при стартиране на потока и възстановява настройките на драйвера, когато потокът приключи. RTSS осигурява най-стабилното темпо на физически екрани; ограничителят на NVIDIA Control Panel е резервен вариант.",
+    "autoVirtualFramegenLabel": "Автоматично ограничаване на виртуалните екрани",
+    "autoVirtualFramegenHint": "При стрийминг към виртуален екран Vibepollo стартира дисплея с 4× заявената честота на опресняване и прилага съответстващ лимит на кадрите — NVIDIA Reflex, когато е наличен — за плавно темпо с ниска латентност. Изключете това, за да оставите ограничителя изцяло ръчен.",
+    "syncLimiterHintVirtual": "На виртуални екрани Vibepollo прилага NVIDIA Reflex автоматично за темпо с най-ниска латентност, така че тази настройка засяга само потоците към физически екрани.",
+    "noticeTitleVirtual": "NVIDIA Reflex се прилага автоматично",
+    "noticeCopyVirtual": "Стриймвате към виртуален екран, така че Vibepollo автоматично включва ограничителя на кадри, стартира дисплея с 4× заявената честота на опресняване и прилага NVIDIA Reflex (когато RTSS е инсталиран) за плавно темпо с ниска латентност. Не е необходима ръчна настройка."
   },
   "changelog": {
     "nav": "Changelog",

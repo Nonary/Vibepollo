@@ -207,8 +207,8 @@
       "health_rtss_install": "Kare üretimi etkinleştirildiğinde mikro takılmaları önlemek için RTSS'i kurun.",
       "health_rtss_endpoint_error": "RTSS durum uç noktası bir hata döndürdü.",
       "health_rtss_unreachable": "RTSS durum uç noktasına ulaşılamadı.",
-      "health_physical_rtss_latency": "Fiziksel bir ekranda DLSS/FSR kare üretimiyle RTSS kare sınırlaması, gecikmeyi 50 ms veya daha fazla artırabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
-      "health_physical_no_rtss": "RTSS kare sınırlayıcısı algılanmadı. Fiziksel bir ekranda DLSS/FSR kare üretimi mikro takılma veya titremeye neden olabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
+      "health_physical_rtss_latency": "Fiziksel ekranlar DLSS/FSR ile üretilen kareleri yakalayamaz. Fiziksel bir ekranda kare sınırlayıcısını DLSS/FSR kare üretimiyle birlikte kullanmak gecikmeyi 50 ms veya daha fazla artırabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
+      "health_physical_no_rtss": "Fiziksel ekranlar DLSS/FSR ile üretilen kareleri yakalayamaz, bu nedenle fiziksel bir ekranda DLSS/FSR kare üretimi mikro takılma veya titremeye neden olabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
       "health_physical_supported": "Bu kare üretimi modu için fiziksel ekran destekleniyor. Uygulama için en iyi çalışan yakalama yöntemini koruyun.",
       "health_display_unknown": "Ekran yenileme yetenekleri belirlenemedi.",
       "health_display_active_label": "Etkin ekran",
@@ -331,7 +331,7 @@
     "dd_refresh_rate_option_auto": "İstemci tarafından sağlanan FPS değerini kullan (varsayılan)",
     "dd_refresh_rate_option_disabled": "Yenileme hızını değiştirmeyin",
     "dd_refresh_rate_option_manual": "Manuel olarak girilen yenileme hızını kullanın",
-    "dd_refresh_rate_option_manual_desc": "Kullanılacak yenileme hızını girin",
+    "dd_refresh_rate_option_manual_desc": "⚠️ Manuel bir yenileme hızını zorunlu kılmak, ana bilgisayarı tüm akışlar için bu yenileme hızına zorlar ve aşağıdaki tüm yenileme kurallarını ve sanal ekranlara uygulanan otomatik 4× yenilemeyi geçersiz kılar.",
     "dd_resolution_option": "Çözünürlük",
     "dd_resolution_option_auto": "İstemci tarafından sağlanan çözünürlüğü kullan (varsayılan)",
     "dd_resolution_option_disabled": "Çözünürlüğü değiştirmeyin",
@@ -750,7 +750,7 @@
     "dd_display_helper_engine_auto": "Otomatik (ön sürüm yapılarında yeni motor)",
     "dd_display_helper_engine_v2": "Yeni motor (v2)",
     "dd_display_helper_engine_legacy": "Eski motor",
-    "physical_display_framegen_warning": "Fiziksel ekranlar DLSS/FSR ile üretilen kareleri yakalayamaz. Fiziksel bir ekranda RTSS kare sınırlayıcısıyla DLSS/FSR kare üretimi kullanırsanız gecikme 50 ms veya daha fazla artabilir. Uygun kare hızlandırması olmadan mikro takılma veya titreme oluşabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
+    "physical_display_framegen_warning": "Fiziksel ekranlar DLSS/FSR ile üretilen kareleri yakalayamaz. Fiziksel bir ekranda kare sınırlayıcısını DLSS/FSR kare üretimiyle birlikte kullanırsanız gecikme 50 ms veya daha fazla artabilir ve uygun kare hızlandırması olmadan mikro takılma veya titreme oluşabilir. Düşük gecikmeli, akıcı yakalama için sanal ekran kullanın.",
     "vulkan_hdr_layer": "Sanal ekranlar için Vulkan HDR katmanı",
     "vulkan_hdr_layer_desc": "Sanal ekranlarda HDR yüzey biçimlerini gösteren sistem genelinde bir Vulkan katmanı kaydeder. Ekran sürücüsü kurulduktan sonra Vulkan oyunları veya uygulamaları erişim ihlaliyle çökerse bunu devre dışı bırakın.",
     "frame_limiter_auto_virtual_framegen": "Sanal kare üretimini otomatik sınırla",
@@ -1602,11 +1602,11 @@
     "sync_limiter_back_disadvantages": "Slightly higher latency; not as low as Reflex or Async",
     "sync_limiter_back_use": "Displays or games that behave better with vsync-style even pacing",
     "sync_limiter_reflex_short": "NVIDIA Reflex",
-    "sync_limiter_reflex_latency": "Variable; depends on driver and game",
-    "sync_limiter_reflex_stutter": "Often unreliable; may introduce microstutter if the game is not optimized",
-    "sync_limiter_reflex_advantages": "Can reduce latency in Reflex-optimized titles; integrates with DLSS 3 Frame Generation",
-    "sync_limiter_reflex_disadvantages": "Requires explicit game support; inconsistent behavior; microstutter issues are common",
-    "sync_limiter_reflex_use": "Only worth testing when Reflex is properly supported and tuned",
+    "sync_limiter_reflex_latency": "Uygulandığında en düşük gecikme",
+    "sync_limiter_reflex_stutter": "Sanal ekranlarda akıcı; fiziksel ekranlarda oyuna ve sürücüye bağlı",
+    "sync_limiter_reflex_advantages": "En düşük giriş gecikmesi; sanal ekranlarda otomatik olarak uygulanır; DLSS Frame Generation ile entegre olur",
+    "sync_limiter_reflex_disadvantages": "RTSS'in kurulu olmasını gerektirir; fiziksel ekranlarda sonuçlar oyuna ve sürücüye göre değişir",
+    "sync_limiter_reflex_use": "Sanal ekranlar için varsayılan; fiziksel ekranlarda isteğe bağlı",
     "recommend_title": "RTSS recommended",
     "recommend_copy": "RTSS delivers the smoothest streaming experience. Install it if missing; NVIDIA's frame limiter is not recommended because it cannot guarantee perfect frame pacing.",
     "status_bootstrap": "RTSS detected; Vibepollo will refresh RTSS configuration on the next stream",
@@ -1627,7 +1627,7 @@
     "provider": {
       "auto": "Auto (prefer RTSS)",
       "nvcp": "NVIDIA Control Panel (not recommended)",
-      "rtss": "RTSS (recommended)",
+      "rtss": "RTSS",
       "none": "None"
     },
     "syncLimiter": {
@@ -1645,8 +1645,8 @@
     "rtssPathPlaceholder": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
-    "syncLimiterHint": "Optional: adjust RTSS SyncLimiter when Vibepollo uses RTSS to limit framerate.",
-    "rtssMissing": "RTSS was not detected. Install RTSS or adjust the install path to use it as a limiter.",
+    "syncLimiterHint": "İsteğe bağlı: fiziksel ekran akışları için kullanılan RTSS SyncLimiter modunu seçin. Async güvenli bir varsayılandır — yukarıdaki karşılaştırmaya bakın.",
+    "rtssMissing": "RTSS kurulu değil. Sanal ekranlarda otomatik NVIDIA Reflex sınırlayıcısını çalıştırır — Vibepollo'ın Reflex'i uygulayabilmesi için onu kurun veya aşağıdaki yolu ayarlayın. Akış onsuz da çalışır, ancak kare sınırı olmadan.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
@@ -1668,10 +1668,13 @@
     "actions": {
       "refresh": "Refresh"
     },
-    "noticeTitle": "RTSS recommended",
-    "noticeCopy": "RTSS offers the most stable frame pacing. Vibepollo will use it automatically when available; NVIDIA's limiter is not recommended because it cannot guarantee perfect frame pacing.",
-    "autoVirtualFramegenLabel": "Sanal kare üretimini otomatik sınırla",
-    "autoVirtualFramegenHint": "Sanal ekran WGC akışı kare üretimi kullandığında Vibepollo, ekranı 4x yenilemede çalıştırır ve hızlandırma için eşleşen bir FPS sınırı uygular."
+    "noticeTitle": "Akıcı kare hızlandırma",
+    "noticeCopy": "Vibepollo, seçtiğiniz sınırlayıcıyı akış başlangıcında uygular ve akış bittiğinde sürücü ayarlarınızı geri yükler. RTSS, fiziksel ekranlarda en tutarlı hızlandırmayı sağlar; NVIDIA Control Panel sınırlayıcısı bir yedektir.",
+    "autoVirtualFramegenLabel": "Sanal ekranları otomatik sınırla",
+    "autoVirtualFramegenHint": "Bir sanal ekrana akış yaparken Vibepollo, ekranı talep edilen yenileme hızının 4× katında çalıştırır ve akıcı, düşük gecikmeli hızlandırma için eşleşen bir kare sınırı — mümkün olduğunda NVIDIA Reflex — uygular. Sınırlayıcıyı tamamen manuel bırakmak için bunu kapatın.",
+    "syncLimiterHintVirtual": "Sanal ekranlarda Vibepollo, en düşük gecikmeli hızlandırma için NVIDIA Reflex'i otomatik olarak uygular; bu nedenle bu ayar yalnızca fiziksel ekran akışlarını etkiler.",
+    "noticeTitleVirtual": "NVIDIA Reflex otomatik olarak uygulanır",
+    "noticeCopyVirtual": "Bir sanal ekrana akış yapıyorsunuz; bu nedenle Vibepollo, kare sınırlayıcısını otomatik olarak etkinleştirir, ekranı talep edilen yenileme hızının 4× katında çalıştırır ve akıcı, düşük gecikmeli hızlandırma için (RTSS kurulu olduğunda) NVIDIA Reflex'i uygular. Manuel kurulum gerekmez."
   },
   "changelog": {
     "nav": "Changelog",
