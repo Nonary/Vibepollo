@@ -546,11 +546,27 @@ namespace platf {
     virtual ~mic_t() = default;
   };
 
+  struct capture_snapshot_t {
+    std::wstring console_id;
+    std::wstring comms_id;
+    std::wstring multimedia_id;
+  };
+
   class audio_control_t {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
+
+    virtual capture_snapshot_t snapshot_capture_defaults() { return {}; }
+
+    virtual void switch_capture_to(const std::string &device_name) {}
+
+    virtual void restore_capture_from(const capture_snapshot_t &snapshot) {}
+
+    virtual std::string get_current_default_capture_name() { return {}; }
+
+    virtual void reset_default_capture_to_first_real() {}
 
     /**
      * @brief Check if the audio sink is available in the system.
@@ -562,6 +578,25 @@ namespace platf {
     virtual std::optional<sink_t> sink_info() = 0;
 
     /**
+     * @brief Initialize the Steam Streaming Microphone redirect backend.
+     * @return 0 on success, -1 if unavailable (Steam not running or driver absent).
+     */
+    virtual int init_mic_redirect_device() { return -1; }
+
+    /**
+     * @brief Release the Steam Streaming Microphone redirect backend.
+     */
+    virtual void release_mic_redirect_device() {}
+
+    /**
+     * @brief Write pre-decoded mono float PCM to the active mic redirect backend.
+     * @param samples Pointer to mono float32 samples.
+     * @param count   Number of frames.
+     * @return 0 on success, -1 on unrecoverable render error.
+     */
+    virtual int write_mic_pcm(const float * /*samples*/, std::uint32_t /*count*/) { return -1; }
+
+    /**
      * @brief Resets the default audio device away from virtual streaming speakers.
      * Implementations may continue trying in the background to restore the
      * preferred device after moving the default away from virtual speakers.
@@ -571,6 +606,15 @@ namespace platf {
      *        device is currently present.
      */
     virtual void reset_default_device(const std::string &preferred_device = {}) {}
+
+    /**
+     * @brief Render-side restore guard (mirror of the capture-side guard).
+     * If the default render device is one of our virtual sinks (Steam Streaming
+     * Speakers / Steam Streaming Microphone), restore the saved prior default
+     * from the state file, falling back to resetting away from the virtual sink.
+     * @param wait_for_device Whether the fallback reset may wait for a device to appear.
+     */
+    virtual void restore_default_render_if_virtual(bool /*wait_for_device*/) {}
 
     virtual ~audio_control_t() = default;
   };

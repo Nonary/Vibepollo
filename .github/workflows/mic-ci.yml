@@ -1,0 +1,22 @@
+name: mic-ci (windows only)
+
+# Fast Windows-only build for the feat/mic port. Manual dispatch.
+# Builds UNSIGNED (no SignPath secrets on the fork) and uploads the installer artifact.
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  windows:
+    name: Windows mic build
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      release_commit: ${{ github.sha }}
+      release_version: 0.0.0-mic
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: vibepollo
+      require_signpath_signing: false
+      publish_symbols: false
+    secrets: inherit
