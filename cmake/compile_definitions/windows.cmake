@@ -214,6 +214,10 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/mic_write.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/mic_write.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vibepollo_vmic.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vibepollo_vmic.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.h"
         ${SUNSHINE_WINDOWS_VDISPLAY_SOURCES}
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.h"
