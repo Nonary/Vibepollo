@@ -240,7 +240,7 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
 
   expect_contains(patch, "<Property Id=\"INSTALL_SUDOVDA\" Value=\"1\" Secure=\"yes\"/>");
-  expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Value=\"0\" Secure=\"yes\"/>");
+  expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Secure=\"yes\"/>");
   expect_contains(
     patch,
     "<Custom Action=\"SetResetAcls\" After=\"InstallFiles\">NOT REMOVE</Custom>"
@@ -255,19 +255,19 @@ TEST(SunshineVirtualDisplayPackaging, WixSchedulesDriverInstallAfterFilesBeforeM
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetInstallVirtualDisplayDriver\" After=\"InstallSudovda\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
+    "<Custom Action=\"SetInstallVirtualDisplayDriver\" After=\"InstallSudovda\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; \"0\"</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"InstallVirtualDisplayDriver\" After=\"SetInstallVirtualDisplayDriver\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
+    "<Custom Action=\"InstallVirtualDisplayDriver\" After=\"SetInstallVirtualDisplayDriver\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; \"0\"</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"SetRegisterVulkanHdrLayer\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
+    "<Custom Action=\"SetRegisterVulkanHdrLayer\" After=\"InstallVirtualDisplayDriver\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; \"0\"</Custom>"
   );
   expect_contains(
     patch,
-    "<Custom Action=\"RegisterVulkanHdrLayer\" After=\"SetRegisterVulkanHdrLayer\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"</Custom>"
+    "<Custom Action=\"RegisterVulkanHdrLayer\" After=\"SetRegisterVulkanHdrLayer\">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; \"0\"</Custom>"
   );
   expect_contains(
     patch,
@@ -441,30 +441,31 @@ TEST(SunshineVirtualDisplayPackaging, WindowsCiCanSelfSignDriverWithoutPersisten
   );
 }
 
-TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSunshineDriverOptIn) {
+TEST(SunshineVirtualDisplayPackaging, BootstrapperOffersSudoVdaRollback) {
   const auto bootstrapper = read_source_file("packaging/windows/bootstrapper/VibeshineInstaller.cs");
 
-  expect_contains(bootstrapper, "InternalInstallVirtualDisplay = false;");
-  expect_contains(bootstrapper, "IsChecked = false,");
-  expect_contains(bootstrapper, "Install experimental Vibepollo Display Driver");
-  expect_contains(bootstrapper, "may improve performance and smoothness for games on virtual displays");
-  expect_contains(bootstrapper, "you can easily switch back in Options if you have issues");
+  expect_contains(bootstrapper, "InternalInstallVirtualDisplay = true;");
+  expect_contains(bootstrapper, "Content = \"Use SudoVDA\"");
+  expect_contains(bootstrapper, "IsChecked = _useSudoVdaSelectedInConfig");
+  expect_contains(bootstrapper, "Vibepollo Display Driver is installed and selected by default");
+  expect_contains(bootstrapper, "Enable this option to use SudoVDA instead.");
   expect_contains(bootstrapper, "contentStack.Children.Add(tipsSection);");
-  expect_contains(bootstrapper, "contentStack.Children.Add(driverSection);");
+  expect_contains(bootstrapper, "contentStack.Children.Add(_installVirtualDisplaySection);");
   expect_contains(bootstrapper, "driverStack.Children.Add(_installVirtualDisplayCheckBox);");
   EXPECT_EQ(bootstrapper.find("tipsStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
   EXPECT_EQ(bootstrapper.find("contentStack.Children.Add(_installVirtualDisplayCheckBox);"), std::string::npos);
   EXPECT_LT(
     bootstrapper.find("contentStack.Children.Add(tipsSection);"),
-    bootstrapper.find("contentStack.Children.Add(driverSection);")
+    bootstrapper.find("contentStack.Children.Add(_installVirtualDisplaySection);")
   );
   EXPECT_LT(
-    bootstrapper.find("contentStack.Children.Add(driverSection);"),
+    bootstrapper.find("contentStack.Children.Add(_installVirtualDisplaySection);"),
     bootstrapper.find("contentStack.Children.Add(divider);")
   );
   expect_contains(bootstrapper, "\"--internal-install-virtual-display-driver\",");
   expect_contains(bootstrapper, "installVirtualDisplayDriver ? \"1\" : \"0\",");
   expect_contains(bootstrapper, "\"INSTALL_VIRTUAL_DISPLAY_DRIVER=\" + (installVirtualDisplayDriver ? \"1\" : \"0\")");
+  expect_contains(bootstrapper, "return _installVirtualDisplayCheckBox.IsChecked != true;");
   expect_contains(bootstrapper, "CollectInstallComponentFailures(logPath, installVirtualDisplayDriver)");
   expect_contains(bootstrapper, "elevatedArgs.AddRange(arguments.ForwardedArguments);");
 }
@@ -489,6 +490,7 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperShowsVirtualDisplayChoiceOnUpg
   expect_contains(bootstrapper, "_installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
   expect_contains(bootstrapper, "_installPathGrid.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;");
   expect_contains(bootstrapper, "_installVirtualDisplayCheckBox.IsEnabled = allowInstallInputs && _showInstallVirtualDisplayOption;");
+  expect_contains(bootstrapper, "_installVirtualDisplaySection.Visibility = _showInstallVirtualDisplayOption ? Visibility.Visible : Visibility.Collapsed;");
 }
 
 TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriverFlag) {
@@ -503,28 +505,33 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(migration, "[string]$InstallVirtualDisplayDriver");
   expect_contains(migration, "Update-SunshineVirtualDriverPreference");
   expect_contains(migration, "dd_use_sunshine_virtual_display_driver");
-  expect_contains(migration, "if ($null -eq $enabled -or -not $enabled)");
+  expect_contains(migration, "if ($null -eq $enabled)");
+  expect_contains(migration, "-Value $(if ($enabled) { 'enabled' } else { 'disabled' })");
   expect_contains(migration, "$isLegacySplitEncodeProperty = $property.Name -eq 'nvenc_force_split_encode'");
   expect_contains(migration, "$targetName -eq 'nvenc_split_encode' -and -not $isLegacySplitEncodeProperty");
   expect_contains(migration, "Updated Vibepollo Display Driver preference from installer selection.");
   expect_contains(header, "use_sunshine_virtual_display_driver");
+  expect_contains(config, "true,  // use_sunshine_virtual_display_driver");
   expect_contains(config, "bool_f(vars, \"dd_use_sunshine_virtual_display_driver\", video.dd.use_sunshine_virtual_display_driver);");
   expect_contains(config, "\"dd_use_sunshine_virtual_display_driver\"");
-  expect_contains(webStore, "dd_use_sunshine_virtual_display_driver: false");
+  expect_contains(webStore, "dd_use_sunshine_virtual_display_driver: true");
   expect_contains(webStore, "'dd_use_sunshine_virtual_display_driver'");
-  expect_contains(audioVideo, "sunshineVirtualDriverEnabled");
-  expect_contains(audioVideo, "config.dd_use_sunshine_virtual_display_driver");
+  expect_contains(audioVideo, "useSudoVdaDriver");
+  expect_contains(audioVideo, "config.value?.dd_use_sunshine_virtual_display_driver === false");
+  expect_contains(audioVideo, "store.updateOption('dd_use_sunshine_virtual_display_driver', !useSudoVda)");
+  expect_contains(audioVideo, "return 'per_client';");
   expect_contains(audioVideo, "config.dd_use_sunshine_virtual_display_driver_desc");
   expect_contains(audioVideo, "currentDriverStatusMessage");
   expect_contains(audioVideo, "virtual_display_status_sudovda_ready");
   expect_contains(audioVideo, "virtual_display_status_vibeshine_ready");
-  expect_contains(locale, "\"dd_use_sunshine_virtual_display_driver\": \"Vibepollo Display Driver\"");
-  expect_contains(locale, "may improve performance and smoothness for games on virtual displays");
+  expect_contains(locale, "\"dd_use_sunshine_virtual_display_driver\": \"Use SudoVDA\"");
+  expect_contains(locale, "Switch back to SudoVDA for virtual displays");
   expect_contains(locale, "\"virtual_display_status_sudovda_ready\": \"SudoVDA driver ready\"");
   expect_contains(locale, "\"virtual_display_status_vibeshine_ready\": \"Vibepollo driver ready\"");
   expect_contains(docs, "### dd_use_sunshine_virtual_display_driver");
-  expect_contains(docs, "experimental Vibepollo Display Driver");
-  EXPECT_LT(audioVideo.find("v-model:value=\"sunshineVirtualDriverEnabled\""), audioVideo.find("<FrameLimiterStep"));
+  expect_contains(docs, "Disable this to switch back to the bundled SudoVDA rollback driver.");
+  expect_contains(docs, "<td colspan=\"2\">@code{}true@endcode</td>");
+  EXPECT_NE(audioVideo.find("v-model:checked=\"useSudoVdaDriver\""), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, BootstrapperCliPreservesSunshineDriverSelection) {
@@ -532,8 +539,8 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperCliPreservesSunshineDriverSele
 
   expect_contains(bootstrapper, "PreserveCliVirtualDisplayDriverSelection(cliArgs);");
   expect_contains(bootstrapper, "HasProperty(cliArgs, \"INSTALL_VIRTUAL_DISPLAY_DRIVER\")");
-  expect_contains(bootstrapper, "CliInstallUsesSunshineVirtualDisplayDriver(cliArgs)");
-  expect_contains(bootstrapper, "cliArgs.Add(\"INSTALL_VIRTUAL_DISPLAY_DRIVER=1\");");
+  expect_contains(bootstrapper, "TryReadCliSunshineVirtualDisplayDriverSelection(cliArgs, out useSunshineDriver)");
+  expect_contains(bootstrapper, "cliArgs.Add(\"INSTALL_VIRTUAL_DISPLAY_DRIVER=\" + (useSunshineDriver ? \"1\" : \"0\"));");
   expect_contains(bootstrapper, "GetPropertyValue(cliArgs, \"INSTALL_ROOT\")");
   expect_contains(bootstrapper, "dd_use_sunshine_virtual_display_driver");
 }
@@ -555,7 +562,7 @@ TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
   expect_contains(dispatcher, "VDISPLAY_SUDOVDA::createVirtualDisplay");
   expect_contains(sunshineDriver, "namespace VDISPLAY_SUNSHINE");
   expect_contains(sudoDriver, "namespace VDISPLAY_SUDOVDA");
-  EXPECT_EQ(audioVideo.find(":disabled=\"platform === 'windows' && !sunshineVirtualDriverEnabled\""), std::string::npos);
+  EXPECT_EQ(audioVideo.find(":disabled=\"platform === 'windows' && useSudoVdaDriver\""), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, RuntimeAvailabilityChecksDoNotRepairOrReinstallMissingDrivers) {
@@ -716,7 +723,7 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperPassesVirtualDisplayRemovalCho
   expect_contains(bootstrapper, "\"REMOVEVIRTUALDISPLAYDRIVER=\" + (removeVirtualDisplayDriver ? \"1\" : \"0\")");
 }
 
-TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDriverOptIn) {
+TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaRollbackAndSunshineDriverDefault) {
   const auto cmake = read_source_file("cmake/packaging/windows.cmake");
   const auto actions = read_source_file("packaging/windows/wix/custom_actions.wxs");
   const auto patch = read_source_file("packaging/windows/wix/patch_custom_actions.wxs");
@@ -731,9 +738,9 @@ TEST(SunshineVirtualDisplayPackaging, InstallerKeepsSudoVdaDefaultAndSunshineDri
   expect_contains(actions, "drivers\\sudovda\\install.ps1");
   expect_contains(actions, "drivers\\sunshine\\install.ps1");
   expect_contains(patch, "<Property Id=\"INSTALL_SUDOVDA\" Value=\"1\" Secure=\"yes\"/>");
-  expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Value=\"0\" Secure=\"yes\"/>");
+  expect_contains(patch, "<Property Id=\"INSTALL_VIRTUAL_DISPLAY_DRIVER\" Secure=\"yes\"/>");
   expect_contains(patch, "INSTALL_SUDOVDA = \"1\"");
-  expect_contains(patch, "INSTALL_VIRTUAL_DISPLAY_DRIVER = \"1\"");
+  expect_contains(patch, "INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; \"0\"");
   EXPECT_EQ(cmake.find("drivers/vdd"), std::string::npos);
   EXPECT_EQ(actions.find("drivers\\vdd"), std::string::npos);
   EXPECT_EQ(patch.find("drivers\\vdd"), std::string::npos);

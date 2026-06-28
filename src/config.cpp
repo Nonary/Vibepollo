@@ -850,7 +850,7 @@ namespace config {
 #else
       0,  // snapshot_restore_hotkey_modifiers
 #endif
-      false,  // use_sunshine_virtual_display_driver
+      true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured

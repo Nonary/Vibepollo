@@ -90,13 +90,13 @@ const displayAutomationEnabled = computed<boolean>({
   },
 });
 
-const sunshineVirtualDriverEnabled = computed<boolean>({
+const useSudoVdaDriver = computed<boolean>({
   get() {
-    return config.value?.dd_use_sunshine_virtual_display_driver === true;
+    return config.value?.dd_use_sunshine_virtual_display_driver === false;
   },
-  set(enabled) {
+  set(useSudoVda) {
     if (!config.value) return;
-    store.updateOption('dd_use_sunshine_virtual_display_driver', enabled);
+    store.updateOption('dd_use_sunshine_virtual_display_driver', !useSudoVda);
   },
 });
 const vulkanHdrLayerEnabled = computed<boolean>({
@@ -109,15 +109,15 @@ const vulkanHdrLayerEnabled = computed<boolean>({
   },
 });
 const selectedVirtualDisplayDriverName = computed(() =>
-  sunshineVirtualDriverEnabled.value
-    ? t('config.virtual_display_driver_vibeshine_name')
-    : t('config.virtual_display_driver_sudovda_name'),
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_driver_sudovda_name')
+    : t('config.virtual_display_driver_vibeshine_name'),
 );
 const currentDriverStatusMessage = computed(() => {
   if (!vdisplay.value) {
-    return sunshineVirtualDriverEnabled.value
-      ? t('config.virtual_display_status_vibeshine_ready')
-      : t('config.virtual_display_status_sudovda_ready');
+    return useSudoVdaDriver.value
+      ? t('config.virtual_display_status_sudovda_ready')
+      : t('config.virtual_display_status_vibeshine_ready');
   }
 
   return t('config.virtual_display_status_driver_state', {
@@ -126,9 +126,9 @@ const currentDriverStatusMessage = computed(() => {
   });
 });
 const currentDriverStatusHint = computed(() =>
-  sunshineVirtualDriverEnabled.value
-    ? t('config.virtual_display_status_hint_vibeshine')
-    : t('config.virtual_display_status_hint_sudovda'),
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_status_hint_sudovda')
+    : t('config.virtual_display_status_hint_vibeshine'),
 );
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
@@ -139,7 +139,7 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
         return mode;
       }
     }
-    return 'disabled';
+    return 'per_client';
   },
   set(mode) {
     if (!config.value) return;
@@ -423,7 +423,7 @@ function selectVirtualDisplayLayout(v: unknown) {
             <PlatformLayout>
               <template #windows>
                 <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
-                  <n-checkbox v-model:checked="sunshineVirtualDriverEnabled">
+                  <n-checkbox v-model:checked="useSudoVdaDriver">
                     <div class="flex flex-col">
                       <span class="text-sm font-medium">
                         {{ $t('config.dd_use_sunshine_virtual_display_driver') }}

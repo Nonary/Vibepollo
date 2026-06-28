@@ -179,7 +179,7 @@
                  Property="InstallSudovda"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
 
-    <!-- The experimental Sunshine virtual display driver is opt-in. -->
+    <!-- The Sunshine virtual display driver is installed by default unless explicitly opted out. -->
     <CustomAction Id="SetInstallVirtualDisplayDriver"
                  Property="InstallVirtualDisplayDriver"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort"/>

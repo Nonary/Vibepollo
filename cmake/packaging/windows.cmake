@@ -102,7 +102,7 @@ install(FILES ${SUDOVDA_DRIVER_FILES}
         DESTINATION "drivers/sudovda"
         COMPONENT sudovda)
 
-# Drivers (experimental Vibepollo Display Driver)
+# Drivers (Vibepollo Display Driver)
 set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sunshine")
 set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT "${CMAKE_SOURCE_DIR}/packaging/windows/virtual_display_driver/refresh_driver_package.ps1")
 set(SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR "" CACHE PATH "GitHub Actions only: path to a prebuilt libvirtualdisplay package root with driver/ and tools/")
@@ -271,12 +271,12 @@ set(CPACK_COMPONENT_ASSETS_REQUIRED true)
 
 # drivers
 set(CPACK_COMPONENT_SUDOVDA_DISPLAY_NAME "SudoVDA")
-set(CPACK_COMPONENT_SUDOVDA_DESCRIPTION "Default virtual display driver.")
+set(CPACK_COMPONENT_SUDOVDA_DESCRIPTION "Bundled rollback virtual display driver.")
 set(CPACK_COMPONENT_SUDOVDA_GROUP "Drivers")
 set(CPACK_COMPONENT_SUDOVDA_REQUIRED true)
 
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DISPLAY_NAME "Vibepollo Display Driver")
-set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DESCRIPTION "Experimental opt-in virtual display driver.")
+set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DESCRIPTION "Default virtual display driver.")
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_GROUP "Drivers")
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_REQUIRED true)
 

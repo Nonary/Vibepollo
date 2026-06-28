@@ -148,7 +148,7 @@ const defaultGroups = [
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
-      dd_use_sunshine_virtual_display_driver: false,
+      dd_use_sunshine_virtual_display_driver: true,
       vulkan_hdr_layer: true,
       dd_activate_virtual_display: false,
       dd_virtual_display_permanent_count: 0,

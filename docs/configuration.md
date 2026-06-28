@@ -1073,7 +1073,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a Sudovda virtual display instead of relying on your physical monitor.
+            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a virtual display instead of relying on your physical monitor.
         </td>
     </tr>
     <tr>
@@ -1577,13 +1577,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            When enabled, Vibepollo uses the experimental Vibepollo Display Driver for virtual display streams instead of legacy virtual display driver integrations such as SudoVDA.
+            When enabled, Vibepollo uses the Vibepollo Display Driver for virtual display streams. Disable this to switch back to the bundled SudoVDA rollback driver.
             @note{Applies to Windows only.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}false@endcode</td>
+        <td colspan="2">@code{}true@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
