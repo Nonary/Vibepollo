@@ -948,7 +948,7 @@ namespace platf::audio {
     }
 
     void switch_capture_to(const std::string &device_name) override {
-      auto target_id = find_capture_device_id(from_utf8(device_name));
+      auto target_id = find_capture_device_id(utf_utils::from_utf8(device_name));
       if (target_id.empty()) {
         BOOST_LOG(warning) << "[mic] switch_capture_to: device not found: " << device_name;
         return;
@@ -984,7 +984,7 @@ namespace platf::audio {
       if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
       prop_var_t pv;
       if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
-        return to_utf8(pv.prop.pwszVal);
+        return utf_utils::to_utf8(pv.prop.pwszVal);
       return {};
     }
 
@@ -1000,7 +1000,7 @@ namespace platf::audio {
         if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
         prop_var_t pv;
         if (FAILED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) || pv.prop.vt != VT_LPWSTR) continue;
-        std::string name = to_utf8(pv.prop.pwszVal);
+        std::string name = utf_utils::to_utf8(pv.prop.pwszVal);
         if (name.find("CABLE") != std::string::npos) continue;
         wstring_t id;
         if (FAILED(dev->GetId(&id))) continue;
@@ -1439,7 +1439,7 @@ namespace platf::audio {
       if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
       prop_var_t pv;
       if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
-        return to_utf8(pv.prop.pwszVal);
+        return utf_utils::to_utf8(pv.prop.pwszVal);
       return {};
     }
 
