@@ -3038,14 +3038,7 @@ namespace stream {
         }
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
         if (is_paused) {
-          // Placebo apps (Desktop, Playnite-managed) are not real streaming sessions.
-          // proc.running() always returns true for them, so is_paused is always true on
-          // disconnect — but showing "Streaming paused" for Desktop is wrong. Reset to idle.
-          if (proc::proc.is_placebo_app()) {
-            system_tray::update_tray_idle();
-          } else {
-            system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-          }
+          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
         } else {
           system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
         }
