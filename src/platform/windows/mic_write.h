@@ -18,6 +18,11 @@
 #include <vector>
 #include <cstdint>
 
+// WinSock2.h must precede any windows.h pulled in by the WASAPI headers below,
+// otherwise the toolchain emits "#warning Please include winsock2.h before
+// windows.h", which is fatal under -Werror.
+#include <WinSock2.h>
+
 #include <mmdeviceapi.h>
 #include <Audioclient.h>
 
