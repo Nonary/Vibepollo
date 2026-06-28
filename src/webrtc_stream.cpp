@@ -451,8 +451,10 @@ namespace webrtc_stream {
       }
       const bool framegen_refresh_active =
         session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
+      // Virtual displays always run at 4x the requested refresh (or the highest the driver
+      // can provide) so frame pacing stays smooth; frame generation reuses the same target.
       const int refresh_multiplier = std::max(
-        config::video.dd.wa.virtual_double_refresh ? 2 : 1,
+        4,
         framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1
       );
       if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {

@@ -119,6 +119,35 @@ namespace {
     EXPECT_EQ(policy.refresh_multiplier, 1);
   }
 
+  TEST(FramegenPolicy, PlainVirtualDisplayAutoEnablesLimiterWithoutFrameGeneration) {
+    // A virtual screen with no frame generation still auto-enables the limiter (Reflex on
+    // NVIDIA) because virtual displays always run at a multiplied refresh. The 4x refresh
+    // itself is enforced at virtual-display creation, not in the policy, so the policy-level
+    // multiplier/refresh stay neutral here.
+    const auto policy = make_policy("lossless-scaling", true, "", false);
+
+    EXPECT_FALSE(policy.frame_generation_enabled);
+    EXPECT_TRUE(policy.uses_virtual_display);
+    EXPECT_TRUE(policy.auto_virtual_framegen_limiter);
+    EXPECT_FALSE(policy.framegen_refresh_rate.has_value());
+    EXPECT_EQ(policy.refresh_multiplier, 1);
+  }
+
+  TEST(FramegenPolicy, PlainVirtualDisplayLimiterRespectsOptOut) {
+    const auto policy = make_policy("lossless-scaling", true, "", false, false);
+
+    EXPECT_FALSE(policy.frame_generation_enabled);
+    EXPECT_TRUE(policy.uses_virtual_display);
+    EXPECT_FALSE(policy.auto_virtual_framegen_limiter);
+  }
+
+  TEST(FramegenPolicy, PhysicalDisplayWithoutFrameGenerationDoesNotAutoEnableLimiter) {
+    const auto policy = make_policy("lossless-scaling", false, "", false);
+
+    EXPECT_FALSE(policy.uses_virtual_display);
+    EXPECT_FALSE(policy.auto_virtual_framegen_limiter);
+  }
+
   TEST(FramegenPolicy, LegacyCaptureFixFlagsDoNotEnableFrameGeneration) {
     const auto policy = make_policy_with_legacy_capture_fix(false, false);
 

@@ -507,7 +507,7 @@ namespace VDISPLAY_SUNSHINE {
     uint32_t apply_refresh_overrides(uint32_t fps_millihz, uint32_t base_fps_millihz = 0u, int framegen_refresh_multiplier = 1) {
       constexpr uint64_t scale = 1000ull;
       using dd_t = config::video_t::dd_t;
-      // Manual refresh rate override takes priority over everything, including doubled refresh rates.
+      // Manual refresh rate override takes priority over everything, including the multiplied virtual refresh.
       if (config::video.dd.refresh_rate_option == dd_t::refresh_rate_option_e::manual) {
         if (auto manual = parse_refresh_hz(config::video.dd.manual_refresh_rate)) {
           const uint64_t forced = static_cast<uint64_t>(*manual) * scale;
@@ -516,7 +516,9 @@ namespace VDISPLAY_SUNSHINE {
           );
         }
       }
-      const int refresh_multiplier = std::max(config::video.dd.wa.virtual_double_refresh ? 2 : 1, framegen_refresh_multiplier);
+      // Virtual displays always target 4x the requested refresh (or the highest the driver can
+      // provide) for smooth pacing; frame generation reuses the same multiplier.
+      const int refresh_multiplier = std::max(4, framegen_refresh_multiplier);
       if (refresh_multiplier > 1 && base_fps_millihz > 0) {
         const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
         const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));

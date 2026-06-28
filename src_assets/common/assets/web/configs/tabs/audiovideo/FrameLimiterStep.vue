@@ -13,6 +13,33 @@ const store = useConfigStore();
 const config = store.config;
 const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
 
+// Mirror the virtual-display detection used in DisplayDeviceOptions so the limiter copy can
+// explain the automatic behavior (4x refresh + auto limiter + NVIDIA Reflex) that kicks in
+// whenever a virtual screen is in use.
+const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
+const usingVirtualDisplay = computed(() => {
+  const mode = config.virtual_display_mode;
+  if (mode === 'per_client' || mode === 'shared') {
+    return true;
+  }
+  if (mode === 'disabled') {
+    return false;
+  }
+  return config.output_name === VIRTUAL_DISPLAY_SELECTION;
+});
+
+const noticeTitle = computed(() =>
+  usingVirtualDisplay.value ? t('frameLimiter.noticeTitleVirtual') : t('frameLimiter.noticeTitle'),
+);
+const noticeCopy = computed(() =>
+  usingVirtualDisplay.value ? t('frameLimiter.noticeCopyVirtual') : t('frameLimiter.noticeCopy'),
+);
+const syncLimiterHint = computed(() =>
+  usingVirtualDisplay.value
+    ? t('frameLimiter.syncLimiterHintVirtual')
+    : t('frameLimiter.syncLimiterHint'),
+);
+
 watch(
   () => config.dd_wa_dummy_plug_hdr10,
   (value) => {
@@ -257,8 +284,8 @@ onMounted(() => {
     </legend>
 
     <div class="mb-4 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-[12px]">
-      <div class="font-medium">{{ t('frameLimiter.noticeTitle') }}</div>
-      <div class="mt-1 opacity-80">{{ t('frameLimiter.noticeCopy') }}</div>
+      <div class="font-medium">{{ noticeTitle }}</div>
+      <div class="mt-1 opacity-80">{{ noticeCopy }}</div>
     </div>
 
     <div class="space-y-4">
@@ -456,7 +483,7 @@ onMounted(() => {
           setting-key="rtss_frame_limit_type"
           v-model="config.rtss_frame_limit_type"
           :label="t('frameLimiter.syncLimiterLabel')"
-          :desc="t('frameLimiter.syncLimiterHint')"
+          :desc="syncLimiterHint"
           :options="syncLimiterOptions"
         />
       </div>

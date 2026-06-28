@@ -319,18 +319,19 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    const bool double_virtual_refresh =
+    // Virtual displays run at 4x the requested refresh (or the highest the driver can provide)
+    // for smooth pacing, unless the user pinned a manual refresh-rate override; frame
+    // generation reuses the same multiplier.
+    const bool quadruple_virtual_refresh =
       session_requests_virtual &&
-      effective_video_config_.dd.wa.virtual_double_refresh &&
       !display_device::refresh_rate_override_active(effective_video_config_, session_);
     const int refresh_multiplier = std::max(
-      double_virtual_refresh ? 2 : 1,
+      quadruple_virtual_refresh ? 4 : 1,
       framegen_active ? rtsp_stream::framegen_refresh_multiplier(session_) : 1
     );
     const int minimum_fps = refresh_multiplier > 1 ? rtsp_stream::saturating_refresh_fps(base_fps, refresh_multiplier) : base_fps;
     // Use the higher of display_fps (which may already be raised by framegen) or the minimum
     const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
-    BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
     BOOST_LOG(debug) << "refresh_multiplier: " << refresh_multiplier;
     BOOST_LOG(debug) << "minimum_fps: " << minimum_fps;
     BOOST_LOG(debug) << "effective_display_fps: "

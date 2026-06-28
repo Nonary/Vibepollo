@@ -902,7 +902,6 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'dd_snapshot_restore_hotkey_modifiers',
   'dd_activate_virtual_display',
   'dd_mode_remapping',
-  'dd_wa_virtual_double_refresh',
   'dd_wa_dummy_plug_hdr10',
   'max_bitrate',
   'minimum_fps_target',

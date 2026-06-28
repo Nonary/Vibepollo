@@ -1701,29 +1701,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### dd_wa_virtual_double_refresh
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            When using Vibepollo Display Driver, create and set the virtual monitor to double the target refresh rate to avoid unexplained FPS drops seen on virtual screens.<br>
-            Disable only if a specific game or virtual monitor behaves incorrectly with the doubled refresh.<br>
-            @note{Applies to Windows virtual displays only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}true@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            dd_wa_virtual_double_refresh = false
-            @endcode</td>
-    </tr>
-</table>
-
 ### dd_wa_dummy_plug_hdr10
 
 <table>
@@ -2785,7 +2762,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Automatically apply the virtual-display frame-generation stream-start policy. When enabled, virtual-display frame-generation streams using WGC run the display at 4x refresh and apply a matching FPS cap for stable pacing. Disable this only if you manage the frame cap yourself.
+            Automatically limit virtual-screen streams. When enabled, any stream to a virtual display runs the display at 4x the requested refresh (or the highest the driver supports) and applies a matching stream-start frame cap &mdash; NVIDIA Reflex on NVIDIA-only systems &mdash; for smooth, low-latency pacing. Frame-generation streams reuse the same policy. Disable this only if you manage the frame cap yourself.
         </td>
     </tr>
     <tr>

@@ -126,10 +126,20 @@ namespace framegen {
       policy.frame_generation_enabled && policy.uses_virtual_display && policy.effective_wgc_capture;
     policy.physical_framegen_capture = policy.frame_generation_enabled && !policy.uses_virtual_display;
 
+    // Any virtual display runs at a multiplied refresh (see the virtual-display creation
+    // paths, which target 4x the requested rate or the highest the driver supports) and
+    // auto-applies a matching stream-start frame cap -- NVIDIA Reflex on NVIDIA-only
+    // systems -- to keep latency low and frame pacing smooth. This is not limited to
+    // frame generation; it applies to every virtual screen unless the user opts out.
+    if (policy.uses_virtual_display) {
+      policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
+    }
+
+    // Frame generation additionally pins the virtual display refresh target to 4x so the
+    // generated frames have somewhere to land.
     if (effective_virtual_framegen) {
       policy.refresh_multiplier = 4;
       policy.framegen_refresh_rate = saturating_refresh_fps(policy.fps, policy.refresh_multiplier);
-      policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
     }
 
     return policy;
