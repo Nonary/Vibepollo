@@ -6,11 +6,16 @@ name: mic-ci (windows only)
 on:
   workflow_dispatch: {}
 
-permissions: {}
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   windows:
     name: Windows mic build
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci-windows.yml
     with:
       release_commit: ${{ github.sha }}
