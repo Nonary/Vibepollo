@@ -795,6 +795,8 @@ namespace config {
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
+      0,  // ltr_frames (native AMF; 0 = off)
+      0,  // input_queue_size (native AMF; 0 = driver default)
     },  // amd
 
     {
@@ -1643,6 +1645,18 @@ namespace config {
     bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
 
+    // Native AMF encoder (amdvce) tuning knobs.
+    int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
+    if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
+      BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
+      video.amd.amd_ltr_frames = std::clamp(video.amd.amd_ltr_frames, 0, 2);
+    }
+    int_f(vars, "amd_input_queue_size", video.amd.amd_input_queue_size);
+    if (video.amd.amd_input_queue_size < 0 || video.amd.amd_input_queue_size > 16) {
+      BOOST_LOG(warning) << "config: amd_input_queue_size must be between 0 and 16, clamping: "sv << video.amd.amd_input_queue_size;
+      video.amd.amd_input_queue_size = std::clamp(video.amd.amd_input_queue_size, 0, 16);
+    }
+
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
     int_f(vars, "vt_software", video.vt.vt_require_sw, vt::force_software_from_view);
@@ -2357,6 +2371,8 @@ namespace config {
         "amd_preanalysis",
         "amd_vbaq",
         "amd_coder",
+        "amd_ltr_frames",
+        "amd_input_queue_size",
         "vt_coder",
         "vt_software",
         "vt_realtime",

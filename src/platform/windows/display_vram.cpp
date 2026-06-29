@@ -1656,15 +1656,25 @@ namespace platf::dxgi {
         amf_cfg.rc_mode = config::video.amd.amd_rc_av1;
       }
 
-      amf_cfg.preanalysis = config::video.amd.amd_preanalysis;
       amf_cfg.vbaq = config::video.amd.amd_vbaq;
       amf_cfg.enforce_hrd = config::video.amd.amd_enforce_hrd;
       amf_cfg.h264_cabac = (config::video.amd.amd_coder != 2);  // 2 = CAVLC
 
-      // Advanced AMF knobs (pre-analysis sub-system, LTR/RFI, multi-instance
-      // encode, AV1 encoding-latency mode, input queue size, ...) are left at
-      // their safe defaults for this first cut and can be exposed as config
-      // options in a follow-up.
+      // AMF pre-analysis is deliberately NOT wired to the native encoder: enabling
+      // it (even without the PAQ/TAQ/CAQ sub-system) makes AMF buffer frames for
+      // lookahead, which stalls the low-latency single-frame encode/probe path and
+      // hangs the encoder. amd_preanalysis still applies to the FFmpeg
+      // amdvce_legacy path; wiring it here needs lookahead-aware draining first.
+
+      // Native-AMF tuning knobs.
+      amf_cfg.max_ltr_frames = config::video.amd.amd_ltr_frames;  // 0 = RFI off
+      if (config::video.amd.amd_input_queue_size > 0) {
+        amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
+      }
+
+      // Remaining advanced AMF knobs (multi-instance encode, AV1 encoding-latency
+      // mode, intra-refresh, ...) are left at their safe driver defaults and can
+      // be exposed as config in a follow-up.
 
       if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
         return false;

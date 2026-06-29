@@ -3574,6 +3574,67 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### amd_ltr_frames
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of long-term reference frames kept for Reference Frame Invalidation (RFI), which lets the
+            encoder recover from packet loss without sending a full keyframe.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `0` to disable RFI.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-2</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_ltr_frames = 1
+            @endcode</td>
+    </tr>
+</table>
+
+### amd_input_queue_size
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of frames the native AMF encoder keeps queued for input. `1` minimises latency but is the most
+            demanding path in the driver; larger values (4-16) can improve stability on some cards at the cost of
+            latency.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `0` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-16 (0 = driver default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_input_queue_size = 4
+            @endcode</td>
+    </tr>
+</table>
+
 ## VideoToolbox Encoder
 
 ### vt_coder

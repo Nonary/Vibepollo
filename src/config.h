@@ -98,6 +98,9 @@ namespace config {
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;
       int amd_coder;
+      // Native AMF encoder (amdvce) tuning knobs.
+      int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
+      int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
     } amd;
 
     struct {
