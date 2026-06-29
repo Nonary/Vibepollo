@@ -1007,6 +1007,7 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 
 function toServerPayload(f: AppForm): Record<string, any> {
   const configOverridesPayload = buildConfigOverridesPayload(f);
+  const selection = displaySelection.value;
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
