@@ -1,0 +1,148 @@
+/**
+ * @file src/amf/amf_d3d11.h
+ * @brief Declarations for AMF D3D11 encoder.
+ */
+#pragma once
+
+#include "amf_encoder.h"
+
+#include <d3d11.h>
+#include <deque>
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+#include <AMF/components/Component.h>
+#include <AMF/core/Context.h>
+#include <AMF/core/Data.h>
+#include <AMF/core/Factory.h>
+
+namespace amf {
+
+  /**
+   * @brief AMF encoder using D3D11 for texture input.
+   */
+  class amf_d3d11: public amf_encoder {
+  public:
+    explicit amf_d3d11(ID3D11Device *d3d_device);
+    ~amf_d3d11();
+
+    bool
+    create_encoder(const amf_config &config,
+      const video::config_t &client_config,
+      const video::sunshine_colorspace_t &colorspace,
+      platf::pix_fmt_e buffer_format) override;
+
+    void
+    destroy_encoder() override;
+
+    amf_encoded_frame
+    encode_frame(uint64_t frame_index, bool force_idr) override;
+
+    bool
+    invalidate_ref_frames(uint64_t first_frame, uint64_t last_frame) override;
+
+    void
+    set_bitrate(int bitrate_kbps) override;
+
+    void
+    set_hdr_metadata(const std::optional<amf_hdr_metadata> &metadata) override;
+
+    void *
+    get_input_texture() override;
+
+  private:
+    bool
+    init_amf_library();
+
+    bool
+    configure_encoder(const amf_config &config,
+      const video::config_t &client_config,
+      const video::sunshine_colorspace_t &colorspace);
+
+    AMF_SURFACE_FORMAT
+    get_amf_format(platf::pix_fmt_e buffer_format, int bit_depth);
+
+    const wchar_t *
+    get_codec_id();
+
+    bool
+    set_ltr_property(const wchar_t *name, int64_t value);
+
+    template<typename T>
+    void
+    set_codec_property(const wchar_t *h264_name, const wchar_t *hevc_name, const wchar_t *av1_name, T value);
+
+    ID3D11Device *device = nullptr;
+    ::amf::AMFFactory *factory = nullptr;
+    ::amf::AMFContextPtr context;
+    ::amf::AMFComponentPtr encoder;
+    HMODULE amf_dll = nullptr;
+
+    // Input texture that the rendering pipeline writes to
+    ID3D11Texture2D *input_texture = nullptr;
+
+    // Encoder state
+    video::config_t current_config {};
+    int video_format = 0;  // 0=H264, 1=HEVC, 2=AV1
+    AMF_SURFACE_FORMAT surface_format = AMF_SURFACE_NV12;
+    int encode_width = 0;
+    int encode_height = 0;
+    bool rfi_pending = false;
+    uint64_t last_rfi_ltr_index = 0;
+    int max_ltr_frames = 0;
+
+    // Whether the driver supports QUERY_TIMEOUT (FFmpeg-style safety check)
+    bool query_timeout_supported = false;
+
+    // Current LTR state for RFI.
+    // Slot 0 is reserved as the IDR baseline (set on every IDR, never overwritten by
+    // periodic marks) so RFI always has a known-good fallback even when every recent
+    // periodic-marked frame was inside a packet-loss window. Slots 1..N-1 form a
+    // sliding window of more recent anchors.
+    static constexpr int MAX_LTR_SLOTS = 4;
+    static constexpr uint64_t LTR_MARK_INTERVAL = 4;  // Mark LTR every N frames
+    int effective_ltr_slots = 0;    // Clamped to min(max_ltr_frames, MAX_LTR_SLOTS)
+    int current_ltr_slot = 0;      // Which LTR slot to mark next
+    bool ltr_slots_valid[MAX_LTR_SLOTS] = {};
+    uint64_t ltr_slot_frame_index[MAX_LTR_SLOTS] = {};  // Frame index when each LTR slot was marked
+
+    // Pending outputs stashed during SubmitInput retry or proactive backpressure drain
+    std::deque<::amf::AMFDataPtr> pending_outputs;
+    std::unordered_map<uint64_t, bool> frame_rfi_flags;
+
+    // FFmpeg-style proactive backpressure: track in-flight surfaces (submitted
+    // but not yet retrieved via QueryOutput) so we can drain output BEFORE
+    // SubmitInput would hit AMF_INPUT_FULL. The native AMF queue is roughly
+    // 21 frames deep per FFmpeg's amfenc.c notes; we keep our soft cap well
+    // below that to leave headroom for VCN stalls and DXGI scheduling jitter.
+    int hwsurfaces_in_queue = 0;
+    static constexpr int HWSURFACES_IN_QUEUE_MAX = 16;
+    bool user_configured_rate_control = false;
+
+    // Statistics feedback state
+    bool statistics_enabled = false;
+    bool psnr_enabled = false;
+    bool ssim_enabled = false;
+
+    // Runtime fault watchdog: count consecutive failures so we can signal
+    // a fatal error to the upper layer (triggering a real reinit) instead
+    // of silently producing no output forever. Threshold is derived from
+    // client framerate in create_encoder() so the watchdog fires after
+    // roughly the same wall-clock time regardless of fps.
+    int consecutive_submit_failures = 0;
+    int consecutive_empty_outputs = 0;
+    int max_consecutive_failures = 60;  // Set to ~1s of frames in create_encoder()
+
+    std::string last_error_string;
+  };
+
+  /**
+   * @brief Create an AMF D3D11 encoder instance.
+   * @param d3d_device The D3D11 device to use.
+   * @return AMF encoder or nullptr on failure.
+   */
+  std::unique_ptr<amf_d3d11>
+  create_amf_d3d11(ID3D11Device *d3d_device);
+
+}  // namespace amf
