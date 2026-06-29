@@ -24,6 +24,7 @@ $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 $script:rebootRequired = $false
+$script:virtualDisplayBrokerWasRunning = $false
 
 trap {
     if ($InstallerBestEffort) {
@@ -429,6 +430,52 @@ function Stop-SunshineForDriverInstall {
     }
 }
 
+function Stop-VirtualDisplayBrokerForDriverInstall {
+    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
+    if (-not $service -or $service.Status -eq 'Stopped') {
+        return
+    }
+
+    $script:virtualDisplayBrokerWasRunning = $true
+    Write-Host '[SunshineVirtualDisplay] Stopping virtual display broker before driver replacement.'
+    Stop-Service -Name 'SunshineVirtualDisplayBroker' -Force -ErrorAction Stop
+    $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+}
+
+function Start-VirtualDisplayBrokerIfNeeded {
+    if (-not $script:virtualDisplayBrokerWasRunning) {
+        return
+    }
+
+    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
+    if (-not $service -or $service.Status -eq 'Running') {
+        return
+    }
+
+    Write-Host '[SunshineVirtualDisplay] Starting virtual display broker after driver replacement.'
+    Start-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction Stop
+    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+}
+
+function Stop-SunshineVirtualDisplayDriverHost {
+    $hosts = @(
+        Get-CimInstance Win32_Process -Filter "name='WUDFHost.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -match [regex]::Escape("-DeviceGroupId:$deviceGroupId") }
+    )
+
+    foreach ($hostProcess in $hosts) {
+        Write-Host "[SunshineVirtualDisplay] Stopping stale UMDF host $($hostProcess.ProcessId) for $deviceGroupId."
+        Stop-Process -Id $hostProcess.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Restart-SunshineVirtualDisplayRuntime {
+    Stop-VirtualDisplayBrokerForDriverInstall
+    Stop-SunshineVirtualDisplayDriverHost
+    Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+    Start-VirtualDisplayBrokerIfNeeded
+}
+
 function Install-DriverPackage {
     Write-Host '[SunshineVirtualDisplay] Installing driver package.'
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $infPath, '/install')
@@ -747,6 +794,16 @@ function Invoke-InstallerHealthCheck {
         if (Test-TemporaryVirtualDisplay) {
             return
         }
+
+        Write-Host '[SunshineVirtualDisplay] Recycling virtual display broker and UMDF host after failed PnP revive.'
+        try {
+            Restart-SunshineVirtualDisplayRuntime
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+        if (Test-TemporaryVirtualDisplay) {
+            return
+        }
     }
 
     $script:rebootRequired = $true
@@ -815,11 +872,17 @@ $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
 $deviceNodePresent = Test-DeviceNodePresent
 
 if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
+    Initialize-DriverStateRegistryAccess
+    Invoke-InstallerHealthCheck
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
+    if ($script:rebootRequired) {
+        Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+    }
     exit 0
 }
 
 Stop-SunshineForDriverInstall
+Stop-VirtualDisplayBrokerForDriverInstall
 Install-DriverPackage
 
 if (-not (Test-DeviceNodePresent)) {
@@ -829,6 +892,7 @@ if (-not (Test-DeviceNodePresent)) {
 }
 
 Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
+Restart-SunshineVirtualDisplayRuntime
 Initialize-DriverStateRegistryAccess
 Invoke-InstallerHealthCheck
 
