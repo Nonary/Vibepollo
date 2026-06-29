@@ -2562,6 +2562,7 @@ namespace confighttp {
         input_tree.contains("virtual_display_layout") ||
         input_tree.contains("config_overrides") ||
         input_tree.contains("prefer_10bit_sdr") ||
+        input_tree.contains("enable_legacy_ordering") ||
         input_tree.contains("allow_client_commands") ||
         input_tree.contains("perm") ||
         input_tree.contains("do") ||
@@ -2576,7 +2577,7 @@ namespace confighttp {
       std::string name = input_tree.value("name", "");
       std::string display_mode = input_tree.value("display_mode", "");
       std::string output_name_override = input_tree.value("output_name_override", "");
-      bool enable_legacy_ordering = true;
+      bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
       std::optional<bool> prefer_10bit_sdr;
