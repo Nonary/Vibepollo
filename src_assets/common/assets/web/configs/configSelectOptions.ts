@@ -358,6 +358,9 @@ export function getConfigSelectOptions(
           value: 'vbr_latency',
         },
         { label: translateOr(t, 'config.amd_rc_vbr_peak', 'VBR (peak)'), value: 'vbr_peak' },
+        { label: translateOr(t, 'config.amd_rc_qvbr', 'QVBR'), value: 'qvbr' },
+        { label: translateOr(t, 'config.amd_rc_hqvbr', 'HQ-VBR'), value: 'hqvbr' },
+        { label: translateOr(t, 'config.amd_rc_hqcbr', 'HQ-CBR'), value: 'hqcbr' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }

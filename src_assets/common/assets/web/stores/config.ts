@@ -288,6 +288,7 @@ const defaultGroups = [
     options: {
       amd_usage: 'ultralowlatency',
       amd_rc: 'vbr_latency',
+      amd_qvbr_quality_level: 0,
       amd_enforce_hrd: 'disabled',
       amd_quality: 'balanced',
       amd_preanalysis: 'disabled',
