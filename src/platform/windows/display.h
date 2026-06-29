@@ -48,7 +48,6 @@ namespace platf::dxgi {
   std::optional<LUID> get_last_wgc_adapter_luid();
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
   std::optional<LUID> get_dxgi_adapter_luid_override();
-  std::uint64_t consume_normal_wgc_repeated_frames();
   bool should_use_wgc_default();
   std::string current_display_adapter_name();
   using dxgi1_t = util::safe_ptr<IDXGIDevice1, Release<IDXGIDevice1>>;
@@ -466,15 +465,12 @@ namespace platf::dxgi {
     capture_e release_snapshot() override;
 
   private:
-    capture_e repeat_cached_frame(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out);
-
     std::unique_ptr<class ipc_session_t> _ipc_session;
     ::video::config_t _config;
     std::string _display_name;
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
     std::shared_ptr<platf::img_t> _last_cached_frame;
-    std::uint32_t _normal_wgc_repeat_count = 0;
     std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
   };
@@ -535,8 +531,6 @@ namespace platf::dxgi {
     capture_e release_snapshot() override;
 
   private:
-    capture_e repeat_cached_frame(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out);
-
     /**
      * @brief IPC session for communication with capture helper.
      */
@@ -550,7 +544,6 @@ namespace platf::dxgi {
      */
     std::string _display_name;
     std::shared_ptr<platf::img_t> _last_cached_frame;
-    std::uint32_t _normal_wgc_repeat_count = 0;
 
     /**
      * @brief Last width of the staging texture for the base class texture.

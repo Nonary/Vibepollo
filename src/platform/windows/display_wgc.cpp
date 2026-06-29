@@ -35,8 +35,6 @@ namespace platf::dxgi {
     std::atomic<uint64_t> g_wgc_snapshot_copies {0};
     std::atomic<uint64_t> g_wgc_slow_snapshot_locks {0};
     std::atomic<uint64_t> g_wgc_slow_snapshot_copies {0};
-    std::atomic<uint64_t> g_wgc_normal_repeated_frames {0};
-    constexpr std::uint32_t NORMAL_WGC_REPEAT_BUDGET = 1;
 
     class adapter_luid_override_guard {
     public:
@@ -82,20 +80,6 @@ namespace platf::dxgi {
 
     bool is_wgc_constant_mode() {
       return config::video.capture == "wgcc";
-    }
-
-    bool should_repeat_normal_wgc_frame(std::chrono::milliseconds requested_timeout) {
-      return config::video.wgc_pacing_smoothing &&
-             requested_timeout == 0ms &&
-             !is_wgc_constant_mode();
-    }
-
-    void stamp_repeated_frame(platf::img_t *img) {
-      const auto now = std::chrono::steady_clock::now();
-      img->frame_timestamp = now;
-      img->host_processing_timestamp = now;
-      img->capture_pacing_timestamp = now;
-      img->repeated_frame = true;
     }
 
     std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout, int client_framerate) {
@@ -176,10 +160,6 @@ namespace platf::dxgi {
     }
   }  // namespace
 
-  std::uint64_t consume_normal_wgc_repeated_frames() {
-    return g_wgc_normal_repeated_frames.exchange(0, std::memory_order_relaxed);
-  }
-
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
   display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
@@ -231,7 +211,6 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    const bool repeat_normal_wgc_frame = should_repeat_normal_wgc_frame(timeout);
     timeout = effective_wgc_timeout(timeout, _config.framerate);
 
     auto capture_status = _ipc_session->wait_for_frame(timeout);
@@ -244,9 +223,6 @@ namespace platf::dxgi {
         }
         if (is_wgc_constant_mode()) {
           return forward_cached_wgc_frame(_last_cached_frame, img_out);
-        }
-        if (repeat_normal_wgc_frame) {
-          return repeat_cached_frame(pull_free_image_cb, img_out);
         }
       }
       return capture_status;
@@ -367,71 +343,9 @@ namespace platf::dxgi {
     // Keep WGC's QPC-derived timestamp for RTP/client accounting, but do not
     // use compositor timestamp jitter as the capture-loop sleep anchor.
     img->capture_pacing_timestamp = host_processing_timestamp;
-    img->repeated_frame = false;
     img_out = img;
     _last_cached_frame = img;
-    _normal_wgc_repeat_count = 0;
 
-    return capture_e::ok;
-  }
-
-  capture_e display_wgc_ipc_vram_t::repeat_cached_frame(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out) {
-    if (!_last_cached_frame || _normal_wgc_repeat_count >= NORMAL_WGC_REPEAT_BUDGET) {
-      return capture_e::timeout;
-    }
-
-    auto cached_img = std::static_pointer_cast<img_d3d_t>(_last_cached_frame);
-    if (!cached_img->capture_texture || !cached_img->capture_mutex) {
-      return capture_e::timeout;
-    }
-
-    std::shared_ptr<platf::img_t> img;
-    if (!pull_free_image_cb(img)) {
-      return capture_e::interrupted;
-    }
-
-    auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
-    if (complete_img(d3d_img.get(), false)) {
-      return capture_e::error;
-    }
-
-    HRESULT status = cached_img->capture_mutex->AcquireSync(0, 3000);
-    if (status == WAIT_ABANDONED) {
-      BOOST_LOG(error) << "Cached WGC texture keyed mutex was abandoned; continuing with lock held";
-    } else if (status != S_OK) {
-      BOOST_LOG(error) << "Failed to lock cached WGC texture [0x"sv << util::hex(status).to_string_view() << ']';
-      return capture_e::error;
-    }
-
-    auto release_cached_mutex = util::fail_guard([&]() {
-      const HRESULT release_status = cached_img->capture_mutex->ReleaseSync(0);
-      if (FAILED(release_status)) {
-        BOOST_LOG(warning) << "Failed to release cached WGC texture mutex [0x"sv << util::hex(release_status).to_string_view() << ']';
-      }
-    });
-
-    status = d3d_img->capture_mutex->AcquireSync(0, 3000);
-    if (status == WAIT_ABANDONED) {
-      BOOST_LOG(error) << "Repeated WGC capture texture keyed mutex was abandoned; continuing with lock held";
-    } else if (status != S_OK) {
-      BOOST_LOG(error) << "Failed to lock repeated WGC capture texture [0x"sv << util::hex(status).to_string_view() << ']';
-      return capture_e::error;
-    }
-
-    auto release_capture_mutex = util::fail_guard([&]() {
-      const HRESULT release_status = d3d_img->capture_mutex->ReleaseSync(0);
-      if (FAILED(release_status)) {
-        BOOST_LOG(warning) << "Failed to release repeated WGC capture texture mutex [0x"sv << util::hex(release_status).to_string_view() << ']';
-      }
-    });
-
-    device_ctx->CopyResource(d3d_img->capture_texture.get(), cached_img->capture_texture.get());
-    d3d_img->blank = false;
-    stamp_repeated_frame(img.get());
-    img_out = img;
-
-    ++_normal_wgc_repeat_count;
-    g_wgc_normal_repeated_frames.fetch_add(1, std::memory_order_relaxed);
     return capture_e::ok;
   }
 
@@ -541,7 +455,6 @@ namespace platf::dxgi {
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
     uint64_t frame_qpc = 0;
-    const bool repeat_normal_wgc_frame = should_repeat_normal_wgc_frame(timeout);
     timeout = effective_wgc_timeout(timeout, _config.framerate);
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
@@ -554,9 +467,6 @@ namespace platf::dxgi {
         }
         if (is_wgc_constant_mode()) {
           return forward_cached_wgc_frame(_last_cached_frame, img_out);
-        }
-        if (repeat_normal_wgc_frame) {
-          return repeat_cached_frame(pull_free_image_cb, img_out);
         }
       }
       // For the default mode just return the capture status on timeouts.
@@ -668,46 +578,8 @@ namespace platf::dxgi {
     img->frame_timestamp = frame_timestamp;
     img->host_processing_timestamp = host_processing_timestamp;
     img->capture_pacing_timestamp = host_processing_timestamp;
-    img->repeated_frame = false;
     _last_cached_frame = img_out;
-    _normal_wgc_repeat_count = 0;
 
-    return capture_e::ok;
-  }
-
-  capture_e display_wgc_ipc_ram_t::repeat_cached_frame(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out) {
-    if (!_last_cached_frame || _normal_wgc_repeat_count >= NORMAL_WGC_REPEAT_BUDGET) {
-      return capture_e::timeout;
-    }
-
-    const auto cached_img = _last_cached_frame.get();
-    if (!cached_img->data ||
-        cached_img->width != width ||
-        cached_img->height != height ||
-        cached_img->row_pitch <= 0 ||
-        cached_img->pixel_pitch <= 0) {
-      return capture_e::timeout;
-    }
-
-    if (!pull_free_image_cb(img_out)) {
-      return capture_e::interrupted;
-    }
-
-    img_info.RowPitch = cached_img->row_pitch;
-    auto img = img_out.get();
-    if (complete_img(img, false)) {
-      return capture_e::error;
-    }
-
-    if (!img->data || img->row_pitch != cached_img->row_pitch || img->height != cached_img->height) {
-      return capture_e::timeout;
-    }
-
-    std::copy_n(cached_img->data, cached_img->height * cached_img->row_pitch, img->data);
-    stamp_repeated_frame(img);
-
-    ++_normal_wgc_repeat_count;
-    g_wgc_normal_repeated_frames.fetch_add(1, std::memory_order_relaxed);
     return capture_e::ok;
   }
 
