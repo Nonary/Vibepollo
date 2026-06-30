@@ -270,25 +270,16 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE, (amf_int64) AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED);
       // Streaming keyframes are client-driven: the first frame and every packet-loss
       // recovery arrive via force_idr (see encode_frame), so a periodic IDR is not
-      // needed for decodability. The FFmpeg-default GOP of 60 was set here only as an
-      // RDNA4 encoder-state-refresh workaround, but it emits a full keyframe ~once a
-      // second; at high resolution that large frame spikes the input queue and drops
-      // frames on RDNA4. Disable the periodic IDR (matching the AV1 path) and keep the
-      // encoder/decoder state refreshed with gradual intra-refresh instead - a moving
-      // band of intra blocks that refreshes the whole frame over ~1s, with no single
-      // large frame to stall the queue.
+      // needed for decodability. Disable it (GOP size 0) - the FFmpeg-default GOP of 60
+      // was only an RDNA4 state-refresh workaround, but emitting a full keyframe ~once a
+      // second spiked the input queue and dropped frames at high resolution on RDNA4.
+      //
+      // This mirrors the AV1 path exactly (GOP 0, no periodic IDR, no intra-refresh),
+      // which runs flawlessly on RDNA4. An earlier attempt added rolling intra-refresh
+      // here for the RDNA4 "state refresh" worry, but that made the HEVC encoder wedge
+      // for seconds at a time on RDNA4 (RX 9070 XT) - so it is deliberately NOT used.
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, (amf_int64) 0);
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 0);
-      {
-        const int ctb = 64;  // AMF HEVC coding-tree-block (LCU) size
-        const int total_ctbs = ((client_config.width + ctb - 1) / ctb) * ((client_config.height + ctb - 1) / ctb);
-        const int refresh_frames = client_config.framerate > 0 ? client_config.framerate : 60;
-        amf_int64 ctbs_per_slot = total_ctbs / refresh_frames;
-        if (ctbs_per_slot < 1) {
-          ctbs_per_slot = 1;
-        }
-        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_INTRA_REFRESH_NUM_CTBS_PER_SLOT, ctbs_per_slot);
-      }
       if (config.preanalysis) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE, !!(*config.preanalysis));
       if (config.vbaq) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENABLE_VBAQ, !!(*config.vbaq));
       // LOWLATENCY_MODE and INPUT_QUEUE_SIZE: only set when user opts in.
