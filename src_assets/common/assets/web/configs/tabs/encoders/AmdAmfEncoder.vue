@@ -63,6 +63,36 @@ const config = store.config;
           <ConfigFieldRenderer
             setting-key="amd_input_queue_size"
             v-model="config.amd_input_queue_size"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            setting-key="amd_smart_access_video"
+            v-model="config.amd_smart_access_video"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            setting-key="amd_lowlatency_mode"
+            v-model="config.amd_lowlatency_mode"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            setting-key="amd_high_motion_quality_boost"
+            v-model="config.amd_high_motion_quality_boost"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            setting-key="amd_av1_screen_content"
+            v-model="config.amd_av1_screen_content"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            setting-key="amd_av1_latency_mode"
+            v-model="config.amd_av1_latency_mode"
             class="mb-0"
           />
         </section>

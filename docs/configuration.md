@@ -3635,6 +3635,211 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### amd_smart_access_video
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Spread encoding across the GPU's multiple VCN engines (AMD Smart Access Video / multi-instance encode).
+            On cards with more than one hardware encoder instance (e.g. RX 7900) this can improve latency and
+            throughput; it has no effect on single-VCN GPUs.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_smart_access_video = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force multi-VCN encode on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force multi-VCN encode off</td>
+    </tr>
+</table>
+
+### amd_lowlatency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Toggle the AMF low-latency mode property (H.264/HEVC). The encoder is already low-latency through the
+            Ultra Low Latency usage profile, so `auto` is fine for most users. Enable for the most aggressive
+            low-latency path, or disable as a workaround for encoder freezes reported on some driver versions.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_lowlatency_mode = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force low-latency mode on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force low-latency mode off</td>
+    </tr>
+</table>
+
+### amd_high_motion_quality_boost
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Improve quality during fast motion.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+            @warning{Some AMD driver releases (e.g. Adrenalin 26.5.x on RDNA4) can freeze the encoder when this is
+            enabled, so opt in with caution.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_high_motion_quality_boost = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force high motion quality boost on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force high motion quality boost off</td>
+    </tr>
+</table>
+
+### amd_av1_screen_content
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable AV1 screen-content coding tools, which can improve efficiency and text/UI clarity for desktop and
+            screen-heavy content.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_screen_content = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force screen-content tools on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force screen-content tools off</td>
+    </tr>
+</table>
+
+### amd_av1_latency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            AV1 encoding-latency tier. Lower tiers finish each frame faster at the cost of higher power draw.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_latency_mode = lowest
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>none</td>
+        <td>balance latency and power</td>
+    </tr>
+    <tr>
+        <td>power_saving</td>
+        <td>real-time with lower power</td>
+    </tr>
+    <tr>
+        <td>realtime</td>
+        <td>real-time</td>
+    </tr>
+    <tr>
+        <td>lowest</td>
+        <td>lowest latency (highest power)</td>
+    </tr>
+</table>
+
 ## VideoToolbox Encoder
 
 ### vt_coder

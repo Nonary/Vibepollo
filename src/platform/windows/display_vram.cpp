@@ -1672,9 +1672,20 @@ namespace platf::dxgi {
         amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
       }
 
-      // Remaining advanced AMF knobs (multi-instance encode, AV1 encoding-latency
-      // mode, intra-refresh, ...) are left at their safe driver defaults and can
-      // be exposed as config in a follow-up.
+      // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
+      // leaves the AMF driver default untouched, so behavior is unchanged unless the
+      // user opts in. Tri-state knobs map nullopt -> unset, 1 -> true, 0 -> false.
+      auto amf_tristate = [](const std::optional<int> &v) -> std::optional<bool> {
+        if (!v) {
+          return std::nullopt;
+        }
+        return *v != 0;
+      };
+      amf_cfg.multi_hw_instance_encode = amf_tristate(config::video.amd.amd_smart_access_video);
+      amf_cfg.lowlatency_mode = amf_tristate(config::video.amd.amd_lowlatency_mode);
+      amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
+      amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
+      amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
 
       if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
         return false;

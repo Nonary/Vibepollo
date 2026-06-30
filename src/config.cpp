@@ -297,6 +297,37 @@ namespace config {
       return original;
     }
 
+    // Tri-state opt-in knobs: "enabled"/"disabled" force the AMF property on/off,
+    // anything else ("auto") returns nullopt so the AMF driver default is left
+    // untouched (matching the std::optional<int> "unset" semantics downstream).
+    ::std::optional<int> tristate_from_view(const ::std::string_view &value) {
+      if (value == "enabled"sv) {
+        return 1;
+      }
+      if (value == "disabled"sv) {
+        return 0;
+      }
+      return ::std::nullopt;
+    }
+
+    // AV1 encoding-latency mode. "auto" leaves the driver default; the rest map to
+    // AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_ENUM values.
+    ::std::optional<int> av1_latency_from_view(const ::std::string_view &value) {
+      if (value == "none"sv) {
+        return 0;
+      }
+      if (value == "power_saving"sv) {
+        return 1;
+      }
+      if (value == "realtime"sv) {
+        return 2;
+      }
+      if (value == "lowest"sv) {
+        return 3;
+      }
+      return ::std::nullopt;
+    }
+
     int coder_from_view(const ::std::string_view &coder) {
       if (coder == "auto"sv) {
         return _auto;
@@ -797,6 +828,11 @@ namespace config {
       (int) amd::coder_e::_auto,  // coder
       0,  // ltr_frames (native AMF; 0 = off)
       0,  // input_queue_size (native AMF; 0 = driver default)
+      std::nullopt,  // smart_access_video (auto)
+      std::nullopt,  // lowlatency_mode (auto)
+      std::nullopt,  // high_motion_quality_boost (auto)
+      std::nullopt,  // av1_screen_content (auto)
+      std::nullopt,  // av1_latency_mode (auto)
     },  // amd
 
     {
@@ -1657,6 +1693,14 @@ namespace config {
       video.amd.amd_input_queue_size = std::clamp(video.amd.amd_input_queue_size, 0, 16);
     }
 
+    // Curated opt-in native-AMF feature knobs. Default "auto" leaves the AMF
+    // driver default untouched, so none of these change behavior unless enabled.
+    int_f(vars, "amd_smart_access_video", video.amd.amd_smart_access_video, amd::tristate_from_view);
+    int_f(vars, "amd_lowlatency_mode", video.amd.amd_lowlatency_mode, amd::tristate_from_view);
+    int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
+    int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
+    int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
+
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
     int_f(vars, "vt_software", video.vt.vt_require_sw, vt::force_software_from_view);
@@ -2373,6 +2417,11 @@ namespace config {
         "amd_coder",
         "amd_ltr_frames",
         "amd_input_queue_size",
+        "amd_smart_access_video",
+        "amd_lowlatency_mode",
+        "amd_high_motion_quality_boost",
+        "amd_av1_screen_content",
+        "amd_av1_latency_mode",
         "vt_coder",
         "vt_software",
         "vt_realtime",
