@@ -818,9 +818,21 @@ namespace video {
       return result;
     }
 
+    // The native AMF encoder is pipelined: encode_frame(frame_nr) usually emits an
+    // earlier frame's output, so the emitted index lags the submitted one. Emitted
+    // indices are still strictly increasing (in order, no duplicates), so track the
+    // last one and only flag a genuine regression (out-of-order / duplicate). Forward
+    // gaps are also normal (a dropped frame is logged separately at submit time).
+    bool note_emitted_index(uint64_t emitted) {
+      const bool monotonic = last_emitted_index < 0 || (int64_t) emitted > last_emitted_index;
+      last_emitted_index = (int64_t) emitted;
+      return monotonic;
+    }
+
   private:
     std::unique_ptr<platf::amf_encode_device_t> device;
     bool force_idr = false;
+    int64_t last_emitted_index = -1;
   };
 
   struct sync_session_ctx_t {
@@ -2347,8 +2359,11 @@ namespace video {
       return 0;
     }
 
-    if (frame_nr != (int64_t) encoded_frame.frame_index) {
-      BOOST_LOG(error) << "AMF frame index mismatch " << frame_nr << " " << encoded_frame.frame_index;
+    // frame_nr != frame_index is expected: the native AMF encoder is pipelined and
+    // emits earlier frames' output. Only a non-monotonic emitted index is a real desync.
+    if (!session.note_emitted_index(encoded_frame.frame_index)) {
+      BOOST_LOG(warning) << "AMF emitted frame index regression: " << encoded_frame.frame_index
+                         << " (submitted " << frame_nr << ")";
     }
 
     auto packet = std::make_unique<packet_raw_generic>(std::move(encoded_frame.data), encoded_frame.frame_index, encoded_frame.idr);
