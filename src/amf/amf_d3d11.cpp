@@ -268,18 +268,14 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, framerate);
       if (config.enforce_hrd) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, !!(*config.enforce_hrd));
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE, (amf_int64) AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED);
-      // Streaming keyframes are client-driven: the first frame and every packet-loss
-      // recovery arrive via force_idr (see encode_frame), so a periodic IDR is not
-      // needed for decodability. Disable it (GOP size 0) - the FFmpeg-default GOP of 60
-      // was only an RDNA4 state-refresh workaround, but emitting a full keyframe ~once a
-      // second spiked the input queue and dropped frames at high resolution on RDNA4.
-      //
-      // This mirrors the AV1 path exactly (GOP 0, no periodic IDR, no intra-refresh),
-      // which runs flawlessly on RDNA4. An earlier attempt added rolling intra-refresh
-      // here for the RDNA4 "state refresh" worry, but that made the HEVC encoder wedge
-      // for seconds at a time on RDNA4 (RX 9070 XT) - so it is deliberately NOT used.
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, (amf_int64) 0);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 0);
+      // Periodic IDR (GOP size 60, matching FFmpeg hevc_amf). GOP size 0 (no periodic
+      // IDR) was reported to misbehave on RDNA4, which is why this is set. The periodic
+      // keyframe can still spike the input queue at high resolution on RDNA4, but that
+      // is an output-handling problem in the native encode loop (it drops/reinits where
+      // FFmpeg buffers/defers), to be fixed there - not by changing the keyframe. Every
+      // keyframe config tried (GOP 60, GOP 0, GOP 0 + intra-refresh) broke on RDNA4.
+      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, (amf_int64) 1);
+      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 60);
       if (config.preanalysis) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE, !!(*config.preanalysis));
       if (config.vbaq) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENABLE_VBAQ, !!(*config.vbaq));
       // LOWLATENCY_MODE and INPUT_QUEUE_SIZE: only set when user opts in.
