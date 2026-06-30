@@ -13,6 +13,7 @@
 #include <cstring>
 #include <future>
 #include <list>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -829,10 +830,40 @@ namespace video {
       return monotonic;
     }
 
+    // Per-frame timestamps captured at submit time. Because the encoder emits an
+    // earlier frame than the one just submitted, each packet must be stamped with the
+    // timestamps of the frame it actually carries, not the newest submitted frame -
+    // otherwise runtime latency stats are skewed by the pipeline depth.
+    struct frame_timestamps_t {
+      std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+    };
+
+    void store_frame_timestamps(uint64_t frame_index, const frame_timestamps_t &ts) {
+      pending_timestamps[frame_index] = ts;
+      // Dropped frames never emit, so bound the map well above the real pipeline
+      // depth and evict the oldest (lowest-index) entries.
+      while (pending_timestamps.size() > 256) {
+        pending_timestamps.erase(pending_timestamps.begin());
+      }
+    }
+
+    frame_timestamps_t take_frame_timestamps(uint64_t frame_index) {
+      auto it = pending_timestamps.find(frame_index);
+      if (it == pending_timestamps.end()) {
+        return {};
+      }
+      frame_timestamps_t ts = it->second;
+      pending_timestamps.erase(it);
+      return ts;
+    }
+
   private:
     std::unique_ptr<platf::amf_encode_device_t> device;
     bool force_idr = false;
     int64_t last_emitted_index = -1;
+    std::map<uint64_t, frame_timestamps_t> pending_timestamps;
   };
 
   struct sync_session_ctx_t {
@@ -2349,6 +2380,10 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
   ) {
+    // Stash this frame's timestamps before submitting; the encoder is pipelined and
+    // emits an earlier frame, so the packet is stamped from this map by emitted index.
+    session.store_frame_timestamps((uint64_t) frame_nr, {frame_timestamp, capture_timestamp, host_processing_timestamp});
+
     auto encoded_frame = session.encode_frame(frame_nr);
     if (encoded_frame.fatal) {
       BOOST_LOG(error) << "AMF encoder entered an unrecoverable state, requesting reinit";
@@ -2356,6 +2391,7 @@ namespace video {
     }
     if (encoded_frame.data.empty()) {
       // No output this call (pipeline still filling or transient stall); not fatal.
+      // The stashed timestamps stay until this frame is actually emitted.
       return 0;
     }
 
@@ -2366,12 +2402,16 @@ namespace video {
                          << " (submitted " << frame_nr << ")";
     }
 
+    // Stamp the packet with the timestamps of the frame it actually carries (the
+    // emitted frame lags the submitted one), not the just-submitted frame's.
+    const auto ts = session.take_frame_timestamps(encoded_frame.frame_index);
+
     auto packet = std::make_unique<packet_raw_generic>(std::move(encoded_frame.data), encoded_frame.frame_index, encoded_frame.idr);
     packet->channel_data = channel_data;
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
-    packet->frame_timestamp = frame_timestamp;
-    packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
-    packet->host_processing_timestamp = host_processing_timestamp;
+    packet->frame_timestamp = ts.frame_timestamp;
+    packet->capture_timestamp = ts.capture_timestamp ? ts.capture_timestamp : ts.frame_timestamp;
+    packet->host_processing_timestamp = ts.host_processing_timestamp;
     if (webrtc_stream::has_active_sessions()) {
       webrtc_stream::submit_video_packet(*packet);
     }
