@@ -277,14 +277,18 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, framerate);
       if (config.enforce_hrd) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, !!(*config.enforce_hrd));
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE, (amf_int64) AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED);
-      // Periodic IDR (GOP size 60, matching FFmpeg hevc_amf). GOP size 0 (no periodic
-      // IDR) was reported to misbehave on RDNA4, which is why this is set. The periodic
-      // keyframe can still spike the input queue at high resolution on RDNA4, but that
-      // is an output-handling problem in the native encode loop (it drops/reinits where
-      // FFmpeg buffers/defers), to be fixed there - not by changing the keyframe. Every
-      // keyframe config tried (GOP 60, GOP 0, GOP 0 + intra-refresh) broke on RDNA4.
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, (amf_int64) 1);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 60);
+      // Infinite GOP (no periodic IDR), matching both FFmpeg's hevc_amf path (which
+      // uses an infinite GOP - see video.cpp "infinite GOP length") and the native AV1
+      // path. Keyframes are client-driven via force_idr (initial frame + packet-loss
+      // recovery). A periodic IDR (GOP 60) emitted a large keyframe every 60 frames;
+      // at high bitrate those overflow the stream FEC block limit (MAX_FEC_BLOCKS = 4,
+      // stream.cpp) and ship unprotected, so a single loss cascades into a freeze. A
+      // tester's host log proved it directly: in one session, GOP-60 HEVC produced 319
+      // over-FEC frames while GOP-0 AV1 produced 0 on the same RX 9070 XT. (An earlier
+      // note that GOP 0 misbehaves on RDNA4 is contradicted by AV1 and FFmpeg both
+      // running infinite-GOP fine on that card.)
+      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NUM_GOPS_PER_IDR, (amf_int64) 0);
+      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 0);
       if (config.preanalysis) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE, !!(*config.preanalysis));
       if (config.vbaq) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENABLE_VBAQ, !!(*config.vbaq));
       // LOWLATENCY_MODE and INPUT_QUEUE_SIZE: only set when user opts in.
