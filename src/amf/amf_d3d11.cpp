@@ -130,6 +130,15 @@ namespace amf {
     const video::sunshine_colorspace_t &colorspace) {
     auto bitrate = static_cast<int64_t>(client_config.bitrate) * 1000;
     auto framerate = AMFConstructRate(client_config.framerate, 1);
+    // Cap the VBV/HRD buffer at ~1 frame of bits, matching FFmpeg's amfenc
+    // (rc_buffer_size = bitrate / framerate). Left at the AMF default (~1 second of
+    // bitrate) a single IDR or scene-change frame can balloon enormous - big enough
+    // to overflow the stream FEC block limit (stream.cpp MAX_FEC_BLOCKS = 4). Such
+    // frames are then sent WITHOUT FEC, and losing one makes the client request an
+    // IDR that is also oversized, cascading into multi-second freezes (observed on
+    // RDNA4 / RX 9070 XT at 200 Mbps + 165 fps: "Skipping FEC for abnormally large
+    // encoded frame"). A ~1-frame buffer keeps every frame comfortably FEC-sized.
+    const int64_t vbv_buffer_size = client_config.framerate > 0 ? (bitrate / client_config.framerate) : bitrate;
     // Match FFmpeg's default AMF path: set only target bitrate unless the user
     // explicitly selects a rate-control mode. In that opt-in path, keep the
     // legacy Sunshine peak/VBV constraints paired with the selected RC mode.
@@ -178,7 +187,7 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
       encoder->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, framerate);
       if (config.enforce_hrd) encoder->SetProperty(AMF_VIDEO_ENCODER_ENFORCE_HRD, !!(*config.enforce_hrd));
@@ -263,7 +272,7 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, framerate);
       if (config.enforce_hrd) encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, !!(*config.enforce_hrd));
@@ -343,7 +352,7 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
       encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_FRAMERATE, framerate);
       if (config.enforce_hrd) encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD, !!(*config.enforce_hrd));
@@ -1096,27 +1105,30 @@ namespace amf {
     if (!encoder) return;
 
     auto bitrate = static_cast<int64_t>(bitrate_kbps) * 1000;
+    // Keep the VBV at ~1 frame of bits on dynamic bitrate changes too, so a raised
+    // bitrate can't start producing FEC-overflowing frames (see configure_encoder).
+    const int64_t vbv_buffer_size = current_config.framerate > 0 ? (bitrate / current_config.framerate) : bitrate;
     AMF_RESULT res;
 
     if (video_format == 0) {
       res = encoder->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
     }
     else if (video_format == 1) {
       res = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
     }
     else {
       res = encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, bitrate);
       if (user_configured_rate_control) {
         encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, bitrate);
-        encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, bitrate);
+        encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_buffer_size);
       }
     }
 
