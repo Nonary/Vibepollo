@@ -98,6 +98,18 @@ namespace stream {
     std::optional<int> lossless_scaling_rtss_limit;
   };
 
+  // Mic-passthrough status snapshot for the web UI Troubleshooting card.
+  struct mic_status_t {
+    bool session_active;  ///< Any RTSP session currently running
+    bool mic_active;  ///< A mic packet has been received in the current session
+    bool capture_switched;  ///< Any live session currently holds the default-capture switch
+    bool has_last_session;  ///< last_* fields below are valid
+    std::uint64_t last_packets_received;  ///< Stats from the most recently ended session
+    std::uint64_t last_frames_written;
+  };
+
+  mic_status_t get_mic_status();
+
   namespace session {
     extern std::atomic_uint running_sessions;
 
