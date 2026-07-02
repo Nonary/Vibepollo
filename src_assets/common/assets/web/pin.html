@@ -232,6 +232,16 @@
                 </div>
               </div>
 
+              <!-- Enable legacy ordering -->
+              <Checkbox
+                class="mb-3"
+                id="enable_legacy_ordering"
+                label="pin.enable_legacy_ordering"
+                desc="pin.enable_legacy_ordering_desc"
+                v-model="client.editEnableLegacyOrdering"
+                default="true"
+              ></Checkbox>
+
               <!-- Allow client commands -->
               <Checkbox
                 class="mb-3"
@@ -689,6 +699,7 @@
           client.editPerm = client.perm;
           client.editName = client.name;
           client.editAllowClientCommands = client.allow_client_commands;
+          client.editEnableLegacyOrdering = client.enable_legacy_ordering;
           client.editAlwaysUseVirtualDisplay = client.always_use_virtual_display;
           client.editDisplayMode = client.display_mode;
           client.edit_do = JSON.parse(JSON.stringify(client.do || []));
@@ -704,6 +715,7 @@
           client.editName = client.name;
           client.editDisplayMode = client.display_mode;
           client.editAllowClientCommands = client.allow_client_commands;
+          client.editEnableLegacyOrdering = client.enable_legacy_ordering;
           client.editAlwaysUseVirtualDisplay = client.always_use_virtual_display;
         },
         saveClient(client) {
@@ -714,6 +726,7 @@
             name: client.editName,
             display_mode: client.editDisplayMode.trim(),
             allow_client_commands: client.editAllowClientCommands,
+            enable_legacy_ordering: client.editEnableLegacyOrdering,
             always_use_virtual_display: client.editAlwaysUseVirtualDisplay,
             perm: client.editPerm & permissionMapping._all,
             do: client.edit_do.reduce((filtered, { cmd: _cmd, elevated }) => {
@@ -861,6 +874,7 @@
                     undo,
                     allow_client_commands,
                     always_use_virtual_display,
+                    enable_legacy_ordering,
                   }) => {
                     const permInt = parseInt(perm, 10);
                     return {
@@ -874,6 +888,7 @@
                       undo,
                       allow_client_commands,
                       always_use_virtual_display,
+                      enable_legacy_ordering,
                     };
                   },
                 );
