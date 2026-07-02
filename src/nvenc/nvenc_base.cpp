@@ -455,6 +455,7 @@ namespace nvenc {
                                                                                             NV_ENC_MULTI_PASS_DISABLED;
 
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
+    enc_config.rcParams.enableTemporalAQ = config.temporal_aq && get_encoder_cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
 
     if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
@@ -569,6 +570,21 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
+          if (client_config.enableIntraRefresh == 1) {
+            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
+              format_config.enableIntraRefresh = 1;
+              format_config.intraRefreshPeriod = 300;
+              format_config.intraRefreshCnt = 299;
+              format_config.outputRecoveryPointSEI = 1;
+              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
+                format_config.singleSliceIntraRefresh = 1;
+              } else {
+                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
+              }
+            } else {
+              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
+            }
+          }
           break;
         }
 
@@ -594,6 +610,7 @@ namespace nvenc {
               format_config.enableIntraRefresh = 1;
               format_config.intraRefreshPeriod = 300;
               format_config.intraRefreshCnt = 299;
+              format_config.outputRecoveryPointSEI = 1;
               if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
                 format_config.singleSliceIntraRefresh = 1;
               } else {
@@ -780,6 +797,9 @@ namespace nvenc {
       }
       if (enc_config.rcParams.enableAQ) {
         extra += " spatial-aq";
+      }
+      if (enc_config.rcParams.enableTemporalAQ) {
+        extra += " temporal-aq";
       }
       if (enc_config.rcParams.enableMinQP) {
         extra += std::format(" qpmin={}", enc_config.rcParams.minQP.qpInterP);

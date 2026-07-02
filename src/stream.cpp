@@ -1834,9 +1834,12 @@ namespace stream {
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
     auto video_epoch = std::chrono::steady_clock::now();
 
-    // Video traffic is sent on this thread
+    // Video traffic is sent on this thread. The send pacer (pacing_max_bitrate_kbps)
+    // relies on this thread waking on its sleep deadlines; if the OS preempts us for
+    // the next scheduler quantum the per-frame burst pattern returns, which is exactly
+    // what the pacer is meant to prevent. Run at critical, above generic background work.
     platf::set_thread_name("stream::videoBroadcast");
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
     logging::min_max_avg_periodic_logger<double> frame_capture_interval_logger(debug, "Frame capture interval", "ms");
@@ -1989,8 +1992,24 @@ namespace stream {
       }
 
       try {
-        // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
-        size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
+        // Pacing target: legacy default targets ~80% of 1 Gbps (Ethernet). On WiFi
+        // links the legacy value collapses to a no-op pacer (frames get blasted out
+        // faster than the link can absorb, then idle), which amplifies AMPDU-aggregation
+        // jitter on the client. If the operator sets `pacing_max_bitrate_kbps` we honor
+        // it; otherwise keep legacy behaviour.
+        size_t pacing_bps;
+        if (config::stream.pacing_max_bitrate_kbps > 0) {
+          pacing_bps = (size_t) config::stream.pacing_max_bitrate_kbps * 1000ull;
+        } else {
+          pacing_bps = (size_t) (std::giga::num * 80 / 100);  // 80% of 1 Gbps
+        }
+        //                                          bps    ms    packet      byte
+        size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
+        if (ratecontrol_packets_in_1ms == 0) {
+          // Floor at one packet/ms so the inner pacing loop never divides by zero
+          // and we still send something on absurdly low bitrate caps.
+          ratecontrol_packets_in_1ms = 1;
+        }
 
         // Send less than 64K in a single batch.
         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,

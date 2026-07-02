@@ -37,6 +37,9 @@ namespace nvenc {
     // Allocate more bitrate to flat regions since they're visually more perceptible, uses CUDA cores
     bool adaptive_quantization = false;
 
+    // Allocate more bitrate to frames with more motion, reduces block-artefact pulsing in moving scenes
+    bool temporal_aq = false;
+
     // Don't use QP below certain value, limits peak image quality to save bitrate
     bool enable_min_qp = false;
 
