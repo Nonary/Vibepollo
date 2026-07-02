@@ -169,6 +169,15 @@ namespace config {
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR 1
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR 2
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR 3
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
   #define AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING 0
   #define AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY 2
@@ -211,21 +220,30 @@ namespace config {
       cbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_hevc_e : int {
       cbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_h264_e : int {
       cbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class usage_av1_e : int {
@@ -279,6 +297,9 @@ namespace config {
       _CONVERT_(cqp);
       _CONVERT_(vbr_latency);
       _CONVERT_(vbr_peak);
+      _CONVERT_(qvbr);
+      _CONVERT_(hqvbr);
+      _CONVERT_(hqcbr);
 #undef _CONVERT_
       return original;
     }
@@ -788,6 +809,7 @@ namespace config {
       (int) amd::rc_h264_e::vbr_latency,  // rate control (h264)
       (int) amd::rc_hevc_e::vbr_latency,  // rate control (hevc)
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
+      std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
       (int) amd::quality_h264_e::balanced,  // quality (h264)
       (int) amd::quality_hevc_e::balanced,  // quality (hevc)
@@ -1631,6 +1653,18 @@ namespace config {
       video.amd.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, video.amd.amd_rc_av1);
     }
 
+    // Only forwarded to the encoder when the 'qvbr' rate control method is selected.
+    // 0 (or an unset value) leaves the level at the encoder default.
+    int qvbr_quality_level = 0;
+    int_f(vars, "amd_qvbr_quality_level", qvbr_quality_level);
+    if (qvbr_quality_level > 0) {
+      if (qvbr_quality_level > 51) {
+        BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
+      } else {
+        video.amd.amd_qvbr_quality_level = qvbr_quality_level;
+      }
+    }
+
     std::string usage;
     string_f(vars, "amd_usage", usage);
     if (!usage.empty()) {
@@ -2352,6 +2386,7 @@ namespace config {
         "qsv_slow_hevc",
         "amd_usage",
         "amd_rc",
+        "amd_qvbr_quality_level",
         "amd_enforce_hrd",
         "amd_quality",
         "amd_preanalysis",

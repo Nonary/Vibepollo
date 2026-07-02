@@ -91,6 +91,7 @@ namespace config {
       std::optional<int> amd_rc_h264;
       std::optional<int> amd_rc_hevc;
       std::optional<int> amd_rc_av1;
+      std::optional<int> amd_qvbr_quality_level;
       std::optional<int> amd_enforce_hrd;
       std::optional<int> amd_quality_h264;
       std::optional<int> amd_quality_hevc;

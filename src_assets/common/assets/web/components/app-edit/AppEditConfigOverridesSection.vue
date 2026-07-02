@@ -945,6 +945,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'qsv_slow_hevc',
   'amd_usage',
   'amd_rc',
+  'amd_qvbr_quality_level',
   'amd_enforce_hrd',
   'amd_quality',
   'amd_preanalysis',

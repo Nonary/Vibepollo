@@ -3407,7 +3407,7 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>cqp</td>
         <td>constant qp mode</td>
     </tr>
@@ -3422,6 +3422,48 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>vbr_peak</td>
         <td>variable bitrate, peak constrained</td>
+    </tr>
+    <tr>
+        <td>qvbr</td>
+        <td>quality-defined variable bitrate (see amd_qvbr_quality_level)</td>
+    </tr>
+    <tr>
+        <td>hqvbr</td>
+        <td>high quality variable bitrate</td>
+    </tr>
+    <tr>
+        <td>hqcbr</td>
+        <td>high quality constant bitrate</td>
+    </tr>
+</table>
+
+### amd_qvbr_quality_level
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The target quality level used by the `qvbr` rate control method, where 1 is the highest quality and 51
+            is the lowest. Lower values spend more bits to preserve quality.
+            @note{This option only applies when using amdvce [encoder](#encoder) with `amd_rc` set to `qvbr`.}
+            @note{Leave this at `0` to keep the encoder default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1-51 (0 to use the encoder default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_qvbr_quality_level = 18
+            @endcode</td>
     </tr>
 </table>
 

@@ -25,6 +25,12 @@ const config = store.config;
           <ConfigFieldRenderer setting-key="amd_rc" v-model="config.amd_rc" class="mb-4" />
 
           <ConfigFieldRenderer
+            setting-key="amd_qvbr_quality_level"
+            v-model="config.amd_qvbr_quality_level"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
             setting-key="amd_enforce_hrd"
             v-model="config.amd_enforce_hrd"
             class="mb-0"
