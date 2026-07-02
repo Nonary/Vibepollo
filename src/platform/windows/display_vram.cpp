@@ -27,6 +27,7 @@ extern "C" {
   #include "nv_truehdr.h"
   #include "rtx_hdr_runtime.h"
 #endif
+#include "src/amf/amf_d3d11.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_config.h"
@@ -1602,6 +1603,108 @@ namespace platf::dxgi {
     NV_ENC_BUFFER_FORMAT buffer_format = NV_ENC_BUFFER_FORMAT_UNDEFINED;
   };
 
+  // Native AMD AMF encode device. Like the NVENC device, it shares the
+  // d3d_base_encode_device colour-conversion pipeline and writes the converted
+  // NV12/P010 frame straight into the D3D11 texture the AMF encoder reads from
+  // (zero-copy). The AMF runtime is loaded dynamically inside amf_d3d11.
+  class d3d_amf_encode_device_t: public amf_encode_device_t {
+  public:
+    bool init_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
+      if (base.init(display, adapter_p, pix_fmt)) {
+        return false;
+      }
+
+      // Async encoder teardown may destroy D3D resources on a different thread.
+      multithread_t mt;
+      auto status = base.device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
+      if (SUCCEEDED(status)) {
+        mt->SetMultithreadProtected(TRUE);
+      } else {
+        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+      }
+
+      amf_d3d = ::amf::create_amf_d3d11(base.device.get());
+      if (!amf_d3d) {
+        return false;
+      }
+
+      buffer_format = pix_fmt;
+      amf = amf_d3d.get();
+      return true;
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      if (!amf_d3d) {
+        return false;
+      }
+
+      ::amf::amf_config amf_cfg;
+
+      // AMF SDK integer values are passed straight through from the existing
+      // amd_* config (shared with the FFmpeg amdvce_legacy path).
+      if (client_config.videoFormat == 0) {
+        amf_cfg.usage = config::video.amd.amd_usage_h264;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_h264;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_h264;
+      } else if (client_config.videoFormat == 1) {
+        amf_cfg.usage = config::video.amd.amd_usage_hevc;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_hevc;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_hevc;
+      } else {
+        amf_cfg.usage = config::video.amd.amd_usage_av1;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_av1;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_av1;
+      }
+
+      amf_cfg.vbaq = config::video.amd.amd_vbaq;
+      amf_cfg.enforce_hrd = config::video.amd.amd_enforce_hrd;
+      amf_cfg.h264_cabac = (config::video.amd.amd_coder != 2);  // 2 = CAVLC
+
+      // AMF pre-analysis is deliberately NOT wired to the native encoder: enabling
+      // it (even without the PAQ/TAQ/CAQ sub-system) makes AMF buffer frames for
+      // lookahead, which stalls the low-latency single-frame encode/probe path and
+      // hangs the encoder. amd_preanalysis still applies to the FFmpeg
+      // amdvce_legacy path; wiring it here needs lookahead-aware draining first.
+
+      // Native-AMF tuning knobs.
+      amf_cfg.max_ltr_frames = config::video.amd.amd_ltr_frames;  // 0 = RFI off
+      if (config::video.amd.amd_input_queue_size > 0) {
+        amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
+      }
+
+      // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
+      // leaves the AMF driver default untouched, so behavior is unchanged unless the
+      // user opts in. Tri-state knobs map nullopt -> unset, 1 -> true, 0 -> false.
+      auto amf_tristate = [](const std::optional<int> &v) -> std::optional<bool> {
+        if (!v) {
+          return std::nullopt;
+        }
+        return *v != 0;
+      };
+      amf_cfg.multi_hw_instance_encode = amf_tristate(config::video.amd.amd_smart_access_video);
+      amf_cfg.lowlatency_mode = amf_tristate(config::video.amd.amd_lowlatency_mode);
+      amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
+      amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
+      amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
+
+      if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
+        return false;
+      }
+
+      base.apply_colorspace(colorspace, client_config.rtx_hdr_active);
+      return base.init_output(static_cast<ID3D11Texture2D *>(amf_d3d->get_input_texture()), client_config.width, client_config.height, colorspace) == 0;
+    }
+
+    int convert(platf::img_t &img_base) override {
+      return base.convert(img_base);
+    }
+
+  private:
+    d3d_base_encode_device base;
+    std::unique_ptr<::amf::amf_d3d11> amf_d3d;
+    platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
+  };
+
   bool set_cursor_texture(device_t::pointer device, gpu_cursor_t &cursor, util::buffer_t<std::uint8_t> &&cursor_img, DXGI_OUTDUPL_POINTER_SHAPE_INFO &shape_info) {
     // This cursor image may not be used
     if (cursor_img.size() == 0) {
@@ -2368,6 +2471,14 @@ namespace platf::dxgi {
 
   std::unique_ptr<nvenc_encode_device_t> display_vram_t::make_nvenc_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_nvenc_encode_device_t>();
+    if (!device->init_device(shared_from_this(), adapter.get(), pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+
+  std::unique_ptr<amf_encode_device_t> display_vram_t::make_amf_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_amf_encode_device_t>();
     if (!device->init_device(shared_from_this(), adapter.get(), pix_fmt)) {
       return nullptr;
     }

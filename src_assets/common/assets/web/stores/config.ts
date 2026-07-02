@@ -293,6 +293,13 @@ const defaultGroups = [
       amd_preanalysis: 'disabled',
       amd_vbaq: 'enabled',
       amd_coder: 'auto',
+      amd_ltr_frames: 0,
+      amd_input_queue_size: 0,
+      amd_smart_access_video: 'auto',
+      amd_lowlatency_mode: 'auto',
+      amd_high_motion_quality_boost: 'auto',
+      amd_av1_screen_content: 'auto',
+      amd_av1_latency_mode: 'auto',
     },
   },
   {
