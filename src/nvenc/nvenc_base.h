@@ -74,6 +74,13 @@ namespace nvenc {
      */
     bool invalidate_ref_frames(uint64_t first_frame, uint64_t last_frame);
 
+    /**
+     * @brief Reconfigure the live encoder with a new average/max bitrate (no rebuild).
+     * @param bitrate_kbps New bitrate in kbps.
+     * @return `true` if reconfigured in place; `false` if the caller must rebuild the encoder.
+     */
+    bool set_bitrate(int bitrate_kbps);
+
   protected:
     /**
      * @brief Required. Used for loading NvEnc library and setting `nvenc` variable with `NvEncodeAPICreateInstance()`.
@@ -146,6 +153,11 @@ namespace nvenc {
       std::pair<uint64_t, uint64_t> last_rfi_range;
       logging::min_max_avg_periodic_logger<double> frame_size_logger = {debug, "NvEnc: encoded frame sizes in kB", ""};
     } encoder_state;
+
+    // Saved during create_encoder() so set_bitrate() can drive nvEncReconfigureEncoder().
+    // saved_init_params.encodeConfig points at current_enc_config.
+    NV_ENC_INITIALIZE_PARAMS saved_init_params {};
+    NV_ENC_CONFIG current_enc_config {};
   };
 
 }  // namespace nvenc

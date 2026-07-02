@@ -161,4 +161,12 @@ namespace stream {
   std::vector<session_info_t> get_all_session_info();
 
   void request_idr_for_all_sessions();
+
+  /**
+   * @brief Apply a new encoder bitrate to active streaming sessions at runtime.
+   * @param client_uuid Target client UUID; when empty, applies to every active session.
+   * @param bitrate_kbps New encoder bitrate in kbps (already clamped by the caller).
+   * @return Number of sessions updated.
+   */
+  int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps);
 }  // namespace stream

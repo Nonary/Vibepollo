@@ -238,6 +238,16 @@ namespace video {
     virtual void request_normal_frame() = 0;
 
     virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+
+    /**
+     * @brief Apply a new encoder bitrate to the live encoder without rebuilding it.
+     * @param bitrate_kbps New bitrate in kbps.
+     * @return `true` if the encoder reconfigured itself in place; `false` if the caller must
+     *         rebuild the encode session to apply the change.
+     */
+    virtual bool set_bitrate(int bitrate_kbps) {
+      return false;
+    }
   };
 
   // encoders

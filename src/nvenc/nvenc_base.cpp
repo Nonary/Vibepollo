@@ -7,6 +7,7 @@
 #include "nvenc_api.h"
 
 // standard includes
+#include <algorithm>
 #include <format>
 #include <optional>
 
@@ -722,6 +723,12 @@ namespace nvenc {
       }
     }
 
+    // Preserve init params + config so set_bitrate() can reconfigure the live encoder later.
+    // encodeConfig must point at our own storage that outlives this function.
+    saved_init_params = init_params;
+    current_enc_config = enc_config;
+    saved_init_params.encodeConfig = &current_enc_config;
+
     if (async_event_handle) {
       NV_ENC_EVENT_PARAMS event_params = {api::event_params_version(selected_api_version)};
       event_params.completionEvent = async_event_handle;
@@ -942,6 +949,58 @@ namespace nvenc {
       }
     }
 
+    return true;
+  }
+
+  bool nvenc_base::set_bitrate(int bitrate_kbps) {
+    if (!encoder || !nvenc) {
+      BOOST_LOG(warning) << "NvEnc: encoder not initialized; cannot change bitrate";
+      return false;
+    }
+    // Reject non-positive and absurd values. The 800000 kbps ceiling keeps bitrate_kbps * 1000
+    // well inside uint32 so the rate-control fields below cannot overflow.
+    if (bitrate_kbps <= 0 || bitrate_kbps > 800000) {
+      BOOST_LOG(error) << "NvEnc: out-of-range bitrate " << bitrate_kbps << " kbps";
+      return false;
+    }
+
+    const bool is_hevc = (saved_init_params.encodeGUID == NV_ENC_CODEC_HEVC_GUID);
+    const uint32_t new_bitrate_bps = static_cast<uint32_t>(bitrate_kbps) * 1000u;
+    const uint32_t prev_bitrate_bps = current_enc_config.rcParams.averageBitRate;
+
+    // Copy the saved config and apply the new bitrate.
+    NV_ENC_CONFIG enc_config = current_enc_config;
+    enc_config.rcParams.averageBitRate = new_bitrate_bps;
+    enc_config.rcParams.maxBitRate = new_bitrate_bps;
+
+    // Scale the VBV buffer with the bitrate so the rate controller keeps a comparable buffering
+    // window (mirrors the create_encoder VBV sizing), with a floor to avoid an undersized buffer.
+    if (enc_config.rcParams.vbvBufferSize > 0 && prev_bitrate_bps > 0) {
+      const uint64_t scaled = static_cast<uint64_t>(new_bitrate_bps) * current_enc_config.rcParams.vbvBufferSize / prev_bitrate_bps;
+      enc_config.rcParams.vbvBufferSize = static_cast<uint32_t>(std::max<uint64_t>(scaled, 100u * 1000u));
+    }
+
+    NV_ENC_RECONFIGURE_PARAMS reconfigure_params {api::reconfigure_params_version(selected_api_version)};
+    reconfigure_params.reInitEncodeParams = saved_init_params;
+    reconfigure_params.reInitEncodeParams.encodeConfig = &enc_config;
+
+    // When raising the ceiling, reset the rate controller and force an IDR so the higher bitrate
+    // takes effect immediately instead of draining the old VBV first.
+    if (new_bitrate_bps > prev_bitrate_bps) {
+      reconfigure_params.resetEncoder = 1;
+      reconfigure_params.forceIDR = 1;
+    }
+
+    if (nvenc_failed(nvenc->nvEncReconfigureEncoder(encoder, &reconfigure_params))) {
+      BOOST_LOG(error) << "NvEnc: nvEncReconfigureEncoder() for " << bitrate_kbps << " kbps failed: " << last_nvenc_error_string;
+      return false;
+    }
+
+    current_enc_config.rcParams.averageBitRate = new_bitrate_bps;
+    current_enc_config.rcParams.maxBitRate = new_bitrate_bps;
+    current_enc_config.rcParams.vbvBufferSize = enc_config.rcParams.vbvBufferSize;
+
+    BOOST_LOG(info) << "NvEnc: " << (is_hevc ? "HEVC" : "H.264/AV1") << " bitrate reconfigured to " << bitrate_kbps << " kbps";
     return true;
   }
 
