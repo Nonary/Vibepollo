@@ -163,6 +163,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/process_handler.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/process_handler.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ctm_bridge.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ctm_bridge.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/display_settings_client.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/display_settings_client.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_coordinator.h"

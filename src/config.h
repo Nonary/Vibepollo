@@ -329,6 +329,25 @@ namespace config {
     bool legacy_auto_detect {false};
   };
 
+  // Windows-only: CTM bridge (CTM-USBIP) controller-passthrough agent.
+  // Vibepollo supervises the external ctm-usbip.exe for the whole service
+  // lifetime so it no longer needs a separate autostart. The binary is treated
+  // as an opaque upstream artifact (no source vendored) — upstream updates are a
+  // drop-in exe replacement.
+  struct ctm_t {
+    // Master switch. When true, Vibepollo starts and keeps ctm-usbip.exe alive.
+    bool enable {false};
+
+    // Path to ctm-usbip.exe. If empty, defaults to "<install>/tools/ctm/ctm-usbip.exe".
+    std::string exe_path;
+
+    // Control/discovery port the agent listens on (TCP+UDP). Upstream default 48054.
+    int port {48054};
+
+    // Pass --enet to the agent (low-latency ENet input transport).
+    bool enet {true};
+  };
+
   namespace flag {
     enum flag_e : std::size_t {
       PIN_STDIN = 0,  ///< Read PIN from stdin instead of http
@@ -422,6 +441,7 @@ namespace config {
   extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
   extern lossless_scaling_t lossless_scaling;
+  extern ctm_t ctm;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);

@@ -948,6 +948,14 @@ namespace config {
     false  // legacy_auto_detect
   };
 
+  // Windows-only: CTM bridge defaults
+  ctm_t ctm {
+    false,  // enable
+    {},  // exe_path (empty => <install>/tools/ctm/ctm-usbip.exe)
+    48054,  // port
+    true  // enet
+  };
+
   namespace {
     int default_min_log_level() {
       if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
@@ -1759,6 +1767,12 @@ namespace config {
     }
     string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
     bool_f(vars, "lossless_scaling_legacy_auto_detect", lossless_scaling.legacy_auto_detect);
+
+    // Windows-only: CTM bridge (ctm-usbip.exe supervision)
+    bool_f(vars, "ctm_enable", ctm.enable);
+    string_f(vars, "ctm_path", ctm.exe_path);
+    int_between_f(vars, "ctm_port", ctm.port, {1, 65535});
+    bool_f(vars, "ctm_enet", ctm.enet);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

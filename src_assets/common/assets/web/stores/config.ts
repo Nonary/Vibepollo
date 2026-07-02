@@ -258,6 +258,16 @@ const defaultGroups = [
     },
   },
   {
+    id: 'ctm',
+    name: 'CTM Bridge',
+    options: {
+      ctm_enable: false,
+      ctm_path: '',
+      ctm_port: 48054,
+      ctm_enet: true,
+    },
+  },
+  {
     id: 'nv',
     name: 'NVIDIA NVENC Encoder',
     options: {
