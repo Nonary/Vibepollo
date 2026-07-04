@@ -2003,17 +2003,20 @@ namespace stream {
         if (config::stream.pacing_max_bitrate_kbps > 0) {
           pacing_bps = (size_t) config::stream.pacing_max_bitrate_kbps * 1000ull;
 
-          // Never pace below the session's negotiated bitrate: a cap under the encoder's
-          // output rate makes the sender permanently slower than the encoder, so the packet
-          // queue (and stream latency) grows without bound. Clamp to ~110% of the stream
-          // bitrate, re-evaluated per frame since the ABR endpoint can raise it mid-session.
-          size_t session_floor_bps = (size_t) session->config.monitor.bitrate * 1000ull * 110 / 100;
+          // Never pace below the encoder's real on-wire rate: a cap under it makes the
+          // sender permanently slower than the encoder, so the packet queue (and stream
+          // latency) grows without bound. monitor.bitrate is the FEC-stripped video rate,
+          // so the floor must fold FEC back in like the auto-derive path below does —
+          // 110% of video is only ~0.9x of on-wire at 20% FEC. Floor at the same
+          // FEC-folded 1.3x expression, re-evaluated per frame since the ABR endpoint
+          // can raise the bitrate (and FEC vary per frame) mid-session.
+          size_t session_floor_bps = (size_t) session->config.monitor.bitrate * 1000ull * 13 / 10 * (100 + fecPercentage) / 100;
           if (pacing_bps < session_floor_bps) {
             static std::atomic_flag pacing_clamp_warned;
             if (!pacing_clamp_warned.test_and_set()) {
               BOOST_LOG(warning) << "pacing_max_bitrate_kbps ("sv << config::stream.pacing_max_bitrate_kbps
-                                 << " kbps) is below the negotiated stream bitrate ("sv << session->config.monitor.bitrate
-                                 << " kbps); clamping the pacer to 110% of the stream bitrate"sv;
+                                 << " kbps) is below the stream's on-wire rate (negotiated "sv << session->config.monitor.bitrate
+                                 << " kbps video plus FEC); clamping the pacer to "sv << session_floor_bps / 1000 << " kbps"sv;
             }
             pacing_bps = session_floor_bps;
           }
