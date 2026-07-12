@@ -102,6 +102,12 @@ namespace proc {
     std::optional<bool> anime4k_vrs;
   };
 
+  enum class disconnect_behavior_e {
+    keep_running,
+    suspend,
+    terminate
+  };
+
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
     std::vector<cmd_t> state_cmds;
@@ -148,7 +154,7 @@ namespace proc {
     bool use_app_identity;
     bool per_client_app_identity;
     bool allow_client_commands;
-    bool terminate_on_pause;
+    std::optional<disconnect_behavior_e> disconnect_behavior_override;
     int scale_factor;
     std::chrono::seconds exit_timeout;
     bool gen1_framegen_fix;

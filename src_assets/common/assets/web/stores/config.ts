@@ -68,6 +68,7 @@ const defaultGroups = [
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       global_state_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       server_cmd: [] as Array<{ name: string; cmd: string; elevated?: boolean }>,
+      app_disconnect_behavior: 'keep_running',
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,

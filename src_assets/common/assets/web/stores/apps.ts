@@ -28,6 +28,7 @@ export interface App {
   elevated?: boolean;
   'auto-detach'?: boolean;
   'wait-all'?: boolean;
+  'disconnect-behavior'?: string;
   'terminate-on-pause'?: boolean;
   'virtual-display'?: boolean;
   'use-app-identity'?: boolean;

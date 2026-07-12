@@ -6,6 +6,7 @@
     "AV1",
     "CABAC",
     "CAVLC",
+    "Close game",
     "CSS",
     "Desktop Duplication API",
     "DirectX",
@@ -17,6 +18,7 @@
     "HTTPS",
     "Intel QuickSync",
     "IPv4",
+    "Keep game running",
     "KMS",
     "KWin",
     "LAN",
@@ -29,7 +31,9 @@
     "Playnite",
     "QSV",
     "RTSP",
+    "Suspend game",
     "Sunshine",
+    "Use global setting",
     "VSync",
     "Vibeshine",
     "WAN",
@@ -40,7 +44,10 @@
     "VA-API",
     "Vulkan",
     "{minutes}m",
-    "wlroots"
+    "wlroots",
+    "When the last streaming device disconnects",
+    "Choose a different action for this game, or use the global setting shown below.",
+    "Choose what happens when the last streaming device disconnects. Keep game running lets it continue in the background. Suspend game keeps it ready to continue when you reconnect while reducing host power use. Close game ends it and frees the PC resources it was using."
   ],
   "literalPatterns": [
     "^[0-9]+( KiB| MB| ms| FPS)?( \\(default\\))?$",

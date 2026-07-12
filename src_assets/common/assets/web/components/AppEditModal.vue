@@ -115,9 +115,21 @@
             >
               Elevated
             </n-checkbox>
-            <n-checkbox v-model:checked="form.terminateOnPause" size="small">
-              Terminate On Pause
-            </n-checkbox>
+            <div class="col-span-2 space-y-1.5">
+              <label class="block text-xs font-semibold uppercase tracking-wide opacity-70">
+                {{ t('config.app_disconnect_behavior') }}
+              </label>
+              <n-select
+                v-model:value="form.disconnectBehavior"
+                :options="appDisconnectBehaviorOptions"
+                size="small"
+              />
+              <p class="text-[11px] opacity-60">
+                {{ t('config.app_disconnect_behavior_app_desc') }}
+                {{ t('config.app_disconnect_behavior') }}:
+                {{ disconnectBehaviorLabel(globalDisconnectBehavior) }}.
+              </p>
+            </div>
             <n-checkbox v-model:checked="form.allowClientCommands" size="small" class="md:col-span-2">
               Allow Client Commands
             </n-checkbox>
@@ -520,6 +532,7 @@ import type {
   AppVirtualDisplayMode,
   AppVirtualDisplayLayout,
   RtxHdrMode,
+  AppDisconnectBehavior,
 } from './app-edit/types';
 import {
   LOSSLESS_PROFILE_DEFAULTS,
@@ -594,7 +607,7 @@ function fresh(): AppForm {
     elevated: false,
     autoDetach: true,
     waitAll: true,
-    terminateOnPause: false,
+    disconnectBehavior: 'inherit',
     allowClientCommands: true,
     useAppIdentity: false,
     perClientAppIdentity: false,
@@ -677,6 +690,19 @@ function parseBooleanOverride(value: unknown, fallback: boolean): boolean {
   if (['true', '1', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
   if (['false', '0', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function parseAppDisconnectBehavior(
+  value: unknown,
+  legacyTerminateOnPause: unknown,
+): AppDisconnectBehavior {
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .trim();
+  if (['inherit', 'keep_running', 'suspend', 'terminate'].includes(normalized)) {
+    return normalized as AppDisconnectBehavior;
+  }
+  return parseBooleanOverride(legacyTerminateOnPause, false) ? 'terminate' : 'inherit';
 }
 
 function parseNumberOverride(value: unknown, fallback: number, min: number, max: number): number {
@@ -961,8 +987,10 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     elevated: !!src.elevated,
     autoDetach: src['auto-detach'] !== undefined ? !!src['auto-detach'] : base.autoDetach,
     waitAll: src['wait-all'] !== undefined ? !!src['wait-all'] : base.waitAll,
-    terminateOnPause:
-      src['terminate-on-pause'] !== undefined ? !!src['terminate-on-pause'] : base.terminateOnPause,
+    disconnectBehavior: parseAppDisconnectBehavior(
+      src['disconnect-behavior'],
+      src['terminate-on-pause'],
+    ),
     allowClientCommands:
       src['allow-client-commands'] !== undefined
         ? !!src['allow-client-commands']
@@ -1025,7 +1053,9 @@ function toServerPayload(f: AppForm): Record<string, any> {
     elevated: !!f.elevated,
     'auto-detach': !!f.autoDetach,
     'wait-all': !!f.waitAll,
-    'terminate-on-pause': !!f.terminateOnPause,
+    ...(f.disconnectBehavior !== 'inherit'
+      ? { 'disconnect-behavior': f.disconnectBehavior }
+      : {}),
     'allow-client-commands': !!f.allowClientCommands,
     'use-app-identity': !!f.useAppIdentity,
     'per-client-app-identity': f.useAppIdentity ? !!f.perClientAppIdentity : false,
@@ -1862,6 +1892,31 @@ const platformName = computed(() => (configStore.metadata?.platform || '').toLow
 const isWindows = computed(() => platformName.value === 'windows');
 const isLinux = computed(() => platformName.value === 'linux');
 const isMac = computed(() => platformName.value === 'macos');
+const DISCONNECT_BEHAVIOR_LABEL_KEYS: Record<Exclude<AppDisconnectBehavior, 'inherit'>, string> = {
+  keep_running: 'config.app_disconnect_behavior_keep_running',
+  suspend: 'config.app_disconnect_behavior_suspend',
+  terminate: 'config.app_disconnect_behavior_terminate',
+};
+const globalDisconnectBehavior = computed<Exclude<AppDisconnectBehavior, 'inherit'>>(() => {
+  const configured = String((configStore.config as any)?.app_disconnect_behavior ?? '')
+    .toLowerCase()
+    .trim();
+  if (configured === 'suspend' || configured === 'terminate') return configured;
+  return 'keep_running';
+});
+function disconnectBehaviorLabel(value: Exclude<AppDisconnectBehavior, 'inherit'>): string {
+  return t(DISCONNECT_BEHAVIOR_LABEL_KEYS[value]);
+}
+const appDisconnectBehaviorOptions = computed(() => [
+  {
+    label: t('config.app_disconnect_behavior_inherit'),
+    value: 'inherit' as AppDisconnectBehavior,
+  },
+  ...(['keep_running', 'suspend', 'terminate'] as const).map((value) => ({
+    label: disconnectBehaviorLabel(value),
+    value,
+  })),
+]);
 const gamepadOptions = computed(() => {
   const options = [
     { label: 'Default (Global)', value: '' },

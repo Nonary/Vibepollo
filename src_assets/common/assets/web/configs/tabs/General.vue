@@ -227,9 +227,15 @@ function removeServerCommand(index: number) {
     </div>
 
     <ConfigFieldRenderer
+      v-model="config.app_disconnect_behavior"
+      setting-key="app_disconnect_behavior"
+      class="mb-6"
+    />
+
+    <ConfigFieldRenderer
       v-model="config.enable_pairing"
       setting-key="enable_pairing"
-      class="mb-3"
+      class="mt-8 mb-3"
     />
 
     <ConfigFieldRenderer

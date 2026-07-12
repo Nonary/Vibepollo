@@ -239,6 +239,43 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### app_disconnect_behavior
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controls what happens to the active application's process tree after the last streaming client disconnects.
+            RAM suspend keeps the game's RAM and GPU allocations resident and resumes it when a client reconnects.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            keep_running
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            app_disconnect_behavior = keep_running
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>keep_running</td>
+        <td>Leave the game running normally in the background.</td>
+    </tr>
+    <tr>
+        <td>suspend</td>
+        <td>RAM-suspend the complete game process tree until a client reconnects.</td>
+    </tr>
+    <tr>
+        <td>terminate</td>
+        <td>Close the game when the last client disconnects.</td>
+    </tr>
+</table>
+
 ### notify_pre_releases
 
 <table>

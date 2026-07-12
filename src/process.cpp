@@ -108,6 +108,27 @@ namespace proc {
     constexpr int LOSSLESS_SHARPNESS_MIN = 1;
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
 
+    std::optional<disconnect_behavior_e> parse_disconnect_behavior(std::string_view value) {
+      auto normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
+      if (normalized == "keep_running") {
+        return disconnect_behavior_e::keep_running;
+      }
+      if (normalized == "suspend") {
+        return disconnect_behavior_e::suspend;
+      }
+      if (normalized == "terminate") {
+        return disconnect_behavior_e::terminate;
+      }
+      return std::nullopt;
+    }
+
+    disconnect_behavior_e effective_disconnect_behavior(const ctx_t &app) {
+      if (app.disconnect_behavior_override) {
+        return *app.disconnect_behavior_override;
+      }
+      return parse_disconnect_behavior(config::stream.app_disconnect_behavior).value_or(disconnect_behavior_e::keep_running);
+    }
+
     constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
     constexpr const char *ENV_LOSSLESS_CAPTURE_API = "SUNSHINE_LOSSLESS_SCALING_CAPTURE_API";
     constexpr const char *ENV_LOSSLESS_QUEUE_TARGET = "SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET";
@@ -1240,7 +1261,7 @@ namespace proc {
     _app_id = input_only_app_id;
     _app_name = "Remote Input";
     _app.uuid = REMOTE_INPUT_UUID;
-    _app.terminate_on_pause = true;
+    _app.disconnect_behavior_override = disconnect_behavior_e::terminate;
     allow_client_commands = false;
     placebo = true;
 
@@ -2284,7 +2305,8 @@ namespace proc {
       return;
     }
 
-    if (_app.terminate_on_pause) {
+    const auto disconnect_behavior = effective_disconnect_behavior(_app);
+    if (disconnect_behavior == disconnect_behavior_e::terminate) {
       BOOST_LOG(info) << "Terminating app [" << _app_name << "] when all clients are disconnected. Pause commands are skipped.";
       terminate();
       return;
@@ -2292,7 +2314,9 @@ namespace proc {
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
 
-    if (!suspend_process_tree()) {
+    if (disconnect_behavior == disconnect_behavior_e::keep_running) {
+      BOOST_LOG(info) << "Leaving app [" << _app_name << "] running while all clients are disconnected.";
+    } else if (!suspend_process_tree()) {
       BOOST_LOG(warning) << "RAM suspension failed for app [" << _app_name << "]; leaving the process tree running.";
     }
 
@@ -3720,7 +3744,22 @@ namespace proc {
         ctx.use_app_identity = util::get_non_string_json_value<bool>(app_node, "use-app-identity", false);
         ctx.per_client_app_identity = util::get_non_string_json_value<bool>(app_node, "per-client-app-identity", false);
         ctx.allow_client_commands = util::get_non_string_json_value<bool>(app_node, "allow-client-commands", true);
-        ctx.terminate_on_pause = util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false);
+        ctx.disconnect_behavior_override.reset();
+        bool has_disconnect_behavior = false;
+        if (auto behavior_it = app_node.find("disconnect-behavior"); behavior_it != app_node.end() && behavior_it->is_string()) {
+          const auto behavior_text = boost::algorithm::trim_copy(behavior_it->get<std::string>());
+          if (boost::iequals(behavior_text, "inherit")) {
+            has_disconnect_behavior = true;
+          } else if (auto behavior = parse_disconnect_behavior(behavior_text)) {
+            ctx.disconnect_behavior_override = *behavior;
+            has_disconnect_behavior = true;
+          } else {
+            BOOST_LOG(warning) << "Ignoring invalid disconnect behavior [" << behavior_text << "] for app [" << name << "].";
+          }
+        }
+        if (!has_disconnect_behavior && util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false)) {
+          ctx.disconnect_behavior_override = disconnect_behavior_e::terminate;
+        }
         ctx.gamepad = app_node.value("gamepad", "");
         const bool frame_generation_capture_fix_enabled =
           util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false)) ||
@@ -3934,7 +3973,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;
@@ -3968,7 +4007,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;
@@ -4002,7 +4041,7 @@ namespace proc {
         ctx.use_app_identity = false;
         ctx.per_client_app_identity = false;
         ctx.allow_client_commands = false;
-        ctx.terminate_on_pause = true;  // There's no need to keep an active input only session ongoing
+        ctx.disconnect_behavior_override = disconnect_behavior_e::terminate;  // There's no need to keep an active input only session ongoing
 
         ctx.elevated = false;
         ctx.auto_detach = true;
@@ -4038,7 +4077,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;

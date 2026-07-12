@@ -25,6 +25,7 @@ export type FrameGenerationProvider = 'lossless-scaling' | 'nvidia-smooth-motion
 export type FrameGenerationMode = 'off' | FrameGenerationProvider;
 export type AppVirtualDisplayMode = 'disabled' | 'per_client' | 'shared';
 export type RtxHdrMode = 'inherit' | 'enabled' | 'disabled';
+export type AppDisconnectBehavior = 'inherit' | 'keep_running' | 'suspend' | 'terminate';
 export type AppVirtualDisplayLayout =
   | 'exclusive'
   | 'extended'
@@ -67,7 +68,7 @@ export interface AppForm {
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
-  terminateOnPause: boolean;
+  disconnectBehavior: AppDisconnectBehavior;
   allowClientCommands: boolean;
   useAppIdentity: boolean;
   perClientAppIdentity: boolean;
@@ -124,6 +125,7 @@ export interface ServerApp {
   'wait-all'?: boolean;
   'exclude-global-state-cmd'?: boolean;
   'state-cmd'?: Array<{ do?: string; undo?: string; elevated?: boolean }>;
+  'disconnect-behavior'?: string;
   'terminate-on-pause'?: boolean;
   'virtual-display'?: boolean;
   'allow-client-commands'?: boolean;
