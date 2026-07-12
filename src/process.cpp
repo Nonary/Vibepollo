@@ -52,6 +52,7 @@
   #include "config_playnite.h"
   #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
+  #include "platform/windows/foreground_app.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
   #include "platform/windows/misc.h"
@@ -939,7 +940,10 @@ namespace proc {
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
+      _ram_suspended(other._ram_suspended),
+      _ram_process_group_suspended(other._ram_process_group_suspended),
 #ifdef _WIN32
+      _ram_suspended_external_processes(std::move(other._ram_suspended_external_processes)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
 #endif
@@ -959,6 +963,8 @@ namespace proc {
     _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
     other._lossless_profile_applied = false;
 #endif
+    other._ram_suspended = false;
+    other._ram_process_group_suspended = false;
   }
 
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
@@ -976,10 +982,15 @@ namespace proc {
       placebo = other.placebo;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
+      _ram_suspended = other._ram_suspended;
+      _ram_process_group_suspended = other._ram_process_group_suspended;
+      other._ram_suspended = false;
+      other._ram_process_group_suspended = false;
       _pipe = std::move(other._pipe);
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
 #ifdef _WIN32
+      _ram_suspended_external_processes = std::move(other._ram_suspended_external_processes);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -2223,6 +2234,10 @@ namespace proc {
   void proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
+    if (!resume_process_tree()) {
+      BOOST_LOG(error) << "Failed to resume the complete game process tree for app [" << _app_name << "].";
+    }
+
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
         _env["APOLLO_APP_STATUS"] = "RESUMING";
@@ -2277,6 +2292,10 @@ namespace proc {
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
 
+    if (!suspend_process_tree()) {
+      BOOST_LOG(warning) << "RAM suspension failed for app [" << _app_name << "]; leaving the process tree running.";
+    }
+
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
         _env["APOLLO_APP_STATUS"] = "PAUSING";
@@ -2319,6 +2338,95 @@ namespace proc {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
 #endif
+  }
+
+  bool proc_t::suspend_process_tree() {
+    std::scoped_lock lock(_ram_suspend_mutex);
+    if (_ram_suspended) {
+      return true;
+    }
+    if (placebo) {
+      return true;
+    }
+
+#ifdef _WIN32
+    if (!_app.playnite_id.empty()) {
+      std::uint32_t game_process_id = 0;
+      const auto foreground = platf::foreground_app::snapshot();
+      if (foreground.matches_active_app && foreground.foreground_pid != 0) {
+        game_process_id = static_cast<std::uint32_t>(foreground.foreground_pid);
+        BOOST_LOG(debug) << "RAM suspension: using matched foreground Playnite game PID=" << game_process_id;
+      } else {
+        const auto status = platf::playnite::get_active_game_status();
+        if (status.active && boost::iequals(status.id, _app.playnite_id)) {
+          game_process_id = status.process_id;
+          if (game_process_id != 0) {
+            BOOST_LOG(debug) << "RAM suspension: using Playnite-reported game PID=" << game_process_id;
+          }
+        }
+      }
+
+      if (game_process_id == 0) {
+        BOOST_LOG(warning) << "RAM suspension: Playnite did not provide a game PID and no matching foreground game was found.";
+        return false;
+      }
+
+      if (!platf::suspend_process_tree_by_pid(game_process_id, _ram_suspended_external_processes)) {
+        return false;
+      }
+    }
+#endif
+
+    if (_process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+      if (!platf::suspend_process_group((std::uintptr_t) _process_group.native_handle())) {
+#ifdef _WIN32
+        (void) platf::resume_suspended_processes(_ram_suspended_external_processes);
+#endif
+        return false;
+      }
+      _ram_process_group_suspended = true;
+    }
+
+    _ram_suspended = _ram_process_group_suspended;
+#ifdef _WIN32
+    _ram_suspended = _ram_suspended || !_ram_suspended_external_processes.empty();
+#endif
+    if (!_ram_suspended) {
+      return true;
+    }
+    BOOST_LOG(info) << "RAM-suspended the complete process tree for app [" << _app_name << "]; memory and GPU allocations remain owned by the game.";
+    return true;
+  }
+
+  bool proc_t::resume_process_tree() {
+    std::scoped_lock lock(_ram_suspend_mutex);
+    if (!_ram_suspended) {
+      return true;
+    }
+#ifdef _WIN32
+    const bool external_resumed = platf::resume_suspended_processes(_ram_suspended_external_processes);
+#else
+    constexpr bool external_resumed = true;
+#endif
+
+    bool process_group_resumed = true;
+    if (_ram_process_group_suspended) {
+      if (_process_group) {
+        process_group_resumed = platf::resume_process_group((std::uintptr_t) _process_group.native_handle());
+      }
+      if (process_group_resumed) {
+        _ram_process_group_suspended = false;
+      }
+    }
+
+    _ram_suspended = _ram_process_group_suspended;
+#ifdef _WIN32
+    _ram_suspended = _ram_suspended || !_ram_suspended_external_processes.empty();
+#endif
+    if (!_ram_suspended) {
+      BOOST_LOG(info) << "Resumed the RAM-suspended process tree for app [" << _app_name << "].";
+    }
+    return external_resumed && process_group_resumed && !_ram_suspended;
   }
 
   bool proc_t::foreground_window_matches_running_app() {
@@ -2407,6 +2515,9 @@ namespace proc {
   void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
+    if (!resume_process_tree()) {
+      BOOST_LOG(warning) << "Could not resume the RAM-suspended process tree before termination; forcing cleanup if graceful exit fails.";
+    }
     placebo = false;
 #ifdef _WIN32
     _deferred_launch = false;
@@ -2447,6 +2558,15 @@ namespace proc {
     terminate_process_group(_process, _process_group, remaining_timeout);
     _process = bp::child();
     _process_group = bp::group();
+    {
+      std::scoped_lock lock(_ram_suspend_mutex);
+      _ram_process_group_suspended = false;
+#ifdef _WIN32
+      _ram_suspended = !_ram_suspended_external_processes.empty();
+#else
+      _ram_suspended = false;
+#endif
+    }
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
 

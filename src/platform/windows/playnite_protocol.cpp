@@ -129,7 +129,9 @@ namespace platf::playnite {
         m.status_game_id = st.value("id", "");
         m.status_install_dir = st.value("installDir", "");
         m.status_exe = st.value("exe", "");
-        BOOST_LOG(debug) << "Playnite protocol: status name='" << m.status_name << "' id='" << m.status_game_id << "'";
+        m.status_process_id = st.value("processId", 0u);
+        BOOST_LOG(debug) << "Playnite protocol: status name='" << m.status_name << "' id='" << m.status_game_id
+                         << "' processId=" << m.status_process_id;
       }
     } catch (...) {
       BOOST_LOG(warning) << "Playnite protocol: failed to parse message";

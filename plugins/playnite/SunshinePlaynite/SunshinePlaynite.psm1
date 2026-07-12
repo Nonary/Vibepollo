@@ -1549,7 +1549,7 @@ function OnApplicationStarted() {
 ## Removed Process-CmdQueue (no longer used)
 
 function Build-StatusPayload {
-  param([string]$Name, [object]$Game)
+  param([string]$Name, [object]$Game, [int]$ProcessId = 0)
   $instDir = ''
   try { if ($Game.InstallDirectory) { $instDir = $Game.InstallDirectory } } catch {}
   try {
@@ -1593,6 +1593,7 @@ function Build-StatusPayload {
     }
   } catch {}
   $status = @{ name = $Name; id = $Game.Id.ToString(); installDir = $instDir; exe = (Get-GameActionInfo -Game $Game).exe }
+  if ($ProcessId -gt 0) { $status.processId = $ProcessId }
   return @{ type = 'status'; status = $status } | ConvertTo-Json -Depth 5 -Compress
 }
 
@@ -1643,9 +1644,9 @@ function Send-PayloadToLauncherConnections {
 }
 
 function Send-StatusMessage {
-  param([string]$Name, [object]$Game, [switch]$ReturnLauncherCount)
+  param([string]$Name, [object]$Game, [switch]$ReturnLauncherCount, [int]$ProcessId = 0)
   $payload = $null
-  try { $payload = Build-StatusPayload -Name $Name -Game $Game }
+  try { $payload = Build-StatusPayload -Name $Name -Game $Game -ProcessId $ProcessId }
   catch {
     Write-Log ("Status build failed: {0}" -f $_.Exception.Message)
     return
@@ -2008,7 +2009,9 @@ function Test-LauncherConnectionForGame {
 function OnGameStarted() {
   param($evnArgs)
   $game = $evnArgs.Game
-  Write-Log "OnGameStarted: $($game.Name) [$($game.Id)]"
+  $processId = 0
+  try { $processId = [int]$evnArgs.StartedProcessId } catch {}
+  Write-Log "OnGameStarted: $($game.Name) [$($game.Id)] processId=$processId"
   $gameId = $null
   try { $gameId = $game.Id } catch {}
   if (-not (Test-SunshineLaunchedGame -Id $gameId)) {
@@ -2020,7 +2023,7 @@ function OnGameStarted() {
   if (Test-SunshineLaunchedGame -Id $gameId) {
     Write-Log "OnGameStarted: sunshine-owned session" -Level 'DEBUG'
   }
-  Send-StatusMessage -Name 'gameStarted' -Game $game
+  Send-StatusMessage -Name 'gameStarted' -Game $game -ProcessId $processId
 }
 
 function OnGameStopped() {

@@ -79,15 +79,19 @@ namespace platf::playnite {
       g_install_dirs[lower_copy(id)] = dir;
     }
 
-    void remember_active_game_started(const std::string &id, const std::string &exe, const std::string &install_dir) {
+    void remember_active_game_started(const std::string &id, const std::string &exe, const std::string &install_dir, std::uint32_t process_id) {
       if (id.empty()) {
         return;
       }
       std::scoped_lock lk(g_active_game_mutex);
+      if (process_id == 0 && g_active_game.active && g_active_game.id == id) {
+        process_id = g_active_game.process_id;
+      }
       g_active_game.active = true;
       g_active_game.id = id;
       g_active_game.exe = exe;
       g_active_game.install_dir = install_dir;
+      g_active_game.process_id = process_id;
     }
 
     void remember_active_game_stopped(const std::string &id) {
@@ -787,7 +791,8 @@ namespace platf::playnite {
         BOOST_LOG(debug) << "Playnite: status '" << msg.status_name
                          << "' id='" << msg.status_game_id
                          << "' exe='" << msg.status_exe
-                         << "' installDir='" << msg.status_install_dir << "'";
+                         << "' installDir='" << msg.status_install_dir
+                         << "' processId=" << msg.status_process_id;
         if (!msg.status_game_id.empty() && !msg.status_install_dir.empty()) {
           // Cache the install dir (cheap) so the next sync can pull the game's high-resolution
           // icon. The heavy filesystem scan + icon extraction is intentionally NOT run here -- it
@@ -795,7 +800,7 @@ namespace platf::playnite {
           remember_install_dir(msg.status_game_id, msg.status_install_dir);
         }
         if (msg.status_name == "gameStarted") {
-          remember_active_game_started(msg.status_game_id, msg.status_exe, msg.status_install_dir);
+          remember_active_game_started(msg.status_game_id, msg.status_exe, msg.status_install_dir, msg.status_process_id);
           playnite_session_tracker().on_started(msg.status_game_id);
           platf::frame_limiter_streaming_refresh();
         } else if (msg.status_name == "gameStopped") {

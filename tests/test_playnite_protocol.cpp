@@ -122,7 +122,7 @@ TEST(PlayniteProtocol_Parse, Games_SkipsMissingId) {
 TEST(PlayniteProtocol_Parse, Status_ParsesFields) {
   std::string j = R"({
     "type":"status",
-    "status": {"name":"gameStarted","id":"guid-1","installDir":"C:/Games/X","exe":"C:/Games/X/game.exe"}
+    "status": {"name":"gameStarted","id":"guid-1","installDir":"C:/Games/X","exe":"C:/Games/X/game.exe","processId":4242}
   })";
   auto m = platf::playnite::parse(bytes(j));
   ASSERT_EQ(m.type, MessageType::Status);
@@ -130,6 +130,7 @@ TEST(PlayniteProtocol_Parse, Status_ParsesFields) {
   EXPECT_EQ(m.status_game_id, "guid-1");
   EXPECT_EQ(m.status_install_dir, "C:/Games/X");
   EXPECT_EQ(m.status_exe, "C:/Games/X/game.exe");
+  EXPECT_EQ(m.status_process_id, 4242u);
 }
 
 TEST(PlayniteProtocol_Parse, Status_ParsesFieldsWithUtf8Bom) {
@@ -139,4 +140,5 @@ TEST(PlayniteProtocol_Parse, Status_ParsesFieldsWithUtf8Bom) {
   ASSERT_EQ(m.type, MessageType::Status);
   EXPECT_EQ(m.status_name, "gameStarted");
   EXPECT_EQ(m.status_game_id, "bom-id");
+  EXPECT_EQ(m.status_process_id, 0u);
 }

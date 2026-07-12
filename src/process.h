@@ -238,6 +238,8 @@ namespace proc {
 
   private:
     int launch_app_commands();
+    bool suspend_process_tree();
+    bool resume_process_tree();
 
     int _app_id = 0;
     std::string _app_name;
@@ -263,8 +265,12 @@ namespace proc {
 
     bp::child _process;
     bp::group _process_group;
+    std::mutex _ram_suspend_mutex;
+    bool _ram_suspended {false};
+    bool _ram_process_group_suspended {false};
 
 #ifdef _WIN32
+    std::vector<std::uintptr_t> _ram_suspended_external_processes;
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
 #endif
