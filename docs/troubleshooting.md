@@ -32,6 +32,13 @@ Can't access the web UI?
 
 1. Check firewall rules.
 
+### Emoji in the Vibepollo name become symbols after an upgrade
+Upgrading from v1.15 to v1.16, v1.16 to v1.17, or v1.17 to v1.18 can replace emoji in the Vibepollo name with
+symbols. For example, 🦍 can become `ðŸ¦`; this has also been observed with 💝 and 🎀.
+
+As a workaround, replace the symbols with the original emoji after upgrading. The corrected name saves and works as
+expected.
+
 ### Controller works on Steam but not in games
 One trick might be to change Steam settings and check or uncheck the configuration to support Xbox/PlayStation
 controllers and leave only support for Generic controllers.
