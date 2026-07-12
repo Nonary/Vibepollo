@@ -146,6 +146,22 @@ namespace video {
     }
   };
 
+  struct encoder_platform_formats_amf: encoder_platform_formats_t {
+    encoder_platform_formats_amf(
+      const platf::mem_type_e &dev_type,
+      const platf::pix_fmt_e &pix_fmt_8bit,
+      const platf::pix_fmt_e &pix_fmt_10bit,
+      const platf::pix_fmt_e &pix_fmt_yuv444_8bit,
+      const platf::pix_fmt_e &pix_fmt_yuv444_10bit
+    ) {
+      encoder_platform_formats_t::dev_type = dev_type;
+      encoder_platform_formats_t::pix_fmt_8bit = pix_fmt_8bit;
+      encoder_platform_formats_t::pix_fmt_10bit = pix_fmt_10bit;
+      encoder_platform_formats_t::pix_fmt_yuv444_8bit = pix_fmt_yuv444_8bit;
+      encoder_platform_formats_t::pix_fmt_yuv444_10bit = pix_fmt_yuv444_10bit;
+    }
+  };
+
   struct encoder_t {
     std::string_view name;
 
@@ -180,7 +196,10 @@ namespace video {
       option_t(const option_t &) = default;
 
       std::string name;
-      std::variant<int, int *, std::optional<int> *, std::function<int()>, std::string, std::string *, std::function<const std::string(const config_t &)>> value;
+      struct optional_int_function_t {
+        std::function<std::optional<int>()> evaluate;
+      };
+      std::variant<int, int *, std::optional<int> *, std::function<int()>, optional_int_function_t, std::string, std::string *, std::function<const std::string(const config_t &)>> value;
 
       option_t(std::string &&name, decltype(value) &&value):
           name {std::move(name)},
@@ -262,6 +281,9 @@ namespace video {
 
 #ifdef _WIN32
   extern encoder_t amdvce;
+  // Legacy AMF workers can be detached when the AMD runtime wedges. Give the
+  // descriptor process lifetime so those workers cannot observe static teardown.
+  extern encoder_t &amdvce_legacy;
   extern encoder_t quicksync;
   extern encoder_t mediafoundation;
 #endif
@@ -401,13 +423,37 @@ namespace video {
     void *channel_data
   );
 
-  bool validate_encoder(encoder_t &encoder, bool expect_failure);
+  bool validate_encoder(
+    encoder_t &encoder,
+    bool expect_failure,
+    std::chrono::steady_clock::time_point shared_probe_deadline =
+      std::chrono::steady_clock::time_point::max());
 
   /**
    * @brief Check if we can allow probing for the encoders.
    * @return True if there should be no issues with the probing, false if we should prevent it.
    */
   bool allow_encoder_probing();
+
+#ifdef _WIN32
+  /**
+   * @brief Return whether an AMD watchdog worker can still be inside vendor code.
+   * @details Windows shutdown uses this to avoid tearing down process globals
+   * while an intentionally abandoned AMF worker may still unwind through them.
+   */
+  bool has_active_amf_watchdog_workers();
+
+  /**
+   * @brief Non-blocking check for AMD work which still owns encoder/display resources.
+   */
+  bool amf_teardown_pending();
+
+  /**
+   * @brief Wait until detached AMD driver work has released display ownership.
+   * @return true when virtual-display/topology cleanup can safely proceed.
+   */
+  bool wait_for_amf_teardown_completion();
+#endif
 
   /**
    * @brief Probe encoders and select the preferred encoder.

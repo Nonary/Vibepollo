@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -27,6 +28,7 @@ extern "C" {
   #include "nv_truehdr.h"
   #include "rtx_hdr_runtime.h"
 #endif
+#include "src/amf/amf_d3d11.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_config.h"
@@ -53,6 +55,10 @@ static void free_frame(AVFrame *frame) {
 using frame_t = util::safe_ptr<AVFrame, free_frame>;
 
 namespace platf::dxgi {
+
+  namespace {
+    std::atomic<int> g_active_native_amf_encoders {0};
+  }
 
   template<class T>
   buf_t make_buffer(device_t::pointer device, const T &t) {
@@ -424,6 +430,35 @@ namespace platf::dxgi {
 
   class d3d_base_encode_device final {
   public:
+    void enable_dynamic_output_textures() {
+      dynamic_output_textures = true;
+    }
+
+    bool prepare_display_lease(std::shared_ptr<platf::display_t> prepared_display) {
+      auto display_base = std::dynamic_pointer_cast<display_base_t>(std::move(prepared_display));
+      if (!display_base) {
+        return false;
+      }
+      detached_display_width = display_base->width;
+      detached_display_height = display_base->height;
+      detached_display_rotation = display_base->display_rotation;
+      display = std::move(display_base);
+      return true;
+    }
+
+    std::shared_ptr<display_base_t> release_display_lease_for_initialization() {
+      if (display) {
+        detached_display_width = display->width;
+        detached_display_height = display->height;
+        detached_display_rotation = display->display_rotation;
+      }
+      return std::move(display);
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<display_base_t> restored_display) {
+      display = std::move(restored_display);
+    }
+
     int convert(platf::img_t &img_base) {
       // Garbage collect mapped capture images whose weak references have expired
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
@@ -471,6 +506,10 @@ namespace platf::dxgi {
         device_ctx->PSSetShaderResources(0, 1, &emptyShaderResourceView);
       };
 
+      auto unbind_render_targets = [&]() {
+        device_ctx->OMSetRenderTargets(0, nullptr, nullptr);
+      };
+
       auto clear_output_to_black = [&]() -> bool {
         if (!ensure_black_texture_for_rtv_clear()) {
           return false;
@@ -478,12 +517,22 @@ namespace platf::dxgi {
 
         draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear, DXGI_FORMAT_B8G8R8A8_UNORM, false);
         rtvs_cleared = true;
+        if (dynamic_output_textures && output_texture) {
+          auto target = output_targets.find(output_texture);
+          if (target != output_targets.end()) {
+            target->second.cleared = true;
+          }
+        }
         unbind_shader_resource();
         return true;
       };
 
       if (img.blank) {
-        return clear_output_to_black() ? 0 : -1;
+        const bool cleared = clear_output_to_black();
+        if (dynamic_output_textures) {
+          unbind_render_targets();
+        }
+        return cleared ? 0 : -1;
       }
 
       auto &img_ctx = img_ctx_map[img.id];
@@ -660,6 +709,9 @@ namespace platf::dxgi {
         ensure_sdr_to_pq_params(encode_input_sdr_white_nits);
       }
       draw(*encode_input_res, out_Y_or_YUV_viewports, out_UV_viewport, encode_input_format, encode_input_sdr_to_pq);
+      if (dynamic_output_textures) {
+        unbind_render_targets();
+      }
 
       // Release encoder mutex to allow capture code to reuse this image
       if (release_encoder_mutex_now()) {
@@ -714,10 +766,71 @@ namespace platf::dxgi {
       this->color_matrix = std::move(color_matrix);
     }
 
+    int set_output_texture(ID3D11Texture2D *frame_texture) {
+      if (!frame_texture) {
+        return -1;
+      }
+      if (!dynamic_output_textures) {
+        BOOST_LOG(error) << "Attempted to rotate a fixed D3D11 encoder output texture";
+        return -1;
+      }
+      if (output_texture == frame_texture) {
+        return 0;
+      }
+
+      if (output_texture) {
+        auto current = output_targets.find(output_texture);
+        if (current != output_targets.end()) {
+          current->second.cleared = rtvs_cleared;
+        }
+      }
+
+      auto [target_it, inserted] = output_targets.try_emplace(frame_texture);
+      auto &target = target_it->second;
+      if (inserted) {
+        frame_texture->AddRef();
+        target.texture.reset(frame_texture);
+
+        auto create_rtv = [&](render_target_t &view, DXGI_FORMAT view_format) -> bool {
+          if (view_format == DXGI_FORMAT_UNKNOWN) {
+            return true;
+          }
+          D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+          rtv_desc.Format = view_format;
+          rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+          const auto status = device->CreateRenderTargetView(frame_texture, &rtv_desc, &view);
+          if (FAILED(status)) {
+            BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(status);
+            return false;
+          }
+          return true;
+        };
+
+        if (!create_rtv(target.y_or_yuv, output_y_or_yuv_rtv_format) ||
+            !create_rtv(target.uv, output_uv_rtv_format)) {
+          output_targets.erase(target_it);
+          return -1;
+        }
+
+        if (output_rtv_simple_clear) {
+          const float y_black[] = {0.0f, 0.0f, 0.0f, 0.0f};
+          device_ctx->ClearRenderTargetView(target.y_or_yuv.get(), y_black);
+          if (target.uv) {
+            const float uv_black[] = {0.5f, 0.5f, 0.5f, 0.5f};
+            device_ctx->ClearRenderTargetView(target.uv.get(), uv_black);
+          }
+          target.cleared = true;
+        }
+      }
+
+      output_texture = frame_texture;
+      out_Y_or_YUV_rtv = target.y_or_yuv.get();
+      out_UV_rtv = target.uv.get();
+      rtvs_cleared = target.cleared;
+      return 0;
+    }
+
     int init_output(ID3D11Texture2D *frame_texture, int width, int height, const ::video::sunshine_colorspace_t &colorspace) {
-      // The underlying frame pool owns the texture, so we must reference it for ourselves
-      frame_texture->AddRef();
-      output_texture.reset(frame_texture);
 
       HRESULT status = S_OK;
 
@@ -740,7 +853,14 @@ namespace platf::dxgi {
     return -1; \
   }
 
-      const bool downscaling = display->width > width || display->height > height;
+      const auto display_width = display ? display->width : detached_display_width;
+      const auto display_height = display ? display->height : detached_display_height;
+      const auto display_rotation = display ? display->display_rotation : detached_display_rotation;
+      if (display_width <= 0 || display_height <= 0) {
+        BOOST_LOG(error) << "Missing source display geometry for D3D11 encoder initialization";
+        return -1;
+      }
+      const bool downscaling = display_width > width || display_height > height;
       const bool target_hdr = ::video::colorspace_is_hdr(colorspace);
 
       switch (format) {
@@ -842,8 +962,8 @@ namespace platf::dxgi {
       auto out_width = width;
       auto out_height = height;
 
-      float in_width = display->width;
-      float in_height = display->height;
+      float in_width = display_width;
+      float in_height = display_height;
 
       // Ensure aspect ratio is maintained
       auto scalar = std::fminf(out_width / in_width, out_height / in_height);
@@ -879,7 +999,7 @@ namespace platf::dxgi {
       device_ctx->VSSetConstantBuffers(0, 1, &subsample_offset);
 
       {
-        int32_t rotation_modifier = display->display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED ? 0 : display->display_rotation - 1;
+        int32_t rotation_modifier = display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED ? 0 : display_rotation - 1;
         int32_t rotation_data[16 / sizeof(int32_t)] {-rotation_modifier};  // aligned to 16-byte
         auto rotation = make_buffer(device.get(), rotation_data);
         if (!rotation) {
@@ -889,33 +1009,33 @@ namespace platf::dxgi {
         device_ctx->VSSetConstantBuffers(1, 1, &rotation);
       }
 
-      DXGI_FORMAT rtv_Y_or_YUV_format = DXGI_FORMAT_UNKNOWN;
-      DXGI_FORMAT rtv_UV_format = DXGI_FORMAT_UNKNOWN;
-      bool rtv_simple_clear = false;
+      output_y_or_yuv_rtv_format = DXGI_FORMAT_UNKNOWN;
+      output_uv_rtv_format = DXGI_FORMAT_UNKNOWN;
+      output_rtv_simple_clear = false;
 
       switch (format) {
         case DXGI_FORMAT_NV12:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R8_UNORM;
-          rtv_UV_format = DXGI_FORMAT_R8G8_UNORM;
-          rtv_simple_clear = true;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R8_UNORM;
+          output_uv_rtv_format = DXGI_FORMAT_R8G8_UNORM;
+          output_rtv_simple_clear = true;
           break;
 
         case DXGI_FORMAT_P010:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R16_UNORM;
-          rtv_UV_format = DXGI_FORMAT_R16G16_UNORM;
-          rtv_simple_clear = true;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R16_UNORM;
+          output_uv_rtv_format = DXGI_FORMAT_R16G16_UNORM;
+          output_rtv_simple_clear = true;
           break;
 
         case DXGI_FORMAT_AYUV:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R8G8B8A8_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R8G8B8A8_UINT;
           break;
 
         case DXGI_FORMAT_R16_UINT:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R16_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R16_UINT;
           break;
 
         case DXGI_FORMAT_Y410:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R10G10B10A2_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R10G10B10A2_UINT;
           break;
 
         default:
@@ -923,44 +1043,48 @@ namespace platf::dxgi {
           return -1;
       }
 
-      auto create_rtv = [&](auto &rt, DXGI_FORMAT rt_format) -> bool {
-        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
-        rtv_desc.Format = rt_format;
-        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+      if (dynamic_output_textures) {
+        return set_output_texture(frame_texture);
+      }
 
-        auto status = device->CreateRenderTargetView(output_texture.get(), &rtv_desc, &rt);
-        if (FAILED(status)) {
-          BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(status);
+      // Preserve the original fixed-output path for NVENC and legacy/shared D3D
+      // users. Native AMF alone opts into the rotating texture map above.
+      frame_texture->AddRef();
+      fixed_output_texture.reset(frame_texture);
+
+      auto create_fixed_rtv = [&](auto &target, DXGI_FORMAT view_format) -> bool {
+        if (view_format == DXGI_FORMAT_UNKNOWN) {
+          return true;
+        }
+        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+        rtv_desc.Format = view_format;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        const auto create_status = device->CreateRenderTargetView(fixed_output_texture.get(), &rtv_desc, &target);
+        if (FAILED(create_status)) {
+          BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(create_status);
           return false;
         }
-
         return true;
       };
 
-      // Create Y/YUV render target view
-      if (!create_rtv(out_Y_or_YUV_rtv, rtv_Y_or_YUV_format)) {
+      if (!create_fixed_rtv(fixed_out_Y_or_YUV_rtv, output_y_or_yuv_rtv_format) ||
+          !create_fixed_rtv(fixed_out_UV_rtv, output_uv_rtv_format)) {
         return -1;
       }
+      out_Y_or_YUV_rtv = fixed_out_Y_or_YUV_rtv.get();
+      out_UV_rtv = fixed_out_UV_rtv.get();
 
-      // Create UV render target view if needed
-      if (rtv_UV_format != DXGI_FORMAT_UNKNOWN && !create_rtv(out_UV_rtv, rtv_UV_format)) {
-        return -1;
-      }
-
-      if (rtv_simple_clear) {
-        // Clear the RTVs to ensure the aspect ratio padding is black
+      if (output_rtv_simple_clear) {
         const float y_black[] = {0.0f, 0.0f, 0.0f, 0.0f};
-        device_ctx->ClearRenderTargetView(out_Y_or_YUV_rtv.get(), y_black);
+        device_ctx->ClearRenderTargetView(out_Y_or_YUV_rtv, y_black);
         if (out_UV_rtv) {
           const float uv_black[] = {0.5f, 0.5f, 0.5f, 0.5f};
-          device_ctx->ClearRenderTargetView(out_UV_rtv.get(), uv_black);
+          device_ctx->ClearRenderTargetView(out_UV_rtv, uv_black);
         }
         rtvs_cleared = true;
       } else {
-        // Can't use ClearRenderTargetView(), will clear on first convert()
         rtvs_cleared = false;
       }
-
       return 0;
     }
 
@@ -989,6 +1113,15 @@ namespace platf::dxgi {
         default:
           BOOST_LOG(error) << "D3D11 backend doesn't support pixel format: " << from_pix_fmt(pix_fmt);
           return -1;
+      }
+
+      if (display) {
+        if (!prepare_display_lease(std::move(display))) {
+          return -1;
+        }
+      } else if (!this->display && (detached_display_width <= 0 || detached_display_height <= 0)) {
+        BOOST_LOG(error) << "Missing prepared display state for deferred D3D11 encoder initialization";
+        return -1;
       }
 
       D3D_FEATURE_LEVEL featureLevels[] {
@@ -1055,12 +1188,6 @@ namespace platf::dxgi {
       }
       device_ctx->VSSetConstantBuffers(3, 1, &color_matrix);
       device_ctx->PSSetConstantBuffers(0, 1, &color_matrix);
-
-      this->display = std::dynamic_pointer_cast<display_base_t>(display);
-      if (!this->display) {
-        return -1;
-      }
-      display = nullptr;
 
       blend_disable = make_blend(device.get(), false, false);
       if (!blend_disable) {
@@ -1384,9 +1511,12 @@ namespace platf::dxgi {
     // below that still references the capture device -- the encoder's own D3D11 device/context and the
     // shared encoder textures + keyed mutexes in img_ctx_map (opened from the capture device via
     // OpenSharedResource1). If `display` were released first, the capture thread could destroy the capture
-    // device concurrently with this device's DestroyDriverInstance, faulting the NVIDIA UMD on a freed
+    // device concurrently with this device's DestroyDriverInstance, faulting the GPU UMD on a freed
     // cross-device shared-resource dependency.
     std::shared_ptr<display_base_t> display;
+    int detached_display_width = 0;
+    int detached_display_height = 0;
+    DXGI_MODE_ROTATION detached_display_rotation = DXGI_MODE_ROTATION_UNSPECIFIED;
 
     // Keep the underlying D3D device/context alive until after all dependent resources have been released.
     device_t device;
@@ -1412,7 +1542,21 @@ namespace platf::dxgi {
     bool truehdr_native_hdr_readback_failure_logged = false;
 #endif
 
-    texture2d_t output_texture;
+    struct output_target_t {
+      texture2d_t texture;
+      render_target_t y_or_yuv;
+      render_target_t uv;
+      bool cleared = false;
+    };
+
+    ID3D11Texture2D *output_texture = nullptr;
+    std::map<ID3D11Texture2D *, output_target_t> output_targets;
+    texture2d_t fixed_output_texture;
+    render_target_t fixed_out_Y_or_YUV_rtv;
+    render_target_t fixed_out_UV_rtv;
+    DXGI_FORMAT output_y_or_yuv_rtv_format = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT output_uv_rtv_format = DXGI_FORMAT_UNKNOWN;
+    bool output_rtv_simple_clear = false;
     texture2d_t black_texture_for_clear;
     shader_res_t black_texture_for_clear_srv;
 
@@ -1424,9 +1568,10 @@ namespace platf::dxgi {
     blend_t blend_disable;
     sampler_state_t sampler_linear;
 
-    render_target_t out_Y_or_YUV_rtv;
-    render_target_t out_UV_rtv;
+    ID3D11RenderTargetView *out_Y_or_YUV_rtv = nullptr;
+    ID3D11RenderTargetView *out_UV_rtv = nullptr;
     bool rtvs_cleared = false;
+    bool dynamic_output_textures = false;
 
     // d3d_img_t::id -> encoder_img_ctx_t
     // These store the encoder textures for each img_t that passes through
@@ -1455,12 +1600,55 @@ namespace platf::dxgi {
     DXGI_FORMAT format;
   };
 
+  bool is_codec_supported_for_adapter(
+    const DXGI_ADAPTER_DESC &adapter_desc,
+    std::string_view name,
+    const ::video::config_t &config);
+
   class d3d_avcodec_encode_device_t: public avcodec_encode_device_t {
   public:
     int init(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
-      int result = base.init(display, adapter_p, pix_fmt);
+      if (!prepare_device(std::move(display), adapter_p, pix_fmt)) return -1;
+      return initialize_hardware_device() ? 0 : -1;
+    }
+
+    bool prepare_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt,
+                        bool defer_adapter_description = false) {
+      if (!adapter_p || !base.prepare_display_lease(std::move(display))) return false;
+      if (!defer_adapter_description) {
+        adapter_p->GetDesc(&adapter_desc);
+        adapter_desc_valid = true;
+      }
+      adapter_p->AddRef();
+      initialization_adapter.reset(adapter_p);
+      buffer_format = pix_fmt;
+      return true;
+    }
+
+    bool initialize_hardware_device() override {
+      if (data) return true;
+      if (!cache_adapter_description() || base.init(nullptr, initialization_adapter.get(), buffer_format) != 0) {
+        return false;
+      }
       data = base.device.get();
-      return result;
+      initialization_adapter.reset();
+      return true;
+    }
+
+    std::shared_ptr<platf::display_t> release_display_lease_for_initialization() override {
+      return base.release_display_lease_for_initialization();
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) override {
+      base.restore_display_lease_after_initialization(
+        std::dynamic_pointer_cast<display_base_t>(std::move(display)));
+    }
+
+    bool is_codec_supported(std::string_view name, const ::video::config_t &config) override {
+      if (!cache_adapter_description()) {
+        return false;
+      }
+      return is_codec_supported_for_adapter(adapter_desc, name, config);
     }
 
     int convert(platf::img_t &img_base) override {
@@ -1541,8 +1729,23 @@ namespace platf::dxgi {
     }
 
   private:
+    bool cache_adapter_description() {
+      if (adapter_desc_valid) {
+        return true;
+      }
+      if (!initialization_adapter || FAILED(initialization_adapter->GetDesc(&adapter_desc))) {
+        return false;
+      }
+      adapter_desc_valid = true;
+      return true;
+    }
+
     d3d_base_encode_device base;
     frame_t hwframe;
+    adapter_t initialization_adapter;
+    DXGI_ADAPTER_DESC adapter_desc {};
+    bool adapter_desc_valid = false;
+    pix_fmt_e buffer_format = pix_fmt_e::unknown;
   };
 
   class d3d_nvenc_encode_device_t: public nvenc_encode_device_t {
@@ -1600,6 +1803,252 @@ namespace platf::dxgi {
     d3d_base_encode_device base;
     std::unique_ptr<nvenc::nvenc_d3d11> nvenc_d3d;
     NV_ENC_BUFFER_FORMAT buffer_format = NV_ENC_BUFFER_FORMAT_UNDEFINED;
+  };
+
+  // Native AMD AMF encode device. Like the NVENC device, it shares the
+  // d3d_base_encode_device colour-conversion pipeline and writes the converted
+  // NV12/P010 frame straight into the D3D11 texture the AMF encoder reads from
+  // (zero-copy). The AMF runtime is loaded dynamically inside amf_d3d11.
+  class d3d_amf_encode_device_t: public amf_encode_device_t {
+  public:
+    ~d3d_amf_encode_device_t() override {
+      if (registered_active_encoder) {
+        amf = nullptr;
+        amf_d3d.reset();
+        const auto remaining = g_active_native_amf_encoders.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        BOOST_LOG(info) << "AMF: native encoder session closed (active=" << remaining << ')';
+      }
+    }
+
+    bool prepare_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
+      if (!adapter_p || !base.prepare_display_lease(std::move(display))) {
+        return false;
+      }
+      // Initialization may be watchdog-owned and outlive ordinary config globals
+      // during shutdown. Capture every AMD option before the worker is started.
+      amd_config = config::video.amd;
+      DXGI_ADAPTER_DESC adapter_desc {};
+      if (SUCCEEDED(adapter_p->GetDesc(&adapter_desc))) {
+        adapter_compatibility_key =
+          std::to_string(adapter_desc.VendorId) + ':' +
+          std::to_string(adapter_desc.DeviceId) + ':' +
+          std::to_string(adapter_desc.SubSysId) + ':' +
+          std::to_string(adapter_desc.Revision) + ':' +
+          std::to_string(adapter_desc.AdapterLuid.HighPart) + ':' +
+          std::to_string(adapter_desc.AdapterLuid.LowPart);
+      }
+      adapter_p->AddRef();
+      initialization_adapter.reset(adapter_p);
+      buffer_format = pix_fmt;
+      return true;
+    }
+
+    bool initialize_hardware_device() override {
+      if (amf_d3d) {
+        return true;
+      }
+      if (!initialization_adapter || base.init(nullptr, initialization_adapter.get(), buffer_format)) {
+        return false;
+      }
+
+      // Async encoder teardown may destroy D3D resources on a different thread.
+      multithread_t mt;
+      auto status = base.device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
+      if (SUCCEEDED(status)) {
+        mt->SetMultithreadProtected(TRUE);
+      } else {
+        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+      }
+
+      amf_d3d = ::amf::create_amf_d3d11(base.device.get());
+      if (!amf_d3d) {
+        return false;
+      }
+
+      base.enable_dynamic_output_textures();
+      amf = amf_d3d.get();
+      initialization_adapter.reset();
+      return true;
+    }
+
+    bool is_codec_supported(std::string_view name, const ::video::config_t &config) override {
+      if (!initialization_adapter) {
+        return false;
+      }
+      DXGI_ADAPTER_DESC adapter_desc {};
+      if (FAILED(initialization_adapter->GetDesc(&adapter_desc))) {
+        return false;
+      }
+      // This includes LoadLibraryW/AMFQueryVersion. It is deliberately invoked
+      // only from the video-layer initialization worker, inside its watchdog.
+      return is_codec_supported_for_adapter(adapter_desc, name, config);
+    }
+
+    std::shared_ptr<platf::display_t> release_display_lease_for_initialization() override {
+      return base.release_display_lease_for_initialization();
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) override {
+      base.restore_display_lease_after_initialization(
+        std::dynamic_pointer_cast<display_base_t>(std::move(display)));
+    }
+
+    void set_input_queue_size_override(std::optional<int> input_queue_size) override {
+      input_queue_size_override = input_queue_size;
+    }
+
+    std::string runtime_compatibility_key() const override {
+      return adapter_compatibility_key;
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      if (!amf_d3d) {
+        return false;
+      }
+
+      ::amf::amf_config amf_cfg;
+      // Initialization is single-flight at the video layer. Count this session
+      // as active only after AMF Init succeeds so a timed-out vendor call cannot
+      // permanently poison concurrency policy for every later session.
+      const auto active_encoder_count = g_active_native_amf_encoders.load(std::memory_order_acquire) + 1;
+      BOOST_LOG(info) << "AMF: creating native encoder session " << client_config.width << 'x' << client_config.height
+                      << '@' << client_config.framerate << " codec=" << client_config.videoFormat
+                      << " bitrate=" << client_config.bitrate << "kbps (active=" << active_encoder_count << ')';
+
+      // AMF SDK integer values are passed straight through from the existing
+      // amd_* config (shared with the FFmpeg amdvce_legacy path).
+      if (client_config.videoFormat == 0) {
+        amf_cfg.usage = amd_config.amd_usage_h264;
+        amf_cfg.quality_preset = amd_config.amd_quality_h264;
+        amf_cfg.rc_mode = amd_config.amd_rc_h264;
+      } else if (client_config.videoFormat == 1) {
+        amf_cfg.usage = amd_config.amd_usage_hevc;
+        amf_cfg.quality_preset = amd_config.amd_quality_hevc;
+        amf_cfg.rc_mode = amd_config.amd_rc_hevc;
+      } else {
+        amf_cfg.usage = amd_config.amd_usage_av1;
+        amf_cfg.quality_preset = amd_config.amd_quality_av1;
+        amf_cfg.rc_mode = amd_config.amd_rc_av1;
+      }
+
+      amf_cfg.vbaq = amd_config.amd_vbaq;
+      amf_cfg.enforce_hrd = amd_config.amd_enforce_hrd;
+      amf_cfg.qvbr_quality_level = amd_config.amd_qvbr_quality_level;
+      amf_cfg.h264_cabac = ::amf::lifecycle::resolve_h264_cabac(amd_config.amd_coder);
+
+      // QVBR/HQVBR/HQCBR require PreAnalysis. Native AMF uses AMD's one-frame
+      // ultra-low-latency PA depth so those modes stay native without inheriting
+      // the much deeper transcoding/high-quality lookahead defaults.
+      const auto preanalysis_plan = ::amf::lifecycle::resolve_preanalysis(
+        amf_cfg.rc_mode,
+        amd_config.amd_preanalysis);
+      amf_cfg.preanalysis = preanalysis_plan.enabled ? 1 : 0;
+      if (preanalysis_plan.enabled) {
+        amf_cfg.pa_lookahead_depth = preanalysis_plan.lookahead_depth;
+        if (preanalysis_plan.enabled_for_rate_control &&
+            (!amd_config.amd_preanalysis || !*amd_config.amd_preanalysis)) {
+          BOOST_LOG(info) << "AMF: enabling native PreAnalysis required by the selected rate-control mode";
+        }
+      }
+
+      // AMF statistics feedback changes the driver submission path and is not a
+      // harmless consequence of debug logging. Keep it disabled unless a dedicated
+      // diagnostic option is added; normal debug logs must exercise the production
+      // encoder path.
+      amf_cfg.enable_statistics_feedback = false;
+
+      // Native-AMF tuning knobs.
+      amf_cfg.max_ltr_frames = amd_config.amd_ltr_frames;  // 0 = RFI off
+      if (amd_config.amd_input_queue_size > 0) {
+        amf_cfg.input_queue_size = amd_config.amd_input_queue_size;
+      }
+      if (input_queue_size_override) {
+        amf_cfg.input_queue_size = input_queue_size_override;
+        BOOST_LOG(info) << "AMF: using adapter-compatible PreAnalysis input queue "
+                        << *input_queue_size_override;
+      }
+
+      // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
+      // leaves the AMF driver default untouched, so behavior is unchanged unless the
+      // user opts in. Tri-state knobs map nullopt -> unset, 1 -> true, 0 -> false.
+      auto amf_tristate = [](const std::optional<int> &v) -> std::optional<bool> {
+        if (!v) {
+          return std::nullopt;
+        }
+        return *v != 0;
+      };
+      amf_cfg.lowlatency_mode = amf_tristate(amd_config.amd_lowlatency_mode);
+      const auto smart_access_video_plan = ::amf::lifecycle::resolve_smart_access_video(
+        amf_tristate(amd_config.amd_smart_access_video),
+        amf_cfg.lowlatency_mode);
+      amf_cfg.smart_access_video = smart_access_video_plan.enabled;
+      if (smart_access_video_plan.disabled_for_low_latency) {
+        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because AMF Low Latency Mode is enabled;"
+                              " this combination has caused AMD GPU watchdog resets";
+      }
+      amf_cfg.high_motion_quality_boost_enable = amf_tristate(amd_config.amd_high_motion_quality_boost);
+      amf_cfg.av1_screen_content_tools = amf_tristate(amd_config.amd_av1_screen_content);
+      amf_cfg.av1_encoding_latency_mode = amd_config.amd_av1_latency_mode;
+
+      const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
+        active_encoder_count,
+        amf_cfg.lowlatency_mode,
+        amf_cfg.high_motion_quality_boost_enable);
+      amf_cfg.lowlatency_mode = concurrent_feature_plan.low_latency_mode;
+      amf_cfg.high_motion_quality_boost_enable = concurrent_feature_plan.high_motion_quality_boost;
+      if (concurrent_feature_plan.overrides_suppressed) {
+        BOOST_LOG(warning) << "AMF: preserving concurrent native session by leaving the optional"
+                              " Low Latency Mode/high-motion overrides unset; the AMF ultra-low-latency"
+                              " usage preset remains active";
+      }
+
+      if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
+        return false;
+      }
+      const auto registered_count = g_active_native_amf_encoders.fetch_add(1, std::memory_order_acq_rel) + 1;
+      registered_active_encoder = true;
+      if (registered_count != active_encoder_count) {
+        BOOST_LOG(debug) << "AMF: active session count changed during initialization (planned="
+                         << active_encoder_count << ", registered=" << registered_count << ')';
+      }
+      return true;
+    }
+
+    bool finish_encoder_initialization(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      base.apply_colorspace(colorspace, client_config.rtx_hdr_active);
+      return base.init_output(
+               static_cast<ID3D11Texture2D *>(amf_d3d->get_input_texture()),
+               client_config.width,
+               client_config.height,
+               colorspace) == 0;
+    }
+
+    int convert(platf::img_t &img_base) override {
+      auto *render_target = amf_d3d->acquire_input_texture_for_render();
+      if (!render_target || base.set_output_texture(render_target) != 0) {
+        amf_d3d->cancel_input_texture_for_render();
+        return -1;
+      }
+
+      const auto result = base.convert(img_base);
+      if (result != 0) {
+        amf_d3d->cancel_input_texture_for_render();
+      } else if (!amf_d3d->commit_input_texture_for_render()) {
+        amf_d3d->cancel_input_texture_for_render();
+        return -1;
+      }
+      return result;
+    }
+
+  private:
+    d3d_base_encode_device base;
+    decltype(config::video.amd) amd_config {};
+    std::unique_ptr<::amf::amf_d3d11> amf_d3d;
+    adapter_t initialization_adapter;
+    platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
+    std::string adapter_compatibility_key;
+    std::optional<int> input_queue_size_override;
+    bool registered_active_encoder = false;
   };
 
   bool set_cursor_texture(device_t::pointer device, gpu_cursor_t &cursor, util::buffer_t<std::uint8_t> &&cursor_img, DXGI_OUTDUPL_POINTER_SHAPE_INFO &shape_info) {
@@ -2274,10 +2723,10 @@ namespace platf::dxgi {
    * @param config The codec configuration.
    * @return `true` if supported, `false` otherwise.
    */
-  bool display_vram_t::is_codec_supported(std::string_view name, const ::video::config_t &config) {
-    DXGI_ADAPTER_DESC adapter_desc;
-    adapter->GetDesc(&adapter_desc);
-
+  bool is_codec_supported_for_adapter(
+    const DXGI_ADAPTER_DESC &adapter_desc,
+    std::string_view name,
+    const ::video::config_t &config) {
     if (adapter_desc.VendorId == 0x1002) {  // AMD
       // If it's not an AMF encoder, it's not compatible with an AMD GPU
       if (!boost::algorithm::ends_with(name, "_amf")) {
@@ -2358,6 +2807,12 @@ namespace platf::dxgi {
     return true;
   }
 
+  bool display_vram_t::is_codec_supported(std::string_view name, const ::video::config_t &config) {
+    DXGI_ADAPTER_DESC adapter_desc {};
+    adapter->GetDesc(&adapter_desc);
+    return is_codec_supported_for_adapter(adapter_desc, name, config);
+  }
+
   std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_avcodec_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_avcodec_encode_device_t>();
     if (device->init(shared_from_this(), adapter.get(), pix_fmt) != 0) {
@@ -2366,9 +2821,27 @@ namespace platf::dxgi {
     return device;
   }
 
+  std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_avcodec_encode_device_t>();
+    if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt, true)) {
+      return nullptr;
+    }
+    return device;
+  }
+
   std::unique_ptr<nvenc_encode_device_t> display_vram_t::make_nvenc_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_nvenc_encode_device_t>();
     if (!device->init_device(shared_from_this(), adapter.get(), pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+
+  std::unique_ptr<amf_encode_device_t> display_vram_t::make_amf_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_amf_encode_device_t>();
+    // This path must remain free of driver calls. The video-layer watchdog owns
+    // D3D11CreateDevice and every subsequent AMF initialization/destruction call.
+    if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt)) {
       return nullptr;
     }
     return device;

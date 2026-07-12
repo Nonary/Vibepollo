@@ -454,6 +454,20 @@ jobs:
           cmake --build build --target all -j "$(nproc)"
           echo "::remove-matcher owner=gcc::"
 
+      - name: Test native AMF lifecycle behavior
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          c++ \
+            -std=gnu++23 \
+            -O2 \
+            -pthread \
+            -DSUNSHINE_AMF_LIFECYCLE_STANDALONE \
+            -I. \
+            tests/unit/platform/windows/test_native_amf_review.cpp \
+            -o build/native-amf-lifecycle-test.exe
+          ./build/native-amf-lifecycle-test.exe
+
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         shell: pwsh

@@ -169,6 +169,22 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef _WIN32
+  // A watchdog timeout deliberately leaves the owning AMD worker in vendor code.
+  // Construct this immediately after the logging guard so all later subsystem
+  // guards unwind first. If an AMF worker is still active, terminate through the
+  // OS before CRT/static teardown can destroy config, logging, or synchronization
+  // objects underneath that worker.
+  auto abandoned_amf_shutdown_guard = util::fail_guard([]() {
+    if (!video::has_active_amf_watchdog_workers()) {
+      return;
+    }
+    BOOST_LOG(warning) << "AMF: watchdog worker still active during shutdown; bypassing CRT teardown"sv;
+    logging::log_flush();
+    ExitProcess(static_cast<UINT>(lifetime::desired_exit_code.load(std::memory_order_acquire)));
+  });
+#endif
+
+#ifdef _WIN32
   const auto app_user_model_id_status =
     SetCurrentProcessExplicitAppUserModelID(WIDEN_STRING_LITERAL(PROJECT_APP_USER_MODEL_ID));
   if (FAILED(app_user_model_id_status)) {

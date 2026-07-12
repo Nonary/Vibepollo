@@ -182,6 +182,16 @@ namespace stream {
           return;
         }
 
+        if (!video::wait_for_amf_teardown_completion()) {
+          BOOST_LOG(error) << "Display cleanup: AMD teardown still owns the display generation after the paused cleanup deadline; preserving topology";
+          return;
+        }
+        if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
+            session::running_sessions.load(std::memory_order_acquire) != 0 ||
+            webrtc_stream::has_active_sessions()) {
+          return;
+        }
+
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
                         << reason << ").";
         const auto cleanup = platf::virtual_display_cleanup::run(
@@ -195,6 +205,44 @@ namespace stream {
           display_helper_integration::stop_watchdog();
         }
       }).detach();
+    }
+
+    void schedule_display_cleanup_after_amf(
+      std::string reason,
+      bool enforce_display_restore,
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes
+    ) {
+      const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+      try {
+        std::thread([generation, reason = std::move(reason), enforce_display_restore,
+                     virtual_display_guid_bytes]() {
+          if (!video::wait_for_amf_teardown_completion()) {
+            BOOST_LOG(error) << "Display cleanup: AMD teardown did not release its display generation; preserving virtual display/topology";
+            return;
+          }
+          if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
+              session::running_sessions.load(std::memory_order_acquire) != 0 ||
+              webrtc_stream::has_active_sessions()) {
+            return;
+          }
+
+          const auto cleanup = platf::virtual_display_cleanup::run(
+            reason,
+            enforce_display_restore,
+            platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
+            true,
+            virtual_display_guid_bytes
+          );
+          if (cleanup.helper_revert_dispatched) {
+            display_helper_integration::stop_watchdog();
+          }
+        }).detach();
+      } catch (const std::system_error &err) {
+        // Cleanup must remain deferred if its owning worker cannot be created;
+        // running it synchronously would recreate the disconnect/teardown race.
+        BOOST_LOG(error) << "Display cleanup: could not start AMD teardown waiter; preserving virtual display/topology: "
+                         << err.what();
+      }
     }
   }  // namespace
 #endif
@@ -2789,23 +2837,32 @@ namespace stream {
         } else if (keep_virtual_display_due_to_pause) {
           BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false, paused timeout disabled).";
         } else {
-          g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
           const auto cleanup_reason = is_paused && !revert_display_config ? "rtsp_session_paused" : "rtsp_session_end";
-          const auto cleanup = platf::virtual_display_cleanup::run(
-            cleanup_reason,
-            revert_display_config,
-            platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
-            true,
-            session.virtual_display.guid_bytes
-          );
-          if (cleanup.helper_revert_dispatched) {
-            // If we reverted the display configuration, the helper watchdog is no longer needed.
-            display_helper_integration::stop_watchdog();
-          } else if (revert_display_config) {
-            BOOST_LOG(debug) << "Display helper: revert dispatch failed; leaving watchdog running.";
-          } else if (is_paused) {
-            BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
-                            << "removed virtual display(s) without restoring physical display configuration.";
+          if (video::amf_teardown_pending()) {
+            BOOST_LOG(info) << "Display cleanup: deferring virtual display/topology changes until AMD teardown releases its resource graph.";
+            schedule_display_cleanup_after_amf(
+              cleanup_reason,
+              revert_display_config,
+              session.virtual_display.guid_bytes
+            );
+          } else {
+            g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+            const auto cleanup = platf::virtual_display_cleanup::run(
+              cleanup_reason,
+              revert_display_config,
+              platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
+              true,
+              session.virtual_display.guid_bytes
+            );
+            if (cleanup.helper_revert_dispatched) {
+              // If we reverted the display configuration, the helper watchdog is no longer needed.
+              display_helper_integration::stop_watchdog();
+            } else if (revert_display_config) {
+              BOOST_LOG(debug) << "Display helper: revert dispatch failed; leaving watchdog running.";
+            } else if (is_paused) {
+              BOOST_LOG(info) << "Display cleanup: session paused with revert-on-disconnect disabled; "
+                              << "removed virtual display(s) without restoring physical display configuration.";
+            }
           }
         }
 #else

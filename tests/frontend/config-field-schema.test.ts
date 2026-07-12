@@ -53,4 +53,18 @@ describe('configFieldSchema', () => {
       }).kind,
     ).toBe('checkbox');
   });
+
+  test.each(['amd_quality', 'amd_vbaq'])(
+    'renders %s as an auto-capable select',
+    (settingKey) => {
+      const field = getConfigFieldDefinition(settingKey, {
+        ...baseContext,
+        defaultValue: 'auto',
+        currentValue: 'auto',
+      });
+
+      expect(field.kind).toBe('select');
+      expect(field.options?.map(({ value }) => value)).toContain('auto');
+    },
+  );
 });

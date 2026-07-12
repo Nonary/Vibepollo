@@ -48,7 +48,13 @@ namespace nvenc {
   class nvenc_base;
 }
 
+namespace amf {
+  class amf_encoder;
+}
+
 namespace platf {
+  class display_t;
+
   // Limited by bits in activeGamepadMask
   constexpr auto MAX_GAMEPADS = 16;
 
@@ -399,6 +405,24 @@ namespace platf {
     void *data {};
     AVFrame *frame {};
 
+    virtual bool initialize_hardware_device() {
+      return true;
+    }
+
+    virtual std::shared_ptr<display_t> release_display_lease_for_initialization() {
+      return {};
+    }
+
+    virtual void restore_display_lease_after_initialization(std::shared_ptr<display_t> display) {
+      (void) display;
+    }
+
+    virtual bool is_codec_supported(std::string_view name, const video::config_t &config) {
+      (void) name;
+      (void) config;
+      return true;
+    }
+
     int convert(platf::img_t &img) override {
       return -1;
     }
@@ -440,6 +464,47 @@ namespace platf {
     virtual bool init_encoder(const video::config_t &client_config, const video::sunshine_colorspace_t &colorspace) = 0;
 
     nvenc::nvenc_base *nvenc = nullptr;
+  };
+
+  struct amf_encode_device_t: encode_device_t {
+    // Native backends prepare only non-driver state on the capture thread.
+    // D3D/AMF construction is invoked by the bounded initialization worker.
+    virtual bool initialize_hardware_device() {
+      return true;
+    }
+    virtual bool is_codec_supported(std::string_view name, const video::config_t &config) {
+      (void) name;
+      (void) config;
+      return true;
+    }
+    virtual bool init_encoder(const video::config_t &client_config, const video::sunshine_colorspace_t &colorspace) = 0;
+    virtual bool finish_encoder_initialization(const video::config_t &client_config, const video::sunshine_colorspace_t &colorspace) {
+      (void) client_config;
+      (void) colorspace;
+      return true;
+    }
+
+    // Some AMF runtimes need the documented default queue to prime a one-frame
+    // PreAnalysis pipeline. The video layer sets this only after a bounded probe
+    // has demonstrated that the user's smaller queue cannot make progress.
+    virtual void set_input_queue_size_override(std::optional<int> input_queue_size) {
+      (void) input_queue_size;
+    }
+    virtual std::string runtime_compatibility_key() const {
+      return {};
+    }
+
+    // Native AMF initialization is watchdog-bounded. A timed-out worker must not
+    // retain the capture display generation forever; Windows detaches this lease
+    // while Init runs and restores it only after successful ownership transfer.
+    virtual std::shared_ptr<display_t> release_display_lease_for_initialization() {
+      return {};
+    }
+    virtual void restore_display_lease_after_initialization(std::shared_ptr<display_t> display) {
+      (void) display;
+    }
+
+    amf::amf_encoder *amf = nullptr;
   };
 
   enum class capture_e : int {
@@ -505,7 +570,17 @@ namespace platf {
       return nullptr;
     }
 
+    // Windows legacy AMF alone needs D3D creation deferred into its watchdog.
+    // Other AVCodec backends retain their established synchronous behavior.
+    virtual std::unique_ptr<avcodec_encode_device_t> make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) {
+      return nullptr;
+    }
+
     virtual std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) {
+      return nullptr;
+    }
+
+    virtual std::unique_ptr<amf_encode_device_t> make_amf_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
     }
 

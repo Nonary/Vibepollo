@@ -294,7 +294,11 @@ namespace platf::dxgi {
 
     std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override;
 
+    std::unique_ptr<avcodec_encode_device_t> make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) override;
+
     std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) override;
+
+    std::unique_ptr<amf_encode_device_t> make_amf_encode_device(pix_fmt_e pix_fmt) override;
 
     std::atomic<uint32_t> next_image_id;
   };

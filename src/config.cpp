@@ -169,6 +169,15 @@ namespace config {
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR 1
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR 2
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR 3
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
   #define AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING 0
   #define AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY 2
@@ -211,21 +220,30 @@ namespace config {
       cbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_hevc_e : int {
       cbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_h264_e : int {
       cbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class usage_av1_e : int {
@@ -260,6 +278,9 @@ namespace config {
 
     template<class T>
     ::std::optional<int> quality_from_view(const ::std::string_view &quality_type, const ::std::optional<int>(&original)) {
+      if (quality_type == "auto"sv) {
+        return ::std::nullopt;
+      }
 #define _CONVERT_(x) \
   if (quality_type == #x##sv) \
   return (int) T::x
@@ -279,6 +300,9 @@ namespace config {
       _CONVERT_(cqp);
       _CONVERT_(vbr_latency);
       _CONVERT_(vbr_peak);
+      _CONVERT_(qvbr);
+      _CONVERT_(hqvbr);
+      _CONVERT_(hqcbr);
 #undef _CONVERT_
       return original;
     }
@@ -295,6 +319,40 @@ namespace config {
       _CONVERT_(webcam);
 #undef _CONVERT_
       return original;
+    }
+
+    // Tri-state knobs: explicit boolean spellings force the AMF property on/off;
+    // anything else (including "auto") returns nullopt so the usage preset's
+    // driver default is left untouched. Accept the legacy bool spellings because
+    // older configs may contain amd_vbaq=true/false rather than enabled/disabled.
+    ::std::optional<int> tristate_from_view(const ::std::string_view &value) {
+      if (value == "true"sv || value == "yes"sv || value == "enable"sv ||
+          value == "enabled"sv || value == "on"sv || value == "1"sv) {
+        return 1;
+      }
+      if (value == "false"sv || value == "no"sv || value == "disable"sv ||
+          value == "disabled"sv || value == "off"sv || value == "0"sv) {
+        return 0;
+      }
+      return ::std::nullopt;
+    }
+
+    // AV1 encoding-latency mode. "auto" leaves the driver default; the rest map to
+    // AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_ENUM values.
+    ::std::optional<int> av1_latency_from_view(const ::std::string_view &value) {
+      if (value == "none"sv) {
+        return 0;
+      }
+      if (value == "power_saving"sv) {
+        return 1;
+      }
+      if (value == "realtime"sv) {
+        return 2;
+      }
+      if (value == "lowest"sv) {
+        return 3;
+      }
+      return ::std::nullopt;
     }
 
     int coder_from_view(const ::std::string_view &coder) {
@@ -788,6 +846,7 @@ namespace config {
       (int) amd::rc_h264_e::vbr_latency,  // rate control (h264)
       (int) amd::rc_hevc_e::vbr_latency,  // rate control (hevc)
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
+      std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
       (int) amd::quality_h264_e::balanced,  // quality (h264)
       (int) amd::quality_hevc_e::balanced,  // quality (hevc)
@@ -795,6 +854,13 @@ namespace config {
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
+      0,  // ltr_frames (native AMF; 0 = off)
+      4,  // input_queue_size (native AMF; bounded streaming default)
+      std::nullopt,  // smart_access_video (auto)
+      std::nullopt,  // lowlatency_mode (auto)
+      std::nullopt,  // high_motion_quality_boost (auto)
+      std::nullopt,  // av1_screen_content (auto)
+      std::nullopt,  // av1_latency_mode (auto)
     },  // amd
 
     {
@@ -1635,6 +1701,18 @@ namespace config {
       video.amd.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, video.amd.amd_rc_av1);
     }
 
+    // Only forwarded to the encoder when the 'qvbr' rate control method is selected.
+    // 0 (or an unset value) leaves the level at the encoder default.
+    int qvbr_quality_level = 0;
+    int_f(vars, "amd_qvbr_quality_level", qvbr_quality_level);
+    if (qvbr_quality_level > 0) {
+      if (qvbr_quality_level > 51) {
+        BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
+      } else {
+        video.amd.amd_qvbr_quality_level = qvbr_quality_level;
+      }
+    }
+
     std::string usage;
     string_f(vars, "amd_usage", usage);
     if (!usage.empty()) {
@@ -1644,8 +1722,28 @@ namespace config {
     }
 
     bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
-    bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
+    int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
+
+    // Native AMF encoder (amdvce) tuning knobs.
+    int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
+    if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
+      BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
+      video.amd.amd_ltr_frames = std::clamp(video.amd.amd_ltr_frames, 0, 2);
+    }
+    int_f(vars, "amd_input_queue_size", video.amd.amd_input_queue_size);
+    if (video.amd.amd_input_queue_size < 0 || video.amd.amd_input_queue_size > 32) {
+      BOOST_LOG(warning) << "config: amd_input_queue_size must be between 0 and 32, clamping: "sv << video.amd.amd_input_queue_size;
+      video.amd.amd_input_queue_size = std::clamp(video.amd.amd_input_queue_size, 0, 32);
+    }
+
+    // Curated opt-in native-AMF feature knobs. Default "auto" leaves the AMF
+    // driver default untouched, so none of these change behavior unless enabled.
+    int_f(vars, "amd_smart_access_video", video.amd.amd_smart_access_video, amd::tristate_from_view);
+    int_f(vars, "amd_lowlatency_mode", video.amd.amd_lowlatency_mode, amd::tristate_from_view);
+    int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
+    int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
+    int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -2370,11 +2468,19 @@ namespace config {
         "qsv_slow_hevc",
         "amd_usage",
         "amd_rc",
+        "amd_qvbr_quality_level",
         "amd_enforce_hrd",
         "amd_quality",
         "amd_preanalysis",
         "amd_vbaq",
         "amd_coder",
+        "amd_ltr_frames",
+        "amd_input_queue_size",
+        "amd_smart_access_video",
+        "amd_lowlatency_mode",
+        "amd_high_motion_quality_boost",
+        "amd_av1_screen_content",
+        "amd_av1_latency_mode",
         "vt_coder",
         "vt_software",
         "vt_realtime",
