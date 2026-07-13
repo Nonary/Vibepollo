@@ -245,8 +245,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Controls what happens to the active application's process tree after the last streaming client disconnects.
-            RAM suspend keeps the game's RAM and GPU allocations resident and resumes it when a client reconnects.
+            Controls what happens to the active application after the last streaming client disconnects.
+            Keep running is the default. Suspend application is a best-effort pause that resumes through the normal
+            Vibepollo reconnect and application lifecycle.
         </td>
     </tr>
     <tr>
@@ -262,19 +263,43 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="2">Choices</td>
         <td>keep_running</td>
-        <td>Leave the game running normally in the background.</td>
+        <td>Leave the application running normally in the background.</td>
     </tr>
     <tr>
         <td>suspend</td>
-        <td>RAM-suspend the complete game process tree until a client reconnects.</td>
-    </tr>
-    <tr>
-        <td>terminate</td>
-        <td>Close the game when the last client disconnects.</td>
+        <td>Suspend the selected application until a client reconnects.</td>
     </tr>
 </table>
+
+Applications can override the global setting with the `disconnect-behavior` field in `apps.json`:
+
+- `inherit` or an omitted field uses the global setting.
+- `keep_running` leaves that application running.
+- `suspend` suspends that application.
+- `terminate` closes that application and preserves the old per-application **Close application** / `terminate-on-pause` behavior.
+
+For backward compatibility, `terminate-on-pause: true` maps to `terminate`, while `false` maps to `inherit`.
+An explicit `disconnect-behavior` value, including `inherit`, takes precedence over the legacy field.
+
+For applications launched directly by Vibepollo, suspension uses Vibepollo's owned process group. On Windows,
+Desktop streams, placeholder applications, missing owned groups, and groups that contain a known launcher use the
+foreground application as a fallback. The foreground fallback suspends one process, not necessarily every process
+belonging to the game. Known launchers, Windows shell/UI executables, system-directory executables, critical or
+protected processes, and processes belonging to another user or interactive session are rejected. If an ordinary
+application is foreground when the client disconnects, that application may be suspended; keep the intended game
+foreground when disconnecting.
+
+Use suspension with offline games. Suspending an online game, especially while anti-cheat is active, can cause
+disconnects, kicks, or penalties. Online and active anti-cheat compatibility is not guaranteed. This does not imply
+that an offline game is inherently unsafe merely because it includes anti-cheat.
+
+Vibepollo retains the exact external process handle and makes recovery attempts on reconnect, application replacement,
+termination, and normal shutdown. If Vibepollo exits abruptly while an external process is suspended, the process may
+remain frozen and require Task Manager or a host restart. Directly owned Windows jobs retain their existing
+kill-on-close behavior. Suspension adds no helper service, driver, watchdog, registry integration, or additional
+privileges.
 
 ### notify_pre_releases
 

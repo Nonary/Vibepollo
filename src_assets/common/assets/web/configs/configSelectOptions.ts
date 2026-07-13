@@ -104,12 +104,8 @@ export function getConfigSelectOptions(
           label: t('config.app_disconnect_behavior_suspend'),
           value: 'suspend',
         },
-        {
-          label: t('config.app_disconnect_behavior_terminate'),
-          value: 'terminate',
-        },
       ];
-      return ensureIncludesCurrentValue(options, ctx.currentValue);
+      return options;
     }
     case 'address_family': {
       const options = [

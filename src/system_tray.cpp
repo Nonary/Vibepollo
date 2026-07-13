@@ -57,6 +57,7 @@
   #include "platform/windows/service_constants.h"
   #include "process.h"
   #include "src/entry_handler.h"
+  #include "system_tray.h"
   #include "update.h"
 
 using namespace std::literals;
@@ -464,17 +465,25 @@ namespace system_tray {
       tray.icon = TRAY_ICON_PAUSING;
 
       char msg[256];
-      snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
+      snprintf(msg, std::size(msg), "%s is suspended. Click this notification to resume it manually.", app_name.c_str());
   #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
   #endif
       s_notification_text = msg;
-      tray.notification_title = "Stream Paused";
+      tray.notification_title = "Game Suspended";
       tray.notification_text = s_notification_text.c_str();
       tray.notification_icon = TRAY_ICON_PAUSING;
       tray.tooltip = s_notification_text.c_str();
+      tray.notification_cb = []() {
+        BOOST_LOG(info) << "Manual game resume requested from the suspension notification"sv;
+        if (proc::proc.resume_suspended_app_manually()) {
+          tray_notify("Game Resumed", "The game was resumed manually. Moonlight will still reconnect normally.");
+        } else {
+          tray_notify("Resume Unavailable", "The game is already running, has exited, or could not be resumed. Check the Vibepollo log for details.");
+        }
+      };
       tray_update(&tray);
     });
   }

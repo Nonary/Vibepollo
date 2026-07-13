@@ -162,7 +162,6 @@ namespace platf::playnite {
     std::string id;
     std::string exe;
     std::string install_dir;
-    std::uint32_t process_id {0};
   };
 
   /**

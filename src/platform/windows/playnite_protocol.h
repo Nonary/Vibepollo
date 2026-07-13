@@ -78,7 +78,6 @@ namespace platf::playnite {
     std::string status_game_id;  ///< Associated game id.
     std::string status_install_dir;  ///< Install directory provided by status update.
     std::string status_exe;  ///< Executable path from status update.
-    std::uint32_t status_process_id {0};  ///< Game root PID, when Playnite can identify it.
   };
 
   /**

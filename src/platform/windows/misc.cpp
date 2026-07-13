@@ -1668,44 +1668,6 @@ namespace platf {
       return error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_FOUND;
     }
 
-    bool process_tree_process_ids(DWORD root_process_id, std::vector<DWORD> &process_ids) {
-      HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-      if (snapshot == INVALID_HANDLE_VALUE) {
-        BOOST_LOG(warning) << "Unable to snapshot the Playnite game process tree: "sv << GetLastError();
-        return false;
-      }
-      auto close_snapshot = util::fail_guard([snapshot]() {
-        CloseHandle(snapshot);
-      });
-
-      std::vector<std::pair<DWORD, DWORD>> process_parents;
-      PROCESSENTRY32W entry {};
-      entry.dwSize = sizeof(entry);
-      if (Process32FirstW(snapshot, &entry)) {
-        do {
-          process_parents.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
-        } while (Process32NextW(snapshot, &entry));
-      } else {
-        BOOST_LOG(warning) << "Unable to enumerate the Playnite game process tree: "sv << GetLastError();
-        return false;
-      }
-
-      std::unordered_set<DWORD> tree {root_process_id};
-      bool changed = true;
-      while (changed) {
-        changed = false;
-        for (const auto &[process_id, parent_process_id] : process_parents) {
-          if (!tree.contains(process_id) && tree.contains(parent_process_id)) {
-            tree.emplace(process_id);
-            changed = true;
-          }
-        }
-      }
-
-      process_ids.assign(tree.begin(), tree.end());
-      return true;
-    }
-
     void resume_and_close_processes(const std::vector<HANDLE> &processes) {
       for (const auto process : processes) {
         NtResumeProcess(process);
@@ -1874,93 +1836,6 @@ namespace platf {
       BOOST_LOG(debug) << "Resumed "sv << process_ids.size() << " process(es) in the game process tree."sv;
     }
     return success;
-  }
-
-  bool suspend_process_tree_by_pid(std::uint32_t root_process_id, std::vector<std::uintptr_t> &suspended_processes) {
-    if (root_process_id == 0 || !suspended_processes.empty()) {
-      return false;
-    }
-
-    std::vector<HANDLE> process_handles;
-    std::unordered_set<DWORD> suspended_process_ids;
-    while (true) {
-      std::vector<DWORD> process_ids;
-      if (!process_tree_process_ids(static_cast<DWORD>(root_process_id), process_ids)) {
-        resume_and_close_processes(process_handles);
-        return false;
-      }
-
-      bool found_unsuspended_process = false;
-      std::vector<std::pair<DWORD, HANDLE>> opened_processes;
-      for (const auto process_id : process_ids) {
-        if (suspended_process_ids.contains(process_id)) {
-          continue;
-        }
-        found_unsuspended_process = true;
-
-        HANDLE process = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, process_id);
-        if (!process) {
-          const auto error = GetLastError();
-          if (process_id != root_process_id && process_is_gone(error)) {
-            suspended_process_ids.emplace(process_id);
-            continue;
-          }
-          BOOST_LOG(warning) << "RAM suspension declined for Playnite game PID ["sv << process_id
-                             << "] by Windows or process protection (OpenProcess error="sv << error
-                             << "); leaving the game running."sv;
-          close_processes(opened_processes);
-          resume_and_close_processes(process_handles);
-          return false;
-        }
-        opened_processes.emplace_back(process_id, process);
-      }
-
-      for (std::size_t index = 0; index < opened_processes.size(); ++index) {
-        const auto [process_id, process] = opened_processes[index];
-        const auto status = NtSuspendProcess(process);
-        if (!NT_SUCCESS(status)) {
-          BOOST_LOG(warning) << "Unable to suspend Playnite game PID ["sv << process_id << "]: NTSTATUS 0x"sv
-                             << std::hex << static_cast<unsigned long>(status) << std::dec;
-          CloseHandle(process);
-          for (std::size_t remaining = index + 1; remaining < opened_processes.size(); ++remaining) {
-            CloseHandle(opened_processes[remaining].second);
-          }
-          resume_and_close_processes(process_handles);
-          return false;
-        }
-
-        suspended_process_ids.emplace(process_id);
-        process_handles.push_back(process);
-      }
-
-      if (!found_unsuspended_process) {
-        break;
-      }
-    }
-
-    suspended_processes.reserve(process_handles.size());
-    for (const auto process : process_handles) {
-      suspended_processes.push_back(reinterpret_cast<std::uintptr_t>(process));
-    }
-    BOOST_LOG(debug) << "RAM-suspended "sv << suspended_processes.size() << " external Playnite game process(es)."sv;
-    return !suspended_processes.empty();
-  }
-
-  bool resume_suspended_processes(std::vector<std::uintptr_t> &suspended_processes) {
-    std::vector<std::uintptr_t> failed_processes;
-    for (const auto native_process : suspended_processes) {
-      const auto process = reinterpret_cast<HANDLE>(native_process);
-      const auto status = NtResumeProcess(process);
-      if (NT_SUCCESS(status)) {
-        CloseHandle(process);
-      } else {
-        BOOST_LOG(warning) << "Unable to resume an external Playnite game process: NTSTATUS 0x"sv
-                           << std::hex << static_cast<unsigned long>(status) << std::dec;
-        failed_processes.push_back(native_process);
-      }
-    }
-    suspended_processes = std::move(failed_processes);
-    return suspended_processes.empty();
   }
 
   bool process_group_running(std::uintptr_t native_handle) {

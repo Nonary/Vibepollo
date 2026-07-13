@@ -1840,7 +1840,7 @@ namespace config {
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
 
     path_f(vars, "file_apps", stream.file_apps);
-    string_restricted_f(vars, "app_disconnect_behavior", stream.app_disconnect_behavior, {"keep_running"sv, "suspend"sv, "terminate"sv});
+    string_restricted_f(vars, "app_disconnect_behavior", stream.app_disconnect_behavior, {"keep_running"sv, "suspend"sv});
 #ifndef __ANDROID__
     // TODO: Android can possibly support this
     if (!fs::exists(stream.file_apps.c_str())) {

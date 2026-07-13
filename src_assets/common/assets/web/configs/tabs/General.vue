@@ -5,7 +5,7 @@ import Checkbox from '@/Checkbox.vue';
 import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
 import ConfigInputField from '@/ConfigInputField.vue';
 import { useConfigStore } from '@/stores/config';
-import { NButton } from 'naive-ui';
+import { NAlert, NButton } from 'naive-ui';
 
 type PrepCommandKey = 'global_prep_cmd' | 'global_state_cmd';
 type PrepCommand = { do: string; undo: string; elevated?: boolean };
@@ -231,6 +231,14 @@ function removeServerCommand(index: number) {
       setting-key="app_disconnect_behavior"
       class="mb-6"
     />
+    <n-alert
+      v-if="config.app_disconnect_behavior === 'suspend'"
+      type="warning"
+      :show-icon="true"
+      class="mb-6"
+    >
+      {{ $t('config.app_disconnect_behavior_suspend_warning') }}
+    </n-alert>
 
     <ConfigFieldRenderer
       v-model="config.enable_pairing"

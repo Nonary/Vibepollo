@@ -499,6 +499,14 @@ export const useConfigStore = defineStore('config', () => {
     _data.value = (obj ? JSON.parse(JSON.stringify(obj)) : {}) as ConfigData;
     const data = _data.value;
 
+    if (data) {
+      const disconnectBehavior = String(data['app_disconnect_behavior'] ?? 'keep_running')
+        .trim()
+        .toLowerCase();
+      data['app_disconnect_behavior'] =
+        disconnectBehavior === 'suspend' ? 'suspend' : 'keep_running';
+    }
+
     // decode known JSON string fields
     const specialOptions: Array<keyof ConfigDefaults> = [
       'dd_mode_remapping',

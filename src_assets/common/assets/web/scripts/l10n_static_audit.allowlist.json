@@ -6,7 +6,7 @@
     "AV1",
     "CABAC",
     "CAVLC",
-    "Close game",
+    "Close application",
     "CSS",
     "Desktop Duplication API",
     "DirectX",
@@ -18,7 +18,7 @@
     "HTTPS",
     "Intel QuickSync",
     "IPv4",
-    "Keep game running",
+    "Keep running",
     "KMS",
     "KWin",
     "LAN",
@@ -31,7 +31,7 @@
     "Playnite",
     "QSV",
     "RTSP",
-    "Suspend game",
+    "Suspend application",
     "Sunshine",
     "Use global setting",
     "VSync",
@@ -47,7 +47,8 @@
     "wlroots",
     "When the last streaming device disconnects",
     "Choose a different action for this game, or use the global setting shown below.",
-    "Choose what happens when the last streaming device disconnects. Keep game running lets it continue in the background. Suspend game keeps it ready to continue when you reconnect while reducing host power use. Close game ends it and frees the PC resources it was using."
+    "Choose what happens when the last streaming device disconnects. Keep running leaves the application active in the background. Suspend application pauses it until a client reconnects.",
+    "Use only with offline games. Suspending an online game, especially when anti-cheat is active, may cause disconnects, kicks, or penalties. Keep the game in the foreground when disconnecting, or another app may be suspended."
   ],
   "literalPatterns": [
     "^[0-9]+( KiB| MB| ms| FPS)?( \\(default\\))?$",

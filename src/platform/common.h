@@ -776,18 +776,6 @@ namespace platf {
    */
   bool resume_process_group(std::uintptr_t native_handle);
 
-#ifdef _WIN32
-  /**
-   * @brief Suspend a process and every descendant, retaining handles for an exact resume.
-   * @param root_process_id Root PID of the external process tree.
-   * @param suspended_processes Receives native process handles owned by the caller.
-   */
-  bool suspend_process_tree_by_pid(std::uint32_t root_process_id, std::vector<std::uintptr_t> &suspended_processes);
-
-  /** Resume and close handles returned by suspend_process_tree_by_pid(). */
-  bool resume_suspended_processes(std::vector<std::uintptr_t> &suspended_processes);
-#endif
-
   /**
    * @brief Check if a process group still has running children.
    * @param native_handle The native handle of the process group.

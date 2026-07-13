@@ -53,6 +53,7 @@
   #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/foreground_app.h"
+  #include "platform/windows/foreground_suspend.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
   #include "platform/windows/misc.h"
@@ -95,6 +96,28 @@ namespace proc {
 
   std::optional<ctx_t> resolve_app_from_snapshot(const std::vector<ctx_t> &apps, const std::string &appid, const std::string &appuuid);
 
+  std::optional<disconnect_behavior_e> parse_app_disconnect_behavior(std::string_view value) {
+    const auto normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
+    if (normalized == "keep_running") {
+      return disconnect_behavior_e::keep_running;
+    }
+    if (normalized == "suspend") {
+      return disconnect_behavior_e::suspend;
+    }
+    if (normalized == "terminate") {
+      return disconnect_behavior_e::terminate;
+    }
+    return std::nullopt;
+  }
+
+  disconnect_behavior_e parse_global_disconnect_behavior(std::string_view value) {
+    const auto parsed = parse_app_disconnect_behavior(value);
+    if (parsed == disconnect_behavior_e::suspend) {
+      return disconnect_behavior_e::suspend;
+    }
+    return disconnect_behavior_e::keep_running;
+  }
+
   namespace {
     constexpr const char *LOSSLESS_PROFILE_RECOMMENDED = "recommended";
     constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
@@ -108,25 +131,11 @@ namespace proc {
     constexpr int LOSSLESS_SHARPNESS_MIN = 1;
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
 
-    std::optional<disconnect_behavior_e> parse_disconnect_behavior(std::string_view value) {
-      auto normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
-      if (normalized == "keep_running") {
-        return disconnect_behavior_e::keep_running;
-      }
-      if (normalized == "suspend") {
-        return disconnect_behavior_e::suspend;
-      }
-      if (normalized == "terminate") {
-        return disconnect_behavior_e::terminate;
-      }
-      return std::nullopt;
-    }
-
     disconnect_behavior_e effective_disconnect_behavior(const ctx_t &app) {
       if (app.disconnect_behavior_override) {
         return *app.disconnect_behavior_override;
       }
-      return parse_disconnect_behavior(config::stream.app_disconnect_behavior).value_or(disconnect_behavior_e::keep_running);
+      return parse_global_disconnect_behavior(config::stream.app_disconnect_behavior);
     }
 
     constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
@@ -961,10 +970,10 @@ namespace proc {
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
-      _ram_suspended(other._ram_suspended),
-      _ram_process_group_suspended(other._ram_process_group_suspended),
+      _disconnect_suspended(other._disconnect_suspended),
+      _owned_group_suspended(other._owned_group_suspended),
 #ifdef _WIN32
-      _ram_suspended_external_processes(std::move(other._ram_suspended_external_processes)),
+      _suspended_foreground_target(std::move(other._suspended_foreground_target)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
 #endif
@@ -984,12 +993,16 @@ namespace proc {
     _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
     other._lossless_profile_applied = false;
 #endif
-    other._ram_suspended = false;
-    other._ram_process_group_suspended = false;
+    other._disconnect_suspended = false;
+    other._owned_group_suspended = false;
   }
 
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
     if (this != &other) {
+      if (!resume_after_disconnect()) {
+        BOOST_LOG(warning) << "Refusing to replace process state while a suspended target cannot be recovered.";
+        return *this;
+      }
       std::scoped_lock lk(_apps_mutex, other._apps_mutex);
 #ifdef _WIN32
       stop_lossless_scaling_support();
@@ -1003,15 +1016,15 @@ namespace proc {
       placebo = other.placebo;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
-      _ram_suspended = other._ram_suspended;
-      _ram_process_group_suspended = other._ram_process_group_suspended;
-      other._ram_suspended = false;
-      other._ram_process_group_suspended = false;
+      _disconnect_suspended = other._disconnect_suspended;
+      _owned_group_suspended = other._owned_group_suspended;
+      other._disconnect_suspended = false;
+      other._owned_group_suspended = false;
       _pipe = std::move(other._pipe);
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
 #ifdef _WIN32
-      _ram_suspended_external_processes = std::move(other._ram_suspended_external_processes);
+      _suspended_foreground_target = std::move(other._suspended_foreground_target);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -2255,8 +2268,8 @@ namespace proc {
   void proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
-    if (!resume_process_tree()) {
-      BOOST_LOG(error) << "Failed to resume the complete game process tree for app [" << _app_name << "].";
+    if (!resume_after_disconnect()) {
+      BOOST_LOG(error) << "Failed to resume a disconnect-suspended target for app [" << _app_name << "]; it remains retained for retry.";
     }
 
     if (!_app.state_cmds.empty()) {
@@ -2316,8 +2329,8 @@ namespace proc {
 
     if (disconnect_behavior == disconnect_behavior_e::keep_running) {
       BOOST_LOG(info) << "Leaving app [" << _app_name << "] running while all clients are disconnected.";
-    } else if (!suspend_process_tree()) {
-      BOOST_LOG(warning) << "RAM suspension failed for app [" << _app_name << "]; leaving the process tree running.";
+    } else if (!suspend_for_disconnect()) {
+      BOOST_LOG(warning) << "Best-effort suspension was skipped for app [" << _app_name << "]; leaving it running.";
     }
 
     if (!_app.state_cmds.empty()) {
@@ -2364,93 +2377,140 @@ namespace proc {
 #endif
   }
 
-  bool proc_t::suspend_process_tree() {
-    std::scoped_lock lock(_ram_suspend_mutex);
-    if (_ram_suspended) {
-      return true;
-    }
-    if (placebo) {
+  bool proc_t::suspend_for_disconnect() {
+    std::scoped_lock lock(_disconnect_suspend_mutex);
+    if (_disconnect_suspended) {
       return true;
     }
 
+    const bool owned_group_live = _process_group &&
+                                  platf::process_group_running((std::uintptr_t) _process_group.native_handle());
+
 #ifdef _WIN32
-    if (!_app.playnite_id.empty()) {
-      std::uint32_t game_process_id = 0;
-      const auto foreground = platf::foreground_app::snapshot();
-      if (foreground.matches_active_app && foreground.foreground_pid != 0) {
-        game_process_id = static_cast<std::uint32_t>(foreground.foreground_pid);
-        BOOST_LOG(debug) << "RAM suspension: using matched foreground Playnite game PID=" << game_process_id;
-      } else {
-        const auto status = platf::playnite::get_active_game_status();
-        if (status.active && boost::iequals(status.id, _app.playnite_id)) {
-          game_process_id = status.process_id;
-          if (game_process_id != 0) {
-            BOOST_LOG(debug) << "RAM suspension: using Playnite-reported game PID=" << game_process_id;
-          }
+    if (_suspended_foreground_target.active()) {
+      BOOST_LOG(warning) << "Skipped suspension: an unresolved foreground target is still retained for recovery.";
+      _disconnect_suspended = true;
+      return false;
+    }
+
+    auto group_scan = platf::foreground_suspend::owned_group_scan_e::clear;
+    if (owned_group_live) {
+      group_scan = platf::foreground_suspend::scan_owned_group((std::uintptr_t) _process_group.native_handle());
+      if (group_scan == platf::foreground_suspend::owned_group_scan_e::unknown) {
+        BOOST_LOG(debug) << "Owned process group identity was incomplete; using the conservative foreground fallback.";
+      }
+    }
+    const bool group_is_launcher_or_unknown = group_scan != platf::foreground_suspend::owned_group_scan_e::clear;
+    const auto initial_selection = platf::foreground_suspend::select_target({
+      .placeholder = placebo,
+      .owned_group_live = owned_group_live,
+      .owned_group_is_launcher = group_is_launcher_or_unknown,
+      .foreground_allowed = false,
+    });
+
+    if (initial_selection != platf::foreground_suspend::target_selection_e::owned_process_group) {
+      auto foreground = platf::foreground_suspend::acquire_and_suspend_foreground();
+      if (!foreground.target) {
+        if (foreground.reason == platf::foreground_suspend::rejection_reason_e::known_launcher) {
+          BOOST_LOG(info) << "Skipped suspension: foreground process is a known launcher.";
+        } else if (foreground.reason == platf::foreground_suspend::rejection_reason_e::critical_process ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::protected_process ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::system_path ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::system_process) {
+          BOOST_LOG(info) << "Skipped suspension: target is a system/critical process.";
+        } else {
+          BOOST_LOG(info) << "Skipped suspension: " << platf::foreground_suspend::describe_rejection(foreground.reason) << '.';
         }
-      }
-
-      if (game_process_id == 0) {
-        BOOST_LOG(warning) << "RAM suspension: Playnite did not provide a game PID and no matching foreground game was found.";
         return false;
       }
 
-      if (!platf::suspend_process_tree_by_pid(game_process_id, _ram_suspended_external_processes)) {
+      const auto pid = foreground.target->pid();
+      const auto basename = foreground.target->executable_basename();
+      const auto process_path = foreground.target->process_path();
+      const auto creation_time = foreground.target->creation_time();
+      const auto session_id = foreground.target->session_id();
+      if (!_suspended_foreground_target.attach(std::move(*foreground.target))) {
+        BOOST_LOG(warning) << "Skipped suspension: an unresolved foreground target already exists.";
         return false;
       }
-    }
-#endif
-
-    if (_process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-      if (!platf::suspend_process_group((std::uintptr_t) _process_group.native_handle())) {
-#ifdef _WIN32
-        (void) platf::resume_suspended_processes(_ram_suspended_external_processes);
-#endif
-        return false;
-      }
-      _ram_process_group_suspended = true;
-    }
-
-    _ram_suspended = _ram_process_group_suspended;
-#ifdef _WIN32
-    _ram_suspended = _ram_suspended || !_ram_suspended_external_processes.empty();
-#endif
-    if (!_ram_suspended) {
+      _disconnect_suspended = true;
+      BOOST_LOG(info) << "Suspended foreground process " << basename << ", PID " << pid << ".";
+      BOOST_LOG(debug) << "Retained foreground target path='" << process_path << "' creationTime=" << creation_time
+                       << " sessionId=" << session_id << ".";
       return true;
     }
-    BOOST_LOG(info) << "RAM-suspended the complete process tree for app [" << _app_name << "]; memory and GPU allocations remain owned by the game.";
+#else
+    if (placebo || !owned_group_live) {
+      return true;
+    }
+#endif
+
+    if (!platf::suspend_process_group((std::uintptr_t) _process_group.native_handle())) {
+      return false;
+    }
+    _owned_group_suspended = true;
+    _disconnect_suspended = true;
+    BOOST_LOG(info) << "Suspended owned process group for app [" << _app_name << "].";
     return true;
   }
 
-  bool proc_t::resume_process_tree() {
-    std::scoped_lock lock(_ram_suspend_mutex);
-    if (!_ram_suspended) {
+  bool proc_t::resume_after_disconnect(bool *was_suspended) {
+    std::scoped_lock lock(_disconnect_suspend_mutex);
+    if (was_suspended) {
+      *was_suspended = _disconnect_suspended;
+    }
+    if (!_disconnect_suspended) {
       return true;
     }
+
+    bool foreground_recovered = true;
 #ifdef _WIN32
-    const bool external_resumed = platf::resume_suspended_processes(_ram_suspended_external_processes);
-#else
-    constexpr bool external_resumed = true;
+    if (_suspended_foreground_target.active()) {
+      const auto *target = _suspended_foreground_target.target();
+      const auto pid = target ? target->pid() : 0;
+      const auto basename = target ? target->executable_basename() : std::string();
+      const auto result = _suspended_foreground_target.recover();
+      foreground_recovered = result != platf::foreground_suspend::resume_result_e::failed;
+      if (foreground_recovered) {
+        BOOST_LOG(info) << "Resumed foreground process " << basename << ", PID " << pid << ".";
+      } else {
+        BOOST_LOG(warning) << "Unable to resume foreground process " << basename << ", PID " << pid << "; retaining the exact handle for retry.";
+      }
+    }
 #endif
 
-    bool process_group_resumed = true;
-    if (_ram_process_group_suspended) {
+    bool group_recovered = true;
+    if (_owned_group_suspended) {
       if (_process_group) {
-        process_group_resumed = platf::resume_process_group((std::uintptr_t) _process_group.native_handle());
+        group_recovered = platf::resume_process_group((std::uintptr_t) _process_group.native_handle());
       }
-      if (process_group_resumed) {
-        _ram_process_group_suspended = false;
+      if (group_recovered) {
+        _owned_group_suspended = false;
+        BOOST_LOG(info) << "Resumed owned process group for app [" << _app_name << "].";
       }
     }
 
-    _ram_suspended = _ram_process_group_suspended;
+    _disconnect_suspended = _owned_group_suspended;
 #ifdef _WIN32
-    _ram_suspended = _ram_suspended || !_ram_suspended_external_processes.empty();
+    _disconnect_suspended = _disconnect_suspended || _suspended_foreground_target.active();
 #endif
-    if (!_ram_suspended) {
-      BOOST_LOG(info) << "Resumed the RAM-suspended process tree for app [" << _app_name << "].";
+    return foreground_recovered && group_recovered && !_disconnect_suspended;
+  }
+
+  bool proc_t::resume_suspended_app_manually() {
+    bool was_suspended = false;
+    const bool resumed = resume_after_disconnect(&was_suspended);
+    if (!was_suspended) {
+      BOOST_LOG(info) << "Manual resume requested, but no disconnect-suspended app is waiting.";
+      return false;
     }
-    return external_resumed && process_group_resumed && !_ram_suspended;
+    if (!resumed) {
+      BOOST_LOG(error) << "Manual resume failed; the suspended target remains retained for retry.";
+      return false;
+    }
+
+    BOOST_LOG(info) << "Disconnect-suspended app resumed manually while no stream is connected.";
+    return true;
   }
 
   bool proc_t::foreground_window_matches_running_app() {
@@ -2539,8 +2599,8 @@ namespace proc {
   void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
-    if (!resume_process_tree()) {
-      BOOST_LOG(warning) << "Could not resume the RAM-suspended process tree before termination; forcing cleanup if graceful exit fails.";
+    if (!resume_after_disconnect()) {
+      BOOST_LOG(warning) << "Could not resume the suspended foreground process before termination; retaining it for a later recovery attempt.";
     }
     placebo = false;
 #ifdef _WIN32
@@ -2583,12 +2643,12 @@ namespace proc {
     _process = bp::child();
     _process_group = bp::group();
     {
-      std::scoped_lock lock(_ram_suspend_mutex);
-      _ram_process_group_suspended = false;
+      std::scoped_lock lock(_disconnect_suspend_mutex);
+      _owned_group_suspended = false;
 #ifdef _WIN32
-      _ram_suspended = !_ram_suspended_external_processes.empty();
+      _disconnect_suspended = _suspended_foreground_target.active();
 #else
-      _ram_suspended = false;
+      _disconnect_suspended = false;
 #endif
     }
 
@@ -3750,7 +3810,7 @@ namespace proc {
           const auto behavior_text = boost::algorithm::trim_copy(behavior_it->get<std::string>());
           if (boost::iequals(behavior_text, "inherit")) {
             has_disconnect_behavior = true;
-          } else if (auto behavior = parse_disconnect_behavior(behavior_text)) {
+          } else if (auto behavior = parse_app_disconnect_behavior(behavior_text)) {
             ctx.disconnect_behavior_override = *behavior;
             has_disconnect_behavior = true;
           } else {

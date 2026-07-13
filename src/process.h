@@ -30,8 +30,9 @@
 #include "utility.h"
 
 #ifdef _WIN32
+  #include "platform/windows/foreground_suspend.h"
   #include "platform/windows/virtual_display.h"
-#include "tools/playnite_launcher/lossless_scaling.h"
+  #include "tools/playnite_launcher/lossless_scaling.h"
 
 namespace VDISPLAY {
   enum class DRIVER_STATUS;
@@ -107,6 +108,9 @@ namespace proc {
     suspend,
     terminate
   };
+
+  [[nodiscard]] std::optional<disconnect_behavior_e> parse_app_disconnect_behavior(std::string_view value);
+  [[nodiscard]] disconnect_behavior_e parse_global_disconnect_behavior(std::string_view value);
 
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
@@ -218,6 +222,7 @@ namespace proc {
     bp::environment get_env();
     void resume();
     void pause();
+    bool resume_suspended_app_manually();
     void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);
     bool last_run_app_frame_gen_limiter_fix() const;
     bool is_launch_deferred() const;
@@ -244,8 +249,8 @@ namespace proc {
 
   private:
     int launch_app_commands();
-    bool suspend_process_tree();
-    bool resume_process_tree();
+    bool suspend_for_disconnect();
+    bool resume_after_disconnect(bool *was_suspended = nullptr);
 
     int _app_id = 0;
     std::string _app_name;
@@ -271,12 +276,12 @@ namespace proc {
 
     bp::child _process;
     bp::group _process_group;
-    std::mutex _ram_suspend_mutex;
-    bool _ram_suspended {false};
-    bool _ram_process_group_suspended {false};
+    std::mutex _disconnect_suspend_mutex;
+    bool _disconnect_suspended {false};
+    bool _owned_group_suspended {false};
 
 #ifdef _WIN32
-    std::vector<std::uintptr_t> _ram_suspended_external_processes;
+    platf::foreground_suspend::foreground_target_slot_t _suspended_foreground_target;
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
 #endif
