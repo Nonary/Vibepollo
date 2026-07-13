@@ -3354,6 +3354,80 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  /**
+   * @brief Serve Playnite-enriched per-app metadata as JSON, keyed by app UUID.
+   *
+   * This is additive to the Moonlight protocol: only apps that carry metadata (Playnite games)
+   * are listed, and clients that don't know the endpoint simply never call it. The applist
+   * hot-path is left untouched.
+   */
+  void appmetadata(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto fg = util::fail_guard([&]() {
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
+      log_permission_denied("Get AppMetadata"sv, "List applications"sv, named_cert_p);
+      fg.disable();
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    nlohmann::json root = nlohmann::json::object();
+    nlohmann::json apps = nlohmann::json::array();
+
+    for (const auto &app : proc::proc.get_apps()) {
+      const auto &meta = app.playnite_metadata;
+      if (!meta.present) {
+        continue;
+      }
+      nlohmann::json node = nlohmann::json::object();
+      node["uuid"] = app.uuid;
+      node["id"] = app.id;
+      node["name"] = app.name;
+      if (!app.playnite_id.empty()) {
+        node["playnite_id"] = app.playnite_id;
+      }
+      if (!meta.description.empty()) {
+        node["description"] = meta.description;
+      }
+      if (!meta.genres.empty()) {
+        node["genres"] = meta.genres;
+      }
+      if (!meta.developers.empty()) {
+        node["developers"] = meta.developers;
+      }
+      if (!meta.publishers.empty()) {
+        node["publishers"] = meta.publishers;
+      }
+      if (!meta.release_date.empty()) {
+        node["release_date"] = meta.release_date;
+      }
+      if (meta.community_score >= 0) {
+        node["community_score"] = meta.community_score;
+      }
+      if (meta.critic_score >= 0) {
+        node["critic_score"] = meta.critic_score;
+      }
+      apps.push_back(std::move(node));
+    }
+
+    root["apps"] = std::move(apps);
+
+    fg.disable();
+
+    const std::string body = root.dump();
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json");
+    response->write(SimpleWeb::StatusCode::success_ok, body, headers);
+    response->close_connection_after_response = true;
+  }
+
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -3687,6 +3761,7 @@ namespace nvhttp {
       });
     };
     https_server.resource["^/appasset$"]["GET"] = appasset;
+    https_server.resource["^/appmetadata$"]["GET"] = appmetadata;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
         std::lock_guard lock {launch_request_mutex};

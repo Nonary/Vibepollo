@@ -99,6 +99,21 @@ namespace platf::playnite {
           game.icon_path = g.value("iconPath", "");
           game.description = g.value("description", "");
           game.tags = to_string_list(g.value("tags", json::array()));
+          // Metadata passthrough (Playnite-enriched). Lists default to empty, scores to -1.
+          game.genres = to_string_list(g.value("genres", json::array()));
+          game.developers = to_string_list(g.value("developers", json::array()));
+          game.publishers = to_string_list(g.value("publishers", json::array()));
+          game.release_date = g.value("releaseDate", "");
+          try {
+            if (g.contains("communityScore") && g["communityScore"].is_number()) {
+              game.community_score = g["communityScore"].get<int>();
+            }
+          } catch (...) {}
+          try {
+            if (g.contains("criticScore") && g["criticScore"].is_number()) {
+              game.critic_score = g["criticScore"].get<int>();
+            }
+          } catch (...) {}
           // Installed flag may be provided as 'installed' or 'isInstalled'.
           // If neither field is present, assume installed=true to avoid filtering out everything.
           bool has1 = g.contains("installed");

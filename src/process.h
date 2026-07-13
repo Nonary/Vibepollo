@@ -102,6 +102,19 @@ namespace proc {
     std::optional<bool> anime4k_vrs;
   };
 
+  // Playnite-enriched game metadata, carried through to clients. Absent values stay empty or
+  // -1; `present` is set when the app carries any metadata at all.
+  struct playnite_metadata_t {
+    bool present {false};
+    std::string description;
+    std::vector<std::string> genres;
+    std::vector<std::string> developers;
+    std::vector<std::string> publishers;
+    std::string release_date;
+    int community_score {-1};
+    int critic_score {-1};
+  };
+
   struct ctx_t {
     std::vector<cmd_t> prep_cmds;
     std::vector<cmd_t> state_cmds;
@@ -134,6 +147,8 @@ namespace proc {
     std::vector<std::string> id_aliases;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
+    // Playnite-enriched metadata for this app (empty/absent for non-Playnite apps).
+    playnite_metadata_t playnite_metadata;
     // When true, launch Playnite in fullscreen mode via the helper.
     bool playnite_fullscreen;
     bool frame_gen_limiter_fix;

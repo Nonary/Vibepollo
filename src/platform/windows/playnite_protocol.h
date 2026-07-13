@@ -61,6 +61,14 @@ namespace platf::playnite {
     std::string description;  ///< Optional description / notes.
     std::vector<std::string> tags;  ///< Tag list.
     bool installed = false;  ///< Installation state (installed / isInstalled).
+    // Metadata Playnite already enriched (e.g. via its IGDB add-on). Passed straight through
+    // so the client can display it; empty/-1 mean the game has no such value.
+    std::vector<std::string> genres;  ///< Genre names (genres).
+    std::vector<std::string> developers;  ///< Developer company names (developers).
+    std::vector<std::string> publishers;  ///< Publisher company names (publishers).
+    std::string release_date;  ///< Release date as Playnite formats it (releaseDate).
+    int community_score = -1;  ///< Community score 0-100, or -1 when absent (communityScore).
+    int critic_score = -1;  ///< Critic score 0-100, or -1 when absent (criticScore).
   };
 
   /**
