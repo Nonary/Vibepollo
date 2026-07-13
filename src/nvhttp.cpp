@@ -2322,10 +2322,14 @@ namespace nvhttp {
         }
         tree.put("root.currentgame", current_appid);
         tree.put("root.currentgameuuid", proc::proc.get_running_app_uuid());
+        // The name of the running app, so a client can say what is being played without having
+        // to fetch and search the whole app list. Clients that do not know this field ignore it.
+        tree.put("root.currentgamename", current_appid > 0 ? proc::proc.get_last_run_app_name() : "");
         tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
       } else {
         tree.put("root.currentgame", 0);
         tree.put("root.currentgameuuid", "");
+        tree.put("root.currentgamename", "");
         tree.put("root.state", "SUNSHINE_SERVER_FREE");
       }
 
