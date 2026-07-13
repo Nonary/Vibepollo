@@ -97,6 +97,7 @@ namespace platf::playnite {
           game.last_played = g.value("lastPlayed", "");
           game.box_art_path = g.value("boxArtPath", "");
           game.icon_path = g.value("iconPath", "");
+          game.background_path = g.value("backgroundPath", "");
           game.description = g.value("description", "");
           game.tags = to_string_list(g.value("tags", json::array()));
           // Metadata passthrough (Playnite-enriched). Lists default to empty, scores to -1.

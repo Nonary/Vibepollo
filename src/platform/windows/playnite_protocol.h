@@ -58,6 +58,7 @@ namespace platf::playnite {
     std::string last_played;  ///< Last played timestamp (ISO8601) (lastPlayed).
     std::string box_art_path;  ///< Path/URL to cover art (boxArtPath).
     std::string icon_path;  ///< Path/URL to game icon (iconPath).
+    std::string background_path;  ///< Path/URL to background/hero art (backgroundPath).
     std::string description;  ///< Optional description / notes.
     std::vector<std::string> tags;  ///< Tag list.
     bool installed = false;  ///< Installation state (installed / isInstalled).

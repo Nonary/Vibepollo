@@ -3689,10 +3689,11 @@ namespace proc {
           meta.release_date = read_string("playnite-release-date");
           meta.community_score = read_score("playnite-community-score");
           meta.critic_score = read_score("playnite-critic-score");
+          meta.background_image_path = parse_env_val(this_env, read_string("playnite-background"));
           meta.present = !meta.description.empty() || !meta.genres.empty() ||
                          !meta.developers.empty() || !meta.publishers.empty() ||
                          !meta.release_date.empty() || meta.community_score >= 0 ||
-                         meta.critic_score >= 0;
+                         meta.critic_score >= 0 || !meta.background_image_path.empty();
         }
         ctx.playnite_fullscreen = false;
         if (app_node.contains("playnite-fullscreen")) {

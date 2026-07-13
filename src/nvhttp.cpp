@@ -3414,6 +3414,10 @@ namespace nvhttp {
       if (meta.critic_score >= 0) {
         node["critic_score"] = meta.critic_score;
       }
+      if (!meta.background_image_path.empty()) {
+        // The image itself is fetched separately via /appbackground?appid=<id>.
+        node["has_background"] = true;
+      }
       apps.push_back(std::move(node));
     }
 
@@ -3425,6 +3429,50 @@ namespace nvhttp {
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
     response->write(SimpleWeb::StatusCode::success_ok, body, headers);
+    response->close_connection_after_response = true;
+  }
+
+  /**
+   * @brief Serve a Playnite game's background/hero image as PNG, mirroring /appasset.
+   *
+   * Additive and optional: returns 404 when the app has no background, so clients can simply
+   * try it and fall back gracefully.
+   */
+  void appbackground(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto fg = util::fail_guard([&]() {
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
+      log_permission_denied("Get AppBackground"sv, "List applications"sv, named_cert_p);
+      fg.disable();
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    const auto appid = get_arg(args, "appid", "0");
+    const auto appuuid = get_arg(args, "appuuid", "");
+    auto app_ctx = proc::proc.resolve_app(appid, appuuid);
+    std::string bg = app_ctx ? app_ctx->playnite_metadata.background_image_path : std::string();
+
+    fg.disable();
+
+    std::ifstream in(bg, std::ios::binary);
+    if (bg.empty() || !in.is_open()) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "image/png");
+    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
     response->close_connection_after_response = true;
   }
 
@@ -3762,6 +3810,7 @@ namespace nvhttp {
     };
     https_server.resource["^/appasset$"]["GET"] = appasset;
     https_server.resource["^/appmetadata$"]["GET"] = appmetadata;
+    https_server.resource["^/appbackground$"]["GET"] = appbackground;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
         std::lock_guard lock {launch_request_mutex};

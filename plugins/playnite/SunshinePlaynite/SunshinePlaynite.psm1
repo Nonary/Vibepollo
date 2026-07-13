@@ -1277,6 +1277,17 @@ function Get-IconPath {
   return ''
 }
 
+function Get-BackgroundPath {
+  param([object]$Game)
+  try {
+    if ($Game.BackgroundImage) {
+      return $PlayniteApi.Database.GetFullFilePath($Game.BackgroundImage)
+    }
+  }
+  catch {}
+  return ''
+}
+
 function Get-PlayniteGames {
   if (-not $PlayniteApi) { return @() }
   $catMap = Get-CategoryNamesMap
@@ -1307,6 +1318,7 @@ function Get-PlayniteGames {
     try { if ($g.LastActivity) { $lastPlayed = ([DateTime]$g.LastActivity).ToString('o') } } catch {}
     $boxArt = Get-BoxArtPath -Game $g
     $icon = Get-IconPath -Game $g
+    $background = Get-BackgroundPath -Game $g
     # Determine installed state explicitly; fallback to InstallDirectory when IsInstalled is unavailable
     $installed = $false
     try {
@@ -1333,6 +1345,7 @@ function Get-PlayniteGames {
       lastPlayed      = $lastPlayed
       boxArtPath      = $boxArt
       iconPath        = $icon
+      backgroundPath  = $background
       installed       = $installed
       tags            = @() # TODO: fill from $g.TagIds if needed
       description     = $description

@@ -496,6 +496,19 @@ namespace platf::playnite::sync {
       }
     } catch (...) {}
     try {
+      bool stored = false;
+      if (!g.background_path.empty()) {
+        auto dst = platf::appdata() / "covers" / ("playnite_bg_" + g.id + ".png");
+        if (convert_playnite_image_to_png(g.background_path, dst)) {
+          app["playnite-background"] = dst.generic_string();
+          stored = true;
+        }
+      }
+      if (!stored && app.contains("playnite-background")) {
+        app.erase("playnite-background");
+      }
+    } catch (...) {}
+    try {
       auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
       // Resolve the install dir from the plugin's explicit field, the library working dir, or the
       // dir cached from a prior "gameStarted" status message (Steam/URL games expose none in the
