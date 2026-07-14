@@ -512,6 +512,19 @@ namespace platf::playnite::sync {
       }
     } catch (...) {}
     try {
+      bool stored = false;
+      if (!g.background_path.empty()) {
+        auto dst = platf::appdata() / "covers" / ("playnite_bg_" + g.id + ".png");
+        if (convert_playnite_image_to_png(g.background_path, dst)) {
+          app["playnite-background"] = dst.generic_string();
+          stored = true;
+        }
+      }
+      if (!stored && app.contains("playnite-background")) {
+        app.erase("playnite-background");
+      }
+    } catch (...) {}
+    try {
       auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
       // Resolve the install dir from the plugin's explicit field, the library working dir, or the
       // dir cached from a prior "gameStarted" status message (Steam/URL games expose none in the
@@ -561,6 +574,38 @@ namespace platf::playnite::sync {
       } else if (app.contains("playnite-plugin-name")) {
         app.erase("playnite-plugin-name");
       }
+    } catch (...) {}
+    // Metadata passthrough: mirror Playnite-enriched fields into the app node so they can be
+    // served to clients. Absent values are erased to keep apps.json tidy and idempotent.
+    try {
+      auto set_or_erase_str = [&](const char *key, const std::string &val) {
+        if (!val.empty()) {
+          app[key] = val;
+        } else if (app.contains(key)) {
+          app.erase(key);
+        }
+      };
+      auto set_or_erase_list = [&](const char *key, const std::vector<std::string> &vals) {
+        if (!vals.empty()) {
+          app[key] = vals;
+        } else if (app.contains(key)) {
+          app.erase(key);
+        }
+      };
+      auto set_or_erase_score = [&](const char *key, int score) {
+        if (score >= 0) {
+          app[key] = score;
+        } else if (app.contains(key)) {
+          app.erase(key);
+        }
+      };
+      set_or_erase_str("playnite-description", g.description);
+      set_or_erase_list("playnite-genres", g.genres);
+      set_or_erase_list("playnite-developers", g.developers);
+      set_or_erase_list("playnite-publishers", g.publishers);
+      set_or_erase_str("playnite-release-date", g.release_date);
+      set_or_erase_score("playnite-community-score", g.community_score);
+      set_or_erase_score("playnite-critic-score", g.critic_score);
     } catch (...) {}
   }
 

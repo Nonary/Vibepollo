@@ -1146,6 +1146,40 @@ function Get-CategoryNamesMap {
   return $map
 }
 
+# Build an id -> name map for a Playnite database field collection (Genres, Companies, ...).
+# Metadata Playnite enriches (e.g. via its IGDB add-on) is stored by id on the game and
+# resolved through these shared collections, exactly like categories.
+function Get-DbEntityNamesMap {
+  param([string]$Collection)
+  $map = @{}
+  try {
+    $db = $null
+    try { $db = $PlayniteApi.Database } catch {}
+    if (-not $db) { return $map }
+    $src = $null
+    try { $src = $db.$Collection } catch {}
+    if (-not $src) { return $map }
+    foreach ($e in $src) {
+      try { $map[$e.Id] = $e.Name } catch {}
+    }
+  } catch {}
+  return $map
+}
+
+# Resolve a game's list of ids against a names map into an array of display names.
+function Resolve-IdNames {
+  param($Ids, $Map)
+  $names = @()
+  try {
+    if ($Ids -and $Map) {
+      foreach ($id in $Ids) {
+        try { if ($Map.ContainsKey($id)) { $names += $Map[$id] } } catch {}
+      }
+    }
+  } catch {}
+  return $names
+}
+
 function Get-LibraryPluginMap {
   $map = @{}
   try {
@@ -1243,21 +1277,48 @@ function Get-IconPath {
   return ''
 }
 
+function Get-BackgroundPath {
+  param([object]$Game)
+  try {
+    if ($Game.BackgroundImage) {
+      return $PlayniteApi.Database.GetFullFilePath($Game.BackgroundImage)
+    }
+  }
+  catch {}
+  return ''
+}
+
 function Get-PlayniteGames {
   if (-not $PlayniteApi) { return @() }
   $catMap = Get-CategoryNamesMap
   $pluginMap = Get-LibraryPluginMap
+  $genreMap = Get-DbEntityNamesMap -Collection 'Genres'
+  $companyMap = Get-DbEntityNamesMap -Collection 'Companies'
   $games = @()
   foreach ($g in $PlayniteApi.Database.Games) {
     $act = Get-GameActionInfo -Game $g
     $catNames = @()
     if ($g.CategoryIds) { foreach ($cid in $g.CategoryIds) { if ($catMap.ContainsKey($cid)) { $catNames += $catMap[$cid] } } }
+    # Metadata Playnite already enriched (IGDB and friends). Resolved here so the client can
+    # show it without ever talking to a metadata provider itself.
+    $genreNames = @(Resolve-IdNames -Ids $g.GenreIds -Map $genreMap)
+    $developerNames = @(Resolve-IdNames -Ids $g.DeveloperIds -Map $companyMap)
+    $publisherNames = @(Resolve-IdNames -Ids $g.PublisherIds -Map $companyMap)
+    $description = ''
+    try { if ($g.Description) { $description = [string]$g.Description } } catch {}
+    $releaseDate = ''
+    try { if ($g.ReleaseDate) { $releaseDate = $g.ReleaseDate.ToString() } } catch {}
+    $communityScore = $null
+    try { if ($null -ne $g.CommunityScore) { $communityScore = [int]$g.CommunityScore } } catch {}
+    $criticScore = $null
+    try { if ($null -ne $g.CriticScore) { $criticScore = [int]$g.CriticScore } } catch {}
     $playtimeMin = 0
     try { if ($g.Playtime) { $playtimeMin = [int]([double]$g.Playtime / 60.0) } } catch {}
     $lastPlayed = ''
     try { if ($g.LastActivity) { $lastPlayed = ([DateTime]$g.LastActivity).ToString('o') } } catch {}
     $boxArt = Get-BoxArtPath -Game $g
     $icon = Get-IconPath -Game $g
+    $background = Get-BackgroundPath -Game $g
     # Determine installed state explicitly; fallback to InstallDirectory when IsInstalled is unavailable
     $installed = $false
     try {
@@ -1284,8 +1345,16 @@ function Get-PlayniteGames {
       lastPlayed      = $lastPlayed
       boxArtPath      = $boxArt
       iconPath        = $icon
+      backgroundPath  = $background
       installed       = $installed
       tags            = @() # TODO: fill from $g.TagIds if needed
+      description     = $description
+      genres          = $genreNames
+      developers      = $developerNames
+      publishers      = $publisherNames
+      releaseDate     = $releaseDate
+      communityScore  = $communityScore
+      criticScore     = $criticScore
     }
   }
   Write-Log "Collected $($games.Count) games"

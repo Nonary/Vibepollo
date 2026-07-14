@@ -722,7 +722,7 @@ async function runVersionChecks() {
     // Remote release checks (GitHub)
     try {
       githubRelease.value = await fetch(
-        'https://api.github.com/repos/Nonary/Vibepollo/releases/latest',
+        'https://api.github.com/repos/DanieleS/Vibepollo/releases/latest',
       ).then((r) => r.json());
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -730,7 +730,7 @@ async function runVersionChecks() {
     }
     // Fetch list of releases to locate prereleases and determine installed stability
     try {
-      const releases = await fetch('https://api.github.com/repos/Nonary/Vibepollo/releases').then(
+      const releases = await fetch('https://api.github.com/repos/DanieleS/Vibepollo/releases').then(
         (r) => r.json(),
       );
       if (Array.isArray(releases)) {

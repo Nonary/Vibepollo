@@ -3678,6 +3678,48 @@ namespace proc {
             ctx.playnite_id.clear();
           }
         }
+
+        // Playnite-enriched metadata passthrough (written by the Playnite sync). Only the
+        // fields present are populated; `present` records whether the app carries any at all.
+        {
+          auto &meta = ctx.playnite_metadata;
+          meta = proc::playnite_metadata_t {};
+          auto read_string = [&](const char *key) -> std::string {
+            if (auto it = app_node.find(key); it != app_node.end() && it->is_string()) {
+              return it->get<std::string>();
+            }
+            return {};
+          };
+          auto read_list = [&](const char *key) -> std::vector<std::string> {
+            std::vector<std::string> out;
+            if (auto it = app_node.find(key); it != app_node.end() && it->is_array()) {
+              for (const auto &v : *it) {
+                if (v.is_string()) {
+                  out.push_back(v.get<std::string>());
+                }
+              }
+            }
+            return out;
+          };
+          auto read_score = [&](const char *key) -> int {
+            if (auto it = app_node.find(key); it != app_node.end() && it->is_number()) {
+              return it->get<int>();
+            }
+            return -1;
+          };
+          meta.description = read_string("playnite-description");
+          meta.genres = read_list("playnite-genres");
+          meta.developers = read_list("playnite-developers");
+          meta.publishers = read_list("playnite-publishers");
+          meta.release_date = read_string("playnite-release-date");
+          meta.community_score = read_score("playnite-community-score");
+          meta.critic_score = read_score("playnite-critic-score");
+          meta.background_image_path = parse_env_val(this_env, read_string("playnite-background"));
+          meta.present = !meta.description.empty() || !meta.genres.empty() ||
+                         !meta.developers.empty() || !meta.publishers.empty() ||
+                         !meta.release_date.empty() || meta.community_score >= 0 ||
+                         meta.critic_score >= 0 || !meta.background_image_path.empty();
+        }
         ctx.playnite_fullscreen = false;
         if (app_node.contains("playnite-fullscreen")) {
           try {

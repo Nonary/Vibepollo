@@ -2326,10 +2326,14 @@ namespace nvhttp {
         }
         tree.put("root.currentgame", current_appid);
         tree.put("root.currentgameuuid", proc::proc.get_running_app_uuid());
+        // The name of the running app, so a client can say what is being played without having
+        // to fetch and search the whole app list. Clients that do not know this field ignore it.
+        tree.put("root.currentgamename", current_appid > 0 ? proc::proc.get_last_run_app_name() : "");
         tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
       } else {
         tree.put("root.currentgame", 0);
         tree.put("root.currentgameuuid", "");
+        tree.put("root.currentgamename", "");
         tree.put("root.state", "SUNSHINE_SERVER_FREE");
       }
 
@@ -3358,6 +3362,128 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  /**
+   * @brief Serve Playnite-enriched per-app metadata as JSON, keyed by app UUID.
+   *
+   * This is additive to the Moonlight protocol: only apps that carry metadata (Playnite games)
+   * are listed, and clients that don't know the endpoint simply never call it. The applist
+   * hot-path is left untouched.
+   */
+  void appmetadata(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto fg = util::fail_guard([&]() {
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
+      log_permission_denied("Get AppMetadata"sv, "List applications"sv, named_cert_p);
+      fg.disable();
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    nlohmann::json root = nlohmann::json::object();
+    nlohmann::json apps = nlohmann::json::array();
+
+    for (const auto &app : proc::proc.get_apps()) {
+      const auto &meta = app.playnite_metadata;
+      if (!meta.present) {
+        continue;
+      }
+      nlohmann::json node = nlohmann::json::object();
+      node["uuid"] = app.uuid;
+      node["id"] = app.id;
+      node["name"] = app.name;
+      if (!app.playnite_id.empty()) {
+        node["playnite_id"] = app.playnite_id;
+      }
+      if (!meta.description.empty()) {
+        node["description"] = meta.description;
+      }
+      if (!meta.genres.empty()) {
+        node["genres"] = meta.genres;
+      }
+      if (!meta.developers.empty()) {
+        node["developers"] = meta.developers;
+      }
+      if (!meta.publishers.empty()) {
+        node["publishers"] = meta.publishers;
+      }
+      if (!meta.release_date.empty()) {
+        node["release_date"] = meta.release_date;
+      }
+      if (meta.community_score >= 0) {
+        node["community_score"] = meta.community_score;
+      }
+      if (meta.critic_score >= 0) {
+        node["critic_score"] = meta.critic_score;
+      }
+      if (!meta.background_image_path.empty()) {
+        // The image itself is fetched separately via /appbackground?appid=<id>.
+        node["has_background"] = true;
+      }
+      apps.push_back(std::move(node));
+    }
+
+    root["apps"] = std::move(apps);
+
+    fg.disable();
+
+    const std::string body = root.dump();
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json");
+    response->write(SimpleWeb::StatusCode::success_ok, body, headers);
+    response->close_connection_after_response = true;
+  }
+
+  /**
+   * @brief Serve a Playnite game's background/hero image as PNG, mirroring /appasset.
+   *
+   * Additive and optional: returns 404 when the app has no background, so clients can simply
+   * try it and fall back gracefully.
+   */
+  void appbackground(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto fg = util::fail_guard([&]() {
+      response->write(SimpleWeb::StatusCode::server_error_internal_server_error);
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_all_actions)) {
+      log_permission_denied("Get AppBackground"sv, "List applications"sv, named_cert_p);
+      fg.disable();
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    const auto appid = get_arg(args, "appid", "0");
+    const auto appuuid = get_arg(args, "appuuid", "");
+    auto app_ctx = proc::proc.resolve_app(appid, appuuid);
+    std::string bg = app_ctx ? app_ctx->playnite_metadata.background_image_path : std::string();
+
+    fg.disable();
+
+    std::ifstream in(bg, std::ios::binary);
+    if (bg.empty() || !in.is_open()) {
+      response->write(SimpleWeb::StatusCode::client_error_not_found);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "image/png");
+    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+    response->close_connection_after_response = true;
+  }
+
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -3691,6 +3817,8 @@ namespace nvhttp {
       });
     };
     https_server.resource["^/appasset$"]["GET"] = appasset;
+    https_server.resource["^/appmetadata$"]["GET"] = appmetadata;
+    https_server.resource["^/appbackground$"]["GET"] = appbackground;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
         std::lock_guard lock {launch_request_mutex};
