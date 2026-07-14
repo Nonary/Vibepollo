@@ -131,10 +131,12 @@ namespace proc {
     constexpr int LOSSLESS_SHARPNESS_MIN = 1;
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
 
-    disconnect_behavior_e effective_disconnect_behavior(const ctx_t &app) {
-      if (app.disconnect_behavior_override) {
-        return *app.disconnect_behavior_override;
+    disconnect_behavior_e effective_disconnect_behavior(std::optional<disconnect_behavior_e> app_override) {
+      if (app_override) {
+        return *app_override;
       }
+
+      auto config_gate = config::acquire_apply_read_gate();
       return parse_global_disconnect_behavior(config::stream.app_disconnect_behavior);
     }
 
@@ -2265,10 +2267,11 @@ namespace proc {
     return 0;
   }
 
-  void proc_t::resume() {
+  bool proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
-    if (!resume_after_disconnect()) {
+    const bool resumed = resume_after_disconnect();
+    if (!resumed) {
       BOOST_LOG(error) << "Failed to resume a disconnect-suspended target for app [" << _app_name << "]; it remains retained for retry.";
     }
 
@@ -2310,6 +2313,8 @@ namespace proc {
 
       exec_thread.detach();
     }
+
+    return resumed;
   }
 
   void proc_t::pause() {
@@ -2318,7 +2323,13 @@ namespace proc {
       return;
     }
 
-    const auto disconnect_behavior = effective_disconnect_behavior(_app);
+    std::optional<disconnect_behavior_e> app_override;
+    {
+      std::scoped_lock apps_lock(_apps_mutex);
+      const auto refreshed_app = resolve_app_from_snapshot(_apps, _app.id, _app.uuid);
+      app_override = refreshed_app ? refreshed_app->disconnect_behavior_override : _app.disconnect_behavior_override;
+    }
+    const auto disconnect_behavior = effective_disconnect_behavior(app_override);
     if (disconnect_behavior == disconnect_behavior_e::terminate) {
       BOOST_LOG(info) << "Terminating app [" << _app_name << "] when all clients are disconnected. Pause commands are skipped.";
       terminate();
@@ -2327,10 +2338,14 @@ namespace proc {
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
 
+    bool app_suspended = false;
     if (disconnect_behavior == disconnect_behavior_e::keep_running) {
       BOOST_LOG(info) << "Leaving app [" << _app_name << "] running while all clients are disconnected.";
-    } else if (!suspend_for_disconnect()) {
-      BOOST_LOG(warning) << "Best-effort suspension was skipped for app [" << _app_name << "]; leaving it running.";
+    } else {
+      app_suspended = suspend_for_disconnect();
+      if (!app_suspended) {
+        BOOST_LOG(warning) << "Best-effort suspension was skipped for app [" << _app_name << "]; leaving it running.";
+      }
     }
 
     if (!_app.state_cmds.empty()) {
@@ -2373,7 +2388,7 @@ namespace proc {
     }
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-    system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+    system_tray::update_tray_pausing(proc::proc.get_last_run_app_name(), app_suspended);
 #endif
   }
 

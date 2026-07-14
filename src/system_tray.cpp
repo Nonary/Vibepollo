@@ -456,8 +456,8 @@ namespace system_tray {
     });
   }
 
-  void update_tray_pausing(std::string app_name) {
-    run_on_tray_thread([app_name = std::move(app_name)]() {
+  void update_tray_pausing(std::string app_name, bool suspended) {
+    run_on_tray_thread([app_name = std::move(app_name), suspended]() {
       tray.notification_cb = nullptr;
       tray.notification_icon = nullptr;
       tray.notification_text = nullptr;
@@ -465,25 +465,31 @@ namespace system_tray {
       tray.icon = TRAY_ICON_PAUSING;
 
       char msg[256];
-      snprintf(msg, std::size(msg), "%s is suspended. Click this notification to resume it manually.", app_name.c_str());
+      if (suspended) {
+        snprintf(msg, std::size(msg), "%s is suspended. Click this notification to resume it manually.", app_name.c_str());
+      } else {
+        snprintf(msg, std::size(msg), "Streaming paused for %s", app_name.c_str());
+      }
   #ifdef _WIN32
       auto msg_acp = utf8ToAcp(msg);
       strncpy(msg, msg_acp.c_str(), std::size(msg) - 1);
       msg[std::size(msg) - 1] = '\0';
   #endif
       s_notification_text = msg;
-      tray.notification_title = "Game Suspended";
+      tray.notification_title = suspended ? "Game Suspended" : "Stream Paused";
       tray.notification_text = s_notification_text.c_str();
       tray.notification_icon = TRAY_ICON_PAUSING;
       tray.tooltip = s_notification_text.c_str();
-      tray.notification_cb = []() {
-        BOOST_LOG(info) << "Manual game resume requested from the suspension notification"sv;
-        if (proc::proc.resume_suspended_app_manually()) {
-          tray_notify("Game Resumed", "The game was resumed manually. Moonlight will still reconnect normally.");
-        } else {
-          tray_notify("Resume Unavailable", "The game is already running, has exited, or could not be resumed. Check the Vibepollo log for details.");
-        }
-      };
+      if (suspended) {
+        tray.notification_cb = []() {
+          BOOST_LOG(info) << "Manual game resume requested from the suspension notification"sv;
+          if (proc::proc.resume_suspended_app_manually()) {
+            tray_notify("Game Resumed", "The game was resumed manually. Moonlight will still reconnect normally.");
+          } else {
+            tray_notify("Resume Unavailable", "The game is already running, has exited, or could not be resumed. Check the Vibepollo log for details.");
+          }
+        };
+      }
       tray_update(&tray);
     });
   }

@@ -220,7 +220,7 @@ namespace proc {
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
-    void resume();
+    bool resume();
     void pause();
     bool resume_suspended_app_manually();
     void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);

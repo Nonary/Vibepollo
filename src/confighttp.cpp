@@ -431,6 +431,10 @@ namespace confighttp {
           continue;
         }
 
+        if (key == "app_disconnect_behavior") {
+          continue;
+        }
+
         if (key == "session_history_enabled") {
           return false;
         }

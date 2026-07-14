@@ -291,7 +291,7 @@ protected processes, and processes belonging to another user or interactive sess
 application is foreground when the client disconnects, that application may be suspended; keep the intended game
 foreground when disconnecting.
 
-Use suspension with offline games. Suspending an online game, especially while anti-cheat is active, can cause
+Use suspension with offline games. Suspending an online game, especially while anti-cheat is active, may cause
 disconnects, kicks, or penalties. Online and active anti-cheat compatibility is not guaranteed. This does not imply
 that an offline game is inherently unsafe merely because it includes anti-cheat.
 

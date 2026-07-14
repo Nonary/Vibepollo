@@ -69,7 +69,7 @@ namespace system_tray {
    * @brief Sets the tray icon in pausing mode (stream stopped but app running) and spawns the appropriate notification
    * @param app_name The paused application name
    */
-  void update_tray_pausing(std::string app_name);
+  void update_tray_pausing(std::string app_name, bool suspended);
 
   /**
    * @brief Sets the tray icon in stopped mode (app and stream stopped) and spawns the appropriate notification

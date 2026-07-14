@@ -62,6 +62,7 @@
 #include "rtsp.h"
 #include "session_history.h"
 #include "stream.h"
+#include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
@@ -4833,6 +4834,12 @@ namespace webrtc_stream {
       platf::frame_limiter_streaming_start(policy);
 #endif
       platf::streaming_will_start();
+      const bool app_resumed = proc::proc.resume();
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      if (app_resumed) {
+        system_tray::update_tray_playing(proc::proc.get_last_run_app_name());
+      }
+#endif
     }
     return snapshot;
   }
