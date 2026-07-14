@@ -124,16 +124,11 @@
                 :options="appDisconnectBehaviorOptions"
                 size="small"
               />
-              <p class="text-[11px] opacity-60">
-                {{ t('config.app_disconnect_behavior_app_desc') }}
-                {{ t('config.app_disconnect_behavior') }}:
-                {{ disconnectBehaviorLabel(globalDisconnectBehavior) }}.
-              </p>
               <n-alert
                 v-if="effectiveAppDisconnectBehavior === 'suspend'"
                 type="warning"
                 :show-icon="true"
-                class="mt-2"
+                class="mt-2 mb-2"
               >
                 {{ t('config.app_disconnect_behavior_suspend_warning') }}
               </n-alert>
@@ -1910,7 +1905,7 @@ const appDisconnectBehaviorOptions = computed(() => [
   ...APP_DISCONNECT_BEHAVIOR_VALUES.map((value) => ({
     label:
       value === 'inherit'
-        ? t('config.app_disconnect_behavior_inherit')
+        ? `${t('config.app_disconnect_behavior_inherit')} (${disconnectBehaviorLabel(globalDisconnectBehavior.value)})`
         : disconnectBehaviorLabel(value),
     value: value as AppDisconnectBehavior,
   })),
