@@ -206,10 +206,12 @@ jobs:
       release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       symbol_product_name: Vibepollo
-      publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
+      # This fork has neither a SignPath subscription nor a symbol-server token, and both gates
+      # hard-fail the build when required but unconfigured. Releases here ship unsigned.
+      publish_symbols: false
       symbol_release_draft: true
       symbol_release_prefix: polo
-      require_signpath_signing: ${{ needs.release-candidate.outputs.should_release == 'true' }}
+      require_signpath_signing: false
       require_truehdr_runtime: ${{ needs.release-candidate.outputs.should_release == 'true' }}
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
