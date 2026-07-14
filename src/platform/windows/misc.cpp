@@ -11,6 +11,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 // lib includes
@@ -24,6 +25,7 @@
 #include <dxgi1_6.h>
 #include <iphlpapi.h>
 #include <iterator>
+#include <TlHelp32.h>
 #include <timeapi.h>
 #include <UserEnv.h>
 #include <WinSock2.h>
@@ -73,6 +75,8 @@
 #include <winternl.h>
 extern "C" {
   NTSTATUS NTAPI NtSetTimerResolution(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+  NTSTATUS NTAPI NtSuspendProcess(HANDLE ProcessHandle);
+  NTSTATUS NTAPI NtResumeProcess(HANDLE ProcessHandle);
   NTSTATUS NTAPI RtlGetVersion(PRTL_OSVERSIONINFOW lpVersionInformation);
 }
 
@@ -1632,6 +1636,53 @@ namespace platf {
     bool requested_exit;
   };
 
+  namespace {
+    bool process_group_process_ids(HANDLE job_handle, std::vector<DWORD> &process_ids) {
+      DWORD buffer_length = sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST);
+      std::vector<unsigned char> buffer(buffer_length);
+
+      while (true) {
+        auto process_id_list = reinterpret_cast<PJOBOBJECT_BASIC_PROCESS_ID_LIST>(buffer.data());
+        DWORD required_length = 0;
+        if (QueryInformationJobObject(job_handle, JobObjectBasicProcessIdList, process_id_list, buffer_length, &required_length)) {
+          process_ids.clear();
+          process_ids.reserve(process_id_list->NumberOfProcessIdsInList);
+          for (DWORD i = 0; i < process_id_list->NumberOfProcessIdsInList; ++i) {
+            process_ids.push_back(static_cast<DWORD>(process_id_list->ProcessIdList[i]));
+          }
+          return true;
+        }
+
+        const auto error = GetLastError();
+        if (error != ERROR_MORE_DATA || required_length <= buffer_length) {
+          BOOST_LOG(warning) << "Failed to enumerate processes in group: "sv << error;
+          return false;
+        }
+
+        buffer_length = required_length;
+        buffer.resize(buffer_length);
+      }
+    }
+
+    bool process_is_gone(DWORD error) {
+      return error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_FOUND;
+    }
+
+    void resume_and_close_processes(const std::vector<HANDLE> &processes) {
+      for (const auto process : processes) {
+        NtResumeProcess(process);
+        CloseHandle(process);
+      }
+    }
+
+    void close_processes(const std::vector<std::pair<DWORD, HANDLE>> &processes) {
+      for (const auto &[process_id, process] : processes) {
+        (void) process_id;
+        CloseHandle(process);
+      }
+    }
+  }  // namespace
+
   static BOOL CALLBACK prgrp_enum_windows(HWND hwnd, LPARAM lParam) {
     auto enum_ctx = (enum_wnd_context_t *) lParam;
 
@@ -1662,34 +1713,18 @@ namespace platf {
     auto job_handle = (HANDLE) native_handle;
 
     // Get list of all processes in our job object
-    bool success;
-    DWORD required_length = sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST);
-    auto process_id_list = (PJOBOBJECT_BASIC_PROCESS_ID_LIST) calloc(1, required_length);
-    auto fg = util::fail_guard([&process_id_list]() {
-      free(process_id_list);
-    });
-    while (!(success = QueryInformationJobObject(job_handle, JobObjectBasicProcessIdList, process_id_list, required_length, &required_length)) &&
-           GetLastError() == ERROR_MORE_DATA) {
-      free(process_id_list);
-      process_id_list = (PJOBOBJECT_BASIC_PROCESS_ID_LIST) calloc(1, required_length);
-      if (!process_id_list) {
-        return false;
-      }
-    }
-
-    if (!success) {
-      auto err = GetLastError();
-      BOOST_LOG(warning) << "Failed to enumerate processes in group: "sv << err;
+    std::vector<DWORD> process_ids;
+    if (!process_group_process_ids(job_handle, process_ids)) {
       return false;
-    } else if (process_id_list->NumberOfProcessIdsInList == 0) {
+    } else if (process_ids.empty()) {
       // If all processes are already dead, treat it as a success
       return true;
     }
 
     enum_wnd_context_t enum_ctx = {};
     enum_ctx.requested_exit = false;
-    for (DWORD i = 0; i < process_id_list->NumberOfProcessIdsInList; i++) {
-      enum_ctx.process_ids.emplace(process_id_list->ProcessIdList[i]);
+    for (const auto process_id : process_ids) {
+      enum_ctx.process_ids.emplace(process_id);
     }
 
     // Enumerate all windows belonging to processes in the list
@@ -1697,6 +1732,110 @@ namespace platf {
 
     // Return success if we told at least one window to close
     return enum_ctx.requested_exit;
+  }
+
+  bool suspend_process_group(std::uintptr_t native_handle) {
+    std::vector<HANDLE> suspended_processes;
+    std::unordered_set<DWORD> suspended_process_ids;
+    while (true) {
+      std::vector<DWORD> process_ids;
+      if (!process_group_process_ids((HANDLE) native_handle, process_ids)) {
+        for (const auto suspended_process : suspended_processes) {
+          NtResumeProcess(suspended_process);
+          CloseHandle(suspended_process);
+        }
+        return false;
+      }
+
+      bool found_unsuspended_process = false;
+      std::vector<std::pair<DWORD, HANDLE>> opened_processes;
+      for (const auto process_id : process_ids) {
+        if (suspended_process_ids.contains(process_id)) {
+          continue;
+        }
+        found_unsuspended_process = true;
+
+        HANDLE process = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, process_id);
+        if (!process) {
+          const auto error = GetLastError();
+          if (process_is_gone(error)) {
+            suspended_process_ids.emplace(process_id);
+            continue;
+          }
+          BOOST_LOG(warning) << "RAM suspension declined for PID ["sv << process_id
+                             << "] by Windows or process protection (OpenProcess error="sv << error
+                             << "); leaving the application running."sv;
+          close_processes(opened_processes);
+          resume_and_close_processes(suspended_processes);
+          return false;
+        }
+        opened_processes.emplace_back(process_id, process);
+      }
+
+      for (std::size_t index = 0; index < opened_processes.size(); ++index) {
+        const auto [process_id, process] = opened_processes[index];
+        const auto status = NtSuspendProcess(process);
+        if (!NT_SUCCESS(status)) {
+          BOOST_LOG(warning) << "Unable to suspend PID ["sv << process_id << "]: NTSTATUS 0x"sv
+                             << std::hex << static_cast<unsigned long>(status) << std::dec;
+          CloseHandle(process);
+          for (std::size_t remaining = index + 1; remaining < opened_processes.size(); ++remaining) {
+            CloseHandle(opened_processes[remaining].second);
+          }
+          resume_and_close_processes(suspended_processes);
+          return false;
+        }
+        suspended_process_ids.emplace(process_id);
+        suspended_processes.push_back(process);
+      }
+
+      // A process can spawn a child after the job snapshot but before it is
+      // suspended. Enumerate again after every known process is stopped so the
+      // completed operation covers the entire tree.
+      if (!found_unsuspended_process) {
+        break;
+      }
+    }
+
+    for (const auto process : suspended_processes) {
+      CloseHandle(process);
+    }
+    BOOST_LOG(debug) << "RAM-suspended "sv << suspended_processes.size() << " process(es) in the game process tree."sv;
+    return true;
+  }
+
+  bool resume_process_group(std::uintptr_t native_handle) {
+    std::vector<DWORD> process_ids;
+    if (!process_group_process_ids((HANDLE) native_handle, process_ids)) {
+      return false;
+    }
+
+    bool success = true;
+    for (const auto process_id : process_ids) {
+      HANDLE process = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, process_id);
+      if (!process) {
+        const auto error = GetLastError();
+        if (process_is_gone(error)) {
+          continue;
+        }
+        BOOST_LOG(warning) << "Unable to open RAM-suspended PID ["sv << process_id << "] for resume: "sv << error;
+        success = false;
+        continue;
+      }
+
+      const auto status = NtResumeProcess(process);
+      CloseHandle(process);
+      if (!NT_SUCCESS(status)) {
+        BOOST_LOG(warning) << "Unable to resume PID ["sv << process_id << "]: NTSTATUS 0x"sv
+                           << std::hex << static_cast<unsigned long>(status) << std::dec;
+        success = false;
+      }
+    }
+
+    if (success) {
+      BOOST_LOG(debug) << "Resumed "sv << process_ids.size() << " process(es) in the game process tree."sv;
+    }
+    return success;
   }
 
   bool process_group_running(std::uintptr_t native_handle) {

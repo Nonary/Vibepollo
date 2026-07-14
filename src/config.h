@@ -248,6 +248,7 @@ namespace config {
     std::chrono::milliseconds ping_timeout;
 
     std::string file_apps;
+    std::string app_disconnect_behavior;
 
     int fec_percentage;
     int video_max_batch_size_kb;

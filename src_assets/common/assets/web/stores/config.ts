@@ -68,6 +68,7 @@ const defaultGroups = [
       global_prep_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       global_state_cmd: [] as Array<{ do: string; undo: string; elevated?: boolean }>,
       server_cmd: [] as Array<{ name: string; cmd: string; elevated?: boolean }>,
+      app_disconnect_behavior: 'keep_running',
       notify_pre_releases: 'disabled',
       update_check_interval: 86400,
       session_token_ttl_seconds: 86400,
@@ -497,6 +498,14 @@ export const useConfigStore = defineStore('config', () => {
     // config payload should not include metadata anymore; just clone
     _data.value = (obj ? JSON.parse(JSON.stringify(obj)) : {}) as ConfigData;
     const data = _data.value;
+
+    if (data) {
+      const disconnectBehavior = String(data['app_disconnect_behavior'] ?? 'keep_running')
+        .trim()
+        .toLowerCase();
+      data['app_disconnect_behavior'] =
+        disconnectBehavior === 'suspend' ? 'suspend' : 'keep_running';
+    }
 
     // decode known JSON string fields
     const specialOptions: Array<keyof ConfigDefaults> = [

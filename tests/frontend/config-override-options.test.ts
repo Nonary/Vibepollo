@@ -7,6 +7,24 @@ const baseContext = {
 };
 
 describe('configOverrideOptions', () => {
+  test('offers only keep-running and suspend as global disconnect behaviors', () => {
+    const options = getConfigSelectOptions('app_disconnect_behavior', {
+      ...baseContext,
+      currentValue: 'keep_running',
+    });
+
+    expect(options.map((option) => option.value)).toEqual(['keep_running', 'suspend']);
+  });
+
+  test('does not preserve an invalid global terminate value as a select option', () => {
+    const options = getConfigSelectOptions('app_disconnect_behavior', {
+      ...baseContext,
+      currentValue: 'terminate',
+    });
+
+    expect(options.map((option) => option.value)).toEqual(['keep_running', 'suspend']);
+  });
+
   test('stringifies numeric-backed select values for override payloads', () => {
     const configOptions = getConfigSelectOptions('min_log_level', {
       ...baseContext,

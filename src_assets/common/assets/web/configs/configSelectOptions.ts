@@ -94,6 +94,19 @@ export function getConfigSelectOptions(
       }));
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
+    case 'app_disconnect_behavior': {
+      const options = [
+        {
+          label: t('config.app_disconnect_behavior_keep_running'),
+          value: 'keep_running',
+        },
+        {
+          label: t('config.app_disconnect_behavior_suspend'),
+          value: 'suspend',
+        },
+      ];
+      return options;
+    }
     case 'address_family': {
       const options = [
         { label: translateOr(t, 'config.address_family_ipv4', 'IPv4'), value: 'ipv4' },

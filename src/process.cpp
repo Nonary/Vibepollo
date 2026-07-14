@@ -52,6 +52,8 @@
   #include "config_playnite.h"
   #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
+  #include "platform/windows/foreground_app.h"
+  #include "platform/windows/foreground_suspend.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
   #include "platform/windows/misc.h"
@@ -94,6 +96,28 @@ namespace proc {
 
   std::optional<ctx_t> resolve_app_from_snapshot(const std::vector<ctx_t> &apps, const std::string &appid, const std::string &appuuid);
 
+  std::optional<disconnect_behavior_e> parse_app_disconnect_behavior(std::string_view value) {
+    const auto normalized = boost::algorithm::to_lower_copy(boost::algorithm::trim_copy(std::string(value)));
+    if (normalized == "keep_running") {
+      return disconnect_behavior_e::keep_running;
+    }
+    if (normalized == "suspend") {
+      return disconnect_behavior_e::suspend;
+    }
+    if (normalized == "terminate") {
+      return disconnect_behavior_e::terminate;
+    }
+    return std::nullopt;
+  }
+
+  disconnect_behavior_e parse_global_disconnect_behavior(std::string_view value) {
+    const auto parsed = parse_app_disconnect_behavior(value);
+    if (parsed == disconnect_behavior_e::suspend) {
+      return disconnect_behavior_e::suspend;
+    }
+    return disconnect_behavior_e::keep_running;
+  }
+
   namespace {
     constexpr const char *LOSSLESS_PROFILE_RECOMMENDED = "recommended";
     constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
@@ -106,6 +130,15 @@ namespace proc {
     constexpr int LOSSLESS_MAX_RESOLUTION_SCALE = 100;
     constexpr int LOSSLESS_SHARPNESS_MIN = 1;
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
+
+    disconnect_behavior_e effective_disconnect_behavior(std::optional<disconnect_behavior_e> app_override) {
+      if (app_override) {
+        return *app_override;
+      }
+
+      auto config_gate = config::acquire_apply_read_gate();
+      return parse_global_disconnect_behavior(config::stream.app_disconnect_behavior);
+    }
 
     constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
     constexpr const char *ENV_LOSSLESS_CAPTURE_API = "SUNSHINE_LOSSLESS_SCALING_CAPTURE_API";
@@ -939,7 +972,10 @@ namespace proc {
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
+      _disconnect_suspended(other._disconnect_suspended),
+      _owned_group_suspended(other._owned_group_suspended),
 #ifdef _WIN32
+      _suspended_foreground_target(std::move(other._suspended_foreground_target)),
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
 #endif
@@ -959,10 +995,16 @@ namespace proc {
     _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
     other._lossless_profile_applied = false;
 #endif
+    other._disconnect_suspended = false;
+    other._owned_group_suspended = false;
   }
 
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
     if (this != &other) {
+      if (!resume_after_disconnect()) {
+        BOOST_LOG(warning) << "Refusing to replace process state while a suspended target cannot be recovered.";
+        return *this;
+      }
       std::scoped_lock lk(_apps_mutex, other._apps_mutex);
 #ifdef _WIN32
       stop_lossless_scaling_support();
@@ -976,10 +1018,15 @@ namespace proc {
       placebo = other.placebo;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
+      _disconnect_suspended = other._disconnect_suspended;
+      _owned_group_suspended = other._owned_group_suspended;
+      other._disconnect_suspended = false;
+      other._owned_group_suspended = false;
       _pipe = std::move(other._pipe);
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
 #ifdef _WIN32
+      _suspended_foreground_target = std::move(other._suspended_foreground_target);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1229,7 +1276,7 @@ namespace proc {
     _app_id = input_only_app_id;
     _app_name = "Remote Input";
     _app.uuid = REMOTE_INPUT_UUID;
-    _app.terminate_on_pause = true;
+    _app.disconnect_behavior_override = disconnect_behavior_e::terminate;
     allow_client_commands = false;
     placebo = true;
 
@@ -2220,8 +2267,13 @@ namespace proc {
     return 0;
   }
 
-  void proc_t::resume() {
+  bool proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
+
+    const bool resumed = resume_after_disconnect();
+    if (!resumed) {
+      BOOST_LOG(error) << "Failed to resume a disconnect-suspended target for app [" << _app_name << "]; it remains retained for retry.";
+    }
 
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
@@ -2261,6 +2313,8 @@ namespace proc {
 
       exec_thread.detach();
     }
+
+    return resumed;
   }
 
   void proc_t::pause() {
@@ -2269,13 +2323,30 @@ namespace proc {
       return;
     }
 
-    if (_app.terminate_on_pause) {
+    std::optional<disconnect_behavior_e> app_override;
+    {
+      std::scoped_lock apps_lock(_apps_mutex);
+      const auto refreshed_app = resolve_app_from_snapshot(_apps, _app.id, _app.uuid);
+      app_override = refreshed_app ? refreshed_app->disconnect_behavior_override : _app.disconnect_behavior_override;
+    }
+    const auto disconnect_behavior = effective_disconnect_behavior(app_override);
+    if (disconnect_behavior == disconnect_behavior_e::terminate) {
       BOOST_LOG(info) << "Terminating app [" << _app_name << "] when all clients are disconnected. Pause commands are skipped.";
       terminate();
       return;
     }
 
     BOOST_LOG(info) << "Session pausing for app [" << _app_name << "].";
+
+    bool app_suspended = false;
+    if (disconnect_behavior == disconnect_behavior_e::keep_running) {
+      BOOST_LOG(info) << "Leaving app [" << _app_name << "] running while all clients are disconnected.";
+    } else {
+      app_suspended = suspend_for_disconnect();
+      if (!app_suspended) {
+        BOOST_LOG(warning) << "Best-effort suspension was skipped for app [" << _app_name << "]; leaving it running.";
+      }
+    }
 
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
@@ -2317,8 +2388,144 @@ namespace proc {
     }
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-    system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+    system_tray::update_tray_pausing(proc::proc.get_last_run_app_name(), app_suspended);
 #endif
+  }
+
+  bool proc_t::suspend_for_disconnect() {
+    std::scoped_lock lock(_disconnect_suspend_mutex);
+    if (_disconnect_suspended) {
+      return true;
+    }
+
+    const bool owned_group_live = _process_group &&
+                                  platf::process_group_running((std::uintptr_t) _process_group.native_handle());
+
+#ifdef _WIN32
+    if (_suspended_foreground_target.active()) {
+      BOOST_LOG(warning) << "Skipped suspension: an unresolved foreground target is still retained for recovery.";
+      _disconnect_suspended = true;
+      return false;
+    }
+
+    auto group_scan = platf::foreground_suspend::owned_group_scan_e::clear;
+    if (owned_group_live) {
+      group_scan = platf::foreground_suspend::scan_owned_group((std::uintptr_t) _process_group.native_handle());
+      if (group_scan == platf::foreground_suspend::owned_group_scan_e::unknown) {
+        BOOST_LOG(debug) << "Owned process group identity was incomplete; using the conservative foreground fallback.";
+      }
+    }
+    const bool group_is_launcher_or_unknown = group_scan != platf::foreground_suspend::owned_group_scan_e::clear;
+    const auto initial_selection = platf::foreground_suspend::select_target({
+      .placeholder = placebo,
+      .owned_group_live = owned_group_live,
+      .owned_group_is_launcher = group_is_launcher_or_unknown,
+      .foreground_allowed = false,
+    });
+
+    if (initial_selection != platf::foreground_suspend::target_selection_e::owned_process_group) {
+      auto foreground = platf::foreground_suspend::acquire_and_suspend_foreground();
+      if (!foreground.target) {
+        if (foreground.reason == platf::foreground_suspend::rejection_reason_e::known_launcher) {
+          BOOST_LOG(info) << "Skipped suspension: foreground process is a known launcher.";
+        } else if (foreground.reason == platf::foreground_suspend::rejection_reason_e::critical_process ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::protected_process ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::system_path ||
+                   foreground.reason == platf::foreground_suspend::rejection_reason_e::system_process) {
+          BOOST_LOG(info) << "Skipped suspension: target is a system/critical process.";
+        } else {
+          BOOST_LOG(info) << "Skipped suspension: " << platf::foreground_suspend::describe_rejection(foreground.reason) << '.';
+        }
+        return false;
+      }
+
+      const auto pid = foreground.target->pid();
+      const auto basename = foreground.target->executable_basename();
+      const auto process_path = foreground.target->process_path();
+      const auto creation_time = foreground.target->creation_time();
+      const auto session_id = foreground.target->session_id();
+      if (!_suspended_foreground_target.attach(std::move(*foreground.target))) {
+        BOOST_LOG(warning) << "Skipped suspension: an unresolved foreground target already exists.";
+        return false;
+      }
+      _disconnect_suspended = true;
+      BOOST_LOG(info) << "Suspended foreground process " << basename << ", PID " << pid << ".";
+      BOOST_LOG(debug) << "Retained foreground target path='" << process_path << "' creationTime=" << creation_time
+                       << " sessionId=" << session_id << ".";
+      return true;
+    }
+#else
+    if (placebo || !owned_group_live) {
+      return true;
+    }
+#endif
+
+    if (!platf::suspend_process_group((std::uintptr_t) _process_group.native_handle())) {
+      return false;
+    }
+    _owned_group_suspended = true;
+    _disconnect_suspended = true;
+    BOOST_LOG(info) << "Suspended owned process group for app [" << _app_name << "].";
+    return true;
+  }
+
+  bool proc_t::resume_after_disconnect(bool *was_suspended) {
+    std::scoped_lock lock(_disconnect_suspend_mutex);
+    if (was_suspended) {
+      *was_suspended = _disconnect_suspended;
+    }
+    if (!_disconnect_suspended) {
+      return true;
+    }
+
+    bool foreground_recovered = true;
+#ifdef _WIN32
+    if (_suspended_foreground_target.active()) {
+      const auto *target = _suspended_foreground_target.target();
+      const auto pid = target ? target->pid() : 0;
+      const auto basename = target ? target->executable_basename() : std::string();
+      const auto result = _suspended_foreground_target.recover();
+      foreground_recovered = result != platf::foreground_suspend::resume_result_e::failed;
+      if (foreground_recovered) {
+        BOOST_LOG(info) << "Resumed foreground process " << basename << ", PID " << pid << ".";
+      } else {
+        BOOST_LOG(warning) << "Unable to resume foreground process " << basename << ", PID " << pid << "; retaining the exact handle for retry.";
+      }
+    }
+#endif
+
+    bool group_recovered = true;
+    if (_owned_group_suspended) {
+      if (_process_group) {
+        group_recovered = platf::resume_process_group((std::uintptr_t) _process_group.native_handle());
+      }
+      if (group_recovered) {
+        _owned_group_suspended = false;
+        BOOST_LOG(info) << "Resumed owned process group for app [" << _app_name << "].";
+      }
+    }
+
+    _disconnect_suspended = _owned_group_suspended;
+#ifdef _WIN32
+    _disconnect_suspended = _disconnect_suspended || _suspended_foreground_target.active();
+#endif
+    return foreground_recovered && group_recovered && !_disconnect_suspended;
+  }
+
+  bool proc_t::resume_suspended_app_manually() {
+    bool was_suspended = false;
+    const bool resumed = resume_after_disconnect(&was_suspended);
+    if (!was_suspended) {
+      BOOST_LOG(info) << "Manual resume requested, but no disconnect-suspended app is waiting.";
+      return false;
+    }
+    if (!resumed) {
+      BOOST_LOG(error) << "Manual resume failed; the suspended target remains retained for retry.";
+      return false;
+    }
+
+    BOOST_LOG(info) << "Disconnect-suspended app resumed manually while no stream is connected.";
+    return true;
   }
 
   bool proc_t::foreground_window_matches_running_app() {
@@ -2407,6 +2614,9 @@ namespace proc {
   void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
+    if (!resume_after_disconnect()) {
+      BOOST_LOG(warning) << "Could not resume the suspended foreground process before termination; retaining it for a later recovery attempt.";
+    }
     placebo = false;
 #ifdef _WIN32
     _deferred_launch = false;
@@ -2447,6 +2657,15 @@ namespace proc {
     terminate_process_group(_process, _process_group, remaining_timeout);
     _process = bp::child();
     _process_group = bp::group();
+    {
+      std::scoped_lock lock(_disconnect_suspend_mutex);
+      _owned_group_suspended = false;
+#ifdef _WIN32
+      _disconnect_suspended = _suspended_foreground_target.active();
+#else
+      _disconnect_suspended = false;
+#endif
+    }
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
 
@@ -3600,7 +3819,22 @@ namespace proc {
         ctx.use_app_identity = util::get_non_string_json_value<bool>(app_node, "use-app-identity", false);
         ctx.per_client_app_identity = util::get_non_string_json_value<bool>(app_node, "per-client-app-identity", false);
         ctx.allow_client_commands = util::get_non_string_json_value<bool>(app_node, "allow-client-commands", true);
-        ctx.terminate_on_pause = util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false);
+        ctx.disconnect_behavior_override.reset();
+        bool has_disconnect_behavior = false;
+        if (auto behavior_it = app_node.find("disconnect-behavior"); behavior_it != app_node.end() && behavior_it->is_string()) {
+          const auto behavior_text = boost::algorithm::trim_copy(behavior_it->get<std::string>());
+          if (boost::iequals(behavior_text, "inherit")) {
+            has_disconnect_behavior = true;
+          } else if (auto behavior = parse_app_disconnect_behavior(behavior_text)) {
+            ctx.disconnect_behavior_override = *behavior;
+            has_disconnect_behavior = true;
+          } else {
+            BOOST_LOG(warning) << "Ignoring invalid disconnect behavior [" << behavior_text << "] for app [" << name << "].";
+          }
+        }
+        if (!has_disconnect_behavior && util::get_non_string_json_value<bool>(app_node, "terminate-on-pause", false)) {
+          ctx.disconnect_behavior_override = disconnect_behavior_e::terminate;
+        }
         ctx.gamepad = app_node.value("gamepad", "");
         const bool frame_generation_capture_fix_enabled =
           util::get_non_string_json_value<bool>(app_node, "gen1-framegen-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-capture-fix", false)) ||
@@ -3814,7 +4048,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;
@@ -3848,7 +4082,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;
@@ -3882,7 +4116,7 @@ namespace proc {
         ctx.use_app_identity = false;
         ctx.per_client_app_identity = false;
         ctx.allow_client_commands = false;
-        ctx.terminate_on_pause = true;  // There's no need to keep an active input only session ongoing
+        ctx.disconnect_behavior_override = disconnect_behavior_e::terminate;  // There's no need to keep an active input only session ongoing
 
         ctx.elevated = false;
         ctx.auto_detach = true;
@@ -3918,7 +4152,7 @@ namespace proc {
       ctx.use_app_identity = false;
       ctx.per_client_app_identity = false;
       ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
+      ctx.disconnect_behavior_override.reset();
 
       ctx.elevated = false;
       ctx.auto_detach = true;

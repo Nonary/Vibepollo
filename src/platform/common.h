@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
@@ -760,6 +761,20 @@ namespace platf {
    * @return `true` if termination was successfully requested.
    */
   bool request_process_group_exit(std::uintptr_t native_handle);
+
+  /**
+   * @brief Suspend every process in a process group without terminating it.
+   * @param native_handle The native handle of the process group.
+   * @return `true` if all live processes were suspended.
+   */
+  bool suspend_process_group(std::uintptr_t native_handle);
+
+  /**
+   * @brief Resume every process in a previously suspended process group.
+   * @param native_handle The native handle of the process group.
+   * @return `true` if all live processes were resumed.
+   */
+  bool resume_process_group(std::uintptr_t native_handle);
 
   /**
    * @brief Check if a process group still has running children.

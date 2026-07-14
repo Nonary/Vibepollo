@@ -41,6 +41,7 @@
 
 # build directories
 build/
+build-*/
 cmake-*/
 docs/doxyconfig*
 
@@ -71,5 +72,7 @@ AGENTS.md
 
 # Local runtime/test artifacts
 test_sunshine.log
+test_sunshine.log.*
 vibeshine_state.json
+/output/
 .claude/

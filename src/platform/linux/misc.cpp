@@ -609,6 +609,26 @@ namespace platf {
     }
   }
 
+  bool suspend_process_group(std::uintptr_t native_handle) {
+    if (kill(-((pid_t) native_handle), SIGSTOP) == 0 || errno == ESRCH) {
+      BOOST_LOG(debug) << "Suspended process group: "sv << native_handle;
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Unable to suspend process group ["sv << native_handle << "]: "sv << errno;
+    return false;
+  }
+
+  bool resume_process_group(std::uintptr_t native_handle) {
+    if (kill(-((pid_t) native_handle), SIGCONT) == 0 || errno == ESRCH) {
+      BOOST_LOG(debug) << "Resumed process group: "sv << native_handle;
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Unable to resume process group ["sv << native_handle << "]: "sv << errno;
+    return false;
+  }
+
   bool process_group_running(std::uintptr_t native_handle) {
     return waitpid(-((pid_t) native_handle), nullptr, WNOHANG) >= 0;
   }

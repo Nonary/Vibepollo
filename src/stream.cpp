@@ -2753,11 +2753,6 @@ namespace stream {
           proc::proc.pause();
         }
         const bool is_paused = proc::proc.running() > 0;
-        if (is_paused) {
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-#endif
-        }
 #ifdef _WIN32
         // App teardown may have reached us before the RTSP session finished.
         // Consume that deferred request only after the app and every stream are gone.
