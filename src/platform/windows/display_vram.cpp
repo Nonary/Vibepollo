@@ -1983,11 +1983,6 @@ namespace platf::dxgi {
       if (amd_config.amd_input_queue_size > 0) {
         amf_cfg.input_queue_size = amd_config.amd_input_queue_size;
       }
-      if (input_queue_size_override) {
-        amf_cfg.input_queue_size = input_queue_size_override;
-        BOOST_LOG(info) << "AMF: using adapter-compatible PreAnalysis input queue "
-                        << *input_queue_size_override;
-      }
 
       // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
       // leaves the AMF driver default untouched, so behavior is unchanged unless the
@@ -1999,17 +1994,36 @@ namespace platf::dxgi {
         return *v != 0;
       };
       amf_cfg.lowlatency_mode = amf_tristate(amd_config.amd_lowlatency_mode);
+      amf_cfg.av1_encoding_latency_mode = amd_config.amd_av1_latency_mode;
+      const bool av1_lowest_latency =
+        client_config.videoFormat == 2 &&
+        ::amf::lifecycle::av1_latency_mode_is_lowest(amf_cfg.av1_encoding_latency_mode);
+      const bool aggressive_latency =
+        (client_config.videoFormat != 2 && amf_cfg.lowlatency_mode && *amf_cfg.lowlatency_mode) ||
+        av1_lowest_latency;
+      const auto latency_bounded_queue = ::amf::lifecycle::input_queue_for_aggressive_latency(
+        amf_cfg.input_queue_size,
+        aggressive_latency);
+      if (latency_bounded_queue != amf_cfg.input_queue_size) {
+        BOOST_LOG(info) << "AMF: capping input queue at one frame for the requested aggressive latency mode";
+        amf_cfg.input_queue_size = latency_bounded_queue;
+      }
+      if (input_queue_size_override) {
+        amf_cfg.input_queue_size = input_queue_size_override;
+        BOOST_LOG(info) << "AMF: using adapter-compatible PreAnalysis input queue "
+                        << *input_queue_size_override;
+      }
       const auto smart_access_video_plan = ::amf::lifecycle::resolve_smart_access_video(
         amf_tristate(amd_config.amd_smart_access_video),
-        amf_cfg.lowlatency_mode);
+        amf_cfg.lowlatency_mode,
+        av1_lowest_latency);
       amf_cfg.smart_access_video = smart_access_video_plan.enabled;
       if (smart_access_video_plan.disabled_for_low_latency) {
-        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because AMF Low Latency Mode is enabled;"
+        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because an aggressive AMF latency mode is enabled;"
                               " this combination has caused AMD GPU watchdog resets";
       }
       amf_cfg.high_motion_quality_boost_enable = amf_tristate(amd_config.amd_high_motion_quality_boost);
       amf_cfg.av1_screen_content_tools = amf_tristate(amd_config.amd_av1_screen_content);
-      amf_cfg.av1_encoding_latency_mode = amd_config.amd_av1_latency_mode;
 
       const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
         active_encoder_count,

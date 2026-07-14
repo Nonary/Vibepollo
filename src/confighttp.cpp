@@ -446,6 +446,12 @@ namespace confighttp {
       return true;
     }
 
+    bool contains_only_amd_encoder_options(const std::set<std::string> &keys) {
+      return !keys.empty() && std::ranges::all_of(keys, [](const std::string &key) {
+        return key.rfind("amd_", 0) == 0;
+      });
+    }
+
   }  // namespace
 
   static std::string get_web_ui_host_for_local_open() {
@@ -3057,7 +3063,13 @@ namespace confighttp {
       bool applied_now = false;
       bool deferred = false;
       if (!restart_required) {
-        if (can_hot_apply_during_session(changed_keys) || !has_active_stream_sessions()) {
+        if (contains_only_amd_encoder_options(changed_keys)) {
+          // Native AMF captures own an immutable encoder snapshot. Apply only
+          // this config group immediately so UI tuning cannot enter the full
+          // deferred reload path while a stream is stopping or resuming.
+          config::apply_amd_config_now();
+          applied_now = true;
+        } else if (can_hot_apply_during_session(changed_keys) || !has_active_stream_sessions()) {
           // Apply immediately
           config::apply_config_now();
           applied_now = true;

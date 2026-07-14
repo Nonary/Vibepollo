@@ -1605,6 +1605,71 @@ namespace config {
     }
   }
 
+  void apply_amd_encoder_options(
+    std::unordered_map<std::string, std::string> &vars,
+    decltype(video.amd) &amd_config) {
+    std::string quality;
+    string_f(vars, "amd_quality", quality);
+    if (!quality.empty()) {
+      amd_config.amd_quality_h264 = amd::quality_from_view<amd::quality_h264_e>(quality, amd_config.amd_quality_h264);
+      amd_config.amd_quality_hevc = amd::quality_from_view<amd::quality_hevc_e>(quality, amd_config.amd_quality_hevc);
+      amd_config.amd_quality_av1 = amd::quality_from_view<amd::quality_av1_e>(quality, amd_config.amd_quality_av1);
+    }
+
+    std::string rc;
+    string_f(vars, "amd_rc", rc);
+    int_f(vars, "amd_coder", amd_config.amd_coder, amd::coder_from_view);
+    if (!rc.empty()) {
+      amd_config.amd_rc_h264 = amd::rc_from_view<amd::rc_h264_e>(rc, amd_config.amd_rc_h264);
+      amd_config.amd_rc_hevc = amd::rc_from_view<amd::rc_hevc_e>(rc, amd_config.amd_rc_hevc);
+      amd_config.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, amd_config.amd_rc_av1);
+    }
+
+    // Only forwarded to the encoder when the 'qvbr' rate control method is selected.
+    // 0 (or an unset value) leaves the level at the encoder default.
+    int qvbr_quality_level = 0;
+    int_f(vars, "amd_qvbr_quality_level", qvbr_quality_level);
+    if (qvbr_quality_level > 0) {
+      if (qvbr_quality_level > 51) {
+        BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
+      } else {
+        amd_config.amd_qvbr_quality_level = qvbr_quality_level;
+      }
+    }
+
+    std::string usage;
+    string_f(vars, "amd_usage", usage);
+    if (!usage.empty()) {
+      amd_config.amd_usage_h264 = amd::usage_from_view<amd::usage_h264_e>(usage, amd_config.amd_usage_h264);
+      amd_config.amd_usage_hevc = amd::usage_from_view<amd::usage_hevc_e>(usage, amd_config.amd_usage_hevc);
+      amd_config.amd_usage_av1 = amd::usage_from_view<amd::usage_av1_e>(usage, amd_config.amd_usage_av1);
+    }
+
+    bool_f(vars, "amd_preanalysis", (bool &) amd_config.amd_preanalysis);
+    int_f(vars, "amd_vbaq", amd_config.amd_vbaq, amd::tristate_from_view);
+    bool_f(vars, "amd_enforce_hrd", (bool &) amd_config.amd_enforce_hrd);
+
+    // Native AMF encoder (amdvce) tuning knobs.
+    int_f(vars, "amd_ltr_frames", amd_config.amd_ltr_frames);
+    if (amd_config.amd_ltr_frames < 0 || amd_config.amd_ltr_frames > 2) {
+      BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << amd_config.amd_ltr_frames;
+      amd_config.amd_ltr_frames = std::clamp(amd_config.amd_ltr_frames, 0, 2);
+    }
+    int_f(vars, "amd_input_queue_size", amd_config.amd_input_queue_size);
+    if (amd_config.amd_input_queue_size < 0 || amd_config.amd_input_queue_size > 32) {
+      BOOST_LOG(warning) << "config: amd_input_queue_size must be between 0 and 32, clamping: "sv << amd_config.amd_input_queue_size;
+      amd_config.amd_input_queue_size = std::clamp(amd_config.amd_input_queue_size, 0, 32);
+    }
+
+    // Curated opt-in native-AMF feature knobs. Default "auto" leaves the AMF
+    // driver default untouched, so none of these change behavior unless enabled.
+    int_f(vars, "amd_smart_access_video", amd_config.amd_smart_access_video, amd::tristate_from_view);
+    int_f(vars, "amd_lowlatency_mode", amd_config.amd_lowlatency_mode, amd::tristate_from_view);
+    int_f(vars, "amd_high_motion_quality_boost", amd_config.amd_high_motion_quality_boost, amd::tristate_from_view);
+    int_f(vars, "amd_av1_screen_content", amd_config.amd_av1_screen_content, amd::tristate_from_view);
+    int_f(vars, "amd_av1_latency_mode", amd_config.amd_av1_latency_mode, amd::av1_latency_from_view);
+  }
+
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     reset_runtime_config_to_defaults();
 #ifndef __ANDROID__
@@ -1684,66 +1749,7 @@ namespace config {
     int_f(vars, "qsv_coder", video.qsv.qsv_cavlc, qsv::coder_from_view);
     bool_f(vars, "qsv_slow_hevc", video.qsv.qsv_slow_hevc);
 
-    std::string quality;
-    string_f(vars, "amd_quality", quality);
-    if (!quality.empty()) {
-      video.amd.amd_quality_h264 = amd::quality_from_view<amd::quality_h264_e>(quality, video.amd.amd_quality_h264);
-      video.amd.amd_quality_hevc = amd::quality_from_view<amd::quality_hevc_e>(quality, video.amd.amd_quality_hevc);
-      video.amd.amd_quality_av1 = amd::quality_from_view<amd::quality_av1_e>(quality, video.amd.amd_quality_av1);
-    }
-
-    std::string rc;
-    string_f(vars, "amd_rc", rc);
-    int_f(vars, "amd_coder", video.amd.amd_coder, amd::coder_from_view);
-    if (!rc.empty()) {
-      video.amd.amd_rc_h264 = amd::rc_from_view<amd::rc_h264_e>(rc, video.amd.amd_rc_h264);
-      video.amd.amd_rc_hevc = amd::rc_from_view<amd::rc_hevc_e>(rc, video.amd.amd_rc_hevc);
-      video.amd.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, video.amd.amd_rc_av1);
-    }
-
-    // Only forwarded to the encoder when the 'qvbr' rate control method is selected.
-    // 0 (or an unset value) leaves the level at the encoder default.
-    int qvbr_quality_level = 0;
-    int_f(vars, "amd_qvbr_quality_level", qvbr_quality_level);
-    if (qvbr_quality_level > 0) {
-      if (qvbr_quality_level > 51) {
-        BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
-      } else {
-        video.amd.amd_qvbr_quality_level = qvbr_quality_level;
-      }
-    }
-
-    std::string usage;
-    string_f(vars, "amd_usage", usage);
-    if (!usage.empty()) {
-      video.amd.amd_usage_h264 = amd::usage_from_view<amd::usage_h264_e>(usage, video.amd.amd_usage_h264);
-      video.amd.amd_usage_hevc = amd::usage_from_view<amd::usage_hevc_e>(usage, video.amd.amd_usage_hevc);
-      video.amd.amd_usage_av1 = amd::usage_from_view<amd::usage_av1_e>(usage, video.amd.amd_usage_av1);
-    }
-
-    bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
-    int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
-    bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
-
-    // Native AMF encoder (amdvce) tuning knobs.
-    int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
-    if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
-      BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
-      video.amd.amd_ltr_frames = std::clamp(video.amd.amd_ltr_frames, 0, 2);
-    }
-    int_f(vars, "amd_input_queue_size", video.amd.amd_input_queue_size);
-    if (video.amd.amd_input_queue_size < 0 || video.amd.amd_input_queue_size > 32) {
-      BOOST_LOG(warning) << "config: amd_input_queue_size must be between 0 and 32, clamping: "sv << video.amd.amd_input_queue_size;
-      video.amd.amd_input_queue_size = std::clamp(video.amd.amd_input_queue_size, 0, 32);
-    }
-
-    // Curated opt-in native-AMF feature knobs. Default "auto" leaves the AMF
-    // driver default untouched, so none of these change behavior unless enabled.
-    int_f(vars, "amd_smart_access_video", video.amd.amd_smart_access_video, amd::tristate_from_view);
-    int_f(vars, "amd_lowlatency_mode", video.amd.amd_lowlatency_mode, amd::tristate_from_view);
-    int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
-    int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
-    int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
+    apply_amd_encoder_options(vars, video.amd);
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -2767,6 +2773,41 @@ namespace config {
       }
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
+    }
+  }
+
+  void apply_amd_config_now() {
+    // AMD encoder settings are consumed from an immutable snapshot when a
+    // capture starts. Updating only this group is therefore safe while the
+    // current stream is active and avoids unrelated full-reload side effects
+    // (display state persistence, history reloads, and other subsystem locks).
+    std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
+    std::unique_lock<std::mutex> apply_once(g_apply_mutex);
+    try {
+      auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
+      for (const auto &[name, value] : command_line_overrides) {
+        vars.insert_or_assign(name, value);
+      }
+
+      const auto runtime_overrides = runtime_overrides_snapshot();
+      for (const auto &[name, value] : runtime_overrides) {
+        vars.insert_or_assign(name, value);
+      }
+
+      std::unordered_map<std::string, std::string> logged_amd_options;
+      for (const auto &[name, value] : vars) {
+        if (name.rfind("amd_", 0) == 0) {
+          logged_amd_options.emplace(name, value);
+        }
+      }
+
+      auto updated_amd_config = default_video.amd;
+      apply_amd_encoder_options(vars, updated_amd_config);
+      video.amd = std::move(updated_amd_config);
+      log_config_settings(logged_amd_options, true);
+      BOOST_LOG(info) << "Hot-apply: updated AMD encoder settings without reloading unrelated subsystems.";
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "AMD encoder hot-apply failed: "sv << e.what();
     }
   }
 

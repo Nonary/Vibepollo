@@ -454,6 +454,7 @@ namespace config {
 
   // Hot-reload helpers
   void apply_config_now();
+  void apply_amd_config_now();
   void mark_deferred_reload();
   void maybe_apply_deferred();
 
