@@ -116,11 +116,24 @@ namespace amf::lifecycle {
     return std::min(maximum_watchdog, overall_deadline - now);
   }
 
+  inline constexpr auto logical_input_retry_backoff = std::chrono::milliseconds(1);
+  inline constexpr auto logical_input_retry_timeout = std::chrono::milliseconds(500);
+
   inline constexpr bool logical_input_requires_immediate_retry(
     bool input_accepted,
     bool fresh_conversion_pending,
-    bool force_idr_pending) noexcept {
-    return !input_accepted && (fresh_conversion_pending || force_idr_pending);
+    [[maybe_unused]] bool force_idr_pending) noexcept {
+    // A converted texture must remain reserved and be retried before a newer
+    // capture can overwrite it. An IDR request by itself has no reserved input:
+    // if AMF cannot replay the last frame yet, the encode loop must wait for a
+    // capture instead of retrying the synthetic refresh in a hot loop.
+    return !input_accepted && fresh_conversion_pending;
+  }
+
+  inline constexpr bool logical_input_retry_timed_out(
+    const std::chrono::steady_clock::time_point &retry_started,
+    const std::chrono::steady_clock::time_point &now) noexcept {
+    return now - retry_started >= logical_input_retry_timeout;
   }
 
   inline constexpr std::chrono::steady_clock::time_point output_or_image_wait_deadline(

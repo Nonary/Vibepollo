@@ -970,12 +970,18 @@ namespace {
            !amf::lifecycle::full_watchdog_interval_fits(deadline, start + 3200ms, maximum);
   }
 
-  bool rejected_fresh_or_idr_input_retries_without_static_wait() {
+  bool rejected_fresh_input_retries_but_idr_only_waits_for_capture() {
     using amf::lifecycle::logical_input_requires_immediate_retry;
+    using amf::lifecycle::logical_input_retry_timed_out;
+    using clock = std::chrono::steady_clock;
+    const auto start = clock::time_point {};
     return logical_input_requires_immediate_retry(false, true, false) &&
-           logical_input_requires_immediate_retry(false, false, true) &&
+           logical_input_requires_immediate_retry(false, true, true) &&
+           !logical_input_requires_immediate_retry(false, false, true) &&
            !logical_input_requires_immediate_retry(false, false, false) &&
-           !logical_input_requires_immediate_retry(true, true, true);
+           !logical_input_requires_immediate_retry(true, true, true) &&
+           !logical_input_retry_timed_out(start, start + 499ms) &&
+           logical_input_retry_timed_out(start, start + 500ms);
   }
 
   bool sparse_output_wait_remains_armed_until_image_or_tail_deadline() {
@@ -1074,7 +1080,7 @@ int main() {
              capture_generation_preservation_is_amd_scoped_and_worker_aware() &&
              probe_teardown_watchdog_obeys_the_end_to_end_deadline() &&
              shared_reinit_deadline_defers_instead_of_shortening_driver_watchdog() &&
-             rejected_fresh_or_idr_input_retries_without_static_wait() &&
+             rejected_fresh_input_retries_but_idr_only_waits_for_capture() &&
              sparse_output_wait_remains_armed_until_image_or_tail_deadline() &&
              smart_access_video_avoids_aggressive_low_latency_driver_path() &&
              concurrent_native_session_remains_usable() ?
@@ -1268,8 +1274,8 @@ TEST(SunshineNativeAmfReview, SharedReinitDeadlineDefersInsteadOfShorteningDrive
   EXPECT_TRUE(shared_reinit_deadline_defers_instead_of_shortening_driver_watchdog());
 }
 
-TEST(SunshineNativeAmfReview, RejectedFreshOrIdrInputRetriesWithoutStaticWait) {
-  EXPECT_TRUE(rejected_fresh_or_idr_input_retries_without_static_wait());
+TEST(SunshineNativeAmfReview, RejectedFreshInputRetriesButIdrOnlyWaitsForCapture) {
+  EXPECT_TRUE(rejected_fresh_input_retries_but_idr_only_waits_for_capture());
 }
 
 TEST(SunshineNativeAmfReview, SparseOutputWaitRemainsArmedUntilImageOrTailDeadline) {

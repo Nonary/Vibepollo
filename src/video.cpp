@@ -1176,9 +1176,10 @@ namespace video {
     }
 
     bool has_pending_submission() const {
-      // A converted capture or an IDR request remains logically pending until
-      // AMF accepts it. The outer loop uses this to retry without waiting for a
-      // new capture (which could otherwise overwrite or postpone this input).
+      // Only a converted capture requires an immediate retry: it owns a
+      // reserved AMF surface which a newer capture must not overwrite. A lone
+      // IDR remains latched until acceptance, but waits for the next capture if
+      // AMF cannot safely replay the last submitted surface yet.
       return amf::lifecycle::logical_input_requires_immediate_retry(
         last_input_accepted, fresh_conversion_pending, force_idr);
     }
@@ -4958,7 +4959,7 @@ namespace video {
       uint64_t popped_placeholder = 0;
       uint64_t pop_timeouts = 0;
       uint64_t gate_skipped = 0;
-      uint64_t encoded = 0;
+      uint64_t encode_attempts = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
 
@@ -4966,6 +4967,7 @@ namespace video {
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+      std::chrono::steady_clock::time_point retry_started;
       bool placeholder = false;
     };
     std::optional<pending_native_input_t> pending_native_input;
@@ -5014,7 +5016,7 @@ namespace video {
                          << " popped_placeholder=" << loop_stats.popped_placeholder
                          << " pop_timeouts=" << loop_stats.pop_timeouts
                          << " gate_skipped=" << loop_stats.gate_skipped
-                         << " encoded=" << loop_stats.encoded
+                         << " encode_attempts=" << loop_stats.encode_attempts
                          << " frame_nr=" << frame_nr;
         loop_stats = {};
         loop_stats.last_log = now;
@@ -5268,24 +5270,46 @@ namespace video {
 #endif
         break;
       }
-      ++loop_stats.encoded;
+      ++loop_stats.encode_attempts;
 
       if (!first_input_timing_logged && (!native_amf || native_amf->was_last_input_accepted())) {
         first_input_timing_logged = true;
         log_startup_stage("first-input"sv);
       }
 
-      if (native_amf && !native_amf->was_last_input_accepted() && native_amf->has_pending_submission()) {
-        // Capacity/output progress may have made an older packet send-ready
-        // before this fresh input was accepted. Retry the same logical frame on
-        // the next loop iteration without consuming a new capture or waiting for
-        // the minimum-FPS timer; preserve its timestamps and pending IDR state.
-        pending_native_input = pending_native_input_t {
-          frame_timestamp,
-          capture_timestamp,
-          host_processing_timestamp,
-          placeholder_input,
-        };
+      if (native_amf && !native_amf->was_last_input_accepted()) {
+        if (native_amf->has_pending_submission()) {
+          // Capacity/output progress may have made an older packet send-ready
+          // before this fresh input was accepted. Retry the same logical frame
+          // without consuming a newer capture, but bound and pace the retry so
+          // a driver invariant failure cannot monopolize the encode thread.
+          const auto now = std::chrono::steady_clock::now();
+          const auto retry_started = pending_native_input ?
+                                       pending_native_input->retry_started :
+                                       now;
+          if (amf::lifecycle::logical_input_retry_timed_out(retry_started, now)) {
+            BOOST_LOG(error) << "AMF: pending native input was not accepted within "
+                             << amf::lifecycle::logical_input_retry_timeout.count()
+                             << "ms; falling back to the legacy AMF encoder"sv;
+            native_amf_runtime_failed = true;
+            break;
+          }
+          pending_native_input = pending_native_input_t {
+            frame_timestamp,
+            capture_timestamp,
+            host_processing_timestamp,
+            retry_started,
+            placeholder_input,
+          };
+          std::this_thread::sleep_for(amf::lifecycle::logical_input_retry_backoff);
+          continue;
+        }
+
+        // No converted texture is pending. This is normally an IDR or static
+        // refresh attempted while the last AMF surface is still owned by the
+        // driver. Keep the IDR and frame index latched, then let the next loop
+        // wait for a capture instead of retrying the same synthetic input.
+        pending_native_input.reset();
         continue;
       }
       pending_native_input.reset();
