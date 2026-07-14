@@ -154,6 +154,10 @@ namespace video {
     // process shutdown. Deliberately give the runtime fence process lifetime.
     auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
     auto &active_amf_watchdog_workers = *new std::atomic_uint32_t {0};
+    // A last-resort retain path can leave a native session's internal AMF
+    // workers alive without an outer watchdog worker to account for them. Keep
+    // that shutdown hazard process-lifetime and force the same no-CRT exit path.
+    auto &unsafe_abandoned_amf_resource = *new std::atomic_bool {false};
     constexpr auto amf_vendor_watchdog_timeout = 5s;
     constexpr auto amf_initialization_total_timeout = 6100ms;
     constexpr auto amf_gate_wait_timeout = amf_initialization_total_timeout;
@@ -513,11 +517,6 @@ namespace video {
 #else
       oss << "nogpu";
 #endif
-      oss << "|encoder=" << config::video.encoder
-          << "|adapter=" << config::video.adapter_name
-          << "|capture=" << config::video.capture
-          << "|hevc=" << config::video.hevc_mode
-          << "|av1=" << config::video.av1_mode;
 #ifdef _WIN32
       auto append_optional = [&](std::string_view name, const std::optional<int> &value) {
         oss << '|' << name << '=';
@@ -531,7 +530,15 @@ namespace video {
                                      config::video.encoder == "amdvce" ||
                                      config::video.encoder == "amdvce_legacy";
       if (amd_may_be_probed) {
-        oss << "|amd_coder=" << config::video.amd.amd_coder
+        // These selectors can change whether/how AMF is initialized, but they
+        // must not invalidate the established GPU-only probe cache for NVENC,
+        // QSV, software encoders, or non-Windows platforms.
+        oss << "|encoder=" << config::video.encoder
+            << "|adapter=" << config::video.adapter_name
+            << "|capture=" << config::video.capture
+            << "|hevc=" << config::video.hevc_mode
+            << "|av1=" << config::video.av1_mode
+            << "|amd_coder=" << config::video.amd.amd_coder
             << "|amd_ltr=" << config::video.amd.amd_ltr_frames
             << "|amd_queue=" << config::video.amd.amd_input_queue_size;
         append_optional("amd_usage_h264", config::video.amd.amd_usage_h264);
@@ -681,11 +688,14 @@ namespace video {
 
 #ifdef _WIN32
   bool has_active_amf_watchdog_workers() {
-    return active_amf_watchdog_workers.load(std::memory_order_acquire) != 0;
+    return active_amf_watchdog_workers.load(std::memory_order_acquire) != 0 ||
+           unsafe_abandoned_amf_resource.load(std::memory_order_acquire);
   }
 
   bool amf_teardown_pending() {
-    return has_active_amf_watchdog_workers() || native_amf_lifecycle_gate.operation_in_progress();
+    return has_active_amf_watchdog_workers() ||
+           native_amf_lifecycle_gate.operation_in_progress() ||
+           native_amf_lifecycle_gate.is_quarantined();
   }
 
   bool wait_for_amf_teardown_completion() {
@@ -1231,6 +1241,16 @@ namespace video {
       return device && device->amf && device->amf->driver_submission_timed_out();
     }
 
+    std::optional<std::chrono::steady_clock::time_point> driver_call_ownership_deadline() {
+      return device && device->amf ?
+               device->amf->driver_call_ownership_deadline() :
+               std::nullopt;
+    }
+
+    const sunshine_colorspace_t *output_colorspace() const {
+      return device ? &device->colorspace : nullptr;
+    }
+
     std::string runtime_compatibility_key() const {
       return device ? device->runtime_compatibility_key() : std::string {};
     }
@@ -1615,6 +1635,10 @@ namespace video {
       return true;
     }
 
+    const auto runtime_requirement =
+      amf::lifecycle::advanced_rate_control_runtime_requirement(
+        video_format, *rate_control);
+
     HMODULE runtime = LoadLibraryW(AMF_DLL_NAME);
     if (!runtime) {
       BOOST_LOG(error) << "AMF: cannot validate the runtime required by the selected advanced rate-control mode";
@@ -1632,12 +1656,15 @@ namespace video {
     }
     if (!amf::lifecycle::runtime_supports_advanced_rate_control(
           video_format,
+          *rate_control,
           AMF_GET_MAJOR_VERSION(version),
           AMF_GET_MINOR_VERSION(version),
           AMF_GET_SUBMINOR_VERSION(version))) {
       BOOST_LOG(error) << "AMF: rate-control mode " << *rate_control
                        << " for codec " << video_format
-                       << " requires AMF 1.4.28 or newer (installed="
+                       << " requires AMF " << runtime_requirement.major << '.'
+                       << runtime_requirement.minor << '.'
+                       << runtime_requirement.subminor << " or newer (installed="
                        << AMF_GET_MAJOR_VERSION(version) << '.'
                        << AMF_GET_MINOR_VERSION(version) << '.'
                        << AMF_GET_SUBMINOR_VERSION(version) << '.'
@@ -2796,7 +2823,7 @@ namespace video {
                 while (capture_ctx->images->peek()) {
 #ifdef _WIN32
                   auto queued_image = capture_ctx->images->pop();
-                  if (queued_image && is_d3d_capture_image(queued_image)) {
+                  if (capture_uses_amf && queued_image && is_d3d_capture_image(queued_image)) {
                     deferred_d3d_images.emplace_back(std::move(queued_image));
                   }
 #else
@@ -3664,6 +3691,7 @@ namespace video {
     // Entering another AMD destructor after a lifecycle timeout can overlap the
     // abandoned vendor call. Keep both halves of the shared-texture graph alive
     // until process exit instead of destroying either half on this caller.
+    unsafe_abandoned_amf_resource.store(true, std::memory_order_release);
     (void) resource.release();
     (void) new std::shared_ptr<platf::display_t> {std::move(display_lease)};
   }
@@ -3780,22 +3808,9 @@ namespace video {
     const auto acceptance_deadline = amf::lifecycle::caller_acceptance_deadline(
       overall_deadline, vendor_deadline);
 
-    std::optional<amf::amf_hdr_metadata> resolved_hdr_metadata;
     if (colorspace_is_hdr(encode_device->colorspace)) {
       if (encode_device->hdr_metadata_valid) {
-        const auto &hdr_metadata = encode_device->hdr_metadata;
-        amf::amf_hdr_metadata amf_metadata;
-        for (int i = 0; i < 3; i++) {
-          amf_metadata.displayPrimaries[i].x = hdr_metadata.displayPrimaries[i].x;
-          amf_metadata.displayPrimaries[i].y = hdr_metadata.displayPrimaries[i].y;
-        }
-        amf_metadata.whitePoint.x = hdr_metadata.whitePoint.x;
-        amf_metadata.whitePoint.y = hdr_metadata.whitePoint.y;
-        amf_metadata.maxDisplayLuminance = hdr_metadata.maxDisplayLuminance;
-        amf_metadata.minDisplayLuminance = hdr_metadata.minDisplayLuminance;
-        amf_metadata.maxContentLightLevel = hdr_metadata.maxContentLightLevel;
-        amf_metadata.maxFrameAverageLightLevel = hdr_metadata.maxFrameAverageLightLevel;
-        resolved_hdr_metadata = amf_metadata;
+        encode_device->set_hdr_metadata_for_initialization(&encode_device->hdr_metadata);
       } else {
         BOOST_LOG(warning) << "AMF: no resolved HDR metadata is available for the native bitstream"sv;
       }
@@ -3813,7 +3828,7 @@ namespace video {
     std::thread initialization_thread;
     try {
       initialization_thread = std::thread {
-        [encode_device = std::move(encode_device), client_config, colorspace, codec_name, resolved_hdr_metadata, handoff,
+        [encode_device = std::move(encode_device), client_config, colorspace, codec_name, handoff,
          amd_runtime_config, unsupported_runtime,
          worker_activity = std::move(worker_activity)]() mutable {
           (void) worker_activity;
@@ -3841,10 +3856,6 @@ namespace video {
               owned_encode_device.reset();
               handoff->publish(nullptr);
               return;
-            }
-            if (resolved_hdr_metadata && owned_encode_device->amf &&
-                !owned_encode_device->amf->set_hdr_metadata(resolved_hdr_metadata)) {
-              BOOST_LOG(warning) << "AMF: HDR stream will continue without mastering metadata"sv;
             }
             handed_off_to_caller = handoff->publish(std::move(owned_encode_device));
           } catch (...) {
@@ -3969,6 +3980,7 @@ namespace video {
     // The AMD runtime is already known to have an abandoned vendor call. Running
     // another destructor can overlap it and hang/crash. Intentionally retain the
     // resources until process termination without registering a static destructor.
+    unsafe_abandoned_amf_resource.store(true, std::memory_order_release);
     (void) session.release();
     // The session's display lease may already have been moved into the teardown
     // worker. Preserve it independently: capture quarantines the complete old
@@ -4155,23 +4167,49 @@ namespace video {
     std::unique_ptr<encode_session_t> session,
     std::shared_ptr<platf::display_t> display_lease,
     std::string reason,
-    amf_teardown_fence_state_e fence_state) {
+    amf_teardown_fence_state_e fence_state,
+    std::optional<std::chrono::steady_clock::time_point> ownership_deadline = std::nullopt) {
     if (!session) return true;
     const auto scheduled_at = std::chrono::steady_clock::now();
     const bool scheduled = run_amf_driver_work_detached(
       [session = std::move(session), display_lease = std::move(display_lease),
-       reason = std::move(reason), fence_state, scheduled_at]() mutable {
-        if (fence_state == amf_teardown_fence_state_e::pending &&
-            !acquire_reserved_amf_teardown_fence(reason)) {
-          abandon_quarantined_session(session, std::move(display_lease));
-          return;
+       reason = std::move(reason), fence_state, ownership_deadline, scheduled_at]() mutable {
+        if (fence_state == amf_teardown_fence_state_e::pending) {
+          const bool gate_acquired = ownership_deadline ?
+                                       acquire_reserved_amf_teardown_fence(
+                                         reason,
+                                         *ownership_deadline,
+                                         std::chrono::steady_clock::duration::zero()) :
+                                       acquire_reserved_amf_teardown_fence(reason);
+          if (!gate_acquired) {
+            // This handoff still owns an in-flight vendor call. If serialization
+            // cannot begin before that call's original ownership deadline, retain
+            // it and close the runtime rather than overlapping another destructor.
+            if (!native_amf_lifecycle_gate.is_quarantined()) {
+              native_amf_lifecycle_gate.quarantine_initialization();
+              BOOST_LOG(error) << "AMF: " << reason
+                               << " could not enter supervised teardown before its ownership deadline; quarantining AMD encoding";
+            }
+            abandon_quarantined_session(session, std::move(display_lease));
+            return;
+          }
         }
+
+        const auto maximum_timeout =
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            amf_vendor_watchdog_timeout);
+        const auto teardown_timeout = ownership_deadline ?
+                                        amf::lifecycle::teardown_watchdog_within_deadline(
+                                          *ownership_deadline,
+                                          std::chrono::steady_clock::now(),
+                                          maximum_timeout) :
+                                        maximum_timeout;
         const bool completed = run_amf_driver_work_with_timeout(
           [session = std::move(session), display_lease = std::move(display_lease)]() mutable {
             session.reset();
             display_lease.reset();
           },
-          amf_vendor_watchdog_timeout);
+          teardown_timeout);
         native_amf_lifecycle_gate.finish_teardown(completed);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - scheduled_at);
@@ -4181,7 +4219,7 @@ namespace video {
         }
         if (!completed) {
           BOOST_LOG(error) << "AMF: deferred " << reason
-                           << " teardown exceeded the driver watchdog after " << elapsed.count()
+                           << " teardown exhausted its remaining ownership watchdog after " << elapsed.count()
                            << "ms; quarantining AMD encoding";
         }
       });
@@ -4189,11 +4227,69 @@ namespace video {
       // run_detached deliberately retains the closure and its full resource
       // graph when thread creation fails. Fence future AMD entry so capture
       // also preserves the creator-side generation.
+      unsafe_abandoned_amf_resource.store(true, std::memory_order_release);
       native_amf_lifecycle_gate.quarantine_initialization();
       BOOST_LOG(error) << "AMF: could not schedule deferred " << reason
                        << " teardown; quarantining AMD encoding";
     }
     return scheduled;
+  }
+
+  struct native_amf_driver_overrun_t {
+    bool observed = false;
+    bool teardown_reserved = false;
+    std::optional<std::chrono::steady_clock::time_point> ownership_deadline;
+  };
+
+  bool arm_native_amf_driver_overrun(
+    native_amf_driver_overrun_t &handoff,
+    amf_encode_session_t *session,
+    std::string_view reason) {
+    if (handoff.observed) return true;
+    if (!session || !session->driver_submission_timed_out()) return false;
+
+    handoff.observed = true;
+    handoff.ownership_deadline = session->driver_call_ownership_deadline();
+    if (!handoff.ownership_deadline) {
+      // Entered calls always publish this deadline before waking the caller. If
+      // that invariant is ever broken, fail closed without inventing more time.
+      handoff.ownership_deadline = std::chrono::steady_clock::now();
+      BOOST_LOG(error) << "AMF: " << reason
+                       << " lost its driver ownership deadline; forcing quarantine-safe handoff";
+    }
+    // Reserve before unwinding the encode/probe stack. The pending reservation
+    // closes initialization immediately while the owning worker is still live.
+    handoff.teardown_reserved = reserve_amf_teardown_fence(reason);
+    return true;
+  }
+
+  void transfer_overdue_native_amf_session(
+    native_amf_driver_overrun_t &handoff,
+    std::unique_ptr<encode_session_t> &session,
+    std::string reason) {
+    if (!handoff.observed || !session) return;
+
+    auto *native_session = dynamic_cast<amf_encode_session_t *>(session.get());
+    if (!native_session) {
+      BOOST_LOG(error) << "Internal error: native-AMF driver handoff received a non-native session"sv;
+      return;
+    }
+    auto display_lease = native_session->release_display_lease_for_driver_work();
+    if (!handoff.teardown_reserved) {
+      native_amf_lifecycle_gate.quarantine_initialization();
+      abandon_quarantined_session(session, std::move(display_lease));
+      BOOST_LOG(error) << "AMF: " << reason
+                       << " could not reserve supervised teardown; retaining the session until process exit";
+      return;
+    }
+
+    auto owned_session = std::move(session);
+    (void) defer_amf_session_teardown(
+      std::move(owned_session),
+      std::move(display_lease),
+      std::move(reason),
+      amf_teardown_fence_state_e::pending,
+      handoff.ownership_deadline);
   }
 
   enum class amf_teardown_result_e {
@@ -4464,7 +4560,10 @@ namespace video {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
     bool force_sync_teardown = false;
-    bool abandon_native_amf_session = false;
+    bool handoff_overdue_native_amf_session = false;
+#ifdef _WIN32
+    native_amf_driver_overrun_t native_driver_overrun;
+#endif
     bool startup_deadline_exhausted = false;
 
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
@@ -4474,14 +4573,18 @@ namespace video {
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
     auto fail_guard = util::fail_guard([session_encoder_flags, legacy_amf_session, &session, &force_sync_teardown,
-                                        &abandon_native_amf_session, &reinit_event, shutdown_event,
+                                        &handoff_overdue_native_amf_session,
+#ifdef _WIN32
+                                        &native_driver_overrun,
+#endif
+                                        &reinit_event, shutdown_event,
                                         &client_packet_delivered, initialization_deadline] {
 #ifdef _WIN32
-      if (abandon_native_amf_session) {
-        native_amf_lifecycle_gate.quarantine_initialization();
-        auto display_lease = static_cast<amf_encode_session_t *>(session.get())->release_display_lease_for_driver_work();
-        abandon_quarantined_session(session, std::move(display_lease));
-        BOOST_LOG(error) << "AMF: abandoned a session whose bounded SubmitInput call did not return"sv;
+      if (handoff_overdue_native_amf_session) {
+        transfer_overdue_native_amf_session(
+          native_driver_overrun,
+          session,
+          "native driver-call overrun"s);
         return;
       }
 #endif
@@ -4696,8 +4799,14 @@ namespace video {
     });
 
     auto native_amf_failure = [&]() {
-      abandon_native_amf_session = native_amf_session && native_amf && native_amf->driver_submission_timed_out();
-      force_sync_teardown = native_amf_session && !abandon_native_amf_session;
+#ifdef _WIN32
+      handoff_overdue_native_amf_session = native_amf_session &&
+        arm_native_amf_driver_overrun(
+          native_driver_overrun,
+          native_amf,
+          "native driver-call overrun"sv);
+#endif
+      force_sync_teardown = native_amf_session && !handoff_overdue_native_amf_session;
       return native_amf_session ? encode_run_result_e::use_legacy_amf : encode_run_result_e::completed;
     };
 
@@ -4948,7 +5057,13 @@ namespace video {
           BOOST_LOG(info) << "AMF rate-control mode ignores client bitrate updates; no rebuild required"sv;
           pending_native_bitrate.reset();
         } else if (bitrate_action == amf::lifecycle::bitrate_loop_action_e::abandon_generation) {
-          BOOST_LOG(error) << "AMF live bitrate update exceeded the vendor watchdog; abandoning this generation"sv;
+#ifdef _WIN32
+          handoff_overdue_native_amf_session = arm_native_amf_driver_overrun(
+            native_driver_overrun,
+            native_amf,
+            "native live-bitrate overrun"sv);
+#endif
+          BOOST_LOG(error) << "AMF live bitrate update exceeded its caller deadline; transferring this generation to supervised teardown"sv;
           native_amf_runtime_failed = true;
           break;
         } else if (bitrate_action == amf::lifecycle::bitrate_loop_action_e::rebuild_once && frame_nr > 1) {
@@ -5131,9 +5246,26 @@ namespace video {
         continue;
       }
 
-      if (encode(frame_nr, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
+      // Preserve the established pre-call advancement contract for every
+      // non-native encoder: an encoder may enqueue output before a later step
+      // reports failure, so a rebuilt session must not reuse that delivered
+      // frame index. Native AMF alone advances after acceptance because a
+      // backpressured submission must retry the same logical input/index.
+      const auto submitted_frame_nr = frame_nr;
+      if (!native_amf_session) {
+        ++frame_nr;
+      }
+      if (encode(submitted_frame_nr, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         native_amf_runtime_failed = native_amf_session;
+#ifdef _WIN32
+        if (native_amf_session) {
+          handoff_overdue_native_amf_session = arm_native_amf_driver_overrun(
+            native_driver_overrun,
+            native_amf,
+            "native frame-call overrun"sv);
+        }
+#endif
         break;
       }
       ++loop_stats.encoded;
@@ -5157,7 +5289,9 @@ namespace video {
         continue;
       }
       pending_native_input.reset();
-      ++frame_nr;
+      if (native_amf_session) {
+        ++frame_nr;
+      }
 
       if (placeholder_input) {
         // PA can accept the first placeholder while intentionally emitting
@@ -5173,8 +5307,15 @@ namespace video {
       platf::enable_mouse_keys();
     }
     if (native_amf_runtime_failed) {
-      abandon_native_amf_session = native_amf && native_amf->driver_submission_timed_out();
-      force_sync_teardown = !abandon_native_amf_session;
+#ifdef _WIN32
+      handoff_overdue_native_amf_session =
+        handoff_overdue_native_amf_session ||
+        arm_native_amf_driver_overrun(
+          native_driver_overrun,
+          native_amf,
+          "native driver-call overrun"sv);
+#endif
+      force_sync_teardown = !handoff_overdue_native_amf_session;
     }
     if (startup_deadline_exhausted) {
       return encode_run_result_e::initialization_timed_out;
@@ -5712,7 +5853,8 @@ namespace video {
   void capture_async(
     safe::mail_t mail,
     config_t &config,
-    void *channel_data
+    void *channel_data,
+    bool *uses_amf_encoder
   ) {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
@@ -5725,6 +5867,17 @@ namespace video {
     if (!ref) {
       return;
     }
+
+#ifdef _WIN32
+    if (uses_amf_encoder) {
+      // encoder_p is the immutable backend snapshot owned by this capture
+      // generation.  Do not infer ownership from the process-global AMF gate:
+      // a stale AMD worker must not make a later NVENC/QSV/MF session look AMD-owned.
+      *uses_amf_encoder = ref->encoder_p == &amdvce || ref->encoder_p == &amdvce_legacy;
+    }
+#else
+    (void) uses_amf_encoder;
+#endif
 
     ref->capture_ctx_queue->raise(capture_ctx_t {images, config});
 
@@ -5772,7 +5925,10 @@ namespace video {
         display = ref->display_wp->lock();
       }
 
-      auto *enc_ptr = chosen_encoder;
+      // Capture and encoding for this generation must use the same backend.
+      // probe_encoders() may update chosen_encoder concurrently, while
+      // encoder_p is the immutable snapshot used by captureThread.
+      auto *enc_ptr = ref->encoder_p;
 #ifdef _WIN32
       if (use_legacy_amf_for_remainder_of_session && enc_ptr == &amdvce) {
         enc_ptr = &amdvce_legacy;
@@ -5977,8 +6133,13 @@ namespace video {
   void capture(
     safe::mail_t mail,
     config_t config,
-    void *channel_data
+    void *channel_data,
+    bool *uses_amf_encoder
   ) {
+    if (uses_amf_encoder) {
+      *uses_amf_encoder = false;
+    }
+
     // Snapshot the encoder pointer to avoid races with concurrent probe_encoders() calls
     auto *encoder = chosen_encoder;
     if (!encoder) {
@@ -5990,7 +6151,7 @@ namespace video {
 
     idr_events->raise(true);
     if (encoder->flags & PARALLEL_ENCODING) {
-      capture_async(std::move(mail), config, channel_data);
+      capture_async(std::move(mail), config, channel_data, uses_amf_encoder);
     } else {
       safe::signal_t join_event;
       auto ref = capture_thread_sync.ref();
@@ -6104,14 +6265,19 @@ namespace video {
           native_adapter_compatibility_key = native_session->runtime_compatibility_key();
           native_session->set_caller_deadline(probe_deadline);
         }
+        native_amf_driver_overrun_t probe_driver_overrun;
 #endif
         auto teardown_probe_session = [&]() {
 #ifdef _WIN32
           if (auto *native_session = dynamic_cast<amf_encode_session_t *>(session.get());
-              native_session && native_session->driver_submission_timed_out()) {
-            native_amf_lifecycle_gate.quarantine_initialization();
-            auto display_lease = native_session->release_display_lease_for_driver_work();
-            abandon_quarantined_session(session, std::move(display_lease));
+              arm_native_amf_driver_overrun(
+                probe_driver_overrun,
+                native_session,
+                "native probe driver-call overrun"sv)) {
+            transfer_overdue_native_amf_session(
+              probe_driver_overrun,
+              session,
+              "native probe driver-call overrun"s);
             terminal_amf_failure = true;
             return false;
           }
@@ -6199,6 +6365,14 @@ namespace video {
             }
             const auto probe_frame_index = static_cast<int64_t>(probe_attempts) + 1;
             if (encode(probe_frame_index, *session, packets, nullptr, {}, {}, {})) {
+#ifdef _WIN32
+              if (auto *native_session = dynamic_cast<amf_encode_session_t *>(session.get())) {
+                (void) arm_native_amf_driver_overrun(
+                  probe_driver_overrun,
+                  native_session,
+                  "native probe driver-call overrun"sv);
+              }
+#endif
               return util::false_v<util::optional_t<int>>;
             }
             if (auto *native_session = dynamic_cast<amf_encode_session_t *>(session.get());
@@ -6228,14 +6402,50 @@ namespace video {
 
         int flag = 0;
 
-        // This check only applies for H.264 and HEVC
-        if (config.videoFormat <= 1) {
+        if (auto *native_session = dynamic_cast<amf_encode_session_t *>(session.get())) {
+          // Native AMF packets bypass AVCodec and its SPS replacement path.
+          // Validate the complete driver-produced sequence header for every
+          // native codec before the probe may advertise the mode.
+          const auto *colorspace = native_session->output_colorspace();
+          if (!colorspace) {
+            BOOST_LOG(error) << "AMF probe could not resolve the native output colorspace"sv;
+            return util::false_v<util::optional_t<int>>;
+          }
+          const auto expected_colorspace = avcodec_colorspace_from_sunshine_colorspace(*colorspace);
+          const int codec_id = config.videoFormat == 0 ? AV_CODEC_ID_H264 :
+                                 config.videoFormat == 1 ? AV_CODEC_ID_H265 :
+                                                           AV_CODEC_ID_AV1;
+          const int expected_profile = config.videoFormat == 1 ?
+                                         (colorspace->bit_depth == 10 ? AV_PROFILE_HEVC_MAIN_10 : AV_PROFILE_HEVC_MAIN) :
+                                       config.videoFormat == 2 ?
+                                         (config.chromaSamplingType == 1 ? AV_PROFILE_AV1_HIGH : AV_PROFILE_AV1_MAIN) :
+                                         -1;
+          if (!cbs::validate_sequence_header(
+                packet->data(),
+                packet->data_size(),
+                codec_id,
+                {
+                  .full_range = expected_colorspace.range == AVCOL_RANGE_JPEG,
+                  .colour_primaries = expected_colorspace.primaries,
+                  .transfer_characteristics = expected_colorspace.transfer_function,
+                  .matrix_coefficients = expected_colorspace.matrix,
+                  .bit_depth = static_cast<int>(colorspace->bit_depth),
+                  .profile = expected_profile,
+                })) {
+            BOOST_LOG(error) << "AMF probe rejected " << codec_name
+                             << " because the driver-produced sequence header does not match"
+                                " the requested profile, bit depth, range, or colour description";
+            return util::false_v<util::optional_t<int>>;
+          }
+          flag |= VUI_PARAMS;
+        } else if (config.videoFormat <= 1) {
           if (auto packet_avcodec = dynamic_cast<packet_raw_avcodec *>(packet.get())) {
             if (cbs::validate_sps(packet_avcodec->av_packet, config.videoFormat ? AV_CODEC_ID_H265 : AV_CODEC_ID_H264)) {
               flag |= VUI_PARAMS;
             }
           } else {
-            // Don't check it for non-avcodec encoders.
+            // Preserve the existing probe contract for other non-AVCodec
+            // encoders; native AMF is the only generic packet path changed here.
             flag |= VUI_PARAMS;
           }
         }
@@ -6375,7 +6585,7 @@ namespace video {
       return false;
     }
 #ifdef _WIN32
-    const bool watchdog_bounded_amd_encoder = bounded_amf_encoder;
+    const bool watchdog_bounded_amd_encoder = bounded_amf_encoder && disp->is_amd_adapter();
 #else
     constexpr bool watchdog_bounded_amd_encoder = false;
 #endif

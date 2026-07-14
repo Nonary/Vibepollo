@@ -484,6 +484,12 @@ namespace platf {
       return true;
     }
 
+    // AV1 input HDR metadata is static in AMF and must be captured before the
+    // bounded initialization worker calls encoder->Init().
+    virtual void set_hdr_metadata_for_initialization(const SS_HDR_METADATA *metadata) {
+      (void) metadata;
+    }
+
     // Some AMF runtimes need the documented default queue to prime a one-frame
     // PreAnalysis pipeline. The video layer sets this only after a bounded probe
     // has demonstrated that the user's smaller queue cannot make progress.
@@ -585,6 +591,12 @@ namespace platf {
     }
 
     virtual bool is_hdr() {
+      return false;
+    }
+
+    // Side-effect-free adapter identity check used to reject AMF before any
+    // watchdog worker or vendor-runtime call is started on non-AMD hardware.
+    virtual bool is_amd_adapter() {
       return false;
     }
 

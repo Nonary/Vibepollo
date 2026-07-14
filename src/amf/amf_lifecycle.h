@@ -57,9 +57,9 @@ namespace amf::lifecycle {
     return bitrate_loop_action_e::abandon_generation;
   }
 
-  // Frame/coalescing deadlines protect stream latency. Once a call has actually
-  // entered the vendor runtime, use a separate watchdog so scheduler jitter can
-  // never be mistaken for a wedged AMD driver.
+  // Frame/coalescing deadlines protect stream latency. A call which has entered
+  // the vendor runtime may outlive that caller deadline, so ownership remains on
+  // a supervised teardown worker until this longer watchdog expires.
   inline constexpr auto driver_call_watchdog_timeout = std::chrono::seconds(5);
 
   template<typename Clock, typename Duration>
@@ -67,6 +67,24 @@ namespace amf::lifecycle {
     const std::chrono::time_point<Clock, Duration> &overall_deadline,
     const std::chrono::time_point<Clock, Duration> &vendor_deadline) noexcept {
     return std::min(overall_deadline, vendor_deadline);
+  }
+
+  template<typename Clock, typename Duration>
+  constexpr std::chrono::time_point<Clock, Duration> driver_call_acceptance_deadline(
+    const std::chrono::time_point<Clock, Duration> &scheduling_deadline,
+    const std::optional<std::chrono::time_point<Clock, Duration>> &caller_deadline,
+    const std::chrono::time_point<Clock, Duration> &ownership_deadline) noexcept {
+    auto result = std::min(scheduling_deadline, ownership_deadline);
+    if (caller_deadline) {
+      result = std::min(result, *caller_deadline);
+    }
+    return result;
+  }
+
+  inline constexpr bool late_driver_response_may_publish(bool caller_abandoned) noexcept {
+    // Once the caller transfers this generation to supervised teardown there is
+    // deliberately no continuation which may consume or reconcile a late result.
+    return !caller_abandoned;
   }
 
   template<typename Clock, typename Duration, typename Rep, typename Period>
@@ -388,6 +406,7 @@ namespace amf::lifecycle {
     bool write_target = false;
     bool write_peak = false;
     bool write_vbv = false;
+    bool rebuild_if_static_vbv_changes = false;
     bool write_maximum_frame_size = false;
   };
 
@@ -439,22 +458,52 @@ namespace amf::lifecycle {
       .write_peak = policy.uses_peak_bitrate,
       // HEVC exposes VBV as a static property; H.264 and AV1 allow the live write.
       .write_vbv = policy.uses_vbv && video_format != 1,
+      // A live HEVC target change is safe only while the Init-time static VBV
+      // still satisfies the one-frame contract at the new bitrate.
+      .rebuild_if_static_vbv_changes = policy.uses_vbv && video_format == 1,
       .write_maximum_frame_size = enforce_hrd
     };
   }
 
+  struct amf_runtime_requirement_t {
+    bool valid = false;
+    unsigned major = 0;
+    unsigned minor = 0;
+    unsigned subminor = 0;
+  };
+
+  inline constexpr amf_runtime_requirement_t advanced_rate_control_runtime_requirement(
+    int video_format,
+    int rate_control_mode) noexcept {
+    if (video_format < 0 || video_format > 2) return {};
+
+    switch (static_cast<rate_control_mode_e>(rate_control_mode)) {
+      case rate_control_mode_e::qvbr:
+        // AVC/HEVC QVBR was added in AMF 1.4.21. AV1 and its rate-control
+        // surface remain gated to the 1.4.28 API used by this implementation.
+        return video_format == 2 ?
+                 amf_runtime_requirement_t {true, 1, 4, 28} :
+                 amf_runtime_requirement_t {true, 1, 4, 21};
+      case rate_control_mode_e::hqvbr:
+      case rate_control_mode_e::hqcbr:
+        return {true, 1, 4, 28};
+      default:
+        return {};
+    }
+  }
+
   inline constexpr bool runtime_supports_advanced_rate_control(
     int video_format,
+    int rate_control_mode,
     unsigned major,
     unsigned minor,
     unsigned subminor) noexcept {
-    if (video_format < 0 || video_format > 2) return false;
-    // AMF 1.4.28 independently introduced the new AVC/HEVC controllers and the
-    // AV1 encoder/API which defines the corresponding QVBR/HQVBR/HQCBR modes.
-    // Keep the codec argument explicit so future per-codec version changes do
-    // not silently inherit another codec's gate.
-    return major > 1 ||
-           (major == 1 && (minor > 4 || (minor == 4 && subminor >= 28)));
+    const auto required = advanced_rate_control_runtime_requirement(
+      video_format, rate_control_mode);
+    if (!required.valid) return false;
+    if (major != required.major) return major > required.major;
+    if (minor != required.minor) return minor > required.minor;
+    return subminor >= required.subminor;
   }
 
   inline constexpr bool native_pa_queue_retry_should_run(
@@ -497,6 +546,15 @@ namespace amf::lifecycle {
     // value changes the latency/FEC contract, while a similar-size value is the
     // intended one-frame buffer.
     return normalized_contract_value_is_acceptable(applied, requested, 4'096, 100);  // 10%
+  }
+
+  inline bool static_vbv_change_requires_rebuild(
+    const live_bitrate_plan_t &plan,
+    const std::optional<std::int64_t> &applied_vbv,
+    std::int64_t requested_vbv) noexcept {
+    return plan.rebuild_if_static_vbv_changes &&
+           (!applied_vbv ||
+            !one_frame_vbv_is_acceptable(*applied_vbv, requested_vbv));
   }
 
   // AMD documents a lookahead depth of one for the ultra-low-latency usage
@@ -572,8 +630,15 @@ namespace amf::lifecycle {
   }
 
   inline constexpr bool fresh_conversion_requires_replay_snapshot(
-    bool preanalysis_enabled) noexcept {
-    return preanalysis_enabled;
+    bool preanalysis_enabled,
+    bool released_replay_source_available) noexcept {
+    // PA always needs a snapshot of the newest conversion because it may retain
+    // its input.  A non-PA session normally pins an AMF-released ring texture and
+    // avoids the copy, but no such texture exists during bootstrap.  Preserve a
+    // temporary snapshot until the first release so a runtime that buffers its
+    // first input can be primed immediately instead of waiting for WGC's first
+    // real frame.
+    return preanalysis_enabled || !released_replay_source_available;
   }
 
   inline constexpr bool unaccepted_fresh_input_must_remain_reserved(
@@ -666,6 +731,18 @@ namespace amf::lifecycle {
   inline constexpr bool startup_budget_reset_allowed(
     bool client_visible_packet_delivered) noexcept {
     return client_visible_packet_delivered;
+  }
+
+  inline constexpr bool rational_rates_are_equivalent(
+    std::uint32_t requested_num,
+    std::uint32_t requested_den,
+    std::uint32_t applied_num,
+    std::uint32_t applied_den) noexcept {
+    if (requested_num == 0 || requested_den == 0 || applied_num == 0 || applied_den == 0) {
+      return false;
+    }
+    return static_cast<std::uint64_t>(requested_num) * applied_den ==
+           static_cast<std::uint64_t>(applied_num) * requested_den;
   }
 
   inline constexpr bool preanalysis_queue_fallback_is_recommended(

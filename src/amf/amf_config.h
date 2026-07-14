@@ -34,6 +34,10 @@ namespace amf {
    * Integer values correspond directly to AMF SDK enum values.
    */
   struct amf_config {
+    // Mastering-display/content-light metadata. Native AMF must apply this
+    // before Init because AV1 exposes the property as static.
+    std::optional<amf_hdr_metadata> hdr_metadata;
+
     // Usage preset (AMF_VIDEO_ENCODER_USAGE_ENUM values)
     std::optional<int> usage;
 

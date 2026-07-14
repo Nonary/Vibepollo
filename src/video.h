@@ -420,7 +420,8 @@ namespace video {
   void capture(
     safe::mail_t mail,
     config_t config,
-    void *channel_data
+    void *channel_data,
+    bool *uses_amf_encoder = nullptr
   );
 
   bool validate_encoder(
@@ -437,9 +438,10 @@ namespace video {
 
 #ifdef _WIN32
   /**
-   * @brief Return whether an AMD watchdog worker can still be inside vendor code.
+   * @brief Return whether AMD work can still outlive ordinary process teardown.
    * @details Windows shutdown uses this to avoid tearing down process globals
-   * while an intentionally abandoned AMF worker may still unwind through them.
+   * while a watchdog worker or intentionally retained native session may still
+   * unwind through them.
    */
   bool has_active_amf_watchdog_workers();
 

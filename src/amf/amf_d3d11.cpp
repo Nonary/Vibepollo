@@ -6,7 +6,6 @@
 #include "amf_d3d11.h"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <exception>
 #include <thread>
@@ -88,6 +87,10 @@ namespace amf {
     released.release_notified = true;
     replay_source_surface_slot = slot_index;
     replay_source_frame_index = frame_index;
+    // From this point the released ring texture is the authoritative repeat
+    // source.  Do not keep using the temporary bootstrap snapshot, which may
+    // contain an older placeholder or capture.
+    replay_texture_valid = false;
   }
 
   bool
@@ -232,16 +235,24 @@ namespace amf {
     preanalysis_lookahead_depth = 0;
 
     const auto preanalysis_plan = lifecycle::resolve_preanalysis(config.rc_mode, config.preanalysis);
-    // AMF 1.4.28 introduced AV1 encoding and the new AVC/HEVC QVBR, HQVBR,
-    // and HQCBR controllers. Reject those modes before touching properties on
-    // an older runtime instead of relying on a late driver-dependent failure.
+    // Reject advanced controllers before touching properties on an older
+    // runtime instead of relying on a late driver-dependent failure. AVC/HEVC
+    // QVBR predates HQVBR/HQCBR and AV1, so the requirement is mode-specific.
+    const auto rate_control_runtime_requirement = config.rc_mode ?
+                                                    lifecycle::advanced_rate_control_runtime_requirement(
+                                                      video_format, *config.rc_mode) :
+                                                    lifecycle::amf_runtime_requirement_t {};
     if (config.rc_mode && lifecycle::rate_control_requires_preanalysis(*config.rc_mode) &&
         !lifecycle::runtime_supports_advanced_rate_control(
           video_format,
+          *config.rc_mode,
           AMF_GET_MAJOR_VERSION(runtime_version),
           AMF_GET_MINOR_VERSION(runtime_version),
           AMF_GET_SUBMINOR_VERSION(runtime_version))) {
-      BOOST_LOG(warning) << "AMF: the requested advanced rate-control mode requires runtime 1.4.28 or newer"
+      BOOST_LOG(warning) << "AMF: the requested advanced rate-control mode requires runtime "
+                         << rate_control_runtime_requirement.major << '.'
+                         << rate_control_runtime_requirement.minor << '.'
+                         << rate_control_runtime_requirement.subminor << " or newer"
                          << " (installed=" << AMF_GET_MAJOR_VERSION(runtime_version) << '.'
                          << AMF_GET_MINOR_VERSION(runtime_version) << '.'
                          << AMF_GET_SUBMINOR_VERSION(runtime_version) << '.'
@@ -301,6 +312,20 @@ namespace amf {
         BOOST_LOG(warning) << "AMF: failed to apply " << label << " (requested=" << requested
                            << ", applied=" << static_cast<bool>(applied) << ", set=" << set_result
                            << ", get=" << get_result << ')';
+        return false;
+      }
+      return true;
+    };
+    auto set_verified_rate = [&](const wchar_t *property, const decltype(framerate) &requested, const char *label) {
+      const auto set_result = encoder->SetProperty(property, requested);
+      decltype(framerate) applied {};
+      const auto get_result = set_result == AMF_OK ? encoder->GetProperty(property, &applied) : set_result;
+      if (set_result != AMF_OK || get_result != AMF_OK ||
+          !lifecycle::rational_rates_are_equivalent(requested.num, requested.den, applied.num, applied.den)) {
+        BOOST_LOG(warning) << "AMF: failed to apply " << label
+                           << " (requested=" << requested.num << '/' << requested.den
+                           << ", applied=" << applied.num << '/' << applied.den
+                           << ", set=" << set_result << ", get=" << get_result << ')';
         return false;
       }
       return true;
@@ -541,7 +566,7 @@ namespace amf {
             "H.264 target bitrate",
             "H.264 peak bitrate",
             "H.264 VBV buffer size")) return false;
-      encoder->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, framerate);
+      if (!set_verified_rate(AMF_VIDEO_ENCODER_FRAMERATE, framerate, "H.264 frame rate")) return false;
       if (config.enforce_hrd) {
         if (!set_verified_bool(AMF_VIDEO_ENCODER_ENFORCE_HRD, !!(*config.enforce_hrd), "H.264 HRD enforcement")) return false;
         // Belt-and-braces with HRD: hard-cap the peak access-unit size so no single frame
@@ -634,7 +659,7 @@ namespace amf {
             "HEVC target bitrate",
             "HEVC peak bitrate",
             "HEVC VBV buffer size")) return false;
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, framerate);
+      if (!set_verified_rate(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, framerate, "HEVC frame rate")) return false;
       if (config.enforce_hrd) {
         if (!set_verified_bool(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, !!(*config.enforce_hrd), "HEVC HRD enforcement")) return false;
         // See H.264 above: cap the peak AU size (~4x per-frame VBV) so no frame overruns FEC.
@@ -665,7 +690,7 @@ namespace amf {
       // native HEVC (freeze on the first keyframe need) while native AV1 and FFmpeg
       // hevc_amf, neither of which sets it, ran clean on the same cards. force_idr
       // keyframes are driven per-surface via HEVC_FORCE_PICTURE_TYPE, independent of this.
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 0);
+      if (!set_verified_int64(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, (amf_int64) 0, "HEVC infinite GOP")) return false;
       if ((config.vbaq || !adaptive_quantization_supported) &&
           !set_verified_bool(
             AMF_VIDEO_ENCODER_HEVC_ENABLE_VBAQ,
@@ -683,10 +708,16 @@ namespace amf {
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT, (amf_int64) 1);
 
       if (colorspace.bit_depth == 10) {
-        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PROFILE, (amf_int64) AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10);
+        if (!set_verified_int64(
+              AMF_VIDEO_ENCODER_HEVC_PROFILE,
+              (amf_int64) AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN_10,
+              "HEVC Main10 profile")) return false;
       }
       else {
-        encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_PROFILE, (amf_int64) AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN);
+        if (!set_verified_int64(
+              AMF_VIDEO_ENCODER_HEVC_PROFILE,
+              (amf_int64) AMF_VIDEO_ENCODER_HEVC_PROFILE_MAIN,
+              "HEVC Main profile")) return false;
       }
 
       // LTR for RFI - see H.264 block above for detailed trade-off rationale.
@@ -727,7 +758,7 @@ namespace amf {
             "AV1 target bitrate",
             "AV1 peak bitrate",
             "AV1 VBV buffer size")) return false;
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_FRAMERATE, framerate);
+      if (!set_verified_rate(AMF_VIDEO_ENCODER_AV1_FRAMERATE, framerate, "AV1 frame rate")) return false;
       if (config.enforce_hrd) {
         if (!set_verified_bool(AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD, !!(*config.enforce_hrd), "AV1 HRD enforcement")) return false;
         // See H.264 above: cap the peak compressed frame size (~4x per-frame VBV) to fit FEC.
@@ -844,14 +875,17 @@ namespace amf {
 
     // Color space properties
     if (video_format == 0) {
-      encoder->SetProperty(AMF_VIDEO_ENCODER_FULL_RANGE_COLOR, colorspace.full_range);
+      if (!set_verified_bool(AMF_VIDEO_ENCODER_FULL_RANGE_COLOR, colorspace.full_range, "H.264 nominal range")) return false;
     }
     else if (video_format == 1) {
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_NOMINAL_RANGE, (amf_int64)(colorspace.full_range ? AMF_VIDEO_ENCODER_HEVC_NOMINAL_RANGE_FULL : AMF_VIDEO_ENCODER_HEVC_NOMINAL_RANGE_STUDIO));
+      if (!set_verified_bool(
+            AMF_VIDEO_ENCODER_HEVC_OUTPUT_FULL_RANGE_COLOR,
+            colorspace.full_range,
+            "HEVC nominal range")) return false;
     }
     else {
       // AV1: amf_bool type
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_OUTPUT_FULL_RANGE_COLOR, colorspace.full_range);
+      if (!set_verified_bool(AMF_VIDEO_ENCODER_AV1_OUTPUT_FULL_RANGE_COLOR, colorspace.full_range, "AV1 nominal range")) return false;
     }
 
     // Color properties for bitstream metadata.
@@ -892,22 +926,27 @@ namespace amf {
     auto amf_bit_depth = (amf_int64)((colorspace.bit_depth == 10) ? AMF_COLOR_BIT_DEPTH_10 : AMF_COLOR_BIT_DEPTH_8);
 
     if (video_format == 0) {
-      encoder->SetProperty(AMF_VIDEO_ENCODER_COLOR_BIT_DEPTH, amf_bit_depth);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PROFILE, amf_color_profile);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PRIMARIES, amf_primaries);
+      if (!set_verified_int64(AMF_VIDEO_ENCODER_COLOR_BIT_DEPTH, amf_bit_depth, "H.264 color bit depth") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PROFILE, amf_color_profile, "H.264 output color profile") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer, "H.264 output transfer characteristic") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_OUTPUT_COLOR_PRIMARIES, amf_primaries, "H.264 output color primaries")) return false;
     }
     else if (video_format == 1) {
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_COLOR_BIT_DEPTH, amf_bit_depth);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PROFILE, amf_color_profile);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PRIMARIES, amf_primaries);
+      if (!set_verified_int64(AMF_VIDEO_ENCODER_HEVC_COLOR_BIT_DEPTH, amf_bit_depth, "HEVC color bit depth") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PROFILE, amf_color_profile, "HEVC output color profile") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer, "HEVC output transfer characteristic") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_OUTPUT_COLOR_PRIMARIES, amf_primaries, "HEVC output color primaries")) return false;
     }
     else {
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_COLOR_BIT_DEPTH, amf_bit_depth);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PROFILE, amf_color_profile);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer);
-      encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PRIMARIES, amf_primaries);
+      if (!set_verified_int64(AMF_VIDEO_ENCODER_AV1_COLOR_BIT_DEPTH, amf_bit_depth, "AV1 color bit depth") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PROFILE, amf_color_profile, "AV1 output color profile") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_OUTPUT_TRANSFER_CHARACTERISTIC, amf_transfer, "AV1 output transfer characteristic") ||
+          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_OUTPUT_COLOR_PRIMARIES, amf_primaries, "AV1 output color primaries")) return false;
+    }
+
+    if (config.hdr_metadata && !set_hdr_metadata(config.hdr_metadata)) {
+      BOOST_LOG(error) << "AMF: required HDR mastering metadata could not be applied before Init";
+      return false;
     }
 
     // Save statistics feedback state for encode_frame()
@@ -1011,6 +1050,40 @@ namespace amf {
     if (res != AMF_OK) {
       BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;
       return false;
+    }
+
+    AVRational requested_fps {client_config.framerate > 0 ? client_config.framerate : 60, 1};
+    if (client_config.framerateX100 > 0) {
+      requested_fps = video::framerateX100_to_rational(client_config.framerateX100);
+    }
+    const auto requested_amf_rate = AMFConstructRate(requested_fps.num, requested_fps.den);
+    const wchar_t *framerate_property = video_format == 0 ? AMF_VIDEO_ENCODER_FRAMERATE :
+                                           video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_FRAMERATE :
+                                                               AMF_VIDEO_ENCODER_AV1_FRAMERATE;
+    AMFRate applied_amf_rate {};
+    const auto framerate_result = encoder->GetProperty(framerate_property, &applied_amf_rate);
+    if (framerate_result != AMF_OK ||
+        !lifecycle::rational_rates_are_equivalent(
+          requested_amf_rate.num,
+          requested_amf_rate.den,
+          applied_amf_rate.num,
+          applied_amf_rate.den)) {
+      BOOST_LOG(error) << "AMF: driver changed the requested frame rate after Init"
+                       << " (requested=" << requested_amf_rate.num << '/' << requested_amf_rate.den
+                       << ", applied=" << applied_amf_rate.num << '/' << applied_amf_rate.den
+                       << ", result=" << framerate_result << ')';
+      return false;
+    }
+
+    if (video_format == 1) {
+      amf_int64 applied_gop_size = -1;
+      const auto gop_result = encoder->GetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, &applied_gop_size);
+      if (gop_result != AMF_OK || applied_gop_size != 0) {
+        BOOST_LOG(error) << "AMF: driver changed the required HEVC infinite GOP after Init"
+                         << " (requested=0, applied=" << applied_gop_size
+                         << ", result=" << gop_result << ')';
+        return false;
+      }
     }
 
     // Some runtimes accept a property before Init but substitute a different
@@ -1314,17 +1387,19 @@ namespace amf {
     if (!ensure_input_surface_count(active_input_surface_count)) {
       return false;
     }
+    // PA uses this for every conversion.  Non-PA uses it only during bootstrap,
+    // until AMF releases the first ring texture.  Keeping one temporary source
+    // avoids waiting for the capture helper when a runtime needs a second input
+    // before it emits the first packet, without restoring a per-frame copy.
     replay_texture.Reset();
-    if (preanalysis_enabled) {
-      const auto replay_hr = device->CreateTexture2D(
-        &input_surface_desc,
-        nullptr,
-        replay_texture.ReleaseAndGetAddressOf());
-      if (FAILED(replay_hr)) {
-        BOOST_LOG(error) << "AMF: failed to create the dedicated PA replay texture, HRESULT: 0x"
-                         << std::hex << replay_hr;
-        return false;
-      }
+    const auto replay_hr = device->CreateTexture2D(
+      &input_surface_desc,
+      nullptr,
+      replay_texture.ReleaseAndGetAddressOf());
+    if (FAILED(replay_hr)) {
+      BOOST_LOG(error) << "AMF: failed to create the replay texture, HRESULT: 0x"
+                       << std::hex << replay_hr;
+      return false;
     }
     prepared_input_surface_slot.reset();
     replay_texture_valid = false;
@@ -1534,18 +1609,25 @@ namespace amf {
       // driver-call phase. Only that phase is eligible for the vendor watchdog.
       submission_cv.notify_all();
 
-      // This is the only potentially unbounded call on this worker. If it does
-      // not return by its independent driver watchdog, the video layer
-      // quarantines and intentionally retains the complete session/resource graph.
+      // This is the only potentially unbounded call on this worker. A caller may
+      // leave at its frame deadline, but a tracked teardown worker then retains
+      // and reaps this complete session/resource graph against the independent
+      // ownership deadline.
       const auto result = operation ? operation() :
                           encoder ? (drain ? encoder->Drain() : encoder->SubmitInput(surface)) :
                                     AMF_FAIL;
 
       {
         std::lock_guard lock(submission_mutex);
-        submission_result = result;
         submission_in_progress = false;
-        submission_response_ready = true;
+        if (lifecycle::late_driver_response_may_publish(submission_timed_out)) {
+          submission_result = result;
+          submission_response_ready = true;
+        } else {
+          // The generation has already been transferred to teardown. Publishing
+          // a stale response would imply a continuation which no longer exists.
+          submission_response_ready = false;
+        }
       }
       submission_cv.notify_all();
     }
@@ -1606,14 +1688,14 @@ namespace amf {
       return std::nullopt;
     }
 
-    // Vendor ownership supervision may outlive the caller, but the startup/probe
-    // caller keeps its own absolute deadline. If that expires, the video layer
-    // quarantines and retains this complete session graph while the worker remains
-    // the sole owner of the in-flight AMF call.
-    const auto acceptance_deadline = caller_deadline ?
-                                       lifecycle::caller_acceptance_deadline(
-                                         *caller_deadline, submission_driver_deadline) :
-                                       submission_driver_deadline;
+    // Vendor ownership supervision may outlive the caller, but the encode thread
+    // must never inherit the multi-second driver watchdog. Once a call outlives
+    // the caller's frame/scheduling deadline, the video layer reserves the runtime
+    // gate and transfers the complete session graph to tracked teardown. Startup
+    // and probe callers may impose an even earlier absolute deadline; the driver
+    // deadline remains the upper bound on resource ownership, not caller latency.
+    const auto acceptance_deadline = lifecycle::driver_call_acceptance_deadline(
+      scheduling_deadline, caller_deadline, submission_driver_deadline);
     if (!submission_cv.wait_until(lock, acceptance_deadline, [&]() {
           return submission_response_ready;
         })) {
@@ -1926,7 +2008,7 @@ namespace amf {
       if (prepared_input_surface_slot) {
         slot_index = *prepared_input_surface_slot;
         prepared_input_surface_slot.reset();
-      } else if ((preanalysis_enabled && replay_texture_valid && replay_texture) ||
+      } else if ((replay_texture_valid && replay_texture) ||
                  (!preanalysis_enabled && replay_source_surface_slot &&
                   replay_source_frame_index == last_submitted_frame_index)) {
         repeated_input = true;
@@ -2027,11 +2109,11 @@ namespace amf {
         return result;
       }
       std::lock_guard lock(state_mutex);
-      ID3D11Texture2D *replay_source = preanalysis_enabled ? replay_texture.Get() :
+      ID3D11Texture2D *replay_source = replay_texture_valid ? replay_texture.Get() :
                                       replay_source_surface_slot ?
                                         input_surface_ring[*replay_source_surface_slot].texture.Get() :
                                         nullptr;
-      if (!replay_source || (!preanalysis_enabled &&
+      if (!replay_source || (!replay_texture_valid && !preanalysis_enabled &&
                              input_surface_ring[*replay_source_surface_slot].state != input_surface_state_e::replay_source)) {
         BOOST_LOG(error) << "AMF: replay source lost its application-owned state";
         result.fatal = true;
@@ -2072,7 +2154,13 @@ namespace amf {
     };
     const auto wrapper_result = property_call_until(std::move(wrapper_operation), encode_wait_deadline);
     auto res = wrapper_result.value_or(AMF_FAIL);
-    ::amf::AMFSurfacePtr surface = std::move(surface_holder->surface);
+    // The worker owns surface_holder until its response is published. On a
+    // caller-deadline overrun it may still Attach() after this stack unwinds, so
+    // never read or move the shared ComPtr until publication synchronizes us.
+    ::amf::AMFSurfacePtr surface;
+    if (wrapper_result) {
+      surface = std::move(surface_holder->surface);
+    }
     if (res != AMF_OK || !surface) {
       BOOST_LOG(error) << "AMF: CreateSurfaceFromDX11Native failed, error: " << res;
       if (!wrapper_result && driver_submission_timed_out()) {
@@ -2400,7 +2488,7 @@ namespace amf {
       retryable_submit,
       20);
     if (driver_submission_deadline_exceeded) {
-      BOOST_LOG(error) << "AMF: SubmitInput exceeded the bounded frame deadline; quarantining this runtime generation";
+      BOOST_LOG(error) << "AMF: SubmitInput exceeded the bounded frame deadline; transferring this runtime generation to supervised teardown";
       result.fatal = true;
       return result;
     }
@@ -2679,6 +2767,17 @@ namespace amf {
     return submission_timed_out;
   }
 
+  std::optional<std::chrono::steady_clock::time_point>
+  amf_d3d11::driver_call_ownership_deadline() {
+    std::lock_guard lock(submission_mutex);
+    if (!submission_timed_out ||
+        submission_driver_deadline.time_since_epoch() ==
+          std::chrono::steady_clock::duration::zero()) {
+      return std::nullopt;
+    }
+    return submission_driver_deadline;
+  }
+
   bool
   amf_d3d11::begin_drain() {
     if (!encoder) {
@@ -2720,7 +2819,7 @@ namespace amf {
       100);
 
     if (driver_call_timed_out) {
-      BOOST_LOG(error) << "AMF: Drain exceeded the independent driver watchdog";
+      BOOST_LOG(error) << "AMF: Drain remained in the vendor call past its caller deadline";
       std::lock_guard lock(state_mutex);
       output_fatal = true;
       state_cv.notify_all();
@@ -2803,6 +2902,15 @@ namespace amf {
       fps = video::framerateX100_to_rational(current_config.framerateX100);
     }
     const int64_t vbv_buffer_size = fps.num > 0 ? (bitrate * fps.den / fps.num) : bitrate;
+    if (lifecycle::static_vbv_change_requires_rebuild(
+          update_plan, applied_vbv_buffer_size, vbv_buffer_size)) {
+      BOOST_LOG(info) << "AMF: rebuilding HEVC for bitrate change because its static Init-time VBV "
+                      << "would no longer be a one-frame buffer"
+                      << " (bitrate=" << bitrate << ", current_vbv="
+                      << applied_vbv_buffer_size.value_or(-1)
+                      << ", required_vbv=" << vbv_buffer_size << ')';
+      return bitrate_update_result_e::requires_rebuild;
+    }
     const wchar_t *target_property = video_format == 0 ? AMF_VIDEO_ENCODER_TARGET_BITRATE :
                                        video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE :
                                                            AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE;
@@ -2877,14 +2985,14 @@ namespace amf {
     };
 
     // All SetProperty/GetProperty calls run on the supervised vendor worker.
-    // A scheduling miss is ordinary contention; a call which actually enters
-    // the driver receives the independent five-second watchdog.
+    // A scheduling miss is ordinary contention; a call which enters the driver
+    // but outlives the frame deadline fences this generation for abandonment.
     const auto scheduling_deadline = std::chrono::steady_clock::now() +
                                      lifecycle::driver_wait_budget(current_config.framerate);
     const auto operation_result = property_call_until(std::move(operation), scheduling_deadline);
     if (!operation_result) {
       BOOST_LOG(warning) << (driver_submission_timed_out() ?
-        "AMF: live bitrate update exceeded the driver watchdog" :
+        "AMF: live bitrate update remained in the vendor call past the frame deadline" :
         "AMF: live bitrate update worker was busy before the frame deadline");
       return driver_submission_timed_out() ?
                bitrate_update_result_e::vendor_timed_out :
@@ -3041,17 +3149,16 @@ namespace amf {
 
   bool
   amf_d3d11::commit_input_texture_for_render() {
-    if (!lifecycle::fresh_conversion_requires_replay_snapshot(preanalysis_enabled)) {
-      // Non-PA sessions promote the newest AMF-released ring texture lazily.
-      // No full-frame snapshot is required on the continuous fresh-frame path.
-      std::lock_guard lock(state_mutex);
-      assert(replay_snapshot_copy_count == 0);
-      return true;
-    }
     Microsoft::WRL::ComPtr<ID3D11Texture2D> source;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> replay;
     {
       std::lock_guard lock(state_mutex);
+      if (!lifecycle::fresh_conversion_requires_replay_snapshot(
+            preanalysis_enabled, replay_source_surface_slot.has_value())) {
+        // Once a non-PA input is released, the pinned ring texture supplies
+        // repeats without a full-frame copy on the continuous capture path.
+        return true;
+      }
       if (!prepared_input_surface_slot || !replay_texture) {
         return false;
       }
@@ -3068,7 +3175,9 @@ namespace amf {
     immediate_context->CopyResource(replay.Get(), source.Get());
 
     std::lock_guard lock(state_mutex);
-    replay_texture_valid = true;
+    // A release can race the GPU copy.  In that case the released ring texture
+    // is newer lifecycle state and remains authoritative.
+    replay_texture_valid = preanalysis_enabled || !replay_source_surface_slot;
     ++replay_snapshot_copy_count;
     return true;
   }

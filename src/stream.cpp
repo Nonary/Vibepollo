@@ -164,10 +164,12 @@ namespace stream {
       std::chrono::seconds timeout,
       std::string reason,
       bool enforce_display_restore,
+      bool wait_for_owned_amf_teardown,
       std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
     ) {
       const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore, virtual_display_guid_bytes]() {
+      std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore,
+                   wait_for_owned_amf_teardown, virtual_display_guid_bytes]() {
         std::this_thread::sleep_for(timeout);
 
         if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
@@ -182,14 +184,18 @@ namespace stream {
           return;
         }
 
-        if (!video::wait_for_amf_teardown_completion()) {
-          BOOST_LOG(error) << "Display cleanup: AMD teardown still owns the display generation after the paused cleanup deadline; preserving topology";
-          return;
-        }
-        if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
-            session::running_sessions.load(std::memory_order_acquire) != 0 ||
-            webrtc_stream::has_active_sessions()) {
-          return;
+        if (wait_for_owned_amf_teardown) {
+          if (!video::wait_for_amf_teardown_completion()) {
+            BOOST_LOG(error) << "Display cleanup: AMD teardown still owns the display generation after the paused cleanup deadline; preserving topology";
+            return;
+          }
+          // The AMD ownership wait may span several seconds. Recheck only on
+          // that path; non-AMD paused cleanup retains its original behavior.
+          if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
+              session::running_sessions.load(std::memory_order_acquire) != 0 ||
+              webrtc_stream::has_active_sessions()) {
+            return;
+          }
         }
 
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
@@ -549,6 +555,11 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
+
+      // Written by video::capture from the immutable encoder snapshot and read
+      // after videoThread joins.  This binds display cleanup fencing to the
+      // session/capture generation that could actually own AMF resources.
+      bool uses_amf_encoder = false;
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -2626,7 +2637,12 @@ namespace stream {
 #endif
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
-    video::capture(session->mail, session->config.monitor, session);
+    video::capture(
+      session->mail,
+      session->config.monitor,
+      session,
+      &session->video.uses_amf_encoder
+    );
   }
 
   void audioThread(session_t *session) {
@@ -2832,13 +2848,14 @@ namespace stream {
             std::chrono::seconds(paused_timeout_secs),
             "rtsp_session_paused",
             false,
+            session.video.uses_amf_encoder,
             session.virtual_display.guid_bytes
           );
         } else if (keep_virtual_display_due_to_pause) {
           BOOST_LOG(debug) << "Display cleanup: session is paused; keeping virtual display alive (config_revert_on_disconnect=false, paused timeout disabled).";
         } else {
           const auto cleanup_reason = is_paused && !revert_display_config ? "rtsp_session_paused" : "rtsp_session_end";
-          if (video::amf_teardown_pending()) {
+          if (session.video.uses_amf_encoder && video::amf_teardown_pending()) {
             BOOST_LOG(info) << "Display cleanup: deferring virtual display/topology changes until AMD teardown releases its resource graph.";
             schedule_display_cleanup_after_amf(
               cleanup_reason,

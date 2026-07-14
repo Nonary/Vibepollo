@@ -66,6 +66,9 @@ namespace amf {
     bool
     driver_submission_timed_out() override;
 
+    std::optional<std::chrono::steady_clock::time_point>
+    driver_call_ownership_deadline() override;
+
     bool
     begin_drain() override;
 
@@ -176,9 +179,10 @@ namespace amf {
     D3D11_TEXTURE2D_DESC input_surface_desc {};
     std::size_t next_input_surface_slot = 0;
     std::optional<std::size_t> prepared_input_surface_slot;
-    // Static refreshes, bootstrap frames, and IDR repeats copy from this dedicated
-    // texture. It is never wrapped in an AMFSurface, so output completion and
-    // AMFSurfaceObserver release ordering cannot invalidate the repeat source.
+    // PA snapshots every conversion into this dedicated texture. Non-PA keeps a
+    // temporary bootstrap snapshot only until AMF releases a ring texture. It is
+    // never wrapped in an AMFSurface, so a buffered first input can be repeated
+    // immediately without waiting for capture startup.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> replay_texture;
     bool replay_texture_valid = false;
     std::optional<std::size_t> replay_source_surface_slot;
@@ -226,10 +230,10 @@ namespace amf {
     bool output_poll_requested = false;
     std::size_t active_output_poll_waiters = 0;
 
-    // SubmitInput is a vendor call and can block inside a damaged/ incompatible
-    // runtime. One owning worker serializes it; the encode thread waits only to
-    // its frame deadline. A timeout fences the complete AMF session at the video
-    // layer, which intentionally retains this object and its shared resources.
+    // AMF calls can block inside a damaged/incompatible runtime. One owning worker
+    // serializes them; the encode thread waits only to its frame deadline. A caller
+    // timeout transfers the complete session to tracked teardown, which reaps a
+    // late return or retains the graph if the ownership watchdog expires.
     std::mutex submission_mutex;
     std::condition_variable submission_cv;
     std::jthread submission_thread;

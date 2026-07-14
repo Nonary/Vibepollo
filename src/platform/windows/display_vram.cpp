@@ -1901,12 +1901,33 @@ namespace platf::dxgi {
       return adapter_compatibility_key;
     }
 
+    void set_hdr_metadata_for_initialization(const SS_HDR_METADATA *metadata) override {
+      initialization_hdr_metadata.reset();
+      if (!metadata) {
+        return;
+      }
+
+      ::amf::amf_hdr_metadata converted {};
+      for (int i = 0; i < 3; ++i) {
+        converted.displayPrimaries[i].x = metadata->displayPrimaries[i].x;
+        converted.displayPrimaries[i].y = metadata->displayPrimaries[i].y;
+      }
+      converted.whitePoint.x = metadata->whitePoint.x;
+      converted.whitePoint.y = metadata->whitePoint.y;
+      converted.maxDisplayLuminance = metadata->maxDisplayLuminance;
+      converted.minDisplayLuminance = metadata->minDisplayLuminance;
+      converted.maxContentLightLevel = metadata->maxContentLightLevel;
+      converted.maxFrameAverageLightLevel = metadata->maxFrameAverageLightLevel;
+      initialization_hdr_metadata = converted;
+    }
+
     bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
       if (!amf_d3d) {
         return false;
       }
 
       ::amf::amf_config amf_cfg;
+      amf_cfg.hdr_metadata = initialization_hdr_metadata;
       // Initialization is single-flight at the video layer. Count this session
       // as active only after AMF Init succeeds so a timed-out vendor call cannot
       // permanently poison concurrency policy for every later session.
@@ -2048,6 +2069,7 @@ namespace platf::dxgi {
     platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
     std::string adapter_compatibility_key;
     std::optional<int> input_queue_size_override;
+    std::optional<::amf::amf_hdr_metadata> initialization_hdr_metadata;
     bool registered_active_encoder = false;
   };
 
@@ -2746,7 +2768,18 @@ namespace platf::dxgi {
           amf_uint64 version;
           auto result = fnAMFQueryVersion(&version);
           if (result == AMF_OK) {
-            if (config.videoFormat == 2 && version < AMF_MAKE_FULL_VERSION(1, 4, 30, 0)) {
+            if (config.dynamicRange && version < AMF_MAKE_FULL_VERSION(1, 4, 32, 0)) {
+              // The native path bypasses FFmpeg's amfenc P010 guard. Match its
+              // minimum exactly: older 23.x driver branches can accept P010 and
+              // then encode it incorrectly or wedge inside the runtime.
+              BOOST_LOG(warning) << "HDR encoding is disabled on AMF version "sv
+                                 << AMF_GET_MAJOR_VERSION(version) << '.'
+                                 << AMF_GET_MINOR_VERSION(version) << '.'
+                                 << AMF_GET_SUBMINOR_VERSION(version) << '.'
+                                 << AMF_GET_BUILD_VERSION(version);
+              BOOST_LOG(warning) << "P010 encoding requires an AMD driver exposing AMF 1.4.32 or newer."sv;
+              return false;
+            } else if (config.videoFormat == 2 && version < AMF_MAKE_FULL_VERSION(1, 4, 30, 0)) {
               // AMF 1.4.30 adds ultra low latency mode for AV1. Don't use AV1 on earlier versions.
               // This corresponds to driver version 23.5.2 (23.10.01.45) or newer.
               BOOST_LOG(warning) << "AV1 encoding is disabled on AMF version "sv
@@ -2755,17 +2788,6 @@ namespace platf::dxgi {
                                  << AMF_GET_SUBMINOR_VERSION(version) << '.'
                                  << AMF_GET_BUILD_VERSION(version);
               BOOST_LOG(warning) << "If your AMD GPU supports AV1 encoding, update your graphics drivers!"sv;
-              return false;
-            } else if (config.dynamicRange && version < AMF_MAKE_FULL_VERSION(1, 4, 23, 0)) {
-              // Older versions of the AMD AMF runtime can crash when fed P010 surfaces.
-              // Fail if AMF version is below 1.4.23 where HEVC Main10 encoding was introduced.
-              // AMF 1.4.23 corresponds to driver version 21.12.1 (21.40.11.03) or newer.
-              BOOST_LOG(warning) << "HDR encoding is disabled on AMF version "sv
-                                 << AMF_GET_MAJOR_VERSION(version) << '.'
-                                 << AMF_GET_MINOR_VERSION(version) << '.'
-                                 << AMF_GET_SUBMINOR_VERSION(version) << '.'
-                                 << AMF_GET_BUILD_VERSION(version);
-              BOOST_LOG(warning) << "If your AMD GPU supports HEVC Main10 encoding, update your graphics drivers!"sv;
               return false;
             }
           } else {
@@ -2811,6 +2833,11 @@ namespace platf::dxgi {
     DXGI_ADAPTER_DESC adapter_desc {};
     adapter->GetDesc(&adapter_desc);
     return is_codec_supported_for_adapter(adapter_desc, name, config);
+  }
+
+  bool display_vram_t::is_amd_adapter() {
+    DXGI_ADAPTER_DESC adapter_desc {};
+    return SUCCEEDED(adapter->GetDesc(&adapter_desc)) && adapter_desc.VendorId == 0x1002;
   }
 
   std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_avcodec_encode_device(pix_fmt_e pix_fmt) {

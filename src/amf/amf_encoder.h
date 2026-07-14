@@ -81,9 +81,16 @@ namespace amf {
     virtual bool
     preanalysis_queue_fallback_recommended() = 0;
 
-    /** @brief Whether a bounded SubmitInput call exceeded its deadline. */
+    /** @brief Whether an in-flight AMF call outlived its caller latency deadline. */
     virtual bool
     driver_submission_timed_out() = 0;
+
+    /**
+     * @brief Absolute deadline for retaining an in-flight call's resource graph.
+     * @return The original vendor-call ownership deadline after a caller timeout.
+     */
+    virtual std::optional<std::chrono::steady_clock::time_point>
+    driver_call_ownership_deadline() = 0;
 
     /**
      * @brief Tell AMF that no more input will be submitted and flush delayed output.

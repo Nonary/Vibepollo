@@ -182,20 +182,17 @@ namespace {
            amf::lifecycle::rate_control_uses_bitrate_updates(6);
   }
 
-  bool rate_control_policy_is_consistent_for_every_codec_and_mode() {
-    for (int video_format = 0; video_format <= 2; ++video_format) {
-      (void) video_format;  // The three AMF APIs share the documented mode values.
-      for (int mode = 0; mode <= 6; ++mode) {
-        const auto policy = amf::lifecycle::rate_control_policy(mode);
-        const bool no_bitrate_contract = mode == 0 || mode == 4;
-        const bool requires_pa = mode >= 4;
-        if (!policy.valid || policy.requires_preanalysis != requires_pa ||
-            policy.uses_target_bitrate == no_bitrate_contract ||
-            policy.uses_peak_bitrate == no_bitrate_contract ||
-            policy.uses_vbv == no_bitrate_contract ||
-            policy.supports_live_bitrate == no_bitrate_contract) {
-          return false;
-        }
+  bool rate_control_policy_covers_all_semantic_modes() {
+    for (int mode = 0; mode <= 6; ++mode) {
+      const auto policy = amf::lifecycle::rate_control_policy(mode);
+      const bool no_bitrate_contract = mode == 0 || mode == 4;
+      const bool requires_pa = mode >= 4;
+      if (!policy.valid || policy.requires_preanalysis != requires_pa ||
+          policy.uses_target_bitrate == no_bitrate_contract ||
+          policy.uses_peak_bitrate == no_bitrate_contract ||
+          policy.uses_vbv == no_bitrate_contract ||
+          policy.supports_live_bitrate == no_bitrate_contract) {
+        return false;
       }
     }
     const auto automatic = amf::lifecycle::rate_control_policy(std::nullopt);
@@ -212,13 +209,26 @@ namespace {
         const bool ignored = mode == 0 || mode == 4;
         if (plan.ignored_for_mode != ignored) return false;
         if (ignored && (plan.write_target || plan.write_peak || plan.write_vbv ||
+                        plan.rebuild_if_static_vbv_changes ||
                         plan.write_maximum_frame_size)) return false;
         if (!ignored && (!plan.write_target || !plan.write_peak ||
                          plan.write_vbv != (video_format != 1) ||
+                         plan.rebuild_if_static_vbv_changes != (video_format == 1) ||
                          !plan.write_maximum_frame_size)) return false;
       }
     }
-    return true;
+    const auto h264_plan = amf::lifecycle::live_bitrate_plan(
+      amf::lifecycle::rate_control_policy(3), 0, false);
+    const auto hevc_plan = amf::lifecycle::live_bitrate_plan(
+      amf::lifecycle::rate_control_policy(3), 1, false);
+    return !amf::lifecycle::static_vbv_change_requires_rebuild(
+             h264_plan, 1'333'333, 666'667) &&
+           !amf::lifecycle::static_vbv_change_requires_rebuild(
+             hevc_plan, 1'333'333, 1'333'333) &&
+           amf::lifecycle::static_vbv_change_requires_rebuild(
+             hevc_plan, std::nullopt, 666'667) &&
+           amf::lifecycle::static_vbv_change_requires_rebuild(
+             hevc_plan, 1'333'333, 666'667);
   }
 
   bool bitrate_worker_contention_defers_and_timeout_abandons() {
@@ -233,16 +243,27 @@ namespace {
   }
 
   bool advanced_rate_control_is_gated_per_codec_runtime() {
-    for (int video_format = 0; video_format <= 2; ++video_format) {
-      if (amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 1, 4, 27) ||
-          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 1, 4, 28) ||
-          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 1, 5, 0) ||
-          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 2, 0, 0)) {
+    for (int video_format = 0; video_format <= 1; ++video_format) {
+      if (amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 4, 1, 4, 20) ||
+          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 4, 1, 4, 21) ||
+          amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 5, 1, 4, 27) ||
+          amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 6, 1, 4, 27) ||
+          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 5, 1, 4, 28) ||
+          !amf::lifecycle::runtime_supports_advanced_rate_control(video_format, 6, 1, 4, 28)) {
         return false;
       }
     }
-    return !amf::lifecycle::runtime_supports_advanced_rate_control(-1, 2, 0, 0) &&
-           !amf::lifecycle::runtime_supports_advanced_rate_control(3, 2, 0, 0);
+    for (int mode = 4; mode <= 6; ++mode) {
+      if (amf::lifecycle::runtime_supports_advanced_rate_control(2, mode, 1, 4, 27) ||
+          !amf::lifecycle::runtime_supports_advanced_rate_control(2, mode, 1, 4, 28) ||
+          !amf::lifecycle::runtime_supports_advanced_rate_control(2, mode, 2, 0, 0)) {
+        return false;
+      }
+    }
+    return !amf::lifecycle::runtime_supports_advanced_rate_control(-1, 4, 2, 0, 0) &&
+           !amf::lifecycle::runtime_supports_advanced_rate_control(3, 4, 2, 0, 0) &&
+           !amf::lifecycle::runtime_supports_advanced_rate_control(0, 3, 2, 0, 0) &&
+           !amf::lifecycle::runtime_supports_advanced_rate_control(0, 7, 2, 0, 0);
   }
 
   bool preanalysis_pipeline_primes_and_drains_in_order() {
@@ -454,8 +475,12 @@ namespace {
     slots[2].state = amf::lifecycle::input_surface_state_e::free;
     const auto selected = amf::lifecycle::select_free_surface(slots, 0);
     return selected && *selected == 2 &&
-           !amf::lifecycle::fresh_conversion_requires_replay_snapshot(false) &&
-           amf::lifecycle::fresh_conversion_requires_replay_snapshot(true) &&
+           // Non-PA needs a temporary snapshot before its first released source,
+           // then avoids continuous copies. PA always snapshots its newest input.
+           amf::lifecycle::fresh_conversion_requires_replay_snapshot(false, false) &&
+           !amf::lifecycle::fresh_conversion_requires_replay_snapshot(false, true) &&
+           amf::lifecycle::fresh_conversion_requires_replay_snapshot(true, false) &&
+           amf::lifecycle::fresh_conversion_requires_replay_snapshot(true, true) &&
            amf::lifecycle::unaccepted_fresh_input_must_remain_reserved(false, false, false) &&
            !amf::lifecycle::unaccepted_fresh_input_must_remain_reserved(true, false, false) &&
            !amf::lifecycle::unaccepted_fresh_input_must_remain_reserved(false, true, false) &&
@@ -639,6 +664,15 @@ namespace {
            !one_frame_vbv_is_acceptable(800'000, 1'333'333);
   }
 
+  bool equivalent_framerates_preserve_the_one_frame_vbv_contract() {
+    using amf::lifecycle::rational_rates_are_equivalent;
+    return rational_rates_are_equivalent(60, 1, 6000, 100) &&
+           rational_rates_are_equivalent(6000, 1001, 12000, 2002) &&
+           !rational_rates_are_equivalent(60, 1, 30, 1) &&
+           !rational_rates_are_equivalent(60, 1, 0, 1) &&
+           !rational_rates_are_equivalent(60, 0, 60, 1);
+  }
+
   bool timed_out_teardown_quarantines_and_retains_the_runtime_fence() {
     amf::lifecycle::native_runtime_gate_t gate;
     if (!gate.begin_teardown()) return false;
@@ -782,7 +816,102 @@ namespace {
            legacy_first_packet >= overall_deadline;
   }
 
-  bool driver_watchdog_is_independent_of_frame_latency_budget() {
+  bool driver_call_deadlines_separate_latency_from_ownership() {
+    using clock = std::chrono::steady_clock;
+    const auto start = clock::time_point {};
+    const auto scheduling_deadline = start + 4ms;
+    const auto caller_deadline = start + 3ms;
+    const auto ownership_deadline = start + 5s;
+    return amf::lifecycle::driver_call_acceptance_deadline(
+             scheduling_deadline,
+             std::optional {caller_deadline},
+             ownership_deadline) == caller_deadline &&
+           amf::lifecycle::driver_call_acceptance_deadline(
+             scheduling_deadline,
+             std::optional<clock::time_point> {},
+             ownership_deadline) == scheduling_deadline &&
+           amf::lifecycle::driver_call_acceptance_deadline(
+             start + 10s,
+             std::optional<clock::time_point> {},
+             ownership_deadline) == ownership_deadline &&
+           amf::lifecycle::teardown_watchdog_within_deadline(
+             ownership_deadline,
+             start + 4s,
+             amf::lifecycle::driver_call_watchdog_timeout) == 1s &&
+           amf::lifecycle::late_driver_response_may_publish(false) &&
+           !amf::lifecycle::late_driver_response_may_publish(true);
+  }
+
+  bool late_driver_return_is_reaped_without_permanent_quarantine() {
+    auto gate = std::make_shared<amf::lifecycle::native_runtime_gate_t>();
+    if (!gate->reserve_teardown()) return false;
+
+    struct state_t {
+      std::atomic<bool> allow_reap {false};
+      std::atomic<bool> reaped {false};
+      std::atomic<bool> supervisor_done {false};
+    };
+    auto state = std::make_shared<state_t>();
+    const auto caller_started = std::chrono::steady_clock::now();
+    const bool scheduled = amf::lifecycle::run_detached([gate, state]() {
+      if (!gate->begin_reserved_teardown()) return;
+      const bool completed = amf::lifecycle::run_with_timeout([state]() {
+        while (!state->allow_reap.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        state->reaped.store(true, std::memory_order_release);
+      }, 1s);
+      gate->finish_teardown(completed);
+      state->supervisor_done.store(true, std::memory_order_release);
+    });
+    const auto caller_elapsed = std::chrono::steady_clock::now() - caller_started;
+    const bool initialization_blocked = !gate->try_begin_initialization();
+    state->allow_reap.store(true, std::memory_order_release);
+
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (scheduled && !state->supervisor_done.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    return scheduled && caller_elapsed < 100ms && initialization_blocked &&
+           state->supervisor_done.load(std::memory_order_acquire) &&
+           state->reaped.load(std::memory_order_acquire) &&
+           !gate->is_quarantined() && gate->try_begin_initialization();
+  }
+
+  bool ownership_deadline_expiry_quarantines_after_caller_return() {
+    amf::lifecycle::native_runtime_gate_t gate;
+    if (!gate.begin_teardown()) return false;
+
+    struct state_t {
+      std::atomic<bool> release_worker {false};
+      std::atomic<bool> worker_finished {false};
+    };
+    auto state = std::make_shared<state_t>();
+    const auto started = std::chrono::steady_clock::now();
+    const bool completed = amf::lifecycle::run_with_timeout([state]() {
+      while (!state->release_worker.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      state->worker_finished.store(true, std::memory_order_release);
+    }, 2ms);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    gate.finish_teardown(completed);
+    const bool quarantined_while_owned = !completed && elapsed < 100ms &&
+                                         gate.is_quarantined() &&
+                                         gate.operation_in_progress() &&
+                                         !gate.try_begin_initialization();
+    state->release_worker.store(true, std::memory_order_release);
+    const auto finish_deadline = std::chrono::steady_clock::now() + 1s;
+    while (!state->worker_finished.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < finish_deadline) {
+      std::this_thread::yield();
+    }
+    return quarantined_while_owned && state->worker_finished.load(std::memory_order_acquire) &&
+           gate.is_quarantined() && !gate.legacy_fallback_is_safe();
+  }
+
+  bool ownership_watchdog_outlives_frame_latency_budget() {
     return amf::lifecycle::driver_call_watchdog_timeout >
              amf::lifecycle::output_coalesce_budget(30) &&
            amf::lifecycle::driver_call_watchdog_timeout >
@@ -905,7 +1034,7 @@ int main() {
              recovery_state_changes_only_after_accepted_input() &&
              preanalysis_dependent_rate_control_is_planned_natively() &&
              every_rate_control_mode_has_a_bounded_first_packet_plan() &&
-             rate_control_policy_is_consistent_for_every_codec_and_mode() &&
+             rate_control_policy_covers_all_semantic_modes() &&
              live_bitrate_plan_skips_qvbr_and_hevc_static_vbv() &&
              bitrate_worker_contention_defers_and_timeout_abandons() &&
              advanced_rate_control_is_gated_per_codec_runtime() &&
@@ -928,6 +1057,7 @@ int main() {
              teardown_reservation_closes_the_worker_registration_window() &&
              ordinary_disconnect_defers_a_slow_destructor_without_opening_reconnect() &&
              bitrate_and_one_frame_vbv_tolerate_only_small_normalization() &&
+             equivalent_framerates_preserve_the_one_frame_vbv_contract() &&
              timed_out_teardown_quarantines_and_retains_the_runtime_fence() &&
              timed_out_worker_handoff_reaps_on_the_producer_thread() &&
              normal_cancellation_does_not_quarantine_the_runtime() &&
@@ -935,7 +1065,10 @@ int main() {
              cancelled_handoff_reports_finished_only_after_reaping() &&
              teardown_gate_contention_respects_its_deadline() &&
              startup_deadline_caps_the_caller_not_the_vendor_watchdog() &&
-             driver_watchdog_is_independent_of_frame_latency_budget() &&
+             driver_call_deadlines_separate_latency_from_ownership() &&
+             late_driver_return_is_reaped_without_permanent_quarantine() &&
+             ownership_deadline_expiry_quarantines_after_caller_return() &&
+             ownership_watchdog_outlives_frame_latency_budget() &&
              output_watchdog_rearms_after_caught_up_idle() &&
              query_output_failure_threshold_is_elapsed_time_not_frame_count() &&
              capture_generation_preservation_is_amd_scoped_and_worker_aware() &&
@@ -975,8 +1108,8 @@ TEST(SunshineNativeAmfReview, EveryRateControlModeHasBoundedFirstPacketPlan) {
   EXPECT_TRUE(every_rate_control_mode_has_a_bounded_first_packet_plan());
 }
 
-TEST(SunshineNativeAmfReview, RateControlPolicyIsConsistentForEveryCodecAndMode) {
-  EXPECT_TRUE(rate_control_policy_is_consistent_for_every_codec_and_mode());
+TEST(SunshineNativeAmfReview, RateControlPolicyCoversAllSemanticModes) {
+  EXPECT_TRUE(rate_control_policy_covers_all_semantic_modes());
 }
 
 TEST(SunshineNativeAmfReview, LiveBitratePlanSkipsQvbrAndHevcStaticVbv) {
@@ -1067,6 +1200,10 @@ TEST(SunshineNativeAmfReview, BitrateAndOneFrameVbvAllowOnlySmallNormalization) 
   EXPECT_TRUE(bitrate_and_one_frame_vbv_tolerate_only_small_normalization());
 }
 
+TEST(SunshineNativeAmfReview, EquivalentFrameratesPreserveOneFrameVbvContract) {
+  EXPECT_TRUE(equivalent_framerates_preserve_the_one_frame_vbv_contract());
+}
+
 TEST(SunshineNativeAmfReview, TimedOutTeardownQuarantinesAndRetainsRuntimeFence) {
   EXPECT_TRUE(timed_out_teardown_quarantines_and_retains_the_runtime_fence());
 }
@@ -1095,8 +1232,20 @@ TEST(SunshineNativeAmfReview, StartupDeadlineCapsCallerNotVendorWatchdog) {
   EXPECT_TRUE(startup_deadline_caps_the_caller_not_the_vendor_watchdog());
 }
 
-TEST(SunshineNativeAmfReview, DriverWatchdogIsIndependentOfFrameLatencyBudget) {
-  EXPECT_TRUE(driver_watchdog_is_independent_of_frame_latency_budget());
+TEST(SunshineNativeAmfReview, DriverCallDeadlinesSeparateLatencyFromOwnership) {
+  EXPECT_TRUE(driver_call_deadlines_separate_latency_from_ownership());
+}
+
+TEST(SunshineNativeAmfReview, LateDriverReturnIsReapedWithoutPermanentQuarantine) {
+  EXPECT_TRUE(late_driver_return_is_reaped_without_permanent_quarantine());
+}
+
+TEST(SunshineNativeAmfReview, OwnershipDeadlineExpiryQuarantinesAfterCallerReturn) {
+  EXPECT_TRUE(ownership_deadline_expiry_quarantines_after_caller_return());
+}
+
+TEST(SunshineNativeAmfReview, OwnershipWatchdogOutlivesFrameLatencyBudget) {
+  EXPECT_TRUE(ownership_watchdog_outlives_frame_latency_budget());
 }
 
 TEST(SunshineNativeAmfReview, OutputWatchdogRearmsAfterCaughtUpIdle) {

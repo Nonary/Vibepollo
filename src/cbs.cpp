@@ -5,11 +5,19 @@
 extern "C" {
 // lib includes
 #include <libavcodec/avcodec.h>
+// FFmpeg's internal C AV1 CBS context names its AVClass field `class`, which
+// is a C++ keyword. Rename only that token while importing the C layout.
+#define class class_
+#include <libavcodec/cbs_av1.h>
+#undef class
 #include <libavcodec/cbs_h264.h>
 #include <libavcodec/cbs_h265.h>
 #include <libavcodec/h264_levels.h>
 #include <libavutil/pixdesc.h>
 }
+
+// standard includes
+#include <limits>
 
 // local includes
 #include "cbs.h"
@@ -214,37 +222,134 @@ namespace cbs {
     };
   }
 
-  /**
-   * This function initializes a Coded Bitstream Context and reads the packet into a Coded Bitstream Fragment.
-   * It then checks if the SPS->VUI (Video Usability Information) is present in the active SPS of the packet.
-   * This is done for both H264 and H265 codecs.
-   */
-  bool validate_sps(const AVPacket *packet, int codec_id) {
-    cbs::ctx_t ctx;
-    if (ff_cbs_init(&ctx, (AVCodecID) codec_id, nullptr)) {
-      return false;
-    }
-
-    cbs::frag_t frag;
-
-    int err = ff_cbs_read_packet(ctx.get(), &frag, packet);
-    if (err < 0) {
-      char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
-      BOOST_LOG(error) << "Couldn't read packet: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, err);
-
-      return false;
-    }
-
-    if (codec_id == AV_CODEC_ID_H264) {
-      auto h264 = (CodedBitstreamH264Context *) ctx->priv_data;
-
-      if (!h264->active_sps->vui_parameters_present_flag) {
+  namespace {
+    bool validate_sequence_header_impl(
+      const AVPacket *packet,
+      int codec_id,
+      const vui_parameters_t *expected,
+      bool allow_unique_inactive_sps) {
+      if (!packet || !packet->data || packet->size <= 0 ||
+          (codec_id != AV_CODEC_ID_H264 && codec_id != AV_CODEC_ID_H265 && codec_id != AV_CODEC_ID_AV1)) {
         return false;
       }
 
-      return true;
+      cbs::ctx_t ctx;
+      if (ff_cbs_init(&ctx, (AVCodecID) codec_id, nullptr)) {
+        return false;
+      }
+
+      cbs::frag_t frag;
+
+      int err = ff_cbs_read_packet(ctx.get(), &frag, packet);
+      if (err < 0) {
+        char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
+        BOOST_LOG(error) << "Couldn't read packet: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, err);
+
+        return false;
+      }
+
+      auto vui_matches = [expected](const auto *sps) {
+        if (!sps || !sps->vui_parameters_present_flag) return false;
+        if (!expected) return true;
+
+        const auto &vui = sps->vui;
+        return vui.video_signal_type_present_flag &&
+               vui.colour_description_present_flag &&
+               static_cast<bool>(vui.video_full_range_flag) == expected->full_range &&
+               vui.colour_primaries == expected->colour_primaries &&
+               vui.transfer_characteristics == expected->transfer_characteristics &&
+               vui.matrix_coefficients == expected->matrix_coefficients;
+      };
+
+      // Header-only probes may not contain a slice that activates a parameter
+      // set. Accept that form only when it contains exactly one unambiguous
+      // SPS; a packet with multiple inactive SPS values cannot prove which
+      // stream contract will actually be used.
+      auto active_or_unique_sps = [](const auto *active, const auto &parameter_sets) -> decltype(active) {
+        if (active) return active;
+
+        decltype(active) unique = nullptr;
+        for (const auto *candidate : parameter_sets) {
+          if (!candidate) continue;
+          if (unique) return nullptr;
+          unique = candidate;
+        }
+        return unique;
+      };
+
+      if (codec_id == AV_CODEC_ID_H264) {
+        auto h264 = (CodedBitstreamH264Context *) ctx->priv_data;
+        const auto *sps = h264 ? h264->active_sps : nullptr;
+        if (!sps && h264 && allow_unique_inactive_sps) {
+          sps = active_or_unique_sps(h264->active_sps, h264->sps);
+        }
+        if (!sps || !vui_matches(sps)) return false;
+        if (!expected) return true;
+        const bool bit_depth_matches = expected->bit_depth <= 0 ||
+                                       (8 + sps->bit_depth_luma_minus8 == expected->bit_depth &&
+                                        8 + sps->bit_depth_chroma_minus8 == expected->bit_depth);
+        const bool profile_matches = expected->profile < 0 || sps->profile_idc == expected->profile;
+        return bit_depth_matches && profile_matches;
+      }
+
+      if (codec_id == AV_CODEC_ID_H265) {
+        auto hevc = (CodedBitstreamH265Context *) ctx->priv_data;
+        const auto *sps = hevc ? hevc->active_sps : nullptr;
+        if (!sps && hevc && allow_unique_inactive_sps) {
+          sps = active_or_unique_sps(hevc->active_sps, hevc->sps);
+        }
+        if (!sps || !vui_matches(sps)) return false;
+        if (!expected) return true;
+
+        const auto &profile_tier_level = sps->profile_tier_level;
+        const bool profile_matches = expected->profile < 0 ||
+                                     profile_tier_level.general_profile_idc == expected->profile;
+        const bool bit_depth_matches = expected->bit_depth <= 0 ||
+                                       (8 + sps->bit_depth_luma_minus8 == expected->bit_depth &&
+                                        8 + sps->bit_depth_chroma_minus8 == expected->bit_depth);
+        return profile_matches && bit_depth_matches;
+      }
+
+      auto av1 = (CodedBitstreamAV1Context *) ctx->priv_data;
+      const auto *sequence_header = av1 ? av1->sequence_header : nullptr;
+      if (!sequence_header) return false;
+      if (!expected) return true;
+
+      const auto &color = sequence_header->color_config;
+      const int bit_depth = !color.high_bitdepth ? 8 : color.twelve_bit ? 12 : 10;
+      return (expected->profile < 0 || sequence_header->seq_profile == expected->profile) &&
+             (expected->bit_depth <= 0 || bit_depth == expected->bit_depth) &&
+             color.color_description_present_flag &&
+             static_cast<bool>(color.color_range) == expected->full_range &&
+             color.color_primaries == expected->colour_primaries &&
+             color.transfer_characteristics == expected->transfer_characteristics &&
+             color.matrix_coefficients == expected->matrix_coefficients;
+    }
+  }  // namespace
+
+  bool validate_sps(const AVPacket *packet, int codec_id) {
+    if (codec_id != AV_CODEC_ID_H264 && codec_id != AV_CODEC_ID_H265) {
+      return false;
+    }
+    return validate_sequence_header_impl(packet, codec_id, nullptr, false);
+  }
+
+  bool validate_sequence_header(
+    const std::uint8_t *data,
+    std::size_t size,
+    int codec_id,
+    const vui_parameters_t &expected) {
+    if (!data || size == 0 ||
+        size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      return false;
     }
 
-    return ((CodedBitstreamH265Context *) ctx->priv_data)->active_sps->vui_parameters_present_flag;
+    // A packet without an AVBufferRef makes CBS copy the borrowed bytes into
+    // its own padded fragment before parsing, so native encoder vectors do not
+    // need FFmpeg's AV_INPUT_BUFFER_PADDING_SIZE tail allocation.
+    AVPacket packet {};
+    packet.data = const_cast<std::uint8_t *>(data);
+    packet.size = static_cast<int>(size);
+    return validate_sequence_header_impl(&packet, codec_id, &expected, true);
   }
 }  // namespace cbs
