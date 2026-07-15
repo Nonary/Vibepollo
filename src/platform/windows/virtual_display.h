@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <winsock2.h>
 #include <windows.h>
@@ -15,6 +16,54 @@
 namespace VDISPLAY {
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
   inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
+
+  struct advanced_color_profile_result_t {
+    bool api_available = false;
+    bool target_found = false;
+    bool attempted = false;
+    bool success = false;
+    HRESULT association_status = E_NOTIMPL;
+    HRESULT default_status = E_NOTIMPL;
+  };
+
+  // Windows HDR calibration profiles are Advanced Color associations. These helpers use
+  // the display's CCD adapter/source identity so Windows consumes the profile's MHC2
+  // luminance metadata and refreshes the effective HDR capabilities.
+  std::optional<std::wstring> get_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    bool system_wide
+  );
+  advanced_color_profile_result_t set_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    bool system_wide
+  );
+  advanced_color_profile_result_t remove_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    bool system_wide
+  );
+
+  struct display_scale_result_t {
+    bool target_found = false;
+    bool queried = false;
+    bool applied = false;
+    std::uint32_t requested_percent = 0;
+    std::uint32_t recommended_percent = 0;
+    std::uint32_t previous_percent = 0;
+    std::uint32_t current_percent = 0;
+    LONG status = ERROR_NOT_SUPPORTED;
+  };
+
+  // Set the exact Windows scale for an active monitor. The monitor EDID's physical size is
+  // also chosen to make this value Windows' recommended scale for new virtual displays.
+  display_scale_result_t set_display_scale_percent(
+    const std::wstring &monitor_device_path,
+    std::uint32_t scale_percent
+  );
+
+  // Read the MHC2 peak-luminance value from a Windows HDR calibration profile selection.
+  std::optional<std::uint32_t> hdr_profile_peak_luminance_nits(std::string_view selection);
 
   enum class DRIVER_STATUS {
     UNKNOWN = 1,

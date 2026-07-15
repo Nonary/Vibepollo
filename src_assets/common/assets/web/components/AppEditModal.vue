@@ -710,7 +710,7 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>) {
     mode,
     valuesOverride: hasRtxHdrValueOverride,
     forceSdr: parseBooleanOverride(overrides['rtx_hdr_force_sdr'], false),
-    peakBrightness: parseNumberOverride(overrides['rtx_hdr_peak_brightness'], 1000, 400, 1500),
+    peakBrightness: parseNumberOverride(overrides['rtx_hdr_peak_brightness'], 1000, 400, 2000),
     middleGray: parseNumberOverride(overrides['rtx_hdr_middle_gray'], 50, 10, 100),
     contrast: parseNumberOverride(overrides['rtx_hdr_contrast'], 0, -100, 100),
     saturation: parseNumberOverride(overrides['rtx_hdr_saturation'], 0, -100, 100),

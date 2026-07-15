@@ -225,6 +225,63 @@ function Resolve-PackageVersionFromPrebuiltRoot {
     return ''
 }
 
+function Resolve-NextLocalDirtyPackageVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$LibRoot,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [string]$ExistingInfPath,
+        [switch]$Advance
+    )
+
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) {
+        return $Version
+    }
+
+    $dirty = & $git.Source -C $LibRoot status --porcelain 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $dirty -or
+        [string]::IsNullOrWhiteSpace($ExistingInfPath) -or
+        -not (Test-Path -LiteralPath $ExistingInfPath -PathType Leaf)) {
+        return $Version
+    }
+
+    $numericVersion = ($Version.TrimStart('v') -replace '[-+].*$', '')
+    if ($numericVersion -match '^([0-9]+)\.([0-9]+)\.([0-9]+)(?:\.([0-9]+))?$') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $patch = [int]$Matches[3]
+        $revision = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
+    } else {
+        return $Version
+    }
+
+    $existingInf = Get-Content -LiteralPath $ExistingInfPath -Raw
+    if ($existingInf -notmatch '(?m)^\s*DriverVer\s*=\s*[0-9]{2}/[0-9]{2}/[0-9]{4}\s*,\s*([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)\s*$') {
+        return $Version
+    }
+
+    $existingMajor = [int]$Matches[1]
+    $existingMinor = [int]$Matches[2]
+    $existingPatch = [int]$Matches[3]
+    $existingRevision = [int]$Matches[4]
+    if ($existingMajor -ne $major -or $existingMinor -ne $minor -or $existingPatch -ne $patch -or
+        $existingRevision -lt $revision) {
+        return $Version
+    }
+
+    if (-not $Advance) {
+        return "$existingMajor.$existingMinor.$existingPatch.$existingRevision"
+    }
+
+    if ($existingRevision -ge 65535) {
+        throw "[SunshineVirtualDisplay] Local dirty DriverVer revision is exhausted for $major.$minor.$patch."
+    }
+
+    $nextVersion = "$major.$minor.$patch.$($existingRevision + 1)"
+    Write-Host "[SunshineVirtualDisplay] Advancing local dirty package version from $Version to $nextVersion so Windows restages changed driver payloads."
+    return $nextVersion
+}
+
 function Resolve-DriverVerDateFromGit {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -246,7 +303,9 @@ function Resolve-DriverVerDateFromGit {
 function Resolve-PackageVersion {
     param(
         [Parameter(Mandatory = $true)][string]$LibRoot,
-        [string]$PrebuiltRoot
+        [string]$PrebuiltRoot,
+        [string]$ExistingInfPath,
+        [switch]$AdvanceLocalDirtyVersion
     )
 
     if ($PackageVersion) {
@@ -260,7 +319,7 @@ function Resolve-PackageVersion {
 
     $fromGit = Resolve-PackageVersionFromGit -Path $LibRoot
     if ($fromGit) {
-        return $fromGit
+        return Resolve-NextLocalDirtyPackageVersion -LibRoot $LibRoot -Version $fromGit -ExistingInfPath $ExistingInfPath -Advance:$AdvanceLocalDirtyVersion
     }
 
     return '0.0.0'
@@ -431,7 +490,7 @@ $packageRoot = Resolve-RequiredPath -Path $PackageDir
 $driverSourceInf = Join-Path $libRoot 'src\driver\windows_driver\SunshineVirtualDisplayDriver.inf'
 Resolve-RequiredPath -Path $driverSourceInf -Leaf | Out-Null
 $prebuiltPackageRoot = Resolve-PrebuiltPackageRoot -Path $PrebuiltPackageDir
-$resolvedPackageVersion = Resolve-PackageVersion -LibRoot $libRoot -PrebuiltRoot $prebuiltPackageRoot
+$resolvedPackageVersion = Resolve-PackageVersion -LibRoot $libRoot -PrebuiltRoot $prebuiltPackageRoot -ExistingInfPath (Join-Path $packageRoot 'SunshineVirtualDisplayDriver.inf') -AdvanceLocalDirtyVersion:$Build
 $resolvedDriverVersion = ConvertTo-DriverVerVersion -Version $resolvedPackageVersion
 $resolvedDriverDate = Resolve-DriverVerDateFromGit -Path $libRoot
 

@@ -516,9 +516,7 @@ namespace VDISPLAY_SUNSHINE {
           );
         }
       }
-      // Virtual displays always target 4x the requested refresh (or the highest the driver can
-      // provide) for smooth pacing; frame generation reuses the same multiplier.
-      const int refresh_multiplier = std::max(4, framegen_refresh_multiplier);
+      const int refresh_multiplier = std::max(1, framegen_refresh_multiplier);
       if (refresh_multiplier > 1 && base_fps_millihz > 0) {
         const uint64_t minimum_millihz = static_cast<uint64_t>(base_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
         const uint32_t safe_minimum = static_cast<uint32_t>(std::min<uint64_t>(minimum_millihz, std::numeric_limits<uint32_t>::max()));
@@ -1560,23 +1558,105 @@ namespace VDISPLAY_SUNSHINE {
       return status == ERROR_SUCCESS;
     }
 
+    bool is_system_wide_profile_scope(const color_profile_scope_e scope) {
+      return scope == color_profile_scope_e::system_wide;
+    }
+
+    std::optional<std::wstring> read_color_profile_association(
+      const std::wstring &device_path,
+      const color_profile_scope_e scope
+    ) {
+      if (auto profile = VDISPLAY::get_advanced_color_profile(device_path, is_system_wide_profile_scope(scope))) {
+        return profile;
+      }
+      return read_color_profile_from_registry(device_path, scope);
+    }
+
+    bool clear_color_profile_association(
+      const std::wstring &device_path,
+      const std::optional<std::wstring> &profile_name,
+      const color_profile_scope_e scope
+    ) {
+      bool api_success = false;
+      if (profile_name && !profile_name->empty()) {
+        const auto result = VDISPLAY::remove_advanced_color_profile(
+          device_path,
+          fs::path(*profile_name).filename().wstring(),
+          is_system_wide_profile_scope(scope)
+        );
+        api_success = result.success;
+        if (result.attempted && !result.success) {
+          BOOST_LOG(debug) << "HDR profile: Advanced Color disassociation failed (hr=0x"
+                           << std::hex << static_cast<unsigned long>(result.association_status) << std::dec
+                           << ", scope=" << color_profile_scope_label(scope) << ").";
+        }
+      }
+      return clear_color_profile_from_registry(device_path, scope) || api_success;
+    }
+
+    bool write_color_profile_association(
+      const std::wstring &device_path,
+      const std::wstring &profile_filename,
+      const color_profile_scope_e scope,
+      LSTATUS *out_status = nullptr
+    ) {
+      // Keep the legacy value populated first. Besides supporting older Windows builds,
+      // this preserves the existing scope-selection state before the modern API activates it.
+      LSTATUS registry_status = ERROR_SUCCESS;
+      const bool registry_success = write_color_profile_to_registry(
+        device_path,
+        profile_filename,
+        scope,
+        &registry_status
+      );
+      const auto result = VDISPLAY::set_advanced_color_profile(
+        device_path,
+        profile_filename,
+        is_system_wide_profile_scope(scope)
+      );
+      if (out_status) {
+        *out_status = registry_status;
+      }
+      if (result.success) {
+        return true;
+      }
+      if (result.attempted) {
+        BOOST_LOG(warning) << "HDR profile: Advanced Color activation failed (add=0x"
+                           << std::hex << static_cast<unsigned long>(result.association_status)
+                           << ", default=0x" << static_cast<unsigned long>(result.default_status) << std::dec
+                           << ", scope=" << color_profile_scope_label(scope) << "); retained registry association only.";
+      } else if (result.api_available && !result.target_found) {
+        BOOST_LOG(warning) << "HDR profile: active DisplayConfig target was unavailable; retained registry association only"
+                           << " (scope=" << color_profile_scope_label(scope) << ").";
+      }
+      return result.api_available ? false : registry_success;
+    }
+
     void apply_hdr_profile_if_available(
       const std::optional<std::wstring> &display_name,
       const std::optional<std::string> &device_id,
       const std::optional<std::wstring> &monitor_device_path,
       const std::optional<std::string> &client_name_utf8,
       const std::optional<std::string> &hdr_profile_utf8,
-      bool is_virtual_display = true
+      bool is_virtual_display = true,
+      bool wait_for_completion = false
     ) {
-      // Only apply HDR profiles when explicitly selected by the user.
-      if (!hdr_profile_utf8 || hdr_profile_utf8->empty()) {
+      // Physical outputs are left untouched unless the user explicitly selected
+      // a profile. Virtual outputs are different: Windows can reuse a monitor
+      // class instance whose registry association belongs to an older display,
+      // so an empty selection must actively clear that stale association.
+      const bool has_profile_selection = hdr_profile_utf8 && !hdr_profile_utf8->empty();
+      if (!has_profile_selection && !is_virtual_display) {
         return;
       }
 
       const std::string client_name = (client_name_utf8 && !client_name_utf8->empty()) ? *client_name_utf8 : "unknown";
 
-      const std::optional<fs::path> profile_path = find_hdr_profile_by_selection(*hdr_profile_utf8);
-      if (!profile_path) {
+      std::optional<fs::path> profile_path;
+      if (has_profile_selection) {
+        profile_path = find_hdr_profile_by_selection(*hdr_profile_utf8);
+      }
+      if (has_profile_selection && !profile_path) {
         BOOST_LOG(warning) << "HDR profile: configured profile '" << *hdr_profile_utf8 << "' not found in '"
                            << platf::to_utf8(default_color_profile_directory().wstring()) << "' for client '" << client_name
                            << "'.";
@@ -1586,13 +1666,12 @@ namespace VDISPLAY_SUNSHINE {
       // For virtual displays, clear mismatched associations (Windows can reuse IDs).
       const bool should_clear_mismatched = is_virtual_display;
 
-      // Run asynchronously to avoid blocking stream startup
-      std::thread([profile_path,
-                   client_name,
-                   monitor_path = monitor_device_path,
-                   display_name,
-                   device_id,
-                   should_clear_mismatched]() {
+      auto apply_profile_work = [profile_path,
+                                 client_name,
+                                 monitor_path = monitor_device_path,
+                                 display_name,
+                                 device_id,
+                                 should_clear_mismatched]() {
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
@@ -1648,7 +1727,7 @@ namespace VDISPLAY_SUNSHINE {
 
           std::optional<std::wstring> existing;
           if (should_clear_mismatched || profile_path) {
-            existing = read_color_profile_from_registry(*device_name_w, scope);
+            existing = read_color_profile_association(*device_name_w, scope);
           }
 
           // For physical displays, remember the pre-stream association so we can restore it on stream end.
@@ -1674,10 +1753,11 @@ namespace VDISPLAY_SUNSHINE {
               }
 
               // If no profile for this client, or existing doesn't match expected, clear it
-              if (expected_filename.empty() || _wcsicmp(existing->c_str(), expected_filename.c_str()) != 0) {
+              if (expected_filename.empty() ||
+                  _wcsicmp(fs::path(*existing).filename().c_str(), expected_filename.c_str()) != 0) {
                 BOOST_LOG(debug) << "HDR profile: clearing mismatched profile '" << platf::to_utf8(*existing)
                                  << "' from virtual display for client '" << client_name << "'.";
-                if (clear_color_profile_from_registry(*device_name_w, scope)) {
+                if (clear_color_profile_association(*device_name_w, existing, scope)) {
                   cleared_mismatched = true;
                 } else {
                   BOOST_LOG(debug) << "HDR profile: failed to clear mismatched profile association for client '" << client_name
@@ -1695,7 +1775,7 @@ namespace VDISPLAY_SUNSHINE {
               !cleared_mismatched &&
               existing &&
               !existing->empty() &&
-              _wcsicmp(existing->c_str(), profile_filename.c_str()) == 0;
+              _wcsicmp(fs::path(*existing).filename().c_str(), profile_filename.c_str()) == 0;
 
             if (desired_already_associated) {
               already_associated = true;
@@ -1712,9 +1792,10 @@ namespace VDISPLAY_SUNSHINE {
               }
             }
 
-            // Write directly to registry (WCS APIs don't work reliably for new virtual displays)
+            // Advanced Color associations notify Windows to consume the MHC2 luminance metadata.
+            // Keep the registry write only as a compatibility fallback for older systems.
             LSTATUS reg_status = ERROR_SUCCESS;
-            local_success = write_color_profile_to_registry(*device_name_w, profile_filename, scope, &reg_status);
+            local_success = write_color_profile_association(*device_name_w, profile_filename, scope, &reg_status);
             if (!local_success) {
               if (reg_status == ERROR_ACCESS_DENIED) {
                 local_access_denied = true;
@@ -1769,7 +1850,13 @@ namespace VDISPLAY_SUNSHINE {
         } else if (cleared_mismatched && !profile_path) {
           BOOST_LOG(info) << "Cleared mismatched HDR color profile association for client '" << client_name << "'.";
         }
-      }).detach();
+      };
+
+      if (wait_for_completion) {
+        apply_profile_work();
+      } else {
+        std::thread(std::move(apply_profile_work)).detach();
+      }
     }
 
     std::uint16_t virtual_display_product_code_from_display_id(const std::uint64_t display_id) {
@@ -2956,11 +3043,14 @@ namespace VDISPLAY_SUNSHINE {
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      if (!devices || devices->empty()) {
-        // Either enumeration failed outright (nullopt) or the CCD subsystem returned no valid
-        // paths (empty vector, e.g. during transient topology churn).  Treat both as "unknown"
-        // rather than letting an empty list fall through to "missing".
+      if (!devices) {
+        // Enumeration failed, so the target's presence cannot be determined yet.
         return MonitorTargetPresence::unknown;
+      }
+      if (devices->empty()) {
+        // A successful empty enumeration is definitive on a headless system. Let the
+        // normal missing-target grace period recreate the virtual display.
+        return MonitorTargetPresence::missing;
       }
 
       bool matched_inactive = false;
@@ -3257,9 +3347,14 @@ namespace VDISPLAY_SUNSHINE {
           }
           bool ok = false;
           if (previous && !previous->empty()) {
-            ok = write_color_profile_to_registry(monitor_path, *previous, color_profile_scope_e::current_user);
+            ok = write_color_profile_association(
+              monitor_path,
+              fs::path(*previous).filename().wstring(),
+              color_profile_scope_e::current_user
+            );
           } else {
-            ok = clear_color_profile_from_registry(monitor_path, color_profile_scope_e::current_user);
+            const auto current = read_color_profile_association(monitor_path, color_profile_scope_e::current_user);
+            ok = clear_color_profile_association(monitor_path, current, color_profile_scope_e::current_user);
           }
           if (ok) {
             BOOST_LOG(info) << "HDR profile: restored physical display color profile association for '"
@@ -4185,23 +4280,51 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       const uint32_t requested_fps = apply_refresh_overrides(fps, base_fps_millihz, framegen_refresh_active ? framegen_refresh_multiplier : 1);
+      // The driver derives its complete mode catalog from the descriptor timing. Keep the
+      // descriptor at the client/base rate so it can advertise both that mode and 4x; the
+      // display helper selects requested_fps after the monitor arrives when a fixed refresh
+      // policy needs to start above the base rate.
+      const uint32_t descriptor_fps = base_fps_millihz > 0 ? base_fps_millihz : requested_fps;
       const auto display_id = client_uuid_to_virtual_display_id(guid);
       const auto lease_id = generate_driver_lease_id();
       const auto dpi_settings_prefix = virtual_display_dpi_settings_prefix(display_id);
-      const auto dpi_snapshot = read_virtual_display_dpi_value(dpi_settings_prefix);
+      const auto configured_scale = config::video.dd.virtual_display_scale_percent;
+      const auto dpi_snapshot = configured_scale == 0 ?
+        read_virtual_display_dpi_value(dpi_settings_prefix) :
+        std::nullopt;
 
       sunshine_driver::CreateTemporaryDisplayRequest create_request {};
       create_request.lease_id = lease_id;
       create_request.display_id = display_id;
       create_request.width = width;
       create_request.height = height;
-      create_request.refresh_rate_millihz = requested_fps;
+      if (configured_scale > 0) {
+        const auto dpi = 96.0 * static_cast<double>(configured_scale) / 100.0;
+        create_request.physical_width_mm = std::clamp(
+          static_cast<std::uint32_t>(std::lround(static_cast<double>(width) * 25.4 / dpi)),
+          sunshine_driver::kMinPhysicalSizeMillimeters,
+          sunshine_driver::kMaxPhysicalSizeMillimeters
+        );
+        create_request.physical_height_mm = std::clamp(
+          static_cast<std::uint32_t>(std::lround(static_cast<double>(height) * 25.4 / dpi)),
+          sunshine_driver::kMinPhysicalSizeMillimeters,
+          sunshine_driver::kMaxPhysicalSizeMillimeters
+        );
+      }
+      create_request.refresh_rate_millihz = descriptor_fps;
       create_request.requested_timeout_ms = DRIVER_LEASE_TIMEOUT_MS;
+      create_request.hdr_max_luminance_nits = static_cast<std::uint32_t>(
+        std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000)
+      );
       const auto temporary_display_name = make_temporary_display_name(s_client_name);
       std::memcpy(create_request.display_name, temporary_display_name.data(), temporary_display_name.size());
 
       BOOST_LOG(debug) << "Calling Sunshine temporary display create (driver transport present, display_id="
-                       << display_id << ", lease_id=" << lease_id << ").";
+                       << display_id << ", lease_id=" << lease_id
+                       << ", HDR peak=" << create_request.hdr_max_luminance_nits << " nits"
+                       << ", scale=" << configured_scale << "%"
+                       << ", physical=" << create_request.physical_width_mm << 'x'
+                       << create_request.physical_height_mm << " mm).";
       const auto create_result = client.create_temporary_display(create_request);
       if (!create_result.ok()) {
         const DWORD error_code = create_result.native_error;
@@ -4294,7 +4417,15 @@ namespace VDISPLAY_SUNSHINE {
             if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
               hdr_profile = std::string(s_hdr_profile);
             }
-            apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
+            apply_hdr_profile_if_available(
+              result.display_name,
+              result.device_id,
+              result.monitor_device_path,
+              result.client_name,
+              hdr_profile,
+              true,
+              true
+            );
             return result;
           }
         }
@@ -4438,7 +4569,15 @@ namespace VDISPLAY_SUNSHINE {
       if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
         hdr_profile = std::string(s_hdr_profile);
       }
-      apply_hdr_profile_if_available(result.display_name, result.device_id, result.monitor_device_path, result.client_name, hdr_profile);
+      apply_hdr_profile_if_available(
+        result.display_name,
+        result.device_id,
+        result.monitor_device_path,
+        result.client_name,
+        hdr_profile,
+        true,
+        true
+      );
       driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
       return result;
     }
@@ -4511,6 +4650,30 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height)) {
+        if (config::video.dd.virtual_display_scale_percent > 0) {
+          if (!result->monitor_device_path) {
+            result->monitor_device_path = resolve_monitor_device_path(result->display_name, result->device_id);
+          }
+          if (result->monitor_device_path) {
+            const auto scale_result = VDISPLAY::set_display_scale_percent(
+              *result->monitor_device_path,
+              static_cast<std::uint32_t>(config::video.dd.virtual_display_scale_percent)
+            );
+            if (scale_result.applied) {
+              BOOST_LOG(info) << "Virtual display scale: requested " << scale_result.requested_percent
+                              << "%, recommended " << scale_result.recommended_percent
+                              << "%, previous " << scale_result.previous_percent
+                              << "%, current " << scale_result.current_percent << "%.";
+            } else {
+              BOOST_LOG(warning) << "Virtual display scale: unable to apply "
+                                 << scale_result.requested_percent << "% (status=" << scale_result.status
+                                 << ", target_found=" << scale_result.target_found
+                                 << ", queried=" << scale_result.queried << ").";
+            }
+          } else if (!allow_pending_enumeration) {
+            BOOST_LOG(warning) << "Virtual display scale: monitor device path was unavailable; Windows scale was not applied.";
+          }
+        }
         track_virtual_display_created(requested_uuid);
         return result;
       }

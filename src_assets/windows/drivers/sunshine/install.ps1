@@ -636,6 +636,23 @@ function Get-CurrentDriverStoreDllPaths {
     )
 }
 
+function Test-DriverStoreMatchesPackagedPayload {
+    $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
+    if ($currentDllPaths.Count -eq 0) {
+        return $false
+    }
+
+    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    $currentHashes = @(
+        $currentDllPaths |
+            ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash } |
+            Select-Object -Unique
+    )
+
+    return $currentHashes.Count -eq 1 -and
+        [string]::Equals($currentHashes[0], $packagedHash, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Test-DriverPackageRefreshNeeded {
     $publishedNames = @(Get-SunshineDriverPublishedNames)
     if ($publishedNames.Count -eq 0) {
@@ -732,8 +749,46 @@ function Get-SunshineDeviceInstanceId {
     return $null
 }
 
+function Reset-SunshineVirtualDisplayDeviceNode {
+    Write-Host '[SunshineVirtualDisplay] Recreating stale device node after failed runtime revive.'
+
+    try {
+        Stop-VirtualDisplayBrokerForDriverInstall
+        Remove-DeviceNode
+
+        try {
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+
+        Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+        Install-DriverPackage
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        Initialize-DriverStateRegistryAccess
+        Start-VirtualDisplayBrokerIfNeeded
+
+        if (Test-TemporaryVirtualDisplay) {
+            $script:rebootRequired = $false
+            Write-Host '[SunshineVirtualDisplay] Device-node recreation restored the virtual display driver without a restart.'
+            return $true
+        }
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Device-node recreation failed: $($_.Exception.Message)"
+    } finally {
+        try {
+            Start-VirtualDisplayBrokerIfNeeded
+        } catch {
+            Write-Warning $_.Exception.Message
+        }
+    }
+
+    return $false
+}
+
 function Invoke-InstallerHealthCheck {
     if (Test-TemporaryVirtualDisplay) {
+        $script:rebootRequired = $false
         return
     }
 
@@ -760,6 +815,7 @@ function Invoke-InstallerHealthCheck {
             Write-Warning $_.Exception.Message
         }
         if (Test-TemporaryVirtualDisplay) {
+            $script:rebootRequired = $false
             return
         }
 
@@ -792,6 +848,7 @@ function Invoke-InstallerHealthCheck {
             Write-Warning $_.Exception.Message
         }
         if (Test-TemporaryVirtualDisplay) {
+            $script:rebootRequired = $false
             return
         }
 
@@ -802,8 +859,13 @@ function Invoke-InstallerHealthCheck {
             Write-Warning $_.Exception.Message
         }
         if (Test-TemporaryVirtualDisplay) {
+            $script:rebootRequired = $false
             return
         }
+    }
+
+    if (Reset-SunshineVirtualDisplayDeviceNode) {
+        return
     }
 
     $script:rebootRequired = $true
@@ -884,6 +946,17 @@ if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
 Stop-SunshineForDriverInstall
 Stop-VirtualDisplayBrokerForDriverInstall
 Install-DriverPackage
+
+if (-not (Test-DriverStoreMatchesPackagedPayload)) {
+    Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
+    Remove-DeviceNode
+    Remove-DriverPackage
+    Install-DriverPackage
+    if (-not (Test-DriverStoreMatchesPackagedPayload)) {
+        throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
+    }
+    Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
+}
 
 if (-not (Test-DeviceNodePresent)) {
     Write-Host '[SunshineVirtualDisplay] Creating device node.'

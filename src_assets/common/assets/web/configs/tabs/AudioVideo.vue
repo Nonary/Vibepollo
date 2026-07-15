@@ -154,6 +154,25 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
   },
 });
 
+const virtualDisplayScale = computed<number>({
+  get() {
+    const value = Number(config.value?.['dd_virtual_display_scale']);
+    return Number.isFinite(value) ? value : 250;
+  },
+  set(value) {
+    if (!config.value) return;
+    store.updateOption('dd_virtual_display_scale', value);
+  },
+});
+
+const virtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_auto'), value: 0 },
+  ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
+    label: `${value}%`,
+    value,
+  })),
+]);
+
 const virtualDisplayLayout = computed<
   'exclusive' | 'extended' | 'extended_primary' | 'extended_isolated' | 'extended_primary_isolated'
 >({
@@ -354,6 +373,21 @@ function selectVirtualDisplayLayout(v: unknown) {
                 {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
+            <transition name="fade">
+              <div
+                v-if="virtualDisplayMode === 'shared'"
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.virtual_display_shared_hdr_warning') }}</span>
+                  </span>
+                </p>
+              </div>
+            </transition>
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
               <div
@@ -370,6 +404,20 @@ function selectVirtualDisplayLayout(v: unknown) {
               </div>
             </div>
             <div v-else class="mt-3 space-y-2">
+              <div class="pb-3">
+                <div class="text-sm font-medium">
+                  {{ $t('config.virtual_display_scale_label') }}
+                </div>
+                <p class="text-[11px] opacity-70 leading-snug">
+                  {{ $t('config.virtual_display_scale_desc') }}
+                </p>
+                <n-select
+                  v-model:value="virtualDisplayScale"
+                  :options="virtualDisplayScaleOptions"
+                  size="small"
+                  class="mt-2 max-w-md"
+                />
+              </div>
               <div class="text-sm font-medium">
                 {{ $t('config.virtual_display_layout_label') }}
               </div>

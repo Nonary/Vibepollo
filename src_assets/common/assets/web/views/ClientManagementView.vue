@@ -700,6 +700,20 @@
                     </div>
                   </div>
 
+                  <div
+                    v-if="isWindows && clientUsesSharedVirtualDisplay(client)"
+                    class="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30 lg:col-span-2"
+                  >
+                    <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                      <span class="flex items-start gap-2">
+                        <i
+                          class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                        />
+                        <span class="block">{{ t('clients.shared_display_hdr_warning') }}</span>
+                      </span>
+                    </p>
+                  </div>
+
                   <n-form-item v-if="isWindows" :label="t('clients.hdr_profile_label')">
                     <n-select
                       v-model:value="client.editHdrProfile"
@@ -714,6 +728,65 @@
                       <span class="text-xs opacity-70">{{ t('clients.hdr_profile_desc') }}</span>
                       <span v-if="hdrProfilesError" class="text-xs text-red-500 block">{{
                         hdrProfilesError
+                      }}</span>
+                    </template>
+                  </n-form-item>
+
+                  <n-form-item v-if="isWindows" :label="t('clients.hdr_peak_nits_label')">
+                    <n-input-number
+                      :value="clientNumericOverride(client, 'rtx_hdr_peak_brightness', 400, 2000)"
+                      :min="400"
+                      :max="2000"
+                      :step="50"
+                      clearable
+                      :placeholder="t('clients.hdr_peak_nits_placeholder')"
+                      @update:value="
+                        (value) =>
+                          setClientNumericOverride(
+                            client,
+                            'rtx_hdr_peak_brightness',
+                            value,
+                            400,
+                            2000,
+                          )
+                      "
+                    >
+                      <template #suffix>nits</template>
+                    </n-input-number>
+                    <template #feedback>
+                      <span class="text-xs opacity-70">{{ t('clients.hdr_peak_nits_desc') }}</span>
+                    </template>
+                  </n-form-item>
+
+                  <n-form-item
+                    v-if="isWindows && clientUsesVirtualDisplay(client)"
+                    :label="t('clients.virtual_display_scale_label')"
+                  >
+                    <n-select
+                      :value="clientNumericOverride(client, 'dd_virtual_display_scale', 0, 500)"
+                      :options="clientVirtualDisplayScaleOptions"
+                      clearable
+                      :placeholder="
+                        globalVirtualDisplayScale > 0
+                          ? t('clients.virtual_display_scale_placeholder', {
+                              scale: globalVirtualDisplayScale,
+                            })
+                          : t('config.virtual_display_scale_auto')
+                      "
+                      @update:value="
+                        (value) =>
+                          setClientNumericOverride(
+                            client,
+                            'dd_virtual_display_scale',
+                            value,
+                            0,
+                            500,
+                          )
+                      "
+                    />
+                    <template #feedback>
+                      <span class="text-xs opacity-70">{{
+                        t('clients.virtual_display_scale_desc')
                       }}</span>
                     </template>
                   </n-form-item>
@@ -862,6 +935,7 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NInputNumber,
   NModal,
   NRadio,
   NRadioGroup,
@@ -1358,6 +1432,69 @@ const virtualDisplayModeOptions = computed(() => [
   { label: t('config.virtual_display_mode_per_client'), value: 'per_client' },
   { label: t('config.virtual_display_mode_shared'), value: 'shared' },
 ]);
+
+const globalVirtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>(() => {
+  const mode = parseClientVirtualDisplayMode(configValue('virtual_display_mode'));
+  return mode === 'disabled' || mode === 'shared' ? mode : 'per_client';
+});
+
+const globalVirtualDisplayScale = computed<number>(() => {
+  const value = Number(configValue('dd_virtual_display_scale'));
+  return Number.isFinite(value) ? value : 250;
+});
+
+const clientVirtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_auto'), value: 0 },
+  ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
+    label: `${value}%`,
+    value,
+  })),
+]);
+
+function clientUsesVirtualDisplay(client: ClientViewModel): boolean {
+  if (!client.editDisplayOverrideEnabled) {
+    return globalVirtualDisplayMode.value !== 'disabled';
+  }
+  return client.editDisplaySelection === 'virtual';
+}
+
+function clientUsesSharedVirtualDisplay(client: ClientViewModel): boolean {
+  if (!clientUsesVirtualDisplay(client)) return false;
+  if (!client.editDisplayOverrideEnabled) {
+    return globalVirtualDisplayMode.value === 'shared';
+  }
+  return (
+    client.editVirtualDisplayMode === 'shared' ||
+    ((client.editVirtualDisplayMode === 'global' || client.editVirtualDisplayMode === null) &&
+      globalVirtualDisplayMode.value === 'shared')
+  );
+}
+
+function clientNumericOverride(
+  client: ClientViewModel,
+  key: string,
+  min: number,
+  max: number,
+): number | null {
+  const rawValue = client.editConfigOverrides?.[key];
+  if (rawValue === null || rawValue === undefined || rawValue === '') return null;
+  const value = Number(rawValue);
+  return Number.isFinite(value) && value >= min && value <= max ? value : null;
+}
+
+function setClientNumericOverride(
+  client: ClientViewModel,
+  key: string,
+  value: number | null,
+  min: number,
+  max: number,
+): void {
+  if (value === null || !Number.isFinite(value)) {
+    delete client.editConfigOverrides[key];
+    return;
+  }
+  client.editConfigOverrides[key] = Math.min(max, Math.max(min, Number(value)));
+}
 
 const globalVirtualDisplayLayout = computed<ClientVirtualDisplayLayout>(() =>
   parseClientVirtualDisplayLayout(configValue('virtual_display_layout')),

@@ -3016,7 +3016,8 @@ namespace stream {
             .uses_virtual_display = session.virtual_display.active,
             .capture_mode = config::video.capture,
             .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
-            .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+            .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+            .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
           });
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
           if (defer_stream_start) {

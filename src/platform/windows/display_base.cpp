@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cwchar>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -33,11 +34,13 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 } D3DKMT_GPU_PREFERENCE_QUERY_STATE;
 
 #include "display.h"
+#include "game_activity.h"
 #include "misc.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
 
@@ -431,7 +434,18 @@ namespace platf::dxgi {
       // display or GPU changes. We should reinit to examine the updated state of
       // the display subsystem. It is recommended to call this once per frame.
       if (!factory->IsCurrent()) {
-        return platf::capture_e::reinit;
+        const bool expected_refresh_change =
+          refresh_only_changes_supported && game_refresh_target &&
+          game_refresh_target->wait_for_expected_refresh_change(5s);
+        if (!expected_refresh_change || !refresh_output_after_expected_mode_change()) {
+          return platf::capture_e::reinit;
+        }
+
+        frame_pacing_group_start.reset();
+        frame_pacing_group_frames = 0;
+        last_pacing_slot.reset();
+        BOOST_LOG(info) << "Capture continued after refresh-only virtual display mode change";
+        continue;
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
@@ -605,6 +619,101 @@ namespace platf::dxgi {
     }
   }
 
+  bool display_base_t::refresh_output_after_expected_mode_change() {
+    for (int attempt = 0; attempt < 5; ++attempt) {
+      factory1_t replacement_factory;
+      if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
+        return false;
+      }
+
+      adapter_t replacement_adapter;
+      output_t replacement_output;
+      DXGI_OUTPUT_DESC replacement_desc {};
+      for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
+        adapter_t::pointer adapter_ptr = nullptr;
+        const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
+        if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(adapter_status) || !adapter_ptr) {
+          continue;
+        }
+
+        adapter_t candidate_adapter {adapter_ptr};
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
+            !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
+          continue;
+        }
+
+        for (UINT output_index = 0;; ++output_index) {
+          output_t::pointer output_ptr = nullptr;
+          const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
+          if (output_status == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(output_status) || !output_ptr) {
+            continue;
+          }
+
+          output_t candidate_output {output_ptr};
+          DXGI_OUTPUT_DESC desc {};
+          if (FAILED(candidate_output->GetDesc(&desc)) ||
+              std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
+            continue;
+          }
+          replacement_adapter = std::move(candidate_adapter);
+          replacement_output = std::move(candidate_output);
+          replacement_desc = desc;
+          break;
+        }
+      }
+
+      if (!replacement_adapter || !replacement_output) {
+        std::this_thread::sleep_for(50ms);
+        continue;
+      }
+
+      const auto &old_rect = captured_output_desc.DesktopCoordinates;
+      const auto &new_rect = replacement_desc.DesktopCoordinates;
+      const bool geometry_unchanged = replacement_desc.AttachedToDesktop &&
+                                      replacement_desc.Rotation == captured_output_desc.Rotation &&
+                                      old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
+                                      old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
+      if (!geometry_unchanged) {
+        BOOST_LOG(info) << "Refresh-only capture continuation rejected because output geometry changed";
+        return false;
+      }
+
+      output6_t replacement_output6;
+      const bool replacement_hdr_valid = SUCCEEDED(
+        replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
+      );
+      bool replacement_hdr = false;
+      if (replacement_hdr_valid) {
+        DXGI_OUTPUT_DESC1 desc1 {};
+        if (FAILED(replacement_output6->GetDesc1(&desc1))) {
+          return false;
+        }
+        replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+      }
+      if (captured_hdr_state_valid != replacement_hdr_valid ||
+          (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
+        BOOST_LOG(info) << "Refresh-only capture continuation rejected because HDR state changed";
+        return false;
+      }
+
+      factory = std::move(replacement_factory);
+      adapter = std::move(replacement_adapter);
+      output = std::move(replacement_output);
+      captured_output_desc = replacement_desc;
+      return true;
+    }
+
+    BOOST_LOG(warning) << "Refresh-only capture continuation could not reacquire the DXGI output";
+    return false;
+  }
+
   /**
    * @brief Tests to determine if the Desktop Duplication API can capture the given output.
    * @details When testing for enumeration only, we avoid resyncing the thread desktop.
@@ -776,6 +885,7 @@ namespace platf::dxgi {
 
           if (desc.AttachedToDesktop && (skip_dd_test || test_dxgi_duplication(adapter_tmp, output_tmp, false))) {
             output = std::move(output_tmp);
+            captured_output_desc = desc;
 
             offset_x = desc.DesktopCoordinates.left;
             offset_y = desc.DesktopCoordinates.top;
@@ -865,6 +975,7 @@ namespace platf::dxgi {
 
     DXGI_ADAPTER_DESC adapter_desc;
     adapter->GetDesc(&adapter_desc);
+    captured_adapter_luid = adapter_desc.AdapterLuid;
 
     auto description = utf_utils::to_utf8(adapter_desc.Description);
     BOOST_LOG(info)
@@ -996,6 +1107,8 @@ namespace platf::dxgi {
     if (SUCCEEDED(status)) {
       DXGI_OUTPUT_DESC1 desc1;
       output6->GetDesc1(&desc1);
+      captured_hdr_state_valid = true;
+      captured_hdr_state = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 
       BOOST_LOG(info)
         << std::endl
@@ -1013,6 +1126,39 @@ namespace platf::dxgi {
     if (!timer || !*timer) {
       BOOST_LOG(error) << "Uninitialized high precision timer";
       return -1;
+    }
+
+    refresh_only_changes_supported = skip_dd_test;
+    if (config::frame_limiter.game_aware_virtual_display_refresh_enabled() &&
+        config::video.dd.refresh_rate_option != config::video_t::dd_t::refresh_rate_option_e::manual &&
+        config.framerate > 0 && VDISPLAY::is_virtual_display_output(display_name)) {
+      if (const auto device_id = VDISPLAY::resolveVirtualDisplayDeviceId(captured_output_desc.DeviceName)) {
+        const auto base_refresh = static_cast<std::uint32_t>(config.framerate);
+        const auto high_refresh = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          static_cast<std::uint64_t>(base_refresh) * 4ull,
+          (std::numeric_limits<std::uint32_t>::max)()
+        ));
+
+        DEVMODEW current_mode {};
+        current_mode.dmSize = sizeof(current_mode);
+        const bool has_current_mode = EnumDisplaySettingsExW(
+          captured_output_desc.DeviceName,
+          ENUM_CURRENT_SETTINGS,
+          &current_mode,
+          0
+        ) != FALSE;
+        const bool initial_high = has_current_mode && current_mode.dmDisplayFrequency > base_refresh;
+        game_refresh_target = platf::game_activity::make_refresh_target({
+          .display_name = display_name,
+          .device_id = *device_id,
+          .capture_rect = captured_output_desc.DesktopCoordinates,
+          .base_refresh_numerator = base_refresh,
+          .base_refresh_denominator = 1,
+          .high_refresh_numerator = high_refresh,
+          .high_refresh_denominator = 1,
+          .initial_high = initial_high,
+        });
+      }
     }
 
     return 0;

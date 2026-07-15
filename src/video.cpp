@@ -55,6 +55,7 @@ extern "C" {
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
   #include "src/platform/windows/misc.h"
+  #include "src/platform/windows/rtx_hdr_runtime.h"
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
 
@@ -1029,6 +1030,39 @@ namespace video {
       return emitted_any_packet;
     }
 
+    void set_hdr_metadata(const SS_HDR_METADATA &metadata) override {
+      if (!device || !device->frame) {
+        return;
+      }
+
+      auto *frame = device->frame;
+      auto *mdm_side_data = av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+      auto *mdm = mdm_side_data ?
+                    reinterpret_cast<AVMasteringDisplayMetadata *>(mdm_side_data->data) :
+                    av_mastering_display_metadata_create_side_data(frame);
+      if (mdm) {
+        for (int primary = 0; primary < 3; ++primary) {
+          mdm->display_primaries[primary][0] = av_make_q(metadata.displayPrimaries[primary].x, 50000);
+          mdm->display_primaries[primary][1] = av_make_q(metadata.displayPrimaries[primary].y, 50000);
+        }
+        mdm->white_point[0] = av_make_q(metadata.whitePoint.x, 50000);
+        mdm->white_point[1] = av_make_q(metadata.whitePoint.y, 50000);
+        mdm->min_luminance = av_make_q(metadata.minDisplayLuminance, 10000);
+        mdm->max_luminance = av_make_q(metadata.maxDisplayLuminance, 1);
+        mdm->has_luminance = metadata.maxDisplayLuminance != 0 ? 1 : 0;
+        mdm->has_primaries = metadata.displayPrimaries[0].x != 0 ? 1 : 0;
+      }
+
+      auto *clm_side_data = av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+      auto *clm = clm_side_data ?
+                    reinterpret_cast<AVContentLightMetadata *>(clm_side_data->data) :
+                    av_content_light_metadata_create_side_data(frame);
+      if (clm) {
+        clm->MaxCLL = metadata.maxContentLightLevel;
+        clm->MaxFALL = metadata.maxFrameAverageLightLevel;
+      }
+    }
+
     avcodec_ctx_t avcodec_ctx;
     std::unique_ptr<platf::avcodec_encode_device_t> device;
 
@@ -1078,6 +1112,15 @@ namespace video {
         return false;
       }
       return device->nvenc->set_bitrate(bitrate_kbps);
+    }
+
+    void set_hdr_metadata(const SS_HDR_METADATA &metadata) override {
+      if (!device || !device->nvenc) {
+        return;
+      }
+      device->hdr_metadata = metadata;
+      device->hdr_metadata_valid = true;
+      device->nvenc->set_hdr_metadata(metadata);
     }
 
     nvenc::nvenc_encoded_frame encode_frame(uint64_t frame_index) {
@@ -1311,6 +1354,12 @@ namespace video {
     SS_HDR_METADATA metadata {};
   };
 
+  struct rtx_hdr_metadata_refresh_state_t {
+    std::uint32_t observed_generation {0};
+    int pending_peak_nits {0};
+    std::chrono::steady_clock::time_point stable_since {};
+  };
+
   struct sync_session_ctx_t {
     safe::signal_t *join_event;
     safe::mail_raw_t::event_t<bool> shutdown_event;
@@ -1326,6 +1375,7 @@ namespace video {
     hdr_latch_t hdr_latch;
     // Last HDR info raised to this session's client, used to suppress duplicates on reinit.
     std::optional<hdr_info_raw_t> last_hdr_info;
+    rtx_hdr_metadata_refresh_state_t rtx_hdr_metadata_refresh;
   };
 
   struct sync_session_t {
@@ -3143,12 +3193,6 @@ namespace video {
   }
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
-  // The NGX TrueHDR model's output tops out around 1500 nits, so we advertise that as the HDR
-  // volume regardless of the per-app peak-brightness dial. The dial varies the actual rendered
-  // luminance (which never exceeds this ceiling), so a fixed honest ceiling keeps the client's
-  // tone-mapping stable and means we never have to re-send metadata when the dial is tuned live.
-  constexpr uint16_t RTX_HDR_PEAK_NITS = 1500;
-
   /**
    * @brief Synthesize Rec.2020/D65 HDR10 metadata for an RTX HDR (SDR->HDR) stream.
    *
@@ -3157,17 +3201,85 @@ namespace video {
    * volume the TrueHDR conversion targets, not whatever the panel reports. Shared by every
    * HDR-metadata producer so the bitstream SEI and the control-channel metadata stay consistent.
    */
-  SS_HDR_METADATA synthesize_rtx_hdr_metadata() {
+  SS_HDR_METADATA synthesize_rtx_hdr_metadata(const int peak_nits) {
+    const auto safe_peak_nits = static_cast<uint16_t>(std::clamp(peak_nits, 400, 2000));
     SS_HDR_METADATA m {};
     m.displayPrimaries[0] = {35400, 14600};  // R (Rec.2020, normalized to 50000)
     m.displayPrimaries[1] = {8500, 39850};  // G
     m.displayPrimaries[2] = {6550, 2300};  // B
     m.whitePoint = {15635, 16450};  // D65
-    m.maxDisplayLuminance = RTX_HDR_PEAK_NITS;  // nits
+    m.maxDisplayLuminance = safe_peak_nits;  // nits
     m.minDisplayLuminance = 1;  // 1/10000th nit (~0)
-    m.maxContentLightLevel = RTX_HDR_PEAK_NITS;  // nits
-    m.maxFrameAverageLightLevel = RTX_HDR_PEAK_NITS / 4;  // nits
+    m.maxContentLightLevel = safe_peak_nits;  // nits
+    m.maxFrameAverageLightLevel = safe_peak_nits / 4;  // nits
     return m;
+  }
+#endif
+
+  // Raise hdr_info unless it matches what this session last raised. Some clients
+  // (moonlight-xbox) perform a full HDMI display mode-set for every HDR mode message,
+  // so a redundant one on reinit costs seconds of black screen mid-stream.
+  void raise_hdr_info_if_changed(safe::mail_raw_t::event_t<hdr_info_t> &event, std::optional<hdr_info_raw_t> &last_hdr_info, hdr_info_t hdr_info) {
+    if (last_hdr_info && last_hdr_info->enabled == hdr_info->enabled &&
+        std::memcmp(&last_hdr_info->metadata, &hdr_info->metadata, sizeof(hdr_info->metadata)) == 0) {
+      return;
+    }
+
+    last_hdr_info = *hdr_info;
+    event->raise(std::move(hdr_info));
+  }
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  bool refresh_rtx_hdr_metadata_if_needed(
+    config_t &config,
+    encode_session_t &encode_session,
+    safe::mail_raw_t::event_t<hdr_info_t> &hdr_event,
+    std::optional<hdr_info_raw_t> &last_hdr_info,
+    rtx_hdr_metadata_refresh_state_t &refresh_state
+  ) {
+    using namespace std::chrono_literals;
+
+    if (!config.rtx_hdr_active) {
+      return false;
+    }
+
+    const auto live_state = platf::rtx_hdr::live_output_metadata_state();
+    if (live_state.generation == 0) {
+      return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (live_state.generation != refresh_state.observed_generation) {
+      refresh_state.observed_generation = live_state.generation;
+      const int new_peak_nits = std::clamp(live_state.peak_brightness, 400, 2000);
+      if (refresh_state.pending_peak_nits != new_peak_nits) {
+        refresh_state.pending_peak_nits = new_peak_nits;
+        refresh_state.stable_since = now;
+      }
+    }
+
+    // Live sliders may publish several intermediate values while being dragged. Wait
+    // for the peak to settle so clients that mode-set on HDR messages see one update.
+    if (refresh_state.pending_peak_nits == 0 || now - refresh_state.stable_since < 250ms) {
+      return false;
+    }
+
+    const int peak_nits = refresh_state.pending_peak_nits;
+    refresh_state.pending_peak_nits = 0;
+    if (config.rtx_hdr_peak_nits == peak_nits) {
+      return false;
+    }
+
+    config.rtx_hdr_peak_nits = peak_nits;
+    const auto metadata = synthesize_rtx_hdr_metadata(peak_nits);
+    encode_session.set_hdr_metadata(metadata);
+    raise_hdr_info_if_changed(
+      hdr_event,
+      last_hdr_info,
+      std::make_unique<hdr_info_raw_t>(true, metadata)
+    );
+    BOOST_LOG(info) << "RTX HDR: updated live HDR10 metadata to peak " << peak_nits << " nits; forcing IDR.";
+    return true;
   }
 #endif
 
@@ -4476,6 +4588,8 @@ namespace video {
     std::chrono::steady_clock::time_point initialization_deadline,
     initialization_cancel_t initialization_cancelled,
     bool &client_packet_delivered,
+    std::optional<hdr_info_raw_t> &last_hdr_info,
+    rtx_hdr_metadata_refresh_state_t &rtx_hdr_metadata_refresh,
     std::optional<int> amf_input_queue_size_override = std::nullopt
   ) {
     client_packet_delivered = false;
@@ -4827,6 +4941,7 @@ namespace video {
 
     auto packets = mail::man->queue<packet_t>(mail::video_packets);
     auto idr_events = mail->event<bool>(mail::idr);
+    auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
     auto bitrate_events = mail->event<int>(mail::dynamic_bitrate);
 
@@ -5212,6 +5327,18 @@ namespace video {
             break;
           }
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+          if (refresh_rtx_hdr_metadata_if_needed(
+                config,
+                *session,
+                hdr_event,
+                last_hdr_info,
+                rtx_hdr_metadata_refresh
+              )) {
+            session->request_idr_frame();
+          }
+#endif
+
           bootstrap_state.current_input_placeholder = placeholder_input;
 
           if (!placeholder_input) {
@@ -5496,7 +5623,7 @@ namespace video {
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
         if (config.rtx_hdr_active) {
           // SDR source + TrueHDR: report the conversion's target peak, not the capture panel's.
-          result->hdr_metadata = synthesize_rtx_hdr_metadata();
+          result->hdr_metadata = synthesize_rtx_hdr_metadata(config.rtx_hdr_peak_nits);
           result->hdr_metadata_valid = true;
           BOOST_LOG(info) << "RTX HDR: synthesized HDR10 metadata (peak " << result->hdr_metadata.maxDisplayLuminance << " nits) for SDR source";
         } else
@@ -5519,19 +5646,6 @@ namespace video {
     }
 
     return result;
-  }
-
-  // Raise hdr_info unless it matches what this session last raised. Some clients
-  // (moonlight-xbox) perform a full HDMI display mode-set for every HDR mode message,
-  // so a redundant one on reinit costs seconds of black screen mid-stream.
-  void raise_hdr_info_if_changed(safe::mail_raw_t::event_t<hdr_info_t> &event, std::optional<hdr_info_raw_t> &last_hdr_info, hdr_info_t hdr_info) {
-    if (last_hdr_info && last_hdr_info->enabled == hdr_info->enabled &&
-        std::memcmp(&last_hdr_info->metadata, &hdr_info->metadata, sizeof(hdr_info->metadata)) == 0) {
-      return;
-    }
-
-    last_hdr_info = *hdr_info;
-    event->raise(std::move(hdr_info));
   }
 
   std::optional<sync_session_t> make_synced_session(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, platf::img_t &img, sync_session_ctx_t &ctx) {
@@ -5777,6 +5891,18 @@ namespace video {
               continue;
             }
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+            if (refresh_rtx_hdr_metadata_if_needed(
+                  ctx->config,
+                  *pos->session,
+                  ctx->hdr_events,
+                  ctx->last_hdr_info,
+                  ctx->rtx_hdr_metadata_refresh
+                )) {
+              pos->session->request_idr_frame();
+            }
+#endif
+
             pos->bootstrap.current_input_placeholder = placeholder_input;
 
             if (!placeholder_input) {
@@ -5915,6 +6041,7 @@ namespace video {
     // so a transient SDR display reading cannot downgrade or re-signal an HDR stream.
     hdr_latch_t hdr_latch;
     std::optional<hdr_info_raw_t> last_hdr_info;
+    rtx_hdr_metadata_refresh_state_t rtx_hdr_metadata_refresh;
 
     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
@@ -6090,6 +6217,8 @@ namespace video {
         initialization_deadline,
         initialization_cancelled,
         client_packet_delivered,
+        last_hdr_info,
+        rtx_hdr_metadata_refresh,
 #ifdef _WIN32
         &session_encoder == &amdvce ? native_amf_queue_override : std::nullopt
 #else

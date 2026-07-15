@@ -5,6 +5,7 @@
 #include "rtx_hdr_runtime.h"
 
 #include "foreground_app.h"
+#include "game_activity.h"
 
 #include "src/config.h"
 #include "src/logging.h"
@@ -24,6 +25,26 @@ namespace platf::rtx_hdr {
     constexpr float SDR_BRIGHTNESS_MAX_WHITE_NITS = 200.0f;
 
     std::atomic<std::uint64_t> g_live_settings_generation {0};
+    // High 32 bits are a change counter; low 32 bits are the peak represented by
+    // the most recent frame state consumed by the TrueHDR conversion path.
+    std::atomic<std::uint64_t> g_live_output_metadata_state {0};
+
+    void publish_live_output_peak(const int peak_brightness) {
+      const auto peak = static_cast<std::uint32_t>(std::clamp(peak_brightness, 400, 2000));
+      auto current = g_live_output_metadata_state.load(std::memory_order_acquire);
+      while (static_cast<std::uint32_t>(current) != peak) {
+        const auto generation = static_cast<std::uint32_t>(current >> 32) + 1;
+        const auto desired = (static_cast<std::uint64_t>(generation) << 32) | peak;
+        if (g_live_output_metadata_state.compare_exchange_weak(
+              current,
+              desired,
+              std::memory_order_acq_rel,
+              std::memory_order_acquire
+            )) {
+          return;
+        }
+      }
+    }
 
     runtime_values_t config_runtime_values() {
       runtime_values_t values;
@@ -142,7 +163,7 @@ namespace platf::rtx_hdr {
         return std::chrono::steady_clock::now();
       };
       backend.foreground_snapshot = [](const std::optional<RECT> &capture_rect) {
-        return platf::foreground_app::snapshot(capture_rect);
+        return platf::game_activity::foreground_snapshot(capture_rect);
       };
       backend.resolve_profile = [](const std::string &executable) {
         return resolve_profile_for_executable(executable);
@@ -425,6 +446,14 @@ namespace platf::rtx_hdr {
     return g_live_settings_generation.load(std::memory_order_acquire);
   }
 
+  live_output_metadata_state_t live_output_metadata_state() {
+    const auto state = g_live_output_metadata_state.load(std::memory_order_acquire);
+    return {
+      static_cast<std::uint32_t>(state >> 32),
+      static_cast<int>(static_cast<std::uint32_t>(state)),
+    };
+  }
+
   frame_state_t runtime_t::update_for_frame(const std::optional<RECT> &capture_rect) {
     frame_state_t frame;
     {
@@ -437,6 +466,8 @@ namespace platf::rtx_hdr {
       }
       frame = state->cached_frame_state;
     }
+
+    publish_live_output_peak(frame.peak_brightness);
 
     start_workers();
 

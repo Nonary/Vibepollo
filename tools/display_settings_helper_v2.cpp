@@ -6,6 +6,7 @@
 #ifdef _WIN32
 
   #include <algorithm>
+  #include <array>
   #include <atomic>
   #include <chrono>
   #include <cctype>
@@ -60,6 +61,8 @@ namespace {
     Disarm = 7,
     SnapshotCurrent = 8,
     VerificationResult = 9,
+    RefreshRate = 10,
+    RefreshRateResult = 11,
     Ping = 0xFE,
     Stop = 0xFF,
   };
@@ -100,6 +103,16 @@ namespace {
     }
 
     return std::nullopt;
+  }
+
+  std::optional<std::uint32_t> read_u32_le(std::span<const std::uint8_t> payload, std::size_t offset) {
+    if (offset + 4 > payload.size()) {
+      return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(payload[offset]) |
+           (static_cast<std::uint32_t>(payload[offset + 1]) << 8u) |
+           (static_cast<std::uint32_t>(payload[offset + 2]) << 16u) |
+           (static_cast<std::uint32_t>(payload[offset + 3]) << 24u);
   }
 
   void send_framed_content(platf::dxgi::AsyncNamedPipe &pipe, MsgType type, std::span<const uint8_t> payload = {}) {
@@ -776,6 +789,37 @@ int run_v2_helper(int argc, char *argv[]) {
             payload_struct.update_exclusions = true;
           }
           queue.push(display_helper::v2::SnapshotCurrentCommand {payload_struct, cancellation.current_generation()});
+          break;
+        }
+        case MsgType::RefreshRate: {
+          const auto numerator = read_u32_le(payload, 0);
+          const auto denominator = read_u32_le(payload, 4);
+          std::string device_id;
+          if (payload.size() > 8) {
+            device_id.assign(
+              reinterpret_cast<const char *>(payload.data() + 8),
+              payload.size() - 8
+            );
+          }
+          if (!numerator || !denominator || *numerator == 0 || *denominator == 0 || device_id.empty()) {
+            std::array<std::uint8_t, 1> result {0u};
+            send_framed_content(async_pipe, MsgType::RefreshRateResult, result);
+            break;
+          }
+
+          dispatcher.dispatch_refresh_rate(
+            std::move(device_id),
+            *numerator,
+            *denominator,
+            [&active_pipe](bool success) {
+              auto *pipe = active_pipe.load(std::memory_order_acquire);
+              if (!pipe) {
+                return;
+              }
+              std::array<std::uint8_t, 1> result {static_cast<std::uint8_t>(success ? 1u : 0u)};
+              send_framed_content(*pipe, MsgType::RefreshRateResult, result);
+            }
+          );
           break;
         }
         case MsgType::Reset:

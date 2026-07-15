@@ -36,6 +36,7 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -1850,13 +1851,9 @@ namespace display_helper_integration {
       g_watchdog_running = false;
       thread = std::move(g_watchdog_thread);
     }
-    if (thread.joinable()) {
-      thread.request_stop();
-      try {
-        thread.join();
-      } catch (const std::system_error &e) {
-        BOOST_LOG(warning) << "Display helper: failed to join watchdog thread: " << e.what();
-      }
+    const auto stop_result = DisplayHelperWatchdog::stop_thread(thread);
+    if (stop_result == DisplayHelperWatchdog::ThreadStopResult::DetachedSelf) {
+      BOOST_LOG(debug) << "Display helper: watchdog requested its own stop; detached for safe exit.";
     }
     if (config::video.dd.config_revert_on_disconnect) {
       platf::display_helper_client::reset_connection();

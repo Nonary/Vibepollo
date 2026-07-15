@@ -312,7 +312,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.4.4
+          LIBVIRTUALDISPLAY_RELEASE_TAG: v1.5.0
         run: |
           $ErrorActionPreference = 'Stop'
 

@@ -151,6 +151,7 @@ const defaultGroups = [
       dd_use_sunshine_virtual_display_driver: true,
       vulkan_hdr_layer: true,
       dd_activate_virtual_display: false,
+      dd_virtual_display_scale: 250,
       dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
@@ -251,7 +252,7 @@ const defaultGroups = [
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
       frame_limiter_fps_limit: 0,
-      frame_limiter_auto_virtual_framegen: true,
+      frame_limiter_auto_virtual_framegen: 'enabled',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
       frame_limiter_disable_vsync: false,
@@ -568,8 +569,22 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
-      if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_auto_virtual_framegen')) {
-        (data as Record<string, unknown>)['frame_limiter_auto_virtual_framegen'] = true;
+      const virtualCaptureKey = 'frame_limiter_auto_virtual_framegen';
+      if (!Object.prototype.hasOwnProperty.call(data, virtualCaptureKey)) {
+        (data as Record<string, unknown>)[virtualCaptureKey] = 'enabled';
+      } else {
+        const raw = (data as Record<string, unknown>)[virtualCaptureKey];
+        const normalized = String(raw ?? '')
+          .toLowerCase()
+          .trim();
+        (data as Record<string, unknown>)[virtualCaptureKey] =
+          normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
+            ? 'legacy'
+            : raw === false ||
+                raw === 0 ||
+                ['false', 'no', 'disable', 'disabled', 'off', '0'].includes(normalized)
+              ? 'disabled'
+              : 'enabled';
       }
       const legacyVsync = Object.prototype.hasOwnProperty.call(data, 'rtss_disable_vsync_ullm');
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
@@ -596,7 +611,6 @@ export const useConfigStore = defineStore('config', () => {
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [
       'frame_limiter_enable',
-      'frame_limiter_auto_virtual_framegen',
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
       'vulkan_hdr_layer',

@@ -34,7 +34,7 @@ namespace platf::dxgi {
     int contrast = 100;  ///< SDK 0..200, mapped from overlay -100..100.
     int saturation = 100;  ///< SDK 0..200, mapped from overlay -100..100.
     int middle_gray = 50;  ///< 10..100  (overlay "Middle Gray", default 50)
-    int peak_brightness = 1000;  ///< 400..1500 nits (overlay "Peak Brightness", default 1000)
+    int peak_brightness = 1000;  ///< 400..2000 nits (overlay "Peak Brightness", default 1000)
   };
 
   /**

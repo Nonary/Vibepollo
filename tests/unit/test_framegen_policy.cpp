@@ -14,7 +14,8 @@ namespace {
     bool uses_virtual_display,
     std::string capture_mode,
     bool lossless_scaling_framegen = false,
-    bool auto_virtual_framegen_limiter = true
+    bool auto_virtual_framegen_limiter = true,
+    int virtual_display_refresh_multiplier = 1
   ) {
     return framegen::make_stream_start_policy({
       .fps = 60,
@@ -28,6 +29,7 @@ namespace {
       .capture_mode = std::move(capture_mode),
       .auto_capture_uses_wgc = true,
       .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
+      .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
     });
   }
 
@@ -47,10 +49,11 @@ namespace {
       .capture_mode = "",
       .auto_capture_uses_wgc = true,
       .auto_virtual_framegen_limiter = true,
+      .virtual_display_refresh_multiplier = 1,
     });
   }
 
-  TEST(FramegenPolicy, VirtualAutoWgcFrameGenerationUsesFourTimesRefresh) {
+  TEST(FramegenPolicy, VirtualAutoWgcFrameGenerationDefersRefreshToGameActivity) {
     for (const auto &provider : {"game-provided", "lossless-scaling", "nvidia-smooth-motion"}) {
       const bool lossless = std::string {provider} == "lossless-scaling";
       const auto policy = make_policy(provider, true, "", lossless);
@@ -59,19 +62,18 @@ namespace {
       EXPECT_TRUE(policy.uses_virtual_display);
       EXPECT_TRUE(policy.effective_wgc_capture);
       EXPECT_FALSE(policy.physical_framegen_capture);
-      ASSERT_TRUE(policy.framegen_refresh_rate.has_value());
-      EXPECT_EQ(*policy.framegen_refresh_rate, 240);
-      EXPECT_EQ(policy.refresh_multiplier, 4);
+      EXPECT_FALSE(policy.framegen_refresh_rate.has_value());
+      EXPECT_EQ(policy.refresh_multiplier, 1);
       EXPECT_TRUE(policy.auto_virtual_framegen_limiter);
     }
   }
 
-  TEST(FramegenPolicy, VirtualExplicitWgcFrameGenerationUsesFourTimesRefresh) {
+  TEST(FramegenPolicy, VirtualExplicitWgcFrameGenerationDefersRefreshToGameActivity) {
     const auto policy = make_policy("game-provided", true, "wgc");
 
     EXPECT_TRUE(policy.effective_wgc_capture);
-    ASSERT_TRUE(policy.framegen_refresh_rate.has_value());
-    EXPECT_EQ(*policy.framegen_refresh_rate, 240);
+    EXPECT_FALSE(policy.framegen_refresh_rate.has_value());
+    EXPECT_EQ(policy.refresh_multiplier, 1);
   }
 
   TEST(FramegenPolicy, PhysicalFrameGenerationDoesNotSetFramegenRefreshRate) {
@@ -100,15 +102,25 @@ namespace {
     EXPECT_EQ(policy.refresh_multiplier, 1);
   }
 
-  TEST(FramegenPolicy, VirtualAutoLimiterCanBeOptedOutWithoutChangingRefreshPolicy) {
+  TEST(FramegenPolicy, DisabledVirtualCaptureModeLeavesLimiterAndRefreshNeutral) {
     const auto policy = make_policy("nvidia-smooth-motion", true, "", false, false);
 
     EXPECT_TRUE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.effective_wgc_capture);
-    ASSERT_TRUE(policy.framegen_refresh_rate.has_value());
-    EXPECT_EQ(*policy.framegen_refresh_rate, 240);
-    EXPECT_EQ(policy.refresh_multiplier, 4);
+    EXPECT_FALSE(policy.framegen_refresh_rate.has_value());
+    EXPECT_EQ(policy.refresh_multiplier, 1);
     EXPECT_FALSE(policy.auto_virtual_framegen_limiter);
+  }
+
+  TEST(FramegenPolicy, LegacyVirtualCaptureModeUsesFixedTwoTimesRefreshAndLimiter) {
+    const auto policy = make_policy("lossless-scaling", true, "", false, true, 2);
+
+    EXPECT_FALSE(policy.frame_generation_enabled);
+    EXPECT_TRUE(policy.uses_virtual_display);
+    EXPECT_TRUE(policy.auto_virtual_framegen_limiter);
+    ASSERT_TRUE(policy.framegen_refresh_rate.has_value());
+    EXPECT_EQ(*policy.framegen_refresh_rate, 120);
+    EXPECT_EQ(policy.refresh_multiplier, 2);
   }
 
   TEST(FramegenPolicy, LosslessProviderAloneDoesNotEnableFrameGeneration) {
@@ -121,9 +133,8 @@ namespace {
 
   TEST(FramegenPolicy, PlainVirtualDisplayAutoEnablesLimiterWithoutFrameGeneration) {
     // A virtual screen with no frame generation still auto-enables the limiter (Reflex on
-    // NVIDIA) because virtual displays always run at a multiplied refresh. The 4x refresh
-    // itself is enforced at virtual-display creation, not in the policy, so the policy-level
-    // multiplier/refresh stay neutral here.
+    // NVIDIA). The runtime game-activity policy owns 4x refresh promotion, so the
+    // policy-level multiplier and refresh stay neutral here.
     const auto policy = make_policy("lossless-scaling", true, "", false);
 
     EXPECT_FALSE(policy.frame_generation_enabled);

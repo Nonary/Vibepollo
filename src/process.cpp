@@ -1681,7 +1681,8 @@ namespace proc {
           rtss_warmup_limit,
           config::video.capture,
           platf::dxgi::should_use_wgc_default(),
-          config::frame_limiter.auto_virtual_framegen
+          config::frame_limiter.virtual_display_limiter_enabled(),
+          config::frame_limiter.fixed_virtual_display_refresh_multiplier()
         );
         platf::frame_limiter_prepare_launch(warmup_policy);
       }
@@ -2159,7 +2160,8 @@ namespace proc {
           .uses_virtual_display = warmup_uses_virtual,
           .capture_mode = config::video.capture,
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
-          .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+          .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+          .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
         });
         platf::frame_limiter_prepare_launch(warmup_policy);
         const bool provider_auto = config::frame_limiter.provider.empty() ||

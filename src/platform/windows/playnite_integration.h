@@ -169,6 +169,14 @@ namespace platf::playnite {
    */
   active_game_status_t get_active_game_status();
 
+  /**
+   * @brief Snapshot every game currently reported as running by the Playnite plugin.
+   * @details Entries are ordered from oldest to most recently started. Consumers can use
+   *          these identities to recognize foreground games without treating a background
+   *          Playnite session as active gameplay.
+   */
+  std::vector<active_game_status_t> get_active_game_statuses();
+
   // no-op: persistence helper moved to confighttp as refresh_client_apps_cache
 
   /**

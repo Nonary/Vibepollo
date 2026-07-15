@@ -332,6 +332,12 @@ namespace display_helper::v2 {
       std::set<std::string> device_set {device_id};
       auto current_modes = display_device_->getCurrentDisplayModes(device_set);
       if (current_modes.count(device_id)) {
+        const auto &current = current_modes[device_id].m_refresh_rate;
+        if (current.m_denominator != 0 &&
+            static_cast<std::uint64_t>(current.m_numerator) * den ==
+              static_cast<std::uint64_t>(num) * current.m_denominator) {
+          return true;
+        }
         current_modes[device_id].m_refresh_rate = display_device::Rational {num, den};
         return display_device_->setDisplayModes(current_modes);
       }

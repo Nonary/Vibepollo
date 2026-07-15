@@ -144,7 +144,7 @@ namespace config {
       int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
       int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
       int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)
-      int peak_brightness;  ///< 400..1500 nits (overlay "Peak Brightness", default 1000)
+      int peak_brightness;  ///< 400..2000 nits (overlay "Peak Brightness", default 1000)
     } rtx_hdr;
 
     std::string capture;
@@ -227,6 +227,7 @@ namespace config {
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
+      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (0 preserves Windows' existing choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
@@ -321,6 +322,12 @@ namespace config {
   };
 
   struct frame_limiter_t {
+    enum class virtual_display_capture_mode_e {
+      enabled,
+      disabled,
+      legacy,
+    };
+
     bool enable {false};
 
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
@@ -334,9 +341,24 @@ namespace config {
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
 
-    // Automatically apply the virtual-display frame-generation pacing policy: 4x virtual refresh
-    // plus a matching frame limit when the effective capture path is WGC.
-    bool auto_virtual_framegen {true};
+    // Virtual-display capture policy. Enabled dynamically switches between 1x desktop and
+    // 4x game refresh with a matching limiter; legacy uses a fixed 2x refresh; disabled
+    // leaves both automatic refresh adjustment and the virtual-display limiter off.
+    virtual_display_capture_mode_e virtual_display_capture_mode {
+      virtual_display_capture_mode_e::enabled
+    };
+
+    [[nodiscard]] bool virtual_display_limiter_enabled() const {
+      return virtual_display_capture_mode != virtual_display_capture_mode_e::disabled;
+    }
+
+    [[nodiscard]] bool game_aware_virtual_display_refresh_enabled() const {
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled;
+    }
+
+    [[nodiscard]] int fixed_virtual_display_refresh_multiplier() const {
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::legacy ? 2 : 1;
+    }
   };
 
   // Windows-only: RTSS integration settings

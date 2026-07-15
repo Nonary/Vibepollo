@@ -47,7 +47,13 @@ namespace nvenc {
      * @param buffer_format Platform-agnostic input surface format.
      * @return `true` on success, `false` on error
      */
-    bool create_encoder(const nvenc_config &config, const video::config_t &client_config, const nvenc_colorspace_t &colorspace, NV_ENC_BUFFER_FORMAT buffer_format);
+    bool create_encoder(
+      const nvenc_config &config,
+      const video::config_t &client_config,
+      const nvenc_colorspace_t &colorspace,
+      NV_ENC_BUFFER_FORMAT buffer_format,
+      const SS_HDR_METADATA *initial_hdr_metadata = nullptr
+    );
 
     /**
      * @brief Destroy the encoder.
@@ -80,6 +86,12 @@ namespace nvenc {
      * @return `true` if reconfigured in place; `false` if the caller must rebuild the encoder.
      */
     bool set_bitrate(int bitrate_kbps);
+
+    /**
+     * @brief Replace HDR mastering-display and content-light metadata for subsequent frames.
+     * @param metadata Metadata in Sunshine's control-channel units.
+     */
+    void set_hdr_metadata(const SS_HDR_METADATA &metadata);
 
   protected:
     /**
@@ -126,6 +138,7 @@ namespace nvenc {
       uint32_t width = 0;
       uint32_t height = 0;
       NV_ENC_BUFFER_FORMAT buffer_format = NV_ENC_BUFFER_FORMAT_UNDEFINED;
+      int video_format = -1;
       uint32_t ref_frames_in_dpb = 0;
       bool rfi = false;
     } encoder_params;
@@ -158,6 +171,9 @@ namespace nvenc {
     // saved_init_params.encodeConfig points at current_enc_config.
     NV_ENC_INITIALIZE_PARAMS saved_init_params {};
     NV_ENC_CONFIG current_enc_config {};
+
+    bool hdr_metadata_valid = false;
+    SS_HDR_METADATA hdr_metadata {};
   };
 
 }  // namespace nvenc

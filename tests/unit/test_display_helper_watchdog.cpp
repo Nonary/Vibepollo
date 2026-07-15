@@ -5,7 +5,10 @@
 #include "../tests_common.h"
 #include "src/platform/windows/display_helper_watchdog.h"
 
+#include <atomic>
 #include <deque>
+#include <future>
+#include <latch>
 
 namespace {
   struct WatchdogHarness {
@@ -98,4 +101,40 @@ TEST(DisplayHelperWatchdog, UsesSuspendedIntervalWhenNoSessions) {
 
   const auto interval = harness.watchdog.tick();
   EXPECT_EQ(interval, display_helper_integration::DisplayHelperWatchdog::suspended_interval());
+}
+
+TEST(DisplayHelperWatchdog, StopsAndJoinsFromAnotherThread) {
+  std::atomic_bool exited = false;
+  std::jthread thread([&](std::stop_token stop_token) {
+    while (!stop_token.stop_requested()) {
+      std::this_thread::yield();
+    }
+    exited.store(true, std::memory_order_release);
+  });
+
+  const auto result = display_helper_integration::DisplayHelperWatchdog::stop_thread(thread);
+
+  EXPECT_EQ(result, display_helper_integration::DisplayHelperWatchdog::ThreadStopResult::Joined);
+  EXPECT_FALSE(thread.joinable());
+  EXPECT_TRUE(exited.load(std::memory_order_acquire));
+}
+
+TEST(DisplayHelperWatchdog, DetachesWhenStoppedFromWatchdogThread) {
+  using StopResult = display_helper_integration::DisplayHelperWatchdog::ThreadStopResult;
+
+  std::latch thread_started {1};
+  std::latch allow_stop {1};
+  std::promise<StopResult> result_promise;
+  auto result_future = result_promise.get_future();
+  std::jthread thread([&](std::stop_token) {
+    thread_started.count_down();
+    allow_stop.wait();
+    result_promise.set_value(display_helper_integration::DisplayHelperWatchdog::stop_thread(thread));
+  });
+
+  thread_started.wait();
+  allow_stop.count_down();
+
+  EXPECT_EQ(result_future.get(), StopResult::DetachedSelf);
+  EXPECT_FALSE(thread.joinable());
 }

@@ -85,6 +85,7 @@ namespace display_helper::v2 {
     ApplyOperation(IDisplaySettings &display, IClock &clock);
 
     ApplyOutcome run(const ApplyRequest &request, const CancellationToken &token);
+    bool set_refresh_rate(const std::string &device_id, unsigned int numerator, unsigned int denominator);
 
   private:
     void apply_monitor_positions(const ApplyRequest &request, const CancellationToken &token);

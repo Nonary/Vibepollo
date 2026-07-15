@@ -13,9 +13,8 @@ const store = useConfigStore();
 const config = store.config;
 const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
 
-// Mirror the virtual-display detection used in DisplayDeviceOptions so the limiter copy can
-// explain the automatic behavior (4x refresh + auto limiter + NVIDIA Reflex) that kicks in
-// whenever a virtual screen is in use.
+// Mirror the virtual-display detection used in DisplayDeviceOptions so the capture-mode copy
+// appears only when a virtual screen is selected.
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
 const usingVirtualDisplay = computed(() => {
   const mode = config.virtual_display_mode;
@@ -75,6 +74,43 @@ const frameLimiterProvider = computed({
   set: (value: string) => {
     config.frame_limiter_provider = value;
   },
+});
+
+type VirtualCaptureMode = 'enabled' | 'disabled' | 'legacy';
+
+function normalizeVirtualCaptureMode(value: unknown): VirtualCaptureMode {
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .trim();
+  if (normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x') {
+    return 'legacy';
+  }
+  if (
+    value === false ||
+    value === 0 ||
+    ['false', 'no', 'disable', 'disabled', 'off', '0'].includes(normalized)
+  ) {
+    return 'disabled';
+  }
+  return 'enabled';
+}
+
+const virtualCaptureMode = computed<VirtualCaptureMode>({
+  get: () => normalizeVirtualCaptureMode(config.frame_limiter_auto_virtual_framegen),
+  set: (value) => {
+    config.frame_limiter_auto_virtual_framegen = value;
+  },
+});
+
+const virtualCaptureSummary = computed(() => {
+  switch (virtualCaptureMode.value) {
+    case 'disabled':
+      return t('frameLimiter.virtual.summaryDisabled');
+    case 'legacy':
+      return t('frameLimiter.virtual.summaryLegacy');
+    default:
+      return t('frameLimiter.virtual.summaryEnabled');
+  }
 });
 
 const providerLabelFor = (id: string) => {
@@ -153,43 +189,6 @@ const rtssDetected = computed(() => {
 const rtssUsable = computed(() => !!status.value?.rtss_available || rtssDetected.value);
 const nvDriverFallbackReady = computed(() => nvidiaDetected.value && nvcpReady.value);
 
-// Virtual screens always get a stream-start frame cap: NVIDIA Reflex through RTSS when it is
-// installed, otherwise the NVIDIA driver's limiter. Surface which path will be taken so users
-// understand what installing RTSS buys them.
-const limiterPath = computed(() => {
-  if (!status.value) {
-    return { text: t('frameLimiter.virtual.pathChecking'), tone: 'neutral' };
-  }
-  if (rtssUsable.value) {
-    return nvidiaDetected.value
-      ? { text: t('frameLimiter.virtual.pathRtssReflex'), tone: 'success' }
-      : { text: t('frameLimiter.virtual.pathRtss'), tone: 'success' };
-  }
-  if (nvDriverFallbackReady.value) {
-    return { text: t('frameLimiter.virtual.pathNvDriver'), tone: 'warning' };
-  }
-  return { text: t('frameLimiter.virtual.pathNone'), tone: 'warning' };
-});
-
-const limiterPathBadgeClass = computed(() => {
-  switch (limiterPath.value.tone) {
-    case 'success':
-      return 'bg-success/10 text-success';
-    case 'warning':
-      return 'bg-warning/10 text-warning';
-    default:
-      return 'bg-primary/10 opacity-80';
-  }
-});
-
-const virtualSteps = computed(() => [
-  t('frameLimiter.virtual.step1'),
-  !status.value || nvidiaDetected.value
-    ? t('frameLimiter.virtual.step2Nvidia')
-    : t('frameLimiter.virtual.step2Generic'),
-  t('frameLimiter.virtual.step3'),
-]);
-
 const rtssMissingText = computed(() =>
   nvDriverFallbackReady.value
     ? t('frameLimiter.rtssMissingNvFallback')
@@ -253,7 +252,7 @@ const showSyncLimiterSelect = computed(() => {
 
 const showSyncLimiterHelp = computed(() => showSyncLimiterSelect.value);
 
-const autoVirtualLimiter = computed(() => !!config.frame_limiter_auto_virtual_framegen);
+const autoVirtualLimiter = computed(() => virtualCaptureMode.value !== 'disabled');
 
 // The auto-limit policy forces the limiter on for virtual screens even when the global
 // toggle is off, so treat that combination as healthy rather than warning about it.
@@ -374,33 +373,8 @@ onMounted(() => {
         <i class="fas fa-tachometer-alt mt-0.5 text-[15px] opacity-80" />
         <div>
           <div class="text-[13px] font-semibold">{{ t('frameLimiter.virtual.title') }}</div>
-          <p class="mt-1 leading-relaxed opacity-80">{{ t('frameLimiter.virtual.why') }}</p>
-          <p class="mt-2 leading-relaxed opacity-80">{{ t('frameLimiter.virtual.whyCap') }}</p>
+          <p class="mt-1 leading-relaxed opacity-80">{{ virtualCaptureSummary }}</p>
         </div>
-      </div>
-      <div class="mt-3 font-medium">{{ t('frameLimiter.virtual.autoHeading') }}</div>
-      <ol class="mt-2 space-y-2">
-        <li v-for="(step, index) in virtualSteps" :key="index" class="flex items-start gap-2">
-          <span
-            class="mt-px flex h-4 w-4 flex-none items-center justify-center rounded-full bg-primary/20 text-[10px] font-semibold leading-none"
-          >
-            {{ index + 1 }}
-          </span>
-          <span class="leading-snug opacity-80">{{ step }}</span>
-        </li>
-      </ol>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <span class="text-[11px] uppercase tracking-wide opacity-70">
-          {{ t('frameLimiter.virtual.pathLabel') }}
-        </span>
-        <span
-          :class="[
-            'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium',
-            limiterPathBadgeClass,
-          ]"
-        >
-          {{ limiterPath.text }}
-        </span>
       </div>
     </div>
     <div
@@ -477,8 +451,9 @@ onMounted(() => {
       />
 
       <ConfigFieldRenderer
-        v-model="config.frame_limiter_auto_virtual_framegen"
+        v-model="virtualCaptureMode"
         setting-key="frame_limiter_auto_virtual_framegen"
+        kind="select"
         :label="t('frameLimiter.autoVirtualFramegenLabel')"
         :desc="t('frameLimiter.autoVirtualFramegenHint')"
       />

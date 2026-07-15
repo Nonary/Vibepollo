@@ -56,6 +56,7 @@ namespace video {
     // checks can still bypass per-frame conversion while this remains true, which
     // keeps capture and encoder format stable across desktop/app focus changes.
     bool rtx_hdr_active = false;
+    int rtx_hdr_peak_nits = 1000;
 
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
@@ -269,6 +270,13 @@ namespace video {
      */
     virtual bool set_bitrate(int bitrate_kbps) {
       return false;
+    }
+
+    /**
+     * @brief Replace static HDR mastering metadata used for subsequent encoded frames.
+     * @param metadata New mastering-display and content-light metadata.
+     */
+    virtual void set_hdr_metadata(const SS_HDR_METADATA &) {
     }
   };
 

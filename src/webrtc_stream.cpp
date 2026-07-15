@@ -217,6 +217,7 @@ namespace webrtc_stream {
       bool prefer_sdr_10bit = false;
       bool force_sdr = false;
       bool rtx_hdr_active = false;
+      int rtx_hdr_peak_nits = 1000;
       int audio_channels = 0;
       bool host_audio = false;
 
@@ -269,7 +270,8 @@ namespace webrtc_stream {
           .uses_virtual_display = uses_virtual_display,
           .capture_mode = config::video.capture,
           .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
-          .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+          .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+          .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
         });
       };
       const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
@@ -428,12 +430,28 @@ namespace webrtc_stream {
 
       uint32_t vd_width = session->width > 0 ? static_cast<uint32_t>(session->width) : 1920u;
       uint32_t vd_height = session->height > 0 ? static_cast<uint32_t>(session->height) : 1080u;
-      display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *session);
-      if (auto initial_resolution = initial_display_helper.initial_virtual_display_resolution()) {
-        vd_width = initial_resolution->m_width;
-        vd_height = initial_resolution->m_height;
-        BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
-                        << vd_width << 'x' << vd_height;
+      // Virtual-display creation may eagerly enable HDR. Default to no state change so
+      // "Do not change HDR" preserves the retained Windows setting.
+      bool virtual_display_hdr_requested = false;
+      display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *session, true);
+      if (auto initial_configuration = initial_display_helper.initial_virtual_display_configuration()) {
+        if (initial_configuration->m_resolution &&
+            initial_configuration->m_resolution->m_width > 0 &&
+            initial_configuration->m_resolution->m_height > 0) {
+          vd_width = initial_configuration->m_resolution->m_width;
+          vd_height = initial_configuration->m_resolution->m_height;
+          BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
+                          << vd_width << 'x' << vd_height;
+        }
+        if (initial_configuration->m_hdr_state) {
+          const bool source_hdr_requested =
+            *initial_configuration->m_hdr_state == display_device::HdrState::Enabled;
+          if (source_hdr_requested != virtual_display_hdr_requested) {
+            BOOST_LOG(info) << "Virtual display creation HDR state aligned with source-display policy: "
+                            << (source_hdr_requested ? "enabled" : "disabled") << '.';
+          }
+          virtual_display_hdr_requested = source_hdr_requested;
+        }
       }
       uint32_t base_vd_fps = session->fps > 0 ? static_cast<uint32_t>(session->fps) : 0u;
       uint32_t base_vd_fps_millihz = base_vd_fps;
@@ -453,12 +471,8 @@ namespace webrtc_stream {
       }
       const bool framegen_refresh_active =
         session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
-      // Virtual displays always run at 4x the requested refresh (or the highest the driver
-      // can provide) so frame pacing stays smooth; frame generation reuses the same target.
-      const int refresh_multiplier = std::max(
-        4,
-        framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1
-      );
+      const int refresh_multiplier =
+        framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1;
       if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
         const uint64_t minimum = static_cast<uint64_t>(base_vd_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
         vd_fps = std::max(vd_fps, static_cast<uint32_t>(std::min<uint64_t>(minimum, std::numeric_limits<uint32_t>::max())));
@@ -484,7 +498,7 @@ namespace webrtc_stream {
         base_vd_fps_millihz,
         framegen_refresh_active,
         refresh_multiplier,
-        rtsp_stream::effective_hdr_requested(*session),
+        virtual_display_hdr_requested,
         false,
         !shared_mode
       );
@@ -512,7 +526,7 @@ namespace webrtc_stream {
         recovery_params.base_fps_millihz = base_vd_fps_millihz;
         recovery_params.framegen_refresh_active = framegen_refresh_active;
         recovery_params.framegen_refresh_multiplier = refresh_multiplier;
-        recovery_params.hdr_requested = rtsp_stream::effective_hdr_requested(*session);
+        recovery_params.hdr_requested = virtual_display_hdr_requested;
         recovery_params.client_uid = session->unique_id;
         recovery_params.client_name = client_label;
         recovery_params.hdr_profile = session->hdr_profile;
@@ -2224,6 +2238,7 @@ namespace webrtc_stream {
                               config.dynamicRange > 0 &&
                               !config.prefer_sdr_10bit &&
                               !config.force_sdr;
+      config.rtx_hdr_peak_nits = std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000);
     }
 
     audio::config_t build_audio_config(const SessionOptions &options) {
@@ -2486,6 +2501,7 @@ namespace webrtc_stream {
       key.prefer_sdr_10bit = video_config.prefer_sdr_10bit;
       key.force_sdr = video_config.force_sdr;
       key.rtx_hdr_active = video_config.rtx_hdr_active;
+      key.rtx_hdr_peak_nits = video_config.rtx_hdr_peak_nits;
       key.audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
       key.host_audio = options.host_audio;
       return key;
@@ -4828,7 +4844,8 @@ namespace webrtc_stream {
         .uses_virtual_display = start_params.uses_virtual_display,
         .capture_mode = config::video.capture,
         .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
-        .auto_virtual_framegen_limiter = config::frame_limiter.auto_virtual_framegen,
+        .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+        .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
       });
       platf::frame_limiter_streaming_start(policy);
 #endif

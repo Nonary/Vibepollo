@@ -2765,7 +2765,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Automatically limit virtual-screen streams. When enabled, any stream to a virtual display runs the display at 4x the requested refresh (or the highest the driver supports) and applies a matching stream-start frame cap &mdash; NVIDIA Reflex on NVIDIA-only systems &mdash; for smooth, low-latency pacing. Frame-generation streams reuse the same policy. Disable this only if you manage the frame cap yourself.
+            Controls smoother capture for virtual displays. @code{}enabled@endcode uses 4x refresh while a game is active, returns to 1x on the desktop, and applies a matching frame limit. This does not change the stream FPS and can make games with uneven frame pacing capture much more smoothly. @code{}disabled@endcode turns off both the automatic virtual-display limiter and refresh adjustments. @code{}legacy@endcode uses a fixed 2x refresh with the matching limiter for the entire stream, without changing refresh when games start or close. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
         </td>
     </tr>
     <tr>
@@ -2773,9 +2773,10 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">@code{}enabled@endcode</td>
     </tr>
     <tr>
-        <td>Example</td>
+        <td>Examples</td>
         <td colspan="2">@code{}
             frame_limiter_auto_virtual_framegen = disabled
+            frame_limiter_auto_virtual_framegen = legacy
             @endcode</td>
     </tr>
 </table>

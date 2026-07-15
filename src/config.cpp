@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <filesystem>
@@ -20,6 +21,7 @@
 
 // lib includes
 #include <boost/asio.hpp>
+#include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -918,6 +920,7 @@ namespace config {
 #endif
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
+      250,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
@@ -1003,7 +1006,7 @@ namespace config {
     "auto",  // provider
     0,  // fps_limit
     false,  // disable_vsync
-    true  // auto_virtual_framegen
+    frame_limiter_t::virtual_display_capture_mode_e::enabled
   };
 
   // Windows-only: RTSS defaults
@@ -1767,7 +1770,7 @@ namespace config {
     int_between_f(vars, "rtx_hdr_contrast", video.rtx_hdr.contrast, {-100, 100});
     int_between_f(vars, "rtx_hdr_saturation", video.rtx_hdr.saturation, {-100, 100});
     int_between_f(vars, "rtx_hdr_middle_gray", video.rtx_hdr.middle_gray, {10, 100});
-    int_between_f(vars, "rtx_hdr_peak_brightness", video.rtx_hdr.peak_brightness, {400, 1500});
+    int_between_f(vars, "rtx_hdr_peak_brightness", video.rtx_hdr.peak_brightness, {400, 2000});
 
     string_f(vars, "capture", video.capture);
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
@@ -1813,6 +1816,17 @@ namespace config {
     generic_f(vars, "dd_display_helper_engine", video.dd.display_helper_engine, dd::helper_engine_from_view);
     bool_f(vars, "dd_use_sunshine_virtual_display_driver", video.dd.use_sunshine_virtual_display_driver);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
+    {
+      int value = video.dd.virtual_display_scale_percent;
+      int_f(vars, "dd_virtual_display_scale", value);
+      constexpr std::array allowed_scales {0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
+      if (std::ranges::find(allowed_scales, value) != allowed_scales.end()) {
+        video.dd.virtual_display_scale_percent = value;
+      } else {
+        BOOST_LOG(warning) << "Ignoring unsupported virtual display scale " << value
+                           << "%; use 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
+      }
+    }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
     {
       auto it = vars.find("dd_virtual_display_permanent_count");
@@ -1869,7 +1883,32 @@ namespace config {
     int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
-    bool_f(vars, "frame_limiter_auto_virtual_framegen", frame_limiter.auto_virtual_framegen);
+    {
+      std::string virtual_capture_mode;
+      string_f(vars, "frame_limiter_auto_virtual_framegen", virtual_capture_mode);
+      if (!virtual_capture_mode.empty()) {
+        boost::algorithm::to_lower(virtual_capture_mode);
+        boost::algorithm::trim(virtual_capture_mode);
+        using mode_e = frame_limiter_t::virtual_display_capture_mode_e;
+        if (virtual_capture_mode == "legacy" || virtual_capture_mode == "2x" ||
+            virtual_capture_mode == "fixed-2x" || virtual_capture_mode == "fixed_2x") {
+          frame_limiter.virtual_display_capture_mode = mode_e::legacy;
+        } else if (virtual_capture_mode == "false" || virtual_capture_mode == "no" ||
+                   virtual_capture_mode == "disable" || virtual_capture_mode == "disabled" ||
+                   virtual_capture_mode == "off" || virtual_capture_mode == "0") {
+          frame_limiter.virtual_display_capture_mode = mode_e::disabled;
+        } else if (virtual_capture_mode == "enabled" || virtual_capture_mode == "enable" ||
+                   virtual_capture_mode == "true" || virtual_capture_mode == "yes" ||
+                   virtual_capture_mode == "on" || virtual_capture_mode == "1" ||
+                   virtual_capture_mode == "smooth" || virtual_capture_mode == "smoother") {
+          frame_limiter.virtual_display_capture_mode = mode_e::enabled;
+        } else {
+          BOOST_LOG(warning) << "config: Unknown frame_limiter_auto_virtual_framegen mode '"
+                             << virtual_capture_mode << "'; using enabled.";
+          frame_limiter.virtual_display_capture_mode = mode_e::enabled;
+        }
+      }
+    }
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
     if (video.dd.wa.dummy_plug_hdr10 && !frame_limiter.disable_vsync) {
@@ -2428,6 +2467,7 @@ namespace config {
         "dd_snapshot_restore_hotkey_modifiers",
         "dd_use_sunshine_virtual_display_driver",
         "dd_activate_virtual_display",
+        "dd_virtual_display_scale",
         "dd_virtual_display_permanent_count",
         "dd_mode_remapping",
         "dd_wa_dummy_plug_hdr10",
@@ -2679,6 +2719,7 @@ namespace config {
       const auto prev_dd_paused_virtual_display_timeout_secs = video.dd.paused_virtual_display_timeout_secs;
       const auto prev_dd_use_sunshine_virtual_display_driver = video.dd.use_sunshine_virtual_display_driver;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
+      const auto prev_dd_virtual_display_scale_percent = video.dd.virtual_display_scale_percent;
       const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
       const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
@@ -2755,6 +2796,7 @@ namespace config {
                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
                                      (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                     (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
                                      (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
                                      (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||

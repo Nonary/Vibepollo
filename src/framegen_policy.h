@@ -43,6 +43,7 @@ namespace framegen {
     std::string capture_mode;
     bool auto_capture_uses_wgc = false;
     bool auto_virtual_framegen_limiter = true;
+    int virtual_display_refresh_multiplier = 1;
   };
 
   inline std::string normalize_provider(std::string_view value) {
@@ -122,24 +123,17 @@ namespace framegen {
     policy.effective_wgc_capture =
       policy.uses_virtual_display && !explicit_dxgi_capture && (explicit_wgc_capture || auto_wgc_capture || hard_wgc_capture);
 
-    const bool effective_virtual_framegen =
-      policy.frame_generation_enabled && policy.uses_virtual_display && policy.effective_wgc_capture;
     policy.physical_framegen_capture = policy.frame_generation_enabled && !policy.uses_virtual_display;
 
-    // Any virtual display runs at a multiplied refresh (see the virtual-display creation
-    // paths, which target 4x the requested rate or the highest the driver supports) and
-    // auto-applies a matching stream-start frame cap -- NVIDIA Reflex on NVIDIA-only
-    // systems -- to keep latency low and frame pacing smooth. This is not limited to
-    // frame generation; it applies to every virtual screen unless the user opts out.
+    // Virtual displays can apply a matching stream-start frame cap independently from their
+    // refresh policy. The default dynamic policy starts at 1x and is promoted by game activity;
+    // legacy mode instead supplies a fixed 2x multiplier here.
     if (policy.uses_virtual_display) {
       policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
-    }
-
-    // Frame generation additionally pins the virtual display refresh target to 4x so the
-    // generated frames have somewhere to land.
-    if (effective_virtual_framegen) {
-      policy.refresh_multiplier = 4;
-      policy.framegen_refresh_rate = saturating_refresh_fps(policy.fps, policy.refresh_multiplier);
+      policy.refresh_multiplier = std::max(1, input.virtual_display_refresh_multiplier);
+      if (policy.refresh_multiplier > 1 && policy.fps > 0) {
+        policy.framegen_refresh_rate = saturating_refresh_fps(policy.fps, policy.refresh_multiplier);
+      }
     }
 
     return policy;

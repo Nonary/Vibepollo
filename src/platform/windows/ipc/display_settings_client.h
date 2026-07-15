@@ -18,6 +18,10 @@ namespace platf::display_helper_client {
   // Returns nullopt on timeout/unavailable.
   std::optional<bool> wait_for_verification_result(int timeout_ms);
 
+  // Change only one display's refresh rate. This does not alter session snapshots,
+  // topology, resolution, HDR, or the helper's restore state.
+  bool send_refresh_rate(const std::string &device_id, std::uint32_t numerator, std::uint32_t denominator);
+
   // Send REVERT with optional JSON payload.
   bool send_revert(const std::string &json_payload = {});
 

@@ -2,8 +2,441 @@
 
 #include "src/config.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <icm.h>
+#include <limits>
+#include <vector>
+
+#ifndef CPST_EXTENDED_DISPLAY_COLOR_MODE
+  // MinGW headers may not expose the extended display color mode constant.
+  #define CPST_EXTENDED_DISPLAY_COLOR_MODE 8
+#endif
+
+namespace {
+  struct advanced_color_target_t {
+    LUID target_adapter_id {};
+    LUID source_adapter_id {};
+    UINT32 source_id {};
+  };
+
+  struct advanced_color_api_t {
+    using add_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL, BOOL);
+    using remove_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, LUID, UINT32, BOOL);
+    using set_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, PCWSTR, COLORPROFILETYPE, COLORPROFILESUBTYPE, LUID, UINT32);
+    using get_default_fn_t = HRESULT(WINAPI *)(WCS_PROFILE_MANAGEMENT_SCOPE, LUID, UINT32, COLORPROFILETYPE, COLORPROFILESUBTYPE, LPWSTR *);
+
+    add_fn_t add {};
+    remove_fn_t remove {};
+    set_default_fn_t set_default {};
+    get_default_fn_t get_default {};
+
+    bool available() const {
+      return add && remove && set_default && get_default;
+    }
+  };
+
+  const advanced_color_api_t &advanced_color_api() {
+    static const advanced_color_api_t api = []() {
+      advanced_color_api_t result;
+      const HMODULE module = LoadLibraryExW(L"Mscms.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+      if (!module) {
+        return result;
+      }
+      result.add = reinterpret_cast<advanced_color_api_t::add_fn_t>(GetProcAddress(module, "ColorProfileAddDisplayAssociation"));
+      result.remove = reinterpret_cast<advanced_color_api_t::remove_fn_t>(GetProcAddress(module, "ColorProfileRemoveDisplayAssociation"));
+      result.set_default = reinterpret_cast<advanced_color_api_t::set_default_fn_t>(GetProcAddress(module, "ColorProfileSetDisplayDefaultAssociation"));
+      result.get_default = reinterpret_cast<advanced_color_api_t::get_default_fn_t>(GetProcAddress(module, "ColorProfileGetDisplayDefault"));
+      return result;
+    }();
+    return api;
+  }
+
+  std::optional<advanced_color_target_t> advanced_color_target_for_monitor(const std::wstring &monitor_device_path) {
+    if (monitor_device_path.empty()) {
+      return std::nullopt;
+    }
+
+    constexpr UINT32 flags = QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      UINT32 path_count = 0;
+      UINT32 mode_count = 0;
+      const LONG size_status = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      if (size_status != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+      std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+      const LONG query_status = QueryDisplayConfig(
+        flags,
+        &path_count,
+        path_count ? paths.data() : nullptr,
+        &mode_count,
+        mode_count ? modes.data() : nullptr,
+        nullptr
+      );
+      if (query_status == ERROR_INSUFFICIENT_BUFFER) {
+        continue;
+      }
+      if (query_status != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      paths.resize(path_count);
+      for (const auto &path : paths) {
+        DISPLAYCONFIG_TARGET_DEVICE_NAME target_name {};
+        target_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        target_name.header.size = sizeof(target_name);
+        target_name.header.adapterId = path.targetInfo.adapterId;
+        target_name.header.id = path.targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&target_name.header) != ERROR_SUCCESS ||
+            target_name.monitorDevicePath[0] == L'\0') {
+          continue;
+        }
+        if (_wcsicmp(target_name.monitorDevicePath, monitor_device_path.c_str()) == 0) {
+          return advanced_color_target_t {
+            path.targetInfo.adapterId,
+            path.sourceInfo.adapterId,
+            path.sourceInfo.id
+          };
+        }
+      }
+      if (attempt + 1 < 3) {
+        Sleep(100);
+      }
+    }
+    return std::nullopt;
+  }
+
+  WCS_PROFILE_MANAGEMENT_SCOPE profile_scope(const bool system_wide) {
+    return system_wide ? WCS_PROFILE_MANAGEMENT_SCOPE_SYSTEM_WIDE : WCS_PROFILE_MANAGEMENT_SCOPE_CURRENT_USER;
+  }
+
+  constexpr std::array<std::uint32_t, 12> kWindowsScalePercentages {
+    100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500
+  };
+
+  struct sunshine_displayconfig_get_dpi_scale_t {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header {};
+    std::int32_t min_scale_relative {};
+    std::int32_t current_scale_relative {};
+    std::int32_t max_scale_relative {};
+  };
+
+  struct sunshine_displayconfig_set_dpi_scale_t {
+    DISPLAYCONFIG_DEVICE_INFO_HEADER header {};
+    std::int32_t scale_relative {};
+  };
+
+  constexpr auto kDisplayConfigGetDpiScale = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(-3);
+  constexpr auto kDisplayConfigSetDpiScale = static_cast<DISPLAYCONFIG_DEVICE_INFO_TYPE>(-4);
+
+  void initialize_dpi_header(
+    DISPLAYCONFIG_DEVICE_INFO_HEADER &header,
+    const advanced_color_target_t &target,
+    const DISPLAYCONFIG_DEVICE_INFO_TYPE type,
+    const std::uint32_t size
+  ) {
+    header.type = type;
+    header.size = size;
+    header.adapterId = target.source_adapter_id;
+    header.id = target.source_id;
+  }
+
+  std::optional<std::size_t> scale_index(const std::int32_t index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= kWindowsScalePercentages.size()) {
+      return std::nullopt;
+    }
+    return static_cast<std::size_t>(index);
+  }
+
+  std::optional<std::wstring> utf8_to_wide(const std::string_view value) {
+    if (value.empty() || value.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)())) {
+      return std::nullopt;
+    }
+    const int input_size = static_cast<int>(value.size());
+    const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, nullptr, 0);
+    if (required <= 0) {
+      return std::nullopt;
+    }
+    std::wstring result(static_cast<std::size_t>(required), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), input_size, result.data(), required) != required) {
+      return std::nullopt;
+    }
+    return result;
+  }
+
+  std::optional<std::filesystem::path> hdr_profile_path(const std::string_view selection) {
+    const auto selection_w = utf8_to_wide(selection);
+    if (!selection_w) {
+      return std::nullopt;
+    }
+    const auto filename = std::filesystem::path(*selection_w).filename().wstring();
+    if (filename.empty()) {
+      return std::nullopt;
+    }
+
+    std::array<wchar_t, MAX_PATH> system_directory {};
+    const UINT length = GetSystemDirectoryW(system_directory.data(), static_cast<UINT>(system_directory.size()));
+    if (length == 0 || length >= system_directory.size()) {
+      return std::nullopt;
+    }
+    const auto color_directory = std::filesystem::path(system_directory.data()) / L"spool" / L"drivers" / L"color";
+    std::vector<std::wstring> candidates {filename};
+    if (!std::filesystem::path(filename).has_extension()) {
+      candidates.push_back(filename + L".icm");
+      candidates.push_back(filename + L".icc");
+    }
+    for (const auto &candidate_name : candidates) {
+      const auto candidate = color_directory / candidate_name;
+      std::error_code ec;
+      if (std::filesystem::is_regular_file(candidate, ec)) {
+        return candidate;
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::uint32_t read_be_u32(const std::vector<std::uint8_t> &bytes, const std::size_t offset) {
+    return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
+           (static_cast<std::uint32_t>(bytes[offset + 1]) << 16) |
+           (static_cast<std::uint32_t>(bytes[offset + 2]) << 8) |
+           static_cast<std::uint32_t>(bytes[offset + 3]);
+  }
+}  // namespace
+
 namespace VDISPLAY {
   HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
+
+  std::optional<std::wstring> get_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    const bool system_wide
+  ) {
+    const auto target = advanced_color_target_for_monitor(monitor_device_path);
+    const auto &api = advanced_color_api();
+    if (!target || !api.available()) {
+      return std::nullopt;
+    }
+
+    LPWSTR profile_name = nullptr;
+    const HRESULT status = api.get_default(
+      profile_scope(system_wide),
+      target->target_adapter_id,
+      target->source_id,
+      CPT_ICC,
+      static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
+      &profile_name
+    );
+    if (FAILED(status) || !profile_name || profile_name[0] == L'\0') {
+      if (profile_name) {
+        LocalFree(profile_name);
+      }
+      return std::nullopt;
+    }
+
+    std::wstring result {profile_name};
+    LocalFree(profile_name);
+    return result;
+  }
+
+  advanced_color_profile_result_t set_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    const bool system_wide
+  ) {
+    advanced_color_profile_result_t result;
+    const auto &api = advanced_color_api();
+    result.api_available = api.available();
+    const auto target = advanced_color_target_for_monitor(monitor_device_path);
+    result.target_found = target.has_value();
+    if (!target || profile_name.empty() || !result.api_available) {
+      return result;
+    }
+
+    result.attempted = true;
+    const auto scope = profile_scope(system_wide);
+    result.association_status = api.add(
+      scope,
+      profile_name.c_str(),
+      target->target_adapter_id,
+      target->source_id,
+      TRUE,
+      TRUE
+    );
+    result.default_status = api.set_default(
+      scope,
+      profile_name.c_str(),
+      CPT_ICC,
+      static_cast<COLORPROFILESUBTYPE>(CPST_EXTENDED_DISPLAY_COLOR_MODE),
+      target->target_adapter_id,
+      target->source_id
+    );
+    result.success = SUCCEEDED(result.association_status) || SUCCEEDED(result.default_status);
+    return result;
+  }
+
+  advanced_color_profile_result_t remove_advanced_color_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    const bool system_wide
+  ) {
+    advanced_color_profile_result_t result;
+    const auto &api = advanced_color_api();
+    result.api_available = api.available();
+    const auto target = advanced_color_target_for_monitor(monitor_device_path);
+    result.target_found = target.has_value();
+    if (!target || profile_name.empty() || !result.api_available) {
+      return result;
+    }
+
+    result.attempted = true;
+    result.association_status = api.remove(
+      profile_scope(system_wide),
+      profile_name.c_str(),
+      target->target_adapter_id,
+      target->source_id,
+      TRUE
+    );
+    result.success = SUCCEEDED(result.association_status);
+    return result;
+  }
+
+  display_scale_result_t set_display_scale_percent(
+    const std::wstring &monitor_device_path,
+    const std::uint32_t scale_percent
+  ) {
+    display_scale_result_t result;
+    result.requested_percent = scale_percent;
+
+    const auto desired = std::ranges::find(kWindowsScalePercentages, scale_percent);
+    if (desired == kWindowsScalePercentages.end()) {
+      result.status = ERROR_INVALID_PARAMETER;
+      return result;
+    }
+    const auto desired_index = static_cast<std::int32_t>(std::distance(kWindowsScalePercentages.begin(), desired));
+
+    const auto target = advanced_color_target_for_monitor(monitor_device_path);
+    result.target_found = target.has_value();
+    if (!target) {
+      result.status = ERROR_NOT_FOUND;
+      return result;
+    }
+
+    sunshine_displayconfig_get_dpi_scale_t get {};
+    initialize_dpi_header(get.header, *target, kDisplayConfigGetDpiScale, sizeof(get));
+    result.status = DisplayConfigGetDeviceInfo(&get.header);
+    if (result.status != ERROR_SUCCESS) {
+      return result;
+    }
+    result.queried = true;
+
+    const auto recommended_index = -get.min_scale_relative;
+    const auto current_index = recommended_index + get.current_scale_relative;
+    const auto recommended = scale_index(recommended_index);
+    const auto current = scale_index(current_index);
+    if (!recommended || !current) {
+      result.status = ERROR_INVALID_DATA;
+      return result;
+    }
+    result.recommended_percent = kWindowsScalePercentages[*recommended];
+    result.previous_percent = kWindowsScalePercentages[*current];
+    result.current_percent = result.previous_percent;
+
+    const auto desired_relative = desired_index - recommended_index;
+    if (desired_relative < get.min_scale_relative || desired_relative > get.max_scale_relative) {
+      result.status = ERROR_NOT_SUPPORTED;
+      return result;
+    }
+    if (current_index == desired_index) {
+      result.applied = true;
+      result.status = ERROR_SUCCESS;
+      return result;
+    }
+
+    sunshine_displayconfig_set_dpi_scale_t set {};
+    initialize_dpi_header(set.header, *target, kDisplayConfigSetDpiScale, sizeof(set));
+    set.scale_relative = desired_relative;
+    result.status = DisplayConfigSetDeviceInfo(&set.header);
+    if (result.status != ERROR_SUCCESS) {
+      return result;
+    }
+
+    result.applied = true;
+    result.current_percent = scale_percent;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      Sleep(50);
+      get = {};
+      initialize_dpi_header(get.header, *target, kDisplayConfigGetDpiScale, sizeof(get));
+      if (DisplayConfigGetDeviceInfo(&get.header) != ERROR_SUCCESS) {
+        continue;
+      }
+      const auto verified_index = scale_index(-get.min_scale_relative + get.current_scale_relative);
+      if (verified_index) {
+        result.current_percent = kWindowsScalePercentages[*verified_index];
+      }
+      if (result.current_percent == scale_percent) {
+        break;
+      }
+    }
+    return result;
+  }
+
+  std::optional<std::uint32_t> hdr_profile_peak_luminance_nits(const std::string_view selection) {
+    const auto profile_path = hdr_profile_path(selection);
+    if (!profile_path) {
+      return std::nullopt;
+    }
+
+    std::ifstream input(*profile_path, std::ios::binary | std::ios::ate);
+    if (!input) {
+      return std::nullopt;
+    }
+    const auto end = input.tellg();
+    constexpr std::streamoff kMaxProfileBytes = 32 * 1024 * 1024;
+    if (end < 132 || end > kMaxProfileBytes) {
+      return std::nullopt;
+    }
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+    input.seekg(0, std::ios::beg);
+    if (!input.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+      return std::nullopt;
+    }
+
+    const auto tag_count = read_be_u32(bytes, 128);
+    if (tag_count > (bytes.size() - 132) / 12) {
+      return std::nullopt;
+    }
+    for (std::uint32_t index = 0; index < tag_count; ++index) {
+      const auto entry = static_cast<std::size_t>(132 + index * 12);
+      if (bytes[entry] != 'M' || bytes[entry + 1] != 'H' || bytes[entry + 2] != 'C' || bytes[entry + 3] != '2') {
+        continue;
+      }
+      const auto tag_offset = static_cast<std::size_t>(read_be_u32(bytes, entry + 4));
+      const auto tag_size = static_cast<std::size_t>(read_be_u32(bytes, entry + 8));
+      if (tag_size < 20 || tag_offset > bytes.size() || tag_size > bytes.size() - tag_offset) {
+        return std::nullopt;
+      }
+      if (bytes[tag_offset] != 'M' || bytes[tag_offset + 1] != 'H' ||
+          bytes[tag_offset + 2] != 'C' || bytes[tag_offset + 3] != '2') {
+        return std::nullopt;
+      }
+
+      const auto peak_raw = read_be_u32(bytes, tag_offset + 16);
+      std::int32_t peak_fixed = 0;
+      std::memcpy(&peak_fixed, &peak_raw, sizeof(peak_fixed));
+      const auto peak_nits = static_cast<double>(peak_fixed) / 65536.0;
+      if (!std::isfinite(peak_nits) || peak_nits <= 0.0 || peak_nits > 100000.0) {
+        return std::nullopt;
+      }
+      return static_cast<std::uint32_t>(std::lround(peak_nits));
+    }
+    return std::nullopt;
+  }
 }
 
 namespace VDISPLAY_SUNSHINE {

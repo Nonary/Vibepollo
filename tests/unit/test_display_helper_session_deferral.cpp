@@ -163,6 +163,23 @@ TEST(DisplayHelperRequestHelpers, AppliesExclusiveVirtualDisplayWhenDisplayConfi
   );
 }
 
+TEST(DisplayHelperRequestHelpers, InitialVirtualDisplayConfigurationPreservesHdrWhenDisabled) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::disabled;
+  video_config.dd.hdr_option = config::video_t::dd_t::hdr_option_e::disabled;
+  video_config.virtual_display_layout = config::video_t::virtual_display_layout_e::exclusive;
+
+  auto session = make_virtual_display_session();
+  session.virtual_display = false;
+  session.enable_hdr = true;
+
+  display_helper_integration::helpers::SessionDisplayConfigurationHelper helper(video_config, session, true);
+  const auto initial_configuration = helper.initial_virtual_display_configuration();
+
+  ASSERT_TRUE(initial_configuration.has_value());
+  EXPECT_FALSE(initial_configuration->m_hdr_state.has_value());
+}
+
 TEST(DisplayHelperRequestHelpers, SkipsExtendedVirtualDisplayWhenDisplayConfigurationDisabled) {
   config::video_t video_config {};
   video_config.dd.configuration_option = config::video_t::dd_t::config_option_e::disabled;

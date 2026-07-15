@@ -174,7 +174,8 @@ namespace rtsp_stream {
     std::optional<int> lossless_rtss_limit,
     std::string_view capture_mode,
     bool auto_capture_uses_wgc,
-    bool auto_virtual_framegen_limiter
+    bool auto_virtual_framegen_limiter,
+    int virtual_display_refresh_multiplier
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
@@ -188,6 +189,7 @@ namespace rtsp_stream {
       .capture_mode = std::string(capture_mode),
       .auto_capture_uses_wgc = auto_capture_uses_wgc,
       .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
+      .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
     });
   }
 

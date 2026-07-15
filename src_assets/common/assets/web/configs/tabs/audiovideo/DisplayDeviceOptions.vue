@@ -774,8 +774,8 @@ function clearSnapshotHotkey(): void {
                         />
                         <span class="block"
                           >Overrides below are disabled while manual resolution or refresh rate is
-                          enforced. Manual refresh rates are applied forcefully and override the
-                          automatic 4&times; refresh applied to virtual displays.</span
+                          enforced. Manual refresh rates are applied forcefully and override
+                          game-aware refresh switching on virtual displays.</span
                         >
                       </span>
                     </p>

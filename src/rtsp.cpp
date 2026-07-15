@@ -173,6 +173,7 @@ namespace rtsp_stream {
                             config.dynamicRange > 0 &&
                             !config.prefer_sdr_10bit &&
                             !config.force_sdr;
+    config.rtx_hdr_peak_nits = std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000);
   }
 
   bool activates_vulkan_hdr_layer_for_stream(const video::config_t &config) {

@@ -39,6 +39,7 @@
     "X11",
     "VA-API",
     "Vulkan",
+    "${value}%",
     "{minutes}m",
     "wlroots"
   ],
