@@ -698,24 +698,6 @@ namespace video {
            native_amf_lifecycle_gate.operation_in_progress() ||
            native_amf_lifecycle_gate.is_quarantined();
   }
-
-  bool wait_for_amf_teardown_completion() {
-    const auto deadline = std::chrono::steady_clock::now() + amf_shutdown_teardown_timeout;
-    const auto process_shutdown_event = mail::man->event<bool>(mail::shutdown);
-    while (std::chrono::steady_clock::now() < deadline) {
-      if (process_shutdown_event && process_shutdown_event->peek()) {
-        return false;
-      }
-      if (native_amf_lifecycle_gate.is_quarantined()) {
-        return false;
-      }
-      if (!amf_teardown_pending()) {
-        return true;
-      }
-      std::this_thread::sleep_for(1ms);
-    }
-    return !amf_teardown_pending();
-  }
 #endif
 
   void free_ctx(AVCodecContext *ctx) {
@@ -4721,112 +4703,27 @@ namespace video {
       constexpr bool amd_session = false;
       constexpr bool process_shutdown_teardown = false;
 #endif
-      // A private shutdown event is an ordinary client disconnect. AMD sessions
-      // use the ownership-safe async path for that case; only capture reinit and
-      // process shutdown require ordered destruction. Preserve the established
-      // behavior for every non-AMD encoder.
+      // Keep AMD destruction ordered with the video thread. The bounded AMD
+      // teardown below already moves vendor work onto a supervised worker, so a
+      // second detached layer only lets the next launch race the old session and
+      // forces stream/display code to coordinate with a normally short teardown.
+      // Preserve the established asynchronous behavior for every non-AMD encoder.
       const bool sync_teardown = force_sync_teardown || reinit_event.peek() ||
-        (amd_session ? process_shutdown_teardown : session_shutdown_teardown);
+        session_shutdown_teardown || amd_session;
       if ((session_encoder_flags & ASYNC_TEARDOWN) && !sync_teardown) {
-#ifdef _WIN32
-        auto display_lease = native_amf_session ?
-                               static_cast<amf_encode_session_t *>(session.get())->release_display_lease_for_driver_work() :
-                             legacy_amf_session ?
-                               static_cast<avcodec_encode_session_t *>(session.get())->release_display_lease_for_driver_work() :
-                               nullptr;
-#else
-        constexpr bool native_amf_session = false;
-        std::shared_ptr<platf::display_t> display_lease;
-#endif
-#ifdef _WIN32
-        if ((native_amf_session || legacy_amf_session) &&
-            !reserve_amf_teardown_fence(native_amf_session ? "async native"sv : "async legacy"sv)) {
-          abandon_quarantined_session(session, std::move(display_lease));
-          return;
-        }
-#endif
-        const auto teardown_scheduled_at = std::chrono::steady_clock::now();
-        auto teardown_work = [session = std::move(session), native_amf_session, legacy_amf_session,
-                              display_lease = std::move(display_lease), teardown_scheduled_at]() mutable {
+        auto teardown_work = [session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
-          bool amf_teardown_completed = true;
-#ifdef _WIN32
-          if (native_amf_session) {
-            // Supervise the vendor destructor from this already-asynchronous path.
-            // On timeout, the inner worker retains ownership while future sessions
-            // refuse to re-enter either AMF backend instead of accumulating more
-            // calls into the same wedged AMD runtime.
-            if (!acquire_reserved_amf_teardown_fence("async native"sv)) {
-              abandon_quarantined_session(session, std::move(display_lease));
-              return;
-            }
-            const bool completed = run_amf_driver_work_with_timeout(
-              [session = std::move(session), display_lease = std::move(display_lease)]() mutable {
-                session.reset();
-                display_lease.reset();
-              },
-              amf_vendor_watchdog_timeout);
-            amf_teardown_completed = completed;
-            native_amf_lifecycle_gate.finish_teardown(completed);
-            if (!completed) {
-              BOOST_LOG(error) << "AMF: async teardown exceeded 5 seconds; quarantining native AMF until host restart"sv;
-            }
-          } else if (legacy_amf_session) {
-            if (!acquire_reserved_amf_teardown_fence("async legacy"sv)) {
-              abandon_quarantined_session(session, std::move(display_lease));
-              return;
-            }
-            const bool completed = run_amf_driver_work_with_timeout(
-              [session = std::move(session), display_lease = std::move(display_lease)]() mutable {
-                session.reset();
-                display_lease.reset();
-              },
-              amf_vendor_watchdog_timeout);
-            amf_teardown_completed = completed;
-            native_amf_lifecycle_gate.finish_teardown(completed);
-            if (!completed) {
-              BOOST_LOG(error) << "AMF: legacy async teardown exceeded 5 seconds; quarantining AMD encoding until host restart"sv;
-            }
-          } else
-#endif
-          {
-            std::lock_guard lg {encode_session_teardown_mutex};
-            session.reset();
-          }
-          if (native_amf_session || legacy_amf_session) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - teardown_scheduled_at);
-            if (amf_teardown_completed) {
-              BOOST_LOG(info) << "AMF timing: async "
-                              << (native_amf_session ? "native"sv : "legacy"sv)
-                              << " teardown=" << elapsed.count() << "ms";
-            } else {
-              BOOST_LOG(error) << "AMF timing: async "
-                               << (native_amf_session ? "native"sv : "legacy"sv)
-                               << " teardown exceeded " << elapsed.count() << "ms";
-            }
-          }
+          std::lock_guard lg {encode_session_teardown_mutex};
+          session.reset();
           BOOST_LOG(info) << "Async encoder teardown complete";
         };
-#ifdef _WIN32
-        if (native_amf_session || legacy_amf_session) {
-          if (!run_amf_driver_work_detached(std::move(teardown_work))) {
-            // run_detached deliberately retains the live resource graph if
-            // std::thread creation fails. Fence AMD so capture also preserves
-            // the corresponding creator-side shared textures.
-            native_amf_lifecycle_gate.quarantine_initialization();
-            BOOST_LOG(error) << "AMF: could not start async teardown worker; quarantining AMD encoding"sv;
-          }
-        } else
-#endif
-        {
-          std::thread encoder_teardown_thread {std::move(teardown_work)};
-          encoder_teardown_thread.detach();
-        }
+        std::thread encoder_teardown_thread {std::move(teardown_work)};
+        encoder_teardown_thread.detach();
       } else {
         if ((session_encoder_flags & ASYNC_TEARDOWN) && sync_teardown) {
           BOOST_LOG(debug) << "Using synchronous encoder teardown during "
-                           << (process_shutdown_teardown || (!amd_session && session_shutdown_teardown) ?
+                           << (amd_session ? "AMD session end"sv :
+                               (process_shutdown_teardown || session_shutdown_teardown) ?
                                  "shutdown"sv : "capture reinit"sv);
         }
 

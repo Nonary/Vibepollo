@@ -457,12 +457,6 @@ namespace video {
    * @brief Non-blocking check for AMD work which still owns encoder/display resources.
    */
   bool amf_teardown_pending();
-
-  /**
-   * @brief Wait until detached AMD driver work has released display ownership.
-   * @return true when virtual-display/topology cleanup can safely proceed.
-   */
-  bool wait_for_amf_teardown_completion();
 #endif
 
   /**

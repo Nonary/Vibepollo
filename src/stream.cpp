@@ -184,18 +184,9 @@ namespace stream {
           return;
         }
 
-        if (wait_for_owned_amf_teardown) {
-          if (!video::wait_for_amf_teardown_completion()) {
-            BOOST_LOG(error) << "Display cleanup: AMD teardown still owns the display generation after the paused cleanup deadline; preserving topology";
-            return;
-          }
-          // The AMD ownership wait may span several seconds. Recheck only on
-          // that path; non-AMD paused cleanup retains its original behavior.
-          if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
-              session::running_sessions.load(std::memory_order_acquire) != 0 ||
-              webrtc_stream::has_active_sessions()) {
-            return;
-          }
+        if (wait_for_owned_amf_teardown && video::amf_teardown_pending()) {
+          BOOST_LOG(error) << "Display cleanup: AMD teardown still owns the display generation after the paused cleanup deadline; preserving topology";
+          return;
         }
 
         BOOST_LOG(info) << "Display cleanup: paused stream timeout reached; removing virtual display(s) (reason="
@@ -213,43 +204,6 @@ namespace stream {
       }).detach();
     }
 
-    void schedule_display_cleanup_after_amf(
-      std::string reason,
-      bool enforce_display_restore,
-      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes
-    ) {
-      const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-      try {
-        std::thread([generation, reason = std::move(reason), enforce_display_restore,
-                     virtual_display_guid_bytes]() {
-          if (!video::wait_for_amf_teardown_completion()) {
-            BOOST_LOG(error) << "Display cleanup: AMD teardown did not release its display generation; preserving virtual display/topology";
-            return;
-          }
-          if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation ||
-              session::running_sessions.load(std::memory_order_acquire) != 0 ||
-              webrtc_stream::has_active_sessions()) {
-            return;
-          }
-
-          const auto cleanup = platf::virtual_display_cleanup::run(
-            reason,
-            enforce_display_restore,
-            platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
-            true,
-            virtual_display_guid_bytes
-          );
-          if (cleanup.helper_revert_dispatched) {
-            display_helper_integration::stop_watchdog();
-          }
-        }).detach();
-      } catch (const std::system_error &err) {
-        // Cleanup must remain deferred if its owning worker cannot be created;
-        // running it synchronously would recreate the disconnect/teardown race.
-        BOOST_LOG(error) << "Display cleanup: could not start AMD teardown waiter; preserving virtual display/topology: "
-                         << err.what();
-      }
-    }
   }  // namespace
 #endif
 
@@ -2856,12 +2810,12 @@ namespace stream {
         } else {
           const auto cleanup_reason = is_paused && !revert_display_config ? "rtsp_session_paused" : "rtsp_session_end";
           if (session.video.uses_amf_encoder && video::amf_teardown_pending()) {
-            BOOST_LOG(info) << "Display cleanup: deferring virtual display/topology changes until AMD teardown releases its resource graph.";
-            schedule_display_cleanup_after_amf(
-              cleanup_reason,
-              revert_display_config,
-              session.virtual_display.guid_bytes
-            );
+            // Normal AMD destruction is ordered before this point. Reaching
+            // here means a watchdog overrun was quarantined, so touching its
+            // display graph would race live driver work. Preserve it until the
+            // host restarts instead of spawning another detached waiter.
+            g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
+            BOOST_LOG(error) << "Display cleanup: quarantined AMD teardown still owns the display generation; preserving virtual display/topology until host restart.";
           } else {
             g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
             const auto cleanup = platf::virtual_display_cleanup::run(
