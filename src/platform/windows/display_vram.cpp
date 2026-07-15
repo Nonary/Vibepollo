@@ -1998,16 +1998,10 @@ namespace platf::dxgi {
       const bool av1_lowest_latency =
         client_config.videoFormat == 2 &&
         ::amf::lifecycle::av1_latency_mode_is_lowest(amf_cfg.av1_encoding_latency_mode);
-      const bool aggressive_latency =
-        (client_config.videoFormat != 2 && amf_cfg.lowlatency_mode && *amf_cfg.lowlatency_mode) ||
-        av1_lowest_latency;
-      const auto latency_bounded_queue = ::amf::lifecycle::input_queue_for_aggressive_latency(
-        amf_cfg.input_queue_size,
-        aggressive_latency);
-      if (latency_bounded_queue != amf_cfg.input_queue_size) {
-        BOOST_LOG(info) << "AMF: capping input queue at one frame for the requested aggressive latency mode";
-        amf_cfg.input_queue_size = latency_bounded_queue;
-      }
+      // INPUT_QUEUE_SIZE is driver capacity, not application pipeline depth.
+      // Keep the documented/tested queue of four even in a low-latency codec
+      // mode; forcing capacity to one starves some Radeon runtimes. The native
+      // submission/coalescing path already limits caller-visible frame depth.
       if (input_queue_size_override) {
         amf_cfg.input_queue_size = input_queue_size_override;
         BOOST_LOG(info) << "AMF: using adapter-compatible PreAnalysis input queue "

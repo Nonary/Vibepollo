@@ -1010,19 +1010,6 @@ namespace {
            explicit_opt_out.enabled && !*explicit_opt_out.enabled && !explicit_opt_out.disabled_for_low_latency;
   }
 
-  bool aggressive_latency_caps_the_native_input_queue() {
-    using amf::lifecycle::av1_latency_mode_is_lowest;
-    using amf::lifecycle::input_queue_for_aggressive_latency;
-    return !av1_latency_mode_is_lowest(std::nullopt) &&
-           !av1_latency_mode_is_lowest(2) &&
-           av1_latency_mode_is_lowest(3) &&
-           input_queue_for_aggressive_latency(std::nullopt, false) == std::nullopt &&
-           input_queue_for_aggressive_latency(4, false) == 4 &&
-           input_queue_for_aggressive_latency(std::nullopt, true) == 1 &&
-           input_queue_for_aggressive_latency(4, true) == 1 &&
-           input_queue_for_aggressive_latency(1, true) == 1;
-  }
-
   bool concurrent_native_session_remains_usable() {
     const auto first = amf::lifecycle::resolve_concurrent_session_features(1, true, true);
     const auto second = amf::lifecycle::resolve_concurrent_session_features(2, true, true);
@@ -1098,7 +1085,6 @@ int main() {
              rejected_fresh_input_retries_but_idr_only_waits_for_capture() &&
              sparse_output_wait_remains_armed_until_image_or_tail_deadline() &&
              smart_access_video_avoids_aggressive_low_latency_driver_path() &&
-             aggressive_latency_caps_the_native_input_queue() &&
              concurrent_native_session_remains_usable() ?
            0 :
            1;
@@ -1300,10 +1286,6 @@ TEST(SunshineNativeAmfReview, SparseOutputWaitRemainsArmedUntilImageOrTailDeadli
 
 TEST(SunshineNativeAmfReview, SmartAccessVideoAvoidsAggressiveLowLatencyDriverPath) {
   EXPECT_TRUE(smart_access_video_avoids_aggressive_low_latency_driver_path());
-}
-
-TEST(SunshineNativeAmfReview, AggressiveLatencyCapsNativeInputQueue) {
-  EXPECT_TRUE(aggressive_latency_caps_the_native_input_queue());
 }
 
 TEST(SunshineNativeAmfReview, ConcurrentNativeSessionRemainsUsable) {

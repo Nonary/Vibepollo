@@ -1059,25 +1059,6 @@ namespace amf::lifecycle {
     return latency_mode && *latency_mode == 3;
   }
 
-  // The AMF queue property is a capacity, but Radeon firmware is allowed to
-  // retain submissions up to that capacity. When the user explicitly selects
-  // an aggressive codec latency mode, cap the queue at one frame so the
-  // throughput-oriented default cannot silently dominate end-to-end latency.
-  // PreAnalysis may raise this later because its quality controllers require
-  // additional headroom; that incompatibility is handled and logged by the
-  // existing PreAnalysis queue policy.
-  inline constexpr std::optional<int> input_queue_for_aggressive_latency(
-    const std::optional<int> &requested_queue,
-    bool aggressive_latency) noexcept {
-    if (!aggressive_latency) {
-      return requested_queue;
-    }
-    if (!requested_queue || *requested_queue > 1) {
-      return 1;
-    }
-    return requested_queue;
-  }
-
   // Smart Access Video distributes media work for throughput; the encoder-level
   // LOWLATENCY_MODE override selects a different, aggressive driver path. A
   // confirmed HEVC 4K120 HDR run with both enabled wedged AMF, triggered two

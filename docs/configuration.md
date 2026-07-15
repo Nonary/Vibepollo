@@ -3683,6 +3683,8 @@ They appear in the Frame Limiter section of the settings UI.
             with little queueing; `1` can starve some drivers, while larger values up to `32` trade latency for
             additional headroom.
             @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Codec low-latency modes do not rewrite this capacity. Native AMF still waits for the output due
+            from the current submission, so queue capacity does not become application-side frame buffering.}
             @note{PreAnalysis preserves the configured queue size, including the low-latency default of `4`.
             Native AMF allocates only the one-frame lookahead/transit surface working set initially and grows that
             surface pool lazily if a runtime temporarily retains additional inputs. If a driver fills a queue below
