@@ -64,6 +64,7 @@ namespace platf::playnite {
     std::string description;  ///< Optional description / notes.
     std::vector<std::string> tags;  ///< Tag list.
     bool installed = false;  ///< Installation state (installed / isInstalled).
+    bool hidden = false;  ///< Hidden in the Playnite library (hidden / isHidden).
     // Metadata Playnite already enriched (e.g. via its IGDB add-on). Passed straight through
     // so the client can display it; empty/-1 mean the game has no such value.
     std::vector<std::string> genres;  ///< Genre names (genres).

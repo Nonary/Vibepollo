@@ -53,6 +53,8 @@ namespace platf::playnite::sync {
   // Additional small helpers for apps.json reconciliation
   std::unordered_set<std::string> build_exclusion_lower(const std::vector<std::string> &ids);
   void snapshot_installed_and_uninstalled(const std::vector<Game> &all, std::vector<Game> &installed, std::unordered_set<std::string> &uninstalled_lower);
+  // Collects ids of games hidden in Playnite and drops them from the installed candidates.
+  void snapshot_hidden(const std::vector<Game> &all, std::vector<Game> &installed, std::unordered_set<std::string> &hidden_lower);
   std::unordered_map<std::string, std::time_t> build_last_played_map(const std::vector<Game> &installed);
   const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name);
   // Art conversion cache: identity of the source image (path+size+mtime) that produced a converted PNG.
@@ -68,10 +70,10 @@ namespace platf::playnite::sync {
   // Purge helpers
   std::unordered_set<std::string> current_auto_ids(const nlohmann::json &root);
   std::size_t count_replacements_available(const std::unordered_set<std::string> &current_auto, const std::unordered_set<std::string> &selected_ids);
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed);
+  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, const std::unordered_set<std::string> &hidden_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed);
 
   // Orchestration helper: performs full autosync reconciliation into root["apps"].
   // Combines recent and category selections, merges source flags, purges, and adds missing entries.
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out);
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool exclude_hidden, bool &changed, std::size_t &matched_out);
 
 }  // namespace platf::playnite::sync

@@ -411,6 +411,18 @@ namespace platf::playnite::sync {
                     installed.end());
   }
 
+  void snapshot_hidden(const std::vector<Game> &all, std::vector<Game> &installed, std::unordered_set<std::string> &hidden_lower) {
+    for (const auto &g : all) {
+      if (g.hidden && !g.id.empty()) {
+        hidden_lower.insert(playnite_id_key(g.id));
+      }
+    }
+    installed.erase(std::remove_if(installed.begin(), installed.end(), [](const auto &g) {
+                      return g.hidden;
+                    }),
+                    installed.end());
+  }
+
   std::unordered_map<std::string, std::time_t> build_last_played_map(const std::vector<Game> &installed) {
     std::unordered_map<std::string, std::time_t> m;
     for (const auto &g : installed) {
@@ -754,7 +766,7 @@ namespace platf::playnite::sync {
     return c;
   }
 
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed) {
+  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, const std::unordered_set<std::string> &hidden_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed) {
     auto cur = current_auto_ids(root);
     auto repl = count_replacements_available(cur, selected_ids);
     nlohmann::json kept = nlohmann::json::array();
@@ -770,7 +782,7 @@ namespace platf::playnite::sync {
         }
       } catch (...) {}
       if (is_auto && !pid.empty()) {
-        if ((remove_uninstalled && uninstalled_lower.contains(pid_key)) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
+        if ((remove_uninstalled && uninstalled_lower.contains(pid_key)) || hidden_lower.contains(pid_key) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
           changed = true;
           continue;
         }
@@ -804,7 +816,7 @@ namespace platf::playnite::sync {
 }  // namespace platf::playnite::sync
 
 namespace platf::playnite::sync {
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out) {
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool exclude_hidden, bool &changed, std::size_t &matched_out) {
     if (!root.contains("apps") || !root["apps"].is_array()) {
       root["apps"] = nlohmann::json::array();
     }
@@ -818,6 +830,12 @@ namespace platf::playnite::sync {
     std::vector<Game> installed;
     std::unordered_set<std::string> uninstalled_lower;
     snapshot_installed_and_uninstalled(all_games, installed, uninstalled_lower);
+
+    // Games hidden in Playnite are never selectable, and already-synced ones are purged below.
+    std::unordered_set<std::string> hidden_lower;
+    if (exclude_hidden) {
+      snapshot_hidden(all_games, installed, hidden_lower);
+    }
 
     // Build exclusion sets
     auto excl = build_exclusion_lower(exclude_ids);
@@ -907,7 +925,7 @@ namespace platf::playnite::sync {
       selected_ids.insert(playnite_id_key(g.id));
     }
     const bool recent_mode = (recentN > 0);
-    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, sync_all_installed, selected_ids, changed);
+    purge_uninstalled_and_ttl(root, uninstalled_lower, hidden_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, sync_all_installed, selected_ids, changed);
 
     // Add missing
     add_missing_auto_entries(root, selected, matched_ids, source_flags, changed);

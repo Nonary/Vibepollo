@@ -112,6 +112,24 @@ TEST(PlayniteProtocol_Parse, Games_InstalledField_PrecedenceAndDefault) {
   EXPECT_TRUE(m.games[3].installed);  // default true when neither present
 }
 
+TEST(PlayniteProtocol_Parse, Games_HiddenField_AliasesAndDefault) {
+  std::string j = R"({
+    "type":"games",
+    "payload":[
+      {"id":"a","hidden":true},
+      {"id":"b","isHidden":true},
+      {"id":"c","hidden":false},
+      {"id":"d"}
+    ]})";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.type, MessageType::Games);
+  ASSERT_EQ(m.games.size(), 4u);
+  EXPECT_TRUE(m.games[0].hidden);
+  EXPECT_TRUE(m.games[1].hidden);
+  EXPECT_FALSE(m.games[2].hidden);
+  EXPECT_FALSE(m.games[3].hidden);  // default false when absent (older plugin)
+}
+
 TEST(PlayniteProtocol_Parse, Games_SkipsMissingId) {
   std::string j = R"({"type":"games","payload":[{"name":"no-id"}]})";
   auto m = platf::playnite::parse(bytes(j));

@@ -869,7 +869,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, config::playnite.exclude_hidden_games, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -1143,6 +1143,7 @@ namespace platf::playnite {
       j["name"] = g.name;
       j["categories"] = g.categories;
       j["installed"] = g.installed;
+      j["hidden"] = g.hidden;
       j["pluginId"] = g.plugin_id;
       j["pluginName"] = g.plugin_name;
       arr.push_back(std::move(j));

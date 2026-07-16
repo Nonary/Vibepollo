@@ -130,6 +130,9 @@ namespace platf::playnite {
             inst = true;
           }
           game.installed = inst;
+          // Hidden flag may be provided as 'hidden' or 'isHidden'; older plugins send neither,
+          // in which case no game is treated as hidden.
+          game.hidden = g.value("hidden", false) || g.value("isHidden", false);
           if (!game.id.empty()) {
             m.games.emplace_back(std::move(game));
           }

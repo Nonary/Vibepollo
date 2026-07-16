@@ -1224,6 +1224,8 @@
     "plugins_include_placeholder": "Include games from these plugins",
     "remove_uninstalled": "Remove uninstalled games automatically",
     "remove_uninstalled_desc": "When enabled, Vibepollo removes auto-synced games as soon as they are uninstalled in Playnite.",
+    "exclude_hidden_games": "Skip games hidden in Playnite",
+    "exclude_hidden_games_desc": "When enabled, games flagged as hidden in Playnite are never auto-synced, and auto-synced games are removed once you hide them.",
     "extensions_dir": "Extensions directory",
     "install_dir": "Installation path override",
     "save_success": "Settings saved.",
@@ -1273,6 +1275,8 @@
     "summary_plugin_include": "Includes all games from {count} selected library plugins.",
     "summary_remove_uninstalled_on": "Uninstalled games are removed automatically.",
     "summary_remove_uninstalled_off": "Uninstalled games remain until you remove them manually.",
+    "summary_exclude_hidden_on": "Games hidden in Playnite are never synced.",
+    "summary_exclude_hidden_off": "Games hidden in Playnite are synced like any other game.",
     "summary_delete_after": "Also remove games never launched after {days} days.",
     "summary_excluded_categories": "Excluded categories: {categories}.",
     "summary_excluded_categories_more": "Excluded categories: {categories} (+{count} more)."

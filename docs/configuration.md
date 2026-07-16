@@ -3973,6 +3973,27 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### playnite_exclude_hidden_games
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td>
+            Controls whether games flagged as hidden in Playnite are auto-synced.
+            When <code>true</code>, hidden games are never selected, and auto-synced entries are removed once the game is hidden in Playnite.
+            Manually added games are not affected.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td>@code{}true@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td>@code{}playnite_exclude_hidden_games = false@endcode</td>
+    </tr>
+</table>
+
 ### playnite_sync_plugins
 
 <table>

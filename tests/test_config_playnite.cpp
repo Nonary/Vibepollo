@@ -26,13 +26,15 @@ TEST_F(PlayniteConfigFixture, Booleans_ParseCaseInsensitiveTruths) {
     {"playnite_auto_sync", "on"},
     {"playnite_autosync_require_replacement", "0"},
     {"playnite_sync_all_installed", "YES"},
-    {"playnite_autosync_remove_uninstalled", "off"}
+    {"playnite_autosync_remove_uninstalled", "off"},
+    {"playnite_exclude_hidden_games", "false"}
   };
   config::apply_playnite(vars);
   EXPECT_TRUE(config::playnite.auto_sync);
   EXPECT_FALSE(config::playnite.autosync_require_replacement);
   EXPECT_TRUE(config::playnite.sync_all_installed);
   EXPECT_FALSE(config::playnite.autosync_remove_uninstalled);
+  EXPECT_FALSE(config::playnite.exclude_hidden_games);
   EXPECT_TRUE(vars.empty());
 }
 

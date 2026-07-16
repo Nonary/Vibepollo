@@ -351,6 +351,17 @@
                   :disabled="!autoSyncEnabled"
                 />
               </div>
+              <div class="md:col-span-2">
+                <Checkbox
+                  v-model="config.playnite_exclude_hidden_games"
+                  id="playnite_exclude_hidden_games"
+                  :default="store.defaults.playnite_exclude_hidden_games"
+                  :localePrefix="'playnite'"
+                  label="playnite.exclude_hidden_games"
+                  desc="playnite.exclude_hidden_games_desc"
+                  :disabled="!autoSyncEnabled"
+                />
+              </div>
               <n-text v-if="autoSyncEnabled" depth="3" class="md:col-span-2 playnite-help">
                 {{ policySummary }}
               </n-text>
@@ -1411,6 +1422,7 @@ const policySummary = computed<string>(() => {
   const syncAll = !!config.value?.playnite_sync_all_installed;
   const includePluginCount = normalizeIdNameEntries(config.value?.playnite_sync_plugins).length;
   const removeUninstalled = config.value?.playnite_autosync_remove_uninstalled !== false;
+  const excludeHidden = config.value?.playnite_exclude_hidden_games !== false;
   const parts: string[] = [];
   parts.push(
     (t('playnite.summary_recent_limit', { n }) as any) ||
@@ -1452,6 +1464,13 @@ const policySummary = computed<string>(() => {
           'Uninstalled games are removed automatically.'
       : (t('playnite.summary_remove_uninstalled_off') as any) ||
           'Uninstalled games remain until removed manually.',
+  );
+  parts.push(
+    excludeHidden
+      ? (t('playnite.summary_exclude_hidden_on') as any) ||
+          'Games hidden in Playnite are never synced.'
+      : (t('playnite.summary_exclude_hidden_off') as any) ||
+          'Games hidden in Playnite are synced like any other game.',
   );
   const excluded = (
     (config.value?.playnite_exclude_categories || []) as Array<{
@@ -1524,6 +1543,7 @@ function resetAutoSyncSection() {
     'playnite_autosync_remove_uninstalled',
     d.playnite_autosync_remove_uninstalled,
   );
+  store.updateOption('playnite_exclude_hidden_games', d.playnite_exclude_hidden_games);
   store.updateOption('playnite_sync_categories', d.playnite_sync_categories);
   store.updateOption('playnite_sync_plugins', d.playnite_sync_plugins);
   notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');

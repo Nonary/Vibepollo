@@ -58,6 +58,10 @@ namespace config {
     // uninstalled in Playnite.
     bool autosync_remove_uninstalled = true;
 
+    // When true, games flagged as hidden in Playnite are never auto-synced, and
+    // auto-synced apps whose games become hidden are removed.
+    bool exclude_hidden_games = true;
+
     // When true, only purge auto-synced games that no longer qualify
     // if there is a qualifying replacement to fill the slot. When false,
     // always purge games that no longer qualify, even if it leaves fewer
