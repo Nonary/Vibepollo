@@ -79,8 +79,6 @@ export interface AppForm {
   stateCmd: PrepCmd[];
   detached: string[];
   virtualScreen: boolean;
-  gen1FramegenFix: boolean;
-  gen2FramegenFix: boolean;
   virtualDisplayMode: AppVirtualDisplayMode | null;
   virtualDisplayLayout: AppVirtualDisplayLayout | null;
   frameGenerationProvider: FrameGenerationProvider;
@@ -168,6 +166,11 @@ export interface FrameGenDisplayTarget {
 
 export interface FrameGenHealth {
   checkedAt: number;
+  os: {
+    status: FrameGenRequirementStatus;
+    buildNumber: number | null;
+    message: string;
+  };
   capture: {
     status: FrameGenRequirementStatus;
     method: string;

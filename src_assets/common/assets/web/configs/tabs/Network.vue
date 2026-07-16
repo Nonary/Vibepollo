@@ -44,63 +44,103 @@ const effectivePort = computed(() => Number(config.port ?? defaultMoonlightPort)
         </div>
       </div>
 
-      <div class="mt-4 grid grid-cols-12 gap-2 text-sm">
-        <div class="col-span-4 font-semibold">
+      <div class="mt-4 grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-12 sm:gap-2">
+        <div class="hidden font-semibold sm:col-span-4 sm:block">
           {{ $t('config.port_protocol') }}
         </div>
-        <div class="col-span-4 font-semibold">
+        <div class="hidden font-semibold sm:col-span-4 sm:block">
           {{ $t('config.port_port') }}
         </div>
-        <div class="col-span-4 font-semibold">
+        <div class="hidden font-semibold sm:col-span-4 sm:block">
           {{ $t('config.port_note') }}
         </div>
 
-        <div class="col-span-4">
-          {{ $t('config.port_tcp') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_protocol') }}
+          </span>
+          <span>{{ $t('config.port_tcp') }}</span>
         </div>
-        <div class="col-span-4">
-          {{ +effectivePort - 5 }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_port') }}
+          </span>
+          <span>{{ +effectivePort - 5 }}</span>
         </div>
-        <div class="col-span-4" />
+        <div class="hidden sm:block sm:col-span-4" />
 
-        <div class="col-span-4">
-          {{ $t('config.port_tcp') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_protocol') }}
+          </span>
+          <span>{{ $t('config.port_tcp') }}</span>
         </div>
-        <div class="col-span-4">
-          {{ +effectivePort }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_port') }}
+          </span>
+          <span>{{ +effectivePort }}</span>
         </div>
-        <div class="col-span-4">
-          <div
-            v-if="+effectivePort !== defaultMoonlightPort"
-            class="mt-1 alert alert-info p-2 rounded-md"
-          >
+        <div class="hidden sm:block sm:col-span-4">
+          <div v-if="+effectivePort !== defaultMoonlightPort" class="alert alert-info p-2 rounded-md sm:mt-1">
+            <i class="fa-solid fa-xl fa-circle-info" /> {{ $t('config.port_http_port_note') }}
+          </div>
+        </div>
+        <div v-if="+effectivePort !== defaultMoonlightPort" class="sm:hidden">
+          <span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_note') }}
+          </span>
+          <div class="alert alert-info p-2 rounded-md">
             <i class="fa-solid fa-xl fa-circle-info" /> {{ $t('config.port_http_port_note') }}
           </div>
         </div>
 
-        <div class="col-span-4">
-          {{ $t('config.port_tcp') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_protocol') }}
+          </span>
+          <span>{{ $t('config.port_tcp') }}</span>
         </div>
-        <div class="col-span-4">
-          {{ +effectivePort + 1 }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_port') }}
+          </span>
+          <span>{{ +effectivePort + 1 }}</span>
         </div>
-        <div class="col-span-4">
-          {{ $t('config.port_web_ui') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_note') }}
+          </span>
+          <span>{{ $t('config.port_web_ui') }}</span>
         </div>
 
-        <div class="col-span-4">
-          {{ $t('config.port_tcp') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_protocol') }}
+          </span>
+          <span>{{ $t('config.port_tcp') }}</span>
         </div>
-        <div class="col-span-4">
-          {{ +effectivePort + 21 }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_port') }}
+          </span>
+          <span>{{ +effectivePort + 21 }}</span>
         </div>
-        <div class="col-span-4" />
+        <div class="hidden sm:block sm:col-span-4" />
 
-        <div class="col-span-4">
-          {{ $t('config.port_udp') }}
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_protocol') }}
+          </span>
+          <span>{{ $t('config.port_udp') }}</span>
         </div>
-        <div class="col-span-4">{{ +effectivePort + 9 }} - {{ +effectivePort + 11 }}</div>
-        <div class="col-span-4" />
+        <div class="flex items-baseline gap-3 sm:block sm:col-span-4">
+          <span class="w-24 shrink-0 text-[11px] font-semibold uppercase tracking-wide opacity-60 sm:hidden">
+            {{ $t('config.port_port') }}
+          </span>
+          <span>{{ +effectivePort + 9 }} - {{ +effectivePort + 11 }}</span>
+        </div>
+        <div class="hidden sm:block sm:col-span-4" />
       </div>
 
       <div

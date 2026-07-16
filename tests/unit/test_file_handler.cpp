@@ -7,6 +7,11 @@
 #include <format>
 #include <src/file_handler.h>
 
+#ifdef _WIN32
+  #include <Windows.h>
+  #include <filesystem>
+#endif
+
 struct FileHandlerParentDirectoryTest: testing::TestWithParam<std::tuple<std::string, std::string>> {};
 
 TEST_P(FileHandlerParentDirectoryTest, Run) {
@@ -94,3 +99,21 @@ TEST(FileHandlerTests, ReadMissingFileTest) {
   // read missing file
   EXPECT_EQ(file_handler::read_file("non-existing-file.txt"), "");
 }
+
+#ifdef _WIN32
+TEST(FileHandlerReadOnlyTest, OverwriteReadOnlyTarget) {
+  const std::string fileName = "readonly_overwrite_test.txt";
+  ASSERT_EQ(file_handler::write_file(fileName.c_str(), "original"), 0);
+
+  // A read-only attribute on the existing target makes the atomic MoveFileEx
+  // replace fail with ERROR_ACCESS_DENIED. write_file must clear it and retry.
+  ASSERT_NE(SetFileAttributesA(fileName.c_str(), FILE_ATTRIBUTE_READONLY), 0);
+
+  EXPECT_EQ(file_handler::write_file(fileName.c_str(), "updated"), 0);
+  EXPECT_EQ(file_handler::read_file(fileName.c_str()), "updated");
+
+  SetFileAttributesA(fileName.c_str(), FILE_ATTRIBUTE_NORMAL);
+  std::error_code ec;
+  std::filesystem::remove(fileName, ec);
+}
+#endif

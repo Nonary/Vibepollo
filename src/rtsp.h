@@ -6,6 +6,7 @@
 
 // standard includes
 #include "config.h"
+#include "framegen_policy.h"
 
 #include <array>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,6 +76,10 @@ namespace rtsp_stream {
     std::string surround_params;
     bool continuous_audio;
     bool enable_hdr;
+    // Resolved global/per-client policy, independent of the client's HDR marker.
+    bool prefer_sdr_10bit = false;
+    // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
+    bool force_sdr = false;
     bool enable_sops;
     bool client_display_mode_override;
     bool client_requests_virtual_display;
@@ -98,8 +104,10 @@ namespace rtsp_stream {
     std::optional<std::map<std::string, std::pair<unsigned int, unsigned int>>> pre_virtual_display_refresh_rates;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
+    bool frame_generation_enabled = false;
     bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
+    int framegen_refresh_multiplier = 1;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
     std::optional<int> lossless_scaling_rtss_limit;
@@ -141,6 +149,49 @@ namespace rtsp_stream {
      */
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
+
+  inline bool effective_hdr_requested(const launch_session_t &session) {
+    return session.enable_hdr && !session.prefer_sdr_10bit && !session.force_sdr;
+  }
+
+  inline bool framegen_capture_fix_enabled(const launch_session_t &session) {
+    return session.gen1_framegen_fix || session.gen2_framegen_fix;
+  }
+
+  inline int framegen_refresh_multiplier(const launch_session_t &session) {
+    if (!session.framegen_refresh_rate || *session.framegen_refresh_rate <= 0) {
+      return 1;
+    }
+    return session.framegen_refresh_multiplier > 1 ? session.framegen_refresh_multiplier : 1;
+  }
+
+  inline int saturating_refresh_fps(int fps, int multiplier) {
+    return framegen::saturating_refresh_fps(fps, multiplier);
+  }
+
+  inline framegen::stream_start_policy_t make_framegen_stream_start_policy(
+    const launch_session_t &session,
+    std::optional<int> lossless_rtss_limit,
+    std::string_view capture_mode,
+    bool auto_capture_uses_wgc,
+    bool auto_virtual_framegen_limiter,
+    int virtual_display_refresh_multiplier
+  ) {
+    return framegen::make_stream_start_policy({
+      .fps = session.fps,
+      .frame_generation_enabled = session.frame_generation_enabled,
+      .gen1_framegen_fix = session.gen1_framegen_fix,
+      .gen2_framegen_fix = session.gen2_framegen_fix,
+      .lossless_scaling_framegen = session.lossless_scaling_framegen,
+      .lossless_rtss_limit = lossless_rtss_limit,
+      .frame_generation_provider = session.frame_generation_provider,
+      .uses_virtual_display = session.virtual_display,
+      .capture_mode = std::string(capture_mode),
+      .auto_capture_uses_wgc = auto_capture_uses_wgc,
+      .auto_virtual_framegen_limiter = auto_virtual_framegen_limiter,
+      .virtual_display_refresh_multiplier = virtual_display_refresh_multiplier,
+    });
+  }
 
   void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
 

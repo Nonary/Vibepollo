@@ -236,6 +236,19 @@ namespace display_helper::v2 {
     BOOST_LOG(info) << "Display helper: refresh rate overrides applied result=" << (rate_result ? "true" : "false");
   }
 
+  bool ApplyOperation::set_refresh_rate(
+    const std::string &device_id,
+    unsigned int numerator,
+    unsigned int denominator
+  ) {
+    const bool success = display_.set_device_refresh_rate(device_id, numerator, denominator);
+    BOOST_LOG(success ? info : warning)
+      << "Display helper: refresh-only request device=" << device_id
+      << " rate=" << numerator << '/' << denominator
+      << " result=" << (success ? "true" : "false");
+    return success;
+  }
+
   VerificationOperation::VerificationOperation(IDisplaySettings &display, IClock &clock)
     : display_(display),
       clock_(clock) {}

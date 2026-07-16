@@ -1,5 +1,6 @@
 #include "src/platform/windows/playnite_sync.h"
 
+#include <chrono>
 #include <filesystem>
 #include <gtest/gtest.h>
 
@@ -127,4 +128,38 @@ TEST(PlayniteSync_Metadata, KeepsBoxArtWhenGameIconMissing) {
   std::error_code ec;
   std::filesystem::remove(platf::appdata() / "covers" / "playnite_fallback-icon.png", ec);
   std::filesystem::remove(platf::appdata() / "covers" / "playnite_icon_fallback-icon.png", ec);
+}
+
+TEST(PlayniteSync_Art, ReconvertsWhenSourceChangesEvenWithOlderMtime) {
+  const auto dir = std::filesystem::temp_directory_path() / "vibeshine_playnite_art_test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const auto real_png = std::filesystem::path {SUNSHINE_SOURCE_DIR} / "sunshine.png";
+  ASSERT_TRUE(std::filesystem::exists(real_png));
+
+  const auto src1 = dir / "cover1.png";
+  const auto dst = dir / "converted.png";
+  std::filesystem::copy_file(real_png, src1);
+
+  // Initial conversion writes dst and a source-signature sidecar
+  ASSERT_TRUE(convert_playnite_image_to_png(src1.string(), dst));
+  ASSERT_TRUE(std::filesystem::exists(dst));
+  const auto sidecar = dst.string() + ".src";
+  EXPECT_EQ(file_handler::read_file(sidecar.c_str()), image_source_signature(src1));
+
+  // Unchanged source: conversion is skipped (sentinel content survives)
+  file_handler::write_file(dst.string().c_str(), "SENTINEL");
+  ASSERT_TRUE(convert_playnite_image_to_png(src1.string(), dst));
+  EXPECT_EQ(file_handler::read_file(dst.string().c_str()), "SENTINEL");
+
+  // New cover at a different path but with an mtime OLDER than dst (Playnite preserves the
+  // original file's mtime when copying art into its library) must still reconvert
+  const auto src2 = dir / "cover2.png";
+  std::filesystem::copy_file(real_png, src2);
+  std::filesystem::last_write_time(src2, std::filesystem::last_write_time(dst) - std::chrono::hours(24 * 365));
+  ASSERT_TRUE(convert_playnite_image_to_png(src2.string(), dst));
+  EXPECT_NE(file_handler::read_file(dst.string().c_str()), "SENTINEL");
+  EXPECT_EQ(file_handler::read_file(sidecar.c_str()), image_source_signature(src2));
+
+  std::filesystem::remove_all(dir);
 }

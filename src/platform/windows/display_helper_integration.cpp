@@ -36,6 +36,7 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -76,6 +77,7 @@ namespace {
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<int> framegen_refresh_rate;
+    int framegen_refresh_multiplier = 1;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
   };
@@ -125,12 +127,13 @@ namespace {
       state.session_snapshot.width = request.session->width;
       state.session_snapshot.height = request.session->height;
       state.session_snapshot.fps = request.session->fps;
-      state.session_snapshot.enable_hdr = request.session->enable_hdr;
+      state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
       state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.virtual_display = request.session->virtual_display;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
     }
@@ -594,6 +597,7 @@ namespace {
     bool virtual_display = false;
     std::string virtual_display_device_id;
     std::optional<int> framegen_refresh_rate;
+    int framegen_refresh_multiplier = 1;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
   };
@@ -1050,11 +1054,12 @@ namespace {
       .width = width_override ? *width_override : session.width,
       .height = height_override ? *height_override : session.height,
       .fps = effective_fps,
-      .enable_hdr = session.enable_hdr,
+      .enable_hdr = rtsp_stream::effective_hdr_requested(session),
       .enable_sops = session.enable_sops,
       .virtual_display = virtual_display_override ? *virtual_display_override : session.virtual_display,
       .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
       .framegen_refresh_rate = framegen_refresh_override ? framegen_refresh_override : session.framegen_refresh_rate,
+      .framegen_refresh_multiplier = session.framegen_refresh_multiplier,
       .gen1_framegen_fix = session.gen1_framegen_fix,
       .gen2_framegen_fix = session.gen2_framegen_fix,
     };
@@ -1507,6 +1512,7 @@ namespace display_helper_integration {
       snapshot.virtual_display_device_id = pending.session_snapshot.virtual_display_device_id;
       snapshot.virtual_display_ready_since = pending.session_snapshot.virtual_display_ready_since;
       snapshot.framegen_refresh_rate = pending.session_snapshot.framegen_refresh_rate;
+      snapshot.framegen_refresh_multiplier = pending.session_snapshot.framegen_refresh_multiplier;
       snapshot.gen1_framegen_fix = pending.session_snapshot.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = pending.session_snapshot.gen2_framegen_fix;
       session = std::move(snapshot);
@@ -1845,13 +1851,9 @@ namespace display_helper_integration {
       g_watchdog_running = false;
       thread = std::move(g_watchdog_thread);
     }
-    if (thread.joinable()) {
-      thread.request_stop();
-      try {
-        thread.join();
-      } catch (const std::system_error &e) {
-        BOOST_LOG(warning) << "Display helper: failed to join watchdog thread: " << e.what();
-      }
+    const auto stop_result = DisplayHelperWatchdog::stop_thread(thread);
+    if (stop_result == DisplayHelperWatchdog::ThreadStopResult::DetachedSelf) {
+      BOOST_LOG(debug) << "Display helper: watchdog requested its own stop; detached for safe exit.";
     }
     if (config::video.dd.config_revert_on_disconnect) {
       platf::display_helper_client::reset_connection();

@@ -525,6 +525,7 @@ namespace stream {
 
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
+      safe::mail_raw_t::event_t<int> bitrate_events;
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -840,6 +841,33 @@ namespace stream {
     }
   }
 
+  int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
+    if (bitrate_kbps <= 0) {
+      return 0;
+    }
+    auto ref = broadcast.ref();
+    if (!ref) {
+      return 0;
+    }
+    int updated = 0;
+    auto lg = ref->control_server._sessions.lock();
+    for (auto *session : *ref->control_server._sessions) {
+      if (!session || !session->video.bitrate_events) {
+        continue;
+      }
+      if (!client_uuid.empty() && session->device_uuid != client_uuid) {
+        continue;
+      }
+      // Keep the session metadata (runtime sessions API, history, stats) in sync with the
+      // value the encoder thread will adopt from the event below.
+      session->config.monitor.bitrate = bitrate_kbps;
+      session->config.monitor.client_requested_bitrate = bitrate_kbps;
+      session->video.bitrate_events->raise(bitrate_kbps);
+      ++updated;
+    }
+    return updated;
+  }
+
   static const char *state_name(session::state_e st) {
     switch (st) {
       case session::state_e::STOPPED: return "stopped";
@@ -874,6 +902,9 @@ namespace stream {
                                       : session->config.monitor.bitrate;
       info.video_format = session->config.monitor.videoFormat;
       info.dynamic_range = session->config.monitor.dynamicRange;
+      info.hdr = session->config.monitor.dynamicRange != 0 &&
+                 !session->config.monitor.prefer_sdr_10bit &&
+                 !session->config.monitor.force_sdr;
       info.yuv444 = session->config.monitor.chromaSamplingType != 0;
       info.audio_channels = session->config.audio.channels;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
@@ -896,13 +927,7 @@ namespace stream {
 
 #ifdef _WIN32
   struct deferred_stream_start_t {
-    int fps = 0;
-    int fps_scaled = 0;
-    bool gen1_framegen_fix = false;
-    bool gen2_framegen_fix = false;
-    std::optional<int> lossless_rtss_limit;
-    std::string frame_generation_provider;
-    bool smooth_motion = false;
+    framegen::stream_start_policy_t policy;
   };
 
   std::mutex &deferred_stream_start_mutex() {
@@ -922,6 +947,10 @@ namespace stream {
     }
     CloseHandle(user_token);
     return true;
+  }
+
+  bool stream_start_actions_still_needed() {
+    return session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_sessions();
   }
 
   void defer_stream_start_actions(deferred_stream_start_t deferred) {
@@ -952,20 +981,17 @@ namespace stream {
       if (!deferred_stream_start_state()) {
         return false;
       }
+      if (!stream_start_actions_still_needed()) {
+        deferred_stream_start_state().reset();
+        BOOST_LOG(debug) << "Stream-start actions skipped because no active stream remains.";
+        return false;
+      }
       deferred = std::move(*deferred_stream_start_state());
       deferred_stream_start_state().reset();
     }
 
     BOOST_LOG(info) << "Stream-start actions applied after user session became available.";
-    platf::frame_limiter_streaming_start(
-      deferred->fps,
-      deferred->fps_scaled,
-      deferred->gen1_framegen_fix,
-      deferred->gen2_framegen_fix,
-      deferred->lossless_rtss_limit,
-      deferred->frame_generation_provider,
-      deferred->smooth_motion
-    );
+    platf::frame_limiter_streaming_start(deferred->policy);
     platf::streaming_will_start();
     return true;
   }
@@ -2127,11 +2153,22 @@ namespace stream {
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
     auto video_epoch = std::chrono::steady_clock::now();
 
-    // Video traffic is sent on this thread
+    // Video traffic is sent on this thread. The send pacer (pacing_max_bitrate_kbps)
+    // relies on this thread waking on its millisecond sleep deadlines; losing the
+    // scheduler slot to lower-priority work reintroduces the per-frame burst pattern
+    // the pacer exists to prevent. Note critical maps to THREAD_PRIORITY_HIGHEST on
+    // Windows (nice -15 on Linux) — the top of the normal dynamic range, not a
+    // realtime class — the same level video::capture and controlBroadcast already use.
     platf::set_thread_name("stream::videoBroadcast");
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
+    logging::min_max_avg_periodic_logger<double> frame_capture_interval_logger(debug, "Frame capture interval", "ms");
+    logging::min_max_avg_periodic_logger<double> packet_queue_latency_logger(debug, "Video packet queue latency", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_sleep_logger(debug, "Network: rate control sleep", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_late_logger(debug, "Network: rate control late", "ms");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_frame_packets_logger(debug, "Network: frame packets sent", "packets");
+    logging::min_max_avg_periodic_logger<double> ratecontrol_batch_packets_logger(debug, "Network: send_batch packet count", "packets");
 
     logging::time_delta_periodic_logger frame_send_batch_latency_logger(debug, "Network: each send_batch() latency");
     logging::time_delta_periodic_logger frame_fec_latency_logger(debug, "Network: each FEC block latency");
@@ -2146,6 +2183,7 @@ namespace stream {
     }
 
     auto ratecontrol_next_frame_start = std::chrono::steady_clock::now();
+    std::optional<std::chrono::steady_clock::time_point> last_frame_timestamp;
 
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
@@ -2158,6 +2196,15 @@ namespace stream {
       if (!session) {
         continue;
       }
+      const auto packet_pop_timestamp = std::chrono::steady_clock::now();
+      packet_queue_latency_logger.collect_and_log(std::chrono::duration<double, std::milli>(packet_pop_timestamp - packet->packet_enqueue_timestamp).count());
+      if (packet->frame_timestamp) {
+        if (last_frame_timestamp) {
+          frame_capture_interval_logger.collect_and_log(std::chrono::duration<double, std::milli>(*packet->frame_timestamp - *last_frame_timestamp).count());
+        }
+        last_frame_timestamp = *packet->frame_timestamp;
+      }
+
       auto lowseq = session->video.lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
@@ -2266,8 +2313,39 @@ namespace stream {
       }
 
       try {
-        // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
-        size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
+        // Pacing target: legacy default targets ~80% of 1 Gbps (Ethernet). On WiFi
+        // links the legacy value collapses to a no-op pacer (frames get blasted out
+        // faster than the link can absorb, then idle), which amplifies AMPDU-aggregation
+        // jitter on the client. If the operator sets `pacing_max_bitrate_kbps` we honor
+        // it; otherwise keep legacy behaviour.
+        size_t pacing_bps;
+        if (config::stream.pacing_max_bitrate_kbps > 0) {
+          pacing_bps = (size_t) config::stream.pacing_max_bitrate_kbps * 1000ull;
+
+          // Never pace below the session's negotiated bitrate: a cap under the encoder's
+          // output rate makes the sender permanently slower than the encoder, so the packet
+          // queue (and stream latency) grows without bound. Clamp to ~110% of the stream
+          // bitrate, re-evaluated per frame since the ABR endpoint can raise it mid-session.
+          size_t session_floor_bps = (size_t) session->config.monitor.bitrate * 1000ull * 110 / 100;
+          if (pacing_bps < session_floor_bps) {
+            static std::atomic_flag pacing_clamp_warned;
+            if (!pacing_clamp_warned.test_and_set()) {
+              BOOST_LOG(warning) << "pacing_max_bitrate_kbps ("sv << config::stream.pacing_max_bitrate_kbps
+                                 << " kbps) is below the negotiated stream bitrate ("sv << session->config.monitor.bitrate
+                                 << " kbps); clamping the pacer to 110% of the stream bitrate"sv;
+            }
+            pacing_bps = session_floor_bps;
+          }
+        } else {
+          pacing_bps = (size_t) (std::giga::num * 80 / 100);  // 80% of 1 Gbps
+        }
+        //                                          bps    ms    packet      byte
+        size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
+        if (ratecontrol_packets_in_1ms == 0) {
+          // Floor at one packet/ms so the inner pacing loop never divides by zero
+          // and we still send something on absurdly low bitrate caps.
+          ratecontrol_packets_in_1ms = 1;
+        }
 
         // Send less than 64K in a single batch.
         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
@@ -2393,13 +2471,18 @@ namespace stream {
 
                 auto now = std::chrono::steady_clock::now();
                 if (now < due) {
-                  timer->sleep_for(due - now);
+                  auto sleep_time = due - now;
+                  ratecontrol_sleep_logger.collect_and_log(std::chrono::duration<double, std::milli>(sleep_time).count());
+                  timer->sleep_for(sleep_time);
+                } else {
+                  ratecontrol_late_logger.collect_and_log(std::chrono::duration<double, std::milli>(now - due).count());
                 }
 
                 ratecontrol_group_packets_sent = 0;
               }
 
               size_t current_batch_size = x - next_shard_to_send + 1;
+              ratecontrol_batch_packets_logger.collect_and_log((double) current_batch_size);
               batch_info.block_offset = next_shard_to_send;
               batch_info.block_count = current_batch_size;
 
@@ -2435,6 +2518,7 @@ namespace stream {
           ratecontrol_next_frame_start = ratecontrol_frame_start +
                                          std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
                                            ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+          ratecontrol_frame_packets_logger.collect_and_log((double) ratecontrol_frame_packets_sent);
 
           frame_network_latency_logger.second_point_now_and_log();
 
@@ -3015,9 +3099,6 @@ namespace stream {
         display_helper_integration::clear_pending_apply();
         clear_deferred_stream_start_actions();
 #endif
-        // Only revert on disconnect when explicitly enabled by config.
-        bool revert_display_config {config::video.dd.config_revert_on_disconnect};
-
         const bool webrtc_active = webrtc_stream::has_active_sessions();
         if (!webrtc_active) {
           BOOST_LOG(info) << "Teardown: pausing app process..."sv;
@@ -3036,13 +3117,18 @@ namespace stream {
           }
           is_paused = proc::proc.running();
         }
-#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-        if (is_paused) {
-          system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
-        } else {
-          system_tray::update_tray_stopped(proc::proc.get_last_run_app_name());
-        }
+#ifdef _WIN32
+        // App teardown may have reached us before the RTSP session finished.
+        // Consume that deferred request only after the app and every stream are gone.
+        const bool deferred_app_revert =
+          !is_paused && !webrtc_active && proc::consume_deferred_display_revert();
+#else
+        constexpr bool deferred_app_revert = false;
 #endif
+        // Revert immediately on disconnect when configured, or complete a restore
+        // that an app exit deferred until the final streaming session ended.
+        const bool revert_display_config =
+          config::video.dd.config_revert_on_disconnect || deferred_app_revert;
         const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
         const bool delay_virtual_display_cleanup_due_to_pause = is_paused && !revert_display_config && paused_timeout_secs > 0;
         const bool keep_virtual_display_due_to_pause = is_paused && !revert_display_config && paused_timeout_secs == 0;
@@ -3187,7 +3273,9 @@ namespace stream {
                                         ? session.config.monitor.client_requested_bitrate
                                         : session.config.monitor.bitrate;
         meta.codec = std::string(video_format_name(session.config.monitor.videoFormat));
-        meta.hdr = session.config.monitor.dynamicRange != 0;
+        meta.hdr = session.config.monitor.dynamicRange != 0 &&
+                   !session.config.monitor.prefer_sdr_10bit &&
+                   !session.config.monitor.force_sdr;
         meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
         meta.audio_channels = session.config.audio.channels;
         meta.server_version = current_server_version();
@@ -3206,8 +3294,6 @@ namespace stream {
           std::optional<int> lossless_rtss_limit;
           const bool using_lossless_provider = session.config.lossless_scaling_framegen &&
                                                boost::iequals(session.config.frame_generation_provider, "lossless-scaling");
-          const bool using_smooth_motion =
-            boost::iequals(session.config.frame_generation_provider, "nvidia-smooth-motion");
           if (using_lossless_provider) {
             if (session.config.lossless_scaling_rtss_limit && *session.config.lossless_scaling_rtss_limit > 0) {
               lossless_rtss_limit = session.config.lossless_scaling_rtss_limit;
@@ -3220,29 +3306,28 @@ namespace stream {
           }
           // Frame limiter should follow the stream FPS the user/client selected (NVHTTP "mode" fps),
           // not the capture display refresh rate.
+          const auto policy = framegen::make_stream_start_policy({
+            .fps = session.stream_fps,
+            .fps_scaled = session.stream_fps_scaled,
+            .frame_generation_enabled = session.config.frame_generation_enabled,
+            .gen1_framegen_fix = session.config.gen1_framegen_fix,
+            .gen2_framegen_fix = session.config.gen2_framegen_fix,
+            .lossless_scaling_framegen = session.config.lossless_scaling_framegen,
+            .lossless_rtss_limit = lossless_rtss_limit,
+            .frame_generation_provider = session.config.frame_generation_provider,
+            .uses_virtual_display = session.virtual_display.active,
+            .capture_mode = config::video.capture,
+            .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+            .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+            .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+          });
           const bool defer_stream_start = platf::is_running_as_system() && !user_session_ready();
           if (defer_stream_start) {
-            deferred_stream_start_t deferred {
-              .fps = session.stream_fps,
-              .fps_scaled = session.stream_fps_scaled,
-              .gen1_framegen_fix = session.config.gen1_framegen_fix,
-              .gen2_framegen_fix = session.config.gen2_framegen_fix,
-              .lossless_rtss_limit = lossless_rtss_limit,
-              .frame_generation_provider = session.config.frame_generation_provider,
-              .smooth_motion = using_smooth_motion,
-            };
+            deferred_stream_start_t deferred {.policy = policy};
             defer_stream_start_actions(std::move(deferred));
             BOOST_LOG(info) << "Stream-start actions deferred until user session is ready.";
           } else {
-            platf::frame_limiter_streaming_start(
-              session.stream_fps,
-              session.stream_fps_scaled,
-              session.config.gen1_framegen_fix,
-              session.config.gen2_framegen_fix,
-              lossless_rtss_limit,
-              session.config.frame_generation_provider,
-              using_smooth_motion
-            );
+            platf::frame_limiter_streaming_start(policy);
             platf::streaming_will_start();
           }
         } else {
@@ -3340,6 +3425,7 @@ namespace stream {
 
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+      session->video.bitrate_events = mail->event<int>(mail::dynamic_bitrate);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {

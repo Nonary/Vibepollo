@@ -15,6 +15,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+  #include "src/rtsp.h"
 
   #include <algorithm>
   #include <boost/algorithm/string/predicate.hpp>
@@ -62,21 +63,12 @@ namespace display_helper_integration::helpers {
     }
 
     bool session_targets_desktop(const rtsp_stream::launch_session_t &session) {
-      const auto apps = proc::proc.get_apps();
-      if (apps.empty()) {
-        return false;
-      }
-
-      const auto app_id = std::to_string(session.appid);
-      const auto it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
-        return app.id == app_id;
-      });
-
-      if (it == apps.end()) {
+      auto app = proc::proc.resolve_app(session.appid);
+      if (!app) {
         return session.appid <= 0;
       }
 
-      return it->cmd.empty() && it->playnite_id.empty();
+      return app->cmd.empty() && app->playnite_id.empty();
     }
 
     bool output_name_targets_virtual(const std::string &output_name) {
@@ -96,6 +88,8 @@ namespace display_helper_integration::helpers {
       snapshot.client_uuid = session.client_uuid;
       snapshot.client_name = session.client_name;
       snapshot.enable_hdr = session.enable_hdr;
+      snapshot.prefer_sdr_10bit = session.prefer_sdr_10bit;
+      snapshot.force_sdr = session.force_sdr;
       snapshot.enable_sops = session.enable_sops;
       snapshot.width = session.width;
       snapshot.height = session.height;
@@ -116,6 +110,7 @@ namespace display_helper_integration::helpers {
       snapshot.gen1_framegen_fix = session.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = session.gen2_framegen_fix;
       snapshot.framegen_refresh_rate = session.framegen_refresh_rate;
+      snapshot.framegen_refresh_multiplier = session.framegen_refresh_multiplier;
       return snapshot;
     }
 
@@ -194,16 +189,6 @@ namespace display_helper_integration::helpers {
       }
     }
 
-    int safe_double_int(int value) {
-      if (value <= 0) {
-        return value;
-      }
-      if (value > std::numeric_limits<int>::max() / 2) {
-        return std::numeric_limits<int>::max();
-      }
-      return value * 2;
-    }
-
     std::optional<int> positive_dimension_to_int(unsigned int value) {
       if (value == 0) {
         return std::nullopt;
@@ -242,7 +227,11 @@ namespace display_helper_integration::helpers {
 
   }  // namespace
 
-  SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session):
+  SessionDisplayConfigurationHelper::SessionDisplayConfigurationHelper(
+    const config::video_t &video_config,
+    const rtsp_stream::launch_session_t &session,
+    const bool virtual_display_intended
+  ):
       video_config_ {video_config},
       effective_video_config_ {video_config},
       session_ {session} {
@@ -257,7 +246,7 @@ namespace display_helper_integration::helpers {
     }
     const auto effective_layout =
       session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
-    if (session_.virtual_display &&
+    if ((session_.virtual_display || virtual_display_intended) &&
         effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
         effective_layout == config::video_t::virtual_display_layout_e::exclusive) {
       effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
@@ -265,12 +254,20 @@ namespace display_helper_integration::helpers {
   }
 
   std::optional<display_device::Resolution> SessionDisplayConfigurationHelper::initial_virtual_display_resolution() const {
-    const auto parsed = display_device::parse_configuration(effective_video_config_, session_);
-    const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
+    const auto cfg = initial_virtual_display_configuration();
     if (!cfg || !cfg->m_resolution || cfg->m_resolution->m_width == 0 || cfg->m_resolution->m_height == 0) {
       return std::nullopt;
     }
     return cfg->m_resolution;
+  }
+
+  std::optional<display_device::SingleDisplayConfiguration> SessionDisplayConfigurationHelper::initial_virtual_display_configuration() const {
+    const auto parsed = display_device::parse_configuration(effective_video_config_, session_);
+    const auto *cfg = std::get_if<display_device::SingleDisplayConfiguration>(&parsed);
+    if (!cfg) {
+      return std::nullopt;
+    }
+    return *cfg;
   }
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
@@ -327,17 +324,14 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "metadata_requests_virtual: " << metadata_requests_virtual;
     const bool session_requests_virtual = session_.virtual_display || config_selects_virtual || metadata_requests_virtual;
     BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
-    const bool double_virtual_refresh =
-      session_requests_virtual &&
-      effective_video_config_.double_refreshrate &&
-      !display_device::refresh_rate_override_active(effective_video_config_, session_);
-    // Either option (virtual_double_refresh or framegen) requests a minimum of 2x base fps
-    const bool needs_double_minimum = double_virtual_refresh || framegen_active;
-    const int minimum_fps = needs_double_minimum ? safe_double_int(base_fps) : base_fps;
-    // Use the higher of display_fps (which may already be doubled by framegen) or the minimum
+    // Fixed-refresh compatibility mode starts at its requested multiplier. The smoother
+    // capture mode begins at the client rate and is promoted dynamically while a game is active.
+    const int refresh_multiplier =
+      framegen_active ? rtsp_stream::framegen_refresh_multiplier(session_) : 1;
+    const int minimum_fps = refresh_multiplier > 1 ? rtsp_stream::saturating_refresh_fps(base_fps, refresh_multiplier) : base_fps;
+    // Use the higher of display_fps (which may already be raised by framegen) or the minimum
     const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
-    BOOST_LOG(debug) << "double_virtual_refresh: " << double_virtual_refresh;
-    BOOST_LOG(debug) << "needs_double_minimum: " << needs_double_minimum;
+    BOOST_LOG(debug) << "refresh_multiplier: " << refresh_multiplier;
     BOOST_LOG(debug) << "minimum_fps: " << minimum_fps;
     BOOST_LOG(debug) << "effective_display_fps: "
                      << (session_requests_virtual ? effective_virtual_display_fps : display_fps);

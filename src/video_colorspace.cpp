@@ -21,7 +21,7 @@ namespace video {
 
   sunshine_colorspace_t colorspace_from_client_config(const config_t &config, bool hdr_display) {
     const bool prefer_sdr_10bit = config.prefer_sdr_10bit && config.dynamicRange > 0;
-    const bool effective_hdr_display = hdr_display && !prefer_sdr_10bit;
+    const bool effective_hdr_display = hdr_display && !prefer_sdr_10bit && !config.force_sdr;
     sunshine_colorspace_t colorspace;
 
     /* See video::config_t declaration for details */

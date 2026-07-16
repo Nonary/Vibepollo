@@ -6,7 +6,8 @@
       "Bash(PATH=\"D:/Software/MSYS2/ucrt64/bin;$env:PATH\" D:/Software/MSYS2/ucrt64/bin/cmake.exe:*)",
       "Bash(Select-Object -First 50)",
       "Bash(PATH=\"D:/Software/MSYS2/ucrt64/bin:$PATH\" cmake --build:*)",
-      "Bash(/d/Software/MSYS2/usr/bin/grep -nE '\"\\(dd_config_verify_only|dd_config_ensure_active|dd_config_ensure_primary|dd_config_ensure_only_display|dd_config_label|dd_config_hint|dd_resolution_option|dd_refresh_rate_option|dd_hdr_option|virtual_display_mode_disabled|virtual_display_mode_per_client|virtual_display_mode_shared|virtual_display_layout_exclusive|virtual_display_layout_extended|virtual_display_layout_extended_primary|virtual_display_layout_extended_isolated|virtual_display_layout_extended_primary_isolated|dd_use_sunshine_virtual_display_driver|app_display_override_virtual|app_display_override_physical|output_name\\)\":' src_assets/common/assets/web/public/assets/locale/en.json)"
+      "Bash(/d/Software/MSYS2/usr/bin/grep -nE '\"\\(dd_config_verify_only|dd_config_ensure_active|dd_config_ensure_primary|dd_config_ensure_only_display|dd_config_label|dd_config_hint|dd_resolution_option|dd_refresh_rate_option|dd_hdr_option|virtual_display_mode_disabled|virtual_display_mode_per_client|virtual_display_mode_shared|virtual_display_layout_exclusive|virtual_display_layout_extended|virtual_display_layout_extended_primary|virtual_display_layout_extended_isolated|virtual_display_layout_extended_primary_isolated|dd_use_sunshine_virtual_display_driver|app_display_override_virtual|app_display_override_physical|output_name\\)\":' src_assets/common/assets/web/public/assets/locale/en.json)",
+      "Bash(ninja -t targets all)"
     ],
     "deny": [],
     "ask": []

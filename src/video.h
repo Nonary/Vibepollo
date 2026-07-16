@@ -49,10 +49,14 @@ namespace video {
     // Set when we bumped dynamicRange to 10-bit for SDR-only encoding (prefer_10bit_sdr)
     bool prefer_sdr_10bit;
 
+    // Force SDR colorspace/signaling independently of negotiated encoder bit depth.
+    bool force_sdr = false;
+
     // Stream-scoped TrueHDR-capable pipeline enable. Runtime foreground-window
     // checks can still bypass per-frame conversion while this remains true, which
     // keeps capture and encoder format stable across desktop/app focus changes.
     bool rtx_hdr_active = false;
+    int rtx_hdr_peak_nits = 1000;
 
     int chromaSamplingType;  // 0 - 4:2:0, 1 - 4:4:4
 
@@ -238,6 +242,23 @@ namespace video {
     virtual void request_normal_frame() = 0;
 
     virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+
+    /**
+     * @brief Apply a new encoder bitrate to the live encoder without rebuilding it.
+     * @param bitrate_kbps New bitrate in kbps.
+     * @return `true` if the encoder reconfigured itself in place; `false` if the caller must
+     *         rebuild the encode session to apply the change.
+     */
+    virtual bool set_bitrate(int bitrate_kbps) {
+      return false;
+    }
+
+    /**
+     * @brief Replace static HDR mastering metadata used for subsequent encoded frames.
+     * @param metadata New mastering-display and content-light metadata.
+     */
+    virtual void set_hdr_metadata(const SS_HDR_METADATA &) {
+    }
   };
 
   // encoders
@@ -292,6 +313,7 @@ namespace video {
     // Raw capture/QPC-derived timestamp before pacing adjustments.
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+    std::chrono::steady_clock::time_point packet_enqueue_timestamp = std::chrono::steady_clock::now();
   };
 
   struct packet_raw_avcodec: packet_raw_t {

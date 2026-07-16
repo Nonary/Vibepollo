@@ -74,6 +74,12 @@ namespace display_helper::v2 {
       const CancellationToken &token,
       std::function<void(bool)> completion) override;
 
+    void dispatch_refresh_rate(
+      std::string device_id,
+      unsigned int numerator,
+      unsigned int denominator,
+      std::function<void(bool)> completion);
+
   private:
     void enqueue_task(std::function<void()> task);
     void worker_loop(std::stop_token st);

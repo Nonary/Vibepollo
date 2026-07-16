@@ -89,6 +89,14 @@ TEST(NvencApiTest, SeparateBitDepthFieldsStartAtSdk122) {
   EXPECT_TRUE(nvenc::api::supports_separate_bit_depth_fields(kApi13_0));
 }
 
+TEST(NvencApiTest, Hdr10MetadataStartsAtSdk130) {
+  EXPECT_FALSE(nvenc::api::supports_hdr10_metadata(kApi11_0));
+  EXPECT_FALSE(nvenc::api::supports_hdr10_metadata(kApi12_0));
+  EXPECT_FALSE(nvenc::api::supports_hdr10_metadata(kApi12_1));
+  EXPECT_FALSE(nvenc::api::supports_hdr10_metadata(kApi12_2));
+  EXPECT_TRUE(nvenc::api::supports_hdr10_metadata(kApi13_0));
+}
+
 TEST(NvencApiTest, StructVersionMappingsMatchReviewedValues) {
   EXPECT_EQ(nvenc::api::function_list_version(kApi11_0), nvenc::api::make_struct_version(kApi11_0, 2U));
   EXPECT_EQ(nvenc::api::function_list_version(kApi13_0), nvenc::api::make_struct_version(kApi13_0, 2U));

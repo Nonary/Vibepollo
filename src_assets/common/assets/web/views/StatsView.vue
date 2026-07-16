@@ -1,5 +1,5 @@
 <template>
-  <div class="stats-page space-y-5 px-2 pb-10 md:px-4">
+  <div class="stats-page space-y-5 pb-10">
     <section class="stats-header">
       <div class="min-w-0">
         <h1 class="text-xl md:text-2xl font-semibold text-dark dark:text-light">

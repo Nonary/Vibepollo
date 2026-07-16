@@ -28,77 +28,63 @@ const platform = computed(() =>
           (config.gamepad === 'auto' && platform !== 'macos')
         "
       >
-        <div class="mb-3 accordion">
-          <div class="accordion-item">
-            <h2 class="accordion-header">
-              <button
-                class="accordion-button"
-                type="button"
-                data-bs-toggle="collapse"
-                data-bs-target="#panelsStayOpen-collapseOne"
-              >
-                {{
-                  $t(
-                    config.gamepad === 'ds4'
-                      ? 'config.gamepad_ds4_manual'
-                      : config.gamepad === 'ds5'
-                        ? 'config.gamepad_ds5_manual'
-                        : 'config.gamepad_auto',
-                  )
-                }}
-              </button>
-            </h2>
-            <div
-              id="panelsStayOpen-collapseOne"
-              class="accordion-collapse collapse show"
-              aria-labelledby="panelsStayOpen-headingOne"
+        <details
+          open
+          class="group mb-3 overflow-hidden rounded-md border border-dark/10 bg-light/60 dark:border-light/10 dark:bg-surface/50"
+        >
+          <summary
+            class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden"
+          >
+            <span>
+              {{
+                $t(
+                  config.gamepad === 'ds4'
+                    ? 'config.gamepad_ds4_manual'
+                    : config.gamepad === 'ds5'
+                      ? 'config.gamepad_ds5_manual'
+                      : 'config.gamepad_auto',
+                )
+              }}
+            </span>
+            <i class="fas fa-chevron-down text-xs opacity-60 transition-transform group-open:rotate-180" />
+          </summary>
+          <div class="border-t border-dark/10 px-4 py-4 dark:border-light/10">
+            <template
+              v-if="config.gamepad === 'auto' && (platform === 'windows' || platform === 'linux')"
             >
-              <div class="accordion-body">
-                <template
-                  v-if="
-                    config.gamepad === 'auto' && (platform === 'windows' || platform === 'linux')
-                  "
-                >
-                  <ConfigFieldRenderer
-                    setting-key="motion_as_ds4"
-                    v-model="config.motion_as_ds4"
-                    class="mb-3"
-                  />
-                  <ConfigFieldRenderer
-                    setting-key="touchpad_as_ds4"
-                    v-model="config.touchpad_as_ds4"
-                    class="mb-3"
-                  />
-                </template>
+              <ConfigFieldRenderer
+                setting-key="motion_as_ds4"
+                v-model="config.motion_as_ds4"
+                class="mb-3"
+              />
+              <ConfigFieldRenderer
+                setting-key="touchpad_as_ds4"
+                v-model="config.touchpad_as_ds4"
+                class="mb-3"
+              />
+            </template>
 
-                <template
-                  v-if="
-                    config.gamepad === 'ds4' ||
-                    (config.gamepad === 'auto' && platform === 'windows')
-                  "
-                >
-                  <ConfigFieldRenderer
-                    setting-key="ds4_back_as_touchpad_click"
-                    v-model="config.ds4_back_as_touchpad_click"
-                    class="mb-3"
-                  />
-                </template>
+            <template
+              v-if="config.gamepad === 'ds4' || (config.gamepad === 'auto' && platform === 'windows')"
+            >
+              <ConfigFieldRenderer
+                setting-key="ds4_back_as_touchpad_click"
+                v-model="config.ds4_back_as_touchpad_click"
+                class="mb-3"
+              />
+            </template>
 
-                <template
-                  v-if="
-                    config.gamepad === 'ds5' || (config.gamepad === 'auto' && platform === 'linux')
-                  "
-                >
-                  <ConfigFieldRenderer
-                    setting-key="ds5_inputtino_randomize_mac"
-                    v-model="config.ds5_inputtino_randomize_mac"
-                    class="mb-3"
-                  />
-                </template>
-              </div>
-            </div>
+            <template
+              v-if="config.gamepad === 'ds5' || (config.gamepad === 'auto' && platform === 'linux')"
+            >
+              <ConfigFieldRenderer
+                setting-key="ds5_inputtino_randomize_mac"
+                v-model="config.ds5_inputtino_randomize_mac"
+                class="mb-3"
+              />
+            </template>
           </div>
-        </div>
+        </details>
       </template>
     </template>
 

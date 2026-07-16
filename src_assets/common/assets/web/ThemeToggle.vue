@@ -11,6 +11,9 @@ import {
 } from '@/theme';
 
 const { t } = useI18n();
+const props = defineProps<{
+  compact?: boolean;
+}>();
 
 const open = ref(false);
 const current = ref('auto');
@@ -66,10 +69,13 @@ onMounted(() => {
     <n-button
       tertiary
       size="small"
-      class="flex items-center gap-2 bg-transparent border-0 shadow-none hover:bg-transparent focus:outline-none"
+      :circle="props.compact"
+      :aria-label="$t('navbar.toggle_theme')"
+      :title="$t('navbar.toggle_theme')"
+      class="theme-toggle flex items-center gap-2 bg-transparent border-0 shadow-none hover:bg-transparent focus:outline-none"
     >
       <span class="theme-icon-active"><i :class="activeIcon" /></span>
-      <span>{{ $t('navbar.toggle_theme') }}</span>
+      <span v-if="!props.compact" class="theme-toggle__label">{{ $t('navbar.toggle_theme') }}</span>
     </n-button>
   </n-dropdown>
 </template>

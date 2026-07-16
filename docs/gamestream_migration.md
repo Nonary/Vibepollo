@@ -17,6 +17,15 @@ To stream over the Internet with Sunshine and a UPnP-capable router, enable the 
 > Running Sunshine together with versions of the Moonlight Internet Hosting Tool prior to v5.6 will cause UPnP
 > port forwarding to become unreliable. Either uninstall the tool entirely or update it to v5.6 or later.
 
+## App Identity
+Sunshine reports each app with a stable `UUID` and a numeric `ID` in `/applist`.
+Clients should treat `UUID` as the persistent app identity. The numeric `ID` is a GameStream transport and artwork
+cache key, so it may change after an app's cover art changes.
+
+Newer clients can also read the optional `ArtVersion` field from `/applist` to invalidate cached artwork without
+changing their saved app identity. Sunshine keeps old numeric IDs as compatibility aliases for launch and artwork
+requests, but client state should be keyed by `UUID` when possible.
+
 ## Limitations
 Sunshine does have some limitations, as compared to Nvidia GameStream.
 

@@ -31,8 +31,14 @@ namespace platf::rtx_hdr {
     std::string foreground_source;
   };
 
+  struct live_output_metadata_state_t {
+    std::uint32_t generation {0};
+    int peak_brightness {0};
+  };
+
   void notify_live_settings_changed();
   std::uint64_t live_settings_generation();
+  live_output_metadata_state_t live_output_metadata_state();
   float sdr_brightness_to_white_nits(int brightness);
 
 #ifdef SUNSHINE_TESTS

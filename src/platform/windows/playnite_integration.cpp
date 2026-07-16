@@ -63,6 +63,7 @@ namespace platf::playnite {
     std::unordered_map<std::string, std::string> g_install_dirs;  // lower(playnite id) -> install dir
     std::mutex g_active_game_mutex;
     active_game_status_t g_active_game;
+    std::vector<active_game_status_t> g_active_games;
 
     std::string lower_copy(std::string s) {
       std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
@@ -84,18 +85,30 @@ namespace platf::playnite {
         return;
       }
       std::scoped_lock lk(g_active_game_mutex);
-      g_active_game.active = true;
-      g_active_game.id = id;
-      g_active_game.exe = exe;
-      g_active_game.install_dir = install_dir;
+      const auto normalized_id = lower_copy(id);
+      std::erase_if(g_active_games, [&](const auto &game) {
+        return lower_copy(game.id) == normalized_id;
+      });
+      g_active_games.push_back({
+        .active = true,
+        .id = id,
+        .exe = exe,
+        .install_dir = install_dir,
+      });
+      g_active_game = g_active_games.back();
     }
 
     void remember_active_game_stopped(const std::string &id) {
       std::scoped_lock lk(g_active_game_mutex);
-      if (!id.empty() && !g_active_game.id.empty() && id != g_active_game.id) {
-        return;
+      if (id.empty()) {
+        g_active_games.clear();
+      } else {
+        const auto normalized_id = lower_copy(id);
+        std::erase_if(g_active_games, [&](const auto &game) {
+          return lower_copy(game.id) == normalized_id;
+        });
       }
-      g_active_game = {};
+      g_active_game = g_active_games.empty() ? active_game_status_t {} : g_active_games.back();
     }
   }  // namespace
 
@@ -115,6 +128,11 @@ namespace platf::playnite {
   active_game_status_t get_active_game_status() {
     std::scoped_lock lk(g_active_game_mutex);
     return g_active_game;
+  }
+
+  std::vector<active_game_status_t> get_active_game_statuses() {
+    std::scoped_lock lk(g_active_game_mutex);
+    return g_active_games;
   }
 
   struct playnite_session_tracker_t {
@@ -314,9 +332,37 @@ namespace platf::playnite {
       return client_ && client_->send_json_line(s);
     }
 
-    void trigger_sync() {
+    bool trigger_sync() {
+      // Reconciling against the cached snapshot right away is wrong when the IPC client just
+      // started (cache empty) or Playnite has unsent changes: ask the plugin for a fresh snapshot
+      // and wait for it to complete before syncing. Older plugins ignore the command and never
+      // bump the generation; the timeout covers them (their connect-time snapshot usually lands
+      // well within it).
+      uint64_t start_generation = 0;
+      {
+        std::scoped_lock lk(mutex_);
+        start_generation = snapshot_generation_;
+      }
+      try {
+        nlohmann::json req;
+        req["type"] = "command";
+        req["command"] = "snapshot";
+        send_cmd_json_line(req.dump());
+      } catch (...) {}
+      {
+        std::unique_lock lk(mutex_);
+        const bool fresh = snapshot_cv_.wait_for(lk, kManualSyncSnapshotWait, [&]() {
+          return snapshot_generation_ != start_generation;
+        });
+        if (!fresh) {
+          BOOST_LOG(warning) << "Playnite: no fresh library snapshot within "
+                             << std::chrono::duration_cast<std::chrono::seconds>(kManualSyncSnapshotWait).count()
+                             << "s; syncing against cached data";
+        }
+      }
       auto stats = sync_apps_metadata();
       BOOST_LOG(info) << "Playnite: manual library sync " << sync_summary(stats);
+      return stats.success;
     }
 
     void snapshot_games(std::vector<platf::playnite::Game> &out) {
@@ -354,6 +400,7 @@ namespace platf::playnite {
           last_categories_.clear();
           last_plugins_.clear();
           new_snapshot_ = true;
+          snapshot_markers_supported_ = false;
         } catch (...) {}
         {
           std::scoped_lock lk(progress_mutex_);
@@ -385,7 +432,11 @@ namespace platf::playnite {
         } catch (...) {}
       });
       client_->start();
-      new_snapshot_ = true;
+      {
+        std::scoped_lock lk(mutex_);
+        new_snapshot_ = true;
+        snapshot_markers_supported_ = false;
+      }
       {
         std::scoped_lock lk(progress_mutex_);
         snapshot_progress_ = {};
@@ -684,7 +735,15 @@ namespace platf::playnite {
           }
           refresh_config_id_name_fields(cats_copy, games_copy, plugins_copy);
         }
-        if (config::playnite.auto_sync) {
+        bool defer_sync_to_snapshot_complete = false;
+        {
+          std::scoped_lock lk(mutex_);
+          defer_sync_to_snapshot_complete = snapshot_markers_supported_;
+        }
+        // When the plugin brackets snapshots with start/complete markers, reconciling per batch
+        // would treat a partially accumulated library as the whole library and purge apps whose
+        // games simply haven't arrived yet; wait for SnapshotComplete instead.
+        if (config::playnite.auto_sync && !defer_sync_to_snapshot_complete) {
           sync_stats = sync_apps_metadata();
           attempted_sync = true;
         }
@@ -695,6 +754,8 @@ namespace platf::playnite {
              << " total=" << (before + added);
         if (attempted_sync) {
           line << " auto_sync " << sync_summary(sync_stats);
+        } else if (defer_sync_to_snapshot_complete) {
+          line << " auto_sync deferred";
         } else {
           line << " auto_sync disabled";
         }
@@ -713,6 +774,33 @@ namespace platf::playnite {
           snapshot_progress_.pending_info = true;
           snapshot_progress_.last_update = std::chrono::steady_clock::now();
         }
+      } else if (msg.type == MT::SnapshotStart) {
+        BOOST_LOG(debug) << "Playnite: library snapshot starting";
+        std::scoped_lock lk(mutex_);
+        snapshot_markers_supported_ = true;
+      } else if (msg.type == MT::SnapshotComplete) {
+        std::size_t total = 0;
+        {
+          std::scoped_lock lk(mutex_);
+          snapshot_markers_supported_ = true;
+          ++snapshot_generation_;
+          total = last_games_.size();
+        }
+        snapshot_cv_.notify_all();
+        SyncStats sync_stats;
+        bool attempted_sync = false;
+        if (config::playnite.auto_sync) {
+          sync_stats = sync_apps_metadata();
+          attempted_sync = true;
+        }
+        std::ostringstream line;
+        line << "Playnite: library snapshot complete games=" << total;
+        if (attempted_sync) {
+          line << " auto_sync " << sync_summary(sync_stats);
+        } else {
+          line << " auto_sync disabled";
+        }
+        BOOST_LOG(info) << line.str();
       } else if (msg.type == MT::Status) {
         BOOST_LOG(debug) << "Playnite: status '" << msg.status_name
                          << "' id='" << msg.status_game_id
@@ -770,6 +858,22 @@ namespace platf::playnite {
       using nlohmann::json;
       const std::string path = config::stream.file_apps;
       SyncStats stats;
+
+      // Build all games snapshot and reconcile with apps.json via helper
+      std::vector<platf::playnite::Game> all;
+      {
+        std::scoped_lock lk(mutex_);
+        all = last_games_;
+      }
+      // An empty snapshot means "no data from Playnite" (client just started, or Playnite not
+      // running), not "the library is empty". Reconciling against it would purge auto apps whose
+      // last-played/installed evidence simply hasn't arrived.
+      if (all.empty()) {
+        BOOST_LOG(warning) << "Playnite sync skipped: no games in cached library snapshot";
+        stats.error = "no library snapshot from Playnite";
+        return stats;
+      }
+
       std::string content = file_handler::read_file(path.c_str());
       stats.file_size = content.size();
       json root = json::parse(content);
@@ -777,13 +881,6 @@ namespace platf::playnite {
         BOOST_LOG(warning) << "apps.json has no 'apps' array";
         stats.error = "missing apps array";
         return stats;
-      }
-
-      // Build all games snapshot and reconcile with apps.json via helper
-      std::vector<platf::playnite::Game> all;
-      {
-        std::scoped_lock lk(mutex_);
-        all = last_games_;
       }
       int recentN = std::max(0, config::playnite.recent_games);
       int recent_age_days = std::max(0, config::playnite.recent_max_age_days);
@@ -860,6 +957,9 @@ namespace platf::playnite {
     std::unique_ptr<platf::playnite::IpcClient> client_;
     mutable std::mutex client_mutex_;
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
+    bool snapshot_markers_supported_ = false;  // Plugin sends snapshotStart/snapshotComplete (reset per connection)
+    uint64_t snapshot_generation_ = 0;  // Incremented on every completed snapshot
+    std::condition_variable snapshot_cv_;  // Signals snapshot completion (paired with mutex_)
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
     SnapshotProgress snapshot_progress_;
@@ -870,6 +970,8 @@ namespace platf::playnite {
     // automatically stop after 30 seconds of inactivity to save resources.
     static constexpr auto kApiInactivityTimeout = std::chrono::seconds(30);
     static constexpr auto kInactivityCheckInterval = std::chrono::seconds(5);
+    // How long a manual sync waits for a requested library snapshot to complete
+    static constexpr auto kManualSyncSnapshotWait = std::chrono::seconds(10);
 
     std::atomic<bool> api_started_ {false};  // True if client was started for API (not session)
     std::atomic<bool> session_active_ {false};  // True if a game session is active (overrides API timeout)
@@ -1339,8 +1441,7 @@ namespace platf::playnite {
       return false;
     }
     inst->ensure_started_for_api();
-    inst->trigger_sync();
-    return true;
+    return inst->trigger_sync();
   }
 
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {
@@ -1363,25 +1464,8 @@ namespace platf::playnite {
     }
 
     try {
-      std::filesystem::path src = gptr->box_art_path;
-      std::filesystem::path dstDir = platf::appdata() / "covers";
-      file_handler::make_directory(dstDir.string());
-      std::filesystem::path dst = dstDir / ("playnite_" + playnite_id + ".png");
-      bool ok = false;
-      std::error_code ec1, ec2;
-      if (std::filesystem::exists(dst)) {
-        auto dstTime = std::filesystem::last_write_time(dst, ec1);
-        auto srcTime = std::filesystem::last_write_time(src, ec2);
-        if (!ec1 && !ec2 && dstTime >= srcTime) {
-          ok = true;
-        }
-      }
-      if (!ok) {
-        std::wstring wsrc = src.wstring();
-        std::wstring wdst = dst.wstring();
-        ok = platf::img::convert_to_png_96dpi(wsrc, wdst);
-      }
-      if (ok) {
+      std::filesystem::path dst = platf::appdata() / "covers" / ("playnite_" + playnite_id + ".png");
+      if (platf::playnite::sync::convert_playnite_image_to_png(gptr->box_art_path, dst)) {
         out_path = dst.generic_string();
         return true;
       }

@@ -2217,6 +2217,16 @@ namespace platf {
     return info;
   }
 
+  bool is_windows_11_or_later() {
+    // Windows 11 shipped as build 22000; treat an unreadable build number as Windows 11
+    // so feature defaults aren't downgraded on a fluke.
+    static const bool result = []() {
+      const auto version = query_windows_version();
+      return !version.build_number.has_value() || *version.build_number >= 22000;
+    }();
+    return result;
+  }
+
   class win32_high_precision_timer: public high_precision_timer {
   public:
     win32_high_precision_timer() {

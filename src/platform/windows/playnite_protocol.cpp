@@ -118,6 +118,10 @@ namespace platf::playnite {
             m.games.emplace_back(std::move(game));
           }
         }
+      } else if (type == "snapshotStart") {
+        m.type = MessageType::SnapshotStart;
+      } else if (type == "snapshotComplete") {
+        m.type = MessageType::SnapshotComplete;
       } else if (type == "status") {
         m.type = MessageType::Status;
         const auto &st = j.value("status", json::object());

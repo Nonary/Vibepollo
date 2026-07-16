@@ -91,6 +91,7 @@ namespace stream {
     std::optional<int> gcmap;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
+    bool frame_generation_enabled;
     bool lossless_scaling_framegen;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
@@ -142,7 +143,8 @@ namespace stream {
     int encoder_bitrate_kbps;
     int requested_bitrate_kbps;  // Original client-requested wire bitrate (== encoder_bitrate_kbps for clients that don't send maximumBitrateKbps)
     int video_format;  // 0=H.264, 1=HEVC, 2=AV1
-    int dynamic_range;  // 0=SDR 8-bit, 1=HDR 10-bit
+    int dynamic_range;  // Encoder bit depth: 0=8-bit, 1=10-bit
+    bool hdr;
     bool yuv444;
     int audio_channels;
     std::string stream_gpu_model;
@@ -172,4 +174,12 @@ namespace stream {
   std::vector<session_info_t> get_all_session_info();
 
   void request_idr_for_all_sessions();
+
+  /**
+   * @brief Apply a new encoder bitrate to active streaming sessions at runtime.
+   * @param client_uuid Target client UUID; when empty, applies to every active session.
+   * @param bitrate_kbps New encoder bitrate in kbps (already clamped by the caller).
+   * @return Number of sessions updated.
+   */
+  int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps);
 }  // namespace stream

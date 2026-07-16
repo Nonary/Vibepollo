@@ -411,8 +411,25 @@ export function getConfigSelectOptions(
         { label: translateOr(t, 'frameLimiter.provider.auto', 'Auto'), value: 'auto' },
         { label: translateOr(t, 'frameLimiter.provider.rtss', 'RTSS'), value: 'rtss' },
         {
-          label: translateOr(t, 'frameLimiter.provider.nvcp', 'NVIDIA Control Panel'),
+          label: translateOr(t, 'frameLimiter.provider.nvcp', 'NVIDIA driver'),
           value: 'nvidia-control-panel',
+        },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'frame_limiter_auto_virtual_framegen': {
+      const options = [
+        {
+          label: translateOr(t, 'frameLimiter.virtual.modeEnabled', 'Enabled (recommended)'),
+          value: 'enabled',
+        },
+        {
+          label: translateOr(t, 'frameLimiter.virtual.modeDisabled', 'Disabled'),
+          value: 'disabled',
+        },
+        {
+          label: translateOr(t, 'frameLimiter.virtual.modeLegacy', 'Legacy (fixed 2× refresh)'),
+          value: 'legacy',
         },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
@@ -538,6 +555,16 @@ export function getConfigSelectOptions(
           ),
           value: 'extended_primary_isolated',
         },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'dd_virtual_display_scale': {
+      const options: ConfigSelectOption[] = [
+        { label: t('config.virtual_display_scale_auto'), value: 0 },
+        ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
+          label: `${value}%`,
+          value,
+        })),
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }

@@ -53,6 +53,7 @@
 #include "state_storage.h"
 #include "update.h"
 #ifdef _WIN32
+  #include "platform/windows/display.h"
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
@@ -336,11 +337,40 @@ namespace nvhttp {
         (!shared_virtual_display_mode && !launch_session->client_uuid.empty()) ?
           launch_session->client_uuid :
           launch_session->unique_id;
-      const bool has_app_output_override = app_output_override.has_value();
+      bool has_app_output_override = app_output_override.has_value();
+      auto make_framegen_policy = [&](bool uses_virtual_display) {
+        return framegen::make_stream_start_policy({
+          .fps = launch_session->fps,
+          .frame_generation_enabled = launch_session->frame_generation_enabled,
+          .gen1_framegen_fix = launch_session->gen1_framegen_fix,
+          .gen2_framegen_fix = launch_session->gen2_framegen_fix,
+          .lossless_scaling_framegen = launch_session->lossless_scaling_framegen,
+          .lossless_rtss_limit = launch_session->lossless_scaling_rtss_limit,
+          .frame_generation_provider = launch_session->frame_generation_provider,
+          .uses_virtual_display = uses_virtual_display,
+          .capture_mode = config::video.capture,
+          .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+          .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+          .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+        });
+      };
+      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
+      if (framegen_requires_virtual_display) {
+        request_virtual_display = true;
+        app_output_override.reset();
+        has_app_output_override = false;
+      }
+      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
+        const auto framegen_policy = make_framegen_policy(uses_virtual_display);
+        launch_session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        launch_session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
+      };
       BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
                        << "' allow_display_changes=" << allow_display_changes
                        << " no_active_sessions=" << no_active_sessions
                        << " request_virtual_display=" << request_virtual_display
+                       << " framegen_requires_virtual_display=" << framegen_requires_virtual_display
                        << " previous_virtual_device_id='" << launch_session->virtual_display_device_id
                        << "' active_output='" << config::get_active_output_name()
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
@@ -358,7 +388,7 @@ namespace nvhttp {
         return;
       }
 
-      if (has_app_output_override && !client_requests_virtual) {
+      if (has_app_output_override && !client_requests_virtual && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         disable_virtual_display_request();
         if (!launch_session->virtual_display_mode_override) {
@@ -377,6 +407,7 @@ namespace nvhttp {
             launch_session->virtual_display_needs_resume_apply = true;
             config::set_runtime_output_name_override(*existing_device);
             pending_output_override = *existing_device;
+            apply_framegen_refresh_policy(true);
             BOOST_LOG(info) << "Display helper: preserving virtual display capture target for resume (device_id="
                             << *existing_device << ").";
             BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for resume.";
@@ -390,6 +421,7 @@ namespace nvhttp {
           if (app_output_override) {
             config::set_runtime_output_name_override(*app_output_override);
             pending_output_override = *app_output_override;
+            apply_framegen_refresh_policy(false);
             BOOST_LOG(info) << "Display helper: preserving output override for resume: "
                             << (app_output_override->empty() ? "primary display" : *app_output_override);
           } else {
@@ -418,6 +450,7 @@ namespace nvhttp {
       BOOST_LOG(debug) << "config_requests_virtual: " << config_requests_virtual;
       BOOST_LOG(debug) << "client_requests_virtual: " << client_requests_virtual;
       BOOST_LOG(debug) << "session_requests_virtual: " << session_requests_virtual;
+      BOOST_LOG(debug) << "framegen_requires_virtual_display: " << framegen_requires_virtual_display;
       BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
       const auto requested_output_name = app_output_override ? *app_output_override : config::get_active_output_name();
@@ -536,12 +569,23 @@ namespace nvhttp {
 
           uint32_t vd_width = launch_session->width > 0 ? static_cast<uint32_t>(launch_session->width) : 1920u;
           uint32_t vd_height = launch_session->height > 0 ? static_cast<uint32_t>(launch_session->height) : 1080u;
-          display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *launch_session);
-          if (auto initial_resolution = initial_display_helper.initial_virtual_display_resolution()) {
-            vd_width = initial_resolution->m_width;
-            vd_height = initial_resolution->m_height;
-            BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
-                            << vd_width << 'x' << vd_height;
+          // Virtual-display creation may eagerly enable HDR. Default to no state change so
+          // "Do not change HDR" preserves the retained Windows setting.
+          bool virtual_display_hdr_requested = false;
+          display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *launch_session, true);
+          if (auto initial_configuration = initial_display_helper.initial_virtual_display_configuration()) {
+            if (initial_configuration->m_resolution &&
+                initial_configuration->m_resolution->m_width > 0 &&
+                initial_configuration->m_resolution->m_height > 0) {
+              vd_width = initial_configuration->m_resolution->m_width;
+              vd_height = initial_configuration->m_resolution->m_height;
+              BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
+                              << vd_width << 'x' << vd_height;
+            }
+            if (initial_configuration->m_hdr_state) {
+              virtual_display_hdr_requested =
+                *initial_configuration->m_hdr_state == display_device::HdrState::Enabled;
+            }
           }
           uint32_t base_vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
           uint32_t base_vd_fps_millihz = base_vd_fps;
@@ -560,8 +604,11 @@ namespace nvhttp {
             vd_fps *= 1000u;
           }
           const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
-          if (base_vd_fps_millihz > 0 && (config::video.dd.wa.virtual_double_refresh || framegen_refresh_active)) {
-            vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
+          const int refresh_multiplier =
+            framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1;
+          if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
+            const uint64_t minimum = static_cast<uint64_t>(base_vd_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
+            vd_fps = std::max(vd_fps, static_cast<uint32_t>(std::min<uint64_t>(minimum, std::numeric_limits<uint32_t>::max())));
           }
 
           std::string client_label;
@@ -625,7 +672,8 @@ namespace nvhttp {
             virtual_display_guid,
             base_vd_fps_millihz,
             framegen_refresh_active,
-            launch_session->enable_hdr,
+            refresh_multiplier,
+            virtual_display_hdr_requested,
             false,
             !shared_mode
           );
@@ -653,7 +701,8 @@ namespace nvhttp {
             recovery_params.fps = vd_fps;
             recovery_params.base_fps_millihz = base_vd_fps_millihz;
             recovery_params.framegen_refresh_active = framegen_refresh_active;
-            recovery_params.hdr_requested = launch_session->enable_hdr;
+            recovery_params.framegen_refresh_multiplier = refresh_multiplier;
+            recovery_params.hdr_requested = virtual_display_hdr_requested;
             recovery_params.client_uid = display_uuid_source;
             recovery_params.client_name = client_label;
             recovery_params.hdr_profile = launch_session->hdr_profile;
@@ -728,6 +777,8 @@ namespace nvhttp {
             launch_session->virtual_display_guid_bytes.fill(0);
             launch_session->virtual_display_device_id.clear();
             launch_session->virtual_display_ready_since.reset();
+            launch_session->framegen_refresh_rate.reset();
+            launch_session->framegen_refresh_multiplier = 1;
             BOOST_LOG(warning) << "Virtual display creation failed.";
           }
         };
@@ -737,6 +788,7 @@ namespace nvhttp {
           request_virtual_display = true;
         }
         if (allow_display_changes) {
+          apply_framegen_refresh_policy(request_virtual_display);
           apply_virtual_display_request(request_virtual_display);
           if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
             config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
@@ -1342,8 +1394,10 @@ namespace nvhttp {
       launch_session->appid = 0;
       launch_session->gen1_framegen_fix = false;
       launch_session->gen2_framegen_fix = false;
+      launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_multiplier = 1;
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
       launch_session->frame_generation_provider = "lossless-scaling";
@@ -1478,7 +1532,10 @@ namespace nvhttp {
 
       launch_session->unique_id = get_arg(args, "uniqueid", "unknown");
       launch_session->perm = named_cert_p->perm;
-      launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
+      const auto launch_appid_arg = get_arg(args, "appid", "0");
+      const auto launch_appuuid_arg = get_arg(args, "appuuid", "");
+      auto launch_app_ctx = proc::proc.resolve_app(launch_appid_arg, launch_appuuid_arg);
+      launch_session->appid = launch_app_ctx ? (int) util::from_view(launch_app_ctx->id) : (int) util::from_view(launch_appid_arg);
       if (!named_cert_p->output_name_override.empty()) {
         launch_session->output_name_override = named_cert_p->output_name_override;
       }
@@ -1494,82 +1551,63 @@ namespace nvhttp {
         launch_session->client_name = original_client_name;
       }
 
-      if (launch_session->appid > 0) {
+      if (launch_app_ctx || launch_session->appid > 0) {
         try {
-          auto apps_snapshot = proc::proc.get_apps();
-          const std::string app_id_str = std::to_string(launch_session->appid);
-          for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id == app_id_str) {
-              launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
-              launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
-              launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
-              launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
-              launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
-              launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
-              rtsp_stream::launch_session_t::app_metadata_t metadata;
-              metadata.id = app_ctx.id;
-              metadata.name = app_ctx.name;
-              metadata.virtual_screen = app_ctx.virtual_screen || app_ctx.virtual_display;
-              metadata.has_command = !app_ctx.cmd.empty();
-              metadata.has_playnite = !app_ctx.playnite_id.empty();
-              metadata.playnite_fullscreen = app_ctx.playnite_fullscreen;
-              launch_session->virtual_display = app_ctx.virtual_screen;
-              if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
-                launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
-              }
-              if (!launch_session->virtual_display_layout_override && app_ctx.virtual_display_layout_override) {
-                launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
-              }
-              if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
-                launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
-              }
-              if (!launch_session->output_name_override && app_ctx.output_name_override) {
-                launch_session->output_name_override = *app_ctx.output_name_override;
-              }
-              launch_session->app_metadata = std::move(metadata);
-              break;
+          if (auto app_ctx = launch_app_ctx ? launch_app_ctx : proc::proc.resolve_app(launch_session->appid)) {
+            launch_session->appid = (int) util::from_view(app_ctx->id);
+            launch_session->gen1_framegen_fix = app_ctx->gen1_framegen_fix;
+            launch_session->gen2_framegen_fix = app_ctx->gen2_framegen_fix;
+            launch_session->frame_generation_enabled = app_ctx->frame_generation_enabled;
+            launch_session->lossless_scaling_framegen = app_ctx->lossless_scaling_framegen;
+            launch_session->lossless_scaling_target_fps = app_ctx->lossless_scaling_target_fps;
+            launch_session->lossless_scaling_rtss_limit = app_ctx->lossless_scaling_rtss_limit;
+            launch_session->frame_generation_provider = app_ctx->frame_generation_provider;
+            rtsp_stream::launch_session_t::app_metadata_t metadata;
+            metadata.id = app_ctx->id;
+            metadata.name = app_ctx->name;
+            metadata.virtual_screen = app_ctx->virtual_screen || app_ctx->virtual_display;
+            metadata.has_command = !app_ctx->cmd.empty();
+            metadata.has_playnite = !app_ctx->playnite_id.empty();
+            metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
+            launch_session->virtual_display = app_ctx->virtual_screen;
+            if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
+              launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
             }
+            if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
+              launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
+            }
+            if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+              launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+            }
+            if (!launch_session->output_name_override && app_ctx->output_name_override) {
+              launch_session->output_name_override = *app_ctx->output_name_override;
+            }
+            launch_session->app_metadata = std::move(metadata);
           }
         } catch (...) {
         }
       }
 
-      const auto apply_refresh_override = [&](int candidate) {
-        if (candidate <= 0) {
-          return;
-        }
-        if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
-          launch_session->framegen_refresh_rate = candidate;
-        }
-      };
-
       launch_session->framegen_refresh_rate.reset();
-      if (launch_session->fps > 0) {
-        const auto saturating_double = [](int value) -> int {
-          if (value > std::numeric_limits<int>::max() / 2) {
-            return std::numeric_limits<int>::max();
-          }
-          return value * 2;
-        };
-
-        if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-          apply_refresh_override(saturating_double(launch_session->fps));
-        }
-      }
+      launch_session->framegen_refresh_multiplier = 1;
       launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
       launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
       launch_session->surround_params = (get_arg(args, "surroundParams", ""));
       launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+      launch_session->prefer_sdr_10bit = named_cert_p->prefer_10bit_sdr.value_or(config::video.prefer_10bit_sdr);
 #ifdef _WIN32
       {
         using override_e = config::video_t::dd_t::hdr_request_override_e;
         switch (config::video.dd.hdr_request_override) {
           case override_e::force_on:
             launch_session->enable_hdr = true;
+            launch_session->prefer_sdr_10bit = false;
+            launch_session->force_sdr = false;
             break;
           case override_e::force_off:
             launch_session->enable_hdr = false;
+            launch_session->force_sdr = true;
             break;
           case override_e::automatic:
             break;
@@ -2482,7 +2520,7 @@ namespace nvhttp {
           visible_apps.push_back(&app);
         }
 
-        const bool enable_legacy_ordering = true;
+        const bool enable_legacy_ordering = config::sunshine.legacy_ordering && named_cert_p->enable_legacy_ordering;
         size_t bits = 0;
         if (enable_legacy_ordering && !visible_apps.empty()) {
           bits = zwpad::pad_width_for_count(visible_apps.size());
@@ -2512,6 +2550,7 @@ namespace nvhttp {
           app_node.put("UUID", app.uuid);
           app_node.put("IDX", app.idx);
           app_node.put("ID", app.id);
+          app_node.put("ArtVersion", app.art_version);
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
@@ -2553,7 +2592,8 @@ namespace nvhttp {
 
       auto appid_str = get_arg(args, "appid", "0");
       auto appuuid_str = get_arg(args, "appuuid", "");
-      auto appid = util::from_view(appid_str);
+      auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
+      auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_appid = proc::proc.running();
       auto current_app_uuid = proc::proc.get_running_app_uuid();
       bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
@@ -2652,15 +2692,8 @@ namespace nvhttp {
         try {
           // Find the target app and apply its config overrides (if any), then layer on client overrides.
           std::unordered_map<std::string, std::string> overrides;
-          const auto apps = proc::proc.get_apps();
-          const auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
-            if (!appuuid_str.empty()) {
-              return app.uuid == appuuid_str;
-            }
-            return app.id == appid_str;
-          });
-          if (app_iter != apps.end()) {
-            overrides = app_iter->config_overrides;
+          if (requested_app) {
+            overrides = requested_app->config_overrides;
           }
 
           auto client_settings = named_cert_p;
@@ -2681,6 +2714,25 @@ namespace nvhttp {
               overrides.insert_or_assign(k, v);
             }
           }
+
+#ifdef _WIN32
+          // "Auto" client peak brightness follows the selected Windows HDR calibration
+          // profile's MHC2 peak. An explicit app/client override remains authoritative.
+          if (client_settings &&
+              !client_settings->hdr_profile.empty() &&
+              !overrides.contains("rtx_hdr_peak_brightness")) {
+            if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(client_settings->hdr_profile)) {
+              const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
+              overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
+              BOOST_LOG(info) << "HDR peak: using " << effective_peak << " nits from MHC2 profile '"
+                              << client_settings->hdr_profile << "'"
+                              << (*profile_peak == effective_peak ? "." : " (clamped to supported range).");
+            } else {
+              BOOST_LOG(warning) << "HDR peak: profile '" << client_settings->hdr_profile
+                                 << "' has no readable MHC2 peak; using the configured default.";
+            }
+          }
+#endif
 
           config::set_runtime_config_overrides(std::move(overrides));
           runtime_overrides_applied = true;
@@ -2926,7 +2978,7 @@ namespace nvhttp {
           }
 
 #ifdef _WIN32
-          rtsp_stream::set_vulkan_hdr_layer_pending_stream(launch_session->enable_hdr);
+          rtsp_stream::set_vulkan_hdr_layer_pending_stream(rtsp_stream::effective_hdr_requested(*launch_session));
 #endif
           auto err = proc::proc.execute(*app_iter, launch_session);
           if (err) {
@@ -3319,7 +3371,10 @@ namespace nvhttp {
     }
 
     auto args = request->parse_query_string();
-    auto app_image = proc::proc.get_app_image((int) util::from_view(get_arg(args, "appid")));
+    const auto appid = get_arg(args, "appid", "0");
+    const auto appuuid = get_arg(args, "appuuid", "");
+    auto app_ctx = proc::proc.resolve_app(appid, appuuid);
+    auto app_image = app_ctx ? proc::validate_app_image_path(app_ctx->image_path) : proc::proc.get_app_image((int) util::from_view(appid));
 
     fg.disable();
 
@@ -3430,6 +3485,85 @@ namespace nvhttp {
 
     response->write();
     return;
+  }
+
+  void setBitrate(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    pt::ptree tree;
+    auto g = util::fail_guard([&]() {
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      response->write(data.str());
+      response->close_connection_after_response = true;
+    });
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
+      log_permission_denied("SetBitrate"sv, "View stream"sv, named_cert_p);
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", permission_denied_status_message(named_cert_p, "View stream"sv));
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    const int requested = (int) util::from_view(get_arg(args, "bitrate", "0"));
+    if (requested <= 0) {
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Missing or invalid bitrate parameter");
+      return;
+    }
+
+    // Clamp to the host bitrate ceiling. max_bitrate == 0 means "unlimited" in config, so also
+    // enforce an absolute ceiling to keep the value sane and avoid overflow downstream
+    // (bitrate_kbps * 1000 must fit the encoder's 32-bit rate-control fields).
+    constexpr int absolute_max_bitrate_kbps = 500000;  // 500 Mbps
+    int applied = requested;
+    if (config::video.max_bitrate > 0 && applied > config::video.max_bitrate) {
+      applied = config::video.max_bitrate;
+    }
+    if (applied > absolute_max_bitrate_kbps) {
+      applied = absolute_max_bitrate_kbps;
+    }
+    if (applied != requested) {
+      BOOST_LOG(info) << "Clamped requested bitrate "sv << requested << " kbps to "sv << applied << " kbps"sv;
+    }
+
+    const int updated = stream::set_bitrate_for_sessions(named_cert_p->uuid, applied);
+    if (updated <= 0) {
+      BOOST_LOG(warning) << "Bitrate change requested by ["sv << named_cert_p->name << "] but no matching active session was found"sv;
+      tree.put("root.bitrate", 0);
+      tree.put("root.<xmlattr>.status_code", 404);
+      tree.put("root.<xmlattr>.status_message", "No active session for this client");
+      return;
+    }
+
+    BOOST_LOG(info) << "Client ["sv << named_cert_p->name << "] set runtime bitrate to "sv << applied << " kbps ("sv << updated << " session(s))"sv;
+    tree.put("root.bitrate", applied);
+    tree.put("root.<xmlattr>.status_code", 200);
+  }
+
+  void getAbrCapabilities(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto named_cert_p = get_verified_cert(request);
+    if (!has_client_perm(named_cert_p, PERM::_allow_view)) {
+      log_permission_denied("AbrCapabilities"sv, "View stream"sv, named_cert_p, true);
+      response->write(SimpleWeb::StatusCode::client_error_unauthorized);
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    // Server-side adaptive bitrate decisioning is not implemented. Reporting it unsupported makes
+    // Foundation-compatible clients (e.g. Moonlight V+) drive their own local ABR controller, which
+    // applies decisions through the runtime /bitrate endpoint above.
+    const std::string body = R"({"supported":false,"version":1,"features":["runtime_bitrate"]})";
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json");
+    response->write(SimpleWeb::StatusCode::success_ok, body, headers);
+    response->close_connection_after_response = true;
   }
 
   void setup(const std::string &pkey, const std::string &cert) {
@@ -3604,6 +3738,8 @@ namespace nvhttp {
     };
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
+    https_server.resource["^/bitrate$"]["GET"] = setBitrate;
+    https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);

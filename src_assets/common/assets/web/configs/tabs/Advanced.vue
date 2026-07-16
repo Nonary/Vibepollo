@@ -31,6 +31,12 @@ const config = store.config;
     />
 
     <ConfigFieldRenderer
+      v-model="config.legacy_ordering"
+      setting-key="legacy_ordering"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
       v-model="config.ignore_encoder_probe_failure"
       setting-key="ignore_encoder_probe_failure"
       class="mb-6"

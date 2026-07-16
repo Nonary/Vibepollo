@@ -3092,7 +3092,7 @@ watch(
   padding-right: 380px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 840px) {
   .webrtc-app.settings-open {
     padding-right: 0;
   }
@@ -3636,7 +3636,7 @@ watch(
   right: calc(380px + 1.5rem);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 840px) {
   .stream-preview {
     width: calc(100% - 2rem);
     left: 1rem;
@@ -3649,7 +3649,7 @@ watch(
 }
 
 .stream-preview.minimized {
-  width: 280px;
+  width: min(280px, calc(100% - 2rem));
 }
 
 .stream-preview.minimized .stream-viewport,
@@ -4077,7 +4077,7 @@ watch(
   box-shadow: -8px 0 32px rgb(0 0 0 / 0.15);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 840px) {
   .settings-drawer {
     width: 100%;
   }

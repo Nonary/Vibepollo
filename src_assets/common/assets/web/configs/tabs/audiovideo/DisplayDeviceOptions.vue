@@ -452,13 +452,13 @@ function clearSnapshotHotkey(): void {
     <template #windows>
       <div class="space-y-4">
         <!-- Step 2 content combined: configuration + snapshot (single card) -->
-        <fieldset
+        <section
           v-if="section === 'pre'"
-          class="border border-dark/35 dark:border-light/25 rounded-xl p-4"
+          class="min-w-0"
         >
-          <legend class="px-2 text-sm font-medium">
+          <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
             {{ $t('config.dd_step_2') }}: {{ $t('config.dd_pre_stream_setup') }}
-          </legend>
+          </h4>
           <!-- Configuration option -->
           <div class="text-sm font-medium mb-2">{{ $t('config.dd_config_label') }}</div>
           <n-radio-group v-if="!usingVirtualDisplay" v-model:value="config.dd_configuration_option">
@@ -741,16 +741,16 @@ function clearSnapshotHotkey(): void {
               </p>
             </div>
           </template>
-        </fieldset>
+        </section>
 
         <!-- Optional adjustments (belongs to Step 3 in parent) -->
-        <fieldset
+        <section
           v-if="section === 'options' && config.dd_configuration_option !== 'disabled'"
-          class="border border-dark/35 dark:border-light/25 rounded-xl p-4"
+          class="min-w-0"
         >
-          <legend class="px-2 text-sm font-medium">
+          <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
             {{ $t('config.dd_step_3') }}: {{ $t('config.dd_optional_adjustments') }}
-          </legend>
+          </h4>
           <div class="space-y-6">
             <!-- Display overrides (formerly Display mode remapping) -->
             <section v-if="canBeRemapped()" class="space-y-3">
@@ -774,8 +774,8 @@ function clearSnapshotHotkey(): void {
                         />
                         <span class="block"
                           >Overrides below are disabled while manual resolution or refresh rate is
-                          enforced. Manual refresh rates are applied forcefully and disable the
-                          double refresh rate fix.</span
+                          enforced. Manual refresh rates are applied forcefully and override
+                          game-aware refresh switching on virtual displays.</span
                         >
                       </span>
                     </p>
@@ -1162,7 +1162,7 @@ function clearSnapshotHotkey(): void {
               </n-gi>
             </n-grid>
           </div>
-        </fieldset>
+        </section>
       </div>
     </template>
     <template #freebsd></template>

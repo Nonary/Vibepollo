@@ -116,7 +116,7 @@
             :options="selectOptions(entry.key)"
             :default-value="entry.globalValue"
             :size="'small'"
-            :model-value="rawOverrideValue(entry.key)"
+            :model-value="renderedOverrideValue(entry.key)"
             :placeholder="overridePlaceholder(entry.key)"
             :filterable="editorKind(entry.key) === 'select'"
             :monospace="editorKind(entry.key) === 'string'"
@@ -375,7 +375,7 @@
                     :options="selectOptions(entry.key, 'draft')"
                     :default-value="entry.globalValue"
                     :size="'small'"
-                    :model-value="rawOverrideValueFor('draft', entry.key)"
+                    :model-value="renderedOverrideValueFor('draft', entry.key)"
                     :placeholder="overridePlaceholder(entry.key, 'draft')"
                     :filterable="editorKind(entry.key, 'draft') === 'select'"
                     :monospace="editorKind(entry.key, 'draft') === 'string'"
@@ -810,6 +810,20 @@ function normalizeOverrideRecord(value: unknown): Record<string, unknown> {
     if (rawKey !== key && Object.prototype.hasOwnProperty.call(normalized, key)) {
       continue;
     }
+    if (key === 'frame_limiter_auto_virtual_framegen') {
+      const mode = String(rawValue ?? '')
+        .toLowerCase()
+        .trim();
+      normalized[key] =
+        mode === 'legacy' || mode === '2x' || mode === 'fixed-2x'
+          ? 'legacy'
+          : rawValue === false ||
+              rawValue === 0 ||
+              ['false', 'no', 'disable', 'disabled', 'off', '0'].includes(mode)
+            ? 'disabled'
+            : 'enabled';
+      continue;
+    }
     normalized[key] = cloneValue(rawValue);
   }
   return normalized;
@@ -901,8 +915,8 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'dd_snapshot_restore_hotkey',
   'dd_snapshot_restore_hotkey_modifiers',
   'dd_activate_virtual_display',
+  'dd_virtual_display_scale',
   'dd_mode_remapping',
-  'dd_wa_virtual_double_refresh',
   'dd_wa_dummy_plug_hdr10',
   'max_bitrate',
   'minimum_fps_target',
@@ -927,6 +941,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'frame_limiter_enable',
   'frame_limiter_provider',
   'frame_limiter_fps_limit',
+  'frame_limiter_auto_virtual_framegen',
   'rtss_frame_limit_type',
   'frame_limiter_disable_vsync',
 
@@ -1739,8 +1754,16 @@ function rawOverrideValueFor(target: EditTarget, key: string): unknown {
   return (getOverridesSource(target) as any)?.[key];
 }
 
-function rawOverrideValue(key: string): unknown {
-  return rawOverrideValueFor('live', key);
+function renderedOverrideValueFor(target: EditTarget, key: string): unknown {
+  const value = rawOverrideValueFor(target, key);
+  if (editorKind(key, target) === 'select' && value !== null && value !== undefined) {
+    return String(value);
+  }
+  return value;
+}
+
+function renderedOverrideValue(key: string): unknown {
+  return renderedOverrideValueFor('live', key);
 }
 
 function entryTypeLabel(key: string): string {
@@ -1852,6 +1875,11 @@ function setRenderedOverrideValueFor(target: EditTarget, key: string, value: unk
       return;
     }
     setOverrideKeyFor(target, key, value);
+    return;
+  }
+
+  if (kind === 'select') {
+    setOverrideKeyFor(target, key, String(value));
     return;
   }
 

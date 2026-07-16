@@ -28,6 +28,10 @@ namespace platf {
   // Re-apply RTSS frame limit and related settings without resetting originals.
   bool rtss_streaming_refresh(int fps);
 
+  // True when the most recent stream start/refresh abandoned RTSS hooks after
+  // the response deadline. Callers may use this to select another provider.
+  bool rtss_hooks_stalled();
+
   // Restore any RTSS settings modified at stream start.
   // If keep_process_running is true, Sunshine leaves RTSS running for pause/resume scenarios.
   void rtss_streaming_stop(bool keep_process_running = false);

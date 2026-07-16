@@ -7,6 +7,9 @@
 #include "nvenc_api.h"
 
 // standard includes
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <format>
 #include <optional>
 
@@ -129,7 +132,13 @@ namespace nvenc {
     // Use destroy_encoder() instead
   }
 
-  bool nvenc_base::create_encoder(const nvenc_config &config, const video::config_t &client_config, const nvenc_colorspace_t &colorspace, NV_ENC_BUFFER_FORMAT buffer_format) {
+  bool nvenc_base::create_encoder(
+    const nvenc_config &config,
+    const video::config_t &client_config,
+    const nvenc_colorspace_t &colorspace,
+    NV_ENC_BUFFER_FORMAT buffer_format,
+    const SS_HDR_METADATA *initial_hdr_metadata
+  ) {
     const auto encode_guid = encode_guid_from_video_format(client_config.videoFormat);
     if (!encode_guid) {
       BOOST_LOG(error) << "NvEnc: unknown video format " << client_config.videoFormat;
@@ -145,6 +154,12 @@ namespace nvenc {
     if (encoder) {
       destroy_encoder();
     }
+    if (initial_hdr_metadata) {
+      set_hdr_metadata(*initial_hdr_metadata);
+    } else {
+      hdr_metadata_valid = false;
+      hdr_metadata = {};
+    }
     auto fail_guard = util::fail_guard([this] {
       destroy_encoder();
     });
@@ -152,6 +167,7 @@ namespace nvenc {
     encoder_params.width = client_config.width;
     encoder_params.height = client_config.height;
     encoder_params.buffer_format = buffer_format;
+    encoder_params.video_format = client_config.videoFormat;
     encoder_params.rfi = true;
 
     selected_api_version = 0;
@@ -454,6 +470,7 @@ namespace nvenc {
                                                                                             NV_ENC_MULTI_PASS_DISABLED;
 
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
+    enc_config.rcParams.enableTemporalAQ = config.temporal_aq && get_encoder_cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
 
     if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
@@ -568,6 +585,21 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
+          if (client_config.enableIntraRefresh == 1) {
+            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
+              format_config.enableIntraRefresh = 1;
+              format_config.intraRefreshPeriod = 300;
+              format_config.intraRefreshCnt = 299;
+              format_config.outputRecoveryPointSEI = 1;
+              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
+                format_config.singleSliceIntraRefresh = 1;
+              } else {
+                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
+              }
+            } else {
+              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
+            }
+          }
           break;
         }
 
@@ -588,11 +620,19 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFramesInDPB, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_hevc);
           fill_h264_hevc_vui(format_config.hevcVUIParameters);
+#if NVENCAPI_MAJOR_VERSION >= 13
+          if (colorspace.tranfer_function == NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084 &&
+              hdr_metadata_valid && api::supports_hdr10_metadata(selected_api_version)) {
+            format_config.outputMaxCll = hdr_metadata.maxContentLightLevel != 0 || hdr_metadata.maxFrameAverageLightLevel != 0;
+            format_config.outputMasteringDisplay = hdr_metadata.maxDisplayLuminance != 0;
+          }
+#endif
           if (client_config.enableIntraRefresh == 1) {
             if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
               format_config.enableIntraRefresh = 1;
               format_config.intraRefreshPeriod = 300;
               format_config.intraRefreshCnt = 299;
+              format_config.outputRecoveryPointSEI = 1;
               if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
                 format_config.singleSliceIntraRefresh = 1;
               } else {
@@ -629,6 +669,13 @@ namespace nvenc {
           format_config.matrixCoefficients = colorspace.matrix;
           format_config.colorRange = colorspace.full_range;
           format_config.chromaSamplePosition = buffer_is_yuv444() ? 0 : 1;
+#if NVENCAPI_MAJOR_VERSION >= 13
+          if (colorspace.tranfer_function == NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084 &&
+              hdr_metadata_valid && api::supports_hdr10_metadata(selected_api_version)) {
+            format_config.outputMaxCll = hdr_metadata.maxContentLightLevel != 0 || hdr_metadata.maxFrameAverageLightLevel != 0;
+            format_config.outputMasteringDisplay = hdr_metadata.maxDisplayLuminance != 0;
+          }
+#endif
           set_ref_frames(format_config.maxNumRefFramesInDPB, format_config.numFwdRefs, 8);
           set_minqp_if_enabled(config.min_qp_av1);
 
@@ -685,7 +732,12 @@ namespace nvenc {
         }
       }
 
-      if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && client_config.videoFormat != 2) {
+      const bool hdr_metadata_requires_explicit_config =
+        colorspace.tranfer_function == NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SMPTE2084 &&
+        hdr_metadata_valid && api::supports_hdr10_metadata(selected_api_version);
+
+      if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && client_config.videoFormat != 2 &&
+          !hdr_metadata_requires_explicit_config) {
         // Without preset config, our manual config may have missed required fields.
         // Try once more with encodeConfig=nullptr so the driver uses presetGUID+tuningInfo defaults.
         BOOST_LOG(debug) << "NvEnc: explicit config rejected (" << init_error
@@ -712,6 +764,10 @@ namespace nvenc {
         }
 
         BOOST_LOG(info) << "NvEnc: initialized with driver defaults (preset config was unavailable)";
+      } else if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && hdr_metadata_requires_explicit_config) {
+        BOOST_LOG(error) << "NvEnc: NvEncInitializeEncoder() failed: " << init_error
+                         << " (driver-default retry disabled because it would drop HDR10 metadata)";
+        return false;
       } else if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && client_config.videoFormat == 2) {
         BOOST_LOG(error) << "NvEnc: NvEncInitializeEncoder() failed: " << init_error
                          << " (AV1 preset fallback unavailable; skipping driver-default retry)";
@@ -721,6 +777,12 @@ namespace nvenc {
         return false;
       }
     }
+
+    // Preserve init params + config so set_bitrate() can reconfigure the live encoder later.
+    // encodeConfig must point at our own storage that outlives this function.
+    saved_init_params = init_params;
+    current_enc_config = enc_config;
+    saved_init_params.encodeConfig = &current_enc_config;
 
     if (async_event_handle) {
       NV_ENC_EVENT_PARAMS event_params = {api::event_params_version(selected_api_version)};
@@ -774,6 +836,9 @@ namespace nvenc {
       if (enc_config.rcParams.enableAQ) {
         extra += " spatial-aq";
       }
+      if (enc_config.rcParams.enableTemporalAQ) {
+        extra += " temporal-aq";
+      }
       if (enc_config.rcParams.enableMinQP) {
         extra += std::format(" qpmin={}", enc_config.rcParams.minQP.qpInterP);
       }
@@ -820,7 +885,17 @@ namespace nvenc {
 
     encoder_state = {};
     encoder_params = {};
+    hdr_metadata_valid = false;
+    hdr_metadata = {};
     selected_api_version = 0;
+  }
+
+  void nvenc_base::set_hdr_metadata(const SS_HDR_METADATA &metadata) {
+    hdr_metadata = metadata;
+    hdr_metadata_valid = true;
+    BOOST_LOG(info) << "NvEnc: HDR metadata set (mastering peak " << metadata.maxDisplayLuminance
+                    << " nits, MaxCLL " << metadata.maxContentLightLevel
+                    << " nits, MaxFALL " << metadata.maxFrameAverageLightLevel << " nits)";
   }
 
   nvenc_encoded_frame nvenc_base::encode_frame(uint64_t frame_index, bool force_idr) {
@@ -859,6 +934,54 @@ namespace nvenc {
     pic_params.bufferFmt = mapped_input_buffer.mappedBufferFmt;
     pic_params.outputBitstream = output_bitstream;
     pic_params.completionEvent = async_event_handle;
+
+#if NVENCAPI_MAJOR_VERSION >= 13
+    CONTENT_LIGHT_LEVEL content_light_level {};
+    MASTERING_DISPLAY_INFO mastering_display {};
+    if (hdr_metadata_valid && api::supports_hdr10_metadata(selected_api_version)) {
+      content_light_level.maxContentLightLevel = hdr_metadata.maxContentLightLevel;
+      content_light_level.maxPicAverageLightLevel = hdr_metadata.maxFrameAverageLightLevel;
+
+      const auto copy_hevc_chroma = [](CHROMA_POINTS &destination, const auto &source) {
+        destination.x = source.x;
+        destination.y = source.y;
+      };
+      const auto copy_av1_chroma = [](CHROMA_POINTS &destination, const auto &source) {
+        destination.x = static_cast<std::uint16_t>(std::clamp(std::lround(source.x * (65536.0 / 50000.0)), 0l, 65535l));
+        destination.y = static_cast<std::uint16_t>(std::clamp(std::lround(source.y * (65536.0 / 50000.0)), 0l, 65535l));
+      };
+
+      if (encoder_params.video_format == 1) {
+        copy_hevc_chroma(mastering_display.r, hdr_metadata.displayPrimaries[0]);
+        copy_hevc_chroma(mastering_display.g, hdr_metadata.displayPrimaries[1]);
+        copy_hevc_chroma(mastering_display.b, hdr_metadata.displayPrimaries[2]);
+        copy_hevc_chroma(mastering_display.whitePoint, hdr_metadata.whitePoint);
+        mastering_display.maxLuma = static_cast<std::uint32_t>(hdr_metadata.maxDisplayLuminance) * 10000u;
+        mastering_display.minLuma = hdr_metadata.minDisplayLuminance;
+        if (hdr_metadata.maxContentLightLevel != 0 || hdr_metadata.maxFrameAverageLightLevel != 0) {
+          pic_params.codecPicParams.hevcPicParams.pMaxCll = &content_light_level;
+        }
+        if (hdr_metadata.maxDisplayLuminance != 0) {
+          pic_params.codecPicParams.hevcPicParams.pMasteringDisplay = &mastering_display;
+        }
+      } else if (encoder_params.video_format == 2) {
+        copy_av1_chroma(mastering_display.r, hdr_metadata.displayPrimaries[0]);
+        copy_av1_chroma(mastering_display.g, hdr_metadata.displayPrimaries[1]);
+        copy_av1_chroma(mastering_display.b, hdr_metadata.displayPrimaries[2]);
+        copy_av1_chroma(mastering_display.whitePoint, hdr_metadata.whitePoint);
+        mastering_display.maxLuma = static_cast<std::uint32_t>(hdr_metadata.maxDisplayLuminance) * 256u;
+        mastering_display.minLuma = static_cast<std::uint32_t>(
+          std::lround(static_cast<double>(hdr_metadata.minDisplayLuminance) * (16384.0 / 10000.0))
+        );
+        if (hdr_metadata.maxContentLightLevel != 0 || hdr_metadata.maxFrameAverageLightLevel != 0) {
+          pic_params.codecPicParams.av1PicParams.pMaxCll = &content_light_level;
+        }
+        if (hdr_metadata.maxDisplayLuminance != 0) {
+          pic_params.codecPicParams.av1PicParams.pMasteringDisplay = &mastering_display;
+        }
+      }
+    }
+#endif
 
     if (nvenc_failed(nvenc->nvEncEncodePicture(encoder, &pic_params))) {
       BOOST_LOG(error) << "NvEnc: NvEncEncodePicture() failed: " << last_nvenc_error_string;
@@ -942,6 +1065,58 @@ namespace nvenc {
       }
     }
 
+    return true;
+  }
+
+  bool nvenc_base::set_bitrate(int bitrate_kbps) {
+    if (!encoder || !nvenc) {
+      BOOST_LOG(warning) << "NvEnc: encoder not initialized; cannot change bitrate";
+      return false;
+    }
+    // Reject non-positive and absurd values. The 800000 kbps ceiling keeps bitrate_kbps * 1000
+    // well inside uint32 so the rate-control fields below cannot overflow.
+    if (bitrate_kbps <= 0 || bitrate_kbps > 800000) {
+      BOOST_LOG(error) << "NvEnc: out-of-range bitrate " << bitrate_kbps << " kbps";
+      return false;
+    }
+
+    const bool is_hevc = (saved_init_params.encodeGUID == NV_ENC_CODEC_HEVC_GUID);
+    const uint32_t new_bitrate_bps = static_cast<uint32_t>(bitrate_kbps) * 1000u;
+    const uint32_t prev_bitrate_bps = current_enc_config.rcParams.averageBitRate;
+
+    // Copy the saved config and apply the new bitrate.
+    NV_ENC_CONFIG enc_config = current_enc_config;
+    enc_config.rcParams.averageBitRate = new_bitrate_bps;
+    enc_config.rcParams.maxBitRate = new_bitrate_bps;
+
+    // Scale the VBV buffer with the bitrate so the rate controller keeps a comparable buffering
+    // window (mirrors the create_encoder VBV sizing), with a floor to avoid an undersized buffer.
+    if (enc_config.rcParams.vbvBufferSize > 0 && prev_bitrate_bps > 0) {
+      const uint64_t scaled = static_cast<uint64_t>(new_bitrate_bps) * current_enc_config.rcParams.vbvBufferSize / prev_bitrate_bps;
+      enc_config.rcParams.vbvBufferSize = static_cast<uint32_t>(std::max<uint64_t>(scaled, 100u * 1000u));
+    }
+
+    NV_ENC_RECONFIGURE_PARAMS reconfigure_params {api::reconfigure_params_version(selected_api_version)};
+    reconfigure_params.reInitEncodeParams = saved_init_params;
+    reconfigure_params.reInitEncodeParams.encodeConfig = &enc_config;
+
+    // When raising the ceiling, reset the rate controller and force an IDR so the higher bitrate
+    // takes effect immediately instead of draining the old VBV first.
+    if (new_bitrate_bps > prev_bitrate_bps) {
+      reconfigure_params.resetEncoder = 1;
+      reconfigure_params.forceIDR = 1;
+    }
+
+    if (nvenc_failed(nvenc->nvEncReconfigureEncoder(encoder, &reconfigure_params))) {
+      BOOST_LOG(error) << "NvEnc: nvEncReconfigureEncoder() for " << bitrate_kbps << " kbps failed: " << last_nvenc_error_string;
+      return false;
+    }
+
+    current_enc_config.rcParams.averageBitRate = new_bitrate_bps;
+    current_enc_config.rcParams.maxBitRate = new_bitrate_bps;
+    current_enc_config.rcParams.vbvBufferSize = enc_config.rcParams.vbvBufferSize;
+
+    BOOST_LOG(info) << "NvEnc: " << (is_hevc ? "HEVC" : "H.264/AV1") << " bitrate reconfigured to " << bitrate_kbps << " kbps";
     return true;
   }
 

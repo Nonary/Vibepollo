@@ -25,6 +25,9 @@
   :root .n-button.n-button--linkish {
     @apply bg-transparent text-brand hover:bg-primary/10 shadow-none border-0 px-3 py-1 rounded-md;
   }
+  :root .n-button.n-button--linkish.saving-status--compact {
+    @apply p-0 rounded-full;
+  }
 
   /* Preserve scrollbar gutter to avoid content overlap in scrollable dropdowns */
   .scroll-stable {
@@ -239,6 +242,11 @@
   :root .n-button .n-button__content .fal,
   :root .n-button .n-button__content .fab {
     margin: 0 !important;
+  }
+
+  /* Button content already uses an 8px flex gap; legacy label margins would double it. */
+  :root .n-button .n-button__content > .ml-2 {
+    margin-left: 0 !important;
   }
 
   /* Global icon alignment and spacing when used inline (outside buttons) */

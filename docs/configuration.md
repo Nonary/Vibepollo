@@ -1073,14 +1073,17 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a Sudovda virtual display instead of relying on your physical monitor.
+            Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a virtual display instead of relying on your physical monitor.
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            disabled
-            @endcode</td>
+            per_client
+            @endcode
+            On Windows 10 hosts the default is <code>disabled</code> (physical display) instead, because the
+            Windows 11 capture features the virtual-display pipeline relies on (WGC frame-generation capture
+            at 4x refresh) are unavailable there. An explicit value always wins.</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -1577,13 +1580,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            When enabled, Vibepollo uses the experimental Vibepollo Display Driver for virtual display streams instead of legacy virtual display driver integrations such as SudoVDA.
+            When enabled, Vibepollo uses the Vibepollo Display Driver for virtual display streams. Disable this to switch back to the bundled SudoVDA rollback driver.
             @note{Applies to Windows only.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}false@endcode</td>
+        <td colspan="2">@code{}true@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -1698,29 +1701,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
               ]
             }@endcode
         </td>
-    </tr>
-</table>
-
-### dd_wa_virtual_double_refresh
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            When using Vibepollo Display Driver, create and set the virtual monitor to double the target refresh rate to avoid unexplained FPS drops seen on virtual screens.<br>
-            Disable only if a specific game or virtual monitor behaves incorrectly with the doubled refresh.<br>
-            @note{Applies to Windows virtual displays only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}true@endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            dd_wa_virtual_double_refresh = false
-            @endcode</td>
     </tr>
 </table>
 
@@ -2775,6 +2755,28 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Example</td>
         <td colspan="2">@code{}
             frame_limiter_fps_limit = 120
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_limiter_auto_virtual_framegen
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controls smoother capture for virtual displays. @code{}enabled@endcode uses 4x refresh while a game is active, returns to 1x on the desktop, and applies a matching frame limit. This does not change the stream FPS and can make games with uneven frame pacing capture much more smoothly. @code{}disabled@endcode turns off both the automatic virtual-display limiter and refresh adjustments. @code{}legacy@endcode uses a fixed 2x refresh with the matching limiter for the entire stream, without changing refresh when games start or close. Existing boolean values remain compatible: true maps to enabled and false maps to disabled.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Examples</td>
+        <td colspan="2">@code{}
+            frame_limiter_auto_virtual_framegen = disabled
+            frame_limiter_auto_virtual_framegen = legacy
             @endcode</td>
     </tr>
 </table>

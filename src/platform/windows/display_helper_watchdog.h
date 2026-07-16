@@ -2,10 +2,17 @@
 
 #include <chrono>
 #include <functional>
+#include <thread>
 
 namespace display_helper_integration {
   class DisplayHelperWatchdog {
   public:
+    enum class ThreadStopResult {
+      NotJoinable,
+      Joined,
+      DetachedSelf,
+    };
+
     struct Hooks {
       std::function<bool()> feature_enabled;
       std::function<bool()> ensure_helper_started;
@@ -23,6 +30,7 @@ namespace display_helper_integration {
 
     static std::chrono::milliseconds active_interval();
     static std::chrono::milliseconds suspended_interval();
+    static ThreadStopResult stop_thread(std::jthread &thread);
 
   private:
     Hooks hooks_;

@@ -120,12 +120,13 @@ namespace display_helper_integration {
       state.session_snapshot.width = request.session->width;
       state.session_snapshot.height = request.session->height;
       state.session_snapshot.fps = request.session->fps;
-      state.session_snapshot.enable_hdr = request.session->enable_hdr;
+      state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
       state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.virtual_display = request.session->virtual_display;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
     }

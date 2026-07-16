@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import {
   NButton,
   NSwitch,
@@ -17,10 +18,11 @@ import type {
   LosslessProfileKey,
 } from './types';
 import { FRAME_GENERATION_PROVIDERS, LOSSLESS_FLOW_MIN, LOSSLESS_FLOW_MAX } from './lossless';
+import { frameGenDisplayNotice } from './frameGenDisplayPolicy';
+
+const { t } = useI18n();
 
 const modeModel = defineModel<FrameGenerationMode>('mode', { default: 'off' });
-const gen1Model = defineModel<boolean>('gen1', { default: false });
-const gen2Model = defineModel<boolean>('gen2', { default: false });
 const losslessProfileModel = defineModel<LosslessProfileKey>('losslessProfile', {
   default: 'recommended',
 });
@@ -38,6 +40,7 @@ const props = defineProps<{
   losslessActive: boolean;
   nvidiaActive: boolean;
   usingVirtualDisplay: boolean;
+  windows10: boolean;
   hasActiveLosslessOverrides: boolean;
   onLosslessRtssLimitChange: (value: number | null) => void;
   resetActiveLosslessProfile: () => void;
@@ -50,29 +53,13 @@ const emit = defineEmits<{
 
 const hasHealthData = computed(() => !!props.health);
 const frameGenOptions = computed(() => [
-  { label: 'None', value: 'off' as const },
+  { label: t('apps.framegen.mode_none'), value: 'off' as const },
   ...FRAME_GENERATION_PROVIDERS,
 ]);
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
-const hasFrameGenSelection = computed(() => modeModel.value !== 'off');
-const captureFixModel = computed<boolean>({
-  get: () => gen1Model.value || gen2Model.value,
-  set: (enabled) => {
-    gen1Model.value = enabled;
-    gen2Model.value = false;
-  },
-});
-const captureFixDescription = computed(() => {
-  if (modeModel.value === 'lossless-scaling') {
-    return 'Uses RTSS Front Edge Sync for Lossless Scaling frame generation. Not required for pure upscaling.';
-  }
-  if (modeModel.value === 'nvidia-smooth-motion') {
-    return 'Uses RTSS Front Edge Sync while NVIDIA Smooth Motion is active.';
-  }
-  if (modeModel.value === 'game-provided') {
-    return 'Uses NVIDIA Reflex for game-provided frame generation on NVIDIA systems, and falls back to RTSS Front Edge Sync on AMD systems.';
-  }
-  return 'Enable when the app uses frame generation. Lossless Scaling and NVIDIA Smooth Motion use RTSS Front Edge Sync, while Game Provided uses NVIDIA Reflex unless an AMD GPU is present.';
+const frameGenDisplayAlert = computed(() => {
+  const notice = frameGenDisplayNotice(props.usingVirtualDisplay, modeModel.value);
+  return notice ? { type: notice.type, message: t(notice.key) } : null;
 });
 const losslessAdvancedTargets = ref(
   losslessTargetModel.value !== null || losslessRtssModel.value !== null,
@@ -100,23 +87,32 @@ const requirementRows = computed(() => {
   if (!props.health) return [];
   return [
     {
+      id: 'os',
+      icon: 'fab fa-windows',
+      label: t('apps.framegen.req_os_label'),
+      status: props.health.os.status,
+      message: props.health.os.message,
+    },
+    {
       id: 'capture',
       icon: 'fas fa-desktop',
-      label: 'Windows Graphics Capture (recommended)',
+      label: t('apps.framegen.req_capture_label'),
       status: props.health.capture.status,
       message: props.health.capture.message,
     },
     {
       id: 'rtss',
       icon: 'fas fa-stopwatch-20',
-      label: 'RTSS installed (recommended)',
+      label: t('apps.framegen.req_rtss_label'),
       status: props.health.rtss.status,
       message: props.health.rtss.message,
     },
     {
       id: 'display',
       icon: 'fas fa-tv',
-      label: 'Display can double your stream FPS',
+      label: props.usingVirtualDisplay
+        ? t('apps.framegen.req_display_virtual_label')
+        : t('apps.framegen.req_display_physical_label'),
       status: props.health.display.status,
       message: props.health.display.message,
     },
@@ -152,13 +148,13 @@ function statusIcon(status: FrameGenRequirementStatus) {
 function statusLabel(status: FrameGenRequirementStatus) {
   switch (status) {
     case 'pass':
-      return 'Ready';
+      return t('apps.framegen.status_ready');
     case 'warn':
-      return 'Needs attention';
+      return t('apps.framegen.status_warn');
     case 'fail':
-      return 'Fail';
+      return t('apps.framegen.status_fail');
     default:
-      return 'Unknown';
+      return t('apps.framegen.status_unknown');
   }
 }
 
@@ -169,15 +165,9 @@ function targetIconClass(supported: boolean | null) {
 }
 
 function targetStatusLabel(supported: boolean | null) {
-  if (supported === true) return 'Supported';
-  if (supported === false) return 'Not supported';
-  return 'Unknown';
-}
-
-function formatHz(hz: number | null) {
-  if (hz === null || Number.isNaN(hz)) return 'Unknown refresh rate';
-  if (hz >= 200) return `${Math.round(hz)} Hz`;
-  return `${Math.round(hz * 10) / 10} Hz`;
+  if (supported === true) return t('apps.framegen.target_supported');
+  if (supported === false) return t('apps.framegen.target_unsupported');
+  return t('apps.framegen.target_unknown');
 }
 
 const showSuggestion = computed(() => {
@@ -197,36 +187,54 @@ const displayTargets = computed(() => props.health?.display.targets || []);
     <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div class="space-y-1">
         <h3 class="text-base font-semibold text-dark dark:text-light">
-          Frame Generation Configuration
+          {{ $t('apps.framegen.title') }}
         </h3>
         <p class="text-[12px] leading-relaxed opacity-70">
-          Select how Vibepollo coordinates frame generation and review the capture safeguards needed
-          for smooth playback.
+          {{ $t('apps.framegen.subtitle') }}
         </p>
         <div class="flex flex-wrap items-center gap-2">
           <n-tag v-if="losslessActive" size="small" type="primary">
-            <i class="fas fa-bolt mr-1" /> Lossless Scaling frame generation active
+            <i class="fas fa-bolt mr-1" /> {{ $t('apps.framegen.tag_lossless_active') }}
           </n-tag>
           <n-tag v-if="nvidiaActive" size="small" type="info">
-            <i class="fab fa-nvidia mr-1" /> NVIDIA Smooth Motion active
+            <i class="fab fa-nvidia mr-1" /> {{ $t('apps.framegen.tag_nvidia_active') }}
           </n-tag>
           <n-tag v-if="usingVirtualDisplay" size="small" type="success">
-            <i class="fas fa-display mr-1" /> Vibepollo virtual screen in use
+            <i class="fas fa-display mr-1" /> {{ $t('apps.framegen.tag_virtual_active') }}
           </n-tag>
         </div>
       </div>
       <div class="flex items-center gap-2">
         <n-button size="small" tertiary :loading="healthLoading" @click="emit('refresh-health')">
           <i class="fas fa-stethoscope" />
-          <span class="ml-2">Run health check</span>
+          <span class="ml-2">{{ $t('apps.framegen.run_health_check') }}</span>
         </n-button>
       </div>
     </div>
 
+    <n-alert
+      v-if="frameGenDisplayAlert"
+      :type="frameGenDisplayAlert.type"
+      size="small"
+      :bordered="false"
+    >
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <span>{{ frameGenDisplayAlert.message }}</span>
+        <n-button
+          v-if="canEnableVirtualScreen"
+          size="small"
+          type="primary"
+          @click="emit('enable-virtual-screen')"
+        >
+          {{ $t('apps.framegen.use_virtual_display') }}
+        </n-button>
+      </div>
+    </n-alert>
+
     <div class="space-y-4">
       <div class="space-y-2">
         <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-          Frame Generation Kind
+          {{ $t('apps.framegen.kind_label') }}
         </label>
         <n-select
           v-model:value="modeModel"
@@ -235,8 +243,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           :clearable="false"
         />
         <p class="text-[12px] opacity-70 leading-relaxed">
-          None keeps Vibepollo out of the loop, Game Provided trusts in-game frame generation,
-          Lossless Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch.
+          {{ $t('apps.framegen.kind_hint') }}
         </p>
       </div>
 
@@ -244,12 +251,14 @@ const displayTargets = computed(() => props.health?.display.targets || []);
         v-if="isLosslessMode"
         class="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-3"
       >
+        <n-alert v-if="windows10" type="warning" size="small">
+          {{ $t('apps.framegen.lossless_win10_warning') }}
+        </n-alert>
         <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div class="space-y-1">
-            <div class="font-medium text-sm">Lossless Scaling Frame Generation</div>
+            <div class="font-medium text-sm">{{ $t('apps.framegen.lossless_title') }}</div>
             <p class="text-[12px] opacity-70 leading-relaxed">
-              Use Vibepollo&rsquo;s tuned profile or your Lossless Scaling defaults, then fine-tune
-              the runtime targets.
+              {{ $t('apps.framegen.lossless_subtitle') }}
             </p>
           </div>
           <n-button
@@ -258,39 +267,38 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             :disabled="!props.hasActiveLosslessOverrides"
             @click="props.resetActiveLosslessProfile()"
           >
-            Reset to Profile Defaults
+            {{ $t('apps.framegen.reset_profile') }}
           </n-button>
         </div>
 
         <div class="space-y-2">
-          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">Profile</label>
+          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
+            $t('apps.framegen.profile_label')
+          }}</label>
           <n-radio-group v-model:value="losslessProfileModel" class="flex flex-col space-y-2">
             <n-radio value="recommended" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
               <div class="flex items-center gap-2 w-full">
-                <span class="block text-sm">Recommended (Lowest Latency & Frame Pacing)</span>
+                <span class="block text-sm">{{ $t('apps.framegen.profile_recommended') }}</span>
               </div>
             </n-radio>
             <n-radio value="custom" class="w-full py-2 px-2 rounded-md hover:bg-surface/10">
               <div class="flex items-center gap-2 w-full">
-                <span class="block text-sm">Custom: Use my Lossless Scaling default profile</span>
+                <span class="block text-sm">{{ $t('apps.framegen.profile_custom') }}</span>
               </div>
             </n-radio>
           </n-radio-group>
           <p class="text-[12px] opacity-60 leading-relaxed">
-            Recommended mirrors Vibepollo&rsquo;s latency-focused template. Custom runs the profile
-            you maintain inside Lossless Scaling.
+            {{ $t('apps.framegen.profile_hint') }}
           </p>
         </div>
 
         <div class="space-y-3">
           <div class="space-y-2">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Frame Targets
+              {{ $t('apps.framegen.frame_targets_label') }}
             </label>
             <p class="text-[12px] opacity-60 leading-relaxed">
-              Vibepollo inherits the FPS your streaming client requests and forwards it to Lossless
-              Scaling automatically. When RTSS is available we cap it at half of that request for
-              steadier pacing.
+              {{ $t('apps.framegen.frame_targets_hint') }}
             </p>
             <div class="flex flex-wrap items-center gap-2">
               <n-switch
@@ -299,15 +307,17 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 @update:value="handleLosslessAdvancedToggle"
               />
               <span class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Advanced overrides
+                {{ $t('apps.framegen.advanced_overrides') }}
               </span>
-              <span class="text-[11px] opacity-60">Manual FPS &amp; RTSS</span>
+              <span class="text-[11px] opacity-60">{{
+                $t('apps.framegen.advanced_overrides_note')
+              }}</span>
             </div>
           </div>
           <div v-if="losslessAdvancedTargets" class="grid gap-3 md:grid-cols-2">
             <div class="space-y-1">
               <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                Target Frame Rate Override
+                {{ $t('apps.framegen.target_fps_label') }}
               </label>
               <n-input-number
                 v-model:value="losslessTargetModel"
@@ -319,13 +329,12 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 size="small"
               />
               <p class="text-[12px] opacity-60 leading-relaxed">
-                Only set this when you need to override the client&rsquo;s requested FPS for
-                Lossless Scaling.
+                {{ $t('apps.framegen.target_fps_hint') }}
               </p>
             </div>
             <div class="space-y-1">
               <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                RTSS Frame Limit Override
+                {{ $t('apps.framegen.rtss_limit_label') }}
               </label>
               <n-input-number
                 v-model:value="losslessRtssModel"
@@ -338,14 +347,13 @@ const displayTargets = computed(() => props.health?.display.targets || []);
                 @update:value="props.onLosslessRtssLimitChange"
               />
               <p class="text-[12px] opacity-60 leading-relaxed">
-                Vibepollo defaults to half of the client request when left blank. Requires RTSS
-                installed and running.
+                {{ $t('apps.framegen.rtss_limit_hint') }}
               </p>
             </div>
           </div>
           <div class="space-y-1">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Flow Scale (%)
+              {{ $t('apps.framegen.flow_scale_label') }}
             </label>
             <n-input-number
               v-model:value="losslessFlowModel"
@@ -357,52 +365,35 @@ const displayTargets = computed(() => props.health?.display.targets || []);
               size="small"
             />
             <p class="text-[12px] opacity-60 leading-relaxed">
-              Frame blending strength (0–100). Vibepollo recommends 50% as a balanced default.
+              {{ $t('apps.framegen.flow_scale_hint') }}
             </p>
           </div>
           <div class="space-y-1">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Lossless Launch Delay (seconds)
+              {{ $t('apps.framegen.launch_delay_label') }}
             </label>
-             <n-input-number
-               v-model:value="losslessLaunchDelayModel"
-               :min="0"
-               :max="600"
-               :step="1"
-               :precision="0"
-               placeholder="8"
-               size="small"
-             />
-             <p class="text-[12px] opacity-60 leading-relaxed">
-               Wait additional seconds after the game starts before opening Lossless Scaling.
-               Leave blank to use the default 8-second delay.
-             </p>
-           </div>
+            <n-input-number
+              v-model:value="losslessLaunchDelayModel"
+              :min="0"
+              :max="600"
+              :step="1"
+              :precision="0"
+              placeholder="8"
+              size="small"
+            />
+            <p class="text-[12px] opacity-60 leading-relaxed">
+              {{ $t('apps.framegen.launch_delay_hint') }}
+            </p>
+          </div>
         </div>
       </div>
 
-      <div class="grid gap-3">
-        <div
-          class="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-dark/10 dark:border-light/10 bg-white/50 dark:bg-white/5 px-3 py-3"
-        >
-          <div class="space-y-1">
-            <div class="font-medium text-sm">Frame Generation Capture Fix</div>
-            <p class="text-[12px] opacity-70 leading-relaxed">{{ captureFixDescription }}</p>
-          </div>
-          <n-switch
-            v-model:value="captureFixModel"
-            size="large"
-            :disabled="!hasFrameGenSelection"
-          />
-        </div>
-      </div>
       <div class="space-y-3">
         <n-alert v-if="healthError" type="error" size="small">
           {{ healthError }}
         </n-alert>
         <n-alert v-else-if="!hasHealthData && !healthLoading" size="small" type="info">
-          Run the health check to verify capture method, RTSS, and display refresh requirements
-          before streaming with frame generation.
+          {{ $t('apps.framegen.health_prompt') }}
         </n-alert>
         <n-alert
           v-else-if="healthLoading && !hasHealthData"
@@ -410,7 +401,7 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           size="small"
           :bordered="false"
         >
-          Checking requirements...
+          {{ $t('apps.framegen.health_checking') }}
         </n-alert>
       </div>
 
@@ -449,9 +440,15 @@ const displayTargets = computed(() => props.health?.display.targets || []);
         >
           <div class="space-y-1">
             <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-              <div class="font-medium text-sm">Refresh rate coverage</div>
+              <div class="font-medium text-sm">
+                {{ $t('apps.framegen.refresh_coverage_title') }}
+              </div>
               <div class="text-[12px] opacity-70">
-                Targeted display: {{ health.display.deviceLabel || 'Targeted display' }}
+                {{
+                  $t('apps.framegen.targeted_display_label', {
+                    label: health.display.deviceLabel || $t('apps.framegen.targeted_display'),
+                  })
+                }}
               </div>
             </div>
             <p class="text-[12px] opacity-70 leading-relaxed">
@@ -467,10 +464,15 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             >
               <div class="flex items-center gap-2 text-sm font-medium">
                 <i :class="targetIconClass(target.supported)" />
-                <span>{{ target.fps }} FPS stream</span>
+                <span>{{ $t('apps.framegen.fps_stream', { fps: target.fps }) }}</span>
               </div>
               <div class="text-[12px] opacity-70 leading-relaxed">
-                Needs {{ target.requiredHz }} Hz - {{ targetStatusLabel(target.supported) }}
+                {{
+                  $t('apps.framegen.needs_hz', {
+                    hz: target.requiredHz,
+                    status: targetStatusLabel(target.supported),
+                  })
+                }}
               </div>
             </div>
           </div>
@@ -500,14 +502,13 @@ const displayTargets = computed(() => props.health?.display.targets || []);
             type="primary"
             @click="emit('enable-virtual-screen')"
           >
-            Use Virtual Screen
+            {{ $t('apps.framegen.use_virtual_display') }}
           </n-button>
         </div>
       </n-alert>
 
       <p class="text-[12px] opacity-70 leading-relaxed">
-        Frame generation capture fixes are only needed when using frame generation technologies.
-        Upscaling alone can stay disabled.
+        {{ $t('apps.framegen.pacing_note') }}
       </p>
     </div>
   </section>

@@ -171,11 +171,13 @@ namespace rtsp_stream {
     config.rtx_hdr_active = config::runtime_config_override_enabled("rtx_hdr") &&
                             config::video.rtx_hdr.enabled &&
                             config.dynamicRange > 0 &&
-                            !config.prefer_sdr_10bit;
+                            !config.prefer_sdr_10bit &&
+                            !config.force_sdr;
+    config.rtx_hdr_peak_nits = std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000);
   }
 
   bool activates_vulkan_hdr_layer_for_stream(const video::config_t &config) {
-    return config.dynamicRange != 0 && !config.prefer_sdr_10bit;
+    return config.dynamicRange != 0 && !config.prefer_sdr_10bit && !config.force_sdr;
   }
 
   std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
@@ -189,6 +191,9 @@ namespace rtsp_stream {
     snapshot->unique_id = unique_id;
     snapshot->client_uuid = client_uuid;
     snapshot->device_name = device_name;
+    snapshot->enable_hdr = enable_hdr;
+    snapshot->prefer_sdr_10bit = prefer_sdr_10bit;
+    snapshot->force_sdr = force_sdr;
     snapshot->perm = perm;
     snapshot->fps = fps;
     // Copied, not moved: the io_context thread still owns the original session.
@@ -199,6 +204,7 @@ namespace rtsp_stream {
     snapshot->virtual_display_guid_bytes = virtual_display_guid_bytes;
     snapshot->gen1_framegen_fix = gen1_framegen_fix;
     snapshot->gen2_framegen_fix = gen2_framegen_fix;
+    snapshot->frame_generation_enabled = frame_generation_enabled;
     snapshot->lossless_scaling_framegen = lossless_scaling_framegen;
     snapshot->frame_generation_provider = frame_generation_provider;
     snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
@@ -1456,6 +1462,7 @@ namespace rtsp_stream {
     stream::config_t config {};
     config.gen1_framegen_fix = false;
     config.gen2_framegen_fix = false;
+    config.frame_generation_enabled = false;
 
     std::int64_t configuredBitrateKbps;
     config.audio.flags[audio::config_t::HOST_AUDIO] = session->host_audio;
@@ -1469,6 +1476,24 @@ namespace rtsp_stream {
 
       config.controlProtocolType = (int) util::from_view(args.at("x-nv-general.useReliableUdp"sv));
       config.packetsize = (int) util::from_view(args.at("x-nv-video[0].packetSize"sv));
+
+      // Limit the packetsize to avoid fragmentation with clients that cannot configure this value
+      if (config::stream.packetsize && config::stream.packetsize < config.packetsize) {
+        if (config::stream.packetsize < config::PACKETSIZE_MIN || config::stream.packetsize > config::PACKETSIZE_MAX) {
+          BOOST_LOG(warning) << "packetsize range: ["sv << config::PACKETSIZE_MIN << "-"sv << config::PACKETSIZE_MAX
+                             << "] invalid value: "sv << config::stream.packetsize;
+        } else {
+          if (config::stream.packetsize < config::PACKETSIZE_SMALL) {
+            BOOST_LOG(info) << "packetsize is small < "sv << config::PACKETSIZE_SMALL << " bytes, reduce bitrate if the stream breaks"sv;
+          } else if (config::stream.packetsize > config::PACKETSIZE_LARGE) {
+            BOOST_LOG(info) << "packetsize is large > "sv << config::PACKETSIZE_LARGE << " bytes, jumbo frames may be used"sv;
+          }
+
+          BOOST_LOG(info) << "packetsize limit: "sv << config.packetsize << " -> "sv << config::stream.packetsize << " bytes"sv;
+          config.packetsize = config::stream.packetsize;
+        }
+      }
+
       config.minRequiredFecPackets = (int) util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
       config.mlFeatureFlags = (int) util::from_view(args.at("x-ml-general.featureFlags"sv));
       config.audioQosType = (int) util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
@@ -1596,20 +1621,25 @@ namespace rtsp_stream {
 
     config.audio.input_only = session->input_only;
 
-    // Prefer 10-bit SDR encoding when enabled globally or overridden per-client.
-    const auto client_prefer_10bit_sdr_override = nvhttp::get_client_prefer_10bit_sdr_override(session->client_uuid);
-    const bool prefer_10bit_sdr = client_prefer_10bit_sdr_override.value_or(config::video.prefer_10bit_sdr);
+    const bool prefer_10bit_sdr = session->prefer_sdr_10bit;
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
     const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
-    if (config.monitor.dynamicRange == 0) {
-      if (session->enable_hdr && supports_10bit_dynamic_range) {
-        BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
-        config.monitor.dynamicRange = 1;
-      } else if (prefer_10bit_sdr && !session->enable_hdr && supports_10bit_dynamic_range) {
+    config.monitor.force_sdr = session->force_sdr;
+    if (prefer_10bit_sdr) {
+      if (supports_10bit_dynamic_range) {
         BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;
+      } else {
+        config.monitor.dynamicRange = 0;
+        config.monitor.prefer_sdr_10bit = false;
+        BOOST_LOG(info) << "10-bit SDR preference active, but Main10 is unavailable; using 8-bit SDR encode";
+      }
+    } else if (config.monitor.dynamicRange == 0) {
+      if (session->enable_hdr && supports_10bit_dynamic_range) {
+        BOOST_LOG(info) << "RTSP ANNOUNCE requested SDR while launch HDR is enabled; using HDR 10-bit encode";
+        config.monitor.dynamicRange = 1;
       }
     }
     apply_rtx_hdr_stream_policy(config.monitor);
@@ -1690,6 +1720,7 @@ namespace rtsp_stream {
 
         config.gen1_framegen_fix = launch_session->gen1_framegen_fix;
         config.gen2_framegen_fix = launch_session->gen2_framegen_fix;
+        config.frame_generation_enabled = launch_session->frame_generation_enabled;
         config.lossless_scaling_framegen = launch_session->lossless_scaling_framegen;
         config.frame_generation_provider = launch_session->frame_generation_provider;
         config.lossless_scaling_target_fps = launch_session->lossless_scaling_target_fps;

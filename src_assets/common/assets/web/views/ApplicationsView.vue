@@ -1,5 +1,5 @@
 <template>
-  <div class="applications-page space-y-5 px-2 md:px-4">
+  <div class="applications-page space-y-5">
     <!-- Header card -->
     <section class="apps-header">
       <div class="apps-header__intro">

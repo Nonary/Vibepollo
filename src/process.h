@@ -13,9 +13,11 @@
 #include <chrono>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // lib includes
 #include "boost_process_shim.h"
@@ -128,6 +130,8 @@ namespace proc {
     std::string image_path;
     std::string id;
     std::string gamepad;
+    std::string art_version;
+    std::vector<std::string> id_aliases;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
@@ -149,6 +153,7 @@ namespace proc {
     std::chrono::seconds exit_timeout;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;
+    bool frame_generation_enabled {false};
     bool lossless_scaling_enabled {false};
     bool lossless_scaling_framegen {false};
     std::string frame_generation_provider {"lossless-scaling"};
@@ -200,6 +205,8 @@ namespace proc {
     active_session_guard_t active_session_guard() const;
     std::vector<ctx_t> get_apps() const;
     std::string get_app_image(int app_id);
+    std::optional<ctx_t> resolve_app(const std::string &appid, const std::string &appuuid = "") const;
+    std::optional<ctx_t> resolve_app(int app_id) const;
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
@@ -291,6 +298,7 @@ namespace proc {
 
   bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
+  std::string calculate_app_cover_fingerprint(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);
   std::optional<proc::proc_t> parse(const std::string &file_name);
@@ -308,6 +316,17 @@ namespace proc {
    * @param exit_timeout The timeout to wait for the process group to gracefully exit.
    */
   void terminate_process_group(bp::child &proc, bp::group &group, std::chrono::seconds exit_timeout);
+
+#ifdef _WIN32
+  /** Mark an app-triggered display revert to run after the final stream ends. */
+  void defer_display_revert();
+
+  /** Consume a previously deferred app-triggered display revert exactly once. */
+  bool consume_deferred_display_revert();
+
+  /** Discard a deferred revert when a replacement app takes ownership of the display. */
+  void clear_deferred_display_revert();
+#endif
 
   extern proc_t proc;
 

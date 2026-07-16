@@ -18,7 +18,9 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -48,6 +50,7 @@
 #ifdef _WIN32
   #include "display_helper_integration.h"
   #include "config_playnite.h"
+  #include "platform/windows/display.h"
   #include "platform/windows/frame_limiter.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/lossless_scaling_paths.h"
@@ -68,6 +71,7 @@
   #include "platform/windows/virtual_display_legacy.h"
 #endif
 #include "rtsp.h"
+#include "state_storage.h"
 #include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
@@ -87,6 +91,8 @@
 namespace proc {
   using namespace std::literals;
   namespace pt = boost::property_tree;
+
+  std::optional<ctx_t> resolve_app_from_snapshot(const std::vector<ctx_t> &apps, const std::string &appid, const std::string &appuuid);
 
   namespace {
     constexpr const char *LOSSLESS_PROFILE_RECOMMENDED = "recommended";
@@ -886,6 +892,21 @@ namespace proc {
 
 #ifdef _WIN32
   VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
+  namespace {
+    std::atomic_bool deferred_display_revert {false};
+  }
+
+  void defer_display_revert() {
+    deferred_display_revert.store(true, std::memory_order_release);
+  }
+
+  bool consume_deferred_display_revert() {
+    return deferred_display_revert.exchange(false, std::memory_order_acq_rel);
+  }
+
+  void clear_deferred_display_revert() {
+    deferred_display_revert.store(false, std::memory_order_release);
+  }
 
   void onVDisplayWatchdogFailed() {
     vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
@@ -1237,12 +1258,18 @@ namespace proc {
 
     _app = app;
     _app_id = util::from_view(app.id);
+#ifdef _WIN32
+    // A replacement app owns the streaming display configuration. Any
+    // restore deferred by the previous app must not fire at this session's end.
+    clear_deferred_display_revert();
+#endif
     _app_name = app.name;
     _launch_session = launch_session;
     _active_client_uuid = launch_session ? launch_session->client_uuid : std::string();
     allow_client_commands = app.allow_client_commands;
     launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
     launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
+    launch_session->frame_generation_enabled = _app.frame_generation_enabled;
     launch_session->lossless_scaling_framegen = _app.lossless_scaling_framegen;
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
@@ -1270,28 +1297,6 @@ namespace proc {
     }
     launch_session->lossless_scaling_rtss_limit = effective_lossless_rtss;
 
-    const auto apply_refresh_override = [&](int candidate) {
-      if (candidate <= 0) {
-        return;
-      }
-      if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
-        launch_session->framegen_refresh_rate = candidate;
-      }
-    };
-
-    launch_session->framegen_refresh_rate.reset();
-    if (launch_session->fps > 0) {
-      const auto saturating_double = [](int value) -> int {
-        if (value > std::numeric_limits<int>::max() / 2) {
-          return std::numeric_limits<int>::max();
-        }
-        return value * 2;
-      };
-
-      if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-        apply_refresh_override(saturating_double(launch_session->fps));
-      }
-    }
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
@@ -1448,6 +1453,18 @@ namespace proc {
           target_fps *= 1000;
         }
 
+        uint32_t base_fps_millihz = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
+        if (base_fps_millihz > 0 && base_fps_millihz < 1000u) {
+          base_fps_millihz *= 1000u;
+        }
+        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+        // Virtual displays always run at 4x the requested refresh (or the highest the driver
+        // can provide) so frame pacing stays smooth; frame generation reuses the same target.
+        const int refresh_multiplier = std::max(
+          4,
+          framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1
+        );
+
         const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
         auto display_info = VDISPLAY::createVirtualDisplay(
           device_uuid_str.c_str(),
@@ -1456,7 +1473,10 @@ namespace proc {
           render_width,
           render_height,
           target_fps,
-          display_guid
+          display_guid,
+          base_fps_millihz,
+          framegen_refresh_active,
+          refresh_multiplier
         );
 
         if (display_info) {
@@ -1520,7 +1540,7 @@ namespace proc {
     _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(render_height);
     _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? std::to_string(std::round((float) launch_session->fps / 1000.0f)) : fps_str;
-    _env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
+    _env["SUNSHINE_CLIENT_HDR"] = rtsp_stream::effective_hdr_requested(*launch_session) ? "true" : "false";
     _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
     _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
@@ -1537,7 +1557,7 @@ namespace proc {
     _env["APOLLO_CLIENT_RENDER_HEIGHT"] = std::to_string(launch_session->height);
     _env["APOLLO_CLIENT_SCALE_FACTOR"] = std::to_string(scale_factor);
     _env["APOLLO_CLIENT_FPS"] = fps_scaled_str;
-    _env["APOLLO_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
+    _env["APOLLO_CLIENT_HDR"] = rtsp_stream::effective_hdr_requested(*launch_session) ? "true" : "false";
     _env["APOLLO_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
     _env["APOLLO_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
     _env["APOLLO_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
@@ -1595,7 +1615,7 @@ namespace proc {
 
     const bool lossless_scaling_enabled = _app.lossless_scaling_enabled || _app.lossless_scaling_framegen;
     _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] =
-      _app.lossless_scaling_framegen ? _app.frame_generation_provider : "";
+      _app.frame_generation_enabled ? _app.frame_generation_provider : "";
 
     const bool using_lossless_provider = _app.lossless_scaling_framegen &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
@@ -1656,7 +1676,15 @@ namespace proc {
         if (effective_lossless_rtss && *effective_lossless_rtss > 0) {
           rtss_warmup_limit = *effective_lossless_rtss;
         }
-        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
+        const auto warmup_policy = rtsp_stream::make_framegen_stream_start_policy(
+          *launch_session,
+          rtss_warmup_limit,
+          config::video.capture,
+          platf::dxgi::should_use_wgc_default(),
+          config::frame_limiter.virtual_display_limiter_enabled(),
+          config::frame_limiter.fixed_virtual_display_refresh_multiplier()
+        );
+        platf::frame_limiter_prepare_launch(warmup_policy);
       }
 #endif
 
@@ -2107,15 +2135,39 @@ namespace proc {
         rtss_warmup_limit = *_lossless_metadata.rtss_limit;
       }
       const bool wants_frame_limit = config::frame_limiter.enable ||
+                                     _app.frame_generation_enabled ||
                                      _app.gen1_framegen_fix ||
                                      _app.gen2_framegen_fix ||
                                      (rtss_warmup_limit && *rtss_warmup_limit > 0);
       if (wants_frame_limit) {
-        platf::frame_limiter_prepare_launch(_app.gen1_framegen_fix, _app.gen2_framegen_fix, rtss_warmup_limit);
+        bool warmup_uses_virtual =
+          _app.virtual_screen ||
+          config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+        if (_app.virtual_display_mode_override) {
+          warmup_uses_virtual = *_app.virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
+        }
+        if (_app.output_name_override && !_app.output_name_override->empty() && !VDISPLAY::is_virtual_display_selection(*_app.output_name_override)) {
+          warmup_uses_virtual = false;
+        }
+        const auto warmup_policy = framegen::make_stream_start_policy({
+          .fps = 0,
+          .frame_generation_enabled = _app.frame_generation_enabled,
+          .gen1_framegen_fix = _app.gen1_framegen_fix,
+          .gen2_framegen_fix = _app.gen2_framegen_fix,
+          .lossless_scaling_framegen = _app.lossless_scaling_framegen,
+          .lossless_rtss_limit = rtss_warmup_limit,
+          .frame_generation_provider = _app.frame_generation_provider,
+          .uses_virtual_display = warmup_uses_virtual,
+          .capture_mode = config::video.capture,
+          .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+          .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+          .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+        });
+        platf::frame_limiter_prepare_launch(warmup_policy);
         const bool provider_auto = config::frame_limiter.provider.empty() ||
                                    boost::iequals(config::frame_limiter.provider, "auto");
         const bool provider_rtss = boost::iequals(config::frame_limiter.provider, "rtss");
-        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.gen1_framegen_fix || _app.gen2_framegen_fix);
+        const bool should_wait_rtss = platf::rtss_is_configured() && (provider_auto || provider_rtss || _app.frame_generation_enabled || _app.gen1_framegen_fix || _app.gen2_framegen_fix);
         if (should_wait_rtss) {
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
           bool running = false;
@@ -2496,10 +2548,12 @@ namespace proc {
 
     if (should_dispatch_revert && skip_display_revert) {
 #ifdef _WIN32
+      clear_deferred_display_revert();
       BOOST_LOG(info) << "Skipping display revert during app replacement because the new session has already applied its display configuration.";
 #endif
     } else if (should_dispatch_revert && !other_streaming_session_active) {
 #ifdef _WIN32
+      clear_deferred_display_revert();
       const bool reverted = display_helper_integration::revert();
       if (reverted && rtsp_stream::session_count() == 0) {
         BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
@@ -2507,6 +2561,9 @@ namespace proc {
       }
 #endif
     } else if (should_dispatch_revert && other_streaming_session_active) {
+#ifdef _WIN32
+      defer_display_revert();
+#endif
       BOOST_LOG(info) << "Deferring display revert after app termination because another streaming session is still active.";
     }
 
@@ -2564,12 +2621,22 @@ namespace proc {
   // Returns http content-type header compatible image type.
   std::string proc_t::get_app_image(int app_id) {
     std::scoped_lock lk(_apps_mutex);
-    auto iter = std::find_if(_apps.begin(), _apps.end(), [&app_id](const auto app) {
-      return app.id == std::to_string(app_id);
-    });
-    auto app_image_path = iter == _apps.end() ? std::string() : iter->image_path;
+    auto resolved_app = resolve_app_from_snapshot(_apps, std::to_string(app_id), "");
+    auto app_image_path = resolved_app ? resolved_app->image_path : std::string();
 
     return validate_app_image_path(app_image_path);
+  }
+
+  std::optional<ctx_t> proc_t::resolve_app(const std::string &appid, const std::string &appuuid) const {
+    std::scoped_lock lk(_apps_mutex);
+    return resolve_app_from_snapshot(_apps, appid, appuuid);
+  }
+
+  std::optional<ctx_t> proc_t::resolve_app(int app_id) const {
+    if (app_id <= 0) {
+      return std::nullopt;
+    }
+    return resolve_app(std::to_string(app_id), "");
   }
 
   std::string proc_t::get_last_run_app_name() {
@@ -2842,6 +2909,339 @@ namespace proc {
     return std::make_tuple(id_no_index, id_with_index);
   }
 
+  struct app_id_alias_state_t {
+    std::string current_id;
+    std::string cover_fingerprint;
+    std::set<std::string> aliases;
+  };
+
+  std::string calculate_numeric_id_from_parts(const std::vector<std::string> &parts, int index) {
+    std::stringstream ss;
+    for (const auto &part : parts) {
+      ss << part;
+    }
+    ss << index;
+    return std::to_string(abs((int32_t) calculate_crc32(ss.str())));
+  }
+
+  std::string calculate_numeric_id_from_parts(const std::vector<std::string> &parts) {
+    std::stringstream ss;
+    for (const auto &part : parts) {
+      ss << part;
+    }
+    return std::to_string(abs((int32_t) calculate_crc32(ss.str())));
+  }
+
+  std::tuple<std::string, std::string> calculate_cover_versioned_app_id(const std::string &app_uuid, const std::string &cover_fingerprint, int index) {
+    std::vector<std::string> parts {app_uuid, "\n", cover_fingerprint};
+    auto id_no_index = calculate_numeric_id_from_parts(parts);
+    auto id_with_index = calculate_numeric_id_from_parts(parts, index);
+    return std::make_tuple(id_no_index, id_with_index);
+  }
+
+  std::string calculate_app_cover_fingerprint(std::string app_image_path) {
+    const auto file_path = validate_app_image_path(std::move(app_image_path));
+    if (file_path == DEFAULT_APP_IMAGE_PATH) {
+      return "default";
+    }
+
+    auto file_hash = calculate_sha256(file_path);
+    if (file_hash) {
+      return "sha256:" + file_hash.value();
+    }
+
+    BOOST_LOG(warning) << "Failed to compute SHA256 for image ["sv << file_path << "], falling back to path for app art version";
+    return "path:" + file_path;
+  }
+
+  std::map<std::string, app_id_alias_state_t> load_app_id_alias_state() {
+    std::map<std::string, app_id_alias_state_t> result;
+
+    statefile::migrate_recent_state_keys();
+    const auto &path = statefile::vibeshine_state_path();
+    if (path.empty()) {
+      return result;
+    }
+
+    std::lock_guard<std::mutex> lock(statefile::state_mutex());
+    pt::ptree tree;
+    if (!statefile::load_json_for_update(path, tree)) {
+      BOOST_LOG(warning) << "Unable to load state file for app ID aliases; using in-memory app IDs for this refresh.";
+      return result;
+    }
+
+    const auto aliases_root = tree.get_child_optional("root.app_id_aliases");
+    if (!aliases_root) {
+      return result;
+    }
+
+    for (const auto &app_node : *aliases_root) {
+      const auto &app_uuid = app_node.first;
+      if (app_uuid.empty()) {
+        continue;
+      }
+
+      app_id_alias_state_t state;
+      state.current_id = app_node.second.get<std::string>("current_id", "");
+      state.cover_fingerprint = app_node.second.get<std::string>("cover_fingerprint", "");
+      if (const auto aliases = app_node.second.get_child_optional("aliases")) {
+        for (const auto &alias_node : *aliases) {
+          auto alias = alias_node.second.get_value<std::string>("");
+          boost::algorithm::trim(alias);
+          if (!alias.empty()) {
+            state.aliases.insert(std::move(alias));
+          }
+        }
+      }
+
+      if (!state.current_id.empty()) {
+        result.emplace(app_uuid, std::move(state));
+      }
+    }
+
+    return result;
+  }
+
+  bool save_app_id_alias_state(const std::map<std::string, app_id_alias_state_t> &state) {
+    statefile::migrate_recent_state_keys();
+    const auto &path = statefile::vibeshine_state_path();
+    if (path.empty()) {
+      return false;
+    }
+
+    std::lock_guard<std::mutex> lock(statefile::state_mutex());
+    pt::ptree tree;
+    if (!statefile::load_json_for_update(path, tree)) {
+      BOOST_LOG(warning) << "Unable to update state file with app ID aliases.";
+      return false;
+    }
+
+    pt::ptree aliases_root;
+    for (const auto &[app_uuid, entry] : state) {
+      if (app_uuid.empty() || entry.current_id.empty()) {
+        continue;
+      }
+
+      pt::ptree app_node;
+      app_node.put("current_id", entry.current_id);
+      app_node.put("cover_fingerprint", entry.cover_fingerprint);
+
+      pt::ptree aliases_node;
+      for (const auto &alias : entry.aliases) {
+        if (alias.empty() || alias == entry.current_id) {
+          continue;
+        }
+        pt::ptree alias_node;
+        alias_node.put_value(alias);
+        aliases_node.push_back(std::make_pair("", std::move(alias_node)));
+      }
+      app_node.put_child("aliases", aliases_node);
+      aliases_root.push_back(std::make_pair(app_uuid, std::move(app_node)));
+    }
+
+    pt::ptree empty_root;
+    pt::ptree root = tree.get_child("root", empty_root);
+    root.put_child("app_id_aliases", std::move(aliases_root));
+    tree.put_child("root", std::move(root));
+
+    try {
+      statefile::write_json_atomic(path, tree);
+      return true;
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Failed to persist app ID aliases: " << e.what();
+      return false;
+    }
+  }
+
+  void remember_alias(app_id_alias_state_t &state, const std::string &alias) {
+    if (!alias.empty() && alias != state.current_id) {
+      state.aliases.insert(alias);
+    }
+  }
+
+  void assign_compatible_app_id(
+    ctx_t &ctx,
+    const std::string &app_name,
+    int index,
+    std::set<std::string> &ids,
+    std::map<std::string, app_id_alias_state_t> &alias_state,
+    std::set<std::string> &active_uuids,
+    bool &alias_state_changed
+  ) {
+    const auto legacy_ids = calculate_app_id(app_name, ctx.uuid, ctx.image_path, index);
+    if (ctx.uuid.empty()) {
+      if (ids.count(std::get<0>(legacy_ids)) == 0) {
+        ctx.id = std::get<0>(legacy_ids);
+      } else {
+        ctx.id = std::get<1>(legacy_ids);
+      }
+      ids.insert(ctx.id);
+      return;
+    }
+
+    active_uuids.insert(ctx.uuid);
+    ctx.art_version = calculate_app_cover_fingerprint(ctx.image_path);
+
+    auto [state_iter, inserted] = alias_state.try_emplace(
+      ctx.uuid,
+      app_id_alias_state_t {
+        std::get<0>(legacy_ids),
+        ctx.art_version,
+        {}
+      }
+    );
+    auto &state = state_iter->second;
+    if (inserted) {
+      alias_state_changed = true;
+    }
+
+    if (state.cover_fingerprint.empty()) {
+      state.cover_fingerprint = ctx.art_version;
+      alias_state_changed = true;
+    }
+    if (state.current_id.empty()) {
+      state.current_id = std::get<0>(legacy_ids);
+      alias_state_changed = true;
+    }
+
+    if (state.cover_fingerprint != ctx.art_version) {
+      const auto previous_current_id = state.current_id;
+      const auto versioned_ids = calculate_cover_versioned_app_id(ctx.uuid, ctx.art_version, index);
+      state.current_id = ids.count(std::get<0>(versioned_ids)) == 0 ? std::get<0>(versioned_ids) : std::get<1>(versioned_ids);
+      state.cover_fingerprint = ctx.art_version;
+      remember_alias(state, previous_current_id);
+      remember_alias(state, std::get<0>(legacy_ids));
+      alias_state_changed = true;
+    }
+
+    if (ids.count(state.current_id) != 0) {
+      BOOST_LOG(warning) << "App ID collision for UUID ["sv << ctx.uuid << "] and ID [" << state.current_id << "]; assigning indexed compatibility ID.";
+      remember_alias(state, state.current_id);
+      const auto versioned_ids = calculate_cover_versioned_app_id(ctx.uuid, ctx.art_version, index);
+      if (ids.count(std::get<1>(versioned_ids)) == 0) {
+        state.current_id = std::get<1>(versioned_ids);
+      } else {
+        state.current_id = std::get<1>(legacy_ids);
+      }
+      alias_state_changed = true;
+    }
+
+    ctx.id = state.current_id;
+    ctx.id_aliases.assign(state.aliases.begin(), state.aliases.end());
+    ids.insert(ctx.id);
+  }
+
+  void prune_and_filter_app_id_alias_state(
+    std::vector<ctx_t> &apps,
+    std::map<std::string, app_id_alias_state_t> &alias_state,
+    const std::set<std::string> &active_uuids,
+    bool &alias_state_changed
+  ) {
+    for (auto it = alias_state.begin(); it != alias_state.end();) {
+      if (active_uuids.count(it->first) == 0) {
+        it = alias_state.erase(it);
+        alias_state_changed = true;
+      } else {
+        ++it;
+      }
+    }
+
+    std::set<std::string> current_ids;
+    std::map<std::string, int> alias_counts;
+    for (const auto &app : apps) {
+      if (!app.id.empty()) {
+        current_ids.insert(app.id);
+      }
+      if (app.uuid.empty()) {
+        continue;
+      }
+      for (const auto &alias : app.id_aliases) {
+        if (!alias.empty()) {
+          ++alias_counts[alias];
+        }
+      }
+    }
+
+    for (auto &app : apps) {
+      if (app.uuid.empty()) {
+        continue;
+      }
+
+      std::vector<std::string> filtered_aliases;
+      std::set<std::string> seen_aliases;
+      for (const auto &alias : app.id_aliases) {
+        if (alias.empty() || alias == app.id || !seen_aliases.insert(alias).second) {
+          alias_state_changed = true;
+          continue;
+        }
+        if (current_ids.count(alias) != 0) {
+          BOOST_LOG(warning) << "Dropping app ID alias ["sv << alias << "] for UUID [" << app.uuid << "] because it collides with a current app ID.";
+          alias_state_changed = true;
+          continue;
+        }
+        if (alias_counts[alias] > 1) {
+          BOOST_LOG(warning) << "Dropping app ID alias ["sv << alias << "] for UUID [" << app.uuid << "] because it is shared by multiple apps.";
+          alias_state_changed = true;
+          continue;
+        }
+        filtered_aliases.push_back(alias);
+      }
+
+      if (filtered_aliases != app.id_aliases) {
+        app.id_aliases = std::move(filtered_aliases);
+      }
+
+      if (auto state_iter = alias_state.find(app.uuid); state_iter != alias_state.end()) {
+        state_iter->second.current_id = app.id;
+        state_iter->second.cover_fingerprint = app.art_version;
+        state_iter->second.aliases = std::set<std::string>(app.id_aliases.begin(), app.id_aliases.end());
+      }
+    }
+  }
+
+  std::optional<ctx_t> resolve_app_from_snapshot(const std::vector<ctx_t> &apps, const std::string &appid, const std::string &appuuid) {
+    if (!appuuid.empty()) {
+      auto iter = std::find_if(apps.begin(), apps.end(), [&appuuid](const auto &app) {
+        return app.uuid == appuuid;
+      });
+      if (iter != apps.end()) {
+        return *iter;
+      }
+    }
+
+    std::string appid_trimmed = appid;
+    boost::algorithm::trim(appid_trimmed);
+    if (appid_trimmed.empty() || appid_trimmed == "0") {
+      return std::nullopt;
+    }
+
+    auto current_iter = std::find_if(apps.begin(), apps.end(), [&appid_trimmed](const auto &app) {
+      return app.id == appid_trimmed;
+    });
+    if (current_iter != apps.end()) {
+      return *current_iter;
+    }
+
+    const ctx_t *alias_match = nullptr;
+    for (const auto &app : apps) {
+      if (std::find(app.id_aliases.begin(), app.id_aliases.end(), appid_trimmed) == app.id_aliases.end()) {
+        continue;
+      }
+      if (alias_match) {
+        BOOST_LOG(warning) << "Ignoring ambiguous app ID alias ["sv << appid_trimmed << "] shared by UUIDs ["
+                           << alias_match->uuid << "] and [" << app.uuid << "].";
+        return std::nullopt;
+      }
+      alias_match = &app;
+    }
+
+    if (alias_match) {
+      return *alias_match;
+    }
+
+    return std::nullopt;
+  }
+
   /**
    * @brief Migrate the applications stored in the file tree by merging in a new app.
    *
@@ -3035,6 +3435,9 @@ namespace proc {
 
     std::set<std::string> ids;
     std::vector<proc::ctx_t> apps;
+    auto app_id_alias_state = load_app_id_alias_state();
+    std::set<std::string> active_app_uuids;
+    bool app_id_alias_state_changed = false;
     int i = 0;
 
     size_t fail_count = 0;
@@ -3307,6 +3710,27 @@ namespace proc {
         if (auto it = app_node.find("frame-generation-provider"); it != app_node.end() && it->is_string()) {
           ctx.frame_generation_provider = normalize_frame_generation_provider(it->get<std::string>());
         }
+        if (auto it = app_node.find("frame-generation-mode"); it != app_node.end() && it->is_string()) {
+          const auto trimmed_mode = boost::algorithm::trim_copy(it->get<std::string>());
+          if (boost::iequals(trimmed_mode, "off") || boost::iequals(trimmed_mode, "none") || boost::iequals(trimmed_mode, "disabled")) {
+            ctx.frame_generation_enabled = false;
+            ctx.lossless_scaling_framegen = false;
+            ctx.frame_generation_provider = "lossless-scaling";
+            // Frame generation explicitly off: legacy capture-fix flags must not re-enable it.
+            ctx.gen1_framegen_fix = false;
+          } else {
+            ctx.frame_generation_provider = normalize_frame_generation_provider(trimmed_mode);
+            ctx.frame_generation_enabled = true;
+            ctx.lossless_scaling_framegen = ctx.frame_generation_provider == "lossless-scaling";
+          }
+        } else {
+          ctx.frame_generation_enabled =
+            ctx.lossless_scaling_framegen ||
+            ctx.frame_generation_provider == "game-provided" ||
+            ctx.frame_generation_provider == "nvidia-smooth-motion" ||
+            ctx.gen1_framegen_fix ||
+            ctx.gen2_framegen_fix;
+        }
         ctx.lossless_scaling_target_fps.reset();
         double lossless_target_fps = util::get_non_string_json_value<double>(app_node, "lossless-scaling-target-fps", 0.0);
         if (lossless_target_fps > 0) {
@@ -3335,13 +3759,7 @@ namespace proc {
         }
 
         // Calculate a unique application id.
-        auto possible_ids = calculate_app_id(name, ctx.uuid, ctx.image_path, i++);
-        if (ids.count(std::get<0>(possible_ids)) == 0) {
-          ctx.id = std::get<0>(possible_ids);
-        } else {
-          ctx.id = std::get<1>(possible_ids);
-        }
-        ids.insert(ctx.id);
+        assign_compatible_app_id(ctx, name, i++, ids, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
 
         ctx.name = std::move(name);
         ctx.prep_cmds = std::move(prep_cmds);
@@ -3523,6 +3941,11 @@ namespace proc {
       terminate_app_id = util::from_view(ctx.id);
 
       apps.emplace_back(std::move(ctx));
+    }
+
+    prune_and_filter_app_id_alias_state(apps, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
+    if (app_id_alias_state_changed) {
+      save_app_id_alias_state(app_id_alias_state);
     }
 
     return proc::proc_t {

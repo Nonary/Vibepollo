@@ -100,6 +100,17 @@ namespace update {
     if (version.empty()) {
       return;
     }
+    // Checks run on every stream start and on the periodic timer, so an update
+    // that stays pending would re-post the same toast each time and stack
+    // copies in the Action Center. Suppress duplicates for the lifetime of the
+    // process: the earlier toast remains pending in the Action Center, and a
+    // restart (which clears the Action Center's pending toasts) re-posts once.
+    static std::string s_notified_version;
+    static bool s_notified_prerelease = false;
+    if (version == s_notified_version && prerelease == s_notified_prerelease) {
+      BOOST_LOG(debug) << "Update notification suppressed: already notified for "sv << version;
+      return;
+    }
     std::string title = prerelease ? "New update available (Pre-release)" : "New update available (Stable)";
     std::string body = "Version " + version;
     state.last_notified_version = version;
@@ -109,8 +120,9 @@ namespace update {
     system_tray::tray_notify(title.c_str(), body.c_str(), []() {
       open_last_notified_release_page();
     });
+    s_notified_version = version;
+    s_notified_prerelease = prerelease;
 #endif
-    // We intentionally allow repeated notifications; do not persist last_notified_version
   }
 
   static void perform_check() {

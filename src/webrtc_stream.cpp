@@ -57,6 +57,7 @@
 #include "httpcommon.h"
 #include "input.h"
 #include "logging.h"
+#include "nvhttp.h"
 #include "process.h"
 #include "rtsp.h"
 #include "session_history.h"
@@ -214,7 +215,9 @@ namespace webrtc_stream {
       int dynamic_range = 0;
       int chroma_sampling_type = 0;
       bool prefer_sdr_10bit = false;
+      bool force_sdr = false;
       bool rtx_hdr_active = false;
+      int rtx_hdr_peak_nits = 1000;
       int audio_channels = 0;
       bool host_audio = false;
 
@@ -254,15 +257,44 @@ namespace webrtc_stream {
         session->virtual_display || config_requests_virtual || metadata_requests_virtual;
       const std::string virtual_display_stable_id =
         !session->unique_id.empty() ? session->unique_id : session->client_uuid;
-      const bool has_app_output_override = app_output_override.has_value();
+      bool has_app_output_override = app_output_override.has_value();
+      auto make_framegen_policy = [&](bool uses_virtual_display) {
+        return framegen::make_stream_start_policy({
+          .fps = session->fps,
+          .frame_generation_enabled = session->frame_generation_enabled,
+          .gen1_framegen_fix = session->gen1_framegen_fix,
+          .gen2_framegen_fix = session->gen2_framegen_fix,
+          .lossless_scaling_framegen = session->lossless_scaling_framegen,
+          .lossless_rtss_limit = session->lossless_scaling_rtss_limit,
+          .frame_generation_provider = session->frame_generation_provider,
+          .uses_virtual_display = uses_virtual_display,
+          .capture_mode = config::video.capture,
+          .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+          .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+          .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+        });
+      };
+      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
+      if (framegen_requires_virtual_display) {
+        request_virtual_display = true;
+        app_output_override.reset();
+        has_app_output_override = false;
+      }
+      auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
+        const auto framegen_policy = make_framegen_policy(uses_virtual_display);
+        session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
+      };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
                        << "' allow_display_changes=" << allow_display_changes
                        << " request_virtual_display=" << request_virtual_display
+                       << " framegen_requires_virtual_display=" << framegen_requires_virtual_display
                        << " previous_virtual_device_id='" << session->virtual_display_device_id
                        << "' active_output='" << config::get_active_output_name()
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
                        << "'.";
-      if (has_app_output_override) {
+      if (has_app_output_override && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         if (!session->virtual_display_mode_override) {
           session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
@@ -279,6 +311,7 @@ namespace webrtc_stream {
             session->virtual_display_ready_since = std::chrono::steady_clock::now();
             session->virtual_display_needs_resume_apply = true;
             config::set_runtime_output_name_override(session->virtual_display_device_id);
+            apply_framegen_refresh_policy(true);
             BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
                             << *existing_device << ").";
             BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for WebRTC resume.";
@@ -290,6 +323,7 @@ namespace webrtc_stream {
           session->virtual_display_recreated_on_demand = true;
         } else if (app_output_override) {
           config::set_runtime_output_name_override(*app_output_override);
+          apply_framegen_refresh_policy(false);
           BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: "
                           << (app_output_override->empty() ? "primary display" : *app_output_override);
           return;
@@ -297,8 +331,12 @@ namespace webrtc_stream {
       }
 
       if (!request_virtual_display) {
+        session->framegen_refresh_rate.reset();
+        session->framegen_refresh_multiplier = 1;
         return;
       }
+
+      apply_framegen_refresh_policy(true);
 
       if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
         proc::initVDisplayDriver();
@@ -392,12 +430,28 @@ namespace webrtc_stream {
 
       uint32_t vd_width = session->width > 0 ? static_cast<uint32_t>(session->width) : 1920u;
       uint32_t vd_height = session->height > 0 ? static_cast<uint32_t>(session->height) : 1080u;
-      display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *session);
-      if (auto initial_resolution = initial_display_helper.initial_virtual_display_resolution()) {
-        vd_width = initial_resolution->m_width;
-        vd_height = initial_resolution->m_height;
-        BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
-                        << vd_width << 'x' << vd_height;
+      // Virtual-display creation may eagerly enable HDR. Default to no state change so
+      // "Do not change HDR" preserves the retained Windows setting.
+      bool virtual_display_hdr_requested = false;
+      display_helper_integration::helpers::SessionDisplayConfigurationHelper initial_display_helper(config::video, *session, true);
+      if (auto initial_configuration = initial_display_helper.initial_virtual_display_configuration()) {
+        if (initial_configuration->m_resolution &&
+            initial_configuration->m_resolution->m_width > 0 &&
+            initial_configuration->m_resolution->m_height > 0) {
+          vd_width = initial_configuration->m_resolution->m_width;
+          vd_height = initial_configuration->m_resolution->m_height;
+          BOOST_LOG(info) << "Virtual display initial resolution resolved from display configuration: "
+                          << vd_width << 'x' << vd_height;
+        }
+        if (initial_configuration->m_hdr_state) {
+          const bool source_hdr_requested =
+            *initial_configuration->m_hdr_state == display_device::HdrState::Enabled;
+          if (source_hdr_requested != virtual_display_hdr_requested) {
+            BOOST_LOG(info) << "Virtual display creation HDR state aligned with source-display policy: "
+                            << (source_hdr_requested ? "enabled" : "disabled") << '.';
+          }
+          virtual_display_hdr_requested = source_hdr_requested;
+        }
       }
       uint32_t base_vd_fps = session->fps > 0 ? static_cast<uint32_t>(session->fps) : 0u;
       uint32_t base_vd_fps_millihz = base_vd_fps;
@@ -417,8 +471,11 @@ namespace webrtc_stream {
       }
       const bool framegen_refresh_active =
         session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
-      if (base_vd_fps_millihz > 0 && (config::video.dd.wa.virtual_double_refresh || framegen_refresh_active)) {
-        vd_fps = std::max(vd_fps, base_vd_fps_millihz * 2u);
+      const int refresh_multiplier =
+        framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1;
+      if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
+        const uint64_t minimum = static_cast<uint64_t>(base_vd_fps_millihz) * static_cast<uint64_t>(refresh_multiplier);
+        vd_fps = std::max(vd_fps, static_cast<uint32_t>(std::min<uint64_t>(minimum, std::numeric_limits<uint32_t>::max())));
       }
 
       std::string client_label = session->client_name;
@@ -440,7 +497,8 @@ namespace webrtc_stream {
         virtual_display_guid,
         base_vd_fps_millihz,
         framegen_refresh_active,
-        session->enable_hdr,
+        refresh_multiplier,
+        virtual_display_hdr_requested,
         false,
         !shared_mode
       );
@@ -467,7 +525,8 @@ namespace webrtc_stream {
         recovery_params.fps = vd_fps;
         recovery_params.base_fps_millihz = base_vd_fps_millihz;
         recovery_params.framegen_refresh_active = framegen_refresh_active;
-        recovery_params.hdr_requested = session->enable_hdr;
+        recovery_params.framegen_refresh_multiplier = refresh_multiplier;
+        recovery_params.hdr_requested = virtual_display_hdr_requested;
         recovery_params.client_uid = session->unique_id;
         recovery_params.client_name = client_label;
         recovery_params.hdr_profile = session->hdr_profile;
@@ -536,6 +595,8 @@ namespace webrtc_stream {
       session->virtual_display_guid_bytes.fill(0);
       session->virtual_display_device_id.clear();
       session->virtual_display_ready_since.reset();
+      session->framegen_refresh_rate.reset();
+      session->framegen_refresh_multiplier = 1;
     }
 #endif
 
@@ -658,8 +719,11 @@ namespace webrtc_stream {
       int fps = 0;
       bool gen1_framegen_fix = false;
       bool gen2_framegen_fix = false;
+      bool frame_generation_enabled = false;
+      bool lossless_scaling_framegen = false;
       std::optional<int> lossless_rtss_limit;
       std::string frame_generation_provider = "lossless-scaling";
+      bool uses_virtual_display = false;
       bool smooth_motion = false;
     };
 
@@ -2103,7 +2167,14 @@ namespace webrtc_stream {
     }
 #endif
 
-    video::config_t build_video_config(const SessionOptions &options) {
+    bool resolve_prefer_10bit_sdr(const SessionOptions &options) {
+      const auto client_override = options.client_uuid ?
+                                     nvhttp::get_client_prefer_10bit_sdr_override(*options.client_uuid) :
+                                     std::nullopt;
+      return client_override.value_or(config::video.prefer_10bit_sdr);
+    }
+
+    video::config_t build_video_config(const SessionOptions &options, std::optional<bool> resolved_prefer_10bit_sdr = std::nullopt) {
       video::config_t config {};
       config.width = options.width.value_or(kDefaultWidth);
       config.height = options.height.value_or(kDefaultHeight);
@@ -2122,17 +2193,35 @@ namespace webrtc_stream {
       config.videoFormat = codec_to_video_format(options.codec);
       config.dynamicRange = options.hdr.value_or(false) ? 1 : 0;
       config.prefer_sdr_10bit = false;
+      config.force_sdr = false;
       config.chromaSamplingType = 0;
       config.enableIntraRefresh = 0;
 
-      const bool prefer_10bit_sdr = config::video.prefer_10bit_sdr;
-      if (prefer_10bit_sdr && config.dynamicRange == 0) {
-        const bool hevc_main10 = config.videoFormat == 1 && video::active_hevc_mode >= 3;
-        const bool av1_main10 = config.videoFormat == 2 && video::active_av1_mode >= 3;
-        if (hevc_main10 || av1_main10) {
+      bool prefer_10bit_sdr = resolved_prefer_10bit_sdr.value_or(resolve_prefer_10bit_sdr(options));
+      const bool hevc_main10 = config.videoFormat == 1 && video::active_hevc_mode >= 3;
+      const bool av1_main10 = config.videoFormat == 2 && video::active_av1_mode >= 3;
+      const bool supports_main10 = hevc_main10 || av1_main10;
+#ifdef _WIN32
+      if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_on) {
+        prefer_10bit_sdr = false;
+        if (supports_main10) {
+          config.dynamicRange = 1;
+        } else {
+          config.dynamicRange = 0;
+          BOOST_LOG(warning) << "WebRTC HDR force-on requested, but Main10 is unavailable; using 8-bit SDR encode";
+        }
+      } else if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_off) {
+        config.force_sdr = true;
+      }
+#endif
+      if (prefer_10bit_sdr) {
+        if (supports_main10) {
           BOOST_LOG(info) << "Preferring 10-bit SDR encode for WebRTC capture";
           config.dynamicRange = 1;
           config.prefer_sdr_10bit = true;
+        } else {
+          config.dynamicRange = 0;
+          BOOST_LOG(info) << "10-bit SDR preference active for WebRTC, but Main10 is unavailable; using 8-bit SDR encode";
         }
       }
 
@@ -2147,7 +2236,9 @@ namespace webrtc_stream {
       config.rtx_hdr_active = config::runtime_config_override_enabled("rtx_hdr") &&
                               config::video.rtx_hdr.enabled &&
                               config.dynamicRange > 0 &&
-                              !config.prefer_sdr_10bit;
+                              !config.prefer_sdr_10bit &&
+                              !config.force_sdr;
+      config.rtx_hdr_peak_nits = std::clamp(config::video.rtx_hdr.peak_brightness, 400, 2000);
     }
 
     audio::config_t build_audio_config(const SessionOptions &options) {
@@ -2167,25 +2258,21 @@ namespace webrtc_stream {
       params.fps = options.fps.value_or(kDefaultFps);
 
       bool lossless_scaling_framegen = false;
+      bool frame_generation_enabled = false;
       std::optional<int> lossless_scaling_target_fps;
       std::optional<int> lossless_scaling_rtss_limit;
       std::string frame_generation_provider = "lossless-scaling";
 
       if (effective_app_id > 0) {
         try {
-          auto apps_snapshot = proc::proc.get_apps();
-          const std::string app_id_str = std::to_string(effective_app_id);
-          for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id != app_id_str) {
-              continue;
-            }
-            params.gen1_framegen_fix = app_ctx.gen1_framegen_fix;
-            params.gen2_framegen_fix = app_ctx.gen2_framegen_fix;
-            lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
-            lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
-            lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
-            frame_generation_provider = app_ctx.frame_generation_provider;
-            break;
+          if (auto app_ctx = proc::proc.resolve_app(effective_app_id)) {
+            params.gen1_framegen_fix = app_ctx->gen1_framegen_fix;
+            params.gen2_framegen_fix = app_ctx->gen2_framegen_fix;
+            frame_generation_enabled = app_ctx->frame_generation_enabled;
+            lossless_scaling_framegen = app_ctx->lossless_scaling_framegen;
+            lossless_scaling_target_fps = app_ctx->lossless_scaling_target_fps;
+            lossless_scaling_rtss_limit = app_ctx->lossless_scaling_rtss_limit;
+            frame_generation_provider = app_ctx->frame_generation_provider;
           }
         } catch (...) {
         }
@@ -2193,6 +2280,8 @@ namespace webrtc_stream {
 
       const bool using_lossless_provider = lossless_scaling_framegen &&
                                            boost::iequals(frame_generation_provider, "lossless-scaling");
+      params.frame_generation_enabled = frame_generation_enabled;
+      params.lossless_scaling_framegen = lossless_scaling_framegen;
       params.frame_generation_provider = frame_generation_provider;
       params.smooth_motion = boost::iequals(frame_generation_provider, "nvidia-smooth-motion");
 
@@ -2273,7 +2362,8 @@ namespace webrtc_stream {
     std::shared_ptr<rtsp_stream::launch_session_t> build_launch_session(
       const SessionOptions &options,
       int app_id,
-      int audio_channels
+      int audio_channels,
+      std::optional<bool> resolved_prefer_10bit_sdr = std::nullopt
     ) {
       auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
       launch_session->id = ++webrtc_launch_session_id;
@@ -2305,6 +2395,7 @@ namespace webrtc_stream {
       launch_session->gcmap = 0;
       launch_session->enable_sops = false;
       launch_session->enable_hdr = options.hdr.value_or(false);
+      launch_session->prefer_sdr_10bit = resolved_prefer_10bit_sdr.value_or(resolve_prefer_10bit_sdr(options));
 
 #ifdef _WIN32
       {
@@ -2312,9 +2403,12 @@ namespace webrtc_stream {
         switch (config::video.dd.hdr_request_override) {
           case override_e::force_on:
             launch_session->enable_hdr = true;
+            launch_session->prefer_sdr_10bit = false;
+            launch_session->force_sdr = false;
             break;
           case override_e::force_off:
             launch_session->enable_hdr = false;
+            launch_session->force_sdr = true;
             break;
           case override_e::automatic:
             break;
@@ -2329,69 +2423,47 @@ namespace webrtc_stream {
       launch_session->virtual_display_ready_since.reset();
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_multiplier = 1;
+      launch_session->frame_generation_enabled = false;
+      launch_session->lossless_scaling_framegen = false;
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
       launch_session->frame_generation_provider = "lossless-scaling";
 
       if (launch_session->appid > 0) {
         try {
-          auto apps_snapshot = proc::proc.get_apps();
-          const std::string app_id_str = std::to_string(launch_session->appid);
-          for (const auto &app_ctx : apps_snapshot) {
-            if (app_ctx.id == app_id_str) {
-              launch_session->gen1_framegen_fix = app_ctx.gen1_framegen_fix;
-              launch_session->gen2_framegen_fix = app_ctx.gen2_framegen_fix;
-              launch_session->lossless_scaling_framegen = app_ctx.lossless_scaling_framegen;
-              launch_session->lossless_scaling_target_fps = app_ctx.lossless_scaling_target_fps;
-              launch_session->lossless_scaling_rtss_limit = app_ctx.lossless_scaling_rtss_limit;
-              launch_session->frame_generation_provider = app_ctx.frame_generation_provider;
-              rtsp_stream::launch_session_t::app_metadata_t metadata;
-              metadata.id = app_ctx.id;
-              metadata.name = app_ctx.name;
-              metadata.virtual_screen = app_ctx.virtual_screen;
-              metadata.has_command = !app_ctx.cmd.empty();
-              metadata.has_playnite = !app_ctx.playnite_id.empty();
-              metadata.playnite_fullscreen = app_ctx.playnite_fullscreen;
-              launch_session->virtual_display = app_ctx.virtual_screen;
-              if (!launch_session->virtual_display_mode_override && app_ctx.virtual_display_mode_override) {
-                launch_session->virtual_display_mode_override = app_ctx.virtual_display_mode_override;
-              }
-              if (!launch_session->virtual_display_layout_override && app_ctx.virtual_display_layout_override) {
-                launch_session->virtual_display_layout_override = app_ctx.virtual_display_layout_override;
-              }
-              if (!launch_session->dd_config_option_override && app_ctx.dd_config_option_override) {
-                launch_session->dd_config_option_override = app_ctx.dd_config_option_override;
-              }
-              if (!launch_session->output_name_override && app_ctx.output_name_override) {
-                launch_session->output_name_override = *app_ctx.output_name_override;
-              }
-              launch_session->app_metadata = std::move(metadata);
-              break;
+          if (auto app_ctx = proc::proc.resolve_app(launch_session->appid)) {
+            launch_session->appid = util::from_view(app_ctx->id);
+            launch_session->gen1_framegen_fix = app_ctx->gen1_framegen_fix;
+            launch_session->gen2_framegen_fix = app_ctx->gen2_framegen_fix;
+            launch_session->frame_generation_enabled = app_ctx->frame_generation_enabled;
+            launch_session->lossless_scaling_framegen = app_ctx->lossless_scaling_framegen;
+            launch_session->lossless_scaling_target_fps = app_ctx->lossless_scaling_target_fps;
+            launch_session->lossless_scaling_rtss_limit = app_ctx->lossless_scaling_rtss_limit;
+            launch_session->frame_generation_provider = app_ctx->frame_generation_provider;
+            rtsp_stream::launch_session_t::app_metadata_t metadata;
+            metadata.id = app_ctx->id;
+            metadata.name = app_ctx->name;
+            metadata.virtual_screen = app_ctx->virtual_screen;
+            metadata.has_command = !app_ctx->cmd.empty();
+            metadata.has_playnite = !app_ctx->playnite_id.empty();
+            metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
+            launch_session->virtual_display = app_ctx->virtual_screen;
+            if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
+              launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
             }
+            if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
+              launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
+            }
+            if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+              launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+            }
+            if (!launch_session->output_name_override && app_ctx->output_name_override) {
+              launch_session->output_name_override = *app_ctx->output_name_override;
+            }
+            launch_session->app_metadata = std::move(metadata);
           }
         } catch (...) {
-        }
-      }
-
-      const auto apply_refresh_override = [&](int candidate) {
-        if (candidate <= 0) {
-          return;
-        }
-        if (!launch_session->framegen_refresh_rate || candidate > *launch_session->framegen_refresh_rate) {
-          launch_session->framegen_refresh_rate = candidate;
-        }
-      };
-
-      if (launch_session->fps > 0) {
-        const auto saturating_double = [](int value) -> int {
-          if (value > std::numeric_limits<int>::max() / 2) {
-            return std::numeric_limits<int>::max();
-          }
-          return value * 2;
-        };
-
-        if (launch_session->gen1_framegen_fix || launch_session->gen2_framegen_fix) {
-          apply_refresh_override(saturating_double(launch_session->fps));
         }
       }
 
@@ -2427,7 +2499,9 @@ namespace webrtc_stream {
       key.dynamic_range = video_config.dynamicRange;
       key.chroma_sampling_type = video_config.chromaSamplingType;
       key.prefer_sdr_10bit = video_config.prefer_sdr_10bit;
+      key.force_sdr = video_config.force_sdr;
       key.rtx_hdr_active = video_config.rtx_hdr_active;
+      key.rtx_hdr_peak_nits = video_config.rtx_hdr_peak_nits;
       key.audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
       key.host_audio = options.host_audio;
       return key;
@@ -2467,6 +2541,11 @@ namespace webrtc_stream {
 #ifdef _WIN32
       if (allow_platform_teardown) {
         const bool is_paused = proc::proc.running() > 0;
+        if (final_teardown && !is_paused) {
+          // WebRTC already restores on final teardown; consume any app-triggered
+          // request so it cannot leak into a later streaming session.
+          (void) proc::consume_deferred_display_revert();
+        }
         // config_revert_on_disconnect only governs reverting while an app is still
         // running (paused session). When the stream is fully over with no app left,
         // the physical display configuration must always be restored — otherwise a
@@ -2527,7 +2606,9 @@ namespace webrtc_stream {
       }
 
       const int current_app_id = proc::proc.running();
-      const int requested_app_id = options.app_id.value_or(0);
+      const int raw_requested_app_id = options.app_id.value_or(0);
+      const auto requested_app_ctx = raw_requested_app_id > 0 ? proc::proc.resolve_app(raw_requested_app_id) : std::optional<proc::ctx_t> {};
+      const int requested_app_id = requested_app_ctx ? (int) util::from_view(requested_app_ctx->id) : raw_requested_app_id;
       const bool resume_only = options.resume.value_or(false);
 
       if (resume_only) {
@@ -2548,7 +2629,8 @@ namespace webrtc_stream {
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
       webrtc_capture.stream_start_params = compute_stream_start_params(options, effective_app_id);
       const int audio_channels = options.audio_channels.value_or(kDefaultAudioChannels);
-      auto video_config = build_video_config(options);
+      const bool prefer_10bit_sdr = resolve_prefer_10bit_sdr(options);
+      auto video_config = build_video_config(options, prefer_10bit_sdr);
       auto audio_config = build_audio_config(options);
       apply_rtsp_video_overrides(video_config, rtsp_config);
       apply_rtx_hdr_stream_policy(video_config);
@@ -2570,7 +2652,7 @@ namespace webrtc_stream {
         stop_webrtc_capture_locked(!rtsp_active, false);
       }
 
-      auto launch_session = build_launch_session(options, effective_app_id, audio_channels);
+      auto launch_session = build_launch_session(options, effective_app_id, audio_channels, prefer_10bit_sdr);
 
       const bool allow_display_changes = !rtsp_active && !resume_only;
       if (allow_display_changes && launch_session->output_name_override) {
@@ -2610,6 +2692,9 @@ namespace webrtc_stream {
 
 #ifdef _WIN32
         prepare_virtual_display_for_webrtc_session(launch_session, allow_display_changes);
+        if (webrtc_capture.stream_start_params) {
+          webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
+        }
         if (allow_display_changes ||
             launch_session->virtual_display_recreated_on_demand ||
             launch_session->virtual_display_needs_resume_apply) {
@@ -4670,7 +4755,9 @@ namespace webrtc_stream {
     session.state.fps = session.video_config.framerate;
     session.state.bitrate_kbps = session.video_config.bitrate;
     session.state.codec = video_format_to_codec(session.video_config.videoFormat);
-    session.state.hdr = session.video_config.dynamicRange != 0;
+    session.state.hdr = session.video_config.dynamicRange != 0 &&
+                        !session.video_config.prefer_sdr_10bit &&
+                        !session.video_config.force_sdr;
     session.state.yuv444 = session.video_config.chromaSamplingType != 0;
 #ifdef _WIN32
     if (const auto stream_gpu_model = platf::dxgi::current_display_adapter_name(); !stream_gpu_model.empty()) {
@@ -4729,7 +4816,9 @@ namespace webrtc_stream {
       }
       if (start_params.fps == 0) {
         const int current_app_id = proc::proc.running();
-        const int requested_app_id = options.app_id.value_or(0);
+        const int raw_requested_app_id = options.app_id.value_or(0);
+        const auto requested_app_ctx = raw_requested_app_id > 0 ? proc::proc.resolve_app(raw_requested_app_id) : std::optional<proc::ctx_t> {};
+        const int requested_app_id = requested_app_ctx ? (int) util::from_view(requested_app_ctx->id) : raw_requested_app_id;
         const int effective_app_id = requested_app_id > 0 ? requested_app_id : current_app_id;
         start_params = compute_stream_start_params(options, effective_app_id);
       }
@@ -4743,15 +4832,22 @@ namespace webrtc_stream {
         return fps * 1000;
       };
       const int fps_scaled = saturating_millihz(start_params.fps);
-      platf::frame_limiter_streaming_start(
-        start_params.fps,
-        fps_scaled,
-        start_params.gen1_framegen_fix,
-        start_params.gen2_framegen_fix,
-        start_params.lossless_rtss_limit,
-        start_params.frame_generation_provider,
-        start_params.smooth_motion
-      );
+      const auto policy = framegen::make_stream_start_policy({
+        .fps = start_params.fps,
+        .fps_scaled = fps_scaled,
+        .frame_generation_enabled = start_params.frame_generation_enabled,
+        .gen1_framegen_fix = start_params.gen1_framegen_fix,
+        .gen2_framegen_fix = start_params.gen2_framegen_fix,
+        .lossless_scaling_framegen = start_params.lossless_scaling_framegen,
+        .lossless_rtss_limit = start_params.lossless_rtss_limit,
+        .frame_generation_provider = start_params.frame_generation_provider,
+        .uses_virtual_display = start_params.uses_virtual_display,
+        .capture_mode = config::video.capture,
+        .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+        .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+        .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+      });
+      platf::frame_limiter_streaming_start(policy);
 #endif
       platf::streaming_will_start();
     }

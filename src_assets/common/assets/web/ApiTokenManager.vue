@@ -995,8 +995,8 @@ watch(
 }
 
 .token-hero__copy {
-  min-width: 16rem;
-  flex: 1;
+  min-width: 0;
+  flex: 1 1 16rem;
 }
 
 .token-hero__title {

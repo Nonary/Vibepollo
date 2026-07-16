@@ -386,7 +386,7 @@ namespace session_history::sampler {
       as.encoder_bitrate_kbps = info.encoder_bitrate_kbps;
       as.requested_bitrate_kbps = info.requested_bitrate_kbps ? info.requested_bitrate_kbps : info.encoder_bitrate_kbps;
       as.codec = !it->second.codec.empty() ? it->second.codec : std::string(stream::video_format_name(info.video_format));
-      as.hdr = info.dynamic_range > 0;
+      as.hdr = info.hdr;
       as.yuv444 = info.yuv444;
       as.stream_gpu_model = info.stream_gpu_model;
       as.uptime_seconds = info.uptime_seconds;

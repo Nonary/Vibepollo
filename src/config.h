@@ -20,6 +20,12 @@
 namespace config {
   constexpr int SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT = 4;
 
+  // Valid range for the packetsize limit (stream_t::packetsize)
+  constexpr int PACKETSIZE_MIN = 200;
+  constexpr int PACKETSIZE_MAX = 65535;
+  constexpr int PACKETSIZE_SMALL = 500;
+  constexpr int PACKETSIZE_LARGE = 1456;
+
   // track modified config options
   inline std::unordered_map<std::string, std::string> modified_config_settings;
   // when a stream is active, we defer some settings until all sessions end
@@ -127,7 +133,7 @@ namespace config {
       int contrast;  ///< -100..100 (overlay "Contrast", default 0 = neutral)
       int saturation;  ///< -100..100 (overlay "Saturation", default 0 = neutral)
       int middle_gray;  ///< 10..100 (overlay "Middle Gray", default 50)
-      int peak_brightness;  ///< 400..1500 nits (overlay "Peak Brightness", default 1000)
+      int peak_brightness;  ///< 400..2000 nits (overlay "Peak Brightness", default 1000)
     } rtx_hdr;
 
     std::string capture;
@@ -141,7 +147,6 @@ namespace config {
     struct dd_t {
       struct workarounds_t {
         bool dummy_plug_hdr10;  ///< Force 30 Hz and HDR for physical dummy plugs (requires VSYNC override).
-        bool virtual_double_refresh;  ///< Request double refresh on virtual displays to avoid unexpected FPS drops.
       };
 
       enum class config_option_e {
@@ -209,8 +214,9 @@ namespace config {
       helper_engine_e display_helper_engine;  ///< Which display helper engine to run.
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
-      bool use_sunshine_virtual_display_driver;  ///< Opt into the Vibepollo Display Driver instead of legacy virtual display drivers.
+      bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
+      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (0 preserves Windows' existing choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
@@ -221,7 +227,7 @@ namespace config {
 
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
-
+    bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
   };
@@ -254,6 +260,14 @@ namespace config {
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;
+
+    // Cap the RTP send pacer (kbps). 0 = legacy ~80% of 1 Gbps assumption, which
+    // collapses to a no-op on a slower WiFi link. Set to ~1.3x stream bitrate when
+    // streaming over WiFi to spread the per-frame burst across the full frame slot.
+    int pacing_max_bitrate_kbps;
+
+    // Limit the packetsize to avoid fragmentation on a low MTU link. 0 = off.
+    int packetsize;
   };
 
   struct nvhttp_t {
@@ -301,6 +315,12 @@ namespace config {
   };
 
   struct frame_limiter_t {
+    enum class virtual_display_capture_mode_e {
+      enabled,
+      disabled,
+      legacy,
+    };
+
     bool enable {false};
 
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
@@ -313,6 +333,25 @@ namespace config {
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
+
+    // Virtual-display capture policy. Enabled dynamically switches between 1x desktop and
+    // 4x game refresh with a matching limiter; legacy uses a fixed 2x refresh; disabled
+    // leaves both automatic refresh adjustment and the virtual-display limiter off.
+    virtual_display_capture_mode_e virtual_display_capture_mode {
+      virtual_display_capture_mode_e::enabled
+    };
+
+    [[nodiscard]] bool virtual_display_limiter_enabled() const {
+      return virtual_display_capture_mode != virtual_display_capture_mode_e::disabled;
+    }
+
+    [[nodiscard]] bool game_aware_virtual_display_refresh_enabled() const {
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled;
+    }
+
+    [[nodiscard]] int fixed_virtual_display_refresh_multiplier() const {
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::legacy ? 2 : 1;
+    }
   };
 
   // Windows-only: RTSS integration settings

@@ -46,6 +46,9 @@ set(CPACK_WIX_LIGHT_EXTRA_FLAGS
 set(CPACK_WIX_CANDLE_EXTRA_FLAGS
   "-dBinDir=${CMAKE_BINARY_DIR}"
   "-dVibepolloAppId=${WINDOWS_APP_USER_MODEL_ID}"
+  # Human-readable version for ARP DisplayVersion; ProductVersion itself is
+  # ordinal-encoded (see below) and no longer matches the semver.
+  "-dVibeshineSemVer=${PROJECT_VERSION_FULL}"
 )
 
 
@@ -53,9 +56,8 @@ set(CPACK_WIX_EXTRA_SOURCES
   "${CMAKE_SOURCE_DIR}/packaging/windows/wix/custom_actions.wxs"
 )
 
-# Override CPack's default WiX template to control MajorUpgrade scheduling.
-# We schedule after InstallValidate to avoid RemoveExistingProducts 2613
-# failures in transactional upgrade flows.
+# Override CPack's default WiX template to keep RemoveExistingProducts inside
+# the MSI transaction. A failed upgrade must roll back to the previous install.
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 # uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the
@@ -68,9 +70,28 @@ set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.i
 # ----------------------------------------------------------------------------
 # Sanitize version for WiX: must be x.x.x.x with integers [0,65534]
 # ----------------------------------------------------------------------------
-# Use PROJECT_VERSION_NUMERIC which is guaranteed to be stripped of prerelease suffixes.
-# This ensures WiX gets a clean numeric version (e.g., 1.2.3) while C++ code uses
-# the full version with prerelease info (e.g., 1.2.3-beta.1).
+# Windows Installer only compares the FIRST THREE ProductVersion fields when
+# deciding whether a package upgrades an installed one (the 4th field is
+# ignored).  Stripping the prerelease suffix therefore collapsed every
+# beta/stable build of the same patch to one ProductVersion, which made
+# beta->beta, beta->stable, and downgrade transitions invisible to MSI and
+# forced the bootstrapper into non-transactional uninstall-then-install
+# workarounds.  Encode a strictly monotonic prerelease ordinal into the third
+# field instead:
+#
+#   third field = patch * 100 + ordinal
+#     -alpha.N  -> N        (1..29)
+#     -beta.N   -> 30 + N   (31..59)
+#     -rc.N     -> 60 + N   (61..89)
+#     other pre -> 90
+#     stable    -> 99
+#
+#   1.18.0-beta.2 -> 1.18.32.0 < 1.18.0 -> 1.18.99.0 < 1.18.1-beta.1 -> 1.18.131.0
+#
+# Every release is now a real MSI major upgrade, handled inside a single
+# transaction.  The human-readable version is preserved for ARP via the
+# VibeshineSemVer candle define below; a third field >= 100 is also how the
+# bootstrapper detects a payload that supports transactional downgrades.
 set(_RAW_VER "${PROJECT_VERSION_NUMERIC}")
 set(_WIX_MAJ 0)
 set(_WIX_MIN 0)
@@ -95,6 +116,37 @@ else()
   endif()
   set(_WIX_REV 0)
 endif()
+
+# Derive the prerelease ordinal from the full version (e.g. 1.18.0-beta.2).
+set(_WIX_PRERELEASE_ORDINAL 99)
+if(PROJECT_VERSION_FULL MATCHES "-([A-Za-z]+)(\\.([0-9]+))?")
+  set(_pre_tag "${CMAKE_MATCH_1}")
+  set(_pre_num "${CMAKE_MATCH_3}")
+  string(TOLOWER "${_pre_tag}" _pre_tag)
+  if(_pre_num STREQUAL "")
+    set(_pre_num 1)
+  endif()
+  if(_pre_num GREATER 29)
+    message(WARNING "Prerelease number ${_pre_num} exceeds the encodable range (1..29); clamping to 29. ProductVersion ordering vs later ${_pre_tag} builds is no longer guaranteed.")
+    set(_pre_num 29)
+  endif()
+  if(_pre_tag STREQUAL "alpha")
+    set(_WIX_PRERELEASE_ORDINAL "${_pre_num}")
+  elseif(_pre_tag STREQUAL "beta")
+    math(EXPR _WIX_PRERELEASE_ORDINAL "30 + ${_pre_num}")
+  elseif(_pre_tag STREQUAL "rc")
+    math(EXPR _WIX_PRERELEASE_ORDINAL "60 + ${_pre_num}")
+  else()
+    # Unknown prerelease tag: rank below stable but above rc.
+    set(_WIX_PRERELEASE_ORDINAL 90)
+  endif()
+endif()
+
+if(_WIX_PAT GREATER 654)
+  # 654 * 100 + 99 = 65499 <= 65534 (WiX field limit); anything larger overflows.
+  message(FATAL_ERROR "Patch version ${_WIX_PAT} cannot be ordinal-encoded into the WiX ProductVersion third field (max 654).")
+endif()
+math(EXPR _WIX_PAT "${_WIX_PAT} * 100 + ${_WIX_PRERELEASE_ORDINAL}")
 
 # Clamp to WiX allowed maximum 65534
 foreach(_v IN ITEMS _WIX_MAJ _WIX_MIN _WIX_PAT _WIX_REV)

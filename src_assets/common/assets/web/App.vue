@@ -16,7 +16,7 @@
                     }}
                   </h1>
                 </div>
-                <nav class="hidden md:flex items-center gap-1 text-sm font-medium ml-2">
+                <nav class="hidden xl:flex items-center gap-0.5 text-xs font-medium ml-2">
                   <RouterLink to="/" :class="linkClass('/')">
                     <i class="fas fa-gauge" /><span>{{ $t('navbar.home') }}</span>
                   </RouterLink>
@@ -44,8 +44,8 @@
                     <i class="fas fa-sign-out-alt" /><span>{{ $t('navbar.logout') }}</span>
                   </a>
                 </nav>
-                <!-- Mobile menu button (md:hidden) -->
-                <div class="md:hidden ml-auto flex items-center gap-2">
+                <!-- Keep the compact controls through tablet widths; the full nav does not fit there. -->
+                <div class="xl:hidden ml-auto flex shrink-0 items-center gap-1">
                   <n-dropdown
                     trigger="click"
                     :show-arrow="true"
@@ -56,14 +56,14 @@
                       <i class="fas fa-bars" />
                     </n-button>
                   </n-dropdown>
-                  <!-- Show save/status control on mobile app bar when on Settings -->
-                  <SavingStatus />
-                  <ThemeToggle />
+                  <!-- Show compact save and theme controls without crowding the app bar. -->
+                  <SavingStatus compact />
+                  <ThemeToggle compact />
                 </div>
                 <!-- Desktop actions -->
-                <div class="hidden md:flex ml-auto items-center gap-3 text-xs">
-                  <SavingStatus />
-                  <ThemeToggle />
+                <div class="hidden xl:flex ml-auto shrink-0 items-center gap-2 text-xs">
+                  <SavingStatus compact />
+                  <ThemeToggle compact />
                 </div>
               </header>
 
@@ -164,7 +164,7 @@ const cfgStore = useConfigStore();
 const { metadata } = storeToRefs(cfgStore);
 
 const linkClass = (path: string) => {
-  const base = 'inline-flex items-center gap-2 px-3 py-1 rounded-md text-brand';
+  const base = 'nav-link inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-brand';
   const active = route.path === path;
   if (active) return base + ' font-semibold bg-primary/20 text-brand';
   return base + ' hover:bg-primary/10';
@@ -276,3 +276,15 @@ function containerClass(r: any) {
   return `${base} ${sizes[size] || sizes['lg']}`;
 }
 </script>
+
+<style scoped>
+/* Navigation uses flex gap, so the global inline-icon margin would double its spacing. */
+.nav-link > .icon,
+.nav-link > .fa,
+.nav-link > .fas,
+.nav-link > .far,
+.nav-link > .fal,
+.nav-link > .fab {
+  margin: 0 !important;
+}
+</style>

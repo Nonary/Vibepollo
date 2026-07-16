@@ -6,6 +6,8 @@
 
 // standard includes
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -28,6 +30,10 @@
 #include "src/utility.h"
 #include "src/video.h"
 
+namespace platf::game_activity {
+  class refresh_target_t;
+}
+
 namespace platf::dxgi {
   extern const char *format_str[];
 
@@ -47,6 +53,7 @@ namespace platf::dxgi {
   std::optional<LUID> get_last_wgc_adapter_luid();
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
   std::optional<LUID> get_dxgi_adapter_luid_override();
+  bool should_use_wgc_default();
   std::string current_display_adapter_name();
   using dxgi1_t = util::safe_ptr<IDXGIDevice1, Release<IDXGIDevice1>>;
   using device_t = util::safe_ptr<ID3D11Device, Release<ID3D11Device>>;
@@ -175,6 +182,7 @@ namespace platf::dxgi {
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
+    bool refresh_output_after_expected_mode_change();
 
     factory1_t factory;
     adapter_t adapter;
@@ -183,6 +191,12 @@ namespace platf::dxgi {
     device_ctx_t device_ctx;
     DXGI_RATIONAL display_refresh_rate {0, 1};
     int display_refresh_rate_rounded {};
+    DXGI_OUTPUT_DESC captured_output_desc {};
+    LUID captured_adapter_luid {};
+    bool captured_hdr_state {false};
+    bool captured_hdr_state_valid {false};
+    bool refresh_only_changes_supported {false};
+    std::shared_ptr<platf::game_activity::refresh_target_t> game_refresh_target;
 
     DXGI_MODE_ROTATION display_rotation = DXGI_MODE_ROTATION_UNSPECIFIED;
     int width_before_rotation;

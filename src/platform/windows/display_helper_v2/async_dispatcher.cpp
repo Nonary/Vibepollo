@@ -121,6 +121,23 @@ namespace display_helper::v2 {
     });
   }
 
+  void AsyncDispatcher::dispatch_refresh_rate(
+    std::string device_id,
+    unsigned int numerator,
+    unsigned int denominator,
+    std::function<void(bool)> completion
+  ) {
+    enqueue_task([
+      this,
+      device_id = std::move(device_id),
+      numerator,
+      denominator,
+      completion = std::move(completion)
+    ]() mutable {
+      completion(apply_operation_.set_refresh_rate(device_id, numerator, denominator));
+    });
+  }
+
   void AsyncDispatcher::enqueue_task(std::function<void()> task) {
     {
       std::lock_guard<std::mutex> lock(mutex_);

@@ -883,6 +883,8 @@ TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLook
   ASSERT_TRUE(frame.enabled);
   EXPECT_EQ(frame.contrast, 150);
   ASSERT_EQ(fake.resolve_calls, 1);
+  const auto initial_metadata = platf::rtx_hdr::live_output_metadata_state();
+  EXPECT_EQ(initial_metadata.peak_brightness, frame.peak_brightness);
 
   config::video.rtx_hdr.contrast = 80;
   config::video.rtx_hdr.saturation = 81;
@@ -904,6 +906,9 @@ TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLook
   EXPECT_EQ(frame.peak_brightness, 1700);
   EXPECT_EQ(frame.source, profile_source_e::config);
   EXPECT_EQ(fake.resolve_calls, 1);
+  const auto updated_metadata = platf::rtx_hdr::live_output_metadata_state();
+  EXPECT_EQ(updated_metadata.peak_brightness, 1700);
+  EXPECT_NE(updated_metadata.generation, initial_metadata.generation);
 }
 
 TEST(RtxHdrRuntimeScheduler, LiveSettingsCanEnableDisabledFrame) {

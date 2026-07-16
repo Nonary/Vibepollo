@@ -6,10 +6,13 @@
 #include "utility.h"
 
 #include <algorithm>
+#include <atomic>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <chrono>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -33,10 +36,39 @@ namespace statefile {
     std::once_flag migration_once;
 
     enum class json_load_result_e {
-      loaded,
-      missing,
-      failed,
+      loaded,   ///< File existed and parsed cleanly.
+      missing,  ///< File (or its content) was absent/blank; safe to create fresh.
+      corrupt,  ///< File was readable but its content was not valid JSON; safe to discard and recreate.
+      failed,   ///< File could not be inspected/opened (I/O, permission, or not-a-regular-file); do NOT overwrite.
     };
+
+    /**
+     * @brief Best-effort rename of an unparseable state file out of the way so a
+     *        fresh, valid file can replace it. Preserves the bad copy for forensics.
+     *
+     * Callers hold state_mutex() during their read/modify/write transaction, so this
+     * runs serialized with respect to other writers of the same file.
+     */
+    void quarantine_corrupt_state(const fs::path &path) {
+      static std::atomic<unsigned> sequence {0};
+      std::error_code ec;
+      const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch()
+      )
+                           .count();
+      fs::path quarantine = path;
+      // Include a process-unique counter so two corrupt-detections in the same
+      // wall-clock second cannot overwrite each other's forensic copy.
+      quarantine += ".corrupt-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1));
+      fs::rename(path, quarantine, ec);
+      if (ec) {
+        // The subsequent atomic write replaces the file in place anyway, so this is non-fatal.
+        BOOST_LOG(warning) << "statefile: could not quarantine corrupt file "sv << path.string()
+                           << " (will overwrite in place): "sv << ec.message();
+      } else {
+        BOOST_LOG(warning) << "statefile: quarantined corrupt state file to "sv << quarantine.string();
+      }
+    }
 
     pt::ptree &ensure_root(pt::ptree &tree) {
       auto it = tree.find("root");
@@ -72,15 +104,68 @@ namespace statefile {
         return json_load_result_e::failed;
       }
 
+      // Read the raw bytes ourselves so we can tell an I/O/permission failure
+      // (which must NOT clobber the on-disk state) apart from genuinely malformed
+      // content (which is safe to discard and recreate). boost::read_json folds
+      // both cases into a single json_parser_error, so it cannot disambiguate them.
+      // The read is done by size and validated against gcount so that a truncated
+      // or failed read is reported as 'failed' (refuse), never mistaken for corrupt.
+      std::string content;
+      {
+        std::ifstream in(path, std::ios::binary);
+        if (!in.is_open()) {
+          BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
+                           << " - could not open it for reading"sv;
+          return json_load_result_e::failed;
+        }
+        in.seekg(0, std::ios::end);
+        const std::streamoff size = in.tellg();
+        if (size < 0) {
+          BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
+                           << " - could not determine file size"sv;
+          return json_load_result_e::failed;
+        }
+        if (size > 0) {
+          in.seekg(0, std::ios::beg);
+          content.resize(static_cast<size_t>(size));
+          in.read(content.data(), size);
+          if (in.bad() || in.gcount() != size) {
+            BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
+                             << " - read error or short read"sv;
+            return json_load_result_e::failed;
+          }
+        }
+      }
+
+      // Strip a leading UTF-8 BOM so a BOM-prefixed but otherwise valid file is
+      // parsed (and preserved) rather than discarded as corrupt.
+      if (content.size() >= 3 &&
+          static_cast<unsigned char>(content[0]) == 0xEF &&
+          static_cast<unsigned char>(content[1]) == 0xBB &&
+          static_cast<unsigned char>(content[2]) == 0xBF) {
+        content.erase(0, 3);
+      }
+
+      // A blank/whitespace-only file is a benign partial-write artifact; treat it
+      // like a missing file so the caller recreates valid content.
+      if (content.find_first_not_of(" \t\r\n\f\v"sv) == std::string::npos) {
+        return json_load_result_e::missing;
+      }
+
       try {
         pt::ptree parsed;
-        pt::read_json(path.string(), parsed);
+        std::istringstream is(content);
+        pt::read_json(is, parsed);
         out = std::move(parsed);
         return json_load_result_e::loaded;
       } catch (const std::exception &e) {
-        BOOST_LOG(error) << "statefile: refusing to update "sv << path.string()
-                         << " after failed read: "sv << e.what();
-        return json_load_result_e::failed;
+        // Readable but not valid JSON: discard it so the user is not permanently
+        // wedged (e.g. an un-dismissable crash banner) by a single bad file.
+        BOOST_LOG(error) << "statefile: "sv << path.string()
+                         << " contains malformed JSON ("sv << e.what()
+                         << "); quarantining it and recreating from current state"sv;
+        quarantine_corrupt_state(path);
+        return json_load_result_e::corrupt;
       }
     }
 
@@ -149,11 +234,94 @@ namespace statefile {
       }
     }
 
-    bool enable_acl_inheritance(const fs::path &path) {
-      if (!path_exists_or_may_be_access_denied(path)) {
+    void clear_readonly_attribute(const fs::path &path) {
+      if (path.empty()) {
+        return;
+      }
+      const auto wide_path = path.wstring();
+      const DWORD attributes = GetFileAttributesW(wide_path.c_str());
+      if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_READONLY)) {
+        return;
+      }
+      if (SetFileAttributesW(wide_path.c_str(), attributes & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY))) {
+        BOOST_LOG(debug) << "statefile: cleared read-only attribute on "sv << path.string();
+      } else {
+        BOOST_LOG(warning) << "statefile: failed to clear read-only attribute on "sv << path.string()
+                           << " (error="sv << GetLastError() << ')';
+      }
+    }
+
+    bool set_token_privilege(LPCWSTR privilege_name, bool enable) {
+      HANDLE raw_token = nullptr;
+      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &raw_token)) {
+        return false;
+      }
+      auto close_token = util::fail_guard([&raw_token]() {
+        if (raw_token) {
+          CloseHandle(raw_token);
+        }
+      });
+
+      LUID luid;
+      if (!LookupPrivilegeValueW(nullptr, privilege_name, &luid)) {
+        return false;
+      }
+      TOKEN_PRIVILEGES privileges {};
+      privileges.PrivilegeCount = 1;
+      privileges.Privileges[0].Luid = luid;
+      privileges.Privileges[0].Attributes = enable ? SE_PRIVILEGE_ENABLED : 0;
+      if (!AdjustTokenPrivileges(raw_token, FALSE, &privileges, sizeof(privileges), nullptr, nullptr)) {
+        return false;
+      }
+      return GetLastError() == ERROR_SUCCESS;
+    }
+
+    // Last-resort recovery: a botched upgrade can leave a config/state file owned by
+    // a foreign account with a DACL the service cannot rewrite. The streaming host
+    // runs as LocalSystem, so granting it ownership lets the inheritance reset retry
+    // succeed. Best-effort and scoped to our own config paths. The required privileges
+    // are enabled only for the duration of the ownership change, not process-wide.
+    bool take_ownership_as_system(const fs::path &path) {
+      const bool restore_enabled = set_token_privilege(L"SeRestorePrivilege", true);
+      const bool take_enabled = set_token_privilege(L"SeTakeOwnershipPrivilege", true);
+      auto disable_privileges = util::fail_guard([&]() {
+        if (restore_enabled) {
+          set_token_privilege(L"SeRestorePrivilege", false);
+        }
+        if (take_enabled) {
+          set_token_privilege(L"SeTakeOwnershipPrivilege", false);
+        }
+      });
+      if (!restore_enabled && !take_enabled) {
         return false;
       }
 
+      alignas(DWORD) BYTE sid_buffer[SECURITY_MAX_SID_SIZE];
+      DWORD sid_size = sizeof(sid_buffer);
+      if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, sid_buffer, &sid_size)) {
+        return false;
+      }
+
+      const auto wide_path = path.wstring();
+      const DWORD status = SetNamedSecurityInfoW(
+        const_cast<LPWSTR>(wide_path.c_str()),
+        SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION,
+        sid_buffer,
+        nullptr,
+        nullptr,
+        nullptr
+      );
+      if (status != ERROR_SUCCESS) {
+        BOOST_LOG(warning) << "statefile: failed to take ownership of "sv << path.string()
+                           << " (error="sv << status << ')';
+        return false;
+      }
+      BOOST_LOG(info) << "statefile: took ownership of "sv << path.string() << " to repair permissions"sv;
+      return true;
+    }
+
+    bool enable_acl_inheritance_once(const fs::path &path) {
       const auto wide_path = path.wstring();
       PSECURITY_DESCRIPTOR security_descriptor = nullptr;
       PACL current_dacl = nullptr;
@@ -215,6 +383,28 @@ namespace statefile {
 
       BOOST_LOG(warning) << "statefile: failed to inspect/restore inherited ACLs for "sv << path.string()
                          << " (get_error="sv << status << ", set_error="sv << unprotect_status << ')';
+      return false;
+    }
+
+    bool enable_acl_inheritance(const fs::path &path) {
+      if (!path_exists_or_may_be_access_denied(path)) {
+        return false;
+      }
+
+      // A read-only attribute blocks atomic replaces independently of the DACL, so
+      // clear it whenever we touch a config path during repair.
+      clear_readonly_attribute(path);
+
+      if (enable_acl_inheritance_once(path)) {
+        return true;
+      }
+
+      // The DACL could not be read or rewritten (likely foreign ownership). Take
+      // ownership as SYSTEM and retry once before giving up.
+      if (take_ownership_as_system(path) && enable_acl_inheritance_once(path)) {
+        BOOST_LOG(info) << "statefile: repaired ACLs for "sv << path.string() << " after taking ownership"sv;
+        return true;
+      }
       return false;
     }
 
@@ -332,6 +522,109 @@ namespace statefile {
     return config::nvhttp.file_state;
   }
 
+  void secure_private_directory(const std::string &path) {
+#ifdef _WIN32
+    if (path.empty()) {
+      return;
+    }
+    fs::path dir(path);
+    std::error_code ec;
+    if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) {
+      return;
+    }
+
+    clear_readonly_attribute(dir);
+
+    // Build an explicit, NON-inherited DACL granting full control to LocalSystem and
+    // the local Administrators group only. Applied with PROTECTED_DACL so no
+    // %ProgramFiles% "Users:(RX)" ACE can cascade in and expose the TLS private key.
+    alignas(DWORD) BYTE system_sid[SECURITY_MAX_SID_SIZE];
+    alignas(DWORD) BYTE admins_sid[SECURITY_MAX_SID_SIZE];
+    DWORD system_size = sizeof(system_sid);
+    DWORD admins_size = sizeof(admins_sid);
+    if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &system_size) ||
+        !CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admins_sid, &admins_size)) {
+      return;
+    }
+
+    // Always include the current process user so the running host never loses access
+    // to its own credentials (e.g. sunshine.exe run directly as a non-admin user). When
+    // running as the LocalSystem service this is the SYSTEM SID (already granted), so no
+    // additional non-admin principal is added.
+    alignas(DWORD) BYTE token_user_buf[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_USER) + 16];
+    PSID user_sid = nullptr;
+    HANDLE process_token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &process_token)) {
+      DWORD token_len = 0;
+      if (GetTokenInformation(process_token, TokenUser, token_user_buf, sizeof(token_user_buf), &token_len)) {
+        PSID candidate = reinterpret_cast<TOKEN_USER *>(token_user_buf)->User.Sid;
+        if (candidate && IsValidSid(candidate) && !EqualSid(candidate, system_sid)) {
+          user_sid = candidate;
+        }
+      }
+      CloseHandle(process_token);
+    }
+
+    EXPLICIT_ACCESS_W entries[3] {};
+    ULONG entry_count = 0;
+    const auto add_full_control = [&](PSID sid, TRUSTEE_TYPE trustee_type) {
+      entries[entry_count].grfAccessPermissions = GENERIC_ALL;
+      entries[entry_count].grfAccessMode = SET_ACCESS;
+      entries[entry_count].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+      entries[entry_count].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+      entries[entry_count].Trustee.TrusteeType = trustee_type;
+      entries[entry_count].Trustee.ptstrName = reinterpret_cast<LPWSTR>(sid);
+      ++entry_count;
+    };
+    add_full_control(system_sid, TRUSTEE_IS_USER);
+    add_full_control(admins_sid, TRUSTEE_IS_GROUP);
+    if (user_sid) {
+      add_full_control(user_sid, TRUSTEE_IS_UNKNOWN);
+    }
+
+    PACL new_dacl = nullptr;
+    if (SetEntriesInAclW(entry_count, entries, nullptr, &new_dacl) != ERROR_SUCCESS || !new_dacl) {
+      return;
+    }
+    auto free_dacl = util::fail_guard([&new_dacl]() {
+      if (new_dacl) {
+        LocalFree(new_dacl);
+      }
+    });
+
+    const auto wide_path = dir.wstring();
+    const DWORD info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+    DWORD status = SetNamedSecurityInfoW(
+      const_cast<LPWSTR>(wide_path.c_str()),
+      SE_FILE_OBJECT,
+      info,
+      nullptr,
+      nullptr,
+      new_dacl,
+      nullptr
+    );
+    if (status != ERROR_SUCCESS && take_ownership_as_system(dir)) {
+      status = SetNamedSecurityInfoW(
+        const_cast<LPWSTR>(wide_path.c_str()),
+        SE_FILE_OBJECT,
+        info,
+        nullptr,
+        nullptr,
+        new_dacl,
+        nullptr
+      );
+    }
+    if (status == ERROR_SUCCESS) {
+      BOOST_LOG(debug) << "statefile: hardened private directory "sv << dir.string();
+    } else {
+      BOOST_LOG(warning) << "statefile: failed to harden private directory "sv << dir.string()
+                         << " (error="sv << status << ')';
+    }
+#else
+    (void) path;
+#endif
+  }
+
   void repair_config_permissions() {
 #ifdef _WIN32
     std::set<fs::path> config_roots;
@@ -362,6 +655,13 @@ namespace statefile {
 
     for (const auto &path : config_files) {
       enable_acl_inheritance(path);
+    }
+
+    // Re-harden the private credentials directory (host TLS key) so that re-enabling
+    // inheritance above cannot cascade a Users:(RX) ACE into it, and so an upgrade
+    // that skipped the installer's icacls hardening is still secured at startup.
+    for (const auto &dir : config_roots) {
+      secure_private_directory((dir / "credentials").string());
     }
 #endif
   }

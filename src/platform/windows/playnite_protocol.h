@@ -19,7 +19,9 @@ namespace platf::playnite {
     Categories,  ///< Message contains a list of categories.
     Plugins,  ///< Message contains a list of library plugins.
     Games,  ///< Message contains a list of games.
-    Status  ///< Message contains a status update for a specific game / session.
+    Status,  ///< Message contains a status update for a specific game / session.
+    SnapshotStart,  ///< A full library snapshot (plugins/categories/games batches) begins.
+    SnapshotComplete  ///< The library snapshot is fully delivered.
   };
 
   /**

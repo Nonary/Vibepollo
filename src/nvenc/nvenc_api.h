@@ -146,6 +146,12 @@ namespace nvenc::api {
     }
   }
 
+  // Native MaxCLL/mastering-display insertion was added in Video Codec SDK 13.0.
+  // Earlier API revisions use these config bits and picture pointers as reserved fields.
+  constexpr bool supports_hdr10_metadata(uint32_t api_version) {
+    return !api_version_less(api_version, make_api_version(13U, 0U));
+  }
+
   // Struct revisions below must match the NV_ENC_*_VER macros in each SDK's
   // nvEncodeAPI.h (ffnvcodec sdk/<version> branches). Drivers dispatch struct
   // layout by revision, so an understated revision makes the driver read the

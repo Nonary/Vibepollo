@@ -121,23 +121,31 @@
   </Fragment>
 
   <Fragment>
-    <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
+    <!-- Post-install chores (ACL reset, config migration, installer migrations) run
+         AFTER InstallFiles. They are best-effort housekeeping, not prerequisites for
+         the app to boot: a failure here must NOT roll back / brick an otherwise complete
+         upgrade. Use Return="ignore" like the driver/Vulkan-layer actions below; Vibepollo
+         re-repairs config ACLs AND re-hardens the private credentials directory at startup
+         (statefile::repair_config_permissions / secure_private_directory, and create_creds
+         hardens it before writing the key), and the legacy config-key migrations are
+         idempotent on the next successful install. -->
+    <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <!-- Driver and Vulkan-layer installs stay Return="ignore" in Vibepollo: a failed
+         SudoVDA/virtual-display driver refresh or Vulkan HDR layer registration (AV
+         quarantine, ACLs, missing payload on upgrade) must NOT roll back an otherwise
+         complete install. Vibepollo reconciles drivers and the layer at startup and
+         surfaces a Web UI toggle + dashboard warning. -->
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
-    <!-- The Vulkan HDR layer is an optional enhancement for virtual displays. A failure here
-         (e.g. AV quarantine, registry ACLs, missing payload on upgrade) must NOT roll back the
-         entire install, so use Return="ignore" like the driver install above. Vibepollo reconciles
-         the layer registration at startup and exposes a Web UI toggle + dashboard warning so users
-         can install/disable it after the fact. -->
     <CustomAction Id="RegisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
     <!-- Uninstall-time actions (deferred, elevated) -->
-    <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
-    <CustomAction Id="RemoveConflictingProducts" BinaryKey="RemoveConflictingProductsVbs" VBScriptCall="RemoveConflictingProducts" Execute="deferred" Return="check" />
+    <CustomAction Id="RestoreNvPrefsUndo" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveConflictingProducts" BinaryKey="RemoveConflictingProductsVbs" VBScriptCall="RemoveConflictingProducts" Execute="immediate" Return="check" />
     <!-- Quiet stop for repair/basic UI: proactively stop service when UI is too low for prompts -->
     <CustomAction Id="StopSvcQuietImmediate" BinaryKey="WixCA" DllEntry="CAQuietExec" Return="ignore" />
     <CustomAction Id="StopSvcQuiet" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -171,10 +179,10 @@
                  Property="InstallSudovda"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sudovda\install.ps1&quot;"/>
 
-    <!-- The experimental Sunshine virtual display driver is opt-in. -->
+    <!-- The Sunshine virtual display driver is installed by default unless explicitly opted out. -->
     <CustomAction Id="SetInstallVirtualDisplayDriver"
                  Property="InstallVirtualDisplayDriver"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot;"/>
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -InstallerBestEffort"/>
 
     <CustomAction Id="SetRegisterVulkanHdrLayer"
                  Property="RegisterVulkanHdrLayer"
@@ -222,10 +230,10 @@
     <!-- Immediate setters for quiet process kill and service removal on manual uninstall -->
     <CustomAction Id="SetKillProcsQuietImmediate"
                  Property="QtExecCmdLine"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
     <CustomAction Id="SetKillProcsQuiet"
                  Property="KillProcsQuiet"
-                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$n='sunshine','sunshinesvc','sunshine_wgc_capture','sunshine_display_helper','playnite-launcher','playnite_launcher','apollo','apollosvc'; foreach($p in $n){ Get-Process -Name $p -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }&quot;"/>
 
     <CustomAction Id="SetUpdatePathRemove"
                  Property="UpdatePathRemove"
@@ -255,7 +263,11 @@
         <CreateFolder />
         <RegistryKey Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Vibepollo">
           <RegistryValue Name="DisplayName" Type="string" Value="Vibepollo" KeyPath="yes" />
-          <RegistryValue Name="DisplayVersion" Type="string" Value="[ProductVersion]" />
+          <!-- Human-readable semver; ProductVersion is ordinal-encoded (e.g.
+               1.18.0-beta.2 -> 1.18.32.0) and would confuse users here. The
+               bootstrapper's ParseVersion maps this string back into the
+               encoded space for comparisons. -->
+          <RegistryValue Name="DisplayVersion" Type="string" Value="$(var.VibeshineSemVer)" />
           <RegistryValue Name="Publisher" Type="string" Value="Nonary" />
           <RegistryValue Name="InstallLocation" Type="string" Value="[INSTALL_ROOT]" />
           <RegistryValue Name="DisplayIcon" Type="string" Value="[INSTALL_ROOT]sunshine.exe" />

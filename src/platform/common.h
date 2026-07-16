@@ -386,6 +386,13 @@ namespace platf {
 
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active = false;
+
+    // Authoritative HDR metadata for the stream, resolved once at device creation so the
+    // control-channel HDR mode message and the bitstream mastering-display SEI always agree,
+    // and so no consumer re-queries a display that may transiently read SDR during a reinit.
+    // Only meaningful when colorspace is HDR.
+    bool hdr_metadata_valid = false;
+    SS_HDR_METADATA hdr_metadata {};
   };
 
   struct avcodec_encode_device_t: encode_device_t {

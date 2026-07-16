@@ -7,6 +7,7 @@
 #ifdef _WIN32
 
   #include "src/platform/windows/rtss_integration.h"
+  #include "src/framegen_policy.h"
 
   #include <optional>
   #include <string>
@@ -34,11 +35,11 @@ namespace platf {
     rtss_status_t rtss;
   };
 
-  void frame_limiter_streaming_start(int fps, int fps_scaled, bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit, const std::string &frame_generation_provider, bool smooth_motion);
+  void frame_limiter_streaming_start(const framegen::stream_start_policy_t &policy);
   void frame_limiter_streaming_stop(bool keep_rtss_running = false);
   void frame_limiter_streaming_refresh();
 
-  bool frame_limiter_prepare_launch(bool gen1_framegen_fix, bool gen2_framegen_fix, std::optional<int> lossless_rtss_limit);
+  bool frame_limiter_prepare_launch(const framegen::stream_start_policy_t &policy);
 
   frame_limiter_provider frame_limiter_active_provider();
   frame_limiter_status_t frame_limiter_get_status();

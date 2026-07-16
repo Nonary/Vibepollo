@@ -10,13 +10,13 @@ import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelect
 import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
 import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
 import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
-import { NCheckbox, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
+import { NCheckbox, NSelect, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
 import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 
 const { t } = useI18n();
 const store = useConfigStore();
-const { config } = storeToRefs(store);
+const { config, isWindows10Host } = storeToRefs(store);
 const platform = computed(() => (config.value as any)?.platform || '');
 const ddConfigDisabled = computed(
   () => (config.value as any)?.dd_configuration_option === 'disabled',
@@ -90,15 +90,22 @@ const displayAutomationEnabled = computed<boolean>({
   },
 });
 
-const sunshineVirtualDriverEnabled = computed<boolean>({
+const useSudoVdaDriver = computed<boolean>(
+  () => config.value?.dd_use_sunshine_virtual_display_driver === false,
+);
+const virtualDisplayDriver = computed<'vibeshine' | 'sudovda'>({
   get() {
-    return config.value?.dd_use_sunshine_virtual_display_driver === true;
+    return useSudoVdaDriver.value ? 'sudovda' : 'vibeshine';
   },
-  set(enabled) {
+  set(driver) {
     if (!config.value) return;
-    store.updateOption('dd_use_sunshine_virtual_display_driver', enabled);
+    store.updateOption('dd_use_sunshine_virtual_display_driver', driver !== 'sudovda');
   },
 });
+const virtualDisplayDriverOptions = computed(() => [
+  { label: t('config.virtual_display_driver_vibeshine_option'), value: 'vibeshine' },
+  { label: t('config.virtual_display_driver_sudovda_option'), value: 'sudovda' },
+]);
 const vulkanHdrLayerEnabled = computed<boolean>({
   get() {
     return config.value?.vulkan_hdr_layer !== false;
@@ -109,15 +116,15 @@ const vulkanHdrLayerEnabled = computed<boolean>({
   },
 });
 const selectedVirtualDisplayDriverName = computed(() =>
-  sunshineVirtualDriverEnabled.value
-    ? t('config.virtual_display_driver_vibeshine_name')
-    : t('config.virtual_display_driver_sudovda_name'),
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_driver_sudovda_name')
+    : t('config.virtual_display_driver_vibeshine_name'),
 );
 const currentDriverStatusMessage = computed(() => {
   if (!vdisplay.value) {
-    return sunshineVirtualDriverEnabled.value
-      ? t('config.virtual_display_status_vibeshine_ready')
-      : t('config.virtual_display_status_sudovda_ready');
+    return useSudoVdaDriver.value
+      ? t('config.virtual_display_status_sudovda_ready')
+      : t('config.virtual_display_status_vibeshine_ready');
   }
 
   return t('config.virtual_display_status_driver_state', {
@@ -126,9 +133,9 @@ const currentDriverStatusMessage = computed(() => {
   });
 });
 const currentDriverStatusHint = computed(() =>
-  sunshineVirtualDriverEnabled.value
-    ? t('config.virtual_display_status_hint_vibeshine')
-    : t('config.virtual_display_status_hint_sudovda'),
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_status_hint_sudovda')
+    : t('config.virtual_display_status_hint_vibeshine'),
 );
 
 const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
@@ -139,13 +146,32 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
         return mode;
       }
     }
-    return 'disabled';
+    return 'per_client';
   },
   set(mode) {
     if (!config.value) return;
     store.updateOption('virtual_display_mode', mode);
   },
 });
+
+const virtualDisplayScale = computed<number>({
+  get() {
+    const value = Number(config.value?.['dd_virtual_display_scale']);
+    return Number.isFinite(value) ? value : 250;
+  },
+  set(value) {
+    if (!config.value) return;
+    store.updateOption('dd_virtual_display_scale', value);
+  },
+});
+
+const virtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_auto'), value: 0 },
+  ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
+    label: `${value}%`,
+    value,
+  })),
+]);
 
 const virtualDisplayLayout = computed<
   'exclusive' | 'extended' | 'extended_primary' | 'extended_isolated' | 'extended_primary_isolated'
@@ -274,19 +300,19 @@ function selectVirtualDisplayLayout(v: unknown) {
     <!-- Display configuration: clear, guided, pre-stream focused -->
     <section class="mb-8">
       <div class="rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
-        <div class="bg-surface/40 px-4 py-3">
+        <div class="bg-surface/40 px-3 py-3 sm:px-4">
           <h3 class="text-sm font-medium">{{ $t('config.dd_display_setup_title') }}</h3>
           <p class="text-[11px] opacity-70 mt-1">
             {{ $t('config.dd_display_setup_intro') }}
           </p>
         </div>
 
-        <div class="p-4">
+        <div class="p-3 sm:p-4">
           <!-- Step 1: Which display to capture -->
-          <fieldset class="mb-4 border border-dark/35 dark:border-light/25 rounded-xl p-4">
-            <legend class="px-2 text-sm font-medium">
+          <section class="mb-5 min-w-0">
+            <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
               {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
-            </legend>
+            </h4>
             <PlatformLayout>
               <template #windows>
                 <div class="mt-3 space-y-3">
@@ -302,40 +328,96 @@ function selectVirtualDisplayLayout(v: unknown) {
                   <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
                     {{ currentDriverStatusHint }}
                   </p>
+                  <div
+                    v-if="isWindows10Host"
+                    class="rounded-md bg-warning/10 px-4 py-3 text-warning"
+                  >
+                    <div class="flex items-start gap-2">
+                      <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                      <div>
+                        <div class="text-[13px] font-semibold">
+                          {{ $t('config.win10_notice_title') }}
+                        </div>
+                        <p class="mt-1 text-[11px] leading-snug opacity-90">
+                          {{ $t('config.win10_notice_body') }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </template>
             </PlatformLayout>
             <p class="text-[11px] opacity-70 mt-2 leading-snug">
-              {{ $t('config.virtual_display_mode_step_hint') }}
+              {{
+                isWindows10Host
+                  ? $t('config.virtual_display_mode_step_hint_win10')
+                  : $t('config.virtual_display_mode_step_hint')
+              }}
             </p>
             <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
               <n-radio value="disabled">
-                {{ $t('config.virtual_display_mode_disabled') }}
+                {{
+                  isWindows10Host
+                    ? $t('config.virtual_display_mode_disabled_win10')
+                    : $t('config.virtual_display_mode_disabled')
+                }}
               </n-radio>
               <n-radio value="per_client">
-                {{ $t('config.virtual_display_mode_per_client') }}
+                {{
+                  isWindows10Host
+                    ? $t('config.virtual_display_mode_per_client_plain')
+                    : $t('config.virtual_display_mode_per_client')
+                }}
               </n-radio>
               <n-radio value="shared">
                 {{ $t('config.virtual_display_mode_shared') }}
               </n-radio>
             </n-radio-group>
-            <PlatformLayout>
-              <template #windows>
-                <div class="mt-4 border-l-2 border-dark/10 dark:border-light/10 pl-3">
-                  <Checkbox
-                    id="dd_wa_virtual_double_refresh"
-                    v-model="config.dd_wa_virtual_double_refresh"
-                    locale-prefix="config"
-                    :default="true"
-                    :disabled="virtualDisplayMode === 'disabled'"
-                  />
-                </div>
-              </template>
-            </PlatformLayout>
+            <transition name="fade">
+              <div
+                v-if="virtualDisplayMode === 'shared'"
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.virtual_display_shared_hdr_warning') }}</span>
+                  </span>
+                </p>
+              </div>
+            </transition>
             <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
               <DisplayOutputSelector />
+              <div
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.physical_display_framegen_warning') }}</span>
+                  </span>
+                </p>
+              </div>
             </div>
             <div v-else class="mt-3 space-y-2">
+              <div class="pb-3">
+                <div class="text-sm font-medium">
+                  {{ $t('config.virtual_display_scale_label') }}
+                </div>
+                <p class="text-[11px] opacity-70 leading-snug">
+                  {{ $t('config.virtual_display_scale_desc') }}
+                </p>
+                <n-select
+                  v-model:value="virtualDisplayScale"
+                  :options="virtualDisplayScaleOptions"
+                  size="small"
+                  class="mt-2 max-w-md"
+                />
+              </div>
               <div class="text-sm font-medium">
                 {{ $t('config.virtual_display_layout_label') }}
               </div>
@@ -424,16 +506,18 @@ function selectVirtualDisplayLayout(v: unknown) {
             <PlatformLayout>
               <template #windows>
                 <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
-                  <n-checkbox v-model:checked="sunshineVirtualDriverEnabled">
-                    <div class="flex flex-col">
-                      <span class="text-sm font-medium">
-                        {{ $t('config.dd_use_sunshine_virtual_display_driver') }}
-                      </span>
-                      <span class="mt-1 text-[11px] leading-snug opacity-70">
-                        {{ $t('config.dd_use_sunshine_virtual_display_driver_desc') }}
-                      </span>
-                    </div>
-                  </n-checkbox>
+                  <div class="text-sm font-medium">
+                    {{ $t('config.virtual_display_driver_label') }}
+                  </div>
+                  <p class="mt-1 text-[11px] leading-snug opacity-70">
+                    {{ $t('config.virtual_display_driver_desc') }}
+                  </p>
+                  <n-select
+                    v-model:value="virtualDisplayDriver"
+                    :options="virtualDisplayDriverOptions"
+                    size="small"
+                    class="mt-2 max-w-md"
+                  />
                 </div>
                 <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
                   <n-checkbox v-model:checked="vulkanHdrLayerEnabled">
@@ -449,23 +533,23 @@ function selectVirtualDisplayLayout(v: unknown) {
                 </div>
               </template>
             </PlatformLayout>
-          </fieldset>
+          </section>
 
-          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
 
           <!-- Step 2: What to do before the stream starts -->
           <div>
             <DisplayDeviceOptions section="pre" />
           </div>
 
-          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
 
           <!-- Step 3: Optional adjustments -->
           <div>
             <DisplayDeviceOptions section="options" />
           </div>
 
-          <div class="my-4 border-t border-dark/5 dark:border-light/5" />
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
 
           <FrameLimiterStep :step-label="frameLimiterStepLabel" />
         </div>

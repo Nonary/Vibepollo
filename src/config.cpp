@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <filesystem>
@@ -20,6 +21,7 @@
 
 // lib includes
 #include <boost/asio.hpp>
+#include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -736,7 +738,7 @@ namespace config {
     _CONVERT_(per_client);
     _CONVERT_(shared);
 #undef _CONVERT_
-    return video_t::virtual_display_mode_e::disabled;  // Default to primary display when unspecified
+    return video_t::virtual_display_mode_e::per_client;  // Default to virtual display when unspecified
   }
 
   video_t::virtual_display_layout_e virtual_display_layout_from_view(const ::std::string_view value) {
@@ -828,7 +830,7 @@ namespace config {
     {},  // adapter_name
     {},  // output_name
 
-    video_t::virtual_display_mode_e::disabled,  // virtual_display_mode
+    video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
     {
@@ -850,19 +852,20 @@ namespace config {
 #else
       0,  // snapshot_restore_hotkey_modifiers
 #endif
-      false,  // use_sunshine_virtual_display_driver
+      true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
+      250,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
-      {false, true},  // wa
+      {false},  // wa
       true  // vulkan_hdr_layer
     },  // display_device
 
     0,  // max_bitrate
     20,  // minimum_fps_target (0 = framerate)
-
+    true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
   };
@@ -890,6 +893,9 @@ namespace config {
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
+
+    0,  // pacing_max_bitrate_kbps (0 = legacy 1 Gbps Ethernet assumption)
+    0,  // packetsize (0 = off)
   };
 
   nvhttp_t nvhttp {
@@ -937,7 +943,8 @@ namespace config {
     false,  // enable
     "auto",  // provider
     0,  // fps_limit
-    false  // disable_vsync
+    false,  // disable_vsync
+    frame_limiter_t::virtual_display_capture_mode_e::enabled
   };
 
   // Windows-only: RTSS defaults
@@ -1581,8 +1588,6 @@ namespace config {
     remap_option("double_refreshrate", "dd_wa_virtual_double_refresh");
 
     bool_f(vars, "limit_framerate", video.limit_framerate);
-    bool_f(vars, "dd_wa_virtual_double_refresh", video.dd.wa.virtual_double_refresh);
-    video.double_refreshrate = video.dd.wa.virtual_double_refresh;
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
@@ -1597,6 +1602,7 @@ namespace config {
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, {1, 7});
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
+    bool_f(vars, "nvenc_temporal_aq", video.nv.temporal_aq);
     generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
@@ -1664,14 +1670,26 @@ namespace config {
     int_between_f(vars, "rtx_hdr_contrast", video.rtx_hdr.contrast, {-100, 100});
     int_between_f(vars, "rtx_hdr_saturation", video.rtx_hdr.saturation, {-100, 100});
     int_between_f(vars, "rtx_hdr_middle_gray", video.rtx_hdr.middle_gray, {10, 100});
-    int_between_f(vars, "rtx_hdr_peak_brightness", video.rtx_hdr.peak_brightness, {400, 1500});
+    int_between_f(vars, "rtx_hdr_peak_brightness", video.rtx_hdr.peak_brightness, {400, 2000});
 
     string_f(vars, "capture", video.capture);
+    bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
 
+    const auto virtual_display_mode_it = vars.find("virtual_display_mode");
+    const bool virtual_display_mode_specified =
+      virtual_display_mode_it != vars.end() && !virtual_display_mode_it->second.empty();
     generic_f(vars, "virtual_display_mode", video.virtual_display_mode, virtual_display_mode_from_view);
+#ifdef _WIN32
+    // The virtual-display pipeline is built around Windows 11 capture features (WGC
+    // frame-generation capture at 4x refresh), so unconfigured Windows 10 hosts stay on
+    // the physical display; an explicit config value always wins.
+    if (!virtual_display_mode_specified && !platf::is_windows_11_or_later()) {
+      video.virtual_display_mode = video_t::virtual_display_mode_e::disabled;
+    }
+#endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
@@ -1698,6 +1716,17 @@ namespace config {
     generic_f(vars, "dd_display_helper_engine", video.dd.display_helper_engine, dd::helper_engine_from_view);
     bool_f(vars, "dd_use_sunshine_virtual_display_driver", video.dd.use_sunshine_virtual_display_driver);
     bool_f(vars, "dd_activate_virtual_display", video.dd.activate_virtual_display);
+    {
+      int value = video.dd.virtual_display_scale_percent;
+      int_f(vars, "dd_virtual_display_scale", value);
+      constexpr std::array allowed_scales {0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
+      if (std::ranges::find(allowed_scales, value) != allowed_scales.end()) {
+        video.dd.virtual_display_scale_percent = value;
+      } else {
+        BOOST_LOG(warning) << "Ignoring unsupported virtual display scale " << value
+                           << "%; use 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
+      }
+    }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
     {
       auto it = vars.find("dd_virtual_display_permanent_count");
@@ -1738,7 +1767,6 @@ namespace config {
       }
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
-    video.double_refreshrate = video.dd.wa.virtual_double_refresh;
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
@@ -1755,6 +1783,32 @@ namespace config {
     int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
+    {
+      std::string virtual_capture_mode;
+      string_f(vars, "frame_limiter_auto_virtual_framegen", virtual_capture_mode);
+      if (!virtual_capture_mode.empty()) {
+        boost::algorithm::to_lower(virtual_capture_mode);
+        boost::algorithm::trim(virtual_capture_mode);
+        using mode_e = frame_limiter_t::virtual_display_capture_mode_e;
+        if (virtual_capture_mode == "legacy" || virtual_capture_mode == "2x" ||
+            virtual_capture_mode == "fixed-2x" || virtual_capture_mode == "fixed_2x") {
+          frame_limiter.virtual_display_capture_mode = mode_e::legacy;
+        } else if (virtual_capture_mode == "false" || virtual_capture_mode == "no" ||
+                   virtual_capture_mode == "disable" || virtual_capture_mode == "disabled" ||
+                   virtual_capture_mode == "off" || virtual_capture_mode == "0") {
+          frame_limiter.virtual_display_capture_mode = mode_e::disabled;
+        } else if (virtual_capture_mode == "enabled" || virtual_capture_mode == "enable" ||
+                   virtual_capture_mode == "true" || virtual_capture_mode == "yes" ||
+                   virtual_capture_mode == "on" || virtual_capture_mode == "1" ||
+                   virtual_capture_mode == "smooth" || virtual_capture_mode == "smoother") {
+          frame_limiter.virtual_display_capture_mode = mode_e::enabled;
+        } else {
+          BOOST_LOG(warning) << "config: Unknown frame_limiter_auto_virtual_framegen mode '"
+                             << virtual_capture_mode << "'; using enabled.";
+          frame_limiter.virtual_display_capture_mode = mode_e::enabled;
+        }
+      }
+    }
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
     if (video.dd.wa.dummy_plug_hdr10 && !frame_limiter.disable_vsync) {
@@ -1845,6 +1899,8 @@ namespace config {
 #endif
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
+    int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
+    int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
@@ -2319,9 +2375,9 @@ namespace config {
         "dd_snapshot_restore_hotkey_modifiers",
         "dd_use_sunshine_virtual_display_driver",
         "dd_activate_virtual_display",
+        "dd_virtual_display_scale",
         "dd_virtual_display_permanent_count",
         "dd_mode_remapping",
-        "dd_wa_virtual_double_refresh",
         "dd_wa_dummy_plug_hdr10",
         "max_bitrate",
         "minimum_fps_target",
@@ -2346,6 +2402,7 @@ namespace config {
         "frame_limiter_enable",
         "frame_limiter_provider",
         "frame_limiter_fps_limit",
+        "frame_limiter_auto_virtual_framegen",
         "rtss_frame_limit_type",
         "frame_limiter_disable_vsync",
 
@@ -2353,6 +2410,7 @@ namespace config {
         "nvenc_preset",
         "nvenc_twopass",
         "nvenc_spatial_aq",
+        "nvenc_temporal_aq",
         "nvenc_split_encode",
         "nvenc_vbv_increase",
         "nvenc_realtime_hags",
@@ -2561,11 +2619,11 @@ namespace config {
       const auto prev_dd_paused_virtual_display_timeout_secs = video.dd.paused_virtual_display_timeout_secs;
       const auto prev_dd_use_sunshine_virtual_display_driver = video.dd.use_sunshine_virtual_display_driver;
       const auto prev_dd_activate_virtual_display = video.dd.activate_virtual_display;
+      const auto prev_dd_virtual_display_scale_percent = video.dd.virtual_display_scale_percent;
       const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
       const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
-      const auto prev_dd_virtual_double_refresh = video.dd.wa.virtual_double_refresh;
       const auto prev_rtx_hdr_enabled = video.rtx_hdr.enabled;
       const auto prev_rtx_hdr_sdr_brightness = video.rtx_hdr.sdr_brightness;
       const auto prev_rtx_hdr_contrast = video.rtx_hdr.contrast;
@@ -2638,11 +2696,11 @@ namespace config {
                                      (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
                                      (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
                                      (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                     (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
                                      (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
                                      (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10) ||
-                                     (prev_dd_virtual_double_refresh != video.dd.wa.virtual_double_refresh);
+                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
       if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {

@@ -367,8 +367,6 @@
           <AppEditFrameGenSection
             v-if="isWindows"
             v-model:mode="frameGenerationSelection"
-            v-model:gen1="form.gen1FramegenFix"
-            v-model:gen2="form.gen2FramegenFix"
             v-model:lossless-profile="form.losslessScalingProfile"
             v-model:lossless-target-fps="form.losslessScalingTargetFps"
             v-model:lossless-rtss-limit="form.losslessScalingRtssLimit"
@@ -380,6 +378,7 @@
             :lossless-active="losslessFrameGenEnabled"
             :nvidia-active="nvidiaFrameGenEnabled"
             :using-virtual-display="usingVirtualDisplay"
+            :windows10="isWindows10"
             :has-active-lossless-overrides="hasActiveLosslessOverrides"
             :on-lossless-rtss-limit-change="onLosslessRtssLimitChange"
             :reset-active-lossless-profile="resetActiveLosslessProfile"
@@ -544,6 +543,14 @@ import AppEditFrameGenSection from './app-edit/AppEditFrameGenSection.vue';
 import AppEditRtxHdrSection from './app-edit/AppEditRtxHdrSection.vue';
 import AppEditCoverModal, { type CoverCandidate } from './app-edit/AppEditCoverModal.vue';
 import AppEditDeleteConfirmModal from './app-edit/AppEditDeleteConfirmModal.vue';
+import {
+  VIRTUAL_DISPLAY_SELECTION,
+  frameGenDisplayHealthKey,
+  physicalFrameGenDisplayWarningKey,
+  resolvesToVirtualDisplay,
+  type DisplaySelection,
+} from './app-edit/frameGenDisplayPolicy';
+
 type DisplayDevice = {
   device_id?: string;
   display_name?: string;
@@ -552,7 +559,6 @@ type DisplayDevice = {
     active?: boolean;
   };
 };
-type DisplaySelection = 'global' | 'virtual' | 'physical';
 type AppVirtualDisplayModeSelection = AppVirtualDisplayMode | 'global';
 
 interface AppEditModalProps {
@@ -600,8 +606,6 @@ function fresh(): AppForm {
     stateCmd: [],
     detached: [],
     virtualScreen: false,
-    gen1FramegenFix: false,
-    gen2FramegenFix: false,
     output: '',
     frameGenerationProvider: 'game-provided',
     frameGenerationMode: 'off',
@@ -706,7 +710,7 @@ function extractRtxHdrOverrides(overrides: Record<string, unknown>) {
     mode,
     valuesOverride: hasRtxHdrValueOverride,
     forceSdr: parseBooleanOverride(overrides['rtx_hdr_force_sdr'], false),
-    peakBrightness: parseNumberOverride(overrides['rtx_hdr_peak_brightness'], 1000, 400, 1500),
+    peakBrightness: parseNumberOverride(overrides['rtx_hdr_peak_brightness'], 1000, 400, 2000),
     middleGray: parseNumberOverride(overrides['rtx_hdr_middle_gray'], 50, 10, 100),
     contrast: parseNumberOverride(overrides['rtx_hdr_contrast'], 0, -100, 100),
     saturation: parseNumberOverride(overrides['rtx_hdr_saturation'], 0, -100, 100),
@@ -731,7 +735,8 @@ function buildConfigOverridesPayload(f: AppForm): Record<string, unknown> {
   }
   return Object.fromEntries(
     Object.entries(overrides).filter(
-      ([key, value]) => typeof key === 'string' && key.length > 0 && value !== undefined && value !== null,
+      ([key, value]) =>
+        typeof key === 'string' && key.length > 0 && value !== undefined && value !== null,
     ),
   );
 }
@@ -904,8 +909,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     typeof src['lossless-scaling-enabled'] === 'boolean'
       ? src['lossless-scaling-enabled']
       : !hasExplicitLosslessEnabled &&
-          frameGenerationMode !== 'lossless-scaling' &&
-          legacyLosslessFlag;
+        frameGenerationMode !== 'lossless-scaling' &&
+        legacyLosslessFlag;
   const frameGenerationProvider =
     frameGenerationModeFromConfig && frameGenerationModeFromConfig !== 'off'
       ? (frameGenerationModeFromConfig as FrameGenerationProvider)
@@ -939,11 +944,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
       ddConfigValue = normalized as AppForm['ddConfigurationOption'];
     }
   }
-  const captureFixEnabled = !!(
-    src['gen1-framegen-fix'] ||
-    src['dlss-framegen-capture-fix'] ||
-    src['gen2-framegen-fix']
-  );
   const rawConfigOverrides = clonePlainRecord((src as any)?.['config-overrides']);
   const rtxHdrOverrides = extractRtxHdrOverrides(rawConfigOverrides);
   return {
@@ -983,8 +983,6 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
     stateCmd: state,
     detached: Array.isArray(src.detached) ? src.detached.map((s) => String(s)) : [],
     virtualScreen,
-    gen1FramegenFix: captureFixEnabled,
-    gen2FramegenFix: false,
     playniteId: src['playnite-id'] || undefined,
     playniteManaged: src['playnite-managed'] || undefined,
     frameGenerationProvider,
@@ -1010,9 +1008,8 @@ function fromServerApp(src?: ServerApp | null, idx: number = -1): AppForm {
 }
 
 function toServerPayload(f: AppForm): Record<string, any> {
-  const selection = displaySelection.value;
-  const captureFixEnabled = !!(f.gen1FramegenFix || f.gen2FramegenFix);
   const configOverridesPayload = buildConfigOverridesPayload(f);
+  const selection = displaySelection.value;
   const payload: Record<string, any> = {
     // Index is required by the backend to determine add (-1) vs update (>= 0)
     index: typeof f.index === 'number' ? f.index : -1,
@@ -1036,7 +1033,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'scale-factor': clampScaleFactor(
       typeof f.scaleFactor === 'number' && Number.isFinite(f.scaleFactor) ? f.scaleFactor : null,
     ),
-    'gen1-framegen-fix': captureFixEnabled,
+    'gen1-framegen-fix': false,
     'gen2-framegen-fix': false,
     'exit-timeout': Number.isFinite(f.exitTimeout) ? f.exitTimeout : 5,
     'prep-cmd': f.prepCmd.map((p) => ({
@@ -1081,7 +1078,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   } else if (mode === 'game-provided') {
     resolvedProvider = 'game-provided';
   } else {
-    resolvedProvider = provider;
+    resolvedProvider = 'lossless-scaling';
   }
   payload['frame-generation-provider'] = resolvedProvider;
   payload['frame-generation-mode'] = mode;
@@ -1091,10 +1088,8 @@ function toServerPayload(f: AppForm): Record<string, any> {
   const losslessRuntimeActive = !!f.losslessScalingEnabled || losslessFramegenActive;
   payload['lossless-scaling-enabled'] = !!f.losslessScalingEnabled;
   payload['lossless-scaling-framegen'] = losslessFramegenActive;
-  payload['lossless-scaling-target-fps'] =
-    losslessFramegenActive ? payloadLosslessTarget : null;
-  payload['lossless-scaling-rtss-limit'] =
-    losslessFramegenActive ? payloadLosslessLimit : null;
+  payload['lossless-scaling-target-fps'] = losslessFramegenActive ? payloadLosslessTarget : null;
+  payload['lossless-scaling-rtss-limit'] = losslessFramegenActive ? payloadLosslessLimit : null;
   const payloadLosslessDelayRaw = parseNumeric(f.losslessScalingLaunchDelay);
   const payloadLosslessDelay =
     payloadLosslessDelayRaw && payloadLosslessDelayRaw > 0
@@ -1252,7 +1247,10 @@ function primeLiveRtxHdrState() {
   clearLiveRtxHdrTimer();
 }
 
-async function postRtxHdrLiveOverrides(overrides: Record<string, unknown>, key: string): Promise<void> {
+async function postRtxHdrLiveOverrides(
+  overrides: Record<string, unknown>,
+  key: string,
+): Promise<void> {
   const uuid = activeAppUuid();
   if (!uuid) {
     return;
@@ -1896,26 +1894,19 @@ const hasNvidia = computed(() => {
   }
   return true;
 });
-const ddConfigOption = computed(
-  () => (configStore.config as any)?.dd_configuration_option ?? 'disabled',
-);
 const captureMethod = computed(() => (configStore.config as any)?.capture ?? '');
-const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
 const globalOutputName = computed(() => {
   const name = (configStore.config as any)?.output_name;
   return typeof name === 'string' ? name : '';
 });
 const globalVirtualDisplayMode = computed<AppVirtualDisplayMode>(() => {
   const mode = (configStore.config as any)?.virtual_display_mode;
-  return parseAppVirtualDisplayMode(mode) ?? 'disabled';
+  return parseAppVirtualDisplayMode(mode) ?? 'per_client';
 });
 const globalVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(() => {
   const layout = (configStore.config as any)?.virtual_display_layout;
   return parseAppVirtualDisplayLayout(layout) ?? 'exclusive';
 });
-const resolvedVirtualDisplayMode = computed<AppVirtualDisplayMode>(
-  () => form.value.virtualDisplayMode ?? globalVirtualDisplayMode.value,
-);
 const resolvedVirtualDisplayLayout = computed<AppVirtualDisplayLayout>(
   () => form.value.virtualDisplayLayout ?? globalVirtualDisplayLayout.value,
 );
@@ -2049,24 +2040,20 @@ const autoCaptureUsesWgc = computed(() => {
   }
   return false;
 });
-const virtualOutputName = computed(() => {
-  const outputName = (configStore.config as any)?.output_name;
-  return typeof outputName === 'string' ? outputName : '';
+// Windows 11 shipped as build 22000; anything below that on Windows is Windows 10.
+const isWindows10 = computed(() => {
+  if (!isWindows.value) return false;
+  const build = windowsBuildNumber.value;
+  return build !== null && build < 22000;
 });
 const usingVirtualDisplay = computed(() => {
-  const selection = displaySelection.value;
-  if (selection === 'virtual') return true;
-  if (selection === 'physical') return false;
-  const mode = resolvedVirtualDisplayMode.value;
-  if (mode === 'per_client' || mode === 'shared') {
-    return true;
-  }
-  if (mode === 'disabled') {
-    return virtualOutputName.value === VIRTUAL_DISPLAY_SELECTION;
-  }
-  return false;
+  return resolvesToVirtualDisplay({
+    displaySelection: displaySelection.value,
+    appVirtualDisplayMode: form.value.virtualDisplayMode,
+    globalVirtualDisplayMode: globalVirtualDisplayMode.value,
+    globalOutputName: globalOutputName.value,
+  });
 });
-const skipDisplayWarnings = computed(() => usingVirtualDisplay.value);
 const displayDevices = ref<DisplayDevice[]>([]);
 const displayDevicesLoading = ref(false);
 const displayDevicesError = ref('');
@@ -2104,7 +2091,7 @@ async function loadDisplayDevices(): Promise<void> {
     displayDevices.value = devices;
     cacheDisplayNames(devices);
   } catch (e: any) {
-    displayDevicesError.value = e?.message || 'Failed to load display devices';
+    displayDevicesError.value = e?.message || t('apps.framegen.health_devices_error');
     displayDevices.value = [];
   } finally {
     displayDevicesLoading.value = false;
@@ -2249,12 +2236,9 @@ watch(open, (o) => {
     });
     requestAnimationFrame(() => updateShadows());
     ensureNameSelectionFromForm();
-    if (isWindows.value && (form.value.gen1FramegenFix || form.value.gen2FramegenFix)) {
-      refreshFrameGenHealth({ reason: 'open', silent: true }).catch(() => {});
-    } else {
-      frameGenHealth.value = null;
-      frameGenHealthError.value = null;
-    }
+    // Frame-gen health is only meaningful after an explicit check; start clean on open.
+    frameGenHealth.value = null;
+    frameGenHealthError.value = null;
     if (isWindows.value) {
       refreshLosslessExecutableStatus().catch(() => {});
       if (displaySelection.value === 'physical' && displayDevices.value.length === 0) {
@@ -2438,6 +2422,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
         http.get('/api/display-devices?detail=full', { validateStatus: () => true }),
       ]);
 
+      const usingVirtual = usingVirtualDisplay.value;
       const captureValue = (captureMethod.value || '').toString().toLowerCase();
       let captureStatus: FrameGenHealth['capture']['status'];
       let captureMessage: string;
@@ -2445,23 +2430,20 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
       if (captureValue === 'wgc' || captureValue === 'wgcc' || autoTreatsAsWgc) {
         captureStatus = 'pass';
         captureMessage = autoTreatsAsWgc
-          ? 'Automatic capture uses Windows Graphics Capture on this Windows build.'
-          : 'Windows Graphics Capture is active for this system.';
+          ? t('apps.framegen.health_capture_wgc_auto')
+          : t('apps.framegen.health_capture_wgc_active');
       } else if (captureValue === '') {
         captureStatus = 'warn';
-        captureMessage =
-          'Autodetect may fall back to Desktop Duplication. Select Windows Graphics Capture in Settings -> Capture.';
+        captureMessage = t('apps.framegen.health_capture_autodetect');
       } else {
         captureStatus = 'fail';
-        captureMessage =
-          'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.';
+        captureMessage = t('apps.framegen.health_capture_switch');
       }
-
       let rtssInstalled = false;
       let rtssHooks = false;
       let rtssRunning = false;
       let rtssStatus: FrameGenHealth['rtss']['status'] = 'unknown';
-      let rtssMessage = 'Unable to verify RTSS.';
+      let rtssMessage = t('apps.framegen.health_rtss_unverified');
       if (rtssResult.status === 'fulfilled') {
         const res = rtssResult.value;
         const ok = res.status >= 200 && res.status < 300;
@@ -2472,36 +2454,50 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
           rtssRunning = !!data?.process_running;
           if (rtssInstalled && rtssHooks) {
             rtssStatus = 'pass';
-            rtssMessage = 'RTSS hooks detected. Vibepollo can control the frame limiter.';
+            rtssMessage = t('apps.framegen.health_rtss_hooks');
           } else if (rtssInstalled) {
             rtssStatus = 'warn';
-            rtssMessage =
-              'RTSS is installed but hooks were not detected. Launch RTSS and ensure the Vibepollo profile is active.';
+            rtssMessage = t('apps.framegen.health_rtss_no_hooks');
           } else {
             rtssStatus = 'fail';
-            rtssMessage = 'Install RTSS to avoid microstutter when frame generation is enabled.';
+            rtssMessage = t('apps.framegen.health_rtss_install');
           }
         } else {
           rtssStatus = 'unknown';
-          rtssMessage = 'RTSS status endpoint returned an error.';
+          rtssMessage = t('apps.framegen.health_rtss_endpoint_error');
         }
       } else {
         rtssStatus = 'unknown';
-        rtssMessage = 'Unable to reach the RTSS status endpoint.';
+        rtssMessage = t('apps.framegen.health_rtss_unreachable');
       }
 
-      const usingVirtual = usingVirtualDisplay.value;
+      const physicalGameProvidedFrameGen =
+        !usingVirtual && form.value.frameGenerationMode === 'game-provided';
+      if (physicalGameProvidedFrameGen) {
+        rtssStatus = 'warn';
+        rtssMessage = rtssInstalled
+          ? t('apps.framegen.health_physical_rtss_latency')
+          : t('apps.framegen.health_physical_no_rtss');
+        captureStatus = 'warn';
+        captureMessage = t(physicalFrameGenDisplayWarningKey());
+      } else if (!usingVirtual) {
+        captureStatus = 'pass';
+        captureMessage = t('apps.framegen.health_physical_supported');
+      }
+
       const fpsTargets = [60, 90, 120, 144];
       const tolerance = 0.5;
       let displayStatus: FrameGenHealth['display']['status'] = 'unknown';
-      let displayMessage = 'Unable to determine display refresh capabilities.';
-      let displayLabel = usingVirtual ? 'Vibepollo Virtual Screen' : 'Active display';
+      let displayMessage = t('apps.framegen.health_display_unknown');
+      let displayLabel = usingVirtual
+        ? t('apps.framegen.health_display_virtual_label')
+        : t('apps.framegen.health_display_active_label');
       let displayId = usingVirtual ? VIRTUAL_DISPLAY_SELECTION : '';
       let displayHz: number | null = null;
       let displayError: string | null = null;
       let displayTargets = fpsTargets.map((fps) => ({
         fps,
-        requiredHz: fps * 2,
+        requiredHz: usingVirtual ? fps * 4 : fps * 2,
         supported: usingVirtual ? true : null,
       }));
       let highestFailUnder144: number | null = null;
@@ -2650,8 +2646,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 
               if (evaluationHz === null) {
                 displayStatus = 'unknown';
-                displayMessage =
-                  'Unable to read the refresh rate from the configured display. Double-check Display Device Step 1.';
+                displayMessage = t('apps.framegen.health_display_refresh_unreadable');
               } else if (evaluationHz >= 240 - tolerance) {
                 displayStatus = 'pass';
                 if (only144Fails) {
@@ -2667,7 +2662,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                 } else if (deltaSupported && highestSupported !== null) {
                   displayMessage = `Current refresh is ${Math.round(activeRefresh ?? evaluationHz)} Hz. Vibepollo can switch to ${Math.round(highestSupported)} Hz during streams to keep frame generation smooth.`;
                 } else {
-                  displayMessage = 'Display refresh is high enough to double 120 FPS streams.';
+                  displayMessage = t('apps.framegen.health_display_ok_120');
                 }
               } else if (evaluationHz >= 180 - tolerance) {
                 displayStatus = 'warn';
@@ -2683,8 +2678,7 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     displayMessage += ` Vibepollo can switch up to ${Math.round(highestSupported)} Hz if Display Device Step 1 keeps only that monitor active.`;
                   }
                 } else {
-                  displayMessage =
-                    'Unable to read the current refresh rate, but the display may not reach the required 240 Hz. Use the display override below to switch to the Vibepollo virtual display or move the stream to a higher-refresh monitor.';
+                  displayMessage = t('apps.framegen.health_display_maybe_low');
                 }
               } else {
                 displayStatus = 'fail';
@@ -2697,42 +2691,62 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
                     displayMessage += ` Vibepollo can switch up to ${Math.round(highestSupported)} Hz if configured in Display Device Step 1.`;
                   }
                 } else {
-                  displayMessage =
-                    'Display refresh information was unavailable. Use the display override below to switch to the Vibepollo virtual display or switch to a 240 Hz display for frame generation.';
+                  displayMessage = t('apps.framegen.health_display_unavailable_240');
                 }
               }
             } else {
               displayStatus = 'unknown';
-              displayMessage =
-                'No display devices were returned by Vibepollo’s helper. Frame generation may not be able to enforce refresh changes.';
-              displayError = 'Display helper returned no devices.';
+              displayMessage = t('apps.framegen.health_display_no_devices');
+              displayError = t('apps.framegen.health_display_no_devices_error');
             }
           } else {
             displayStatus = 'unknown';
-            displayMessage = 'Display helper did not respond with device information.';
-            displayError = 'Display device enumeration failed.';
+            displayMessage = t('apps.framegen.health_display_helper_silent');
+            displayError = t('apps.framegen.health_display_enum_failed');
           }
         } else {
           displayStatus = 'unknown';
-          displayMessage = 'Unable to reach the display helper.';
-          displayError = 'Display helper request failed.';
+          displayMessage = t('apps.framegen.health_display_helper_unreachable');
+          displayError = t('apps.framegen.health_display_helper_failed');
         }
       } else {
         displayStatus = 'pass';
-        displayMessage =
-          'Vibepollo virtual screen guarantees a high refresh surface for frame generation.';
+        displayMessage = t(frameGenDisplayHealthKey(true, form.value.frameGenerationMode));
       }
 
       if (usingVirtual) {
         displayTargets = fpsTargets.map((fps) => ({
           fps,
-          requiredHz: fps * 2,
+          requiredHz: fps * 4,
           supported: true,
         }));
       }
 
+      const osBuild = windowsBuildNumber.value;
+      const losslessSelected = form.value.frameGenerationMode === 'lossless-scaling';
+      let osStatus: FrameGenHealth['os']['status'];
+      let osMessage: string;
+      if (osBuild === null) {
+        osStatus = 'unknown';
+        osMessage = t('apps.framegen.health_os_unknown');
+      } else if (osBuild >= 22000) {
+        osStatus = 'pass';
+        osMessage = t('apps.framegen.health_os_win11');
+      } else if (losslessSelected) {
+        osStatus = 'fail';
+        osMessage = t('apps.framegen.health_os_win10_lossless');
+      } else {
+        osStatus = 'warn';
+        osMessage = t('apps.framegen.health_os_win10');
+      }
+
       const health: FrameGenHealth = {
         checkedAt: Date.now(),
+        os: {
+          status: osStatus,
+          buildNumber: osBuild,
+          message: osMessage,
+        },
         capture: {
           status: captureStatus,
           method: captureValue,
@@ -2760,13 +2774,18 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
 
       if (highestFailUnder144 !== null) {
         health.suggestion = {
-          message: `Use the display override above to switch to the Vibepollo virtual display or configure Display Device Step 1 to target the virtual display so ${highestFailUnder144} FPS streams stay smooth.`,
+          message:
+            form.value.frameGenerationMode === 'game-provided'
+              ? t('apps.framegen.health_suggestion_virtual')
+              : t('apps.framegen.health_suggestion_target', { fps: highestFailUnder144 }),
           emphasis: 'warning',
         };
       } else if (captureStatus === 'warn' || captureStatus === 'fail') {
         health.suggestion = {
           message:
-            'Set Capture -> Method to Windows Graphics Capture so frame generation stays stable.',
+            form.value.frameGenerationMode === 'game-provided'
+              ? t('apps.framegen.health_suggestion_virtual')
+              : t('apps.framegen.health_suggestion_capture'),
           emphasis: 'info',
         };
       }
@@ -2776,9 +2795,9 @@ async function refreshFrameGenHealth(options: FrameGenHealthOptions = {}): Promi
     } catch (error) {
       frameGenHealth.value = null;
       frameGenHealthError.value =
-        error instanceof Error ? error.message : 'Unable to run frame generation health check.';
+        error instanceof Error ? error.message : t('apps.framegen.health_run_error');
       if (!options.silent) {
-        message?.error('Unable to run frame generation health check.');
+        message?.error(t('apps.framegen.health_run_error'));
       }
     } finally {
       frameGenHealthLoading.value = false;
@@ -2800,47 +2819,8 @@ function handleEnableVirtualScreen() {
   refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
 }
 
-function warnIfHealthIssues(reason: FrameGenHealthReason) {
-  if (
-    reason === 'auto' ||
-    reason === 'virtual-toggle' ||
-    reason === 'capture-change' ||
-    reason === 'output-change' ||
-    reason === 'open'
-  ) {
-    return;
-  }
-  if (!message) return;
-  const health = frameGenHealth.value;
-  if (!health) return;
-  if (health.capture.status === 'warn' || health.capture.status === 'fail') {
-    message.warning(
-      'Switch capture method to Windows Graphics Capture in Settings -> Capture to keep frame generation compatible.',
-      { duration: 8000 },
-    );
-  }
-  if (health.rtss.status === 'warn' || health.rtss.status === 'fail') {
-    message.warning(
-      'RTSS is required for this fix. Install and launch RTSS to avoid microstutter.',
-      { duration: 8000 },
-    );
-  }
-  if (!skipDisplayWarnings.value && !health.display.virtualActive) {
-    const requiresHigh = health.display.targets.some(
-      (target) => target.fps < 144 && target.supported === false,
-    );
-    if (requiresHigh) {
-      message.warning(
-        'Use the display override to switch to the Vibepollo virtual display or adjust Display Device Step 1 to keep only the high-refresh monitor active.',
-        { duration: 8000 },
-      );
-    }
-  }
-}
-
 const playniteInstalled = ref(false);
-const APP_UUID_RE =
-  /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
+const APP_UUID_RE = /^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$/;
 const isNew = computed(() => !form.value.uuid && form.value.index < 0);
 // New app source: 'custom' or 'playnite' (Windows only)
 const newAppSource = ref<'custom' | 'playnite'>('custom');
@@ -2922,60 +2902,11 @@ watch(newAppSource, (v) => {
     selectedPlayniteId.value = '';
   }
 });
-// Track if the unified capture fix is being auto-enabled to prevent alert spam
-let autoEnablingCaptureFix = false;
-
-watch(
-  () => form.value.gen1FramegenFix,
-  async (enabled) => {
-    if (!enabled) {
-      return;
-    }
-    // Collapse any Gen2 state into the unified capture fix.
-    if (form.value.gen2FramegenFix) {
-      form.value.gen2FramegenFix = false;
-    }
-    if (autoEnablingCaptureFix) {
-      return;
-    }
-    message?.info(
-      "Frame Generation Capture Fix requires Windows Graphics Capture (WGC), RTSS, and a display capable of 240 Hz or higher. Vibepollo's virtual screen or any display that satisfies the doubled refresh requirement will work.",
-      { duration: 8000 },
-    );
-    if (!skipDisplayWarnings.value) {
-      if (!ddConfigOption.value || ddConfigOption.value === 'disabled') {
-        message?.warning(
-          'Configure Step 1 for Vibepollo\'s virtual screen or enable Display Device and set it to "Deactivate all other displays" so the doubled refresh requirement is met during the stream.',
-          { duration: 8000 },
-        );
-      } else if (ddConfigOption.value !== 'ensure_only_display') {
-        message?.warning(
-          'Set Step 1 to use Vibepollo\'s virtual screen or adjust Display Device to "Deactivate all other displays" so only the high-refresh monitor stays active.',
-          { duration: 8000 },
-        );
-      }
-    }
-    await refreshFrameGenHealth({ reason: 'gen1' });
-    warnIfHealthIssues('gen1');
-  },
-);
-
-watch(
-  () => form.value.gen2FramegenFix,
-  (enabled) => {
-    if (!enabled) {
-      return;
-    }
-    form.value.gen1FramegenFix = true;
-    form.value.gen2FramegenFix = false;
-  },
-);
-
 watch(
   () => displaySelection.value,
   (selection, prev) => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     if (selection === prev) return;
     const reason: FrameGenHealthReason =
       selection === 'virtual' || prev === 'virtual' ? 'virtual-toggle' : 'output-change';
@@ -2984,10 +2915,21 @@ watch(
 );
 
 watch(
+  () => usingVirtualDisplay.value,
+  (usesVirtual, previous) => {
+    if (!isWindows.value) return;
+    if (open.value && (previous !== usesVirtual || frameGenHealth.value)) {
+      refreshFrameGenHealth({ reason: 'virtual-toggle', silent: true }).catch(() => {});
+    }
+  },
+  { immediate: true },
+);
+
+watch(
   () => captureMethod.value,
   () => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
@@ -2997,7 +2939,7 @@ watch(
   (enabled, prev) => {
     if (enabled === prev) return;
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'capture-change', silent: true }).catch(() => {});
   },
 );
@@ -3006,50 +2948,19 @@ watch(
   () => [form.value.output, globalOutputName.value],
   () => {
     if (!isWindows.value) return;
-    if (!(form.value.gen1FramegenFix || form.value.gen2FramegenFix || frameGenHealth.value)) return;
+    if (!frameGenHealth.value) return;
     refreshFrameGenHealth({ reason: 'output-change', silent: true }).catch(() => {});
   },
 );
 
-// Automatically enable Gen1 Frame Generation fix when Frame Generation is enabled
+// Re-run the frame-generation health check whenever frame generation is turned on.
 watch(
   () => frameGenerationSelection.value,
-  (mode, prevMode) => {
-    if (formHydratingFromServer) {
-      return;
-    }
-    const anyFrameGenEnabled = mode !== 'off';
-    const wasFrameGenEnabled = prevMode !== 'off';
-    if (anyFrameGenEnabled && !form.value.gen1FramegenFix) {
-      autoEnablingCaptureFix = true;
-      form.value.gen1FramegenFix = true;
-      if (mode === 'nvidia-smooth-motion') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled. NVIDIA Smooth Motion uses RTSS Front Edge Sync during streams.',
-          { duration: 8000 },
-        );
-      } else if (mode === 'lossless-scaling') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled because Lossless Scaling frame generation uses RTSS Front Edge Sync.',
-          { duration: 8000 },
-        );
-      } else if (mode === 'game-provided') {
-        message?.info(
-          'Frame Generation Capture Fix has been automatically enabled. Game-provided frame generation uses NVIDIA Reflex on NVIDIA systems and Front Edge Sync on AMD systems.',
-          { duration: 8000 },
-        );
-      }
-      refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
-      setTimeout(() => {
-        autoEnablingCaptureFix = false;
-      }, 100);
-    } else if (!anyFrameGenEnabled && wasFrameGenEnabled && form.value.gen1FramegenFix) {
-      autoEnablingCaptureFix = true;
-      form.value.gen1FramegenFix = false;
-      setTimeout(() => {
-        autoEnablingCaptureFix = false;
-      }, 100);
-    }
+  (mode) => {
+    if (!isWindows.value) return;
+    if (formHydratingFromServer) return;
+    if (mode === 'off') return;
+    refreshFrameGenHealth({ reason: 'auto', silent: true }).catch(() => {});
   },
 );
 // Scroll affordance logic for modal body

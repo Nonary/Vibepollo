@@ -14,6 +14,36 @@
 #include <windows.h>
 
 namespace playnite_launcher::playnite {
+  namespace {
+    // Quote an argument for CommandLineToArgvW/CreateProcessW. Backslashes before
+    // a closing quote must be doubled, including the trailing slash common in
+    // Playnite install directories.
+    std::wstring quote_command_line_argument(const std::wstring &argument) {
+      std::wstring quoted;
+      quoted.push_back(L'"');
+      for (auto it = argument.begin();;) {
+        std::size_t backslash_count = 0;
+        while (it != argument.end() && *it == L'\\') {
+          ++it;
+          ++backslash_count;
+        }
+
+        if (it == argument.end()) {
+          quoted.append(backslash_count * 2, L'\\');
+          break;
+        }
+        if (*it == L'"') {
+          quoted.append(backslash_count * 2 + 1, L'\\');
+        } else {
+          quoted.append(backslash_count, L'\\');
+        }
+        quoted.push_back(*it);
+        ++it;
+      }
+      quoted.push_back(L'"');
+      return quoted;
+    }
+  }  // namespace
 
   bool is_playnite_running() {
     try {
@@ -338,9 +368,9 @@ namespace playnite_launcher::playnite {
 
   bool spawn_cleanup_watchdog_process(const std::wstring &self_path, const std::string &install_dir_utf8, int exit_timeout_secs, bool fullscreen_flag, std::optional<DWORD> wait_for_pid) {
     try {
-      std::wstring wcmd = L"\"" + self_path + L"\" --do-cleanup";
+      std::wstring wcmd = quote_command_line_argument(self_path) + L" --do-cleanup";
       if (!install_dir_utf8.empty()) {
-        wcmd += L" --install-dir \"" + platf::dxgi::utf8_to_wide(install_dir_utf8) + L"\"";
+        wcmd += L" --install-dir " + quote_command_line_argument(platf::dxgi::utf8_to_wide(install_dir_utf8));
       }
       if (exit_timeout_secs > 0) {
         wcmd += L" --exit-timeout " + std::to_wstring(exit_timeout_secs);

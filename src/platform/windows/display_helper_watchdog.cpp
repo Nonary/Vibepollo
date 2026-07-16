@@ -75,4 +75,19 @@ namespace display_helper_integration {
   std::chrono::milliseconds DisplayHelperWatchdog::suspended_interval() {
     return 20s;
   }
+
+  DisplayHelperWatchdog::ThreadStopResult DisplayHelperWatchdog::stop_thread(std::jthread &thread) {
+    if (!thread.joinable()) {
+      return ThreadStopResult::NotJoinable;
+    }
+
+    thread.request_stop();
+    if (thread.get_id() == std::this_thread::get_id()) {
+      thread.detach();
+      return ThreadStopResult::DetachedSelf;
+    }
+
+    thread.join();
+    return ThreadStopResult::Joined;
+  }
 }  // namespace display_helper_integration

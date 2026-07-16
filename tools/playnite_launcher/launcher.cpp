@@ -852,9 +852,16 @@ namespace playnite_launcher {
           return normalize_game_id(std::move(s));
         };
         if (!msg.status_game_id.empty() && norm(msg.status_game_id) == norm(config.game_id)) {
-          if (!launch_command_sent.load(std::memory_order_acquire)) {
+          const bool launch_was_sent = launch_command_sent.load(std::memory_order_acquire);
+          if (!launch_was_sent && msg.status_name != "gameStarted") {
             BOOST_LOG(debug) << "Ignoring pre-launch status '" << msg.status_name << "' for id=" << msg.status_game_id;
             return;
+          }
+          if (!launch_was_sent) {
+            // The plugin synchronizes an already-running game as soon as the launcher
+            // connects. That status can arrive before the launcher has sent its launch
+            // command, which is the normal resume path rather than stale state.
+            BOOST_LOG(info) << "Accepting active game sync before launch for id=" << msg.status_game_id;
           }
           if (!msg.status_install_dir.empty()) {
             bool changed = last_install_dir != msg.status_install_dir;
@@ -1247,10 +1254,11 @@ namespace playnite_launcher {
       };
 
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.timeout_sec);
-      // After gameStarted, monitor the launched game's processes (not Playnite itself).
-      // Playnite can be configured to close when launching a game, and that must not
-      // tear down the stream. We exit when either gameStopped arrives over IPC (sets
-      // should_exit), or the game's processes have all disappeared for a grace window.
+      // While the plugin connection is active, gameStarted/gameStopped is authoritative.
+      // Process paths reported by launchers and mod managers can point somewhere other
+      // than the actual game, so treating a local scan miss as game exit would tear down
+      // a healthy stream. If Playnite or its IPC goes away, fall back to the process scan
+      // so quit-on-launch configurations can still clean themselves up.
       std::optional<std::chrono::steady_clock::time_point> game_missing_since;
       const auto game_missing_grace = std::chrono::seconds(15);
       while (!should_exit.load()) {
@@ -1259,6 +1267,11 @@ namespace playnite_launcher {
           break;
         }
         if (got_started.load()) {
+          if (client.is_active()) {
+            game_missing_since.reset();
+            std::this_thread::sleep_for(250ms);
+            continue;
+          }
           bool any_game_proc = false;
           if (!last_install_dir.empty()) {
             try {

@@ -458,27 +458,43 @@ namespace platf::playnite::sync {
     return nullptr;
   }
 
-  static bool convert_playnite_image_to_png(const std::string &src_path, const std::filesystem::path &dst) {
+  std::string image_source_signature(const std::filesystem::path &src) {
+    std::error_code size_ec;
+    std::error_code time_ec;
+    const auto size = std::filesystem::file_size(src, size_ec);
+    const auto mtime = std::filesystem::last_write_time(src, time_ec);
+    if (size_ec || time_ec) {
+      return {};
+    }
+    std::ostringstream os;
+    os << normalize_path_for_match(src.string()) << '|' << size << '|' << mtime.time_since_epoch().count();
+    return os.str();
+  }
+
+  bool convert_playnite_image_to_png(const std::string &src_path, const std::filesystem::path &dst) {
     if (src_path.empty()) {
       return false;
     }
 
     const auto src = std::filesystem::path(src_path);
-    auto dstDir = dst.parent_path();
-    file_handler::make_directory(dstDir.string());
+    file_handler::make_directory(dst.parent_path().string());
 
-    bool ok = false;
-    std::error_code src_time_ec;
-    std::error_code dst_time_ec;
-    if (std::filesystem::exists(dst)) {
-      const auto src_time = std::filesystem::last_write_time(src, src_time_ec);
-      const auto dst_time = std::filesystem::last_write_time(dst, dst_time_ec);
-      ok = !src_time_ec && !dst_time_ec && dst_time >= src_time;
+    // A sidecar records which source produced dst. Playnite copies newly assigned art into its
+    // library preserving the original file's mtime, so "dst newer than src" cannot detect cover
+    // changes; the source path itself changes instead (new GUID filename).
+    const auto signature = image_source_signature(src);
+    const std::string sidecar = dst.string() + ".src";
+    std::error_code exists_ec;
+    if (!signature.empty() && std::filesystem::exists(dst, exists_ec) && file_handler::read_file(sidecar.c_str()) == signature) {
+      return true;
     }
-    if (!ok) {
-      ok = platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring());
+    if (!platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring())) {
+      return false;
     }
-    return ok;
+    if (!signature.empty()) {
+      file_handler::write_file(sidecar.c_str(), signature);
+    }
+    return true;
   }
 
   void apply_game_metadata_to_app(const Game &g, nlohmann::json &app) {

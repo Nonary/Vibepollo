@@ -1299,6 +1299,9 @@ function Get-PlayniteGames {
 
 function Send-InitialSnapshot {
   Write-Log "Building initial snapshot"
+  # Bracket the snapshot so Sunshine can defer reconciliation until the library is fully delivered
+  $jsonStart = @{ type = 'snapshotStart' } | ConvertTo-Json -Compress
+  Send-JsonMessage -Json $jsonStart -AllowConnectIfMissing
   $plugins = @(Get-PlaynitePlugins)
   $jsonPlugins = @{ type = 'plugins'; payload = $plugins } | ConvertTo-Json -Depth 6 -Compress
   Send-JsonMessage -Json $jsonPlugins -AllowConnectIfMissing
@@ -1324,6 +1327,8 @@ function Send-InitialSnapshot {
     Write-Log ("Sent games batch {0} with {1} items" -f $batchIndex, $chunkCount)
   }
   $gamesCount = $games.Count
+  $jsonDone = @{ type = 'snapshotComplete'; games = $gamesCount } | ConvertTo-Json -Compress
+  Send-JsonMessage -Json $jsonDone -AllowConnectIfMissing
   Write-Log ("Initial snapshot completed: categories={0} games={1}" -f $catCount, $gamesCount)
 }
 
@@ -1383,6 +1388,11 @@ function Start-ConnectorLoop {
             Send-StopSignalToLauncher -GameId $targetId
             Write-Log ("Forwarded stop signal to launcher(s) for id='{0}'" -f $targetId)
           } catch { Write-Log ("Failed to forward stop signal: {0}" -f $_.Exception.Message) }
+        } elseif ($obj.type -eq 'command' -and $obj.command -eq 'snapshot') {
+          try {
+            Write-Log "Library snapshot requested by Sunshine"
+            Send-InitialSnapshot
+          } catch { Write-Log "Failed to send requested snapshot: $($_.Exception.Message)" }
         } else {
           try { Write-DebugLog ("Connector loop: unhandled message type={0} cmd={1}" -f ([string]$obj.type), ([string]$obj.command)) } catch {}
         }

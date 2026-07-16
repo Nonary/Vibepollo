@@ -1,7 +1,7 @@
 <template>
-  <main ref="mainEl" class="flex-1 px-0 md:px-2 xl:px-6 py-2 md:py-6 space-y-6 overflow-x-hidden">
+  <main ref="mainEl" class="flex-1 space-y-6 overflow-x-hidden">
     <header
-      class="sticky top-0 z-20 -mx-0 md:-mx-2 xl:-mx-6 px-0 md:px-2 xl:px-6 py-3 bg-light/70 dark:bg-dark/60 backdrop-blur supports-[backdrop-filter]:bg-light/50 supports-[backdrop-filter]:dark:bg-dark/40 border-b border-dark/10 dark:border-light/10"
+      class="sticky top-0 z-20 py-3 bg-light/70 dark:bg-dark/60 backdrop-blur supports-[backdrop-filter]:bg-light/50 supports-[backdrop-filter]:dark:bg-dark/40 border-b border-dark/10 dark:border-light/10"
     >
       <div class="flex items-center justify-between gap-4 flex-wrap">
         <div class="min-w-0">
@@ -20,7 +20,7 @@
           </transition>
         </div>
 
-        <div class="relative flex-1 max-w-2xl min-w-[260px]">
+        <div class="relative basis-full min-w-0 max-w-2xl sm:flex-1 sm:basis-auto sm:min-w-[260px]">
           <n-input
             v-model:value="searchQuery"
             type="text"
@@ -159,7 +159,10 @@
       </transition>
     </div>
     <transition name="slide-fade">
-      <div v-if="(dirty && !autoSave) || manualUnsaved" class="fixed bottom-4 right-6 z-30">
+      <div
+        v-if="(dirty && !autoSave) || manualUnsaved"
+        class="fixed inset-x-4 bottom-4 z-30 sm:left-auto sm:right-6 sm:max-w-[calc(100vw-3rem)]"
+      >
         <div
           :class="[
             'backdrop-blur rounded-lg shadow px-4 py-2 border transition-colors duration-200 ease-out',
@@ -168,8 +171,8 @@
               : 'bg-light/90 dark:bg-surface/90 border-dark/10 dark:border-light/10',
           ]"
         >
-          <div class="flex items-center gap-3">
-            <span class="text-[11px] font-medium inline-flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
+            <span class="min-w-0 break-words text-[11px] font-medium inline-flex items-center gap-2">
               <i
                 v-if="manualUnsaved"
                 class="fas fa-circle-exclamation text-[12px] text-warning dark:text-warning"
@@ -179,6 +182,7 @@
             <n-button
               :type="manualUnsaved ? 'warning' : 'primary'"
               strong
+              class="shrink-0"
               :disabled="saveState === 'saving'"
               @click="save"
               >Save</n-button

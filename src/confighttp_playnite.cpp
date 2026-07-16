@@ -842,6 +842,44 @@ namespace confighttp {
   static std::vector<ZipDataEntry> collect_support_logs() {
     std::vector<ZipDataEntry> entries;
 
+    auto add_recent_logs = [&](const std::filesystem::path &dir, const std::string &prefix, const std::string &suffix, std::size_t limit, const std::string &zip_prefix) {
+      std::vector<log_candidate_t> candidates;
+      std::error_code ec;
+      if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+        return;
+      }
+      for (std::filesystem::directory_iterator it(dir, ec); it != std::filesystem::directory_iterator(); ++it) {
+        if (ec) {
+          break;
+        }
+        std::error_code file_ec;
+        if (!it->is_regular_file(file_ec)) {
+          continue;
+        }
+        const auto filename = it->path().filename().string();
+        if (filename.rfind(prefix, 0) != 0) {
+          continue;
+        }
+        if (filename.size() < suffix.size() || filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0) {
+          continue;
+        }
+        add_log_candidate(it->path(), candidates);
+      }
+      std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+        return a.mtime > b.mtime;
+      });
+      if (candidates.size() > limit) {
+        candidates.resize(limit);
+      }
+      for (const auto &candidate : candidates) {
+        std::string data;
+        std::optional<std::filesystem::file_time_type> mtime;
+        if (read_file_if_exists(candidate.path, data, &mtime)) {
+          entries.push_back(ZipDataEntry {zip_prefix + candidate.path.filename().string(), std::move(data), mtime});
+        }
+      }
+    };
+
     // Sunshine log directory (session logging)
     try {
       bool collected_directory = false;
@@ -1092,6 +1130,24 @@ namespace confighttp {
       std::optional<std::filesystem::file_time_type> mtime;
       if (read_file_if_exists(p, data, &mtime)) {
         entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+      }
+    } catch (...) {}
+
+    // Installer logs persisted by the bootstrapper, plus recent MSI logs still in TEMP.
+    try {
+      std::filesystem::path install_log_dir = platf::appdata() / "logs" / "installer";
+      add_recent_logs(install_log_dir, "vibeshine_", ".log", 12, "installer/");
+    } catch (...) {}
+    try {
+      wchar_t tmpPathW[MAX_PATH] = {};
+      DWORD n = GetTempPathW(_countof(tmpPathW), tmpPathW);
+      if (n > 0 && n < _countof(tmpPathW)) {
+        std::filesystem::path temp_dir = std::filesystem::path(tmpPathW);
+        add_recent_logs(temp_dir, "vibeshine_install_", ".log", 8, "installer/temp/");
+        add_recent_logs(temp_dir, "vibeshine_preinstall_remove_", ".log", 8, "installer/temp/");
+        add_recent_logs(temp_dir, "vibeshine_uninstall_", ".log", 4, "installer/temp/");
+        add_recent_logs(temp_dir, "vibeshine_uninstall_remove_", ".log", 4, "installer/temp/");
+        add_recent_logs(temp_dir, "vibeshine_cli", ".log", 4, "installer/temp/");
       }
     } catch (...) {}
 

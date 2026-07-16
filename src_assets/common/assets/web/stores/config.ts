@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { http } from '@/http';
 
 // Metadata describing build/runtime info returned by /api/meta
@@ -131,7 +131,7 @@ const defaultGroups = [
       auto_capture_sink: 'enabled',
       adapter_name: '',
       output_name: '',
-      virtual_display_mode: 'disabled',
+      virtual_display_mode: 'per_client',
       virtual_display_layout: 'exclusive',
       dd_configuration_option: 'verify_only',
       dd_resolution_option: 'auto',
@@ -148,16 +148,16 @@ const defaultGroups = [
       dd_snapshot_exclude_devices: [] as Array<string>,
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
-      dd_use_sunshine_virtual_display_driver: false,
+      dd_use_sunshine_virtual_display_driver: true,
       vulkan_hdr_layer: true,
       dd_activate_virtual_display: false,
+      dd_virtual_display_scale: 250,
       dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,
         resolution_only: [] as Array<Record<string, string>>,
         refresh_rate_only: [] as Array<Record<string, string>>,
       },
-      dd_wa_virtual_double_refresh: true,
       dd_wa_dummy_plug_hdr10: false,
       rtx_hdr: false,
       rtx_hdr_force_sdr: false,
@@ -252,6 +252,7 @@ const defaultGroups = [
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
       frame_limiter_fps_limit: 0,
+      frame_limiter_auto_virtual_framegen: 'enabled',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
       frame_limiter_disable_vsync: false,
@@ -384,6 +385,22 @@ export const useConfigStore = defineStore('config', () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const validationError = ref<string | null>(null);
+
+  // Windows 11 shipped as build 22000; anything below that on Windows is Windows 10.
+  const isWindows10Host = computed(() => {
+    const m = metadata.value;
+    if ((m?.platform || '') !== 'windows') return false;
+    const raw = m?.windows_build_number;
+    const build = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(build) && build > 0 && build < 22000;
+  });
+
+  // The backend defaults virtual_display_mode to disabled (physical display) on Windows 10
+  // and per_client elsewhere. Mirror that in the client-side default map so pruning values
+  // that equal the default doesn't silently flip the user's effective choice.
+  function applyOsAwareDefaults() {
+    defaultMap.virtual_display_mode = isWindows10Host.value ? 'disabled' : 'per_client';
+  }
 
   // --- Autosave (PATCH) queue ------------------------------------------------
   // Holds only non-manual changes since last flush. Keys are replaced with
@@ -544,6 +561,23 @@ export const useConfigStore = defineStore('config', () => {
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
       }
+      const virtualCaptureKey = 'frame_limiter_auto_virtual_framegen';
+      if (!Object.prototype.hasOwnProperty.call(data, virtualCaptureKey)) {
+        (data as Record<string, unknown>)[virtualCaptureKey] = 'enabled';
+      } else {
+        const raw = (data as Record<string, unknown>)[virtualCaptureKey];
+        const normalized = String(raw ?? '')
+          .toLowerCase()
+          .trim();
+        (data as Record<string, unknown>)[virtualCaptureKey] =
+          normalized === 'legacy' || normalized === '2x' || normalized === 'fixed-2x'
+            ? 'legacy'
+            : raw === false ||
+                raw === 0 ||
+                ['false', 'no', 'disable', 'disabled', 'off', '0'].includes(normalized)
+              ? 'disabled'
+              : 'enabled';
+      }
       const legacyVsync = Object.prototype.hasOwnProperty.call(data, 'rtss_disable_vsync_ullm');
       const hasNewVsync = Object.prototype.hasOwnProperty.call(data, 'frame_limiter_disable_vsync');
       if (legacyVsync) {
@@ -572,7 +606,6 @@ export const useConfigStore = defineStore('config', () => {
       'frame_limiter_disable_vsync',
       'dd_use_sunshine_virtual_display_driver',
       'vulkan_hdr_layer',
-      'dd_wa_virtual_double_refresh',
       'dd_wa_dummy_plug_hdr10',
       'realtime_stats_enabled',
       'realtime_stats_pause_when_hidden',
@@ -925,6 +958,7 @@ export const useConfigStore = defineStore('config', () => {
           else if (raw.startsWith('lin')) norm = 'linux';
           (m as any).platform = norm;
           metadata.value = m;
+          applyOsAwareDefaults();
         }
       } catch (_) {
         /* ignore */
@@ -1032,6 +1066,7 @@ export const useConfigStore = defineStore('config', () => {
     manualDirty,
     savingState,
     metadata,
+    isWindows10Host,
     loading,
     error,
     validationError,

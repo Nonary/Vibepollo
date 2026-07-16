@@ -197,4 +197,5 @@ namespace platf {
   std::vector<gpu_info_t> enumerate_gpus();
   bool has_nvidia_gpu();
   windows_version_info_t query_windows_version();
+  bool is_windows_11_or_later();
 }  // namespace platf

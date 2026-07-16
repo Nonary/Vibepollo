@@ -16,12 +16,21 @@ namespace display_helper_integration::helpers {
    */
   class SessionDisplayConfigurationHelper {
   public:
-    SessionDisplayConfigurationHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+    SessionDisplayConfigurationHelper(
+      const config::video_t &video_config,
+      const rtsp_stream::launch_session_t &session,
+      bool virtual_display_intended = false
+    );
 
     /**
      * @brief Resolve the display configuration resolution that should be used when creating a virtual display.
      */
     [[nodiscard]] std::optional<display_device::Resolution> initial_virtual_display_resolution() const;
+
+    /**
+     * @brief Parse the effective display configuration used to seed virtual display creation.
+     */
+    [[nodiscard]] std::optional<display_device::SingleDisplayConfiguration> initial_virtual_display_configuration() const;
 
     /**
      * @brief Populate the provided builder with configuration data.

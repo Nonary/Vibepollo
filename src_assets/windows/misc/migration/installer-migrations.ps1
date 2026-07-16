@@ -85,7 +85,7 @@ function Update-SunshineVirtualDriverPreference {
     )
 
     $enabled = Convert-InstallerBooleanValue -Value $InstallVirtualDisplayDriver
-    if ($null -eq $enabled -or -not $enabled) {
+    if ($null -eq $enabled) {
         return $false
     }
 
@@ -93,7 +93,7 @@ function Update-SunshineVirtualDriverPreference {
     return Set-SunshineConfigOption `
         -ConfigPath $configPath `
         -Name 'dd_use_sunshine_virtual_display_driver' `
-        -Value 'enabled'
+        -Value $(if ($enabled) { 'enabled' } else { 'disabled' })
 }
 
 function Convert-LegacySplitEncodeValue {
@@ -185,7 +185,8 @@ function Convert-SplitFrameEncodingJsonNode {
     if ($Node -is [System.Management.Automation.PSCustomObject]) {
         $result = [ordered]@{}
         foreach ($property in $Node.PSObject.Properties) {
-            $targetName = if ($property.Name -eq 'nvenc_force_split_encode') {
+            $isLegacySplitEncodeProperty = $property.Name -eq 'nvenc_force_split_encode'
+            $targetName = if ($isLegacySplitEncodeProperty) {
                 $Changed.Value = $true
                 'nvenc_split_encode'
             } else {
@@ -205,6 +206,9 @@ function Convert-SplitFrameEncodingJsonNode {
 
             if (-not $result.Contains($targetName)) {
                 $result[$targetName] = $value
+            } elseif ($targetName -eq 'nvenc_split_encode' -and -not $isLegacySplitEncodeProperty) {
+                $result[$targetName] = $value
+                $Changed.Value = $true
             }
         }
         return [pscustomobject]$result

@@ -4,13 +4,15 @@
     type="default"
     strong
     size="small"
-    class="flex items-center gap-2 text-xs select-none n-button--linkish"
-    :class="{ 'cursor-pointer': canSave }"
+    :circle="props.compact"
+    class="saving-status flex items-center gap-2 text-xs select-none n-button--linkish"
+    :class="{ 'cursor-pointer': canSave, 'saving-status--compact': props.compact }"
+    :aria-label="label"
     :title="tooltip"
     @click="onClick"
   >
     <i :class="iconClass" />
-    <span class="opacity-80">{{ label }}</span>
+    <span v-if="!props.compact" class="saving-status__label opacity-80">{{ label }}</span>
   </n-button>
 </template>
 
@@ -23,6 +25,9 @@ import { NButton, useMessage } from 'naive-ui';
 import { http } from '@/http';
 
 const route = useRoute();
+const props = defineProps<{
+  compact?: boolean;
+}>();
 const store = useConfigStore();
 const { savingState, manualDirty, validationError } = storeToRefs(store);
 const message = useMessage();

@@ -201,6 +201,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"

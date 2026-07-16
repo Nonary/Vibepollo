@@ -4,10 +4,12 @@
  */
 // standard includes
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 
 // platform includes
 #include <winsock2.h>
@@ -83,6 +85,13 @@ namespace platf::dxgi {
     float padding[3];
   };
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  struct alignas(16) truehdr_peak_params_t {
+    float luminance_scale;
+    float padding[3];
+  };
+#endif
+
   blend_t make_blend(device_t::pointer device, bool enable, bool invert) {
     D3D11_BLEND_DESC bdesc {};
     auto &rt = bdesc.RenderTarget[0];
@@ -149,7 +158,14 @@ namespace platf::dxgi {
   blob_t cursor_vs_hlsl;
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  blob_t convert_yuv420_packed_uv_type0_ps_truehdr_peak_hlsl;
+  blob_t convert_yuv420_packed_uv_type0s_ps_truehdr_peak_hlsl;
+  blob_t convert_yuv420_planar_y_ps_truehdr_peak_hlsl;
+  blob_t convert_yuv444_planar_ps_truehdr_peak_hlsl;
+  blob_t convert_yuv444_packed_y410_ps_truehdr_peak_hlsl;
+
   namespace {
+    constexpr int TRUEHDR_NGX_OUTPUT_CEILING_NITS = 1000;
     constexpr UINT TRUEHDR_NATIVE_HDR_GRID_SIZE = 4;
     constexpr UINT TRUEHDR_NATIVE_HDR_PATCH_SIZE = 2;
     constexpr UINT TRUEHDR_NATIVE_HDR_SAMPLE_WIDTH = TRUEHDR_NATIVE_HDR_GRID_SIZE * TRUEHDR_NATIVE_HDR_PATCH_SIZE;
@@ -160,6 +176,32 @@ namespace platf::dxgi {
 
     bool truehdr_native_hdr_detectable_format(DXGI_FORMAT format) {
       return format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    }
+
+    double pq_to_nits(double pq) {
+      // SMPTE ST 2084 inverse EOTF. PQ is absolute, so this lets the live P010
+      // readback report the luminance represented by the codes handed to NVENC.
+      constexpr double m1 = 2610.0 / 4096.0 / 4.0;
+      constexpr double m2 = 2523.0 / 4096.0 * 128.0;
+      constexpr double c1 = 3424.0 / 4096.0;
+      constexpr double c2 = 2413.0 / 4096.0 * 32.0;
+      constexpr double c3 = 2392.0 / 4096.0 * 32.0;
+
+      const double p = std::pow(std::clamp(pq, 0.0, 1.0), 1.0 / m2);
+      const double numerator = std::max(p - c1, 0.0);
+      const double denominator = c2 - c3 * p;
+      if (denominator <= 0.0) {
+        return 10000.0;
+      }
+      return 10000.0 * std::pow(numerator / denominator, 1.0 / m1);
+    }
+
+    double p010_luma_code_to_nits(const int code, const bool full_range) {
+      // H.273 10-bit luma ranges: 0..1023 full range, 64..940 limited range.
+      const double pq = full_range ?
+                          static_cast<double>(code) / 1023.0 :
+                          (static_cast<double>(code) - 64.0) / 876.0;
+      return pq_to_nits(std::clamp(pq, 0.0, 1.0));
     }
 
     float half_to_float(std::uint16_t half) {
@@ -435,17 +477,32 @@ namespace platf::dxgi {
       }
 
       auto &img = (img_d3d_t &) img_base;
-      auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport, DXGI_FORMAT input_format, bool sdr_to_pq) {
+      auto draw = [&](auto &input, auto &y_or_yuv_viewports, auto &uv_viewport, DXGI_FORMAT input_format, bool sdr_to_pq, bool truehdr_peak_expand) {
         device_ctx->PSSetShaderResources(0, 1, &input);
-        ID3D11Buffer *sdr_to_pq_buffer = sdr_to_pq ? sdr_to_pq_params.get() : nullptr;
-        device_ctx->PSSetConstantBuffers(1, 1, &sdr_to_pq_buffer);
+        ID3D11Buffer *conversion_params_buffer = sdr_to_pq ? sdr_to_pq_params.get() : nullptr;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+        if (truehdr_peak_expand) {
+          conversion_params_buffer = truehdr_peak_params.get();
+        }
+#else
+        (void) truehdr_peak_expand;
+#endif
+        device_ctx->PSSetConstantBuffers(1, 1, &conversion_params_buffer);
 
         // Draw Y/YUV
         device_ctx->OMSetRenderTargets(1, &out_Y_or_YUV_rtv, nullptr);
         device_ctx->VSSetShader(convert_Y_or_YUV_vs.get(), nullptr, 0);
-        auto *y_or_yuv_ps = input_format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
-                              convert_Y_or_YUV_fp16_ps.get() :
-                              (sdr_to_pq && convert_Y_or_YUV_sdr_to_pq_ps ? convert_Y_or_YUV_sdr_to_pq_ps.get() : convert_Y_or_YUV_ps.get());
+        auto *y_or_yuv_ps = convert_Y_or_YUV_ps.get();
+        if (input_format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+          y_or_yuv_ps = convert_Y_or_YUV_fp16_ps.get();
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+          if (truehdr_peak_expand) {
+            y_or_yuv_ps = convert_Y_or_YUV_truehdr_peak_ps.get();
+          }
+#endif
+        } else if (sdr_to_pq && convert_Y_or_YUV_sdr_to_pq_ps) {
+          y_or_yuv_ps = convert_Y_or_YUV_sdr_to_pq_ps.get();
+        }
         device_ctx->PSSetShader(y_or_yuv_ps, nullptr, 0);
         auto viewport_count = (format == DXGI_FORMAT_R16_UINT) ? 3 : 1;
         assert(viewport_count <= y_or_yuv_viewports.size());
@@ -457,9 +514,17 @@ namespace platf::dxgi {
           assert(format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010);
           device_ctx->OMSetRenderTargets(1, &out_UV_rtv, nullptr);
           device_ctx->VSSetShader(convert_UV_vs.get(), nullptr, 0);
-          auto *uv_ps = input_format == DXGI_FORMAT_R16G16B16A16_FLOAT ?
-                          convert_UV_fp16_ps.get() :
-                          (sdr_to_pq && convert_UV_sdr_to_pq_ps ? convert_UV_sdr_to_pq_ps.get() : convert_UV_ps.get());
+          auto *uv_ps = convert_UV_ps.get();
+          if (input_format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+            uv_ps = convert_UV_fp16_ps.get();
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+            if (truehdr_peak_expand) {
+              uv_ps = convert_UV_truehdr_peak_ps.get();
+            }
+#endif
+          } else if (sdr_to_pq && convert_UV_sdr_to_pq_ps) {
+            uv_ps = convert_UV_sdr_to_pq_ps.get();
+          }
           device_ctx->PSSetShader(uv_ps, nullptr, 0);
           device_ctx->RSSetViewports(1, &uv_viewport);
           device_ctx->Draw(3, 0);
@@ -476,7 +541,7 @@ namespace platf::dxgi {
           return false;
         }
 
-        draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear, DXGI_FORMAT_B8G8R8A8_UNORM, false);
+        draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear, DXGI_FORMAT_B8G8R8A8_UNORM, false, false);
         rtvs_cleared = true;
         unbind_shader_resource();
         return true;
@@ -537,6 +602,8 @@ namespace platf::dxgi {
       auto *encode_input_res = &img_ctx.encoder_input_res;
       DXGI_FORMAT encode_input_format = img.format;
       bool encode_input_sdr_to_pq = false;
+      bool encode_input_truehdr_peak_expand = false;
+      bool encode_input_truehdr_converted = false;
       float encode_input_sdr_white_nits = 100.0f;
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
       ID3D11Texture2D *truehdr_input_texture = img_ctx.encoder_texture.get();
@@ -603,6 +670,7 @@ namespace platf::dxgi {
           }
 
           bool truehdr_converted = false;
+          bool truehdr_peak_compensated = false;
           if (truehdr_private_input_ready && !truehdr_engine) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
             truehdr_engine->init(device.get());
@@ -612,7 +680,43 @@ namespace platf::dxgi {
             p.contrast = truehdr_frame_state.contrast;
             p.saturation = truehdr_frame_state.saturation;
             p.middle_gray = truehdr_frame_state.middle_gray;
-            p.peak_brightness = truehdr_frame_state.peak_brightness;
+            p.peak_brightness = std::clamp(truehdr_frame_state.peak_brightness, 400, 2000);
+
+            // The public RTX Video SDK accepts MaxLuminance up to 2000, but its TrueHDR
+            // output texture hard-clips near 1000 nits. Preserve the requested tone curve
+            // by evaluating NGX at 1000 nits with a proportionally lower middle-gray, then
+            // restore the requested scRGB headroom immediately before PQ encoding.
+            if (p.peak_brightness > TRUEHDR_NGX_OUTPUT_CEILING_NITS) {
+              const int requested_peak_nits = p.peak_brightness;
+              const float luminance_scale = static_cast<float>(requested_peak_nits) /
+                                            static_cast<float>(TRUEHDR_NGX_OUTPUT_CEILING_NITS);
+              if (ensure_truehdr_peak_params(luminance_scale)) {
+                const int requested_middle_gray = p.middle_gray;
+                p.middle_gray = std::clamp(
+                  static_cast<int>(std::lround(static_cast<float>(requested_middle_gray) / luminance_scale)),
+                  10,
+                  100
+                );
+                p.peak_brightness = TRUEHDR_NGX_OUTPUT_CEILING_NITS;
+                truehdr_peak_compensated = true;
+
+                if (truehdr_last_compensated_peak_nits != requested_peak_nits ||
+                    truehdr_last_compensated_middle_gray != requested_middle_gray) {
+                  BOOST_LOG(info) << "RTX HDR: compensating for the NGX 1000-nit output ceiling"
+                                  << " (requested peak=" << requested_peak_nits
+                                  << " nits, NGX middleGray=" << requested_middle_gray << "->" << p.middle_gray
+                                  << ", post-scale=" << luminance_scale << "x).";
+                  truehdr_last_compensated_peak_nits = requested_peak_nits;
+                  truehdr_last_compensated_middle_gray = requested_middle_gray;
+                }
+              } else if (!truehdr_peak_compensation_failure_logged) {
+                BOOST_LOG(warning) << "RTX HDR: failed to create the peak compensation buffer; output above 1000 nits may clip.";
+                truehdr_peak_compensation_failure_logged = true;
+              }
+            } else {
+              truehdr_last_compensated_peak_nits = 0;
+              truehdr_last_compensated_middle_gray = 0;
+            }
             if (auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p)) {
               if (hdr_tex != truehdr_srv_texture) {
                 truehdr_srv.reset();
@@ -631,6 +735,8 @@ namespace platf::dxgi {
                 }
                 encode_input_res = &truehdr_srv;
                 encode_input_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                encode_input_truehdr_peak_expand = truehdr_peak_compensated;
+                encode_input_truehdr_converted = true;
                 truehdr_converted = true;
               } else if (!truehdr_failure_logged) {
                 BOOST_LOG(warning) << "RTX HDR: failed to create shader resource view for TrueHDR output; streaming unconverted frame.";
@@ -659,7 +765,27 @@ namespace platf::dxgi {
       if (encode_input_sdr_to_pq) {
         ensure_sdr_to_pq_params(encode_input_sdr_white_nits);
       }
-      draw(*encode_input_res, out_Y_or_YUV_viewports, out_UV_viewport, encode_input_format, encode_input_sdr_to_pq);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (encode_input_truehdr_converted) {
+        update_truehdr_live_readback_request(truehdr_frame_state);
+      } else {
+        truehdr_live_readback_request.reset();
+      }
+#endif
+      draw(
+        *encode_input_res,
+        out_Y_or_YUV_viewports,
+        out_UV_viewport,
+        encode_input_format,
+        encode_input_sdr_to_pq,
+        encode_input_truehdr_peak_expand
+      );
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (encode_input_truehdr_converted) {
+        maybe_log_truehdr_live_readback();
+      }
+#endif
 
       // Release encoder mutex to allow capture code to reuse this image
       if (release_encoder_mutex_now()) {
@@ -683,12 +809,190 @@ namespace platf::dxgi {
       }
     }
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    bool ensure_truehdr_peak_params(float luminance_scale) {
+      if (truehdr_peak_params && std::abs(truehdr_peak_luminance_scale - luminance_scale) < 0.001f) {
+        return true;
+      }
+
+      truehdr_peak_params_t params {luminance_scale, {}};
+      if (auto buffer = make_buffer(device.get(), params)) {
+        truehdr_peak_params = std::move(buffer);
+        truehdr_peak_luminance_scale = luminance_scale;
+        return true;
+      }
+
+      return false;
+    }
+
+    struct truehdr_live_readback_request_t {
+      int contrast;
+      int saturation;
+      int middle_gray;
+      int peak_brightness;
+      std::chrono::steady_clock::time_point stable_since;
+      bool logged {false};
+
+      bool same_settings(const platf::rtx_hdr::frame_state_t &frame) const {
+        return contrast == frame.contrast &&
+               saturation == frame.saturation &&
+               middle_gray == frame.middle_gray &&
+               peak_brightness == frame.peak_brightness;
+      }
+    };
+
+    void update_truehdr_live_readback_request(const platf::rtx_hdr::frame_state_t &frame) {
+      // A full GPU readback is deliberately restricted to debug/verbose logging and
+      // debounced so dragging a slider cannot stall every frame.
+      if (config::sunshine.min_log_level > 1 || format != DXGI_FORMAT_P010) {
+        truehdr_live_readback_request.reset();
+        return;
+      }
+
+      if (truehdr_live_readback_request && truehdr_live_readback_request->same_settings(frame)) {
+        return;
+      }
+
+      truehdr_live_readback_request = truehdr_live_readback_request_t {
+        frame.contrast,
+        frame.saturation,
+        frame.middle_gray,
+        frame.peak_brightness,
+        std::chrono::steady_clock::now(),
+      };
+    }
+
+    void maybe_log_truehdr_live_readback() {
+      using namespace std::chrono_literals;
+
+      auto &request = truehdr_live_readback_request;
+      if (!request || request->logged || std::chrono::steady_clock::now() - request->stable_since < 500ms) {
+        return;
+      }
+      request->logged = true;
+
+      D3D11_TEXTURE2D_DESC output_desc {};
+      output_texture->GetDesc(&output_desc);
+      if (output_desc.Format != DXGI_FORMAT_P010) {
+        return;
+      }
+
+      bool create_readback = !truehdr_live_readback_texture;
+      if (truehdr_live_readback_texture) {
+        D3D11_TEXTURE2D_DESC readback_desc {};
+        truehdr_live_readback_texture->GetDesc(&readback_desc);
+        create_readback = readback_desc.Width != output_desc.Width ||
+                          readback_desc.Height != output_desc.Height ||
+                          readback_desc.ArraySize != output_desc.ArraySize ||
+                          readback_desc.Format != output_desc.Format;
+      }
+
+      if (create_readback) {
+        auto readback_desc = output_desc;
+        readback_desc.Usage = D3D11_USAGE_STAGING;
+        readback_desc.BindFlags = 0;
+        readback_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        readback_desc.MiscFlags = 0;
+        texture2d_t::pointer readback_p = nullptr;
+        const HRESULT create_status = device->CreateTexture2D(&readback_desc, nullptr, &readback_p);
+        if (FAILED(create_status)) {
+          if (!truehdr_live_readback_failure_logged) {
+            BOOST_LOG(warning) << "RTX HDR live readback: failed to create P010 staging texture: " << util::log_hex(create_status);
+            truehdr_live_readback_failure_logged = true;
+          }
+          return;
+        }
+        truehdr_live_readback_texture.reset(readback_p);
+      }
+
+      // The luma/UV render targets must be unbound before copying the encoder input.
+      device_ctx->OMSetRenderTargets(0, nullptr, nullptr);
+      device_ctx->CopyResource(truehdr_live_readback_texture.get(), output_texture.get());
+
+      D3D11_MAPPED_SUBRESOURCE mapped {};
+      const HRESULT map_status = device_ctx->Map(truehdr_live_readback_texture.get(), 0, D3D11_MAP_READ, 0, &mapped);
+      if (FAILED(map_status)) {
+        if (!truehdr_live_readback_failure_logged) {
+          BOOST_LOG(warning) << "RTX HDR live readback: failed to map P010 staging texture: " << util::log_hex(map_status);
+          truehdr_live_readback_failure_logged = true;
+        }
+        return;
+      }
+
+      std::array<std::uint64_t, 1024> histogram {};
+      std::uint64_t pixel_count = 0;
+      for (UINT y = 0; y < output_desc.Height; ++y) {
+        const auto *row = reinterpret_cast<const std::uint16_t *>(
+          static_cast<const std::uint8_t *>(mapped.pData) + static_cast<std::size_t>(y) * mapped.RowPitch
+        );
+        for (UINT x = 0; x < output_desc.Width; ++x) {
+          ++histogram[std::min<int>(row[x] >> 6, 1023)];
+          ++pixel_count;
+        }
+      }
+      device_ctx->Unmap(truehdr_live_readback_texture.get(), 0);
+
+      auto highest_populated_code = [&]() {
+        for (int code = 1023; code >= 0; --code) {
+          if (histogram[code] != 0) {
+            return code;
+          }
+        }
+        return 0;
+      };
+      auto percentile_code = [&](const double fraction) {
+        const auto target = static_cast<std::uint64_t>(std::ceil(static_cast<double>(pixel_count) * fraction));
+        std::uint64_t accumulated = 0;
+        for (int code = 0; code <= 1023; ++code) {
+          accumulated += histogram[code];
+          if (accumulated >= target) {
+            return code;
+          }
+        }
+        return 1023;
+      };
+      auto count_above_nits = [&](const double threshold_nits) {
+        std::uint64_t count = 0;
+        for (int code = 0; code <= 1023; ++code) {
+          if (p010_luma_code_to_nits(code, truehdr_output_full_range) > threshold_nits) {
+            count += histogram[code];
+          }
+        }
+        return count;
+      };
+
+      const int maximum_code = highest_populated_code();
+      const int p9999_code = percentile_code(0.9999);
+      const auto over_1000 = count_above_nits(1000.0);
+      const auto over_90_percent_target = count_above_nits(std::max(request->peak_brightness * 0.9, 1000.0));
+      const double over_1000_percent = pixel_count == 0 ? 0.0 : 100.0 * static_cast<double>(over_1000) / static_cast<double>(pixel_count);
+      const double over_target_percent = pixel_count == 0 ? 0.0 : 100.0 * static_cast<double>(over_90_percent_target) / static_cast<double>(pixel_count);
+
+      BOOST_LOG(info) << "RTX HDR live P010 readback"
+                      << " (peak=" << request->peak_brightness
+                      << " nits, middleGray=" << request->middle_gray
+                      << ", contrast=" << request->contrast
+                      << ", saturation=" << request->saturation
+                      << ", range=" << (truehdr_output_full_range ? "full" : "limited")
+                      << ", maxCode=" << maximum_code
+                      << ", maxLuma=" << pq_to_nits(truehdr_output_full_range ?
+                                           static_cast<double>(maximum_code) / 1023.0 :
+                                           std::clamp((static_cast<double>(maximum_code) - 64.0) / 876.0, 0.0, 1.0))
+                      << " nits, p99.99Luma=" << p010_luma_code_to_nits(p9999_code, truehdr_output_full_range)
+                      << " nits, pixelsAbove1000=" << over_1000 << '/' << pixel_count
+                      << " [" << over_1000_percent << "%]"
+                      << ", pixelsAbove90PercentTarget=" << over_90_percent_target << '/' << pixel_count
+                      << " [" << over_target_percent << "%]).";
+    }
+#endif
+
     void apply_colorspace(const ::video::sunshine_colorspace_t &colorspace, bool rtx_hdr_active) {
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
       // Remember whether we are emitting HDR, so the convert step knows it may need to
       // synthesize HDR from an SDR capture via TrueHDR.
       truehdr_active = rtx_hdr_active;
       truehdr_output_hdr = ::video::colorspace_is_hdr(colorspace);
+      truehdr_output_full_range = colorspace.full_range;
 #endif
       auto color_vectors = ::video::color_vectors_from_colorspace(colorspace, true);
 
@@ -770,6 +1074,9 @@ namespace platf::dxgi {
           if (target_hdr) {
             create_pixel_shader_helper(convert_yuv420_planar_y_ps_perceptual_quantizer_hlsl, convert_Y_or_YUV_fp16_ps);
             create_pixel_shader_helper(convert_yuv420_planar_y_ps_sdr_to_pq_hlsl, convert_Y_or_YUV_sdr_to_pq_ps);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+            create_pixel_shader_helper(convert_yuv420_planar_y_ps_truehdr_peak_hlsl, convert_Y_or_YUV_truehdr_peak_ps);
+#endif
           } else {
             create_pixel_shader_helper(convert_yuv420_planar_y_ps_linear_hlsl, convert_Y_or_YUV_fp16_ps);
             convert_Y_or_YUV_sdr_to_pq_ps.reset();
@@ -780,6 +1087,9 @@ namespace platf::dxgi {
             if (target_hdr) {
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_perceptual_quantizer_hlsl, convert_UV_fp16_ps);
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_sdr_to_pq_hlsl, convert_UV_sdr_to_pq_ps);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+              create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_truehdr_peak_hlsl, convert_UV_truehdr_peak_ps);
+#endif
             } else {
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_linear_hlsl, convert_UV_fp16_ps);
               convert_UV_sdr_to_pq_ps.reset();
@@ -790,6 +1100,9 @@ namespace platf::dxgi {
             if (target_hdr) {
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0_ps_perceptual_quantizer_hlsl, convert_UV_fp16_ps);
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0_ps_sdr_to_pq_hlsl, convert_UV_sdr_to_pq_ps);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+              create_pixel_shader_helper(convert_yuv420_packed_uv_type0_ps_truehdr_peak_hlsl, convert_UV_truehdr_peak_ps);
+#endif
             } else {
               create_pixel_shader_helper(convert_yuv420_packed_uv_type0_ps_linear_hlsl, convert_UV_fp16_ps);
               convert_UV_sdr_to_pq_ps.reset();
@@ -804,6 +1117,9 @@ namespace platf::dxgi {
           if (target_hdr) {
             create_pixel_shader_helper(convert_yuv444_planar_ps_perceptual_quantizer_hlsl, convert_Y_or_YUV_fp16_ps);
             create_pixel_shader_helper(convert_yuv444_planar_ps_sdr_to_pq_hlsl, convert_Y_or_YUV_sdr_to_pq_ps);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+            create_pixel_shader_helper(convert_yuv444_planar_ps_truehdr_peak_hlsl, convert_Y_or_YUV_truehdr_peak_ps);
+#endif
           } else {
             create_pixel_shader_helper(convert_yuv444_planar_ps_linear_hlsl, convert_Y_or_YUV_fp16_ps);
             convert_Y_or_YUV_sdr_to_pq_ps.reset();
@@ -825,6 +1141,9 @@ namespace platf::dxgi {
           if (target_hdr) {
             create_pixel_shader_helper(convert_yuv444_packed_y410_ps_perceptual_quantizer_hlsl, convert_Y_or_YUV_fp16_ps);
             create_pixel_shader_helper(convert_yuv444_packed_y410_ps_sdr_to_pq_hlsl, convert_Y_or_YUV_sdr_to_pq_ps);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+            create_pixel_shader_helper(convert_yuv444_packed_y410_ps_truehdr_peak_hlsl, convert_Y_or_YUV_truehdr_peak_ps);
+#endif
           } else {
             create_pixel_shader_helper(convert_yuv444_packed_y410_ps_linear_hlsl, convert_Y_or_YUV_fp16_ps);
             convert_Y_or_YUV_sdr_to_pq_ps.reset();
@@ -1410,6 +1729,15 @@ namespace platf::dxgi {
     bool truehdr_native_hdr_confirmed = false;
     bool truehdr_native_hdr_logged = false;
     bool truehdr_native_hdr_readback_failure_logged = false;
+    buf_t truehdr_peak_params;
+    float truehdr_peak_luminance_scale = 1.0f;
+    int truehdr_last_compensated_peak_nits = 0;
+    int truehdr_last_compensated_middle_gray = 0;
+    bool truehdr_peak_compensation_failure_logged = false;
+    bool truehdr_output_full_range = false;
+    texture2d_t truehdr_live_readback_texture;
+    std::optional<truehdr_live_readback_request_t> truehdr_live_readback_request;
+    bool truehdr_live_readback_failure_logged = false;
 #endif
 
     texture2d_t output_texture;
@@ -1441,11 +1769,17 @@ namespace platf::dxgi {
     ps_t convert_Y_or_YUV_ps;
     ps_t convert_Y_or_YUV_fp16_ps;
     ps_t convert_Y_or_YUV_sdr_to_pq_ps;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    ps_t convert_Y_or_YUV_truehdr_peak_ps;
+#endif
 
     vs_t convert_UV_vs;
     ps_t convert_UV_ps;
     ps_t convert_UV_fp16_ps;
     ps_t convert_UV_sdr_to_pq_ps;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    ps_t convert_UV_truehdr_peak_ps;
+#endif
 
     std::array<D3D11_VIEWPORT, 3> out_Y_or_YUV_viewports;
     std::array<D3D11_VIEWPORT, 3> out_Y_or_YUV_viewports_for_clear;
@@ -1584,7 +1918,13 @@ namespace platf::dxgi {
       }
 
       auto nvenc_colorspace = nvenc::nvenc_colorspace_from_sunshine_colorspace(colorspace);
-      if (!nvenc_d3d->create_encoder(config::video.nv, client_config, nvenc_colorspace, buffer_format)) {
+      if (!nvenc_d3d->create_encoder(
+            config::video.nv,
+            client_config,
+            nvenc_colorspace,
+            buffer_format,
+            hdr_metadata_valid ? &hdr_metadata : nullptr
+          )) {
         return false;
       }
 
@@ -2411,6 +2751,13 @@ namespace platf::dxgi {
     compile_pixel_shader_helper(convert_yuv444_packed_y410_ps_perceptual_quantizer);
     compile_pixel_shader_helper(convert_yuv444_packed_y410_ps_sdr_to_pq);
     compile_vertex_shader_helper(convert_yuv444_planar_vs);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    compile_pixel_shader_helper(convert_yuv420_packed_uv_type0_ps_truehdr_peak);
+    compile_pixel_shader_helper(convert_yuv420_packed_uv_type0s_ps_truehdr_peak);
+    compile_pixel_shader_helper(convert_yuv420_planar_y_ps_truehdr_peak);
+    compile_pixel_shader_helper(convert_yuv444_planar_ps_truehdr_peak);
+    compile_pixel_shader_helper(convert_yuv444_packed_y410_ps_truehdr_peak);
+#endif
     compile_pixel_shader_helper(cursor_ps);
     compile_pixel_shader_helper(cursor_ps_normalize_white);
     compile_vertex_shader_helper(cursor_vs);

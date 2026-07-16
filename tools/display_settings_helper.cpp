@@ -171,6 +171,8 @@ namespace {
     ApplyResult = 6,  // payload: [u8 success][optional message...]
     Disarm = 7,  // cancel any pending restore requests/watchdogs
     SnapshotCurrent = 8,  // snapshot current session state (rotate current->previous) without applying
+    RefreshRate = 10,  // payload: [u32 numerator][u32 denominator][UTF-8 device id]
+    RefreshRateResult = 11,  // payload: [u8 success]
     Ping = 0xFE,  // no payload, reply with Pong
     Stop = 0xFF  // no payload, terminate process
   };
@@ -180,6 +182,16 @@ namespace {
     out.front() = static_cast<uint8_t>(type);
     std::copy(payload.begin(), payload.end(), out.begin() + 1);
     pipe.send(out);
+  }
+
+  std::optional<std::uint32_t> read_u32_le(std::span<const std::uint8_t> payload, std::size_t offset) {
+    if (offset + 4 > payload.size()) {
+      return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(payload[offset]) |
+           (static_cast<std::uint32_t>(payload[offset + 1]) << 8u) |
+           (static_cast<std::uint32_t>(payload[offset + 2]) << 16u) |
+           (static_cast<std::uint32_t>(payload[offset + 3]) << 24u);
   }
 
   // Wrap SettingsManager for easy use in this helper
@@ -511,6 +523,12 @@ namespace {
         std::set<std::string> device_set {device_id};
         auto current_modes = m_dd->getCurrentDisplayModes(device_set);
         if (current_modes.count(device_id)) {
+          const auto &current = current_modes[device_id].m_refresh_rate;
+          if (current.m_denominator != 0 &&
+              static_cast<std::uint64_t>(current.m_numerator) * den ==
+                static_cast<std::uint64_t>(num) * current.m_denominator) {
+            return true;
+          }
           current_modes[device_id].m_refresh_rate = display_device::Rational {num, den};
           return m_dd->setDisplayModes(current_modes);
         }
@@ -5257,6 +5275,26 @@ namespace {
         return;
       }
       (void) state.refresh_current_snapshot_preserving_previous("snapshot-only");
+    } else if (type == MsgType::RefreshRate) {
+      const auto numerator = read_u32_le(payload, 0);
+      const auto denominator = read_u32_le(payload, 4);
+      std::string device_id;
+      if (payload.size() > 8) {
+        device_id.assign(
+          reinterpret_cast<const char *>(payload.data() + 8),
+          payload.size() - 8
+        );
+      }
+
+      const bool valid = numerator && denominator && *numerator > 0 && *denominator > 0 && !device_id.empty();
+      const bool success = valid && state.controller.set_device_refresh_rate(device_id, *numerator, *denominator);
+      BOOST_LOG(success ? info : warning)
+        << "Display helper: refresh-only request device=" << (device_id.empty() ? "(missing)" : device_id)
+        << " rate=" << (numerator ? std::to_string(*numerator) : "invalid")
+        << '/' << (denominator ? std::to_string(*denominator) : "invalid")
+        << " result=" << (success ? "true" : "false");
+      std::array<std::uint8_t, 1> result {static_cast<std::uint8_t>(success ? 1u : 0u)};
+      send_framed_content(async_pipe, MsgType::RefreshRateResult, result);
     } else if (type == MsgType::Ping) {
       state.record_heartbeat_ping();
       send_framed_content(async_pipe, MsgType::Ping);

@@ -23,10 +23,24 @@
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes"/>
         <?endif?>
 
+        <!-- AllowDowngrades makes every transition (upgrade, same-version
+             rebuild, downgrade) a single-transaction major upgrade: the
+             installed product is removed inside the transaction
+             (afterInstallInitialize), so a failed install rolls back to the
+             previous version instead of leaving neither installed.
+             ProductVersion is ordinal-encoded (see windows_wix.cmake) so
+             prerelease/stable builds of the same patch are strictly ordered
+             and downgrades only happen when genuinely requested. -->
         <MajorUpgrade
-            Schedule="afterInstallValidate"
-            AllowSameVersionUpgrades="yes"
-            DowngradeErrorMessage="A later version of [ProductName] is already installed. Setup will now exit."/>
+            Schedule="afterInstallInitialize"
+            AllowDowngrades="yes"/>
+
+        <!-- Read from the payload by the bootstrapper
+             (PayloadSupportsTransactionalReplacement): this package replaces
+             any installed version inside its own transaction, so the
+             bootstrapper must NOT run its legacy uninstall-then-install
+             workaround before launching it. -->
+        <Property Id="VIBESHINE_TRANSACTIONAL_REPLACEMENT" Value="1" Secure="yes"/>
 
         <WixVariable Id="WixUILicenseRtf" Value="$(var.CPACK_WIX_LICENSE_RTF)"/>
         <Property Id="WIXUI_INSTALLDIR" Value="INSTALL_ROOT"/>

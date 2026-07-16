@@ -1,5 +1,5 @@
 <template>
-  <div class="dashboard-page space-y-6 px-2 sm:space-y-8 md:px-4">
+  <div class="dashboard-page space-y-6 sm:space-y-8">
     <!-- Hero / Intro -->
     <section
       class="rounded-xl border border-dark/10 bg-light/70 p-4 shadow-sm backdrop-blur dark:border-light/10 dark:bg-surface/70 sm:p-5 md:p-6"
