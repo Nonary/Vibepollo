@@ -315,6 +315,17 @@ namespace video {
 
     virtual size_t data_size() = 0;
 
+    // Native AMF may expose one encoded frame progressively as up to four
+    // independently protected transport blocks. Every other encoder keeps the
+    // default single-fragment contract.
+    virtual uint8_t frame_fragment_index() {
+      return 0;
+    }
+
+    virtual uint8_t frame_fragment_count() {
+      return 1;
+    }
+
     struct replace_t {
       std::string_view old;
       std::string_view _new;
@@ -367,10 +378,17 @@ namespace video {
   };
 
   struct packet_raw_generic: packet_raw_t {
-    packet_raw_generic(std::vector<uint8_t> &&frame_data, int64_t frame_index, bool idr):
+    packet_raw_generic(
+      std::vector<uint8_t> &&frame_data,
+      int64_t frame_index,
+      bool idr,
+      uint8_t fragment_index = 0,
+      uint8_t fragment_count = 1):
         frame_data {std::move(frame_data)},
         index {frame_index},
-        idr {idr} {
+        idr {idr},
+        fragment_index {fragment_index},
+        fragment_count {fragment_count} {
     }
 
     bool is_idr() override {
@@ -389,9 +407,19 @@ namespace video {
       return frame_data.size();
     }
 
+    uint8_t frame_fragment_index() override {
+      return fragment_index;
+    }
+
+    uint8_t frame_fragment_count() override {
+      return fragment_count;
+    }
+
     std::vector<uint8_t> frame_data;
     int64_t index;
     bool idr;
+    uint8_t fragment_index;
+    uint8_t fragment_count;
   };
 
   using packet_t = std::unique_ptr<packet_raw_t>;

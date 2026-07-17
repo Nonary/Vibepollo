@@ -17,8 +17,11 @@ namespace amf {
   struct amf_encoded_frame {
     std::vector<uint8_t> data;
     uint64_t frame_index = 0;
+    uint8_t fragment_index = 0;
+    uint8_t fragment_count = 1;
     bool has_valid_pts = false;
     bool idr = false;
+    bool frame_complete = true;
     bool after_ref_frame_invalidation = false;
     bool fatal = false;  // Set when encoder is in unrecoverable state (device lost, repeated failures)
   };

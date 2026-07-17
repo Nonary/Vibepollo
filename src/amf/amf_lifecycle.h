@@ -697,7 +697,9 @@ namespace amf::lifecycle {
       candidate_indices.erase(frame_index);
     }
 
-    output_pts_result_e classify(std::optional<std::uint64_t> frame_index) {
+    output_pts_result_e classify(
+      std::optional<std::uint64_t> frame_index,
+      bool completes_frame = true) {
       if (!frame_index) return output_pts_result_e::missing;
       if (candidate_indices.contains(*frame_index)) {
         return output_pts_result_e::pending_confirmation;
@@ -706,11 +708,13 @@ namespace amf::lifecycle {
       if (found == accepted_indices.end()) {
         return output_pts_result_e::not_from_accepted_input;
       }
-      accepted_indices.erase(found);
       if (last_completed && *frame_index <= *last_completed) {
         return output_pts_result_e::duplicate_or_regressing;
       }
-      last_completed = *frame_index;
+      if (completes_frame) {
+        accepted_indices.erase(found);
+        last_completed = *frame_index;
+      }
       return output_pts_result_e::accepted;
     }
 
@@ -728,8 +732,35 @@ namespace amf::lifecycle {
   class monotonic_delivery_tracker_t {
   public:
     bool accept(std::uint64_t frame_index) noexcept {
-      if (last_delivered && frame_index <= *last_delivered) return false;
-      last_delivered = frame_index;
+      return accept_fragment(frame_index, 0, 1);
+    }
+
+    bool accept_fragment(
+      std::uint64_t frame_index,
+      std::uint8_t fragment_index,
+      std::uint8_t fragment_count) noexcept {
+      if (fragment_count == 0 || fragment_index >= fragment_count) return false;
+
+      if (fragment_index == 0) {
+        if (open_frame || (last_delivered && frame_index <= *last_delivered)) return false;
+        open_frame = frame_index;
+        open_fragment_count = fragment_count;
+        next_fragment_index = 1;
+      } else {
+        if (!open_frame || *open_frame != frame_index ||
+            open_fragment_count != fragment_count ||
+            fragment_index != next_fragment_index) {
+          return false;
+        }
+        ++next_fragment_index;
+      }
+
+      if (fragment_index + 1 == fragment_count) {
+        last_delivered = frame_index;
+        open_frame.reset();
+        open_fragment_count = 0;
+        next_fragment_index = 0;
+      }
       return true;
     }
 
@@ -739,7 +770,55 @@ namespace amf::lifecycle {
 
   private:
     std::optional<std::uint64_t> last_delivered;
+    std::optional<std::uint64_t> open_frame;
+    std::uint8_t open_fragment_count = 0;
+    std::uint8_t next_fragment_index = 0;
   };
+
+  inline constexpr bool high_throughput_encode(
+    int width,
+    int height,
+    std::uint32_t framerate_num,
+    std::uint32_t framerate_den) noexcept {
+    if (framerate_num == 0 || framerate_den == 0) return false;
+
+    // Below this pixel rate, parallel hardware and progressive output usually
+    // cost more coordination/compression efficiency than the overlap they buy.
+    // Keep probes and ordinary 1080p60 sessions on the driver's simple path.
+    constexpr std::uint64_t activation_pixel_rate =
+      1920ull * 1080ull * 90ull;
+    const auto pixel_rate_numerator =
+      static_cast<std::uint64_t>(std::max(0, width)) *
+      static_cast<std::uint64_t>(std::max(0, height)) *
+      framerate_num;
+    return pixel_rate_numerator >= activation_pixel_rate * framerate_den;
+  }
+
+  inline constexpr std::uint8_t progressive_output_fragment_count(
+    int width,
+    int height,
+    std::uint32_t framerate_num,
+    std::uint32_t framerate_den,
+    int client_requested_fragments,
+    bool output_fragments_supported) noexcept {
+    constexpr std::uint8_t transport_fragment_limit = 4;
+    if (!output_fragments_supported || framerate_num == 0 || framerate_den == 0) {
+      return 1;
+    }
+    if (client_requested_fragments > 1) {
+      return client_requested_fragments <= transport_fragment_limit ?
+               static_cast<std::uint8_t>(client_requested_fragments) :
+               1;
+    }
+
+    return high_throughput_encode(
+             width,
+             height,
+             framerate_num,
+             framerate_den) ?
+             transport_fragment_limit :
+             1;
+  }
 
   inline constexpr bool startup_budget_reset_allowed(
     bool client_visible_packet_delivered) noexcept {

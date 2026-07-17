@@ -445,7 +445,9 @@ namespace {
       return false;
     }
     tracker.confirm_input_accepted(10);
-    if (tracker.classify(10) != amf::lifecycle::output_pts_result_e::accepted ||
+    if (tracker.classify(10, false) != amf::lifecycle::output_pts_result_e::accepted ||
+        tracker.last().has_value() ||
+        tracker.classify(10) != amf::lifecycle::output_pts_result_e::accepted ||
         tracker.classify(9) != amf::lifecycle::output_pts_result_e::duplicate_or_regressing ||
         tracker.classify(10) != amf::lifecycle::output_pts_result_e::not_from_accepted_input ||
         tracker.last() != std::optional<uint64_t> {10}) {
@@ -462,10 +464,28 @@ namespace {
 
   bool delivery_filter_and_startup_budget_follow_client_visible_packets() {
     amf::lifecycle::monotonic_delivery_tracker_t delivery;
-    return delivery.accept(10) && !delivery.accept(9) && !delivery.accept(10) &&
+    return delivery.accept_fragment(10, 0, 3) &&
+           delivery.accept_fragment(10, 1, 3) &&
+           !delivery.last().has_value() &&
+           !delivery.accept_fragment(10, 1, 3) &&
+           delivery.accept_fragment(10, 2, 3) &&
+           !delivery.accept(9) && !delivery.accept(10) &&
            delivery.last() == std::optional<uint64_t> {10} && delivery.accept(11) &&
            !amf::lifecycle::startup_budget_reset_allowed(false) &&
            amf::lifecycle::startup_budget_reset_allowed(true);
+  }
+
+  bool progressive_output_is_limited_to_latency_relevant_sessions() {
+    using amf::lifecycle::high_throughput_encode;
+    using amf::lifecycle::progressive_output_fragment_count;
+    return !high_throughput_encode(1920, 1080, 60, 1) &&
+           high_throughput_encode(1920, 1080, 120, 1) &&
+           progressive_output_fragment_count(1920, 1080, 60, 1, 1, true) == 1 &&
+           progressive_output_fragment_count(1920, 1080, 120, 1, 1, true) == 4 &&
+           progressive_output_fragment_count(3840, 2160, 30, 1, 1, true) == 4 &&
+           progressive_output_fragment_count(1280, 720, 60, 1, 2, true) == 2 &&
+           progressive_output_fragment_count(3840, 2160, 120, 1, 5, true) == 1 &&
+           progressive_output_fragment_count(3840, 2160, 120, 1, 4, false) == 1;
   }
 
   bool replay_policy_avoids_continuous_copies_and_never_reuses_owned_sources() {
@@ -1166,6 +1186,10 @@ TEST(SunshineNativeAmfReview, OutputPtsFilterRejectsMissingDuplicateAndRegressin
 
 TEST(SunshineNativeAmfReview, DeliveryFilterAndStartupBudgetFollowVisiblePackets) {
   EXPECT_TRUE(delivery_filter_and_startup_budget_follow_client_visible_packets());
+}
+
+TEST(SunshineNativeAmfReview, ProgressiveOutputIsLimitedToLatencyRelevantSessions) {
+  EXPECT_TRUE(progressive_output_is_limited_to_latency_relevant_sessions());
 }
 
 TEST(SunshineNativeAmfReview, ReplayPolicyAvoidsContinuousCopiesAndOwnedSources) {

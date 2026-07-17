@@ -258,6 +258,10 @@ namespace amf {
     bool preanalysis_enabled = false;
     int preanalysis_lookahead_depth = 0;
     bool query_timeout_supported = false;
+    std::uint8_t progressive_output_fragments = 1;
+    std::optional<uint64_t> partial_output_frame_index;
+    std::uint8_t next_output_fragment_index = 0;
+    bool multi_hw_encode_enabled = false;
     bool user_configured_rate_control = false;
     bool enforce_hrd_enabled = false;
     bool constant_qp_mode = false;

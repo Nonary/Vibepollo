@@ -233,6 +233,10 @@ namespace amf {
     rfi_enabled = false;
     preanalysis_enabled = false;
     preanalysis_lookahead_depth = 0;
+    progressive_output_fragments = 1;
+    partial_output_frame_index.reset();
+    next_output_fragment_index = 0;
+    multi_hw_encode_enabled = false;
 
     const auto preanalysis_plan = lifecycle::resolve_preanalysis(config.rc_mode, config.preanalysis);
     // Reject advanced controllers before touching properties on an older
@@ -512,6 +516,90 @@ namespace amf {
       return true;
     };
 
+    auto configure_multi_hw_encode = [&](const wchar_t *property, const char *label) {
+      if (!lifecycle::high_throughput_encode(
+            client_config.width,
+            client_config.height,
+            static_cast<std::uint32_t>(fps.num),
+            static_cast<std::uint32_t>(fps.den))) {
+        BOOST_LOG(debug) << "AMF: " << label << " is unnecessary for this session's pixel rate";
+        return;
+      }
+      const ::amf::AMFPropertyInfo *property_info = nullptr;
+      const auto info_result = encoder->GetPropertyInfo(property, &property_info);
+      if (info_result != AMF_OK || !property_info) {
+        BOOST_LOG(debug) << "AMF: " << label << " is not exposed by this encoder"
+                         << " (result=" << info_result << ')';
+        return;
+      }
+
+      amf_bool applied = false;
+      const auto set_result = encoder->SetProperty(property, true);
+      const auto readback_result = encoder->GetProperty(property, &applied);
+      multi_hw_encode_enabled = set_result == AMF_OK &&
+                                readback_result == AMF_OK &&
+                                static_cast<bool>(applied);
+      BOOST_LOG(info) << "AMF: " << label << ' '
+                      << (multi_hw_encode_enabled ? "enabled" : "unavailable")
+                      << " (set=" << set_result << ", get=" << readback_result
+                      << ", applied=" << static_cast<bool>(applied) << ')';
+    };
+
+    auto configure_progressive_output = [&](const wchar_t *fragment_count_property,
+                                            const wchar_t *support_capability,
+                                            const wchar_t *output_mode_property,
+                                            amf_int64 progressive_output_mode,
+                                            amf_int64 frame_output_mode,
+                                            const char *fragment_label,
+                                            const char *output_label) {
+      amf_bool output_supported = false;
+      const bool capability_known = encoder_caps &&
+                                    encoder_caps->GetProperty(support_capability, &output_supported) == AMF_OK;
+      const auto fragments = lifecycle::progressive_output_fragment_count(
+        client_config.width,
+        client_config.height,
+        static_cast<std::uint32_t>(fps.num),
+        static_cast<std::uint32_t>(fps.den),
+        client_config.slicesPerFrame,
+        capability_known && output_supported);
+      const bool explicitly_requested = client_config.slicesPerFrame > 1;
+      const int encoder_fragment_count = explicitly_requested ?
+                                           client_config.slicesPerFrame :
+                                           static_cast<int>(fragments);
+
+      if (encoder_fragment_count > 1 &&
+          !set_verified_int64(fragment_count_property, encoder_fragment_count, fragment_label)) {
+        // Preserve the old contract for an explicit client slice request. An
+        // automatic latency optimization must never make encoder startup fail.
+        return !explicitly_requested;
+      }
+      if (fragments <= 1) {
+        if (explicitly_requested && client_config.slicesPerFrame > 4) {
+          BOOST_LOG(info) << "AMF: keeping " << client_config.slicesPerFrame << ' '
+                          << fragment_label << " in full-frame output mode because Moonlight supports at most four FEC blocks";
+        }
+        return true;
+      }
+
+      if (!set_verified_int64(output_mode_property, progressive_output_mode, output_label)) {
+        // A runtime may advertise the capability but reject the mode for a
+        // specific profile. Keep its ordinary full-frame path usable.
+        encoder->SetProperty(output_mode_property, frame_output_mode);
+        if (!explicitly_requested) {
+          encoder->SetProperty(fragment_count_property, static_cast<amf_int64>(1));
+        }
+        BOOST_LOG(warning) << "AMF: falling back to full-frame output for this session";
+        return true;
+      }
+
+      progressive_output_fragments = fragments;
+      BOOST_LOG(info) << "AMF: enabled progressive " << output_label << " with "
+                      << static_cast<int>(progressive_output_fragments)
+                      << " transport fragments per frame"
+                      << (explicitly_requested ? " (client requested)" : " (high-throughput latency path)");
+      return true;
+    };
+
     // USAGE configures a complete preset and may overwrite later properties.
     // Apply usage/quality first, then rate control and PA, then bitrate/VBV so
     // driver normalization cannot silently undo the requested controller.
@@ -642,9 +730,14 @@ namespace amf {
             *config.intra_refresh_mbs,
             "H.264 intra-refresh macroblocks")) return false;
 
-      // Slices per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_SLICES_PER_FRAME, client_config.slicesPerFrame, "H.264 slices per frame")) return false;
+      if (!configure_progressive_output(
+            AMF_VIDEO_ENCODER_SLICES_PER_FRAME,
+            AMF_VIDEO_ENCODER_CAP_SUPPORT_SLICE_OUTPUT,
+            AMF_VIDEO_ENCODER_OUTPUT_MODE,
+            AMF_VIDEO_ENCODER_OUTPUT_MODE_SLICE,
+            AMF_VIDEO_ENCODER_OUTPUT_MODE_FRAME,
+            "H.264 slices per frame",
+            "H.264 slice output")) return false;
 
       // Statistics feedback is a per-submission surface property. It is applied to
       // sampled input surfaces in encode_frame(), never to the encoder component.
@@ -705,6 +798,9 @@ namespace amf {
             AMF_VIDEO_ENCODER_HEVC_CAP_SUPPORT_SMART_ACCESS_VIDEO)) {
         return false;
       }
+      configure_multi_hw_encode(
+        AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE,
+        "HEVC multi-hardware encode");
       encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT, (amf_int64) 1);
 
       if (colorspace.bit_depth == 10) {
@@ -742,9 +838,14 @@ namespace amf {
             *config.intra_refresh_mbs,
             "HEVC intra-refresh CTBs")) return false;
 
-      // Slices per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_SLICES_PER_FRAME, client_config.slicesPerFrame, "HEVC slices per frame")) return false;
+      if (!configure_progressive_output(
+            AMF_VIDEO_ENCODER_HEVC_SLICES_PER_FRAME,
+            AMF_VIDEO_ENCODER_HEVC_CAP_SUPPORT_SLICE_OUTPUT,
+            AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE,
+            AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE_SLICE,
+            AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE_FRAME,
+            "HEVC slices per frame",
+            "HEVC slice output")) return false;
 
       // Statistics feedback is applied per input surface in encode_frame().
     }
@@ -780,6 +881,9 @@ namespace amf {
             AMF_VIDEO_ENCODER_AV1_CAP_SUPPORT_SMART_ACCESS_VIDEO)) {
         return false;
       }
+      configure_multi_hw_encode(
+        AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE,
+        "AV1 multi-hardware encode");
       encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT, (amf_int64) 1);
       if (config.av1_encoding_latency_mode) {
         if (!set_verified_int64(
@@ -844,9 +948,19 @@ namespace amf {
               "AV1 intra-refresh stripes")) return false;
       }
 
-      // Tiles per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME, client_config.slicesPerFrame, "AV1 tiles per frame")) return false;
+      if (!configure_progressive_output(
+            AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME,
+            AMF_VIDEO_ENCODER_AV1_CAP_SUPPORT_TILE_OUTPUT,
+            AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE,
+            AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE_TILE,
+            AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE_FRAME,
+            "AV1 tiles per frame",
+            "AV1 tile output")) return false;
+      if (progressive_output_fragments > 1 &&
+          !set_verified_bool(
+            AMF_VIDEO_ENCODER_AV1_TILE_GROUP_OBU,
+            true,
+            "AV1 tile-group OBU output")) return false;
 
       // Statistics feedback is applied per input surface in encode_frame().
     }
@@ -1227,6 +1341,53 @@ namespace amf {
       }
     }
 
+    if (progressive_output_fragments > 1) {
+      const wchar_t *output_mode_property = video_format == 0 ? AMF_VIDEO_ENCODER_OUTPUT_MODE :
+                                            video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE :
+                                                                AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE;
+      const wchar_t *fragment_count_property = video_format == 0 ? AMF_VIDEO_ENCODER_SLICES_PER_FRAME :
+                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_SLICES_PER_FRAME :
+                                                                    AMF_VIDEO_ENCODER_AV1_TILES_PER_FRAME;
+      const amf_int64 expected_mode = video_format == 2 ?
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_OUTPUT_MODE_TILE) :
+                                      video_format == 1 ?
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_OUTPUT_MODE_SLICE) :
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_OUTPUT_MODE_SLICE);
+      amf_int64 applied_mode = -1;
+      amf_int64 applied_fragments = 0;
+      const auto mode_result = encoder->GetProperty(output_mode_property, &applied_mode);
+      const auto fragments_result = encoder->GetProperty(fragment_count_property, &applied_fragments);
+      if (mode_result != AMF_OK || fragments_result != AMF_OK ||
+          applied_mode != expected_mode ||
+          applied_fragments < 1 || applied_fragments > 4) {
+        BOOST_LOG(error) << "AMF: driver changed the progressive output contract after Init"
+                         << " (mode=" << applied_mode << "/" << expected_mode
+                         << ", fragments=" << applied_fragments << '/'
+                         << static_cast<int>(progressive_output_fragments)
+                         << ", mode_result=" << mode_result
+                         << ", fragments_result=" << fragments_result << ')';
+        return false;
+      }
+      if (applied_fragments != progressive_output_fragments) {
+        BOOST_LOG(info) << "AMF: driver adjusted progressive output from "
+                        << static_cast<int>(progressive_output_fragments) << " to "
+                        << applied_fragments << " fragments";
+        progressive_output_fragments = static_cast<std::uint8_t>(applied_fragments);
+      }
+    }
+
+    if (multi_hw_encode_enabled && video_format != 0) {
+      const wchar_t *multi_hw_property = video_format == 1 ?
+                                           AMF_VIDEO_ENCODER_HEVC_MULTI_HW_INSTANCE_ENCODE :
+                                           AMF_VIDEO_ENCODER_AV1_MULTI_HW_INSTANCE_ENCODE;
+      amf_bool applied_multi_hw = false;
+      const auto multi_hw_result = encoder->GetProperty(multi_hw_property, &applied_multi_hw);
+      multi_hw_encode_enabled = multi_hw_result == AMF_OK && static_cast<bool>(applied_multi_hw);
+      BOOST_LOG(info) << "AMF: post-Init multi-hardware encode readback="
+                      << (multi_hw_encode_enabled ? "enabled" : "unavailable")
+                      << " (result=" << multi_hw_result << ')';
+    }
+
     const bool adaptive_quantization_supported_after_init =
       lifecycle::rate_control_supports_adaptive_quantization(config.rc_mode);
     if (!adaptive_quantization_supported_after_init) {
@@ -1444,6 +1605,8 @@ namespace amf {
     drain_complete = false;
     output_poll_requested = false;
     active_output_poll_waiters = 0;
+    partial_output_frame_index.reset();
+    next_output_fragment_index = 0;
     catchup_batch_count = 0;
     submit_capacity_saturated = false;
     {
@@ -1481,7 +1644,8 @@ namespace amf {
                     << ", lookahead=" << preanalysis_lookahead_depth
                     << ", input_queue=" << encoder_input_queue_size
                     << ", input_surfaces=" << active_input_surface_count
-                    << ", slices=" << client_config.slicesPerFrame << ")";
+                    << ", output_fragments=" << static_cast<int>(progressive_output_fragments)
+                    << ", multi_hw=" << (multi_hw_encode_enabled ? "on" : "off") << ")";
     return true;
   }
 
@@ -1543,6 +1707,8 @@ namespace amf {
       drain_complete = false;
       output_poll_requested = false;
       active_output_poll_waiters = 0;
+      partial_output_frame_index.reset();
+      next_output_fragment_index = 0;
       catchup_batch_count = 0;
       consecutive_output_failures = 0;
       submit_capacity_saturated = false;
@@ -1570,6 +1736,8 @@ namespace amf {
     applied_peak_bitrate.reset();
     applied_vbv_buffer_size.reset();
     query_timeout_supported = false;
+    progressive_output_fragments = 1;
+    multi_hw_encode_enabled = false;
     encoder_input_queue_size = lifecycle::default_amf_input_queue_size;
     input_surface_desc = {};
     replay_texture.Reset();
@@ -1724,6 +1892,40 @@ namespace amf {
       return result;
     }
 
+    if (progressive_output_fragments > 1) {
+      const wchar_t *buffer_type_property = video_format == 0 ? AMF_VIDEO_ENCODER_OUTPUT_BUFFER_TYPE :
+                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_OUTPUT_BUFFER_TYPE :
+                                                                    AMF_VIDEO_ENCODER_AV1_OUTPUT_BUFFER_TYPE;
+      const amf_int64 frame_type = video_format == 0 ?
+                                     static_cast<amf_int64>(AMF_VIDEO_ENCODER_OUTPUT_BUFFER_TYPE_FRAME) :
+                                   video_format == 1 ?
+                                     static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_OUTPUT_BUFFER_TYPE_FRAME) :
+                                     static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_OUTPUT_BUFFER_TYPE_FRAME);
+      const amf_int64 fragment_type = video_format == 0 ?
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_OUTPUT_BUFFER_TYPE_SLICE) :
+                                      video_format == 1 ?
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_OUTPUT_BUFFER_TYPE_SLICE) :
+                                        static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_OUTPUT_BUFFER_TYPE_TILE);
+      const amf_int64 final_fragment_type = video_format == 0 ?
+                                              static_cast<amf_int64>(AMF_VIDEO_ENCODER_OUTPUT_BUFFER_TYPE_SLICE_LAST) :
+                                            video_format == 1 ?
+                                              static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_OUTPUT_BUFFER_TYPE_SLICE_LAST) :
+                                              static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_OUTPUT_BUFFER_TYPE_TILE_LAST);
+      amf_int64 buffer_type = -1;
+      const auto buffer_type_result = output_data->GetProperty(buffer_type_property, &buffer_type);
+      if (buffer_type_result != AMF_OK ||
+          (buffer_type != frame_type && buffer_type != fragment_type && buffer_type != final_fragment_type)) {
+        BOOST_LOG(error) << "AMF: progressive output omitted a valid buffer type"
+                         << " (type=" << buffer_type << ", result=" << buffer_type_result << ')';
+        result.fatal = true;
+        return result;
+      }
+      if (buffer_type != frame_type) {
+        result.fragment_count = progressive_output_fragments;
+        result.frame_complete = buffer_type == final_fragment_type;
+      }
+    }
+
     auto data_ptr = static_cast<uint8_t *>(buffer->GetNative());
     auto data_size = buffer->GetSize();
     if (!data_ptr || data_size == 0) {
@@ -1782,6 +1984,10 @@ namespace amf {
 
   void
   amf_d3d11::process_encoded_frame_locked(amf_encoded_frame encoded_frame) {
+    if (encoded_frame.fatal) {
+      output_fatal = true;
+      return;
+    }
     if (encoded_frame.data.empty()) {
       if (++consecutive_output_failures >= max_consecutive_failures) {
         BOOST_LOG(error) << "AMF: encoder repeatedly returned empty output; signaling reinit";
@@ -1793,7 +1999,8 @@ namespace amf {
     const auto pts_result = output_pts_tracker.classify(
       encoded_frame.has_valid_pts ?
         std::optional<uint64_t> {encoded_frame.frame_index} :
-        std::nullopt);
+        std::nullopt,
+      encoded_frame.frame_complete);
     if (pts_result == lifecycle::output_pts_result_e::pending_confirmation) {
       // QueryOutput can win the narrow race against SubmitInput returning. Hold
       // the packet until that exact logical input is confirmed accepted; do not
@@ -1813,17 +2020,58 @@ namespace amf {
       return;
     }
 
+    if (encoded_frame.fragment_count > 1) {
+      if (!partial_output_frame_index) {
+        partial_output_frame_index = encoded_frame.frame_index;
+        next_output_fragment_index = 0;
+      }
+      if (*partial_output_frame_index != encoded_frame.frame_index ||
+          next_output_fragment_index >= encoded_frame.fragment_count) {
+        BOOST_LOG(error) << "AMF: progressive output changed frame or exceeded its fragment count"
+                         << " (expected_frame=" << *partial_output_frame_index
+                         << ", frame=" << encoded_frame.frame_index
+                         << ", next=" << static_cast<int>(next_output_fragment_index)
+                         << ", count=" << static_cast<int>(encoded_frame.fragment_count) << ')';
+        output_fatal = true;
+        return;
+      }
+      encoded_frame.fragment_index = next_output_fragment_index++;
+      const bool expected_complete = next_output_fragment_index == encoded_frame.fragment_count;
+      if (encoded_frame.frame_complete != expected_complete) {
+        BOOST_LOG(error) << "AMF: driver returned an unexpected progressive output boundary"
+                         << " (frame=" << encoded_frame.frame_index
+                         << ", fragment=" << static_cast<int>(encoded_frame.fragment_index + 1)
+                         << '/' << static_cast<int>(encoded_frame.fragment_count)
+                         << ", final=" << encoded_frame.frame_complete << ')';
+        output_fatal = true;
+        return;
+      }
+      if (encoded_frame.frame_complete) {
+        partial_output_frame_index.reset();
+        next_output_fragment_index = 0;
+      }
+    } else if (partial_output_frame_index) {
+      BOOST_LOG(error) << "AMF: full-frame output interrupted progressive frame "
+                       << *partial_output_frame_index;
+      output_fatal = true;
+      return;
+    }
+
     auto rfi_flag = frame_rfi_flags.find(encoded_frame.frame_index);
     if (rfi_flag != frame_rfi_flags.end()) {
       encoded_frame.after_ref_frame_invalidation = rfi_flag->second;
-      frame_rfi_flags.erase(rfi_flag);
+      if (encoded_frame.frame_complete) {
+        frame_rfi_flags.erase(rfi_flag);
+      }
     }
     while (frame_rfi_flags.size() > 256) {
       frame_rfi_flags.erase(frame_rfi_flags.begin());
     }
     consecutive_output_failures = 0;
-    ++completed_output_count;
-    last_completed_frame_index = std::max(last_completed_frame_index, encoded_frame.frame_index);
+    if (encoded_frame.frame_complete) {
+      ++completed_output_count;
+      last_completed_frame_index = std::max(last_completed_frame_index, encoded_frame.frame_index);
+    }
     last_output_progress = std::chrono::steady_clock::now();
     consecutive_query_failures = 0;
     query_failure_started = {};
@@ -1832,7 +2080,7 @@ namespace amf {
 
   void
   amf_d3d11::output_pump(std::stop_token stop_token) noexcept {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     try {
       while (!stop_token.stop_requested()) {
@@ -1891,15 +2139,19 @@ namespace amf {
                                          query_result == AMF_NEED_MORE_INPUT;
         if (no_output_available) {
           bool poll_disarmed = false;
+          bool latency_waiter_active = false;
           {
             std::lock_guard lock(state_mutex);
             consecutive_query_failures = 0;
             query_failure_started = {};
+            latency_waiter_active = active_output_poll_waiters > 0 ||
+                                    drain_requested ||
+                                    partial_output_frame_index.has_value();
             if (lifecycle::should_disarm_output_poll(
                   queried_through_input,
                   accepted_input_count,
                   drain_requested,
-                  active_output_poll_waiters)) {
+                  active_output_poll_waiters + (partial_output_frame_index ? 1 : 0))) {
               // No bounded waiter remains for this accepted generation. Sleep
               // until a new input explicitly re-arms polling; an output that
               // legitimately never arrives must not leave a permanent poll loop.
@@ -1914,7 +2166,13 @@ namespace amf {
             // to 1 ms. Some runtimes return NEED_MORE_INPUT immediately even from
             // QueryOutput, so sleep for that defensive compatibility case rather
             // than hot-spinning an above-normal-priority thread.
-            if (query_result == AMF_NEED_MORE_INPUT || !query_timeout_supported) {
+            if (query_result == AMF_NEED_MORE_INPUT &&
+                query_timeout_supported && latency_waiter_active) {
+              // FFmpeg immediately re-enters QueryOutput in this state. Yield to
+              // the equally important SubmitInput worker, but do not add a fixed
+              // millisecond to the same frame's first slice/tile.
+              std::this_thread::yield();
+            } else if (query_result == AMF_NEED_MORE_INPUT || !query_timeout_supported) {
               std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
           }

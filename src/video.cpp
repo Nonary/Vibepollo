@@ -1247,8 +1247,11 @@ namespace video {
     // earlier submissions, but emitted indices remain strictly increasing (in order,
     // no duplicates), so only flag a genuine regression (out-of-order / duplicate).
     // Forward gaps are also normal (a dropped frame is logged separately at submit time).
-    bool note_emitted_index(uint64_t emitted) {
-      return emitted_frames.accept(emitted);
+    bool note_emitted_fragment(
+      uint64_t emitted,
+      uint8_t fragment_index,
+      uint8_t fragment_count) {
+      return emitted_frames.accept_fragment(emitted, fragment_index, fragment_count);
     }
 
     bool has_emitted_frame(uint64_t frame_index) const {
@@ -1300,14 +1303,64 @@ namespace video {
       }
     }
 
-    frame_timestamps_t take_frame_timestamps(uint64_t frame_index) {
+    frame_timestamps_t frame_timestamps(uint64_t frame_index, bool frame_complete) {
       auto it = pending_timestamps.find(frame_index);
       if (it == pending_timestamps.end()) {
         return {};
       }
       frame_timestamps_t ts = it->second;
-      pending_timestamps.erase(it);
+      if (frame_complete) {
+        pending_timestamps.erase(it);
+      }
       return ts;
+    }
+
+    struct assembled_webrtc_frame_t {
+      std::vector<uint8_t> data;
+      bool idr = false;
+      bool after_ref_frame_invalidation = false;
+    };
+
+    std::optional<assembled_webrtc_frame_t> append_webrtc_fragment(
+      const amf::amf_encoded_frame &fragment) {
+      if (fragment.fragment_count <= 1) {
+        return std::nullopt;
+      }
+      if (fragment.fragment_index == 0) {
+        webrtc_fragment_frame_index = fragment.frame_index;
+        webrtc_fragment_count = fragment.fragment_count;
+        webrtc_fragment_data.clear();
+        webrtc_fragment_idr = false;
+        webrtc_fragment_after_rfi = false;
+      }
+      if (!webrtc_fragment_frame_index ||
+          *webrtc_fragment_frame_index != fragment.frame_index ||
+          webrtc_fragment_count != fragment.fragment_count) {
+        webrtc_fragment_frame_index.reset();
+        webrtc_fragment_data.clear();
+        return std::nullopt;
+      }
+
+      webrtc_fragment_data.insert(
+        webrtc_fragment_data.end(),
+        fragment.data.begin(),
+        fragment.data.end());
+      webrtc_fragment_idr = webrtc_fragment_idr || fragment.idr;
+      webrtc_fragment_after_rfi = webrtc_fragment_after_rfi || fragment.after_ref_frame_invalidation;
+      if (!fragment.frame_complete) {
+        return std::nullopt;
+      }
+
+      assembled_webrtc_frame_t result {
+        std::move(webrtc_fragment_data),
+        webrtc_fragment_idr,
+        webrtc_fragment_after_rfi,
+      };
+      webrtc_fragment_frame_index.reset();
+      webrtc_fragment_count = 1;
+      webrtc_fragment_idr = false;
+      webrtc_fragment_after_rfi = false;
+      return result;
     }
 
     void discard_frame_timestamps(uint64_t frame_index) {
@@ -1323,6 +1376,11 @@ namespace video {
     bool suppress_tail_flush_until_fresh_conversion = false;
     amf::lifecycle::monotonic_delivery_tracker_t emitted_frames;
     std::map<uint64_t, frame_timestamps_t> pending_timestamps;
+    std::optional<uint64_t> webrtc_fragment_frame_index;
+    uint8_t webrtc_fragment_count = 1;
+    std::vector<uint8_t> webrtc_fragment_data;
+    bool webrtc_fragment_idr = false;
+    bool webrtc_fragment_after_rfi = false;
   };
 
   // Sticky per-session HDR state, persists across capture reinits so a transient SDR
@@ -3090,8 +3148,14 @@ namespace video {
 
       // frame_nr != frame_index is expected when this batch is catching up after a
       // transient delay. Only a non-monotonic emitted index is a real desync.
-      if (!session.note_emitted_index(encoded_frame.frame_index)) {
-        BOOST_LOG(warning) << "AMF emitted frame index regression: " << encoded_frame.frame_index
+      if (!session.note_emitted_fragment(
+            encoded_frame.frame_index,
+            encoded_frame.fragment_index,
+            encoded_frame.fragment_count)) {
+        BOOST_LOG(warning) << "AMF emitted an invalid frame fragment sequence: "
+                           << encoded_frame.frame_index << " fragment "
+                           << static_cast<int>(encoded_frame.fragment_index + 1) << '/'
+                           << static_cast<int>(encoded_frame.fragment_count)
                            << " (submitted " << submitted_frame_nr << ")";
         session.discard_frame_timestamps(encoded_frame.frame_index);
         continue;
@@ -3099,15 +3163,40 @@ namespace video {
 
       // Stamp every packet with the timestamps of the frame it actually carries,
       // including earlier frames drained in the same catch-up batch.
-      const auto ts = session.take_frame_timestamps(encoded_frame.frame_index);
+      const auto ts = session.frame_timestamps(
+        encoded_frame.frame_index,
+        encoded_frame.frame_complete);
 
-      auto packet = std::make_unique<packet_raw_generic>(std::move(encoded_frame.data), encoded_frame.frame_index, encoded_frame.idr);
+      if (webrtc_stream::has_active_sessions() && channel_data == nullptr &&
+          encoded_frame.fragment_count > 1) {
+        auto assembled = session.append_webrtc_fragment(encoded_frame);
+        if (assembled) {
+          packet_raw_generic webrtc_packet {
+            std::move(assembled->data),
+            static_cast<int64_t>(encoded_frame.frame_index),
+            assembled->idr,
+          };
+          webrtc_packet.channel_data = channel_data;
+          webrtc_packet.after_ref_frame_invalidation = assembled->after_ref_frame_invalidation;
+          webrtc_packet.frame_timestamp = ts.frame_timestamp;
+          webrtc_packet.capture_timestamp = ts.capture_timestamp ? ts.capture_timestamp : ts.frame_timestamp;
+          webrtc_packet.host_processing_timestamp = ts.host_processing_timestamp;
+          webrtc_stream::submit_video_packet(webrtc_packet);
+        }
+      }
+
+      auto packet = std::make_unique<packet_raw_generic>(
+        std::move(encoded_frame.data),
+        encoded_frame.frame_index,
+        encoded_frame.idr,
+        encoded_frame.fragment_index,
+        encoded_frame.fragment_count);
       packet->channel_data = channel_data;
       packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
       packet->frame_timestamp = ts.frame_timestamp;
       packet->capture_timestamp = ts.capture_timestamp ? ts.capture_timestamp : ts.frame_timestamp;
       packet->host_processing_timestamp = ts.host_processing_timestamp;
-      if (webrtc_stream::has_active_sessions()) {
+      if (webrtc_stream::has_active_sessions() && encoded_frame.fragment_count == 1) {
         webrtc_stream::submit_video_packet(*packet);
       }
       packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();

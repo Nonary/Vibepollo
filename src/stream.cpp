@@ -510,6 +510,12 @@ namespace stream {
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
 
+      // AMF fragments normally carry the capture timestamp on every block. Keep
+      // the generated fallback stable too, so duplicate frames use one RTP
+      // timestamp across all progressive FEC blocks.
+      std::optional<int64_t> progressive_frame_index;
+      std::optional<std::chrono::steady_clock::time_point> progressive_frame_timestamp;
+
       // Written by video::capture from the immutable encoder snapshot and read
       // after videoThread joins.  This binds display cleanup fencing to the
       // session/capture generation that could actually own AMF resources.
@@ -1145,6 +1151,43 @@ namespace stream {
     }
 
     return result;
+  }
+
+  bool append_av1_padding_obu(std::vector<uint8_t> &payload, std::size_t total_size) {
+    // OBU_PADDING with obu_has_size_field=1. Find a payload length whose
+    // minimally encoded LEB128 size makes the complete OBU exactly total_size.
+    auto leb128_size = [](std::size_t value) {
+      std::size_t size = 1;
+      while (value >= 0x80) {
+        value >>= 7;
+        ++size;
+      }
+      return size;
+    };
+
+    std::optional<std::size_t> padding_payload_size;
+    for (std::size_t candidate = 0; candidate < total_size; ++candidate) {
+      if (1 + leb128_size(candidate) + candidate == total_size) {
+        padding_payload_size = candidate;
+        break;
+      }
+    }
+    if (!padding_payload_size) {
+      return false;
+    }
+
+    payload.push_back(0x7A);  // OBU_PADDING, has_size_field=1
+    auto remaining = *padding_payload_size;
+    do {
+      auto byte = static_cast<uint8_t>(remaining & 0x7F);
+      remaining >>= 7;
+      if (remaining != 0) {
+        byte |= 0x80;
+      }
+      payload.push_back(byte);
+    } while (remaining != 0);
+    payload.insert(payload.end(), *padding_payload_size, 0);
+    return true;
   }
 
   std::vector<uint8_t> replace(const std::string_view &original, const std::string_view &old, const std::string_view &_new) {
@@ -1893,9 +1936,35 @@ namespace stream {
       if (!session) {
         continue;
       }
+      constexpr uint8_t MAX_FEC_BLOCKS = 4;
+      const auto fragment_index = packet->frame_fragment_index();
+      const auto fragment_count = packet->frame_fragment_count();
+      const bool fragmented_frame = fragment_count > 1;
+      if (fragment_count == 0 || fragment_count > MAX_FEC_BLOCKS || fragment_index >= fragment_count) {
+        BOOST_LOG(error) << "Dropping invalid encoded-frame fragment "sv
+                         << static_cast<int>(fragment_index + 1) << '/'
+                         << static_cast<int>(fragment_count) << " for frame "sv
+                         << packet->frame_index();
+        session->video.idr_events->raise(true);
+        continue;
+      }
+      const bool first_frame_fragment = fragment_index == 0;
+      const bool final_frame_fragment = fragment_index + 1 == fragment_count;
+      if (fragmented_frame && !first_frame_fragment) {
+        if (!session->video.progressive_frame_index ||
+            *session->video.progressive_frame_index != packet->frame_index()) {
+          BOOST_LOG(error) << "Dropping out-of-sequence progressive frame block for frame "sv
+                           << packet->frame_index();
+          session->video.idr_events->raise(true);
+          continue;
+        }
+        if (!packet->frame_timestamp && session->video.progressive_frame_timestamp) {
+          packet->frame_timestamp = session->video.progressive_frame_timestamp;
+        }
+      }
       const auto packet_pop_timestamp = std::chrono::steady_clock::now();
       packet_queue_latency_logger.collect_and_log(std::chrono::duration<double, std::milli>(packet_pop_timestamp - packet->packet_enqueue_timestamp).count());
-      if (packet->frame_timestamp) {
+      if (first_frame_fragment && packet->frame_timestamp) {
         if (last_frame_timestamp) {
           frame_capture_interval_logger.collect_and_log(std::chrono::duration<double, std::milli>(*packet->frame_timestamp - *last_frame_timestamp).count());
         }
@@ -1911,7 +1980,7 @@ namespace stream {
       // We need to know the final frame size to calculate the last packet size, and we
       // must avoid matching replacements against the frame header or any other non-video
       // part of the payload.
-      if (packet->is_idr() && packet->replacements) {
+      if (first_frame_fragment && packet->is_idr() && packet->replacements) {
         for (auto &replacement : *packet->replacements) {
           auto frame_old = replacement.old;
           auto frame_new = replacement._new;
@@ -1921,18 +1990,26 @@ namespace stream {
         }
       }
 
+      // Insert space for packet headers. Progressive AMF output maps each
+      // slice/tile to one Moonlight multi-FEC block so the first block can be
+      // protected and sent while VCN is still encoding the rest of the frame.
+      auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
+      auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
+
       video_short_frame_header_t frame_header = {};
       frame_header.headerType = 0x01;  // Short header type
       frame_header.frameType = packet->is_idr()                     ? 2 :
                                packet->after_ref_frame_invalidation ? 5 :
                                                                       1;
-      frame_header.lastPayloadLen = (payload.size() + sizeof(frame_header)) % (session->config.packetsize - sizeof(NV_VIDEO_PACKET));
+      frame_header.lastPayloadLen = fragmented_frame ?
+                                      payload_blocksize :
+                                      (payload.size() + sizeof(frame_header)) % payload_blocksize;
       if (frame_header.lastPayloadLen == 0) {
-        frame_header.lastPayloadLen = session->config.packetsize - sizeof(NV_VIDEO_PACKET);
+        frame_header.lastPayloadLen = payload_blocksize;
       }
 
       auto host_processing_timestamp = packet->host_processing_timestamp ? packet->host_processing_timestamp : packet->frame_timestamp;
-      if (host_processing_timestamp) {
+      if (first_frame_fragment && host_processing_timestamp) {
         auto duration_to_latency = [](const std::chrono::steady_clock::duration &duration) {
           const auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
           return (uint16_t) std::clamp<decltype(duration_us)>((duration_us + 50) / 100, 0, std::numeric_limits<uint16_t>::max());
@@ -1942,22 +2019,53 @@ namespace stream {
         frame_header.frame_processing_latency = latency;
         frame_processing_latency_logger.collect_and_log(latency / 10.);
         session->stats.last_encode_latency_us10.store(latency, std::memory_order_relaxed);
-      } else {
+      } else if (first_frame_fragment) {
         frame_header.frame_processing_latency = 0;
         session->stats.last_encode_latency_us10.store(0, std::memory_order_relaxed);
       }
 
       auto fecPercentage = config::stream.fec_percentage;
 
-      // Insert space for packet headers
-      auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
-      auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
-      auto payload_new = concat_and_insert(sizeof(video_packet_raw_t), payload_blocksize, std::string_view {(char *) &frame_header, sizeof(frame_header)}, payload);
+      std::vector<uint8_t> payload_with_codec_padding;
+      if (fragmented_frame && session->config.monitor.videoFormat == 2) {
+        payload_with_codec_padding.assign(
+          reinterpret_cast<const uint8_t *>(payload.data()),
+          reinterpret_cast<const uint8_t *>(payload.data()) + payload.size());
+        const auto header_size = first_frame_fragment ? sizeof(frame_header) : 0;
+        auto padding_size = (payload_blocksize -
+                             ((header_size + payload_with_codec_padding.size()) % payload_blocksize)) %
+                            payload_blocksize;
+        if (padding_size != 0 && !append_av1_padding_obu(payload_with_codec_padding, padding_size)) {
+          // A few sizes cannot be represented by one minimal OBU. Add one
+          // packet of room and encode a single valid padding OBU there.
+          padding_size += payload_blocksize;
+          if (!append_av1_padding_obu(payload_with_codec_padding, padding_size)) {
+            BOOST_LOG(error) << "Unable to align progressive AV1 fragment for transport"sv;
+            session->video.idr_events->raise(true);
+            continue;
+          }
+        }
+        payload = std::string_view {
+          reinterpret_cast<const char *>(payload_with_codec_padding.data()),
+          payload_with_codec_padding.size(),
+        };
+      }
+
+      auto payload_new = first_frame_fragment ?
+                           concat_and_insert(
+                             sizeof(video_packet_raw_t),
+                             payload_blocksize,
+                             std::string_view {(char *) &frame_header, sizeof(frame_header)},
+                             payload) :
+                           concat_and_insert(
+                             sizeof(video_packet_raw_t),
+                             payload_blocksize,
+                             payload,
+                             {});
 
       payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
 
       // There are 2 bits for FEC block count for a maximum of 4 FEC blocks
-      constexpr auto MAX_FEC_BLOCKS = 4;
       constexpr auto MAX_TOTAL_FEC_SHARDS = 255;
 
       // The max number of data shards per block is found by solving this system of equations for D:
@@ -1973,6 +2081,23 @@ namespace stream {
       auto max_data_per_fec_block = max_data_shards_per_fec_block * blocksize;
       auto fec_blocks_needed = (payload.size() + (max_data_per_fec_block - 1)) / max_data_per_fec_block;
 
+      if (fragmented_frame && fec_blocks_needed > 1 && fecPercentage != 0) {
+        // Keep one AMF fragment in one protocol block. Retrying without parity
+        // raises the per-block data ceiling while retaining progressive delivery.
+        fecPercentage = 0;
+        max_data_shards_per_fec_block = MAX_TOTAL_FEC_SHARDS;
+        max_data_per_fec_block = max_data_shards_per_fec_block * blocksize;
+        fec_blocks_needed = (payload.size() + (max_data_per_fec_block - 1)) / max_data_per_fec_block;
+      }
+      if (fragmented_frame && fec_blocks_needed > 1) {
+        BOOST_LOG(error) << "AMF frame fragment is too large for one Moonlight FEC block; dropping frame "sv
+                         << packet->frame_index() << " fragment "sv
+                         << static_cast<int>(fragment_index + 1) << '/'
+                         << static_cast<int>(fragment_count);
+        session->video.idr_events->raise(true);
+        continue;
+      }
+
       // If the number of FEC blocks needed exceeds the protocol limit, turn off FEC for this frame.
       // For normal FEC percentages, this should only happen for enormous frames (over 800 packets at 20%).
       if (fec_blocks_needed > MAX_FEC_BLOCKS) {
@@ -1980,13 +2105,24 @@ namespace stream {
         fecPercentage = 0;
         fec_blocks_needed = MAX_FEC_BLOCKS;
       }
+      const auto frame_fec_block_count = fragmented_frame ?
+                                           static_cast<std::size_t>(fragment_count) :
+                                           fec_blocks_needed;
+      const auto first_fec_block_index = fragmented_frame ?
+                                           static_cast<std::size_t>(fragment_index) :
+                                           std::size_t {0};
 
       std::array<std::string_view, MAX_FEC_BLOCKS> fec_blocks;
       decltype(fec_blocks)::iterator
         fec_blocks_begin = std::begin(fec_blocks),
         fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
-      BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
+      if (fragmented_frame) {
+        BOOST_LOG(verbose) << "Generating one FEC block for progressive frame block "sv
+                           << (first_fec_block_index + 1) << '/' << frame_fec_block_count;
+      } else {
+        BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
+      }
 
       // Align individual FEC blocks to blocksize
       auto unaligned_size = payload.size() / fec_blocks_needed;
@@ -2063,7 +2199,7 @@ namespace stream {
         size_t ratecontrol_frame_packets_sent = 0;
         size_t ratecontrol_group_packets_sent = 0;
 
-        auto blockIndex = 0;
+        auto blockIndex = first_fec_block_index;
         std::for_each(fec_blocks_begin, fec_blocks_end, [&](std::string_view &current_payload) {
           auto packets = (current_payload.size() + (blocksize - 1)) / blocksize;
 
@@ -2075,7 +2211,8 @@ namespace stream {
 
             // Match multiFecFlags with Moonlight
             inspect->packet.multiFecFlags = 0x10;
-            inspect->packet.multiFecBlocks = (blockIndex << 4) | ((fec_blocks_needed - 1) << 6);
+            inspect->packet.multiFecBlocks =
+              static_cast<uint8_t>((blockIndex << 4) | ((frame_fec_block_count - 1) << 6));
 
             inspect->packet.flags = FLAG_CONTAINS_PIC_DATA;
             if (x == 0) {
@@ -2115,6 +2252,10 @@ namespace stream {
             packet->frame_timestamp = ratecontrol_next_frame_start;
             frame_is_dupe = true;
           }
+          if (fragmented_frame && first_frame_fragment) {
+            session->video.progressive_frame_index = packet->frame_index();
+            session->video.progressive_frame_timestamp = packet->frame_timestamp;
+          }
           using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
           uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
 
@@ -2131,7 +2272,8 @@ namespace stream {
             inspect->rtp.sequenceNumber = util::endian::big<uint16_t>(lowseq + x);
             inspect->rtp.timestamp = util::endian::big<uint32_t>(timestamp);
 
-            inspect->packet.multiFecBlocks = (blockIndex << 4) | ((fec_blocks_needed - 1) << 6);
+            inspect->packet.multiFecBlocks =
+              static_cast<uint8_t>((blockIndex << 4) | ((frame_fec_block_count - 1) << 6));
             inspect->packet.frameIndex = (uint32_t) packet->frame_index();
 
             // Encrypt this shard if video encryption is enabled
@@ -2219,11 +2361,21 @@ namespace stream {
 
           frame_network_latency_logger.second_point_now_and_log();
 
-          BOOST_LOG(verbose) << "Sent Frame seq ["sv << packet->frame_index() << "] pts ["sv << timestamp
-                             << "] shards ["sv << shards.size() << "/"sv << shards.percentage << "%]"sv
-                             << (frame_is_dupe ? " Dupe" : "")
-                             << (packet->is_idr() ? " Key" : "")
-                             << (packet->after_ref_frame_invalidation ? " RFI" : "");
+          if (fragmented_frame) {
+            BOOST_LOG(verbose) << "Sent Frame seq ["sv << packet->frame_index() << "] pts ["sv << timestamp
+                               << "] progressive block ["sv << static_cast<int>(fragment_index + 1)
+                               << '/' << static_cast<int>(fragment_count) << "] shards ["sv
+                               << shards.size() << "/"sv << shards.percentage << "%]"sv
+                               << (frame_is_dupe ? " Dupe" : "")
+                               << (packet->is_idr() ? " Key" : "")
+                               << (packet->after_ref_frame_invalidation ? " RFI" : "");
+          } else {
+            BOOST_LOG(verbose) << "Sent Frame seq ["sv << packet->frame_index() << "] pts ["sv << timestamp
+                               << "] shards ["sv << shards.size() << "/"sv << shards.percentage << "%]"sv
+                               << (frame_is_dupe ? " Dupe" : "")
+                               << (packet->is_idr() ? " Key" : "")
+                               << (packet->after_ref_frame_invalidation ? " RFI" : "");
+          }
 
           ++blockIndex;
           lowseq += shards.size();
@@ -2232,11 +2384,15 @@ namespace stream {
         session->video.lowseq = lowseq;
 
         // Update per-session performance counters
-        session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
         session->stats.packets_sent.fetch_add(ratecontrol_frame_packets_sent, std::memory_order_relaxed);
         auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
         session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
-        session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+        if (final_frame_fragment) {
+          session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
+          session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+          session->video.progressive_frame_index.reset();
+          session->video.progressive_frame_timestamp.reset();
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);

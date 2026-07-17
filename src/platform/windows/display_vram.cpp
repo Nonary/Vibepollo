@@ -2311,6 +2311,18 @@ namespace platf::dxgi {
             (!amd_config.amd_preanalysis || !*amd_config.amd_preanalysis)) {
           BOOST_LOG(info) << "AMF: enabling native PreAnalysis required by the selected rate-control mode";
         }
+        if (preanalysis_plan.enabled_for_rate_control) {
+          auto configured_rate = ::video::framerateX100_to_rational(
+            client_config.framerateX100 > 0 ?
+              client_config.framerateX100 :
+              std::max(1, client_config.framerate) * 100);
+          const double configured_fps = configured_rate.den > 0 ?
+                                          static_cast<double>(configured_rate.num) / configured_rate.den :
+                                          static_cast<double>(std::max(1, client_config.framerate));
+          BOOST_LOG(warning) << "AMF: selected rate-control mode requires one frame of PreAnalysis lookahead (~"
+                             << (1000.0 / configured_fps) << " ms at " << configured_fps
+                             << " fps); latency VBR, CBR, or CQP avoids this added frame";
+        }
       }
 
       // AMF statistics feedback changes the driver submission path and is not a

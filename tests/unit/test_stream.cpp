@@ -3,6 +3,7 @@
  * @brief Test src/stream.*
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -17,6 +18,7 @@ namespace stream {
   };
 
   std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2);
+  bool append_av1_padding_obu(std::vector<uint8_t> &payload, std::size_t total_size);
   std::string canonical_codec_name(std::string_view codec);
   std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes);
 }
@@ -58,6 +60,26 @@ TEST(ConcatAndInsertTests, ConcatSmallStrideTest) {
   auto res = stream::concat_and_insert(1, 1, std::string_view {b1, sizeof(b1)}, std::string_view {b2, sizeof(b2)});
   auto expected = std::vector<uint8_t> {0, 'a', 0, 'b', 0, 'c', 0, 'd', 0, 'e'};
   ASSERT_EQ(res, expected);
+}
+
+TEST(Av1PaddingObuTests, AppendsAnExactlySizedValidPaddingObu) {
+  std::vector<uint8_t> payload {'a'};
+
+  ASSERT_TRUE(stream::append_av1_padding_obu(payload, 131));
+  ASSERT_EQ(payload.size(), 132);
+  EXPECT_EQ(payload[1], 0x7A);
+  EXPECT_EQ(payload[2], 0x80);
+  EXPECT_EQ(payload[3], 0x01);
+  EXPECT_TRUE(std::all_of(payload.begin() + 4, payload.end(), [](uint8_t byte) {
+    return byte == 0;
+  }));
+}
+
+TEST(Av1PaddingObuTests, RejectsUnrepresentableOneBytePadding) {
+  std::vector<uint8_t> payload {'a'};
+
+  EXPECT_FALSE(stream::append_av1_padding_obu(payload, 1));
+  EXPECT_EQ(payload, std::vector<uint8_t> {'a'});
 }
 
 TEST(ControlPacketParsing, RejectsRuntPacketsBeforeReadingType) {
