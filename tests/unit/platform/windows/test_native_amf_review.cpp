@@ -540,6 +540,7 @@ namespace {
   bool asynchronous_pipeline_catches_up_to_current_output() {
     using amf::lifecycle::output_coalesce_budget;
     using amf::lifecycle::driver_wait_budget;
+    using amf::lifecycle::submit_wait_budget;
     using amf::lifecycle::output_coalesce_target_reached;
 
     return output_coalesce_budget(30) == std::chrono::milliseconds(32) &&
@@ -551,6 +552,8 @@ namespace {
            driver_wait_budget(60) == std::chrono::milliseconds(16) &&
            driver_wait_budget(120) == std::chrono::milliseconds(8) &&
            driver_wait_budget(240) == std::chrono::milliseconds(4) &&
+           submit_wait_budget(60, true) == std::chrono::milliseconds(100) &&
+           submit_wait_budget(60, false) == std::chrono::milliseconds(16) &&
            !output_coalesce_target_reached(11, 10, 10, 10) &&
            !output_coalesce_target_reached(11, 10, 11, 10) &&
            output_coalesce_target_reached(11, 10, 11, 11) &&

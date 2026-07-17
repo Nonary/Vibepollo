@@ -2247,11 +2247,13 @@ namespace amf {
 
     std::size_t slot_index = 0;
     bool repeated_input = false;
+    bool first_submission = false;
     uint64_t completed_before_submission = 0;
     {
       std::unique_lock lock(state_mutex);
       drain_completed_outputs_locked();
       completed_before_submission = completed_output_count;
+      first_submission = accepted_input_count == 0;
       if (output_fatal) {
         result.fatal = true;
         return result;
@@ -2594,9 +2596,15 @@ namespace amf {
     // more inputs than its configured queue. Check known ownership before entering
     // the driver so probe/runtime deadlines remain enforceable even on a stalled
     // encoder. The reserved wrapper is released by release_reserved_slot on return.
-    const auto submission_deadline = std::min(
-      encode_wait_deadline,
-      std::chrono::steady_clock::now() + lifecycle::driver_wait_budget(current_config.framerate));
+    const auto submission_started = std::chrono::steady_clock::now();
+    const auto submission_budget = lifecycle::submit_wait_budget(
+      current_config.framerate,
+      first_submission);
+    const auto submission_deadline = first_submission ?
+                                       submission_started + submission_budget :
+                                       std::min(
+                                         encode_wait_deadline,
+                                         submission_started + submission_budget);
     {
       std::unique_lock lock(state_mutex);
       drain_completed_outputs_locked();

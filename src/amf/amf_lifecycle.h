@@ -952,6 +952,17 @@ namespace amf::lifecycle {
     return std::min(std::chrono::milliseconds(20), output_coalesce_budget(framerate));
   }
 
+  inline constexpr std::chrono::milliseconds submit_wait_budget(
+    int framerate,
+    bool first_submission) noexcept {
+    // Some AMD runtimes lazily allocate encoder resources in the first
+    // SubmitInput call. Give only that cold call enough time to finish instead
+    // of tearing down a healthy generation; steady-state submissions retain the
+    // single-frame latency budget above.
+    return first_submission ? std::chrono::milliseconds(100) :
+                              driver_wait_budget(framerate);
+  }
+
   inline constexpr bool output_delivery_is_due(uint64_t accepted_input_count,
                                                 uint64_t completed_output_count,
                                                 int lookahead_depth,
