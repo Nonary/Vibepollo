@@ -54,7 +54,16 @@ describe('configFieldSchema', () => {
     ).toBe('checkbox');
   });
 
-  test.each(['amd_quality', 'amd_vbaq'])(
+  test.each([
+    'amd_rc',
+    'amd_quality',
+    'amd_vbaq',
+    'amd_smart_access_video',
+    'amd_lowlatency_mode',
+    'amd_high_motion_quality_boost',
+    'amd_av1_screen_content',
+    'amd_av1_latency_mode',
+  ])(
     'renders %s as an auto-capable select',
     (settingKey) => {
       const field = getConfigFieldDefinition(settingKey, {

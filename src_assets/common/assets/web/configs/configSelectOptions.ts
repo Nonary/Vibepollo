@@ -7,6 +7,11 @@ export type ConfigSelectOptionsContext = {
   currentValue?: unknown;
 };
 
+function translateOr(t: (key: string) => string, key: string, fallback: string): string {
+  const translated = t(key);
+  return translated && translated !== key ? translated : fallback;
+}
+
 function isSelectValue(value: unknown): value is string | number {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 }
