@@ -152,19 +152,35 @@ function extractPlaceholders(value) {
 
 function extractHtmlTags(value) {
   if (typeof value !== 'string') return [];
-  return Array.from(value.matchAll(/<\/?([A-Za-z][A-Za-z0-9-]*)\b[^>]*>/g), (match) => match[1].toLowerCase()).sort();
+  return Array.from(value.matchAll(/<\/?([A-Za-z][A-Za-z0-9-]*)\b[^>]*>/g), (match) =>
+    match[1].toLowerCase(),
+  ).sort();
 }
 
-function looksMojibake(value) {
+function looksMojibake(value, enValue, key) {
   if (typeof value !== 'string') return false;
-  return /\uFFFD|\?{2,}|Ã[\u0080-\u00ff]|Â[\u0080-\u00ff\s]|â[€\u0080-\u00ff]/.test(value);
+  if (/\uFFFD|\?{2,}|Ã[\u0080-\u00ff]|Â[\u0080-\u00ff\s]|â[€\u0080-\u00ff]/.test(value)) {
+    return true;
+  }
+
+  const namespace = String(key ?? '').split('.', 1)[0];
+  const settingsNamespace = ['apps', 'config', 'playnite', 'rtss'].includes(namespace);
+  return settingsNamespace && value.includes('?') && !String(enValue ?? '').includes('?');
+}
+
+function normalizeFingerprint(fingerprint) {
+  if (typeof fingerprint !== 'string') return fingerprint;
+  const parts = fingerprint.split('|');
+  // Baselines created before this change include a volatile source line number
+  // between the file and locale fields. Keep accepting them as a migration path.
+  if (parts.length === 8) parts.splice(2, 1);
+  return parts.join('|');
 }
 
 function issueFingerprint(issue) {
   return [
     issue.rule,
     issue.file ?? '',
-    issue.line ?? '',
     issue.locale ?? '',
     issue.key ?? '',
     issue.value ?? '',
@@ -184,7 +200,7 @@ function compileAllowlist(allowlist) {
     literalValues: new Set(allowlist?.literalValues ?? []),
     literalPatterns: (allowlist?.literalPatterns ?? []).map((pattern) => new RegExp(pattern)),
     pathPatterns: (allowlist?.pathPatterns ?? []).map((pattern) => new RegExp(pattern)),
-    issueFingerprints: new Set(allowlist?.issueFingerprints ?? []),
+    issueFingerprints: new Set((allowlist?.issueFingerprints ?? []).map(normalizeFingerprint)),
   };
 }
 
@@ -212,7 +228,10 @@ function isUiEnglishLiteral(value) {
 function stripComments(text) {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (match) => ' '.repeat(match.length))
-    .replace(/(^|[^:])\/\/.*$/gm, (match, prefix) => `${prefix}${' '.repeat(match.length - prefix.length)}`);
+    .replace(
+      /(^|[^:])\/\/.*$/gm,
+      (match, prefix) => `${prefix}${' '.repeat(match.length - prefix.length)}`,
+    );
 }
 
 function splitTopLevelArgs(argsText) {
@@ -254,7 +273,9 @@ function readStringLiteral(raw) {
   if (!['"', "'", '`'].includes(quote) || value[value.length - 1] !== quote) return null;
   if (quote === '`' && /\$\{/.test(value)) return null;
   try {
-    return JSON.parse(quote === '"' ? value : `"${value.slice(1, -1).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+    return JSON.parse(
+      quote === '"' ? value : `"${value.slice(1, -1).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+    );
   } catch {
     return value.slice(1, -1);
   }
@@ -346,7 +367,12 @@ function scanI18nCalls(root, relPath, text, enKeys) {
   for (const call of extractCallArgs(source, '\\$tp')) {
     const baseKey = readStringLiteral(call.args[0] ?? '');
     if (!baseKey) continue;
-    const candidates = [`${baseKey}_windows`, `${baseKey}_linux`, `${baseKey}_macos`, `${baseKey}_unix`];
+    const candidates = [
+      `${baseKey}_windows`,
+      `${baseKey}_linux`,
+      `${baseKey}_macos`,
+      `${baseKey}_unix`,
+    ];
     if (!candidates.some((key) => enKeys.has(key))) {
       issues.push(
         makeIssue({
@@ -360,7 +386,8 @@ function scanI18nCalls(root, relPath, text, enKeys) {
     }
   }
 
-  const fallbackRegex = /(?:\$t|t)\s*\(\s*(['"`])([^'"`]+)\1\s*\)\s*(?:\|\||\?\?)\s*(['"`])([\s\S]*?)\3/g;
+  const fallbackRegex =
+    /(?:\$t|t)\s*\(\s*(['"`])([^'"`]+)\1\s*\)\s*(?:\|\||\?\?)\s*(['"`])([\s\S]*?)\3/g;
   let fallbackMatch;
   while ((fallbackMatch = fallbackRegex.exec(source))) {
     const fallback = fallbackMatch[4];
@@ -383,12 +410,29 @@ function scanI18nCalls(root, relPath, text, enKeys) {
 function scanVueTemplateLiterals(relPath, text, compiledAllowlist) {
   if (!relPath.endsWith('.vue')) return [];
   const issues = [];
-  const templateMatch = text.match(/<template\b[^>]*>([\s\S]*?)<\/template>/i);
-  if (!templateMatch) return issues;
-  const template = templateMatch[1];
-  const templateOffset = templateMatch.index + templateMatch[0].indexOf(template);
+  const openingMatch = /<template\b[^>]*>/i.exec(text);
+  if (!openingMatch) return issues;
+  const templateOffset = openingMatch.index + openingMatch[0].length;
+  const tagRegex = /<\/?template\b[^>]*>/gi;
+  tagRegex.lastIndex = templateOffset;
+  let depth = 1;
+  let closingIndex = -1;
+  let tagMatch;
+  while ((tagMatch = tagRegex.exec(text))) {
+    if (/^<\/template/i.test(tagMatch[0])) {
+      depth -= 1;
+      if (depth === 0) {
+        closingIndex = tagMatch.index;
+        break;
+      }
+    } else {
+      depth += 1;
+    }
+  }
+  if (closingIndex < 0) return issues;
+  const template = text.slice(templateOffset, closingIndex);
 
-  const textRegex = />([^<>{}\n]*[A-Za-z][^<>{}\n]*)</g;
+  const textRegex = />([^<>{}]*[A-Za-z][^<>{}]*)</g;
   let match;
   while ((match = textRegex.exec(template))) {
     const value = match[1].replace(/\s+/g, ' ').trim();
@@ -405,7 +449,10 @@ function scanVueTemplateLiterals(relPath, text, compiledAllowlist) {
   }
 
   for (const attr of TEMPLATE_ATTRS) {
-    const attrRegex = new RegExp(`(?<![:@\\w-])${attr}\\s*=\\s*(['"])([^'"{}]*[A-Za-z][^'"{}]*)\\1`, 'g');
+    const attrRegex = new RegExp(
+      `(?<![:@\\w-])${attr}\\s*=\\s*(['"])([^'"{}]*[A-Za-z][^'"{}]*)\\1`,
+      'g',
+    );
     let attrMatch;
     while ((attrMatch = attrRegex.exec(template))) {
       const value = attrMatch[2].trim();
@@ -447,7 +494,8 @@ function scanScriptUiLiterals(relPath, text, compiledAllowlist) {
     }
   }
 
-  const messageRegex = /\b(?:message|notification)\.(?:success|error|warning|info|create)\s*\(\s*(['"`])([^'"`]*[A-Za-z][^'"`]*)\1/g;
+  const messageRegex =
+    /\b(?:message|notification)\.(?:success|error|warning|info|create)\s*\(\s*(['"`])([^'"`]*[A-Za-z][^'"`]*)\1/g;
   let messageMatch;
   while ((messageMatch = messageRegex.exec(source))) {
     const value = messageMatch[2].trim();
@@ -490,7 +538,10 @@ function compareLocaleFiles(root, enJson, allowlist) {
   const enFlat = flattenMessages(enJson);
   const enTypes = messageNodeTypes(enJson);
 
-  for (const fileName of fs.readdirSync(localeDir).filter((name) => name.endsWith('.json')).sort()) {
+  for (const fileName of fs
+    .readdirSync(localeDir)
+    .filter((name) => name.endsWith('.json'))
+    .sort()) {
     if (fileName === 'en.json') continue;
     const filePath = path.join(localeDir, fileName);
     const locale = path.basename(fileName, '.json');
@@ -542,7 +593,7 @@ function compareLocaleFiles(root, enJson, allowlist) {
         );
       }
 
-      if (looksMojibake(value)) {
+      if (looksMojibake(value, enValue, key)) {
         issues.push(
           makeIssue({
             rule: 'locale-mojibake',
@@ -632,7 +683,9 @@ export function runAudit(rawOptions = {}) {
   const baselinePath = path.resolve(rawOptions.baseline ?? DEFAULT_BASELINE);
   const allowlist = compileAllowlist(readJson(allowlistPath, {}));
   const baseline = readJson(baselinePath, { issues: [] });
-  const baselineFingerprints = new Set((baseline.issues ?? []).map((issue) => issue.fingerprint ?? issue));
+  const baselineFingerprints = new Set(
+    (baseline.issues ?? []).map((issue) => normalizeFingerprint(issue.fingerprint ?? issue)),
+  );
   const localeDir = path.join(root, 'public', 'assets', 'locale');
   const enPath = path.join(localeDir, 'en.json');
   const enJson = readJson(enPath);

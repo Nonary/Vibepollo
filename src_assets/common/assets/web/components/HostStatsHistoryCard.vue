@@ -47,6 +47,7 @@
 import { computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { NCard } from 'naive-ui';
+import { useI18n } from 'vue-i18n';
 import { useHostStatsStore } from '@/stores/hostStats';
 import type { HostHistoryPoint } from '@/types/host';
 
@@ -60,6 +61,7 @@ const MAX_RENDERED_POINTS = 240;
 
 const store = useHostStatsStore();
 const { history } = storeToRefs(store);
+const { t } = useI18n();
 
 const pct = (value: number | undefined) =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(100, value) : 0;
@@ -96,15 +98,23 @@ const charts = computed(() => {
   return [
     {
       id: 'compute',
-      title: 'CPU / GPU / Encoder',
+      title: t('sessions.chart_host_compute'),
       latest: latest
         ? percentLabel(latest.cpu_percent, latest.gpu_percent, latest.gpu_encoder_percent)
         : '--',
       lines: [
-        { label: 'CPU', color: '#2563eb', points: toPoints(points, (p) => pct(p.cpu_percent)) },
-        { label: 'GPU', color: '#16a34a', points: toPoints(points, (p) => pct(p.gpu_percent)) },
         {
-          label: 'Encoder',
+          label: t('sessions.chart_host_cpu'),
+          color: '#2563eb',
+          points: toPoints(points, (p) => pct(p.cpu_percent)),
+        },
+        {
+          label: t('sessions.chart_host_gpu'),
+          color: '#16a34a',
+          points: toPoints(points, (p) => pct(p.gpu_percent)),
+        },
+        {
+          label: t('sessions.chart_host_gpu_encoder'),
           color: '#dc2626',
           points: toPoints(points, (p) => pct(p.gpu_encoder_percent)),
         },
@@ -112,11 +122,19 @@ const charts = computed(() => {
     },
     {
       id: 'memory',
-      title: 'RAM / VRAM',
+      title: t('sessions.chart_host_memory'),
       latest: latest ? percentLabel(latest.ram_percent, latest.vram_percent) : '--',
       lines: [
-        { label: 'RAM', color: '#9333ea', points: toPoints(points, (p) => pct(p.ram_percent)) },
-        { label: 'VRAM', color: '#ea580c', points: toPoints(points, (p) => pct(p.vram_percent)) },
+        {
+          label: t('sessions.chart_host_ram'),
+          color: '#9333ea',
+          points: toPoints(points, (p) => pct(p.ram_percent)),
+        },
+        {
+          label: t('sessions.chart_host_vram'),
+          color: '#ea580c',
+          points: toPoints(points, (p) => pct(p.vram_percent)),
+        },
       ] satisfies MetricLine[],
     },
   ];

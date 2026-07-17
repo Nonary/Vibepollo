@@ -108,8 +108,8 @@ const parsedDefaultPropValue = (() => {
   return null as boolean | null;
 })();
 
-const labelField = props.label ?? `${props.localePrefix}.${props.id}`;
-const descField = props.desc ?? `${props.localePrefix}.${props.id}_desc`;
+const labelField = computed(() => props.label ?? `${props.localePrefix}.${props.id}`);
+const descField = computed(() => props.desc ?? `${props.localePrefix}.${props.id}_desc`);
 const showDesc = computed(() => props.desc !== '' || Boolean(slots['default']));
 const showActions = computed(() => Boolean(slots['actions']));
 const showMeta = computed(() => Boolean(slots['meta']));
@@ -122,7 +122,11 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
     <div class="flex items-start justify-between gap-3">
       <div class="flex min-w-0 flex-1 items-start gap-3">
         <div class="pt-0.5">
-          <n-checkbox :id="`${props.id}_cb`" v-model:checked="isChecked" :disabled="props.disabled" />
+          <n-checkbox
+            :id="`${props.id}_cb`"
+            v-model:checked="isChecked"
+            :disabled="props.disabled"
+          />
         </div>
         <div class="min-w-0 flex-1 space-y-1">
           <label :for="`${props.id}_cb`" class="form-label cursor-pointer leading-snug">

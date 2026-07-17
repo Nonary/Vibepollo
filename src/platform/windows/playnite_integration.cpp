@@ -332,7 +332,7 @@ namespace platf::playnite {
       return client_ && client_->send_json_line(s);
     }
 
-    bool trigger_sync() {
+    bool trigger_sync(const bool wait_for_snapshot) {
       // Reconciling against the cached snapshot right away is wrong when the IPC client just
       // started (cache empty) or Playnite has unsent changes: ask the plugin for a fresh snapshot
       // and wait for it to complete before syncing. Older plugins ignore the command and never
@@ -343,13 +343,14 @@ namespace platf::playnite {
         std::scoped_lock lk(mutex_);
         start_generation = snapshot_generation_;
       }
+      bool snapshot_requested = false;
       try {
         nlohmann::json req;
         req["type"] = "command";
         req["command"] = "snapshot";
-        send_cmd_json_line(req.dump());
+        snapshot_requested = send_cmd_json_line(req.dump());
       } catch (...) {}
-      {
+      if (snapshot_requested && wait_for_snapshot) {
         std::unique_lock lk(mutex_);
         const bool fresh = snapshot_cv_.wait_for(lk, kManualSyncSnapshotWait, [&]() {
           return snapshot_generation_ != start_generation;
@@ -359,9 +360,14 @@ namespace platf::playnite {
                              << std::chrono::duration_cast<std::chrono::seconds>(kManualSyncSnapshotWait).count()
                              << "s; syncing against cached data";
         }
+      } else if (!snapshot_requested) {
+        BOOST_LOG(debug) << "Playnite: snapshot command was not delivered; skipping snapshot wait";
+      } else {
+        BOOST_LOG(debug) << "Playnite: snapshot requested asynchronously; syncing against cached data without blocking startup";
       }
       auto stats = sync_apps_metadata();
-      BOOST_LOG(info) << "Playnite: manual library sync " << sync_summary(stats);
+      BOOST_LOG(info) << "Playnite: " << (wait_for_snapshot ? "manual" : "non-blocking")
+                      << " library sync " << sync_summary(stats);
       return stats.success;
     }
 
@@ -1435,13 +1441,17 @@ namespace platf::playnite {
     return inst->send_cmd_json_line(j.dump());
   }
 
-  bool force_sync() {
+  bool force_sync(const bool wait_for_snapshot) {
+    if (!is_plugin_installed()) {
+      BOOST_LOG(debug) << "Playnite: sync skipped because the plugin is not installed";
+      return false;
+    }
     auto inst = g_instance.load(std::memory_order_acquire);
     if (!inst) {
       return false;
     }
     inst->ensure_started_for_api();
-    return inst->trigger_sync();
+    return inst->trigger_sync(wait_for_snapshot);
   }
 
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {

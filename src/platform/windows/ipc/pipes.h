@@ -37,26 +37,61 @@ namespace platf::dxgi {
   constexpr uint8_t SECURE_DESKTOP_MSG = 0x01;  ///< Message type for WGC desktop-switch reinit notifications
   constexpr uint8_t ACK_MSG = 0x02;  ///< Message type for acknowledgment responses
 
+  inline constexpr size_t WGC_IPC_TEXTURE_SLOT_COUNT = 3;
+
+  enum class wgc_texture_slot_state_e : LONG {
+    free = 0,
+    writing = 1,
+    ready = 2,
+    leased = 3,
+  };
+
   /**
-   * @brief Structure for sharing handle and texture metadata via IPC.
-   * @param texture_handle Shared texture handle.
+   * @brief Structure for sharing texture-ring handles and frame metadata via IPC.
+   * @param texture_handles Shared texture handles for the producer/consumer ring.
    * @param frame_event_handle Auto-reset event signaled when a new frame is ready.
    * @param frame_metadata_handle File-mapping handle containing latest frame metadata.
    * @param width Width of the texture.
    * @param height Height of the texture.
    */
   struct shared_handle_data_t {
-    HANDLE texture_handle;
+    HANDLE texture_handles[WGC_IPC_TEXTURE_SLOT_COUNT];
     HANDLE frame_event_handle;
     HANDLE frame_metadata_handle;
     UINT width;
     UINT height;
   };
 
+  struct alignas(8) wgc_texture_slot_metadata_t {
+    volatile LONG state;
+    LONG reserved;
+    volatile LONG64 frame_id;
+    volatile LONG64 frame_qpc;
+  };
+
+  inline LONG wgc_texture_slot_state(const wgc_texture_slot_metadata_t &slot) {
+    return InterlockedCompareExchange(const_cast<volatile LONG *>(&slot.state), 0, 0);
+  }
+
+  inline bool transition_wgc_texture_slot(wgc_texture_slot_metadata_t &slot, wgc_texture_slot_state_e expected, wgc_texture_slot_state_e desired) {
+    const auto expected_value = static_cast<LONG>(expected);
+    return InterlockedCompareExchange(&slot.state, static_cast<LONG>(desired), expected_value) == expected_value;
+  }
+
+  inline bool release_wgc_texture_slot(wgc_texture_slot_metadata_t &slot, LONG64 frame_id) {
+    if (InterlockedCompareExchange64(&slot.frame_id, 0, 0) != frame_id) {
+      return false;
+    }
+
+    return transition_wgc_texture_slot(slot, wgc_texture_slot_state_e::leased, wgc_texture_slot_state_e::free);
+  }
+
   struct alignas(8) frame_metadata_t {
     volatile LONG64 sequence;
     volatile LONG64 frame_id;
     volatile LONG64 frame_qpc;
+    volatile LONG64 texture_slot;
+    wgc_texture_slot_metadata_t slots[WGC_IPC_TEXTURE_SLOT_COUNT];
   };
 
   /**

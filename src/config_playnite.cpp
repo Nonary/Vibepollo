@@ -321,7 +321,9 @@ namespace config {
 #ifdef _WIN32
     if (config::playnite.auto_sync) {
       try {
-        platf::playnite::force_sync();
+        // Startup/config application must not wait on an optional external plugin.
+        // A delivered snapshot is reconciled asynchronously by the normal auto-sync path.
+        platf::playnite::force_sync(false);
       } catch (...) {
       }
     }

@@ -50,11 +50,11 @@
               @click="launchPlaynite"
             >
               <i class="fas fa-rocket" />
-              <span class="ml-2">{{ $t('playnite.launch_button') || 'Launch Playnite' }}</span>
+              <span class="ml-2">{{ $t('playnite.launch_button') }}</span>
             </n-button>
             <n-button size="small" type="primary" strong @click="refreshStatus">
               <i class="fas fa-sync" />
-              <span class="ml-2">{{ $t('playnite.refresh_status') || 'Refresh Status' }}</span>
+              <span class="ml-2">{{ $t('playnite.refresh_status') }}</span>
             </n-button>
           </div>
 
@@ -73,7 +73,7 @@
                 <n-text code class="playnite-path">{{ status.extensions_dir }}</n-text>
                 <n-button size="tiny" secondary @click="copyExtensionsPath">
                   <i class="fas fa-copy" />
-                  <span class="ml-1">{{ $t('playnite.copy_path') || 'Copy' }}</span>
+                  <span class="ml-1">{{ $t('playnite.copy_path') }}</span>
                 </n-button>
               </div>
             </div>
@@ -83,7 +83,7 @@
             />
             <div v-if="status.plugin_version" class="playnite-detail-row">
               <n-text depth="3" strong class="playnite-detail-label">
-                {{ $t('playnite.plugin_version') || 'Plugin' }}
+                {{ $t('playnite.plugin_version') }}
               </n-text>
               <n-space align="center" size="small">
                 <n-tag size="small" type="default">v{{ status.plugin_version }}</n-tag>
@@ -107,11 +107,10 @@
               :label="
                 status.installed
                   ? pluginOutdated
-                    ? ($t('playnite.upgrade_button') as any) || 'Upgrade Plugin'
+                    ? ($t('playnite.upgrade_button') as any)
                     : ($t('playnite.reinstall_button') as any) ||
-                      ($t('playnite.repair_button') as any) ||
-                      'Reinstall Plugin'
-                  : ($t('playnite.install_button') as any) || 'Install Plugin'
+                      ($t('playnite.repair_button') as any)
+                  : ($t('playnite.install_button') as any)
               "
               @done="onReinstallDone"
             />
@@ -124,7 +123,7 @@
               @click="openUninstallConfirm"
             >
               <i class="fas fa-trash" />
-              <span class="ml-2">{{ $t('playnite.uninstall_button') || 'Uninstall Plugin' }}</span>
+              <span class="ml-2">{{ $t('playnite.uninstall_button') }}</span>
             </n-button>
           </div>
         </template>
@@ -141,7 +140,7 @@
           <div class="playnite-card-heading">
             <n-icon size="18"><i class="fas fa-arrows-rotate" /></n-icon>
             <n-text strong>
-              {{ $t('playnite.section_auto_sync') || 'Auto-sync' }}
+              {{ $t('playnite.section_auto_sync') }}
             </n-text>
           </div>
         </template>
@@ -149,7 +148,7 @@
           <n-space wrap size="small">
             <n-button size="tiny" type="default" strong @click="resetAutoSyncSection">
               <i class="fas fa-undo" />
-              <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
+              <span class="ml-1">{{ $t('playnite.reset_defaults') }}</span>
             </n-button>
             <n-button
               size="tiny"
@@ -160,7 +159,7 @@
             >
               <i class="fas fa-trash" />
               <span class="ml-1">
-                {{ $t('playnite.delete_all_autosync') || 'Delete Auto-sync Games' }}
+                {{ $t('playnite.delete_all_autosync') }}
               </span>
             </n-button>
           </n-space>
@@ -177,9 +176,7 @@
                 :desc="''"
               />
               <n-text v-if="!autoSyncEnabled" depth="3" class="playnite-help">
-                {{
-                  $t('playnite.enable_autosync_hint') || 'Enable Auto-sync to edit these settings.'
-                }}
+                {{ $t('playnite.enable_autosync_hint') }}
               </n-text>
             </div>
             <div>
@@ -206,8 +203,7 @@
                 />
               </n-form-item>
               <n-text depth="3" class="playnite-help">
-                {{ $t('playnite.recent_games_desc') }} (0 =
-                {{ $t('_common.disabled') || 'disabled' }})
+                {{ $t('playnite.recent_games_desc') }} (0 = {{ $t('_common.disabled') }})
               </n-text>
             </div>
             <div>
@@ -223,8 +219,7 @@
                 />
               </n-form-item>
               <n-text depth="3" class="playnite-help">
-                {{ $t('playnite.recent_max_age_days_desc') }} (0 =
-                {{ $t('_common.disabled') || 'disabled' }})
+                {{ $t('playnite.recent_max_age_days_desc') }} (0 = {{ $t('_common.disabled') }})
               </n-text>
             </div>
             <div class="md:col-span-1">
@@ -239,9 +234,7 @@
                       filterable
                       tag
                       clearable
-                      :placeholder="
-                        $t('playnite.categories_placeholder') || 'All categories (default)'
-                      "
+                      :placeholder="$t('playnite.categories_placeholder')"
                       :loading="categoriesLoading"
                       :disabled="disablePlayniteSelection || !autoSyncEnabled"
                       @focus="() => loadCategories()"
@@ -249,10 +242,7 @@
                     />
                   </template>
                   <span>{{
-                    !autoSyncEnabled
-                      ? $t('playnite.enable_autosync_hint') ||
-                        'Enable Auto-sync to edit these settings.'
-                      : disabledHint
+                    !autoSyncEnabled ? $t('playnite.enable_autosync_hint') : disabledHint
                   }}</span>
                 </n-tooltip>
               </n-form-item>
@@ -261,7 +251,7 @@
               </n-text>
             </div>
             <div>
-              <n-form-item :label="$t('playnite.sync_plugins') || 'Include library plugins'">
+              <n-form-item :label="$t('playnite.sync_plugins')">
                 <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
                   <template #trigger>
                     <n-select
@@ -271,9 +261,7 @@
                       :options="pluginOptions"
                       filterable
                       clearable
-                      :placeholder="
-                        $t('playnite.plugins_include_placeholder') || 'Include all games from...'
-                      "
+                      :placeholder="$t('playnite.plugins_include_placeholder')"
                       :loading="pluginsLoading"
                       :disabled="disablePlayniteSelection || !autoSyncEnabled"
                       @focus="() => loadPlugins()"
@@ -281,10 +269,7 @@
                     />
                   </template>
                   <span>{{
-                    !autoSyncEnabled
-                      ? $t('playnite.enable_autosync_hint') ||
-                        'Enable Auto-sync to edit these settings.'
-                      : disabledHint
+                    !autoSyncEnabled ? $t('playnite.enable_autosync_hint') : disabledHint
                   }}</span>
                 </n-tooltip>
               </n-form-item>
@@ -306,12 +291,11 @@
                   />
                 </n-form-item>
                 <n-text depth="3" class="playnite-help">
-                  {{ $t('playnite.delete_after_days_desc') }} (0 =
-                  {{ $t('_common.disabled') || 'disabled' }})
+                  {{ $t('playnite.delete_after_days_desc') }} (0 = {{ $t('_common.disabled') }})
                 </n-text>
               </div>
               <div>
-                <n-form-item :label="$t('playnite.cleanup_policy') || 'Cleanup policy'">
+                <n-form-item :label="$t('playnite.cleanup_policy')">
                   <n-radio-group
                     id="playnite_cleanup_policy"
                     v-model:value="config.playnite_autosync_require_replacement"
@@ -319,25 +303,16 @@
                   >
                     <n-space vertical size="small">
                       <n-radio :value="true">
-                        {{
-                          $t('playnite.policy_keep_until_replaced') ||
-                          'Keep until replaced (default)'
-                        }}
+                        {{ $t('playnite.policy_keep_until_replaced') }}
                       </n-radio>
                       <n-radio :value="false">
-                        {{
-                          $t('playnite.policy_prune_immediately') ||
-                          'Always prune games that no longer qualify'
-                        }}
+                        {{ $t('playnite.policy_prune_immediately') }}
                       </n-radio>
                     </n-space>
                   </n-radio-group>
                 </n-form-item>
                 <n-text depth="3" class="playnite-help">
-                  {{
-                    $t('playnite.policy_explainer') ||
-                    'Choose how Vibepollo removes old auto-synced games.'
-                  }}
+                  {{ $t('playnite.policy_explainer') }}
                 </n-text>
               </div>
               <div class="md:col-span-2">
@@ -365,14 +340,14 @@
           <div class="playnite-card-heading">
             <n-icon size="18"><i class="fas fa-gamepad" /></n-icon>
             <n-text strong>
-              {{ $t('playnite.section_launch_behavior') || 'Launch Behavior' }}
+              {{ $t('playnite.section_launch_behavior') }}
             </n-text>
           </div>
         </template>
         <template #header-extra>
           <n-button size="tiny" type="default" strong @click="resetLaunchSection">
             <i class="fas fa-undo" />
-            <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
+            <span class="ml-1">{{ $t('playnite.reset_defaults') }}</span>
           </n-button>
         </template>
         <n-form label-placement="top" :show-feedback="false">
@@ -383,12 +358,12 @@
                 id="playnite_fullscreen_entry_enabled"
                 :default="store.defaults.playnite_fullscreen_entry_enabled"
                 :localePrefix="'playnite'"
-                label="Add 'Playnite (Fullscreen)' to Applications"
-                desc="When enabled, Vibepollo adds a launcher entry that opens Playnite in fullscreen desktop mode."
+                label="playnite.fullscreen_entry"
+                desc="playnite.fullscreen_entry_desc"
               />
             </div>
             <div>
-              <n-form-item :label="$t('playnite.focus_attempts') || 'Auto-focus attempts'">
+              <n-form-item :label="$t('playnite.focus_attempts')">
                 <n-input-number
                   id="playnite_focus_attempts"
                   v-model:value="config.playnite_focus_attempts"
@@ -399,25 +374,15 @@
                 />
               </n-form-item>
               <n-text depth="3" class="playnite-help">
-                {{
-                  $t('playnite.focus_attempts_help') ||
-                  'Number of times to try to bring Playnite windows to the foreground when launching.'
-                }}
+                {{ $t('playnite.focus_attempts_help') }}
               </n-text>
             </div>
             <div>
               <ConfigDurationField
                 id="playnite_focus_timeout_secs"
                 v-model="config.playnite_focus_timeout_secs"
-                :label="
-                  String($t('playnite.focus_timeout_secs') || 'Auto-focus timeout window (seconds)')
-                "
-                :desc="
-                  String(
-                    $t('playnite.focus_timeout_secs_help') ||
-                      'How long auto-focus runs while re-applying focus (0 to disable).',
-                  )
-                "
+                :label="String($t('playnite.focus_timeout_secs'))"
+                :desc="String($t('playnite.focus_timeout_secs_help'))"
                 :min="0"
                 :max="120"
                 size="small"
@@ -443,20 +408,20 @@
           <div class="playnite-card-heading">
             <n-icon size="18"><i class="fas fa-filter" /></n-icon>
             <n-text strong>
-              {{ $t('playnite.section_exclusions_filters') || 'Exclusions & Filters' }}
+              {{ $t('playnite.section_exclusions_filters') }}
             </n-text>
           </div>
         </template>
         <template #header-extra>
           <n-button size="tiny" type="default" strong @click="resetFiltersSection">
             <i class="fas fa-undo" />
-            <span class="ml-1">{{ $t('playnite.reset_defaults') || 'Reset to defaults' }}</span>
+            <span class="ml-1">{{ $t('playnite.reset_defaults') }}</span>
           </n-button>
         </template>
         <n-form label-placement="top" :show-feedback="false">
           <div class="settings-grid">
             <div>
-              <n-form-item :label="$t('playnite.exclude_categories') || 'Exclude categories'">
+              <n-form-item :label="$t('playnite.exclude_categories')">
                 <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
                   <template #trigger>
                     <n-select
@@ -467,9 +432,7 @@
                       filterable
                       tag
                       clearable
-                      :placeholder="
-                        $t('playnite.categories_placeholder') || 'All categories (default)'
-                      "
+                      :placeholder="$t('playnite.categories_placeholder')"
                       :loading="categoriesLoading"
                       :disabled="disablePlayniteSelection || !autoSyncEnabled"
                       @focus="() => loadCategories()"
@@ -477,22 +440,16 @@
                     />
                   </template>
                   <span>{{
-                    !autoSyncEnabled
-                      ? $t('playnite.enable_autosync_hint') ||
-                        'Enable Auto-sync to edit these settings.'
-                      : disabledHint
+                    !autoSyncEnabled ? $t('playnite.enable_autosync_hint') : disabledHint
                   }}</span>
                 </n-tooltip>
               </n-form-item>
               <n-text depth="3" class="playnite-help">
-                {{
-                  $t('playnite.exclude_categories_help') ||
-                  'Games tagged with these categories will never be auto-synced.'
-                }}
+                {{ $t('playnite.exclude_categories_help') }}
               </n-text>
             </div>
             <div>
-              <n-form-item :label="$t('playnite.exclude_plugins') || 'Exclude library plugins'">
+              <n-form-item :label="$t('playnite.exclude_plugins')">
                 <n-tooltip :disabled="!disablePlayniteSelection && autoSyncEnabled" trigger="hover">
                   <template #trigger>
                     <n-select
@@ -502,9 +459,7 @@
                       :options="pluginOptions"
                       filterable
                       clearable
-                      :placeholder="
-                        $t('playnite.plugins_placeholder') || 'All library plugins (default)'
-                      "
+                      :placeholder="$t('playnite.plugins_placeholder')"
                       :loading="pluginsLoading"
                       :disabled="disablePlayniteSelection || !autoSyncEnabled"
                       @focus="() => loadPlugins()"
@@ -512,43 +467,31 @@
                     />
                   </template>
                   <span>{{
-                    !autoSyncEnabled
-                      ? $t('playnite.enable_autosync_hint') ||
-                        'Enable Auto-sync to edit these settings.'
-                      : disabledHint
+                    !autoSyncEnabled ? $t('playnite.enable_autosync_hint') : disabledHint
                   }}</span>
                 </n-tooltip>
               </n-form-item>
               <n-text depth="3" class="playnite-help">
-                {{
-                  $t('playnite.exclude_plugins_help') ||
-                  'Games imported from these plugins will never be auto-synced.'
-                }}
+                {{ $t('playnite.exclude_plugins_help') }}
               </n-text>
             </div>
             <div class="md:col-span-2">
               <div class="flex flex-col gap-2">
                 <n-text strong>
-                  {{ $t('playnite.exclude_games') || 'Exclude games from auto-sync' }}
+                  {{ $t('playnite.exclude_games') }}
                 </n-text>
                 <div class="text-[12px]">
                   <n-alert v-if="limitedNoCache" type="warning" :show-icon="true">
-                    {{
-                      $t('playnite.games_unavailable_indicator') ||
-                      'Cannot retrieve Playnite games right now. Start Playnite to load games.'
-                    }}
+                    {{ $t('playnite.games_unavailable_indicator') }}
                   </n-alert>
                   <n-alert v-else-if="limitedWithCache" type="info" :show-icon="true">
-                    {{
-                      $t('playnite.games_cached_indicator') ||
-                      'Showing cached Playnite games due to limited connectivity.'
-                    }}
+                    {{ $t('playnite.games_cached_indicator') }}
                   </n-alert>
                 </div>
                 <n-card size="small" embedded class="playnite-exclusions">
                   <template #header>
                     <n-text strong>
-                      {{ $t('playnite.exclude_games_table_title') || 'Excluded Games' }}
+                      {{ $t('playnite.exclude_games_table_title') }}
                     </n-text>
                   </template>
                   <div class="playnite-exclusions-toolbar">
@@ -560,7 +503,7 @@
                       @click="openAddExclusions"
                     >
                       <i class="fas fa-plus" />
-                      <span class="ml-1">{{ $t('playnite.add_exclusions') || 'Add' }}</span>
+                      <span class="ml-1">{{ $t('playnite.add_exclusions') }}</span>
                     </n-button>
                     <n-button
                       size="small"
@@ -570,7 +513,7 @@
                       @click="clearAllExclusions"
                     >
                       <i class="fas fa-times" />
-                      <span class="ml-1">{{ $t('_common.clear_all') || 'Clear All' }}</span>
+                      <span class="ml-1">{{ $t('_common.clear_all') }}</span>
                     </n-button>
                   </div>
                   <n-data-table
@@ -595,7 +538,7 @@
                           tertiary
                           type="error"
                           size="small"
-                          :aria-label="$t('_common.remove') || 'Remove'"
+                          :aria-label="$t('_common.remove')"
                           @click="removeExclusion(game.id)"
                         >
                           <i class="fas fa-trash" />
@@ -607,32 +550,24 @@
                     v-else
                     class="playnite-exclusions-empty"
                     size="small"
-                    :description="$t('_common.no_data') || 'No excluded games'"
+                    :description="$t('playnite.no_exclusions')"
                   />
                 </n-card>
                 <n-text depth="3" class="playnite-source">
-                  <span v-if="gamesSource === 'live'">{{
-                    $t('playnite.games_loaded_live') || 'Loaded from Playnite'
-                  }}</span>
+                  <span v-if="gamesSource === 'live'">{{ $t('playnite.games_loaded_live') }}</span>
                   <span v-else-if="gamesSource === 'cache'"
-                    >{{ $t('playnite.games_loaded_cache') || 'Loaded from cache'
+                    >{{ $t('playnite.games_loaded_cache')
                     }}<template v-if="gamesCacheTime">
                       — {{ new Date(gamesCacheTime).toLocaleString() }}</template
                     ></span
                   >
-                  <span v-else>{{
-                    $t('playnite.games_not_available') ||
-                    'No games available. Start Playnite to fetch games.'
-                  }}</span>
+                  <span v-else>{{ $t('playnite.games_not_available') }}</span>
                 </n-text>
                 <n-text depth="3" class="playnite-help">
-                  {{
-                    $t('playnite.exclude_games_desc') ||
-                    'Selected games will not be auto-synced from Playnite.'
-                  }}
+                  {{ $t('playnite.exclude_games_desc') }}
                 </n-text>
                 <n-text depth="3" class="playnite-help">
-                  {{ $t('playnite.exclusions_override_note') || 'Exclusions override categories.' }}
+                  {{ $t('playnite.exclusions_override_note') }}
                 </n-text>
               </div>
             </div>
@@ -647,28 +582,25 @@
       <template #header>
         <div class="flex items-center gap-2">
           <i class="fas fa-trash" />
-          <span>{{ $t('playnite.delete_autosync_title') || 'Delete auto-synced games?' }}</span>
+          <span>{{ $t('playnite.delete_autosync_title') }}</span>
         </div>
       </template>
       <div class="space-y-2 text-sm">
         <p>
-          {{
-            $t('playnite.delete_autosync_body') ||
-            'This removes every Playnite-managed auto-sync entry from the Applications list. Apps added manually are not affected.'
-          }}
+          {{ $t('playnite.delete_autosync_body') }}
         </p>
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
           <n-button type="default" strong @click="showDeleteAutosyncConfirm = false">{{
-            $t('_common.cancel') || 'Cancel'
+            $t('_common.cancel')
           }}</n-button>
           <n-button
             type="error"
             strong
             :loading="deletingAutosync"
             @click="confirmDeleteAutosync"
-            >{{ $t('_common.continue') || 'Continue' }}</n-button
+            >{{ $t('_common.continue') }}</n-button
           >
         </div>
       </template>
@@ -680,14 +612,11 @@
       <template #header>
         <div class="flex items-center gap-2">
           <i class="fas fa-trash" />
-          <span>{{ $t('playnite.uninstall_button') || 'Uninstall Plugin' }}</span>
+          <span>{{ $t('playnite.uninstall_button') }}</span>
         </div>
       </template>
       <div class="text-sm">
-        {{
-          $t('playnite.uninstall_requires_restart') ||
-          'Uninstalling the Playnite plugin may require restarting Playnite. Continue?'
-        }}
+        {{ $t('playnite.uninstall_requires_restart') }}
       </div>
       <template #footer>
         <div class="w-full flex items-center justify-center gap-3">
@@ -695,7 +624,7 @@
             $t('_common.cancel')
           }}</n-button>
           <n-button type="error" strong :loading="uninstalling" @click="confirmUninstall">{{
-            $t('_common.continue') || 'Continue'
+            $t('_common.continue')
           }}</n-button>
         </div>
       </template>
@@ -711,7 +640,7 @@
       <template #header>
         <div class="flex items-center gap-2">
           <i class="fas fa-list-check" />
-          <span>{{ $t('playnite.add_exclusions') || 'Add Exclusions' }}</span>
+          <span>{{ $t('playnite.add_exclusions') }}</span>
         </div>
       </template>
       <div class="space-y-2">
@@ -723,15 +652,12 @@
           clearable
           :loading="gamesLoading"
           :disabled="disablePlayniteSelection"
-          :placeholder="$t('playnite.add_exclusions_placeholder') || 'Search and select games'"
+          :placeholder="$t('playnite.add_exclusions_placeholder')"
           class="w-full"
           @focus="() => loadGames()"
         />
         <div class="text-[12px] opacity-70">
-          {{
-            $t('playnite.add_exclusions_hint') ||
-            'Pick one or more games to exclude from auto-sync.'
-          }}
+          {{ $t('playnite.add_exclusions_hint') }}
         </div>
       </div>
       <template #footer>
@@ -740,7 +666,7 @@
             $t('_common.cancel')
           }}</n-button>
           <n-button type="primary" :disabled="!addSelection.length" @click="confirmAddExclusions">{{
-            $t('_common.add') || 'Add'
+            $t('_common.add')
           }}</n-button>
         </div>
       </template>
@@ -904,7 +830,7 @@ const excludedIds = computed<string[]>({
   },
   set(v: string[]) {
     const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
-    const next = (v || []).map((id) => ({ id, name: nameById.get(id) || '' }));
+    const next = (v || []).map((id) => ({ id, name: nameById.get(id) }));
     store.updateOption('playnite_exclude_games', next);
   },
 });
@@ -913,7 +839,7 @@ const excludedIds = computed<string[]>({
 const excludedDisplayList = computed<Array<{ id: string; name: string }>>(() => {
   const arr = normalizeIdNameEntries(config.value?.playnite_exclude_games);
   const nameById = new Map(gamesList.value.map((g) => [g.id, g.name] as const));
-  return (arr || []).map(({ id, name }) => ({ id, name: name || nameById.get(id) || '' }));
+  return (arr || []).map(({ id, name }) => ({ id, name: name || nameById.get(id) }));
 });
 
 // Connectivity indicator helpers for transfer UI
@@ -928,10 +854,9 @@ const limitedWithCache = computed(() => limitedConnectivity.value && hasCachedGa
 // Transfer options include all games and any excluded items not in games (so right list always shows)
 const transferOptions = computed(() => {
   const map = new Map<string, string>();
-  for (const g of gamesList.value)
-    map.set(g.id, g.name || (t('playnite.unknown_game') as any) || 'Unknown');
+  for (const g of gamesList.value) map.set(g.id, g.name || (t('playnite.unknown_game') as any));
   for (const g of excludedDisplayList.value)
-    if (!map.has(g.id)) map.set(g.id, g.name || (t('playnite.unknown_game') as any) || 'Unknown');
+    if (!map.has(g.id)) map.set(g.id, g.name || (t('playnite.unknown_game') as any));
   const arr = Array.from(map.entries()).map(([value, label]) => ({ value, label }));
   return arr.sort((a, b) => a.label.localeCompare(b.label));
 });
@@ -958,15 +883,9 @@ async function refreshStatus() {
 const diagnosticText = computed<string | ''>(() => {
   switch (statusKind.value) {
     case 'uninstalled':
-      return (
-        (t('playnite.diagnostic_not_installed') as any) ||
-        'Playnite plugin is not installed in the Extensions directory.'
-      );
+      return t('playnite.diagnostic_not_installed') as any;
     case 'waiting':
-      return (
-        (t('playnite.diagnostic_not_running') as any) ||
-        'Playnite is not running. Launch it to resume syncing.'
-      );
+      return t('playnite.diagnostic_not_running') as any;
     case 'active':
       return '';
     default:
@@ -1187,12 +1106,10 @@ async function loadGames(useCacheFirst = true) {
 
 async function onReinstallDone(res: { ok: boolean; error?: string }) {
   if (res.ok) {
-    notify('success', (t('playnite.install_success') as any) || 'Plugin installed successfully.');
+    notify('success', t('playnite.install_success') as any);
     await refreshStatus();
   } else {
-    const msg =
-      ((t('playnite.install_error') as any) || 'Failed to install plugin.') +
-      (res.error ? `: ${res.error}` : '');
+    const msg = (t('playnite.install_error') as any) + (res.error ? `: ${res.error}` : '');
     notify('error', msg);
   }
 }
@@ -1211,22 +1128,13 @@ async function confirmDeleteAutosync() {
     } catch {}
     const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
     if (ok) {
-      notify(
-        'success',
-        (t('playnite.delete_autosync_success') as any) || 'Removed auto-synced Playnite games.',
-      );
+      notify('success', t('playnite.delete_autosync_success') as any);
       showDeleteAutosyncConfirm.value = false;
     } else {
-      const msg =
-        ((t('playnite.delete_autosync_error') as any) ||
-          'Failed to delete auto-synced Playnite games.') + (body?.error ? `: ${body.error}` : '');
-      notify('error', msg);
+      notify('error', t('playnite.delete_autosync_error') as any);
     }
-  } catch (e: any) {
-    const msg =
-      ((t('playnite.delete_autosync_error') as any) ||
-        'Failed to delete auto-synced Playnite games.') + (e?.message ? `: ${e.message}` : '');
-    notify('error', msg);
+  } catch {
+    notify('error', t('playnite.delete_autosync_error') as any);
   }
   deletingAutosync.value = false;
 }
@@ -1251,22 +1159,13 @@ async function confirmUninstall() {
     } catch {}
     ok = r.status >= 200 && r.status < 300 && body && body.status === true;
     if (ok) {
-      notify(
-        'success',
-        (t('playnite.uninstall_success') as any) || 'Plugin uninstalled successfully.',
-      );
+      notify('success', t('playnite.uninstall_success') as any);
       await refreshStatus();
     } else {
-      const msg =
-        ((t('playnite.uninstall_error') as any) || 'Failed to uninstall plugin.') +
-        (body && body.error ? `: ${body.error}` : '');
-      notify('error', msg);
+      notify('error', t('playnite.uninstall_error') as any);
     }
-  } catch (e: any) {
-    const msg =
-      ((t('playnite.uninstall_error') as any) || 'Failed to uninstall plugin.') +
-      (e?.message ? `: ${e.message}` : '');
-    notify('error', msg);
+  } catch {
+    notify('error', t('playnite.uninstall_error') as any);
   }
   uninstalling.value = false;
 }
@@ -1387,16 +1286,13 @@ const autoSyncEnabled = computed<boolean>(() => !!config.value?.playnite_auto_sy
 // Disable category/game selection when Playnite is not fully connected
 const disablePlayniteSelection = computed<boolean>(() => statusKind.value !== 'active');
 const disabledHint = computed<string>(() => {
-  return (
-    (t('playnite.selects_disabled_hint') as any) ||
-    'Cannot modify without Playnite connectivity. Start Playnite to continue.'
-  );
+  return t('playnite.selects_disabled_hint') as any;
 });
 
 function copyExtensionsPath() {
   try {
     if (status.extensions_dir) navigator.clipboard?.writeText(status.extensions_dir);
-    notify('success', (t('playnite.copied_path') as any) || 'Copied path to clipboard.');
+    notify('success', t('playnite.copied_path') as any);
   } catch {}
 }
 
@@ -1412,46 +1308,29 @@ const policySummary = computed<string>(() => {
   const includePluginCount = normalizeIdNameEntries(config.value?.playnite_sync_plugins).length;
   const removeUninstalled = config.value?.playnite_autosync_remove_uninstalled !== false;
   const parts: string[] = [];
-  parts.push(
-    (t('playnite.summary_recent_limit', { n }) as any) ||
-      `Up to ${n} most-recently played games will be auto-synced.`,
-  );
+  parts.push(t('playnite.summary_recent_limit', { n }) as any);
   parts.push(
     days > 0
-      ? (t('playnite.summary_activity_window', { days }) as any) ||
-          `Activity window: last ${days} days.`
-      : (t('playnite.summary_activity_ignored') as any) || 'Activity window is ignored.',
+      ? (t('playnite.summary_activity_window', { days }) as any)
+      : (t('playnite.summary_activity_ignored') as any),
   );
   parts.push(
     keepUntilReplaced
-      ? (t('playnite.summary_keep_until_replaced') as any) ||
-          'Games stay until a newer game replaces them.'
-      : (t('playnite.summary_prune_immediately') as any) ||
-          'Games are pruned when they no longer qualify.',
+      ? (t('playnite.summary_keep_until_replaced') as any)
+      : (t('playnite.summary_prune_immediately') as any),
   );
   if (syncAll) {
-    parts.push(
-      (t('playnite.summary_all_installed') as any) ||
-        'All installed Playnite games will be kept in Vibepollo.',
-    );
+    parts.push(t('playnite.summary_all_installed') as any);
   } else if (includePluginCount > 0) {
-    parts.push(
-      (t('playnite.summary_plugin_include', { count: includePluginCount }) as any) ||
-        `Includes every game from ${includePluginCount} selected library plugins.`,
-    );
+    parts.push(t('playnite.summary_plugin_include', { count: includePluginCount }) as any);
   }
   if (pruneDays > 0) {
-    parts.push(
-      (t('playnite.summary_delete_after', { days: pruneDays }) as any) ||
-        `Also remove games never launched after ${pruneDays} days.`,
-    );
+    parts.push(t('playnite.summary_delete_after', { days: pruneDays }) as any);
   }
   parts.push(
     removeUninstalled
-      ? (t('playnite.summary_remove_uninstalled_on') as any) ||
-          'Uninstalled games are removed automatically.'
-      : (t('playnite.summary_remove_uninstalled_off') as any) ||
-          'Uninstalled games remain until removed manually.',
+      ? (t('playnite.summary_remove_uninstalled_on') as any)
+      : (t('playnite.summary_remove_uninstalled_off') as any),
   );
   const excluded = (
     (config.value?.playnite_exclude_categories || []) as Array<{
@@ -1467,16 +1346,13 @@ const policySummary = computed<string>(() => {
     const more = excluded.length > shown.length ? excluded.length - shown.length : 0;
     if (more > 0) {
       parts.push(
-        (t('playnite.summary_excluded_categories_more', {
+        t('playnite.summary_excluded_categories_more', {
           categories: sample,
           count: more,
-        }) as any) || `Excluded categories: ${sample} (+${more} more).`,
+        }) as any,
       );
     } else {
-      parts.push(
-        (t('playnite.summary_excluded_categories', { categories: sample }) as any) ||
-          `Excluded categories: ${sample}.`,
-      );
+      parts.push(t('playnite.summary_excluded_categories', { categories: sample }) as any);
     }
   }
   return parts.join(' ');
@@ -1526,7 +1402,7 @@ function resetAutoSyncSection() {
   );
   store.updateOption('playnite_sync_categories', d.playnite_sync_categories);
   store.updateOption('playnite_sync_plugins', d.playnite_sync_plugins);
-  notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
+  notify('success', t('playnite.reset_done') as any);
 }
 
 function resetLaunchSection() {
@@ -1534,7 +1410,7 @@ function resetLaunchSection() {
   store.updateOption('playnite_focus_attempts', d.playnite_focus_attempts);
   store.updateOption('playnite_focus_timeout_secs', d.playnite_focus_timeout_secs);
   store.updateOption('playnite_focus_exit_on_first', d.playnite_focus_exit_on_first);
-  notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
+  notify('success', t('playnite.reset_done') as any);
 }
 
 function resetFiltersSection() {
@@ -1542,15 +1418,15 @@ function resetFiltersSection() {
   store.updateOption('playnite_exclude_categories', d.playnite_exclude_categories);
   store.updateOption('playnite_exclude_plugins', d.playnite_exclude_plugins);
   store.updateOption('playnite_exclude_games', d.playnite_exclude_games);
-  notify('success', (t('playnite.reset_done') as any) || 'Section reset to defaults.');
+  notify('success', t('playnite.reset_done') as any);
 }
 
 // Data table columns and actions
 type ExcludedRow = { id: string; name: string };
 const exclusionsColumns = computed(() => [
-  { title: (t('playnite.table_game') as any) || 'Game', key: 'name' },
+  { title: t('playnite.table_game') as any, key: 'name' },
   {
-    title: (t('playnite.table_actions') as any) || 'Actions',
+    title: t('playnite.table_actions') as any,
     key: 'actions',
     width: 104,
     render: (row: ExcludedRow) =>
@@ -1561,7 +1437,7 @@ const exclusionsColumns = computed(() => [
           {
             default: () => [
               h('i', { class: 'fas fa-trash' }),
-              h('span', { class: 'ml-1' }, (t('_common.remove') as any) || 'Remove'),
+              h('span', { class: 'ml-1' }, t('_common.remove') as any),
             ],
           },
         ),
@@ -1586,7 +1462,7 @@ const addOptions = computed(() => {
   return gamesList.value
     .filter((g) => !excluded.has(g.id))
     .map((g) => ({
-      label: g.name || (t('playnite.unknown_game') as any) || 'Unknown',
+      label: g.name || (t('playnite.unknown_game') as any),
       value: g.id,
     }))
     .sort((a, b) => a.label.localeCompare(b.label));

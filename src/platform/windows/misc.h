@@ -72,6 +72,17 @@ namespace platf {
   bool is_default_input_desktop_active();
 
   /**
+   * @brief Cache the interactive user's screen saver enabled state before launching an app.
+   * @details Repeated calls preserve the first captured value until it is restored.
+   */
+  void cache_screen_saver_state();
+
+  /**
+   * @brief Restore the screen saver enabled state cached by cache_screen_saver_state().
+   */
+  void restore_screen_saver_state();
+
+  /**
    * @brief Launch a process with user impersonation (for use when running as SYSTEM).
    * @param elevated Specify whether to elevate the process.
    * @param cmd The command to run.

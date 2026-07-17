@@ -522,15 +522,20 @@ namespace statefile {
     return config::nvhttp.file_state;
   }
 
-  void secure_private_directory(const std::string &path) {
+  bool secure_private_directory(const std::string &path) {
 #ifdef _WIN32
     if (path.empty()) {
-      return;
+      return false;
     }
     fs::path dir(path);
     std::error_code ec;
     if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) {
-      return;
+      return false;
+    }
+    const auto wide_path = dir.wstring();
+    const DWORD attributes = GetFileAttributesW(wide_path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+      return false;
     }
 
     clear_readonly_attribute(dir);
@@ -544,31 +549,43 @@ namespace statefile {
     DWORD admins_size = sizeof(admins_sid);
     if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid, &system_size) ||
         !CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admins_sid, &admins_size)) {
-      return;
+      return false;
     }
 
     // Always include the current process user so the running host never loses access
     // to its own credentials (e.g. sunshine.exe run directly as a non-admin user). When
     // running as the LocalSystem service this is the SYSTEM SID (already granted), so no
     // additional non-admin principal is added.
-    alignas(DWORD) BYTE token_user_buf[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_USER) + 16];
+    alignas(TOKEN_USER) BYTE token_user_buf[SECURITY_MAX_SID_SIZE + sizeof(TOKEN_USER) + 16];
     PSID user_sid = nullptr;
     HANDLE process_token = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &process_token)) {
-      DWORD token_len = 0;
-      if (GetTokenInformation(process_token, TokenUser, token_user_buf, sizeof(token_user_buf), &token_len)) {
-        PSID candidate = reinterpret_cast<TOKEN_USER *>(token_user_buf)->User.Sid;
-        if (candidate && IsValidSid(candidate) && !EqualSid(candidate, system_sid)) {
-          user_sid = candidate;
-        }
-      }
-      CloseHandle(process_token);
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &process_token)) {
+      return false;
+    }
+    DWORD token_len = 0;
+    const bool token_user_ok = GetTokenInformation(
+      process_token,
+      TokenUser,
+      token_user_buf,
+      sizeof(token_user_buf),
+      &token_len
+    );
+    CloseHandle(process_token);
+    if (!token_user_ok) {
+      return false;
+    }
+    PSID candidate = reinterpret_cast<TOKEN_USER *>(token_user_buf)->User.Sid;
+    if (!candidate || !IsValidSid(candidate)) {
+      return false;
+    }
+    if (!EqualSid(candidate, system_sid)) {
+      user_sid = candidate;
     }
 
     EXPLICIT_ACCESS_W entries[3] {};
     ULONG entry_count = 0;
     const auto add_full_control = [&](PSID sid, TRUSTEE_TYPE trustee_type) {
-      entries[entry_count].grfAccessPermissions = GENERIC_ALL;
+      entries[entry_count].grfAccessPermissions = FILE_ALL_ACCESS;
       entries[entry_count].grfAccessMode = SET_ACCESS;
       entries[entry_count].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
       entries[entry_count].Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -584,7 +601,7 @@ namespace statefile {
 
     PACL new_dacl = nullptr;
     if (SetEntriesInAclW(entry_count, entries, nullptr, &new_dacl) != ERROR_SUCCESS || !new_dacl) {
-      return;
+      return false;
     }
     auto free_dacl = util::fail_guard([&new_dacl]() {
       if (new_dacl) {
@@ -592,7 +609,6 @@ namespace statefile {
       }
     });
 
-    const auto wide_path = dir.wstring();
     const DWORD info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
     DWORD status = SetNamedSecurityInfoW(
       const_cast<LPWSTR>(wide_path.c_str()),
@@ -614,14 +630,87 @@ namespace statefile {
         nullptr
       );
     }
-    if (status == ERROR_SUCCESS) {
-      BOOST_LOG(debug) << "statefile: hardened private directory "sv << dir.string();
-    } else {
+    if (status != ERROR_SUCCESS) {
       BOOST_LOG(warning) << "statefile: failed to harden private directory "sv << dir.string()
                          << " (error="sv << status << ')';
+      return false;
     }
+
+    PSECURITY_DESCRIPTOR security_descriptor = nullptr;
+    PACL actual_dacl = nullptr;
+    const DWORD verify_status = GetNamedSecurityInfoW(
+      const_cast<LPWSTR>(wide_path.c_str()),
+      SE_FILE_OBJECT,
+      DACL_SECURITY_INFORMATION,
+      nullptr,
+      nullptr,
+      &actual_dacl,
+      nullptr,
+      &security_descriptor
+    );
+    auto free_security_descriptor = util::fail_guard([&security_descriptor]() {
+      if (security_descriptor) {
+        LocalFree(security_descriptor);
+      }
+    });
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    ACL_SIZE_INFORMATION acl_info {};
+    bool verified = verify_status == ERROR_SUCCESS &&
+                    security_descriptor && actual_dacl &&
+                    GetSecurityDescriptorControl(security_descriptor, &control, &revision) &&
+                    (control & SE_DACL_PROTECTED) != 0 &&
+                    GetAclInformation(actual_dacl, &acl_info, sizeof(acl_info), AclSizeInformation) &&
+                    acl_info.AceCount == entry_count;
+    if (verified) {
+      PSID expected_sids[3] {system_sid, admins_sid, user_sid};
+      bool matched_sids[3] {};
+      constexpr BYTE expected_ace_flags = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
+      for (DWORD ace_index = 0; ace_index < acl_info.AceCount && verified; ++ace_index) {
+        void *raw_ace = nullptr;
+        if (!GetAce(actual_dacl, ace_index, &raw_ace) || !raw_ace) {
+          verified = false;
+          break;
+        }
+        const auto *allowed_ace = static_cast<const ACCESS_ALLOWED_ACE *>(raw_ace);
+        if (allowed_ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE ||
+            allowed_ace->Header.AceFlags != expected_ace_flags ||
+            allowed_ace->Mask != FILE_ALL_ACCESS) {
+          verified = false;
+          break;
+        }
+
+        PSID ace_sid = const_cast<DWORD *>(&allowed_ace->SidStart);
+        if (!IsValidSid(ace_sid)) {
+          verified = false;
+          break;
+        }
+        bool matched = false;
+        for (ULONG expected_index = 0; expected_index < entry_count; ++expected_index) {
+          if (!matched_sids[expected_index] && expected_sids[expected_index] &&
+              EqualSid(ace_sid, expected_sids[expected_index])) {
+            matched_sids[expected_index] = true;
+            matched = true;
+            break;
+          }
+        }
+        verified = matched;
+      }
+      for (ULONG expected_index = 0; expected_index < entry_count && verified; ++expected_index) {
+        verified = matched_sids[expected_index];
+      }
+    }
+    if (!verified) {
+      BOOST_LOG(warning) << "statefile: private directory ACL verification failed for "sv << dir.string()
+                         << " (error="sv << verify_status << ')';
+      return false;
+    }
+
+    BOOST_LOG(debug) << "statefile: hardened private directory "sv << dir.string();
+    return true;
 #else
     (void) path;
+    return true;
 #endif
   }
 
@@ -661,7 +750,7 @@ namespace statefile {
     // inheritance above cannot cascade a Users:(RX) ACE into it, and so an upgrade
     // that skipped the installer's icacls hardening is still secured at startup.
     for (const auto &dir : config_roots) {
-      secure_private_directory((dir / "credentials").string());
+      (void) secure_private_directory((dir / "credentials").string());
     }
 #endif
   }

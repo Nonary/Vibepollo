@@ -8,7 +8,7 @@
     <n-card
       :title="
         isPlayniteAuto
-          ? 'Remove and Exclude from Auto‑Sync?'
+          ? ($t('apps.confirm_delete_autosync_title') as any)
           : ($t('apps.confirm_delete_title_named', { name: name }) as any)
       "
       :bordered="false"
@@ -16,15 +16,9 @@
     >
       <div class="text-sm text-center space-y-2">
         <template v-if="isPlayniteAuto">
-          <div>
-            This application is managed by Playnite. Removing it will also add it to the Excluded
-            Games list so it won’t be auto‑synced back.
-          </div>
-          <div class="opacity-80">
-            You can restore it later by manually adding it, or by removing the exclusion under
-            Settings → Playnite.
-          </div>
-          <div class="opacity-70">Do you want to continue?</div>
+          <div>{{ $t('apps.confirm_delete_autosync_body') }}</div>
+          <div class="opacity-80">{{ $t('apps.confirm_delete_autosync_restore_hint') }}</div>
+          <div class="opacity-70">{{ $t('apps.confirm_delete_autosync_continue') }}</div>
         </template>
         <template v-else>
           {{ $t('apps.confirm_delete_message_named', { name }) }}

@@ -42,8 +42,10 @@ namespace platf {
 
   namespace {
     // RTSSHooks function pointer types
-    using fn_LoadProfile = BOOL(__cdecl *)(LPCSTR profileName);
-    using fn_SaveProfile = BOOL(__cdecl *)(LPCSTR profileName);
+    // RTSS' profile SDK declares load/save as void. Treating their undefined
+    // return registers as BOOL makes successful operations look like failures.
+    using fn_LoadProfile = VOID(__cdecl *)(LPCSTR profileName);
+    using fn_SaveProfile = VOID(__cdecl *)(LPCSTR profileName);
     using fn_GetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
     using fn_SetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
     using fn_UpdateProfiles = VOID(__cdecl *)();
@@ -847,9 +849,7 @@ namespace platf {
       std::string property_name(name);
       auto result = call_rtss_hooks<std::optional<int>>(name, [load_profile, get_property, property_name = std::move(property_name)]() {
         int value = 0;
-        if (!load_profile("")) {
-          return std::optional<int> {};
-        }
+        load_profile("");
         if (get_property(property_name.c_str(), &value, sizeof(value))) {
           return std::optional<int> {value};
         }
@@ -887,13 +887,12 @@ namespace platf {
                                                        ]() mutable {
         set_result_t state {0, false, false};
         // Empty string selects the global profile as in the RTSS UI.
-        if (!load_profile("")) {
-          return state;
-        }
+        load_profile("");
         state.had_old = get_property(property_name.c_str(), &state.old_value, sizeof(state.old_value)) != FALSE;
-        if (!set_property(property_name.c_str(), &new_value, sizeof(new_value)) || !save_profile("")) {
+        if (!set_property(property_name.c_str(), &new_value, sizeof(new_value))) {
           return state;
         }
+        save_profile("");
         update();
         state.applied = true;
         return state;
@@ -1338,51 +1337,42 @@ namespace platf {
       }
     }
 
-    if (hooks_available()) {
-      if (g_sync_limiter_modified && g_original_sync_limiter.has_value()) {
-        if (!set_profile_property_int("SyncLimiter", *g_original_sync_limiter).has_value()) {
-          restore_success = false;
+    if (g_sync_limiter_modified && g_original_sync_limiter.has_value()) {
+      bool restored = false;
+      if (hooks_available()) {
+        restored = set_profile_property_int("SyncLimiter", *g_original_sync_limiter).has_value();
+      }
+      if (!restored && write_profile_value_int(g_rtss_root, "SyncLimiter", *g_original_sync_limiter)) {
+        restored = true;
+        BOOST_LOG(info) << "RTSS profile SyncLimiter restored to "sv << *g_original_sync_limiter;
+        if (hooks_available()) {
+          (void) update_profiles();
         }
       }
-
-      if (g_limit_modified) {
-        if (g_original_limit.has_value()) {
-          if (set_profile_property_int("FramerateLimit", *g_original_limit).has_value()) {
-            BOOST_LOG(info) << "RTSS restored framerate limit=" << *g_original_limit;
-          } else {
-            restore_success = false;
-          }
-        } else {
-          if (set_profile_property_int("FramerateLimit", 0).has_value()) {
-            BOOST_LOG(info) << "RTSS restored framerate limit=<unset> (set 0)";
-          } else {
-            restore_success = false;
-          }
-        }
-      }
+      restore_success = restore_success && restored;
     }
-    if (!hooks_available()) {
-      if (g_sync_limiter_modified && g_original_sync_limiter.has_value()) {
-        if (write_profile_value_int(g_rtss_root, "SyncLimiter", *g_original_sync_limiter)) {
-          BOOST_LOG(info) << "RTSS profile SyncLimiter restored to "sv << *g_original_sync_limiter;
-        } else {
-          restore_success = false;
-        }
-      }
 
-      if (g_limit_modified) {
-        if (g_original_limit.has_value()) {
-          if (write_profile_value_int(g_rtss_root, "FramerateLimit", *g_original_limit)) {
-            BOOST_LOG(info) << "RTSS profile framerate limit restored to "sv << *g_original_limit;
-          } else {
-            restore_success = false;
-          }
-        } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", 0)) {
-          BOOST_LOG(info) << "RTSS profile framerate limit restored to 0"sv;
-        } else {
-          restore_success = false;
+    if (g_limit_modified) {
+      const int original_limit = g_original_limit.value_or(0);
+      bool restored = false;
+      if (hooks_available()) {
+        restored = set_profile_property_int("FramerateLimit", original_limit).has_value();
+      }
+      if (!restored && write_profile_value_int(g_rtss_root, "FramerateLimit", original_limit)) {
+        restored = true;
+        BOOST_LOG(info) << "RTSS profile framerate limit restored to "sv << original_limit;
+        if (hooks_available()) {
+          (void) update_profiles();
         }
       }
+      if (restored) {
+        if (g_original_limit.has_value()) {
+          BOOST_LOG(info) << "RTSS restored framerate limit=" << original_limit;
+        } else {
+          BOOST_LOG(info) << "RTSS restored framerate limit=<unset> (set 0)";
+        }
+      }
+      restore_success = restore_success && restored;
     }
 
     if (restore_success) {

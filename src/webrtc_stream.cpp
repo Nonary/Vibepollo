@@ -2214,9 +2214,14 @@ namespace webrtc_stream {
         config.force_sdr = true;
       }
 #endif
-      if (prefer_10bit_sdr) {
+      const bool effective_10bit_sdr = rtsp_stream::effective_10bit_sdr_requested(
+        prefer_10bit_sdr,
+        options.hdr.value_or(false),
+        config.force_sdr
+      );
+      if (effective_10bit_sdr) {
         if (supports_main10) {
-          BOOST_LOG(info) << "Preferring 10-bit SDR encode for WebRTC capture";
+          BOOST_LOG(info) << "Preferring 10-bit SDR encode for an SDR WebRTC request";
           config.dynamicRange = 1;
           config.prefer_sdr_10bit = true;
         } else {

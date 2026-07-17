@@ -1796,6 +1796,11 @@ namespace proc {
     });
 
 #ifdef _WIN32
+    // Some launchers disable the user's global screen saver setting and may
+    // exit without restoring it. Preserve the pre-launch state independently
+    // of whether the launched process remains trackable.
+    platf::cache_screen_saver_state();
+
     std::unordered_set<DWORD> lossless_baseline_pids;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
@@ -2225,6 +2230,12 @@ namespace proc {
   void proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
+#ifdef _WIN32
+    // pause() consumes the prior snapshot after restoring it. Capture a new
+    // baseline before any resume command can change the setting again.
+    platf::cache_screen_saver_state();
+#endif
+
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
         _env["APOLLO_APP_STATUS"] = "RESUMING";
@@ -2320,6 +2331,12 @@ namespace proc {
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+#endif
+
+#ifdef _WIN32
+    // A paused app can remain alive for session resume, so restore this global
+    // user setting even when normal application termination does not run.
+    platf::restore_screen_saver_state();
 #endif
   }
 
@@ -2502,6 +2519,12 @@ namespace proc {
         BOOST_LOG(warning) << "Return code ["sv << ret << ']';
       }
     }
+
+#ifdef _WIN32
+    // Restore after terminating the app and running its undo commands so a
+    // detached/placebo launcher cannot leave this global setting disabled.
+    platf::restore_screen_saver_state();
+#endif
 
     _pipe.reset();
 

@@ -27,7 +27,7 @@
             :class="{ active: showSettings }"
           >
             <i class="fas fa-sliders-h"></i>
-            <span>Settings</span>
+            <span>{{ $t('webrtc.session_settings') }}</span>
           </button>
         </div>
       </header>
@@ -50,7 +50,7 @@
             <input
               v-model="searchQuery"
               type="text"
-              :placeholder="$t('webrtc.search_placeholder') || 'Search applications...'"
+              :placeholder="$t('webrtc.search_placeholder')"
               class="search-input"
             />
             <button v-if="searchQuery" @click="searchQuery = ''" class="search-clear">
@@ -62,15 +62,15 @@
         <!-- No apps at all -->
         <div v-if="!appsList.length" class="empty-state">
           <i class="fas fa-gamepad"></i>
-          <h3>No Applications</h3>
-          <p>Add games in the Applications tab to start streaming</p>
+          <h3>{{ $t('webrtc.no_applications') }}</h3>
+          <p>{{ $t('webrtc.no_applications_hint') }}</p>
         </div>
 
         <!-- No search results -->
         <div v-else-if="!filteredApps.length" class="empty-state">
           <i class="fas fa-search"></i>
-          <h3>No Results</h3>
-          <p>No applications match "{{ searchQuery }}"</p>
+          <h3>{{ $t('webrtc.no_results') }}</h3>
+          <p>{{ $t('webrtc.no_applications_match', { query: searchQuery }) }}</p>
         </div>
 
         <template v-else>
@@ -87,7 +87,7 @@
               <div class="game-cover">
                 <img
                   :src="coverUrl(app) || undefined"
-                  :alt="app.name || 'Application'"
+                  :alt="app.name || $t('apps.app_name')"
                   loading="lazy"
                   @load="onCoverLoad(app)"
                   @error="onCoverError(app)"
@@ -101,7 +101,7 @@
                 </div>
               </div>
               <div class="game-meta">
-                <span class="game-name">{{ app.name || '(untitled)' }}</span>
+                <span class="game-name">{{ app.name || $t('webrtc.untitled_application') }}</span>
                 <span class="game-source">{{ appSubtitle(app) }}</span>
               </div>
             </button>
@@ -111,7 +111,7 @@
           <div v-if="appsWithoutCovers.length" class="other-apps-section">
             <h3 class="section-label">
               <i class="fas fa-window-maximize"></i>
-              Other Applications
+              {{ $t('webrtc.other_applications') }}
             </h3>
             <div class="apps-list">
               <button
@@ -126,7 +126,7 @@
                   <i class="fas fa-window-maximize"></i>
                 </div>
                 <div class="app-info">
-                  <span class="app-name">{{ app.name || '(untitled)' }}</span>
+                  <span class="app-name">{{ app.name || $t('webrtc.untitled_application') }}</span>
                   <span class="app-source">{{ appSubtitle(app) }}</span>
                 </div>
                 <div v-if="appNumericId(app) === selectedAppId" class="app-selected-icon">
@@ -149,10 +149,10 @@
         <div class="preview-header" v-if="!isFullscreen">
           <div class="preview-title">
             <i class="fas fa-tv"></i>
-            <span>Stream</span>
+            <span>{{ $t('webrtc.nav') }}</span>
             <span v-if="isConnected" class="live-indicator">
               <span class="live-dot"></span>
-              LIVE
+              {{ $t('sessions.live') }}
             </span>
           </div>
           <div class="preview-controls">
@@ -201,7 +201,7 @@
           <!-- Connecting State -->
           <div v-if="showStartingOverlay" class="connecting-state">
             <div class="spinner"></div>
-            <span>Connecting...</span>
+            <span>{{ $t('webrtc.connecting') }}</span>
           </div>
 
           <!-- Stats Overlay -->
@@ -258,13 +258,13 @@
           </button>
 
           <div class="quick-toggles">
-            <label class="toggle" title="Enable input forwarding">
+            <label class="toggle" :title="$t('webrtc.enable_input_forwarding')">
               <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
-              <span>Input</span>
+              <span>{{ $t('webrtc.input') }}</span>
             </label>
-            <label class="toggle" title="Show performance overlay">
+            <label class="toggle" :title="$t('webrtc.show_performance_overlay')">
               <n-switch v-model:value="showOverlay" size="small" />
-              <span>Stats</span>
+              <span>{{ $t('navbar.stats') }}</span>
             </label>
           </div>
         </div>
@@ -272,19 +272,19 @@
         <!-- Compact Metrics -->
         <div class="compact-metrics" v-if="isConnected && !isFullscreen && !streamMinimized">
           <div class="metric">
-            <span class="label">Bitrate</span
+            <span class="label">{{ $t('sessions.bitrate') }}</span
             ><span class="value">{{ formatKbps(stats.videoBitrateKbps) }}</span>
           </div>
           <div class="metric">
-            <span class="label">Latency</span
+            <span class="label">{{ $t('webrtc.metric_latency') }}</span
             ><span class="value">{{ formatMs(smoothedLatencyMs) }}</span>
           </div>
           <div class="metric">
-            <span class="label">FPS</span
+            <span class="label">{{ $t('sessions.fps') }}</span
             ><span class="value">{{ displayVideoFps ? displayVideoFps.toFixed(0) : '--' }}</span>
           </div>
           <div class="metric">
-            <span class="label">Dropped</span
+            <span class="label">{{ $t('webrtc.metric_dropped') }}</span
             ><span class="value">{{ stats.videoFramesDropped ?? '--' }}</span>
           </div>
         </div>
@@ -477,12 +477,12 @@
 
           <!-- Advanced Options -->
           <details class="advanced-section">
-            <summary><i class="fas fa-cogs"></i> Advanced Options</summary>
+            <summary><i class="fas fa-cogs"></i> {{ $t('webrtc.advanced_options') }}</summary>
             <div class="advanced-content">
               <div class="setting-group toggle-setting">
                 <div class="toggle-info">
-                  <label class="group-label">Auto Fullscreen</label>
-                  <p class="hint">Enter fullscreen when stream starts</p>
+                  <label class="group-label">{{ $t('webrtc.auto_fullscreen') }}</label>
+                  <p class="hint">{{ $t('webrtc.auto_fullscreen_desc') }}</p>
                 </div>
                 <n-switch v-model:value="autoFullscreen" size="small" />
               </div>
@@ -618,9 +618,9 @@ const connectionPillClass = computed(() => {
 });
 
 const connectionStatusLabel = computed(() => {
-  if (isConnected.value) return 'Connected';
-  if (isConnecting.value) return 'Connecting...';
-  return 'Ready';
+  if (isConnected.value) return t('clients.connected');
+  if (isConnecting.value) return t('webrtc.connecting');
+  return t('webrtc.status_ready');
 });
 
 type EncodingOption = { label: string; value: EncodingType };
@@ -655,18 +655,18 @@ const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport
 const encodingOptions = computed(() =>
   baseEncodingOptions.map((opt) => {
     const supported = opt.value === 'av1' ? encodingSupport.value[opt.value] : true;
-    const hint = supported ? '' : `${opt.label} may be unsupported by this browser.`;
+    const hint = supported ? '' : t('webrtc.encoding_unsupported_browser', { codec: opt.label });
     return { ...opt, supported, hint };
   }),
 );
 
-const pacingOptions = [
-  { label: 'Latency', value: 'latency' },
-  { label: 'Balanced', value: 'balanced' },
-  { label: 'Smooth', value: 'smoothness' },
-] as const;
+type PacingMode = 'latency' | 'balanced' | 'smoothness';
 
-type PacingMode = (typeof pacingOptions)[number]['value'];
+const pacingOptions = computed(() => [
+  { label: t('webrtc.pacing_latency'), value: 'latency' },
+  { label: t('webrtc.pacing_balanced'), value: 'balanced' },
+  { label: t('webrtc.pacing_smooth'), value: 'smoothness' },
+] as const);
 
 const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
   latency: { slackMs: 0, maxAgeFrames: 1 },
@@ -718,7 +718,7 @@ const hdrInlineWarning = computed(() => {
   if (!config.hdr) return null;
   if (hdrRuntimeWarning.value) return hdrRuntimeWarning.value;
   if (!hdrCodecAdvertised.value) {
-    return `This browser reports no ${config.encoding.toUpperCase()} decode support. If you get a black screen, switch codecs or disable HDR.`;
+    return t('webrtc.hdr_decode_unsupported', { codec: config.encoding.toUpperCase() });
   }
   return null;
 });
@@ -921,7 +921,7 @@ function coverUrl(app: App): string {
 function appSubtitle(app: App): string {
   if (app['playnite-id']) return 'Playnite';
   if (app['working-dir']) return String(app['working-dir']);
-  return 'Custom';
+  return t('webrtc.app_source_custom');
 }
 
 function appNumericId(app: App): number | null {
@@ -949,9 +949,11 @@ function clearSelection() {
 }
 
 const selectedAppLabel = computed(() => {
-  if (!selectedAppId.value) return 'No app selected';
+  if (!selectedAppId.value) return t('webrtc.no_app_selected');
   const selected = appsList.value.find((app) => appNumericId(app) === selectedAppId.value);
-  return selected?.name ? selected.name : `App ${selectedAppId.value}`;
+  return selected?.name
+    ? selected.name
+    : t('webrtc.app_fallback_name', { id: selectedAppId.value });
 });
 
 const selectedAppName = computed(() => {
@@ -1242,9 +1244,9 @@ const overlayLines = computed(() => {
   const dropped = stats.value.videoFramesDropped ?? '--';
   const codec = stats.value.videoCodec ?? '--';
   return [
-    `FPS: ${fps} | Bitrate: ${bitrate}`,
-    `Latency: ${latency} | Dropped: ${dropped}`,
-    `Codec: ${codec} | Size: ${videoSizeLabel.value}`,
+    t('webrtc.stats_fps_bitrate', { fps, bitrate }),
+    t('webrtc.stats_latency_dropped', { latency, dropped }),
+    t('webrtc.stats_codec_size', { codec, size: videoSizeLabel.value }),
   ];
 });
 
@@ -2771,7 +2773,7 @@ async function startConnect() {
             negotiatedEncoding.value = encoding;
         },
         onWarning: (warning) => {
-          notifyWarning('Configuration Warning', warning);
+          notifyWarning(t('_common.warning'), warning);
           if (config.hdr && /^hdr\b/i.test(warning)) hdrRuntimeWarning.value = warning;
         },
       },
@@ -2780,8 +2782,8 @@ async function startConnect() {
     sessionId.value = id;
     startServerSessionPolling();
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Failed to establish WebRTC session.';
-    notifyError('Connection Failed', msg);
+    const msg = error instanceof Error ? error.message : t('webrtc.connection_start_failed');
+    notifyError(t('webrtc.connection_failed'), msg);
     console.error(error);
     audioAutoplayRequested = false;
     stopAudioPlayRetry();
@@ -2867,8 +2869,8 @@ async function terminateSession() {
   try {
     await http.post('/api/apps/close', {}, { validateStatus: () => true });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Failed to terminate session.';
-    notifyError('Termination Failed', msg);
+    const msg = error instanceof Error ? error.message : t('webrtc.termination_failed_desc');
+    notifyError(t('webrtc.termination_failed'), msg);
   } finally {
     await disconnect();
     terminatePending.value = false;

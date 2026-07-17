@@ -9,6 +9,8 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -79,6 +81,8 @@ extern "C" {
 namespace {
 
   std::atomic<bool> used_nt_set_timer_resolution = false;
+  std::mutex screen_saver_state_mutex;
+  std::optional<bool> screen_saver_active_before_app;
 
   bool nt_set_timer_resolution_max() {
     ULONG maximum;
@@ -129,6 +133,75 @@ namespace platf {
   decltype(WlanFreeMemory) *fn_WlanFreeMemory = nullptr;
   decltype(WlanEnumInterfaces) *fn_WlanEnumInterfaces = nullptr;
   decltype(WlanSetInterface) *fn_WlanSetInterface = nullptr;
+
+  namespace {
+    bool update_screen_saver_state(UINT action, UINT value, PVOID state, DWORD &winerr) {
+      BOOL success = FALSE;
+      auto invoke = [&]() {
+        SetLastError(ERROR_SUCCESS);
+        success = SystemParametersInfoW(action, value, state, 0);
+        winerr = success ? ERROR_SUCCESS : GetLastError();
+      };
+
+      if (!is_running_as_system()) {
+        invoke();
+        return success != FALSE;
+      }
+
+      HANDLE user_token = retrieve_users_token(false);
+      if (!user_token) {
+        winerr = GetLastError();
+        return false;
+      }
+      auto close_token = util::fail_guard([user_token]() {
+        CloseHandle(user_token);
+      });
+
+      const auto impersonation_error = impersonate_current_user(user_token, invoke);
+      if (impersonation_error) {
+        winerr = static_cast<DWORD>(impersonation_error.value());
+        return false;
+      }
+
+      return success != FALSE;
+    }
+  }  // namespace
+
+  void cache_screen_saver_state() {
+    auto lock = std::lock_guard(screen_saver_state_mutex);
+    if (screen_saver_active_before_app) {
+      return;
+    }
+
+    BOOL screen_saver_active = FALSE;
+    DWORD winerr = ERROR_SUCCESS;
+    if (!update_screen_saver_state(SPI_GETSCREENSAVEACTIVE, 0, &screen_saver_active, winerr)) {
+      BOOST_LOG(warning) << "Unable to cache the screen saver state before app launch: "sv << winerr;
+      return;
+    }
+
+    screen_saver_active_before_app = screen_saver_active != FALSE;
+    BOOST_LOG(debug) << "Cached screen saver state before app launch: "
+                     << (*screen_saver_active_before_app ? "enabled" : "disabled");
+  }
+
+  void restore_screen_saver_state() {
+    auto lock = std::lock_guard(screen_saver_state_mutex);
+    if (!screen_saver_active_before_app) {
+      return;
+    }
+
+    DWORD winerr = ERROR_SUCCESS;
+    const auto previous_state = *screen_saver_active_before_app;
+    if (!update_screen_saver_state(SPI_SETSCREENSAVEACTIVE, previous_state ? TRUE : FALSE, nullptr, winerr)) {
+      BOOST_LOG(warning) << "Unable to restore the screen saver state after app/session teardown: "sv << winerr;
+      return;
+    }
+
+    screen_saver_active_before_app.reset();
+    BOOST_LOG(info) << "Restored screen saver state after app/session teardown: "
+                    << (previous_state ? "enabled" : "disabled");
+  }
 
   std::filesystem::path appdata() {
     WCHAR sunshine_path[MAX_PATH];

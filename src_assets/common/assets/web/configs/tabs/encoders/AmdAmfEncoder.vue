@@ -10,9 +10,7 @@ const config = store.config;
   <div id="amd-amf-encoder" class="config-page">
     <div class="mb-4 rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
       <div class="bg-surface/40 dark:bg-surface/30 px-4 py-3">
-        <h3 class="text-sm font-medium">
-          AMD AMF Encoder
-        </h3>
+        <h3 class="text-sm font-medium">{{ $t('config.amd_section_title') }}</h3>
       </div>
       <div class="p-4">
         <ConfigFieldRenderer setting-key="amd_usage" v-model="config.amd_usage" class="mb-6" />
@@ -42,7 +40,11 @@ const config = store.config;
             {{ $t('config.amd_quality_group') }}
           </h4>
 
-          <ConfigFieldRenderer setting-key="amd_quality" v-model="config.amd_quality" class="mb-6" />
+          <ConfigFieldRenderer
+            setting-key="amd_quality"
+            v-model="config.amd_quality"
+            class="mb-6"
+          />
 
           <ConfigFieldRenderer
             setting-key="amd_preanalysis"

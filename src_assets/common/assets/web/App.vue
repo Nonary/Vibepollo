@@ -52,7 +52,7 @@
                     :options="mobileMenuOptions"
                     @select="onMobileSelect"
                   >
-                    <n-button type="primary" strong circle size="small" aria-label="Menu">
+                    <n-button type="primary" strong circle size="small" :aria-label="$t('navbar.menu')">
                       <i class="fas fa-bars" />
                     </n-button>
                   </n-dropdown>

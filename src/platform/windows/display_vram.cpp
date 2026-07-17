@@ -502,9 +502,9 @@ namespace platf::dxgi {
     }
 
     int convert(platf::img_t &img_base) {
-      // Garbage collect mapped capture images whose weak references have expired
+      // Garbage collect mapped capture resources whose shared handle owners have expired.
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
-        if (it->second.img_weak.expired()) {
+        if (it->second.encoder_texture_handle_weak.expired()) {
           it = img_ctx_map.erase(it);
         } else {
           it++;
@@ -1547,7 +1547,7 @@ namespace platf::dxgi {
       texture2d_t truehdr_input_texture;
       shader_res_t truehdr_input_res;
 
-      std::weak_ptr<const platf::img_t> img_weak;
+      std::weak_ptr<winrt::handle> encoder_texture_handle_weak;
 
       void reset() {
         capture_texture_p = nullptr;
@@ -1556,7 +1556,7 @@ namespace platf::dxgi {
         encoder_mutex.reset();
         truehdr_input_texture.reset();
         truehdr_input_res.reset();
-        img_weak.reset();
+        encoder_texture_handle_weak.reset();
       }
     };
 
@@ -1577,8 +1577,13 @@ namespace platf::dxgi {
         return -1;
       }
 
+      if (!img.encoder_texture_handle || !img.encoder_texture_handle->get()) {
+        BOOST_LOG(error) << "Missing shared image texture handle";
+        return -1;
+      }
+
       // Open a handle to the shared texture
-      status = device1->OpenSharedResource1(img.encoder_texture_handle, __uuidof(ID3D11Texture2D), (void **) &img_ctx.encoder_texture);
+      status = device1->OpenSharedResource1(img.encoder_texture_handle->get(), __uuidof(ID3D11Texture2D), (void **) &img_ctx.encoder_texture);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Failed to open shared image texture [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
@@ -1600,7 +1605,7 @@ namespace platf::dxgi {
 
       img_ctx.capture_texture_p = img.capture_texture.get();
 
-      img_ctx.img_weak = img.weak_from_this();
+      img_ctx.encoder_texture_handle_weak = img.encoder_texture_handle;
 
       return 0;
     }
@@ -3008,10 +3013,7 @@ namespace platf::dxgi {
     img->capture_rt.reset();
     img->capture_mutex.reset();
     img->data = nullptr;
-    if (img->encoder_texture_handle) {
-      CloseHandle(img->encoder_texture_handle);
-      img->encoder_texture_handle = nullptr;
-    }
+    img->encoder_texture_handle.reset();
 
     // Initialize format-dependent fields
     img->pixel_pitch = get_pixel_pitch();
@@ -3056,12 +3058,14 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // Create a handle for the encoder device to use to open this texture
-    status = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, &img->encoder_texture_handle);
+    // Create a handle for the encoder device to use to open this texture.
+    auto encoder_texture_handle = std::make_shared<winrt::handle>();
+    status = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr, encoder_texture_handle->put());
     if (FAILED(status)) {
       BOOST_LOG(error) << "Failed to create shared texture handle [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
     }
+    img->encoder_texture_handle = std::move(encoder_texture_handle);
 
     img->data = (std::uint8_t *) img->capture_texture.get();
 

@@ -15,18 +15,20 @@ export const LOSSLESS_RESOLUTION_MAX = 100;
 export const LOSSLESS_SHARPNESS_MIN = 1;
 export const LOSSLESS_SHARPNESS_MAX = 10;
 
-export const LOSSLESS_SCALING_OPTIONS: { label: string; value: LosslessScalingMode }[] = [
-  { label: 'Off', value: 'off' },
+export type LocalizedOption<T> = { label?: string; labelKey?: string; value: T };
+
+export const LOSSLESS_SCALING_OPTIONS: LocalizedOption<LosslessScalingMode>[] = [
+  { labelKey: '_common.disabled', value: 'off' },
   { label: 'LS1', value: 'ls1' },
   { label: 'FSR 1.0', value: 'fsr' },
   { label: 'NIS', value: 'nis' },
   { label: 'SGSR', value: 'sgsr' },
-  { label: 'BCAS (Anime)', value: 'bcas' },
+  { labelKey: 'apps.lossless.scaling_bcas', value: 'bcas' },
   { label: 'Anime4K', value: 'anime4k' },
   { label: 'xBR', value: 'xbr' },
-  { label: 'Sharp Bilinear', value: 'sharp-bilinear' },
-  { label: 'Integer Scale', value: 'integer' },
-  { label: 'Nearest Neighbour', value: 'nearest' },
+  { labelKey: 'apps.lossless.scaling_sharp_bilinear', value: 'sharp-bilinear' },
+  { labelKey: 'apps.lossless.scaling_integer', value: 'integer' },
+  { labelKey: 'apps.lossless.scaling_nearest', value: 'nearest' },
 ];
 
 export const LOSSLESS_SCALING_SHARPENING = new Set<LosslessScalingMode>([
@@ -36,20 +38,19 @@ export const LOSSLESS_SCALING_SHARPENING = new Set<LosslessScalingMode>([
   'sgsr',
 ]);
 
-export const LOSSLESS_ANIME_SIZES: { label: string; value: Anime4kSize }[] = [
-  { label: 'Small', value: 'S' },
-  { label: 'Medium', value: 'M' },
-  { label: 'Large', value: 'L' },
-  { label: 'Very Large', value: 'VL' },
-  { label: 'Ultra Large', value: 'UL' },
+export const LOSSLESS_ANIME_SIZES: LocalizedOption<Anime4kSize>[] = [
+  { labelKey: 'apps.lossless.anime_size_s', value: 'S' },
+  { labelKey: 'apps.lossless.anime_size_m', value: 'M' },
+  { labelKey: 'apps.lossless.anime_size_l', value: 'L' },
+  { labelKey: 'apps.lossless.anime_size_vl', value: 'VL' },
+  { labelKey: 'apps.lossless.anime_size_ul', value: 'UL' },
 ];
 
-export const FRAME_GENERATION_PROVIDERS: Array<{ label: string; value: FrameGenerationProvider }> =
-  [
-    { label: 'Game Provided', value: 'game-provided' },
-    { label: 'Lossless Scaling', value: 'lossless-scaling' },
-    { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
-  ];
+export const FRAME_GENERATION_PROVIDERS: LocalizedOption<FrameGenerationProvider>[] = [
+  { labelKey: 'apps.framegen.provider_game_provided', value: 'game-provided' },
+  { label: 'Lossless Scaling', value: 'lossless-scaling' },
+  { label: 'NVIDIA Smooth Motion', value: 'nvidia-smooth-motion' },
+];
 
 export const LOSSLESS_PROFILE_DEFAULTS: Record<LosslessProfileKey, LosslessProfileDefaults> = {
   recommended: {

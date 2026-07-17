@@ -1,12 +1,16 @@
 <template>
   <section class="space-y-3">
     <div class="flex items-center justify-between">
-      <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">Prep Commands</h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wider opacity-70">
+        {{ $t('apps.cmd_prep_name') }}
+      </h3>
       <n-button size="small" type="primary" @click="emit('add-prep')">
-        <i class="fas fa-plus" /> Add
+        <i class="fas fa-plus" /> {{ $t('_common.add') }}
       </n-button>
     </div>
-    <div v-if="form.prepCmd.length === 0" class="text-[12px] opacity-60">None</div>
+    <div v-if="form.prepCmd.length === 0" class="text-[12px] opacity-60">
+      {{ $t('apps.framegen.mode_none') }}
+    </div>
     <div v-else class="space-y-2">
       <div
         v-for="(p, i) in form.prepCmd"
@@ -14,7 +18,7 @@
         class="rounded-md border border-dark/10 dark:border-light/10 p-2"
       >
         <div class="flex items-center justify-between gap-2 mb-2">
-          <div class="text-xs opacity-70">Step {{ i + 1 }}</div>
+          <div class="text-xs opacity-70">{{ $t('apps.prep_step', { number: i + 1 }) }}</div>
           <div class="flex items-center gap-2">
             <n-checkbox v-if="isWindows" v-model:checked="p.elevated" size="small">
               {{ $t('_common.elevated') }}
@@ -32,7 +36,7 @@
               type="textarea"
               :autosize="{ minRows: 1, maxRows: 3 }"
               class="font-mono"
-              placeholder="Command to run before start"
+              :placeholder="$t('_common.do_cmd')"
             />
           </div>
           <div>
@@ -42,7 +46,7 @@
               type="textarea"
               :autosize="{ minRows: 1, maxRows: 3 }"
               class="font-mono"
-              placeholder="Command to run on stop"
+              :placeholder="$t('_common.undo_cmd')"
             />
           </div>
         </div>

@@ -6,6 +6,7 @@
 
 // standard includes
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -467,27 +468,16 @@ namespace platf::dxgi {
 
   protected:
     /**
-     * @brief Acquires the next frame from the display.
-     * @param timeout Maximum time to wait for a frame.
-     * @param src Output parameter for the source texture.
-     * @param frame_qpc Output parameter for the frame's QPC timestamp.
-     * @param cursor_visible Whether the cursor should be included in the capture.
-     * @return Status of the frame acquisition operation.
-     */
-    capture_e acquire_next_frame(std::chrono::milliseconds timeout, texture2d_t &src, uint64_t &frame_qpc, bool cursor_visible);
-
-    /**
      * @brief Releases resources or state after a snapshot.
      * @return Status of the release operation.
      */
     capture_e release_snapshot() override;
 
   private:
-    std::unique_ptr<class ipc_session_t> _ipc_session;
+    std::shared_ptr<class ipc_session_t> _ipc_session;
     ::video::config_t _config;
     std::string _display_name;
-    bool _session_initialized_logged = false;
-    bool _frame_locked = false;
+    std::array<uint32_t, WGC_IPC_TEXTURE_SLOT_COUNT> _slot_image_ids {};
     std::shared_ptr<platf::img_t> _last_cached_frame;
     std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
@@ -552,7 +542,7 @@ namespace platf::dxgi {
     /**
      * @brief IPC session for communication with capture helper.
      */
-    std::unique_ptr<class ipc_session_t> _ipc_session;
+    std::shared_ptr<class ipc_session_t> _ipc_session;
     /**
      * @brief Video configuration used for capture.
      */

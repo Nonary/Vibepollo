@@ -1,12 +1,9 @@
 import {
   buildConfigOptionsText,
   getConfigSelectOptions,
-  translateOr,
   type ConfigSelectOption,
   type ConfigSelectOptionsContext,
 } from '@/configs/configSelectOptions';
-
-export { translateOr };
 
 export type OverrideSelectOption = ConfigSelectOption;
 export type OverrideSelectOptionsContext = ConfigSelectOptionsContext;

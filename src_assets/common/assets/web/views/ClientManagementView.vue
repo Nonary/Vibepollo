@@ -398,9 +398,9 @@
                   <n-form-item>
                     <n-checkbox v-model:checked="client.editAllowClientCommands" size="small">
                       <div class="flex flex-col">
-                        <span>Allow Client Commands</span>
+                        <span>{{ $t('pin.allow_client_commands') }}</span>
                         <span class="text-[11px] opacity-60">
-                          Allow this client to run connect and disconnect commands.
+                          {{ $t('pin.allow_client_commands_desc') }}
                         </span>
                       </div>
                     </n-checkbox>
@@ -412,7 +412,7 @@
                     >
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          Connect Commands
+                          {{ $t('pin.client_do_cmd') }}
                         </div>
                         <n-button
                           size="tiny"
@@ -423,7 +423,7 @@
                         </n-button>
                       </div>
                       <div v-if="client.editDoCommands.length === 0" class="text-xs opacity-70">
-                        No commands configured.
+                        {{ $t('apps.framegen.mode_none') }}
                       </div>
                       <div v-else class="space-y-2">
                         <div
@@ -462,7 +462,7 @@
                     >
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          Disconnect Commands
+                          {{ $t('pin.client_undo_cmd') }}
                         </div>
                         <n-button
                           size="tiny"
@@ -473,7 +473,7 @@
                         </n-button>
                       </div>
                       <div v-if="client.editUndoCommands.length === 0" class="text-xs opacity-70">
-                        No commands configured.
+                        {{ $t('apps.framegen.mode_none') }}
                       </div>
                       <div v-else class="space-y-2">
                         <div

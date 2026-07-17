@@ -197,7 +197,7 @@ const virtualDisplayLayout = computed<
 const virtualDisplayLayoutOptions = computed(() => [
   {
     value: 'exclusive',
-    label: t('config.virtual_display_layout_exclusive') + ' (default)',
+    label: `${t('config.virtual_display_layout_exclusive')} ${t('_common.default_parenthetical')}`,
     description: t('config.virtual_display_layout_exclusive_desc'),
   },
   {

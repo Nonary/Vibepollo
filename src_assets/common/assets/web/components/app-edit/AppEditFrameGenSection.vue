@@ -54,7 +54,10 @@ const emit = defineEmits<{
 const hasHealthData = computed(() => !!props.health);
 const frameGenOptions = computed(() => [
   { label: t('apps.framegen.mode_none'), value: 'off' as const },
-  ...FRAME_GENERATION_PROVIDERS,
+  ...FRAME_GENERATION_PROVIDERS.map((option) => ({
+    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
+    value: option.value,
+  })),
 ]);
 const isLosslessMode = computed(() => modeModel.value === 'lossless-scaling');
 const frameGenDisplayAlert = computed(() => {

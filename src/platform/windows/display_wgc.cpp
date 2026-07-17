@@ -5,7 +5,6 @@
 
 // standard includes
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <winsock2.h>
 #include <dxgi1_2.h>
@@ -13,9 +12,9 @@
 #include <wrl/client.h>
 
 // local includes
-#include "src/config.h"
 #include "ipc/ipc_session.h"
 #include "ipc/misc_utils.h"
+#include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/windows/display.h"
 #include "src/platform/windows/display_vram.h"
@@ -31,10 +30,6 @@ namespace platf::dxgi {
       bool secure_desktop_active;
       bool recent_desktop_switch;
     };
-
-    std::atomic<uint64_t> g_wgc_snapshot_copies {0};
-    std::atomic<uint64_t> g_wgc_slow_snapshot_locks {0};
-    std::atomic<uint64_t> g_wgc_slow_snapshot_copies {0};
 
     class adapter_luid_override_guard {
     public:
@@ -81,6 +76,20 @@ namespace platf::dxgi {
     bool is_wgc_constant_mode() {
       return config::video.capture == "wgcc";
     }
+
+    /**
+     * Owns both a pooled capture image and its move-only helper ring-slot
+     * lease. The image returned to encoders aliases this owner, so the slot is
+     * released only after the final consumer drops the image.
+     */
+    struct wgc_vram_frame_owner_t {
+      wgc_vram_frame_owner_t(std::shared_ptr<platf::img_t> pooled_image, wgc_texture_slot_lease_t slot_lease):
+          image(std::move(pooled_image)),
+          lease(std::move(slot_lease)) {}
+
+      std::shared_ptr<platf::img_t> image;
+      wgc_texture_slot_lease_t lease;
+    };
 
     std::chrono::milliseconds effective_wgc_timeout(std::chrono::milliseconds timeout, int client_framerate) {
       if (timeout.count() != 0) {
@@ -162,12 +171,7 @@ namespace platf::dxgi {
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
-  display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
-    if (_frame_locked && _ipc_session) {
-      _ipc_session->release();
-      _frame_locked = false;
-    }
-  }
+  display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() = default;
 
   int display_wgc_ipc_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
     _config = config;
@@ -182,9 +186,13 @@ namespace platf::dxgi {
     const bool advanced_color_capture = is_hdr();
 
     // Create session
-    _ipc_session = std::make_unique<ipc_session_t>();
+    _ipc_session = std::make_shared<ipc_session_t>();
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
+    }
+
+    for (auto &image_id : _slot_image_ids) {
+      image_id = next_image_id++;
     }
 
     return 0;
@@ -257,121 +265,64 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    // Pull a free image from the pool before touching the shared IPC keyed
-    // mutex. The encoder image pool can block under pressure; holding the
-    // shared mutex during that wait stalls the WGC helper producer.
-    std::shared_ptr<platf::img_t> img;
-    if (!pull_free_image_cb(img)) {
+    // Use the shared capture-image pool so frame handoff has no per-frame
+    // image allocation. The alias owner below keeps this pooled image checked
+    // out until all encoder consumers have released the ring slot.
+    std::shared_ptr<platf::img_t> pooled_image;
+    if (!pull_free_image_cb(pooled_image)) {
       return capture_e::interrupted;
     }
 
-    auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
-    if (complete_img(d3d_img.get(), false)) {
-      return capture_e::error;
-    }
-
-    // Acquire the encoder image's keyed mutex BEFORE the shared IPC mutex.
-    // The encoder may still be sampling the previous frame; if we held the
-    // shared IPC mutex during this wait, the helper's delivery thread would
-    // block, its WGC frame pool would back up, and the compositor would drop
-    // frames at the source. Taking the encoder mutex first keeps the shared
-    // IPC mutex critical section bounded to the GPU-copy submission only.
-    const auto capture_mutex_wait_start = std::chrono::steady_clock::now();
-    HRESULT status = d3d_img->capture_mutex->AcquireSync(0, 3000);
-    const auto capture_mutex_wait = std::chrono::steady_clock::now() - capture_mutex_wait_start;
-    if (status == WAIT_ABANDONED) {
-      BOOST_LOG(error) << "Capture texture keyed mutex was abandoned; continuing with lock held";
-    } else if (status != S_OK) {
-      BOOST_LOG(error) << "Failed to lock capture texture [0x"sv << util::hex(status).to_string_view() << ']';
-      return capture_e::error;
-    }
-
-    auto release_capture_mutex = util::fail_guard([&]() {
-      const HRESULT release_status = d3d_img->capture_mutex->ReleaseSync(0);
-      if (FAILED(release_status)) {
-        BOOST_LOG(warning) << "Failed to release capture texture mutex [0x"sv << util::hex(release_status).to_string_view() << ']';
-      }
-    });
-
-    texture2d_t src;
-    uint64_t frame_qpc = 0;
-    winrt::com_ptr<ID3D11Texture2D> gpu_tex;
-    capture_status = _ipc_session->lock_frame(gpu_tex, frame_qpc);
+    // Claim the helper-owned ring slot directly. The lease keeps the texture
+    // immutable until every encoder and cached-frame reference has finished.
+    shared_frame_t frame;
+    capture_status = _ipc_session->claim_frame(frame);
     if (capture_status != capture_e::ok) {
+      pooled_image.reset();
       return capture_status;
     }
-    gpu_tex.copy_to(&src);
-    _frame_locked = true;
 
     const auto host_processing_timestamp = std::chrono::steady_clock::now();
-    auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame_qpc);
+    const auto frame_timestamp = host_processing_timestamp - qpc_time_difference(qpc_counter(), frame.frame_qpc);
 
-    // The IPC texture is a single mutable helper-owned surface. Snapshot it into
-    // this pool-owned texture so queued encoder frames remain stable.
-    const auto copy_start = std::chrono::steady_clock::now();
-    device_ctx->CopyResource(d3d_img->capture_texture.get(), src.get());
-    const auto copy_submit = std::chrono::steady_clock::now() - copy_start;
-    d3d_img->blank = false;
-
-    // Release the shared IPC mutex immediately after queueing the copy. The
-    // GPU work is fenced through the keyed-mutex / encoder pipeline, so the
-    // helper is free to publish the next frame as soon as we drop this mutex.
-    _ipc_session->release();
-    _frame_locked = false;
-
-    const auto copy_count = g_wgc_snapshot_copies.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();
-    const auto copy_submit_ms = std::chrono::duration<double, std::milli>(copy_submit).count();
-    const bool slow_lock = capture_mutex_wait_ms > 1.0;
-    const bool slow_copy = copy_submit_ms > 1.0;
-    if (slow_lock) {
-      g_wgc_slow_snapshot_locks.fetch_add(1, std::memory_order_relaxed);
-    }
-    if (slow_copy) {
-      g_wgc_slow_snapshot_copies.fetch_add(1, std::memory_order_relaxed);
-    }
-    if (copy_count == 1 || copy_count % 600 == 0 || slow_lock || slow_copy) {
-      BOOST_LOG(debug) << "WGC snapshot copy timing: frame=" << copy_count
-                       << " capture_mutex_wait_ms=" << capture_mutex_wait_ms
-                       << " copy_submit_ms=" << copy_submit_ms
-                       << " slow_locks=" << g_wgc_slow_snapshot_locks.load(std::memory_order_relaxed)
-                       << " slow_copies=" << g_wgc_slow_snapshot_copies.load(std::memory_order_relaxed);
-    }
+    // This is the only new owner allocation per frame. The returned shared_ptr
+    // aliases it rather than allocating another image/control block.
+    auto owner = std::make_shared<wgc_vram_frame_owner_t>(std::move(pooled_image), std::move(frame.lease));
+    auto *img = static_cast<img_d3d_t *>(owner->image.get());
+    img->capture_texture.reset();
+    img->capture_rt.reset();
+    img->capture_mutex.reset();
+    img->encoder_texture_handle.reset();
+    img->data = nullptr;
+    img->width = width_before_rotation;
+    img->height = height_before_rotation;
+    img->pixel_pitch = get_pixel_pitch();
+    img->row_pitch = img->pixel_pitch * img->width;
+    img->format = capture_format;
+    img->id = _slot_image_ids[frame.texture_slot];
+    img->dummy = false;
+    img->blank = false;
+    frame.texture.copy_to(&img->capture_texture);
+    frame.keyed_mutex.copy_to(&img->capture_mutex);
+    img->encoder_texture_handle = std::move(frame.encoder_texture_handle);
+    img->data = reinterpret_cast<std::uint8_t *>(img->capture_texture.get());
 
     img->frame_timestamp = frame_timestamp;
     img->host_processing_timestamp = host_processing_timestamp;
     // Keep WGC's QPC-derived timestamp for RTP/client accounting, but do not
     // use compositor timestamp jitter as the capture-loop sleep anchor.
     img->capture_pacing_timestamp = host_processing_timestamp;
-    img_out = img;
-    _last_cached_frame = img;
-
-    return capture_e::ok;
-  }
-
-  capture_e display_wgc_ipc_vram_t::acquire_next_frame(std::chrono::milliseconds timeout, texture2d_t &src, uint64_t &frame_qpc, bool cursor_visible) {
-    if (!_ipc_session) {
-      return capture_e::error;
+    img_out = std::shared_ptr<platf::img_t> {owner, owner->image.get()};
+    if (is_wgc_constant_mode()) {
+      _last_cached_frame = img_out;
+    } else {
+      _last_cached_frame.reset();
     }
-
-    winrt::com_ptr<ID3D11Texture2D> gpu_tex;
-    auto status = _ipc_session->acquire(effective_wgc_timeout(timeout, _config.framerate), gpu_tex, frame_qpc);
-
-    if (status != capture_e::ok) {
-      return status;
-    }
-
-    gpu_tex.copy_to(&src);
-    _frame_locked = true;
 
     return capture_e::ok;
   }
 
   capture_e display_wgc_ipc_vram_t::release_snapshot() {
-    if (_ipc_session && _frame_locked) {
-      _ipc_session->release();
-      _frame_locked = false;
-    }
     return capture_e::ok;
   }
 
@@ -425,7 +376,7 @@ namespace platf::dxgi {
     const bool advanced_color_capture = is_hdr();
 
     // Create session
-    _ipc_session = std::make_unique<ipc_session_t>();
+    _ipc_session = std::make_shared<ipc_session_t>();
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
@@ -578,7 +529,11 @@ namespace platf::dxgi {
     img->frame_timestamp = frame_timestamp;
     img->host_processing_timestamp = host_processing_timestamp;
     img->capture_pacing_timestamp = host_processing_timestamp;
-    _last_cached_frame = img_out;
+    if (is_wgc_constant_mode()) {
+      _last_cached_frame = img_out;
+    } else {
+      _last_cached_frame.reset();
+    }
 
     return capture_e::ok;
   }

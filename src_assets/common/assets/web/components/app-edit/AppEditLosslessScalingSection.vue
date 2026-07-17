@@ -3,10 +3,10 @@
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-          Lossless Scaling Upscaling
+          {{ $t('apps.framegen.lossless_title') }}
         </div>
         <p class="text-[11px] opacity-60">
-          Enable Lossless Scaling when you want Vibepollo to manage upscaling before encoding.
+          {{ $t('apps.framegen.lossless_subtitle') }}
         </p>
       </div>
       <n-switch v-model:value="form.losslessScalingEnabled" size="small" />
@@ -19,10 +19,7 @@
       size="small"
       class="text-xs"
     >
-      This application isn't managed by Playnite. Vibepollo will try to guess which game executable
-      is running and apply the Lossless Scaling profile automatically, but that detection is
-      best-effort and may not always succeed. Configure Playnite integration for more reliable
-      results.
+      {{ $t('apps.framegen.lossless_unmanaged_warning') }}
     </n-alert>
     <n-alert
       v-if="
@@ -35,21 +32,21 @@
       size="small"
       class="text-xs"
     >
-      Lossless Scaling executable not detected. Configure the executable path under Settings →
-      Capture.
+      {{ $t('apps.framegen.lossless_not_detected') }}
     </n-alert>
 
     <div v-if="form.losslessScalingEnabled" class="space-y-4">
       <div class="grid gap-3 md:grid-cols-2">
         <div class="space-y-1">
-          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">Profile</label>
+          <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
+            {{ $t('apps.framegen.profile_label') }}
+          </label>
           <n-radio-group v-model:value="form.losslessScalingProfile">
-            <n-radio value="recommended">Recommended (Lowest Latency & Frame Pacing)</n-radio>
-            <n-radio value="custom">Custom: Use my Lossless Scaling default profile</n-radio>
+            <n-radio value="recommended">{{ $t('apps.framegen.profile_recommended') }}</n-radio>
+            <n-radio value="custom">{{ $t('apps.framegen.profile_custom') }}</n-radio>
           </n-radio-group>
           <p class="text-[11px] opacity-60">
-            Recommended keeps Vibepollo-tuned values for consistent latency and frame pacing. Custom
-            runs the profile you maintain inside Lossless Scaling.
+            {{ $t('apps.framegen.profile_hint') }}
           </p>
         </div>
         <div class="flex items-end justify-end">
@@ -59,7 +56,7 @@
             :disabled="!hasActiveLosslessOverrides"
             @click="resetActiveLosslessProfile"
           >
-            Reset to Profile Defaults
+            {{ $t('apps.framegen.reset_profile') }}
           </n-button>
         </div>
       </div>
@@ -67,35 +64,33 @@
       <div class="space-y-3 p-3 rounded-md border border-primary/20 bg-primary/5">
         <div class="flex items-center gap-2">
           <i class="fas fa-info-circle text-primary"></i>
-          <div class="text-xs font-semibold">How Lossless Scaling Works</div>
+          <div class="text-xs font-semibold">{{ $t('apps.framegen.lossless_how_it_works') }}</div>
         </div>
         <p class="text-[11px] opacity-70">
-          Lossless Scaling <strong>downscales</strong> the game using the resolution scale, then
-          <strong>upscales</strong> back to the original resolution using the selected filter. This
-          can improve performance but may reduce visual quality.
+          {{ $t('apps.framegen.lossless_how_it_works_desc') }}
         </p>
       </div>
 
       <div class="grid gap-3 md:grid-cols-2">
         <div class="space-y-1">
           <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-            Upscaling Filter
+            {{ $t('apps.framegen.upscaling_filter') }}
           </label>
           <n-select
             v-model:value="losslessScalingModeModel"
-            :options="LOSSLESS_SCALING_OPTIONS"
+            :options="losslessScalingOptions"
             size="small"
             :clearable="false"
           />
           <p class="text-[11px] opacity-60">
-            Filter used after downscaling. "Off" disables scaling entirely.
+            {{ $t('apps.framegen.upscaling_filter_hint') }}
           </p>
         </div>
 
         <div v-if="showLosslessResolution" class="space-y-1">
           <div class="flex items-center justify-between">
             <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-              Resolution Scale
+              {{ $t('apps.framegen.resolution_scale') }}
             </label>
             <n-radio-group
               v-model:value="resolutionInputMode"
@@ -103,8 +98,8 @@
               class="text-[11px]"
               button-style="solid"
             >
-              <n-radio-button value="factor">Scale Factor</n-radio-button>
-              <n-radio-button value="percent">Percent</n-radio-button>
+              <n-radio-button value="factor">{{ $t('apps.framegen.scale_factor') }}</n-radio-button>
+              <n-radio-button value="percent">{{ $t('apps.framegen.percent') }}</n-radio-button>
             </n-radio-group>
           </div>
           <div v-if="resolutionInputMode === 'factor'" class="space-y-1">
@@ -142,13 +137,13 @@
         size="small"
         class="text-xs"
       >
-        <strong>Performance Note:</strong> Only use upscaling if the game lacks native FSR/DLSS
-        support.
+        <strong>{{ $t('apps.framegen.performance_note') }}</strong>
+        {{ $t('apps.framegen.performance_note_desc') }}
       </n-alert>
 
       <div v-if="showLosslessSharpening" class="space-y-1">
         <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-          Sharpening (1-10)
+          {{ $t('apps.framegen.sharpening') }}
         </label>
         <n-input-number
           v-model:value="losslessSharpeningModel"
@@ -159,18 +154,22 @@
           size="small"
         />
         <p class="text-[11px] opacity-60">
-          Post-upscaling sharpness for {{ losslessScalingModeModel.toUpperCase() }} filter.
+          {{
+            $t('apps.framegen.sharpening_hint', {
+              filter: losslessScalingModeModel.toUpperCase(),
+            })
+          }}
         </p>
       </div>
 
       <div v-if="showLosslessAnimeOptions" class="grid gap-3 md:grid-cols-2">
         <div class="space-y-1">
           <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-            Anime4K Size
+            {{ $t('apps.framegen.anime4k_size') }}
           </label>
           <n-select
             v-model:value="losslessAnimeSizeModel"
-            :options="LOSSLESS_ANIME_SIZES"
+            :options="losslessAnimeSizes"
             size="small"
             :clearable="false"
           />
@@ -179,8 +178,10 @@
           class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
         >
           <div>
-            <div class="text-xs font-semibold uppercase tracking-wide opacity-70">VRS</div>
-            <p class="text-[11px] opacity-60">Enable Variable Rate Shading where supported.</p>
+            <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+              {{ $t('apps.framegen.vrs') }}
+            </div>
+            <p class="text-[11px] opacity-60">{{ $t('apps.framegen.vrs_hint') }}</p>
           </div>
           <n-switch v-model:value="losslessAnimeVrsModel" size="small" />
         </div>
@@ -192,8 +193,10 @@
       class="flex items-center justify-between gap-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
     >
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wide opacity-70">Performance Mode</div>
-        <p class="text-[11px] opacity-60">Reduces GPU usage with minimal quality impact.</p>
+        <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+          {{ $t('apps.framegen.performance_mode') }}
+        </div>
+        <p class="text-[11px] opacity-60">{{ $t('apps.framegen.performance_mode_hint') }}</p>
       </div>
       <n-switch v-model:value="losslessPerformanceModeModel" size="small" />
     </div>
@@ -202,10 +205,12 @@
       v-if="showLosslessLaunchSettings"
       class="space-y-3 rounded-md border border-dark/10 px-3 py-2 dark:border-light/10"
     >
-      <div class="text-xs font-semibold uppercase tracking-wide opacity-70">Advanced Launch</div>
+      <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
+        {{ $t('apps.framegen.advanced_launch') }}
+      </div>
       <div class="space-y-1">
         <label class="text-xs font-semibold uppercase tracking-wide opacity-70">
-          Lossless Launch Delay (seconds)
+          {{ $t('apps.framegen.launch_delay_label') }}
         </label>
         <n-input-number
           v-model:value="form.losslessScalingLaunchDelay"
@@ -217,8 +222,7 @@
           size="small"
         />
         <p class="text-[11px] opacity-60">
-          Wait additional seconds after the game starts before opening Lossless Scaling.
-          Leave blank to use the default 8-second delay.
+          {{ $t('apps.framegen.launch_delay_hint') }}
         </p>
       </div>
     </div>
@@ -227,6 +231,7 @@
 
 <script setup lang="ts">
 import { computed, ref, toRef } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { Anime4kSize, AppForm, LosslessScalingMode } from './types';
 import {
   LOSSLESS_ANIME_SIZES,
@@ -249,6 +254,14 @@ import {
 } from 'naive-ui';
 
 const form = defineModel<AppForm>('form', { required: true });
+const { t } = useI18n();
+const localizeOptions = <T,>(options: Array<{ label?: string; labelKey?: string; value: T }>) =>
+  options.map((option) => ({
+    label: option.labelKey ? t(option.labelKey) : (option.label ?? String(option.value)),
+    value: option.value,
+  }));
+const losslessScalingOptions = computed(() => localizeOptions(LOSSLESS_SCALING_OPTIONS));
+const losslessAnimeSizes = computed(() => localizeOptions(LOSSLESS_ANIME_SIZES));
 const losslessPerformanceModeModel = defineModel<boolean>('losslessPerformanceMode', {
   required: true,
 });

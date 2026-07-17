@@ -25,23 +25,8 @@ const loading = ref(false);
 const loadError = ref('');
 const { t } = useI18n();
 
-function tFirst(keys: string[], fallback: string): string {
-  for (const k of keys) {
-    const m = t(k) as unknown as string;
-    if (m && m !== k) return m;
-  }
-  return fallback;
-}
-
-const outputNameLabel = computed(() =>
-  tFirst(['config.output_name', 'offline.output_name'], 'Display Id'),
-);
-const outputNameDefaultLabel = computed(() =>
-  tFirst(
-    ['offline.output_name_default', 'config.output_name_default'],
-    'Primary display (default)',
-  ),
-);
+const outputNameLabel = computed(() => t('config.output_name'));
+const outputNameDefaultLabel = computed(() => t('config.output_name_default'));
 const outputNameDesc = computed(() => {
   const description = $tp('config.output_name_desc', '');
   if (description) return description;
@@ -57,9 +42,9 @@ async function loadDisplayDevices() {
     });
     const arr = Array.isArray(res.data) ? res.data : [];
     devices.value = arr;
-  } catch (e: any) {
+  } catch {
     // Non-fatal: keep manual entry available as fallback
-    loadError.value = e?.message || 'Failed to load display devices';
+    loadError.value = t('config.display_devices_load_failed');
     devices.value = [];
   } finally {
     loading.value = false;
@@ -108,7 +93,7 @@ function toOptions() {
 
   for (const d of devices.value) {
     // Prefer a human-friendly name for the first line, fall back to display_name
-    const displayName = d.friendly_name || d.display_name || 'Display';
+    const displayName = d.friendly_name || d.display_name || t('_common.display');
     // For the ID line prefer device_id, fall back to the raw display_name
     const guid = d.device_id || '';
     const dispName = d.display_name || '';
@@ -116,7 +101,7 @@ function toOptions() {
     // Compose label to include identifying info even if slots are not applied
     const parts: string[] = [displayName];
     if (guid) parts.push(guid);
-    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    if (dispName) parts.push(dispName + (d.info ? ` (${t('_common.active')})` : ''));
     const label = parts.join(' — ');
     // Only include entries that can be selected by config: prefer device_id, else display_name
     const value = d.device_id || d.display_name || '';

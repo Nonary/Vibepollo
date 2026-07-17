@@ -1621,14 +1621,14 @@ namespace rtsp_stream {
 
     config.audio.input_only = session->input_only;
 
-    const bool prefer_10bit_sdr = session->prefer_sdr_10bit;
+    const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
     const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
     config.monitor.force_sdr = session->force_sdr;
     if (prefer_10bit_sdr) {
       if (supports_10bit_dynamic_range) {
-        BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
+        BOOST_LOG(info) << "Preferring 10-bit SDR encode for an SDR client request";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;
       } else {

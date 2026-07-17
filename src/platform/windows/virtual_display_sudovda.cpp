@@ -1604,9 +1604,16 @@ namespace VDISPLAY_SUDOVDA {
         }
       };
 
-      if (wait_for_completion) {
+      const bool monitor_path_ready = monitor_device_path && !monitor_device_path->empty();
+      if (wait_for_completion && monitor_path_ready) {
         apply_profile_work();
       } else {
+        if (wait_for_completion) {
+          // A newly enumerated virtual target may not have a monitor device path until the
+          // display helper activates it. The helper cannot receive APPLY until creation
+          // returns, so waiting here would only exhaust the resolver's retry budget.
+          BOOST_LOG(debug) << "HDR profile: deferring virtual display profile work until the pending monitor path becomes available.";
+        }
         std::thread(std::move(apply_profile_work)).detach();
       }
     }

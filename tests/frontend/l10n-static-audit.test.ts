@@ -46,7 +46,17 @@ function fixture(files: Record<string, string>, localeOverrides: Record<string, 
 function audit(root: string) {
   const output = execFileSync(
     process.execPath,
-    [scriptPath, '--root', root, '--allowlist', allowlistPath, '--baseline', resolve(root, 'baseline.json'), '--format', 'json'],
+    [
+      scriptPath,
+      '--root',
+      root,
+      '--allowlist',
+      allowlistPath,
+      '--baseline',
+      resolve(root, 'baseline.json'),
+      '--format',
+      'json',
+    ],
     { encoding: 'utf8' },
   );
   return JSON.parse(output);
@@ -58,7 +68,9 @@ describe('l10n static audit', () => {
       'Example.vue': `<template><button>{{ $t('common.missing') }}</button></template>`,
     });
     expect(audit(root).issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'missing-en-key', key: 'common.missing' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'missing-en-key', key: 'common.missing' }),
+      ]),
     );
   });
 
@@ -68,11 +80,43 @@ describe('l10n static audit', () => {
     });
     const issues = audit(root).issues;
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'hardcoded-template-text', value: 'Save Changes' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'hardcoded-template-text', value: 'Save Changes' }),
+      ]),
     );
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'hardcoded-ui-attr', value: 'Apply changes' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'hardcoded-ui-attr', value: 'Apply changes' }),
+      ]),
     );
+  });
+
+  it('keeps legacy baseline entries valid when source lines move', () => {
+    const root = fixture({
+      'Example.vue': `<template><section>Save Changes</section></template>`,
+    });
+    const initial = audit(root);
+    const issue = initial.issues.find(
+      (candidate: { rule: string; file?: string; value?: string }) =>
+        candidate.rule === 'hardcoded-template-text' &&
+        candidate.file === 'Example.vue' &&
+        candidate.value === 'Save Changes',
+    );
+    if (!issue) throw new Error('Expected hard-coded text issue');
+
+    const [rule, file, ...rest] = issue.fingerprint.split('|');
+    writeJson(resolve(root, 'baseline.json'), {
+      issues: [{ fingerprint: [rule, file, '999', ...rest].join('|') }],
+    });
+
+    expect(
+      audit(root).unbaselined.some(
+        (candidate: { rule: string; file?: string; value?: string }) =>
+          candidate.rule === 'hardcoded-template-text' &&
+          candidate.file === 'Example.vue' &&
+          candidate.value === 'Save Changes',
+      ),
+    ).toBe(false);
   });
 
   it('flags script UI properties and fallback misuse', () => {
@@ -81,9 +125,13 @@ describe('l10n static audit', () => {
     });
     const issues = audit(root).issues;
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'hardcoded-ui-prop', value: 'Start Stream' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'hardcoded-ui-prop', value: 'Start Stream' }),
+      ]),
     );
-    expect(issues.filter((issue: { rule: string }) => issue.rule === 'fallback-literal').length).toBeGreaterThan(0);
+    expect(
+      issues.filter((issue: { rule: string }) => issue.rule === 'fallback-literal').length,
+    ).toBeGreaterThan(0);
   });
 
   it('flags placeholder mismatches and stale extra locale keys', () => {
@@ -100,7 +148,9 @@ describe('l10n static audit', () => {
     );
     const issues = audit(root).issues;
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'locale-placeholder-mismatch', key: 'common.greeting' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'locale-placeholder-mismatch', key: 'common.greeting' }),
+      ]),
     );
     expect(issues).toEqual(
       expect.arrayContaining([expect.objectContaining({ rule: 'locale-extra-key', key: 'stale' })]),
@@ -125,10 +175,14 @@ describe('l10n static audit', () => {
     );
     const issues = audit(root).issues;
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'locale-html-tag-mismatch', key: 'common.rich' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'locale-html-tag-mismatch', key: 'common.rich' }),
+      ]),
     );
     expect(issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'locale-missing-key', key: 'extra.key' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'locale-missing-key', key: 'extra.key' }),
+      ]),
     );
   });
 
@@ -144,7 +198,32 @@ describe('l10n static audit', () => {
       },
     );
     expect(audit(root).issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ rule: 'locale-mojibake', key: 'common.greeting' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'locale-mojibake', key: 'common.greeting' }),
+      ]),
+    );
+  });
+
+  it('flags isolated question-mark corruption in settings translations', () => {
+    const root = fixture(
+      {},
+      {
+        en: {
+          config: {
+            saving: 'Saving…',
+          },
+        },
+        fr: {
+          config: {
+            saving: 'Enregistrement?',
+          },
+        },
+      },
+    );
+    expect(audit(root).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rule: 'locale-mojibake', key: 'config.saving' }),
+      ]),
     );
   });
 
@@ -155,7 +234,8 @@ describe('l10n static audit', () => {
     expect(
       audit(root).issues.filter(
         (issue: { rule: string; value?: string }) =>
-          issue.rule === 'hardcoded-ui-prop' && (issue.value === 'NVIDIA NVENC' || issue.value === 'IPv4'),
+          issue.rule === 'hardcoded-ui-prop' &&
+          (issue.value === 'NVIDIA NVENC' || issue.value === 'IPv4'),
       ),
     ).toEqual([]);
   });
