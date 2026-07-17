@@ -33,6 +33,25 @@ const platform = computed(() => config.platform || '');
     />
 
     <ConfigFieldRenderer
+      v-if="config.nvenc_spatial_aq === 'enabled'"
+      setting-key="nvenc_aq_strength"
+      v-model="config.nvenc_aq_strength"
+      class="mb-4"
+    />
+
+    <ConfigFieldRenderer
+      setting-key="nvenc_temporal_aq"
+      v-model="config.nvenc_temporal_aq"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      setting-key="nvenc_weighted_prediction"
+      v-model="config.nvenc_weighted_prediction"
+      class="mb-4"
+    />
+
+    <ConfigFieldRenderer
       setting-key="nvenc_split_encode"
       v-model="config.nvenc_split_encode"
       class="mb-4"

@@ -1599,6 +1599,8 @@ namespace config {
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
     bool_f(vars, "nvenc_temporal_aq", video.nv.temporal_aq);
+    int_between_f(vars, "nvenc_aq_strength", video.nv.aq_strength, {0, 15});
+    bool_f(vars, "nvenc_weighted_prediction", video.nv.weighted_prediction);
     generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
@@ -2399,6 +2401,8 @@ namespace config {
         "nvenc_twopass",
         "nvenc_spatial_aq",
         "nvenc_temporal_aq",
+        "nvenc_aq_strength",
+        "nvenc_weighted_prediction",
         "nvenc_split_encode",
         "nvenc_vbv_increase",
         "nvenc_realtime_hags",
