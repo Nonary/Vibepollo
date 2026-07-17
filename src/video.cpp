@@ -1357,9 +1357,10 @@ namespace video {
 
   // Native AMD AMF encoder (src/amf/amf_d3d11.cpp). Bypasses the FFmpeg AMF
   // wrapper for direct AMF SDK access: D3D11 zero-copy input, reference-frame
-  // invalidation and HDR metadata. Probed before amdvce_legacy; if the native
-  // path fails to initialise, encoding transparently falls back to the
-  // FFmpeg-based amdvce_legacy below.
+  // invalidation and HDR metadata. Selecting amdvce is a strict native-AMF
+  // contract: feature, initialization, or runtime failures are reported instead
+  // of silently changing encoder implementations. amdvce_legacy remains an
+  // explicit user-selected rollback below.
   encoder_t amdvce {
     "amdvce"sv,
     std::make_unique<encoder_platform_formats_amf>(
@@ -3587,7 +3588,7 @@ namespace video {
 
   enum class encode_run_result_e {
     completed,
-    use_legacy_amf,
+    native_amf_failed,
     temporarily_busy,
     initialization_failed,
   };
@@ -3610,7 +3611,6 @@ namespace video {
     rtx_hdr_metadata_refresh_state_t &rtx_hdr_metadata_refresh
   ) {
     const encoder_t *session_encoder = &encoder;
-    bool native_amf_init_fallback_used = false;
     bool initialization_was_cancelled = false;
     bool initialization_gate_contended = false;
     auto session = prepared_session ?
@@ -3621,25 +3621,8 @@ namespace video {
                        &initialization_was_cancelled, &initialization_gate_contended);
 #ifdef _WIN32
     if (initialization_was_cancelled) return encode_run_result_e::completed;
-    if (!session && &encoder == &amdvce && !initialization_gate_contended && !native_amf_lifecycle_gate.is_quarantined()) {
-      BOOST_LOG(warning) << "AMF: native session failed for the requested stream; retrying with amdvce_legacy"sv;
-      bool legacy_cancelled = false;
-      bool legacy_gate_contended = false;
-      auto legacy = make_legacy_amf_session_bounded(
-        disp, config, disp->width, disp->height, hdr_latch,
-        initialization_deadline, initialization_cancelled,
-        legacy_cancelled, legacy_gate_contended);
-      if (legacy_cancelled) return encode_run_result_e::completed;
-      initialization_gate_contended = initialization_gate_contended || legacy_gate_contended;
-      if (legacy) {
-        session = std::move(legacy->session);
-        session_encoder = &amdvce_legacy;
-        native_amf_init_fallback_used = true;
-        BOOST_LOG(info) << "AMF: real-session fallback to amdvce_legacy succeeded"sv;
-      }
-    }
-    if (!session && &encoder == &amdvce && native_amf_lifecycle_gate.is_quarantined()) {
-      BOOST_LOG(error) << "AMF: legacy fallback suppressed while the native runtime is fenced or quarantined"sv;
+    if (!session && &encoder == &amdvce) {
+      BOOST_LOG(error) << "AMF: native session initialization failed; refusing silent amdvce_legacy fallback"sv;
     }
 #endif
     if (!session) {
@@ -3798,7 +3781,7 @@ namespace video {
 
     auto native_amf_failure = [&]() {
       force_sync_teardown = native_amf_session;
-      return native_amf_session ? encode_run_result_e::use_legacy_amf : encode_run_result_e::completed;
+      return native_amf_session ? encode_run_result_e::native_amf_failed : encode_run_result_e::completed;
     };
 
     if (config.encodingFramerate <= 0) {
@@ -4147,8 +4130,8 @@ namespace video {
     if (native_amf_runtime_failed) {
       force_sync_teardown = true;
     }
-    return native_amf_init_fallback_used || native_amf_runtime_failed ?
-             encode_run_result_e::use_legacy_amf :
+    return native_amf_runtime_failed ?
+             encode_run_result_e::native_amf_failed :
              encode_run_result_e::completed;
   }
 
@@ -4700,9 +4683,6 @@ namespace video {
     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
     auto idr_event = mail->event<bool>(mail::idr);
-#ifdef _WIN32
-    bool use_legacy_amf_for_remainder_of_session = false;
-#endif
     int consecutive_encoder_initialization_failures = 0;
 
     // Encoding takes place on this thread (async-capture mode; capture lives in
@@ -4729,11 +4709,6 @@ namespace video {
       }
 
       auto *enc_ptr = chosen_encoder;
-#ifdef _WIN32
-      if (use_legacy_amf_for_remainder_of_session && enc_ptr == &amdvce) {
-        enc_ptr = &amdvce_legacy;
-      }
-#endif
       if (!enc_ptr) {
         BOOST_LOG(error) << "No encoder available for async capture"sv;
         return;
@@ -4772,19 +4747,8 @@ namespace video {
       }
 #ifdef _WIN32
       if (initialization_was_cancelled) continue;
-      if (!encode_device && !prepared_session && &encoder == &amdvce && !initialization_gate_contended && !native_amf_lifecycle_gate.is_quarantined()) {
-        BOOST_LOG(warning) << "AMF: native device creation failed for the requested stream; retrying with amdvce_legacy"sv;
-        enc_ptr = &amdvce_legacy;
-        auto legacy = make_legacy_amf_session_bounded(
-          display, config, display->width, display->height, &hdr_latch,
-          initialization_deadline, initialization_cancelled,
-          initialization_was_cancelled, initialization_gate_contended);
-        if (legacy) {
-          prepared_session = std::move(legacy->session);
-          session_hdr_metadata_valid = legacy->hdr_metadata_valid;
-          session_hdr_metadata = legacy->hdr_metadata;
-          use_legacy_amf_for_remainder_of_session = true;
-        }
+      if (!encode_device && !prepared_session && &encoder == &amdvce) {
+        BOOST_LOG(error) << "AMF: native device creation failed; refusing silent amdvce_legacy fallback"sv;
       }
 #endif
       if (initialization_was_cancelled) continue;
@@ -4825,10 +4789,9 @@ namespace video {
         rtx_hdr_metadata_refresh
       );
 #ifdef _WIN32
-      if (encode_result == encode_run_result_e::use_legacy_amf && &session_encoder == &amdvce) {
-        use_legacy_amf_for_remainder_of_session = true;
-        idr_event->raise(true);
-        BOOST_LOG(error) << "AMF: native runtime failed; switching this stream to amdvce_legacy"sv;
+      if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce) {
+        BOOST_LOG(error) << "AMF: native runtime failed; ending the stream without changing encoder implementations"sv;
+        return;
       }
 #endif
       if (encode_result == encode_run_result_e::initialization_failed) {
@@ -5294,6 +5257,13 @@ namespace video {
     });
 
     auto encoder_list = encoders;
+#ifdef _WIN32
+    // amdvce_legacy is rollback-only. It participates in probing solely when
+    // explicitly selected; native feature or capability failures must remain visible.
+    if (config::video.encoder != amdvce_legacy.name) {
+      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &amdvce_legacy), encoder_list.end());
+    }
+#endif
 
     // Use a local variable for encoder selection during probing so that
     // chosen_encoder is never null while concurrent capture threads may read it.
@@ -5349,6 +5319,12 @@ namespace video {
 
       if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
+#ifdef _WIN32
+        if (config::video.encoder == amdvce.name) {
+          BOOST_LOG(error) << "Native AMF was explicitly selected; refusing automatic fallback to amdvce_legacy or another encoder"sv;
+          return -1;
+        }
+#endif
       }
     }
 
