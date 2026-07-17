@@ -18,6 +18,7 @@
 #include <future>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -103,7 +104,7 @@ namespace amf::lifecycle {
       return quarantined;
     }
 
-    bool legacy_fallback_is_safe() const {
+    bool runtime_is_idle() const {
       std::lock_guard lock(mutex);
       return !quarantined && !initialization_in_progress &&
              pending_teardowns == 0 && teardowns_in_progress == 0;
@@ -198,6 +199,22 @@ namespace amf::lifecycle {
     input_surface_state_e state = input_surface_state_e::free;
     bool release_notified = false;
   };
+
+  struct encoder_selection_policy_t {
+    bool include_legacy = false;
+    bool fail_closed = false;
+  };
+
+  inline constexpr encoder_selection_policy_t encoder_selection_policy(
+    std::string_view requested_encoder) noexcept {
+    // Native AMF and the FFmpeg AMF implementation are separate, explicit
+    // contracts. Automatic probing must never make a native feature/property
+    // failure look successful by selecting the legacy encoder behind the user.
+    return {
+      requested_encoder == "amdvce_legacy",
+      requested_encoder == "amdvce",
+    };
+  }
 
   inline bool rate_control_requires_preanalysis(int mode) noexcept {
     // AMF uses these values consistently for AVC, HEVC, and AV1.

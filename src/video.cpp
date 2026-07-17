@@ -1400,8 +1400,8 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION  // flags
   };
 
-  // Legacy FFmpeg-based AMF encoder. Automatic fallback when the native
-  // amdvce path above is unavailable (e.g. older driver/runtime).
+  // Legacy FFmpeg-based AMF encoder. This is an explicit rollback target only;
+  // native feature, initialization, and runtime failures never select it.
   encoder_t amdvce_legacy {
     "amdvce_legacy"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
@@ -5258,9 +5258,10 @@ namespace video {
 
     auto encoder_list = encoders;
 #ifdef _WIN32
+    const auto amf_selection_policy = amf::lifecycle::encoder_selection_policy(config::video.encoder);
     // amdvce_legacy is rollback-only. It participates in probing solely when
     // explicitly selected; native feature or capability failures must remain visible.
-    if (config::video.encoder != amdvce_legacy.name) {
+    if (!amf_selection_policy.include_legacy) {
       encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &amdvce_legacy), encoder_list.end());
     }
 #endif
@@ -5320,7 +5321,7 @@ namespace video {
       if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
 #ifdef _WIN32
-        if (config::video.encoder == amdvce.name) {
+        if (amf_selection_policy.fail_closed) {
           BOOST_LOG(error) << "Native AMF was explicitly selected; refusing automatic fallback to amdvce_legacy or another encoder"sv;
           return -1;
         }

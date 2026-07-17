@@ -199,6 +199,16 @@ namespace {
     return !automatic && cabac && *cabac == 1 && cavlc && *cavlc == 0;
   }
 
+  bool native_selection_never_routes_to_legacy() {
+    const auto automatic = amf::lifecycle::encoder_selection_policy("");
+    const auto native = amf::lifecycle::encoder_selection_policy("amdvce");
+    const auto legacy = amf::lifecycle::encoder_selection_policy("amdvce_legacy");
+
+    return !automatic.include_legacy && !automatic.fail_closed &&
+           !native.include_legacy && native.fail_closed &&
+           legacy.include_legacy && !legacy.fail_closed;
+  }
+
   bool repeated_input_rotates_away_from_a_lookahead_owned_surface() {
     std::array<amf::lifecycle::input_surface_state_t, 3> slots;
     slots[0].state = amf::lifecycle::input_surface_state_e::in_flight;
@@ -381,19 +391,19 @@ namespace {
       }
     }};
     std::this_thread::sleep_for(5ms);
-    if (teardown_entered.load(std::memory_order_acquire) || gate.legacy_fallback_is_safe()) {
+    if (teardown_entered.load(std::memory_order_acquire) || gate.runtime_is_idle()) {
       gate.cancel_initialization();
       teardown.join();
       return false;
     }
     gate.cancel_initialization();
     teardown.join();
-    if (!gate.legacy_fallback_is_safe() || !gate.try_begin_initialization()) {
+    if (!gate.runtime_is_idle() || !gate.try_begin_initialization()) {
       return false;
     }
     gate.quarantine_initialization();
     return !gate.finish_initialization() && gate.is_quarantined() &&
-           !gate.legacy_fallback_is_safe() && !gate.try_begin_initialization();
+           !gate.runtime_is_idle() && !gate.try_begin_initialization();
   }
 
   bool timed_out_teardown_quarantines_and_retains_the_runtime_fence() {
@@ -405,7 +415,7 @@ namespace {
     return !second_teardown_entered &&
            std::chrono::steady_clock::now() - start < 50ms &&
            gate.is_quarantined() && gate.operation_in_progress() &&
-           !gate.try_begin_initialization() && !gate.legacy_fallback_is_safe();
+           !gate.try_begin_initialization() && !gate.runtime_is_idle();
   }
 
   bool timed_out_worker_handoff_reaps_on_the_producer_thread() {
@@ -442,7 +452,7 @@ namespace {
       &was_cancelled);
     gate.cancel_initialization();
     return !accepted && was_cancelled && !gate.is_quarantined() &&
-           gate.legacy_fallback_is_safe();
+           gate.runtime_is_idle();
   }
 
   bool teardown_gate_contention_respects_its_deadline() {
@@ -453,7 +463,7 @@ namespace {
     const auto elapsed = std::chrono::steady_clock::now() - start;
     gate.cancel_initialization();
     return !entered && elapsed < 100ms && !gate.is_quarantined() &&
-           gate.legacy_fallback_is_safe();
+           gate.runtime_is_idle();
   }
 
   bool smart_access_video_avoids_aggressive_low_latency_driver_path() {
@@ -503,6 +513,7 @@ int main() {
              preanalysis_dependent_rate_control_is_planned_natively() &&
              preanalysis_pipeline_primes_and_drains_in_order() &&
              automatic_h264_coder_preserves_driver_default() &&
+             native_selection_never_routes_to_legacy() &&
              repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
              surface_pool_can_prime_a_retaining_driver() &&
              preanalysis_preserves_low_latency_queue() &&
@@ -550,6 +561,10 @@ TEST(SunshineNativeAmfReview, PreAnalysisPipelinePrimesAndDrainsInOrder) {
 
 TEST(SunshineNativeAmfReview, AutomaticH264CoderPreservesDriverDefault) {
   EXPECT_TRUE(automatic_h264_coder_preserves_driver_default());
+}
+
+TEST(SunshineNativeAmfReview, NativeSelectionNeverRoutesToLegacy) {
+  EXPECT_TRUE(native_selection_never_routes_to_legacy());
 }
 
 TEST(SunshineNativeAmfReview, RepeatedInputRotatesAwayFromLookaheadOwnedSurface) {
