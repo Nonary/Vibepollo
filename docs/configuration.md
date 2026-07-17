@@ -3411,7 +3411,7 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>cqp</td>
         <td>constant qp mode</td>
     </tr>
@@ -3426,6 +3426,48 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>vbr_peak</td>
         <td>variable bitrate, peak constrained</td>
+    </tr>
+    <tr>
+        <td>qvbr</td>
+        <td>quality-defined variable bitrate (see amd_qvbr_quality_level)</td>
+    </tr>
+    <tr>
+        <td>hqvbr</td>
+        <td>high quality variable bitrate</td>
+    </tr>
+    <tr>
+        <td>hqcbr</td>
+        <td>high quality constant bitrate</td>
+    </tr>
+</table>
+
+### amd_qvbr_quality_level
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The target quality level used by the `qvbr` rate control method, where 1 is the lowest quality and 51
+            is the highest. Higher values spend more bits to preserve quality.
+            @note{This option only applies to AMD [encoders](#encoder) with `amd_rc` set to `qvbr`. Native `amdvce` automatically enables PreAnalysis with a one-frame low-latency lookahead for `qvbr`, `hqvbr`, and `hqcbr`.}
+            @note{Leave this at `0` to keep the encoder default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1-51 (0 to use the encoder default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_qvbr_quality_level = 18
+            @endcode</td>
     </tr>
 </table>
 
@@ -3461,6 +3503,7 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Description</td>
         <td colspan="2">
             The quality profile controls the tradeoff between speed and quality of encoding.
+            `auto` leaves the quality property unset so the selected AMF usage preset can choose it.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3477,7 +3520,11 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="4">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
         <td>speed</td>
         <td>prefer speed</td>
     </tr>
@@ -3497,8 +3544,9 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Preanalysis can increase encoding quality at the cost of latency.
-            @note{This option only applies when using amdvce [encoder](#encoder).}
+            Preanalysis can increase encoding quality at the cost of latency. Native `amdvce` uses a one-frame
+            low-latency lookahead; it is enabled automatically by `qvbr`, `hqvbr`, and `hqcbr`. The setting is
+            also forwarded to `amdvce_legacy`.
         </td>
     </tr>
     <tr>
@@ -3523,6 +3571,8 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">
             Variance Based Adaptive Quantization (VBAQ) can increase subjective visual quality by prioritizing
             allocation of more bits to smooth areas compared to more textured areas.
+            `auto` leaves the property unset so the selected AMF usage preset can choose it. VBAQ is enabled
+            by default.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3537,6 +3587,19 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">@code{}
             amd_vbaq = enabled
             @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>enable VBAQ</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>disable VBAQ</td>
     </tr>
 </table>
 
@@ -3566,7 +3629,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td rowspan="3">Choices</td>
         <td>auto</td>
-        <td>let ffmpeg decide</td>
+        <td>leave the encoder default</td>
     </tr>
     <tr>
         <td>cabac</td>
@@ -3575,6 +3638,280 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>cavlc</td>
         <td>context adaptive variable-length coding - higher quality</td>
+    </tr>
+</table>
+
+### amd_ltr_frames
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of long-term reference frames kept for Reference Frame Invalidation (RFI), which lets the
+            encoder recover from packet loss without sending a full keyframe.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `0` to disable RFI.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-2</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_ltr_frames = 1
+            @endcode</td>
+    </tr>
+</table>
+
+### amd_input_queue_size
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of frames the native AMF encoder keeps queued for input. The default `4` keeps the hardware fed
+            with little queueing; `1` can starve some drivers, while larger values up to `32` trade latency for
+            additional headroom.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{When PreAnalysis is enabled, values below AMD's documented default of `16` are raised to `16` so
+            the lookahead pipeline cannot saturate before its first output. Larger explicit values are preserved.}
+            @note{Leave at `0` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            4
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-32 (0 = driver default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_input_queue_size = 4
+            @endcode</td>
+    </tr>
+</table>
+
+### amd_smart_access_video
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable AMD Smart Access Video media-workload distribution on supported systems. This is a throughput
+            feature and is distinct from the encoder's split-frame multi-HW mode, which remains driver-controlled.
+            It is not a latency optimization.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+            @warning{Smart Access Video is forced off when AMF Low Latency Mode is enabled. A confirmed native
+            HEVC 4K120 HDR run with both overrides enabled caused AMD GPU watchdog resets and an `amdxx64.dll` fault.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_smart_access_video = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>request Smart Access Video (unless Low Latency Mode is enabled)</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force Smart Access Video off</td>
+    </tr>
+</table>
+
+### amd_lowlatency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Toggle the AMF low-latency mode property (H.264/HEVC). The encoder is already low-latency through the
+            Ultra Low Latency usage profile, so `auto` is fine for most users. Enable for the most aggressive
+            low-latency path, or disable as a workaround for encoder freezes reported on some driver versions.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+            @warning{For a second concurrent native session, an explicitly enabled override is left unset to avoid
+            affected-driver VCN freezes. The Ultra Low Latency usage profile remains active for that session.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_lowlatency_mode = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force low-latency mode on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force low-latency mode off</td>
+    </tr>
+</table>
+
+### amd_high_motion_quality_boost
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Improve quality during fast motion.
+            @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+            @warning{Some AMD driver releases (e.g. Adrenalin 26.5.x on RDNA4) can freeze the encoder when this is
+            enabled, so opt in with caution.}
+            @warning{For a second concurrent native session, an explicitly enabled override is left unset to avoid
+            affected-driver VCN freezes. The native session remains active.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_high_motion_quality_boost = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force high motion quality boost on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force high motion quality boost off</td>
+    </tr>
+</table>
+
+### amd_av1_screen_content
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable AV1 screen-content coding tools, which can improve efficiency and text/UI clarity for desktop and
+            screen-heavy content.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_screen_content = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force screen-content tools on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force screen-content tools off</td>
+    </tr>
+</table>
+
+### amd_av1_latency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            AV1 encoding-latency tier. Lower tiers finish each frame faster at the cost of higher power draw.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_latency_mode = lowest
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>none</td>
+        <td>balance latency and power</td>
+    </tr>
+    <tr>
+        <td>power_saving</td>
+        <td>real-time with lower power</td>
+    </tr>
+    <tr>
+        <td>realtime</td>
+        <td>real-time</td>
+    </tr>
+    <tr>
+        <td>lowest</td>
+        <td>lowest latency (highest power)</td>
     </tr>
 </table>
 
