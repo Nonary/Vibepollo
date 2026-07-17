@@ -296,7 +296,7 @@ const defaultGroups = [
       amd_vbaq: 'enabled',
       amd_coder: 'auto',
       amd_ltr_frames: 0,
-      amd_input_queue_size: 4,
+      amd_input_queue_size: 0,
       amd_smart_access_video: 'auto',
       amd_lowlatency_mode: 'auto',
       amd_high_motion_quality_boost: 'auto',

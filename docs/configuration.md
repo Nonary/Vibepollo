@@ -3677,19 +3677,17 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Number of frames the native AMF encoder keeps queued for input. The default `4` keeps the hardware fed
-            with little queueing; `1` can starve some drivers, while larger values up to `32` trade latency for
-            additional headroom.
+            Optional AMF input-queue override. The default `0` leaves the property unset so the driver chooses its
+            queue. Explicit values from `1` to `32` trade latency and memory use for additional submission headroom.
             @note{This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
-            @note{When PreAnalysis is enabled, values below AMD's documented default of `16` are raised to `16` so
-            the lookahead pipeline cannot saturate before its first output. Larger explicit values are preserved.}
-            @note{Leave at `0` to use the driver default.}
+            @note{PreAnalysis does not force a queue override; its one-frame lookahead uses the independently managed
+            input-surface pool.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            4
+            0
             @endcode</td>
     </tr>
     <tr>

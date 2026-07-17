@@ -857,7 +857,7 @@ namespace config {
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
       0,  // ltr_frames (native AMF; 0 = off)
-      4,  // input_queue_size (native AMF; bounded streaming default)
+      0,  // input_queue_size (native AMF; 0 = leave driver queue unset/auto)
       std::nullopt,  // smart_access_video (auto)
       std::nullopt,  // lowlatency_mode (auto)
       std::nullopt,  // high_motion_quality_boost (auto)

@@ -401,7 +401,7 @@
     "amd_enforce_hrd": "AMF Hypothetical Reference Decoder (HRD) Enforcement",
     "amd_enforce_hrd_desc": "Increases the constraints on rate control to meet HRD model requirements. This greatly reduces bitrate overflows, but may cause encoding artifacts or reduced quality on certain cards.",
     "amd_input_queue_size": "AMF Input Queue Size",
-    "amd_input_queue_size_desc": "Number of frames the native AMF encoder (amdvce) keeps queued for input. 0 uses the driver default. The default 4 keeps latency and memory use low; the encoder grows its input surface pool independently when needed. Values up to 32 trade latency for submission headroom. Only applies to the native amdvce encoder.",
+    "amd_input_queue_size_desc": "Optional native AMF input queue override. 0 (Auto) leaves the property unset so the driver chooses its queue. Explicit values from 1 to 32 trade latency and memory use for additional submission headroom. PreAnalysis manages its input surfaces independently. Only applies to the native amdvce encoder.",
     "amd_ltr_frames": "AMF Long-Term Reference Frames (RFI)",
     "amd_ltr_frames_desc": "Number of long-term reference frames the native AMF encoder (amdvce) keeps for Reference Frame Invalidation, which recovers from packet loss without sending a full keyframe. 0 disables it. Only applies to the native amdvce encoder.",
     "amd_native_group": "Native AMF only - amdvce",
