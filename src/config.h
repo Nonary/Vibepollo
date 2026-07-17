@@ -97,13 +97,24 @@ namespace config {
       std::optional<int> amd_rc_h264;
       std::optional<int> amd_rc_hevc;
       std::optional<int> amd_rc_av1;
+      std::optional<int> amd_qvbr_quality_level;
       std::optional<int> amd_enforce_hrd;
-      std::optional<int> amd_quality_h264;
-      std::optional<int> amd_quality_hevc;
-      std::optional<int> amd_quality_av1;
+      std::optional<int> amd_quality_h264;  // nullopt = follow usage-preset default
+      std::optional<int> amd_quality_hevc;  // nullopt = follow usage-preset default
+      std::optional<int> amd_quality_av1;  // nullopt = follow usage-preset default
       std::optional<int> amd_preanalysis;
-      std::optional<int> amd_vbaq;
+      std::optional<int> amd_vbaq;  // nullopt = follow usage-preset default
       int amd_coder;
+      // Native AMF encoder (amdvce) tuning knobs.
+      int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
+      int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
+      // Curated opt-in native-AMF feature knobs. nullopt / 0 == leave the AMF
+      // driver default untouched, so none of these change behavior unless enabled.
+      std::optional<int> amd_smart_access_video;  // Multi-VCN encode (Smart Access Video): 1=on, 0=off
+      std::optional<int> amd_lowlatency_mode;  // AMF LOWLATENCY_MODE (H.264/HEVC): 1=on, 0=off
+      std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off
+      std::optional<int> amd_av1_screen_content;  // AV1 screen-content tools: 1=on, 0=off
+      std::optional<int> amd_av1_latency_mode;  // AV1 encoding-latency mode (0-3)
     } amd;
 
     struct {
