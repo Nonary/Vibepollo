@@ -3602,7 +3602,10 @@ namespace video {
     std::unique_ptr<encode_session_t> prepared_session,
     safe::signal_t &reinit_event,
     const encoder_t &encoder,
+    hdr_latch_t *hdr_latch,
     void *channel_data,
+    std::chrono::steady_clock::time_point initialization_deadline,
+    initialization_cancel_t initialization_cancelled,
     std::optional<hdr_info_raw_t> &last_hdr_info,
     rtx_hdr_metadata_refresh_state_t &rtx_hdr_metadata_refresh
   ) {
@@ -4666,10 +4669,7 @@ namespace video {
   void capture_async(
     safe::mail_t mail,
     config_t &config,
-    hdr_latch_t *hdr_latch,
-    void *channel_data,
-    std::chrono::steady_clock::time_point initialization_deadline,
-    initialization_cancel_t initialization_cancelled
+    void *channel_data
   ) {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
