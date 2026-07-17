@@ -334,14 +334,50 @@ export function getConfigSelectOptions(
           value: 'vbr_latency',
         },
         { label: t('config.amd_rc_vbr_peak'), value: 'vbr_peak' },
+        { label: translateOr(t, 'config.amd_rc_qvbr', 'QVBR'), value: 'qvbr' },
+        { label: translateOr(t, 'config.amd_rc_hqvbr', 'HQ-VBR'), value: 'hqvbr' },
+        { label: translateOr(t, 'config.amd_rc_hqcbr', 'HQ-CBR'), value: 'hqcbr' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_quality': {
       const options = [
+        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
         { label: t('config.amd_quality_speed'), value: 'speed' },
         { label: t('config.amd_quality_balanced'), value: 'balanced' },
         { label: t('config.amd_quality_quality'), value: 'quality' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_vbaq': {
+      const options = [
+        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
+        { label: translateOr(t, 'config.amd_opt_enabled', 'Enabled'), value: 'enabled' },
+        { label: translateOr(t, 'config.amd_opt_disabled', 'Disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_smart_access_video':
+    case 'amd_lowlatency_mode':
+    case 'amd_high_motion_quality_boost':
+    case 'amd_av1_screen_content': {
+      const options = [
+        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
+        { label: translateOr(t, 'config.amd_opt_enabled', 'Enabled'), value: 'enabled' },
+        { label: translateOr(t, 'config.amd_opt_disabled', 'Disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_av1_latency_mode': {
+      const options = [
+        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
+        { label: translateOr(t, 'config.amd_av1_latency_none', 'None'), value: 'none' },
+        {
+          label: translateOr(t, 'config.amd_av1_latency_power_saving', 'Power saving (real-time)'),
+          value: 'power_saving',
+        },
+        { label: translateOr(t, 'config.amd_av1_latency_realtime', 'Real-time'), value: 'realtime' },
+        { label: translateOr(t, 'config.amd_av1_latency_lowest', 'Lowest latency'), value: 'lowest' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
