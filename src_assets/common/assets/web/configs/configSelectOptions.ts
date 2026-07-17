@@ -381,8 +381,14 @@ export function getConfigSelectOptions(
           label: translateOr(t, 'config.amd_av1_latency_power_saving', 'Power saving (real-time)'),
           value: 'power_saving',
         },
-        { label: translateOr(t, 'config.amd_av1_latency_realtime', 'Real-time'), value: 'realtime' },
-        { label: translateOr(t, 'config.amd_av1_latency_lowest', 'Lowest latency'), value: 'lowest' },
+        {
+          label: translateOr(t, 'config.amd_av1_latency_realtime', 'Real-time'),
+          value: 'realtime',
+        },
+        {
+          label: translateOr(t, 'config.amd_av1_latency_lowest', 'Lowest latency'),
+          value: 'lowest',
+        },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
