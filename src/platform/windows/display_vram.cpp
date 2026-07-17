@@ -959,7 +959,7 @@ namespace platf::dxgi {
 
       // The luma/UV render targets must be unbound before copying the encoder input.
       device_ctx->OMSetRenderTargets(0, nullptr, nullptr);
-      device_ctx->CopyResource(truehdr_live_readback_texture.get(), output_texture.get());
+      device_ctx->CopyResource(truehdr_live_readback_texture.get(), output_texture);
 
       D3D11_MAPPED_SUBRESOURCE mapped {};
       const HRESULT map_status = device_ctx->Map(truehdr_live_readback_texture.get(), 0, D3D11_MAP_READ, 0, &mapped);
