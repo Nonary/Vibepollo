@@ -85,4 +85,19 @@ describe('configFieldSchema', () => {
     expect(field.kind).toBe('select');
     expect(field.options?.map(({ value }) => value)).toContain('auto');
   });
+
+  test('exposes every native AMF quality preset', () => {
+    const field = getConfigFieldDefinition('amd_quality', {
+      ...baseContext,
+      defaultValue: 'balanced',
+      currentValue: 'balanced',
+    });
+
+    expect(field.options?.map(({ value }) => value)).toEqual([
+      'auto',
+      'speed',
+      'balanced',
+      'quality',
+    ]);
+  });
 });
