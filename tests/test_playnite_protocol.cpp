@@ -26,6 +26,20 @@ TEST(PlayniteProtocol_Parse, UnknownType_ReturnsUnknown) {
   EXPECT_EQ(m.type, MessageType::Unknown);
 }
 
+TEST(PlayniteProtocol_Parse, SnapshotComplete_ParsesGamesCount) {
+  auto m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\",\"games\":42}"));
+  EXPECT_EQ(m.type, MessageType::SnapshotComplete);
+  EXPECT_EQ(m.snapshot_games_count, 42);
+
+  // An explicit zero is what distinguishes an emptied library from lost batches.
+  m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\",\"games\":0}"));
+  EXPECT_EQ(m.snapshot_games_count, 0);
+
+  // Older plugins omit the field entirely.
+  m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\"}"));
+  EXPECT_EQ(m.snapshot_games_count, -1);
+}
+
 TEST(PlayniteProtocol_Parse, Categories_ParsesAndSkipsEmpty) {
   std::string j = R"({
     "type":"categories",

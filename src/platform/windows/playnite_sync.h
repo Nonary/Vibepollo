@@ -70,10 +70,15 @@ namespace platf::playnite::sync {
   // Purge helpers
   std::unordered_set<std::string> current_auto_ids(const nlohmann::json &root);
   std::size_t count_replacements_available(const std::unordered_set<std::string> &current_auto, const std::unordered_set<std::string> &selected_ids);
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, const std::unordered_set<std::string> &hidden_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed);
+  // known_ids_lower holds every id in the Playnite snapshot; auto apps whose id is absent were
+  // deleted from the library and are purged, but only when library_complete says the snapshot is
+  // the whole library rather than a partially accumulated one.
+  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, const std::unordered_set<std::string> &hidden_lower, const std::unordered_set<std::string> &known_ids_lower, bool library_complete, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed);
 
   // Orchestration helper: performs full autosync reconciliation into root["apps"].
   // Combines recent and category selections, merges source flags, purges, and adds missing entries.
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool exclude_hidden, bool &changed, std::size_t &matched_out);
+  // library_complete tells whether all_games is a full library snapshot; when false, auto apps
+  // missing from it are kept because the rest of the library may simply not have arrived yet.
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, bool library_complete, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool exclude_hidden, bool &changed, std::size_t &matched_out);
 
 }  // namespace platf::playnite::sync

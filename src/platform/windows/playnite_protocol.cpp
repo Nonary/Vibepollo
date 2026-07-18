@@ -141,6 +141,8 @@ namespace platf::playnite {
         m.type = MessageType::SnapshotStart;
       } else if (type == "snapshotComplete") {
         m.type = MessageType::SnapshotComplete;
+        // Older plugins omit the count; -1 keeps "unknown" distinct from a genuinely empty library.
+        m.snapshot_games_count = j.value("games", -1);
       } else if (type == "status") {
         m.type = MessageType::Status;
         const auto &st = j.value("status", json::object());

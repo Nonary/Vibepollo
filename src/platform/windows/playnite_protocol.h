@@ -83,6 +83,7 @@ namespace platf::playnite {
     std::vector<Category> categories;  ///< Categories payload (if type == Categories).
     std::vector<Plugin> plugins;  ///< Plugins payload (if type == Plugins).
     std::vector<Game> games;  ///< Games payload (if type == Games).
+    int snapshot_games_count = -1;  ///< Games the plugin says it sent (if type == SnapshotComplete); -1 when not reported.
     // Status payload (if type == Status)
     std::string status_name;  ///< Status event name (e.g. gameStarted, gameStopped).
     std::string status_game_id;  ///< Associated game id.

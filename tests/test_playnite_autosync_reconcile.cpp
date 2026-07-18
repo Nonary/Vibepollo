@@ -24,8 +24,7 @@ TEST(PlayniteAutosync_Reconcile, AddsSelectedGamesToEmptyApps) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true), G("B", "2024-01-01T00:00:00Z", true, {"RPG"})};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all,
-                     /*recentN*/ 1,
+  autosync_reconcile(root, all, true /*library complete*/, /*recentN*/ 1,
                      /*recentAgeDays*/ 0,
                      /*delete_after_days*/ 0,
                      /*require_repl*/ true,
@@ -51,7 +50,7 @@ TEST(PlayniteAutosync_Reconcile, HonorsExcludeIds) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {"a"}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 1, 0, 0, true, false, {}, {}, {}, {"a"}, {}, true, true, changed, matched);
   EXPECT_FALSE(changed);
   EXPECT_EQ(root["apps"].size(), 0u);
 }
@@ -65,8 +64,7 @@ TEST(PlayniteAutosync_Reconcile, HonorsExcludeCategories) {
   };
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all,
-                     /*recentN*/ 2,
+  autosync_reconcile(root, all, true /*library complete*/, /*recentN*/ 2,
                      /*recentAgeDays*/ 0,
                      /*delete_after_days*/ 0,
                      /*require_repl*/ true,
@@ -94,8 +92,7 @@ TEST(PlayniteAutosync_Reconcile, HonorsExcludePlugins) {
   };
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all,
-                     /*recentN*/ 2,
+  autosync_reconcile(root, all, true /*library complete*/, /*recentN*/ 2,
                      /*recentAgeDays*/ 0,
                      /*delete_after_days*/ 0,
                      /*require_repl*/ true,
@@ -125,7 +122,7 @@ TEST(PlayniteAutosync_Reconcile, UpdatesExistingAndSetsManagedFields) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
@@ -144,7 +141,7 @@ TEST(PlayniteAutosync_Reconcile, MatchesExistingEntriesCaseInsensitively) {
   std::vector<Game> all {G("abc-def", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
 
   EXPECT_TRUE(changed);
   EXPECT_EQ(matched, 1u);
@@ -170,7 +167,7 @@ TEST(PlayniteAutosync_Reconcile, RemovesDuplicateAutoEntriesByPlayniteId) {
   std::vector<Game> all {G("abc-def", "2025-01-01T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 1, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
 
   EXPECT_TRUE(changed);
   EXPECT_EQ(matched, 1u);
@@ -188,7 +185,7 @@ TEST(PlayniteAutosync_Reconcile, SyncPluginsIncludesGames) {
   };
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, false, {}, std::vector<std::string> {"plugin-one"}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, false, {}, std::vector<std::string> {"plugin-one"}, {}, {}, {}, true, true, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
@@ -201,7 +198,7 @@ TEST(PlayniteAutosync_Reconcile, SyncAllInstalledIncludesAllGames) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true), G("B", "2025-01-02T00:00:00Z", true)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, true, {}, {}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, true, {}, {}, {}, {}, {}, true, true, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 2u);
   std::unordered_set<std::string> ids;
@@ -223,7 +220,7 @@ TEST(PlayniteAutosync_Reconcile, AutoRemoveUninstalledHonorsFlag) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", false)};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, false, {}, {}, {}, {}, {}, true, true, changed, matched);
   EXPECT_TRUE(changed);
   EXPECT_EQ(root["apps"].size(), 0u);
 
@@ -232,10 +229,51 @@ TEST(PlayniteAutosync_Reconcile, AutoRemoveUninstalledHonorsFlag) {
   root["apps"].push_back(entry);
   changed = false;
   matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, false, {}, {}, {}, {}, {}, false, true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, false, {}, {}, {}, {}, {}, false, true, changed, matched);
   EXPECT_FALSE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
+}
+
+TEST(PlayniteAutosync_Reconcile, RemovesAutoEntryDeletedFromLibrary) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  for (auto id : {"A", "B"}) {
+    nlohmann::json entry;
+    entry["playnite-id"] = id;
+    entry["playnite-managed"] = "auto";
+    entry["playnite-source"] = "installed";
+    root["apps"].push_back(entry);
+  }
+  // B was deleted from Playnite, so it is absent from the snapshot rather than flagged uninstalled.
+  std::vector<Game> all {G("A", "2025-01-01T00:00:00Z")};
+  bool changed = false;
+  std::size_t matched = 0;
+  // Removal happens even with remove_uninstalled disabled: the game no longer exists to launch.
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, false, true, changed, matched);
+  EXPECT_TRUE(changed);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
+}
+
+TEST(PlayniteAutosync_Reconcile, KeepsAutoEntryMissingFromPartialSnapshot) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  nlohmann::json entry;
+  entry["playnite-id"] = "B";
+  entry["playnite-managed"] = "auto";
+  entry["playnite-source"] = "installed";
+  root["apps"].push_back(entry);
+  // B is missing only because the snapshot is still accumulating; purging it would be wrong.
+  std::vector<Game> all {G("A", "2025-01-01T00:00:00Z")};
+  bool changed = false;
+  std::size_t matched = 0;
+  autosync_reconcile(root, all, false /*library complete*/, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, false, true, changed, matched);
+  std::unordered_set<std::string> ids;
+  for (auto &app : root["apps"]) {
+    ids.insert(app["playnite-id"].get<std::string>());
+  }
+  EXPECT_TRUE(ids.contains("B"));
 }
 
 TEST(PlayniteAutosync_Reconcile, SkipsHiddenGamesWhenExcludeHiddenEnabled) {
@@ -246,7 +284,7 @@ TEST(PlayniteAutosync_Reconcile, SkipsHiddenGamesWhenExcludeHiddenEnabled) {
   std::vector<Game> all {G("A", "2025-01-01T00:00:00Z"), hidden};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, true, /*exclude_hidden*/ true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, true, /*exclude_hidden*/ true, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
@@ -260,7 +298,7 @@ TEST(PlayniteAutosync_Reconcile, SyncsHiddenGamesWhenExcludeHiddenDisabled) {
   std::vector<Game> all {hidden};
   bool changed = false;
   std::size_t matched = 0;
-  autosync_reconcile(root, all, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, true, /*exclude_hidden*/ false, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, true, /*exclude_hidden*/ false, changed, matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "B");
@@ -280,7 +318,7 @@ TEST(PlayniteAutosync_Reconcile, RemovesAutoEntryWhenGameBecomesHidden) {
   bool changed = false;
   std::size_t matched = 0;
   // Removal happens even with remove_uninstalled disabled: the game is installed, just hidden.
-  autosync_reconcile(root, all, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, false, /*exclude_hidden*/ true, changed, matched);
+  autosync_reconcile(root, all, true /*library complete*/, 0, 0, 0, true, /*sync_all_installed*/ true, {}, {}, {}, {}, {}, false, /*exclude_hidden*/ true, changed, matched);
   EXPECT_TRUE(changed);
   EXPECT_EQ(root["apps"].size(), 0u);
 }
