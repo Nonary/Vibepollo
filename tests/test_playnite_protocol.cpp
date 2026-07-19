@@ -26,6 +26,20 @@ TEST(PlayniteProtocol_Parse, UnknownType_ReturnsUnknown) {
   EXPECT_EQ(m.type, MessageType::Unknown);
 }
 
+TEST(PlayniteProtocol_Parse, SnapshotComplete_ParsesGamesCount) {
+  auto m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\",\"games\":42}"));
+  EXPECT_EQ(m.type, MessageType::SnapshotComplete);
+  EXPECT_EQ(m.snapshot_games_count, 42);
+
+  // An explicit zero is what distinguishes an emptied library from lost batches.
+  m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\",\"games\":0}"));
+  EXPECT_EQ(m.snapshot_games_count, 0);
+
+  // Older plugins omit the field entirely.
+  m = platf::playnite::parse(bytes("{\"type\":\"snapshotComplete\"}"));
+  EXPECT_EQ(m.snapshot_games_count, -1);
+}
+
 TEST(PlayniteProtocol_Parse, Categories_ParsesAndSkipsEmpty) {
   std::string j = R"({
     "type":"categories",
@@ -110,6 +124,24 @@ TEST(PlayniteProtocol_Parse, Games_InstalledField_PrecedenceAndDefault) {
   EXPECT_TRUE(m.games[1].installed);
   EXPECT_FALSE(m.games[2].installed);
   EXPECT_TRUE(m.games[3].installed);  // default true when neither present
+}
+
+TEST(PlayniteProtocol_Parse, Games_HiddenField_AliasesAndDefault) {
+  std::string j = R"({
+    "type":"games",
+    "payload":[
+      {"id":"a","hidden":true},
+      {"id":"b","isHidden":true},
+      {"id":"c","hidden":false},
+      {"id":"d"}
+    ]})";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.type, MessageType::Games);
+  ASSERT_EQ(m.games.size(), 4u);
+  EXPECT_TRUE(m.games[0].hidden);
+  EXPECT_TRUE(m.games[1].hidden);
+  EXPECT_FALSE(m.games[2].hidden);
+  EXPECT_FALSE(m.games[3].hidden);  // default false when absent (older plugin)
 }
 
 TEST(PlayniteProtocol_Parse, Games_SkipsMissingId) {

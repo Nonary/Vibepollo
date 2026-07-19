@@ -213,6 +213,7 @@ const defaultGroups = [
       playnite_autosync_delete_after_days: 0,
       playnite_autosync_require_replacement: true,
       playnite_autosync_remove_uninstalled: true,
+      playnite_exclude_hidden_games: true,
       playnite_focus_attempts: 3,
       playnite_focus_timeout_secs: 15,
       playnite_focus_exit_on_first: false,
@@ -582,6 +583,7 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_sync_all_installed',
       'playnite_autosync_require_replacement',
       'playnite_autosync_remove_uninstalled',
+      'playnite_exclude_hidden_games',
       'playnite_focus_exit_on_first',
       'playnite_fullscreen_entry_enabled',
     ];

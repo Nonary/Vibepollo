@@ -383,6 +383,8 @@ namespace platf::playnite {
           last_plugins_.clear();
           new_snapshot_ = true;
           snapshot_markers_supported_ = false;
+          library_complete_ = false;
+          library_confirmed_empty_ = false;
         } catch (...) {}
         {
           std::scoped_lock lk(progress_mutex_);
@@ -418,6 +420,8 @@ namespace platf::playnite {
         std::scoped_lock lk(mutex_);
         new_snapshot_ = true;
         snapshot_markers_supported_ = false;
+        library_complete_ = false;
+        library_confirmed_empty_ = false;
       }
       {
         std::scoped_lock lk(progress_mutex_);
@@ -686,6 +690,8 @@ namespace platf::playnite {
             last_games_.clear();
             game_ids_.clear();
             new_snapshot_ = false;
+            // Accumulating again: what we hold is partial until SnapshotComplete says otherwise.
+            library_complete_ = false;
           }
           before = last_games_.size();
           for (const auto &g : msg.games) {
@@ -760,11 +766,23 @@ namespace platf::playnite {
         BOOST_LOG(debug) << "Playnite: library snapshot starting";
         std::scoped_lock lk(mutex_);
         snapshot_markers_supported_ = true;
+        // Clear here rather than on the first 'games' batch: an emptied library sends no batch at
+        // all, which used to leave the previous snapshot in place and reconcile against stale data.
+        last_games_.clear();
+        game_ids_.clear();
+        new_snapshot_ = false;
+        library_complete_ = false;
+        library_confirmed_empty_ = false;
       } else if (msg.type == MT::SnapshotComplete) {
         std::size_t total = 0;
         {
           std::scoped_lock lk(mutex_);
           snapshot_markers_supported_ = true;
+          library_complete_ = true;
+          // Only an explicit zero from the plugin proves the library is empty. If we accumulated
+          // nothing but the plugin claims games (or reports nothing at all), the batches went
+          // missing and purging everything against that would be destructive.
+          library_confirmed_empty_ = last_games_.empty() && msg.snapshot_games_count == 0;
           ++snapshot_generation_;
           total = last_games_.size();
         }
@@ -843,14 +861,19 @@ namespace platf::playnite {
 
       // Build all games snapshot and reconcile with apps.json via helper
       std::vector<platf::playnite::Game> all;
+      bool library_complete = false;
+      bool library_confirmed_empty = false;
       {
         std::scoped_lock lk(mutex_);
         all = last_games_;
+        library_complete = library_complete_;
+        library_confirmed_empty = library_confirmed_empty_;
       }
-      // An empty snapshot means "no data from Playnite" (client just started, or Playnite not
-      // running), not "the library is empty". Reconciling against it would purge auto apps whose
-      // last-played/installed evidence simply hasn't arrived.
-      if (all.empty()) {
+      // An empty snapshot usually means "no data from Playnite" (client just started, or Playnite
+      // not running), not "the library is empty". Reconciling against it would purge auto apps
+      // whose last-played/installed evidence simply hasn't arrived. The exception is a snapshot the
+      // plugin explicitly closed with a zero-game count: there the library really is empty.
+      if (all.empty() && !library_confirmed_empty) {
         BOOST_LOG(warning) << "Playnite sync skipped: no games in cached library snapshot";
         stats.error = "no library snapshot from Playnite";
         return stats;
@@ -869,7 +892,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, library_complete, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, config::playnite.exclude_hidden_games, changed, matched);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -940,6 +963,8 @@ namespace platf::playnite {
     mutable std::mutex client_mutex_;
     bool new_snapshot_ = true;  // Indicates next games message starts a new accumulation
     bool snapshot_markers_supported_ = false;  // Plugin sends snapshotStart/snapshotComplete (reset per connection)
+    bool library_complete_ = false;  // last_games_ holds a whole library, not a partial accumulation
+    bool library_confirmed_empty_ = false;  // Plugin explicitly reported a zero-game library
     uint64_t snapshot_generation_ = 0;  // Incremented on every completed snapshot
     std::condition_variable snapshot_cv_;  // Signals snapshot completion (paired with mutex_)
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
@@ -1143,6 +1168,7 @@ namespace platf::playnite {
       j["name"] = g.name;
       j["categories"] = g.categories;
       j["installed"] = g.installed;
+      j["hidden"] = g.hidden;
       j["pluginId"] = g.plugin_id;
       j["pluginName"] = g.plugin_name;
       arr.push_back(std::move(j));

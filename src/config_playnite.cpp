@@ -157,6 +157,11 @@ namespace config {
     if (!tmp.empty()) {
       playnite.autosync_remove_uninstalled = to_bool(tmp);
     }
+    tmp.clear();
+    erase_take(vars, "playnite_exclude_hidden_games", tmp);
+    if (!tmp.empty()) {
+      playnite.exclude_hidden_games = to_bool(tmp);
+    }
 
     // integers
     tmp.clear();

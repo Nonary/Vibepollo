@@ -1325,6 +1325,8 @@ function Get-PlayniteGames {
       if ($null -ne $g.IsInstalled) { $installed = [bool]$g.IsInstalled }
       elseif ($g.InstallDirectory) { $installed = $true }
     } catch {}
+    $hidden = $false
+    try { if ($null -ne $g.Hidden) { $hidden = [bool]$g.Hidden } } catch {}
     $pluginId = ''
     try { if ($g.PluginId) { $pluginId = $g.PluginId.ToString() } } catch {}
     $pluginName = ''
@@ -1347,6 +1349,7 @@ function Get-PlayniteGames {
       iconPath        = $icon
       backgroundPath  = $background
       installed       = $installed
+      hidden          = $hidden
       tags            = @() # TODO: fill from $g.TagIds if needed
       description     = $description
       genres          = $genreNames
