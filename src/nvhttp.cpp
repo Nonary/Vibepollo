@@ -3422,6 +3422,12 @@ namespace nvhttp {
       if (meta.critic_score >= 0) {
         node["critic_score"] = meta.critic_score;
       }
+      if (!meta.last_played.empty()) {
+        node["last_played"] = meta.last_played;
+      }
+      if (meta.playtime_minutes > 0) {
+        node["playtime_minutes"] = meta.playtime_minutes;
+      }
       if (!meta.background_image_path.empty()) {
         // The image itself is fetched separately via /appbackground?appid=<id>.
         node["has_background"] = true;

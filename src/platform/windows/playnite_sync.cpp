@@ -618,6 +618,14 @@ namespace platf::playnite::sync {
       set_or_erase_str("playnite-release-date", g.release_date);
       set_or_erase_score("playnite-community-score", g.community_score);
       set_or_erase_score("playnite-critic-score", g.critic_score);
+      set_or_erase_str("playnite-last-played", g.last_played);
+      // Zero playtime is the same as none for a client ordering a library, so it is erased
+      // rather than written, keeping apps.json free of a key on every never-played game.
+      if (g.playtime_minutes > 0) {
+        app["playnite-playtime-minutes"] = g.playtime_minutes;
+      } else if (app.contains("playnite-playtime-minutes")) {
+        app.erase("playnite-playtime-minutes");
+      }
     } catch (...) {}
   }
 

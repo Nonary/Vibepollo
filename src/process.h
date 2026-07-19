@@ -113,6 +113,11 @@ namespace proc {
     std::string release_date;
     int community_score {-1};
     int critic_score {-1};
+    // When Playnite last recorded the game as played (ISO8601), and for how long in total.
+    // Unlike anything a client can track on its own, these cover sessions played at the PC
+    // itself. Empty / 0 when the game has never been played or Playnite reports nothing.
+    std::string last_played;
+    uint64_t playtime_minutes {0};
     // Local path to the converted background/hero image, served via /appbackground. Empty when
     // the game has none.
     std::string background_image_path;
