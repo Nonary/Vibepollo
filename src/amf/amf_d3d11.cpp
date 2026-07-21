@@ -197,15 +197,11 @@ namespace amf {
     preanalysis_lookahead_depth = 0;
 
     const auto preanalysis_plan = lifecycle::resolve_preanalysis(config.rc_mode, config.preanalysis);
+    // input_queue_size_for_preanalysis deliberately preserves the user's
+    // low-latency queue choice (see the lifecycle policy test) — no raise here.
     const auto effective_input_queue_size = lifecycle::input_queue_size_for_preanalysis(
       config.input_queue_size,
       preanalysis_plan.enabled);
-    if (effective_input_queue_size && config.input_queue_size &&
-        *effective_input_queue_size != *config.input_queue_size) {
-      BOOST_LOG(info) << "AMF: raising input queue from " << *config.input_queue_size
-                      << " to the documented default of " << *effective_input_queue_size
-                      << " for PreAnalysis pipeline headroom";
-    }
     const bool adaptive_quantization_supported =
       lifecycle::rate_control_supports_adaptive_quantization(config.rc_mode);
     if (!adaptive_quantization_supported && config.vbaq && *config.vbaq) {

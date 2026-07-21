@@ -108,8 +108,9 @@ namespace config {
       // Native AMF encoder (amdvce) tuning knobs.
       int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
       int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
-      // Curated opt-in native-AMF feature knobs. nullopt / 0 == leave the AMF
-      // driver default untouched, so none of these change behavior unless enabled.
+      // Curated tri-state native-AMF feature knobs. nullopt (auto) leaves the
+      // AMF driver default untouched; 1 forces the property on and 0 forces it
+      // off — both explicit values are applied and read back like any other.
       std::optional<int> amd_smart_access_video;  // Multi-VCN encode (Smart Access Video): 1=on, 0=off
       std::optional<int> amd_lowlatency_mode;  // AMF LOWLATENCY_MODE (H.264/HEVC): 1=on, 0=off
       std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off

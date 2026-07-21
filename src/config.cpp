@@ -336,6 +336,9 @@ namespace config {
           value == "disabled"sv || value == "off"sv || value == "0"sv) {
         return 0;
       }
+      if (!value.empty() && value != "auto"sv) {
+        BOOST_LOG(warning) << "Unknown tri-state value ["sv << value << "], falling back to auto"sv;
+      }
       return ::std::nullopt;
     }
 
@@ -353,6 +356,9 @@ namespace config {
       }
       if (value == "lowest"sv) {
         return 3;
+      }
+      if (!value.empty() && value != "auto"sv) {
+        BOOST_LOG(warning) << "Unknown amd_av1_latency_mode value ["sv << value << "], falling back to auto"sv;
       }
       return ::std::nullopt;
     }
@@ -1714,6 +1720,8 @@ namespace config {
       } else {
         video.amd.amd_qvbr_quality_level = qvbr_quality_level;
       }
+    } else if (qvbr_quality_level < 0) {
+      BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
     }
 
     std::string usage;

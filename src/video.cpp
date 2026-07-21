@@ -4695,7 +4695,6 @@ namespace video {
 
     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
-    auto idr_event = mail->event<bool>(mail::idr);
     int consecutive_encoder_initialization_failures = 0;
 #ifdef _WIN32
     int consecutive_native_amf_runtime_failures = 0;
