@@ -360,10 +360,6 @@ namespace platf::dxgi {
         display_refresh_rate.Denominator > 0 &&
         display_refresh_rate_rounded > 0;
 
-      if (valid_display_refresh_rate && adjusted_client_frame_rate > display_refresh_rate_rounded) {
-        adjusted_client_frame_rate = display_refresh_rate_rounded;
-      }
-
       // Adjust capture frame interval when display refresh rate is not integral but very close to requested fps.
       if (valid_display_refresh_rate && display_refresh_rate.Denominator > 1 && adjusted_client_frame_rate > 0) {
         DXGI_RATIONAL candidate = display_refresh_rate;
