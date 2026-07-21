@@ -1786,16 +1786,18 @@ namespace amf {
 
     // Submit input — retry with output draining if input queue is still full (like FFmpeg).
     //
-    // AMF SubmitInput return values we explicitly handle (per AMF SimpleEncoder sample):
+    // AMF SubmitInput return values we explicitly handle:
     //   AMF_OK                          — submitted, count it.
-    //   AMF_INPUT_FULL                  — encoder queue full, drain output + retry.
-    //   AMF_DECODER_NO_FREE_SURFACES    — surface pool exhausted, semantically equivalent
-    //                                     to INPUT_FULL on the input side; treat the same.
-    //   AMF_NEED_MORE_INPUT             — not accepted yet; retain and retry the same
-    //                                     surface, matching AMD's official samples.
+    //   AMF_INPUT_FULL                  — NOT consumed; encoder queue full, drain output + retry.
+    //   AMF_DECODER_NO_FREE_SURFACES    — NOT consumed; surface pool exhausted, semantically
+    //                                     equivalent to INPUT_FULL on the input side.
+    //   AMF_NEED_MORE_INPUT             — CONSUMED; output is merely deferred (PreAnalysis
+    //                                     lookahead priming). Never resubmit the same surface:
+    //                                     FFmpeg's amfenc.c retries AMF_INPUT_FULL only and
+    //                                     releases the surface for every other result.
     //   anything else                   — real error.
     auto retryable_submit = [](AMF_RESULT value) {
-      return value == AMF_INPUT_FULL || value == AMF_DECODER_NO_FREE_SURFACES || value == AMF_NEED_MORE_INPUT;
+      return value == AMF_INPUT_FULL || value == AMF_DECODER_NO_FREE_SURFACES;
     };
     res = lifecycle::submit_with_bounded_retry(
       [&]() {
@@ -1836,8 +1838,7 @@ namespace amf {
         }
         in_flight = static_cast<int>(input_surfaces_in_flight);
       }
-      const char *reason = res == AMF_INPUT_FULL ? "AMF_INPUT_FULL" :
-                           res == AMF_DECODER_NO_FREE_SURFACES ? "AMF_DECODER_NO_FREE_SURFACES" : "AMF_NEED_MORE_INPUT";
+      const char *reason = res == AMF_INPUT_FULL ? "AMF_INPUT_FULL" : "AMF_DECODER_NO_FREE_SURFACES";
       BOOST_LOG(warning) << "AMF: SubmitInput still " << reason
                          << " after retries, dropping frame " << frame_index
                          << " (in_flight=" << in_flight << ")";
@@ -1861,6 +1862,12 @@ namespace amf {
         result.fatal = true;
       }
       return result;
+    }
+    if (res == AMF_NEED_MORE_INPUT) {
+      // The encoder consumed the surface and only defers output (PreAnalysis
+      // lookahead priming). Account for it exactly like AMF_OK — the pump
+      // already tolerates output arriving later than its input.
+      res = AMF_OK;
     }
     if (res != AMF_OK) {
       BOOST_LOG(error) << "AMF: SubmitInput failed, error: " << res;
