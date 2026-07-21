@@ -470,6 +470,9 @@ namespace nvenc {
                                                                                             NV_ENC_MULTI_PASS_DISABLED;
 
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
+    if (config.adaptive_quantization && config.aq_strength > 0) {
+      enc_config.rcParams.aqStrength = config.aq_strength;
+    }
     enc_config.rcParams.enableTemporalAQ = config.temporal_aq && get_encoder_cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
 
