@@ -187,6 +187,11 @@ namespace {
            std::holds_alternative<display_helper::v2::ResetCommand>(message);
   }
 
+  bool is_stabilization_completion(const display_helper::v2::Message &message) {
+    const auto *completion = std::get_if<display_helper::v2::VerificationCompleted>(&message);
+    return completion && completion->purpose == display_helper::v2::VerificationPurpose::Stabilization;
+  }
+
   bool is_async_completion(const display_helper::v2::Message &message) {
     return std::holds_alternative<display_helper::v2::ApplyCompleted>(message) ||
            std::holds_alternative<display_helper::v2::VerificationCompleted>(message) ||
@@ -817,19 +822,24 @@ int run_v2_helper(int argc, char *argv[]) {
 
   auto process_queue = [&]() {
     if (auto message = queue.wait_for(std::chrono::milliseconds(100))) {
-      // A completion may race a replacement APPLY/REVERT/DISARM arriving from
-      // the pipe. Give a contiguous replacement-intent prefix priority so the
-      // state machine can coalesce it behind the active mutation fence before
-      // that completion decides what to run next. This is v2 mailbox ownership,
-      // not v1's background-worker mutex choreography.
+      // A stabilization-verification completion may race a replacement
+      // APPLY/REVERT/DISARM or refresh command arriving from the pipe. Give a
+      // contiguous replacement-intent prefix priority so the state machine can
+      // coalesce it behind the active mutation fence before that completion
+      // decides what to run next. This is v2 mailbox ownership, not v1's
+      // background-worker mutex choreography.
       std::deque<display_helper::v2::Message> controls;
       // Do not cross a normal IPC ingress frame such as SNAPSHOT_CURRENT: its
       // pipe order is a baseline-capture contract. Only a contiguous control
       // prefix immediately following an asynchronous completion may supersede
       // that completion.
+      const bool prioritize_refresh_rate = is_stabilization_completion(*message);
       auto queued_controls = is_async_completion(*message) ?
-                               queue.extract_prefix_while([](const display_helper::v2::Message &queued) {
-                                 return is_replacement_control_intent(queued);
+                               queue.extract_prefix_while([prioritize_refresh_rate](const display_helper::v2::Message &queued) {
+                                 return is_replacement_control_intent(queued) ||
+                                        (prioritize_refresh_rate &&
+                                         (std::holds_alternative<display_helper::v2::RefreshRateCommand>(queued) ||
+                                          std::holds_alternative<display_helper::v2::PingCommand>(queued)));
                                }) :
                                std::deque<display_helper::v2::Message> {};
       while (!queued_controls.empty()) {

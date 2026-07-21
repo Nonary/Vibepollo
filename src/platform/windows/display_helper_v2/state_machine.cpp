@@ -409,6 +409,19 @@ namespace display_helper::v2 {
            active_mutation_worker_->generation == generation;
   }
 
+  bool StateMachine::refresh_targets_active_request(const std::string &device_id) const {
+    return current_request_.configuration &&
+           (boost::iequals(current_request_.configuration->m_device_id, device_id) ||
+            (current_request_.configuration->m_device_id.empty() &&
+             resolved_target_ &&
+             std::any_of(
+               resolved_target_->duplicate_device_ids.begin(),
+               resolved_target_->duplicate_device_ids.end(),
+               [&device_id](const std::string &candidate) {
+                 return boost::iequals(candidate, device_id);
+               })));
+  }
+
   void StateMachine::queue_after_active_mutation(
     DeferredMutationCommand command,
     const char *label,
@@ -991,6 +1004,25 @@ namespace display_helper::v2 {
       send_refresh_rate_result(false, command.connection_epoch, command.request_id);
       return;
     }
+    if (post_apply_check_pending_ && !refresh_targets_active_request(command.device_id)) {
+      // A stabilization verification owns the current session's display
+      // contract. Do not let an unrelated refresh mutate another device while
+      // that read/repair decision is pending; the caller can retry afterward.
+      BOOST_LOG(debug) << "Display helper: rejecting unrelated refresh-rate mutation while post-apply verification is pending.";
+      send_refresh_rate_result(false, command.connection_epoch, command.request_id);
+      return;
+    }
+    if (post_apply_check_pending_) {
+      // A stabilization verification carries a copy of the pre-refresh
+      // request. If it completes after this refresh is dispatched, a failed
+      // result would otherwise start a full APPLY with the old refresh rate
+      // and replace the refresh worker's ownership fence. Invalidate that
+      // verification before the refresh mutation is queued; its completion
+      // will then be ignored as stale.
+      BOOST_LOG(debug) << "Display helper: cancelling pending post-apply verification before refresh-rate mutation.";
+      system_.cancel_operations();
+      rewind_post_apply_stabilization();
+    }
     // Refresh-rate changes are a display mutation in their own right.  Give
     // them the same ownership fence as APPLY/REVERT so a replacement session
     // cannot begin while Windows is still committing the rate change.
@@ -1386,29 +1418,20 @@ namespace display_helper::v2 {
       return;
     }
 
-    const bool refresh_targets_active_request =
-      current_request_.configuration &&
-      (boost::iequals(current_request_.configuration->m_device_id, completed.device_id) ||
-       (current_request_.configuration->m_device_id.empty() &&
-        resolved_target_ &&
-        std::any_of(
-          resolved_target_->duplicate_device_ids.begin(),
-          resolved_target_->duplicate_device_ids.end(),
-          [&completed](const std::string &device_id) {
-            return boost::iequals(device_id, completed.device_id);
-          })));
-    if (completed.success && refresh_targets_active_request) {
-      // Adaptive refresh is part of the active transaction, not an unrelated
-      // side effect. A later virtual-display recreation/reapply must preserve
-      // the refresh rate that Sunshine just confirmed.
-      current_request_.configuration->m_refresh_rate = display_device::Rational {
-        completed.numerator,
-        completed.denominator,
-      };
-
+    if (refresh_targets_active_request(completed.device_id)) {
+      if (completed.success) {
+        // Adaptive refresh is part of the active transaction, not an unrelated
+        // side effect. A later virtual-display recreation/reapply must preserve
+        // the refresh rate that Sunshine just confirmed.
+        current_request_.configuration->m_refresh_rate = display_device::Rational {
+          completed.numerator,
+          completed.denominator,
+        };
+      }
       // Delayed verifications hold a copy of the prior request. Cancel that
-      // generation and restart the v1-style settling envelope from the
-      // confirmed adaptive rate so a stale check cannot reapply it.
+      // generation and restart the v1-style settling envelope. This is needed
+      // after both success and failure because a failed refresh may still have
+      // changed Windows state before reporting its result.
       system_.cancel_operations();
       rewind_post_apply_stabilization();
       if (transient_disconnect_settlement_requested_) {

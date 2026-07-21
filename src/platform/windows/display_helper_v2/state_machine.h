@@ -430,6 +430,7 @@ namespace display_helper::v2 {
     void reset_uncommitted_staged_state_if_needed();
     bool mutation_worker_active() const;
     bool owns_active_worker(MutationWorkerKind kind, std::uint64_t generation) const;
+    bool refresh_targets_active_request(const std::string &device_id) const;
 
     ApplyPipeline &apply_;
     RecoveryPipeline &recovery_;

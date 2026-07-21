@@ -1332,6 +1332,64 @@ TEST(DisplayHelperV2StateMachine, ApplyWaitsForAnInFlightRefreshRateMutation) {
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
 }
 
+TEST(DisplayHelperV2StateMachine, RefreshRateInvalidatesPendingStabilizationVerification) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual";
+  request.virtual_layout = "extended";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  // The successful initial verification schedules the delayed stabilization
+  // check. Keep its completion so it can arrive after the refresh is accepted.
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  const auto stale_verification = harness.dispatcher.verification_completion;
+  const int apply_dispatches_before_refresh = harness.dispatcher.apply_dispatch_count;
+
+  harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
+    .device_id = "virtual",
+    .numerator = 464,
+    .denominator = 1,
+    .generation = harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.refresh_dispatch_count, 1);
+
+  // A failed old verification must not replace the refresh mutation with a
+  // full APPLY using the previous session refresh rate.
+  stale_verification(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before_refresh);
+
+  ASSERT_TRUE(harness.dispatcher.refresh_completion);
+  harness.dispatcher.refresh_completion(true);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.refresh_result.has_value());
+  EXPECT_TRUE(*harness.refresh_result);
+
+  const int verification_dispatches_before_failed_refresh = harness.dispatcher.verification_dispatch_count;
+  harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
+    .device_id = "virtual",
+    .numerator = 116,
+    .denominator = 1,
+    .generation = harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.refresh_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.refresh_completion);
+  harness.dispatcher.refresh_completion(false);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.refresh_result.has_value());
+  EXPECT_FALSE(*harness.refresh_result);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_failed_refresh + 1);
+}
+
 // Test: Non-virtual display still goes to Waiting state after successful apply.
 TEST(DisplayHelperV2StateMachine, NonVirtualDisplayGoesToWaitingState) {
   StateMachineHarness harness;
