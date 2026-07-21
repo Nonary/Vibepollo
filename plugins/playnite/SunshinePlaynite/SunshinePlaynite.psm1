@@ -1258,13 +1258,21 @@ function Start-LauncherConnReader {
           Register-SunshineLaunchedGame -Id $obj.id
           Initialize-PlayniteUIBridgeV2FromLegacy
           $launchEnvironment = Get-LaunchEnvironmentEntries -Message $obj
-          [SunshinePlayniteUIBridgeV2]::StartGameByGuidStringOnUIThread([string]$obj.id, $launchEnvironment)
-          Write-Log "LauncherConn[$Guid]: launch dispatched for $($obj.id)"
+          # Playnite can return from StartGame before its asynchronous process
+          # launch consumes the process environment. Keep this connection's
+          # session environment applied until the launcher disconnects instead
+          # of restoring it as soon as StartGame returns.
+          [SunshinePlayniteUIBridgeV2]::SetPersistentEnvironment($Guid, $launchEnvironment)
+          [SunshinePlayniteUIBridgeV2]::StartGameByGuidStringOnUIThread([string]$obj.id, [string[]]@())
+          Write-Log "LauncherConn[$Guid]: launch dispatched for $($obj.id); session environment applied ($($launchEnvironment.Count) variables)"
         }
         elseif ($obj.type -eq 'command' -and $obj.command -eq 'set-environment') {
           Initialize-PlayniteUIBridgeV2FromLegacy
           $launchEnvironment = Get-LaunchEnvironmentEntries -Message $obj
-          [SunshinePlayniteUIBridgeV2]::SetPersistentEnvironmentOnUIThread($Guid, $launchEnvironment)
+          # Environment mutation is process-wide and protected by the bridge's
+          # scope lock; apply it synchronously so a fullscreen input cannot race
+          # the UI dispatch that used to perform this update later.
+          [SunshinePlayniteUIBridgeV2]::SetPersistentEnvironment($Guid, $launchEnvironment)
           Write-Log "LauncherConn[$Guid]: fullscreen environment applied ($($launchEnvironment.Count) variables)"
         }
         elseif ($obj.type -and $obj.command) {
@@ -1281,7 +1289,7 @@ function Start-LauncherConnReader {
     }
   }
   finally {
-    try { [SunshinePlayniteUIBridgeV2]::ClearPersistentEnvironmentOnUIThread($Guid) } catch {}
+    try { [SunshinePlayniteUIBridgeV2]::ClearPersistentEnvironment($Guid) } catch {}
     try { if ($Conn.Reader) { $Conn.Reader.Dispose() } } catch {}
     try { if ($Conn.Writer) { $Conn.Writer.Dispose() } } catch {}
     try { if ($Conn.Stream) { $Conn.Stream.Dispose() } } catch {}
