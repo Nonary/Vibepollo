@@ -918,7 +918,8 @@ namespace platf::dxgi {
       using namespace std::chrono_literals;
 
       auto &request = truehdr_live_readback_request;
-      if (!request || request->logged || std::chrono::steady_clock::now() - request->stable_since < 500ms) {
+      if (!request || request->logged || !output_texture ||
+          std::chrono::steady_clock::now() - request->stable_since < 500ms) {
         return;
       }
       request->logged = true;
@@ -1370,6 +1371,9 @@ namespace platf::dxgi {
       // users. Native AMF alone opts into the rotating texture map above.
       frame_texture->AddRef();
       fixed_output_texture.reset(frame_texture);
+      // Keep the raw output pointer in sync for consumers shared with the
+      // dynamic path (TrueHDR live readback dereferences it unconditionally).
+      output_texture = frame_texture;
 
       auto create_fixed_rtv = [&](auto &target, DXGI_FORMAT view_format) -> bool {
         if (view_format == DXGI_FORMAT_UNKNOWN) {
