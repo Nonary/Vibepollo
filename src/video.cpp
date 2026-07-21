@@ -3630,7 +3630,11 @@ namespace video {
       return encode_run_result_e::initialization_failed;
     }
     const bool native_amf_session = dynamic_cast<amf_encode_session_t *>(session.get()) != nullptr;
+#ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_legacy;
+#else
+    const bool legacy_amf_session = false;
+#endif
     bool native_amf_runtime_failed = false;
     const auto session_encoder_flags = session_encoder->flags;
 
