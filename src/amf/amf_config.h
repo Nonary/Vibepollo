@@ -101,9 +101,11 @@ namespace amf {
     // --- Intra Refresh ---
     // H.264: number of MBs per slot; HEVC: number of CTBs per slot; AV1: mode enum
     std::optional<int> intra_refresh_mbs;
+    // H.264 AMF exposes intra refresh only with more than one reference frame.
+    int intra_refresh_minimum_reference_frames = 0;
     // AV1-specific: intra refresh mode (AMF_VIDEO_ENCODER_AV1_INTRA_REFRESH_MODE_ENUM)
     std::optional<int> av1_intra_refresh_mode;
-    // AV1-specific: number of stripes for intra refresh
+    // AV1-specific: number of frames/stripes in one intra-refresh cycle
     std::optional<int> av1_intra_refresh_stripes;
 
     // --- Statistics feedback ---

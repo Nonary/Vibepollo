@@ -209,6 +209,27 @@ namespace {
            legacy.include_legacy && !legacy.fail_closed;
   }
 
+  bool xbox_intra_refresh_maps_to_native_amf() {
+    const auto disabled = amf::lifecycle::resolve_intra_refresh(false, 0, 1920, 1080);
+    const auto invalid = amf::lifecycle::resolve_intra_refresh(true, 3, 1920, 1080);
+    const auto h264 = amf::lifecycle::resolve_intra_refresh(true, 0, 1920, 1080);
+    const auto h264_odd = amf::lifecycle::resolve_intra_refresh(true, 0, 1919, 1079);
+    const auto hevc = amf::lifecycle::resolve_intra_refresh(true, 1, 1920, 1080);
+    const auto av1 = amf::lifecycle::resolve_intra_refresh(true, 2, 1920, 1080);
+
+    return !disabled.enabled && !disabled.blocks_per_slot &&
+           !invalid.enabled &&
+           h264.enabled && h264.blocks_per_slot && *h264.blocks_per_slot == 28 &&
+           h264.minimum_reference_frames == 2 && h264.disable_ltr &&
+           h264_odd.blocks_per_slot && *h264_odd.blocks_per_slot == 28 &&
+           hevc.enabled && hevc.blocks_per_slot && *hevc.blocks_per_slot == 2 &&
+           hevc.minimum_reference_frames == 0 && !hevc.disable_ltr &&
+           av1.enabled && !av1.blocks_per_slot &&
+           av1.av1_mode && *av1.av1_mode == amf::lifecycle::av1_continuous_intra_refresh_mode &&
+           av1.av1_cycle_frames &&
+           *av1.av1_cycle_frames == amf::lifecycle::intra_refresh_period_frames;
+  }
+
   bool repeated_input_rotates_away_from_a_lookahead_owned_surface() {
     std::array<amf::lifecycle::input_surface_state_t, 3> slots;
     slots[0].state = amf::lifecycle::input_surface_state_e::in_flight;
@@ -514,6 +535,7 @@ int main() {
              preanalysis_pipeline_primes_and_drains_in_order() &&
              automatic_h264_coder_preserves_driver_default() &&
              native_selection_never_routes_to_legacy() &&
+             xbox_intra_refresh_maps_to_native_amf() &&
              repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
              surface_pool_can_prime_a_retaining_driver() &&
              preanalysis_preserves_low_latency_queue() &&
@@ -565,6 +587,10 @@ TEST(SunshineNativeAmfReview, AutomaticH264CoderPreservesDriverDefault) {
 
 TEST(SunshineNativeAmfReview, NativeSelectionNeverRoutesToLegacy) {
   EXPECT_TRUE(native_selection_never_routes_to_legacy());
+}
+
+TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {
+  EXPECT_TRUE(xbox_intra_refresh_maps_to_native_amf());
 }
 
 TEST(SunshineNativeAmfReview, RepeatedInputRotatesAwayFromLookaheadOwnedSurface) {

@@ -260,7 +260,14 @@ namespace amf {
         return true;
       }
 
-      const auto requested = static_cast<amf_int64>(client_config.numRefFrames);
+      const auto requested = static_cast<amf_int64>(std::max(
+        client_config.numRefFrames,
+        config.intra_refresh_minimum_reference_frames));
+      if (requested != client_config.numRefFrames) {
+        BOOST_LOG(info) << "AMF: raised the client reference-frame limit from "
+                        << client_config.numRefFrames << " to " << requested
+                        << " because H.264 intra refresh requires more than one reference frame";
+      }
       const auto set_result = encoder->SetProperty(property, requested);
       amf_int64 applied = 0;
       const auto get_result = encoder->GetProperty(property, &applied);

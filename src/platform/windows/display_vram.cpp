@@ -2250,6 +2250,31 @@ namespace platf::dxgi {
         amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
       }
 
+      // Xbox clients request rolling intra refresh because they cannot always
+      // recover by asking for a keyframe. Match NVENC's 300-frame period using
+      // the codec-specific AMF controls. H.264 AMF requires LTR to be disabled
+      // and at least two reference frames while intra refresh is active.
+      const auto intra_refresh_plan = ::amf::lifecycle::resolve_intra_refresh(
+        client_config.enableIntraRefresh == 1,
+        client_config.videoFormat,
+        client_config.width,
+        client_config.height);
+      amf_cfg.intra_refresh_mbs = intra_refresh_plan.blocks_per_slot;
+      amf_cfg.intra_refresh_minimum_reference_frames = intra_refresh_plan.minimum_reference_frames;
+      amf_cfg.av1_intra_refresh_mode = intra_refresh_plan.av1_mode;
+      amf_cfg.av1_intra_refresh_stripes = intra_refresh_plan.av1_cycle_frames;
+      if (intra_refresh_plan.disable_ltr && amf_cfg.max_ltr_frames > 0) {
+        BOOST_LOG(warning) << "AMF: disabling LTR because the client requested H.264 intra refresh";
+        amf_cfg.max_ltr_frames = 0;
+      }
+      if (intra_refresh_plan.enabled) {
+        BOOST_LOG(info) << "AMF: enabling client-requested intra refresh (period="
+                        << ::amf::lifecycle::intra_refresh_period_frames
+                        << ", blocks_per_slot=" << intra_refresh_plan.blocks_per_slot.value_or(0)
+                        << ", AV1_mode=" << intra_refresh_plan.av1_mode.value_or(0)
+                        << ", AV1_cycle=" << intra_refresh_plan.av1_cycle_frames.value_or(0) << ')';
+      }
+
       // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
       // leaves the AMF driver default untouched, so behavior is unchanged unless the
       // user opts in. Tri-state knobs map nullopt -> unset, 1 -> true, 0 -> false.

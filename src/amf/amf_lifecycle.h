@@ -216,6 +216,63 @@ namespace amf::lifecycle {
     };
   }
 
+  inline constexpr int intra_refresh_period_frames = 300;
+  inline constexpr int intra_refresh_duration_frames = intra_refresh_period_frames - 1;
+  inline constexpr int av1_continuous_intra_refresh_mode = 2;
+
+  struct intra_refresh_plan_t {
+    bool enabled = false;
+    std::optional<int> blocks_per_slot;
+    std::optional<int> av1_mode;
+    std::optional<int> av1_cycle_frames;
+    int minimum_reference_frames = 0;
+    bool disable_ltr = false;
+  };
+
+  inline constexpr intra_refresh_plan_t resolve_intra_refresh(
+    bool requested,
+    int video_format,
+    int width,
+    int height) noexcept {
+    if (!requested || width <= 0 || height <= 0) {
+      return {};
+    }
+
+    if (video_format == 2) {
+      // AMF's AV1 stripe count is the number of frames in a complete refresh
+      // cycle. Continuous mode therefore maps directly to NVENC's 300-frame
+      // Xbox-compatible period.
+      return {
+        true,
+        std::nullopt,
+        av1_continuous_intra_refresh_mode,
+        intra_refresh_period_frames,
+        0,
+        false,
+      };
+    }
+
+    if (video_format != 0 && video_format != 1) {
+      return {};
+    }
+
+    const int block_edge = video_format == 0 ? 16 : 64;
+    const int64_t blocks_wide = (static_cast<int64_t>(width) + block_edge - 1) / block_edge;
+    const int64_t blocks_high = (static_cast<int64_t>(height) + block_edge - 1) / block_edge;
+    const int64_t block_count = blocks_wide * blocks_high;
+    const int64_t refresh_frames = std::min<int64_t>(block_count, intra_refresh_duration_frames);
+    const int blocks_per_slot = static_cast<int>((block_count + refresh_frames - 1) / refresh_frames);
+
+    return {
+      true,
+      blocks_per_slot,
+      std::nullopt,
+      std::nullopt,
+      video_format == 0 ? 2 : 0,
+      video_format == 0,
+    };
+  }
+
   inline bool rate_control_requires_preanalysis(int mode) noexcept {
     // AMF uses these values consistently for AVC, HEVC, and AV1.
     return mode >= 4 && mode <= 6;  // QVBR, HQVBR, HQCBR
