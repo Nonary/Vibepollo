@@ -107,6 +107,13 @@ namespace amf {
     bool
     ensure_input_surface_count(std::size_t count);
 
+    // Safe to call with state_mutex released: device and input_surface_desc are
+    // immutable while the encode thread runs. Pool expansion allocates through
+    // this so a multi-MB CreateTexture2D never stalls the pump or AMF's
+    // release observers behind the lock.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>
+    create_input_surface_texture();
+
     ID3D11Device *device = nullptr;
     ::amf::AMFFactory *factory = nullptr;
     ::amf::AMFContextPtr context;

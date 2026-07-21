@@ -64,28 +64,37 @@ namespace amf {
     }
   }
 
-  bool
-  amf_d3d11::ensure_input_surface_count(std::size_t count) {
-    count = std::min(count, input_surface_ring.size());
+  Microsoft::WRL::ComPtr<ID3D11Texture2D>
+  amf_d3d11::create_input_surface_texture() {
     static const GUID AMFTextureArrayIndexGUID = { 0x28115527, 0xe7c3, 0x4b66, { 0x99, 0xd3, 0x4f, 0x2a, 0xe6, 0xb4, 0x7f, 0xaf } };
     int array_index = 0;
 
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    const auto hr = device->CreateTexture2D(
+      &input_surface_desc,
+      nullptr,
+      texture.ReleaseAndGetAddressOf());
+    if (FAILED(hr)) {
+      BOOST_LOG(error) << "AMF: failed to create direct-render input texture"
+                       << ", HRESULT: 0x" << std::hex << hr;
+      return nullptr;
+    }
+    texture->SetPrivateData(AMFTextureArrayIndexGUID, sizeof(array_index), &array_index);
+    return texture;
+  }
+
+  bool
+  amf_d3d11::ensure_input_surface_count(std::size_t count) {
+    count = std::min(count, input_surface_ring.size());
     for (std::size_t index = 0; index < count; ++index) {
       auto &slot = input_surface_ring[index];
       if (slot.texture) {
         continue;
       }
-
-      const auto hr = device->CreateTexture2D(
-        &input_surface_desc,
-        nullptr,
-        slot.texture.ReleaseAndGetAddressOf());
-      if (FAILED(hr)) {
-        BOOST_LOG(error) << "AMF: failed to create direct-render input texture " << index
-                         << ", HRESULT: 0x" << std::hex << hr;
+      slot.texture = create_input_surface_texture();
+      if (!slot.texture) {
         return false;
       }
-      slot.texture->SetPrivateData(AMFTextureArrayIndexGUID, sizeof(array_index), &array_index);
     }
     return true;
   }
@@ -1245,14 +1254,9 @@ namespace amf {
     }
     result.data.assign(data_ptr, data_ptr + data_size);
 
-    auto rfi_flag = frame_rfi_flags.find(result.frame_index);
-    if (rfi_flag != frame_rfi_flags.end()) {
-      result.after_ref_frame_invalidation = rfi_flag->second;
-      frame_rfi_flags.erase(rfi_flag);
-    }
-    while (frame_rfi_flags.size() > 256) {
-      frame_rfi_flags.erase(frame_rfi_flags.begin());
-    }
+    // after_ref_frame_invalidation is resolved by the pump under state_mutex.
+    // This function deliberately touches no lock-protected members so the
+    // bitstream copy and driver property reads can run outside the lock.
 
     amf_int64 output_type = 0;
     if (video_format == 0) {
@@ -1331,15 +1335,26 @@ namespace amf {
         }
 
         if (output_data) {
+          // Extract outside state_mutex: the bitstream assign() is multi-MB on
+          // high-bitrate IDR frames and encode_frame takes this same mutex as
+          // its first action — copying under the lock adds submit-path jitter.
+          auto encoded_frame = extract_encoded_frame(output_data);
           {
             std::lock_guard lock(state_mutex);
-            auto encoded_frame = extract_encoded_frame(output_data);
             if (encoded_frame.data.empty()) {
               if (++consecutive_output_failures >= max_consecutive_failures) {
                 BOOST_LOG(error) << "AMF: encoder repeatedly returned invalid output; signaling reinit";
                 output_fatal = true;
               }
             } else {
+              auto rfi_flag = frame_rfi_flags.find(encoded_frame.frame_index);
+              if (rfi_flag != frame_rfi_flags.end()) {
+                encoded_frame.after_ref_frame_invalidation = rfi_flag->second;
+                frame_rfi_flags.erase(rfi_flag);
+              }
+              while (frame_rfi_flags.size() > 256) {
+                frame_rfi_flags.erase(frame_rfi_flags.begin());
+              }
               consecutive_output_failures = 0;
               ++completed_output_count;
               last_completed_frame_index = std::max(last_completed_frame_index, encoded_frame.frame_index);
@@ -1392,10 +1407,15 @@ namespace amf {
             // Drain, an active waiter, or a concurrent submission keeps polling
             // armed. QUERY_TIMEOUT-backed OK/REPEAT calls already blocked for up
             // to 1 ms. Some runtimes return NEED_MORE_INPUT immediately even from
-            // QueryOutput, so sleep for that defensive compatibility case rather
-            // than hot-spinning an above-normal-priority thread.
+            // QueryOutput, so pace that defensive compatibility case rather
+            // than hot-spinning an above-normal-priority thread — but stay
+            // interruptible so stop/drain/new-input wake the pump immediately
+            // instead of eating the remainder of a fixed sleep quantum.
             if (query_result == AMF_NEED_MORE_INPUT || !query_timeout_supported) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              std::unique_lock lock(state_mutex);
+              state_cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+                return stop_token.stop_requested() || output_fatal || drain_requested;
+              });
             }
           }
           continue;
@@ -1422,7 +1442,12 @@ namespace amf {
             state_cv.notify_all();
             break;
           }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          // Interruptible failure backoff — stop requests must not wait out
+          // the sleep quantum.
+          std::unique_lock lock(state_mutex);
+          state_cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+            return stop_token.stop_requested() || output_fatal;
+          });
         }
       }
     } catch (const std::exception &ex) {
@@ -1486,10 +1511,22 @@ namespace amf {
         };
         auto repeat_slot = find_repeat_slot();
         if (!repeat_slot && !output_fatal && active_input_surface_count < input_surface_ring.size()) {
-          const auto expanded_count = active_input_surface_count + 1;
-          if (ensure_input_surface_count(expanded_count)) {
+          // Allocate outside the lock: a multi-MB CreateTexture2D under
+          // state_mutex stalls the pump and AMF's release observers. Expansion
+          // only ever runs on this thread, so re-checking after relock only has
+          // to account for slots the observers freed meanwhile.
+          lock.unlock();
+          auto expansion_texture = create_input_surface_texture();
+          lock.lock();
+          repeat_slot = find_repeat_slot();
+          if (!repeat_slot && expansion_texture && !output_fatal &&
+              active_input_surface_count < input_surface_ring.size()) {
+            auto &expansion_slot = input_surface_ring[active_input_surface_count];
+            if (!expansion_slot.texture) {
+              expansion_slot.texture = std::move(expansion_texture);
+            }
             repeat_slot = active_input_surface_count;
-            active_input_surface_count = expanded_count;
+            ++active_input_surface_count;
             BOOST_LOG(debug) << "AMF: expanded direct-render input pool to " << active_input_surface_count
                              << " surfaces for repeated input";
           }
@@ -2281,10 +2318,22 @@ namespace amf {
 
     auto slot = find_free_slot();
     if (!slot && !output_fatal && active_input_surface_count < input_surface_ring.size()) {
-      const auto expanded_count = active_input_surface_count + 1;
-      if (ensure_input_surface_count(expanded_count)) {
+      // Allocate outside the lock: a multi-MB CreateTexture2D under state_mutex
+      // stalls the pump and AMF's release observers. Expansion only ever runs
+      // on this thread, so re-checking after relock only has to account for
+      // slots the observers freed meanwhile.
+      lock.unlock();
+      auto expansion_texture = create_input_surface_texture();
+      lock.lock();
+      slot = find_free_slot();
+      if (!slot && expansion_texture && !output_fatal &&
+          active_input_surface_count < input_surface_ring.size()) {
+        auto &expansion_slot = input_surface_ring[active_input_surface_count];
+        if (!expansion_slot.texture) {
+          expansion_slot.texture = std::move(expansion_texture);
+        }
         slot = active_input_surface_count;
-        active_input_surface_count = expanded_count;
+        ++active_input_surface_count;
         BOOST_LOG(debug) << "AMF: expanded direct-render input pool to " << active_input_surface_count
                          << " surfaces during driver backlog";
       }
