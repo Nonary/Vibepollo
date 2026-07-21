@@ -230,6 +230,29 @@ namespace {
            *av1.av1_cycle_frames == amf::lifecycle::intra_refresh_period_frames;
   }
 
+  bool effective_reference_frame_limit_matches_configure_and_verify() {
+    using amf::lifecycle::effective_reference_frame_limit;
+
+    // No client limit and no intra-refresh minimum: leave the driver default.
+    const auto untouched = effective_reference_frame_limit(0, 0);
+    const auto untouched_negative = effective_reference_frame_limit(-1, 0);
+    // "No limit" clients still get the H.264 intra-refresh floor.
+    const auto floored = effective_reference_frame_limit(0, 2);
+    // The non-RFI single-reference client is raised to the floor — and the
+    // post-Init verify must expect the raised value, not the client value.
+    const auto raised = effective_reference_frame_limit(1, 2);
+    // A client above the floor keeps its own limit.
+    const auto client_wins = effective_reference_frame_limit(4, 2);
+    // Without intra refresh the client limit passes through untouched.
+    const auto passthrough = effective_reference_frame_limit(3, 0);
+
+    return !untouched && !untouched_negative &&
+           floored && *floored == 2 &&
+           raised && *raised == 2 &&
+           client_wins && *client_wins == 4 &&
+           passthrough && *passthrough == 3;
+  }
+
   bool repeated_input_rotates_away_from_a_lookahead_owned_surface() {
     std::array<amf::lifecycle::input_surface_state_t, 3> slots;
     slots[0].state = amf::lifecycle::input_surface_state_e::in_flight;
@@ -536,6 +559,7 @@ int main() {
              automatic_h264_coder_preserves_driver_default() &&
              native_selection_never_routes_to_legacy() &&
              xbox_intra_refresh_maps_to_native_amf() &&
+             effective_reference_frame_limit_matches_configure_and_verify() &&
              repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
              surface_pool_can_prime_a_retaining_driver() &&
              preanalysis_preserves_low_latency_queue() &&
@@ -591,6 +615,10 @@ TEST(SunshineNativeAmfReview, NativeSelectionNeverRoutesToLegacy) {
 
 TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {
   EXPECT_TRUE(xbox_intra_refresh_maps_to_native_amf());
+}
+
+TEST(SunshineNativeAmfReview, EffectiveReferenceFrameLimitMatchesConfigureAndVerify) {
+  EXPECT_TRUE(effective_reference_frame_limit_matches_configure_and_verify());
 }
 
 TEST(SunshineNativeAmfReview, RepeatedInputRotatesAwayFromLookaheadOwnedSurface) {

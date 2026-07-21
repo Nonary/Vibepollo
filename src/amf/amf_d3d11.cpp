@@ -256,14 +256,18 @@ namespace amf {
     };
 
     auto configure_reference_frames = [&](const wchar_t *property) {
-      if (client_config.numRefFrames <= 0) {
+      const auto requested_limit = lifecycle::effective_reference_frame_limit(
+        client_config.numRefFrames,
+        config.intra_refresh_minimum_reference_frames);
+      if (!requested_limit) {
         return true;
       }
 
-      const auto requested = static_cast<amf_int64>(std::max(
-        client_config.numRefFrames,
-        config.intra_refresh_minimum_reference_frames));
-      if (requested != client_config.numRefFrames) {
+      const auto requested = static_cast<amf_int64>(*requested_limit);
+      if (client_config.numRefFrames <= 0) {
+        BOOST_LOG(info) << "AMF: applying the intra-refresh minimum of " << requested
+                        << " reference frames (client sent no reference-frame limit)";
+      } else if (requested != client_config.numRefFrames) {
         BOOST_LOG(info) << "AMF: raised the client reference-frame limit from "
                         << client_config.numRefFrames << " to " << requested
                         << " because H.264 intra refresh requires more than one reference frame";
@@ -929,15 +933,19 @@ namespace amf {
       }
     }
 
-    if (client_config.numRefFrames > 0) {
+    // Verify against the same effective limit the configure path applied — the
+    // intra-refresh raise is ours, not a driver change (see effective_reference_frame_limit).
+    if (const auto effective_reference_frames = lifecycle::effective_reference_frame_limit(
+          client_config.numRefFrames,
+          config.intra_refresh_minimum_reference_frames)) {
       const wchar_t *reference_frames_property = video_format == 0 ? AMF_VIDEO_ENCODER_MAX_NUM_REFRAMES :
                                                    video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_MAX_NUM_REFRAMES :
                                                                        AMF_VIDEO_ENCODER_AV1_MAX_NUM_REFRAMES;
-      const auto requested_reference_frames = static_cast<amf_int64>(client_config.numRefFrames);
+      const auto requested_reference_frames = static_cast<amf_int64>(*effective_reference_frames);
       amf_int64 applied_reference_frames = 0;
       const auto reference_frames_result = encoder->GetProperty(reference_frames_property, &applied_reference_frames);
       if (reference_frames_result != AMF_OK || applied_reference_frames != requested_reference_frames) {
-        BOOST_LOG(error) << "AMF: driver changed the client reference-frame limit after Init"
+        BOOST_LOG(error) << "AMF: driver changed the effective reference-frame limit after Init"
                          << " (requested=" << requested_reference_frames
                          << ", applied=" << applied_reference_frames
                          << ", result=" << reference_frames_result << ')';

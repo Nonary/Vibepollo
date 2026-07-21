@@ -273,6 +273,24 @@ namespace amf::lifecycle {
     };
   }
 
+  // The client's reference-frame limit and the intra-refresh minimum must be
+  // combined identically at configure time and at post-Init verification, or
+  // the readback contract rejects its own raise. nullopt == leave the driver
+  // default untouched (no limit requested and no minimum required).
+  inline constexpr std::optional<int64_t> effective_reference_frame_limit(
+    int client_num_ref_frames,
+    int intra_refresh_minimum_reference_frames) noexcept {
+    if (client_num_ref_frames <= 0) {
+      if (intra_refresh_minimum_reference_frames <= 0) {
+        return std::nullopt;
+      }
+      // "No limit" from the client still needs the intra-refresh floor applied,
+      // otherwise H.264 intra refresh rides on a driver-default single reference.
+      return intra_refresh_minimum_reference_frames;
+    }
+    return std::max<int64_t>(client_num_ref_frames, intra_refresh_minimum_reference_frames);
+  }
+
   inline bool rate_control_requires_preanalysis(int mode) noexcept {
     // AMF uses these values consistently for AVC, HEVC, and AV1.
     return mode >= 4 && mode <= 6;  // QVBR, HQVBR, HQCBR
