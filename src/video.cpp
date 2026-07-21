@@ -3635,7 +3635,10 @@ namespace video {
       if (initialization_gate_contended) return encode_run_result_e::temporarily_busy;
       return encode_run_result_e::initialization_failed;
     }
-    const bool native_amf_session = dynamic_cast<amf_encode_session_t *>(session.get()) != nullptr;
+    // One RTTI lookup for the whole session — the pointer stays valid until the
+    // fail_guard teardown moves the session out after the encode loop exits.
+    auto *const native_session = dynamic_cast<amf_encode_session_t *>(session.get());
+    const bool native_amf_session = native_session != nullptr;
 #ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_legacy;
 #else
@@ -3986,7 +3989,7 @@ namespace video {
         }
 
         const auto image_wait_started = std::chrono::steady_clock::now();
-        if (auto *amf_session = dynamic_cast<amf_encode_session_t *>(session.get());
+        if (auto *amf_session = native_session;
             amf_session && image_wait_budget > decltype(max_frametime)::zero()) {
           // Never hold an already-completed packet behind conversion/submission
           // of a newer image. This zero-wait drain also runs during continuous
@@ -4033,7 +4036,7 @@ namespace video {
                                 decltype(max_frametime)::zero();
         }
 
-        if (auto *amf_session = dynamic_cast<amf_encode_session_t *>(session.get());
+        if (auto *amf_session = native_session;
             amf_session && amf_session->has_retained_preanalysis_tail()) {
           // Check after sparse draining as well as before the final image wait:
           // QueryOutput may have completed during the drain and exposed PA's
@@ -4130,8 +4133,7 @@ namespace video {
         // PA can accept the first placeholder while intentionally emitting
         // nothing until its lookahead is primed. Keep submitting placeholders
         // until a packet actually exists; accepted input is not packet delivery.
-        auto *amf_session = dynamic_cast<amf_encode_session_t *>(session.get());
-        bootstrap_state.placeholder_encoded = !amf_session || amf_session->has_emitted_any_frame();
+        bootstrap_state.placeholder_encoded = !native_session || native_session->has_emitted_any_frame();
       }
 
       session->request_normal_frame();

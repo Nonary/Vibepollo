@@ -2289,14 +2289,6 @@ namespace platf::dxgi {
         return *v != 0;
       };
       amf_cfg.lowlatency_mode = amf_tristate(config::video.amd.amd_lowlatency_mode);
-      const auto smart_access_video_plan = ::amf::lifecycle::resolve_smart_access_video(
-        amf_tristate(config::video.amd.amd_smart_access_video),
-        amf_cfg.lowlatency_mode);
-      amf_cfg.smart_access_video = smart_access_video_plan.enabled;
-      if (smart_access_video_plan.disabled_for_low_latency) {
-        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because AMF Low Latency Mode is enabled;"
-                              " this combination has caused AMD GPU watchdog resets";
-      }
       amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
       amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
       amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
@@ -2311,6 +2303,18 @@ namespace platf::dxgi {
         BOOST_LOG(warning) << "AMF: preserving concurrent native session by leaving the optional"
                               " Low Latency Mode/high-motion overrides unset; the AMF ultra-low-latency"
                               " usage preset remains active";
+      }
+
+      // Resolve Smart Access Video against the post-suppression Low Latency
+      // Mode: a second concurrent session that suppressed LLM must not also
+      // lose an explicit SAV opt-in based on the stale pre-suppression value.
+      const auto smart_access_video_plan = ::amf::lifecycle::resolve_smart_access_video(
+        amf_tristate(config::video.amd.amd_smart_access_video),
+        amf_cfg.lowlatency_mode);
+      amf_cfg.smart_access_video = smart_access_video_plan.enabled;
+      if (smart_access_video_plan.disabled_for_low_latency) {
+        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because AMF Low Latency Mode is enabled;"
+                              " this combination has caused AMD GPU watchdog resets";
       }
 
       if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
