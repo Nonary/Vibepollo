@@ -4697,6 +4697,9 @@ namespace video {
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
     auto idr_event = mail->event<bool>(mail::idr);
     int consecutive_encoder_initialization_failures = 0;
+#ifdef _WIN32
+    int consecutive_native_amf_runtime_failures = 0;
+#endif
 
     // Encoding takes place on this thread (async-capture mode; capture lives in
     // capture_thread_async at critical already). Match it so neither half of the
@@ -4803,8 +4806,23 @@ namespace video {
       );
 #ifdef _WIN32
       if (encode_result == encode_run_result_e::native_amf_failed && &session_encoder == &amdvce) {
-        BOOST_LOG(error) << "AMF: native runtime failed; ending the stream without changing encoder implementations"sv;
-        return;
+        // Runtime fatals (TDR, sustained backpressure, output stalls) are
+        // classified by the encoder layer as reinit requests. Rebuild the same
+        // native session like every other encoder does — never a silent
+        // amdvce_legacy fallback — but stay bounded so a wedged driver cannot
+        // busy-loop the stream.
+        if (native_amf_lifecycle_gate.is_quarantined()) {
+          BOOST_LOG(error) << "AMF: native runtime failed while quarantined; ending the stream. Host restart is required before retrying AMD encoding"sv;
+          return;
+        }
+        ++consecutive_native_amf_runtime_failures;
+        if (consecutive_native_amf_runtime_failures >= 3) {
+          BOOST_LOG(error) << "AMF: native runtime failed 3 times without a stable session; ending the stream without changing encoder implementations"sv;
+          return;
+        }
+        BOOST_LOG(warning) << "AMF: native runtime failed; rebuilding the native session (attempt "
+                           << consecutive_native_amf_runtime_failures << " of 3)"sv;
+        continue;
       }
 #endif
       if (encode_result == encode_run_result_e::initialization_failed) {
@@ -4834,6 +4852,9 @@ namespace video {
         continue;
       }
       consecutive_encoder_initialization_failures = 0;
+#ifdef _WIN32
+      consecutive_native_amf_runtime_failures = 0;
+#endif
     }
   }
 
