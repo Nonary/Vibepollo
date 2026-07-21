@@ -2647,7 +2647,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="5">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>nvenc</td>
         <td>For NVIDIA graphics cards</td>
     </tr>
@@ -2657,7 +2657,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>amdvce</td>
-        <td>For AMD graphics cards</td>
+        <td>For AMD graphics cards (native AMF encoder)</td>
+    </tr>
+    <tr>
+        <td>amdvce_legacy</td>
+        <td>Explicit rollback to the FFmpeg-based AMD AMF encoder. Never selected automatically —
+            automatic probing and `amdvce` fail closed instead of silently falling back.
+            @note{Applies to Windows only.}</td>
     </tr>
     <tr>
         <td>vaapi</td>

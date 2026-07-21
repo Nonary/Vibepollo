@@ -212,6 +212,9 @@ export function getConfigSelectOptions(
         if (hasNvidia) options.push({ label: 'NVIDIA NVENC', value: 'nvenc' });
         if (hasIntel) options.push({ label: 'Intel QuickSync', value: 'quicksync' });
         if (hasAmd) options.push({ label: 'AMD AMF/VCE', value: 'amdvce' });
+        // Explicit rollback to the FFmpeg AMF path — never probed automatically,
+        // so it must stay selectable here.
+        if (hasAmd) options.push({ label: 'AMD AMF/VCE (legacy FFmpeg)', value: 'amdvce_legacy' });
       } else if (platform === 'linux') {
         options.push(
           { label: 'NVIDIA NVENC', value: 'nvenc' },

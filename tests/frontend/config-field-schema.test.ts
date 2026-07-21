@@ -67,7 +67,6 @@ describe('configFieldSchema', () => {
   });
 
   test.each([
-    'amd_rc',
     'amd_quality',
     'amd_vbaq',
     'amd_smart_access_video',
@@ -76,14 +75,27 @@ describe('configFieldSchema', () => {
     'amd_av1_screen_content',
     'amd_av1_latency_mode',
   ])('renders %s as an auto-capable select', (settingKey) => {
+    // currentValue stays undefined so ensureIncludesCurrentValue cannot append
+    // 'auto' as a fallback — the option must come from the select definition.
     const field = getConfigFieldDefinition(settingKey, {
       ...baseContext,
       defaultValue: 'auto',
-      currentValue: 'auto',
+      currentValue: undefined,
     });
 
     expect(field.kind).toBe('select');
     expect(field.options?.map(({ value }) => value)).toContain('auto');
+  });
+
+  test('amd_rc has no auto option — the backend has no auto branch for it', () => {
+    const field = getConfigFieldDefinition('amd_rc', {
+      ...baseContext,
+      defaultValue: 'vbr_latency',
+      currentValue: undefined,
+    });
+
+    expect(field.kind).toBe('select');
+    expect(field.options?.map(({ value }) => value)).not.toContain('auto');
   });
 
   test('exposes every native AMF quality preset', () => {
