@@ -9,6 +9,7 @@
 
   #include <algorithm>
   #include <array>
+  #include <atomic>
   #include <chrono>
   #include <cstring>
   #include <display_device/windows/win_api_layer.h>
@@ -20,6 +21,22 @@
 
 namespace platf::virtual_display_cleanup {
   namespace {
+    std::atomic_uint g_cleanup_reservations {0};
+
+    class cleanup_reservation_t {
+    public:
+      cleanup_reservation_t() {
+        g_cleanup_reservations.fetch_add(1, std::memory_order_acq_rel);
+      }
+
+      ~cleanup_reservation_t() {
+        g_cleanup_reservations.fetch_sub(1, std::memory_order_acq_rel);
+      }
+
+      cleanup_reservation_t(const cleanup_reservation_t &) = delete;
+      cleanup_reservation_t &operator=(const cleanup_reservation_t &) = delete;
+    };
+
     bool has_active_virtual_display() {
       const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
       return std::any_of(
@@ -101,6 +118,7 @@ namespace platf::virtual_display_cleanup {
     const bool prefer_golden_if_current_missing,
     const std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes
   ) {
+    cleanup_reservation_t cleanup_reservation;
     cleanup_result_t result;
 
     const std::string reason_text = reason.empty() ? "unspecified" : std::string(reason);
@@ -160,6 +178,10 @@ namespace platf::virtual_display_cleanup {
                     << ", database_restore_applied=" << (result.database_restore_applied ? "true" : "false")
                     << ")";
     return result;
+  }
+
+  bool in_progress() {
+    return g_cleanup_reservations.load(std::memory_order_acquire) != 0;
   }
 }  // namespace platf::virtual_display_cleanup
 

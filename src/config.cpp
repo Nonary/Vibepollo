@@ -48,6 +48,7 @@
 #include "rtsp.h"
 #include "session_history.h"
 #include "state_storage.h"
+#include "stream.h"
 #include "utility.h"
 #include "version_compare.h"
 #include "video.h"
@@ -3042,7 +3043,8 @@ namespace config {
                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
 
       // If any DD settings changed and there are no active sessions, revert to clear cached state
-      if (dd_config_changed && rtsp_stream::session_count() == 0 && runtime_overrides.empty()) {
+      if (dd_config_changed && !has_active_stream_sessions() && runtime_overrides.empty()) {
+        stream::session::cleanup_reservation_t cleanup_reservation;
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
         display_helper_integration::revert();
 

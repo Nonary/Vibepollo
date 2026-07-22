@@ -3425,18 +3425,31 @@ namespace confighttp {
     }
 
     BOOST_LOG(debug) << "WebRTC: creating session";
-    if (auto error = webrtc_stream::ensure_capture_started(options)) {
+    std::optional<std::string> capture_start_error;
 #ifdef _WIN32
-      // Lifecycle gap: if capture start fails after a virtual display was created/applied but
-      // before a session exists, ensure we don't leave the virtual display behind.
-      if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_or_pending_sessions()) {
-        (void) platf::virtual_display_cleanup::run(
-          "webrtc_session_start_failed",
-          config::video.dd.config_revert_on_disconnect
-        );
+    {
+      // Publish the cleanup tail before capture startup mutates any display or
+      // runtime configuration, then serialize the failed-start idle check.
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      capture_start_error = webrtc_stream::ensure_capture_started(options);
+      if (capture_start_error) {
+        std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+        if (rtsp_stream::session_count_no_cleanup() == 0 &&
+            !webrtc_stream::has_active_or_pending_sessions() &&
+            !webrtc_stream::has_capture_active() &&
+            !webrtc_stream::has_teardown_in_progress()) {
+          (void) platf::virtual_display_cleanup::run(
+            "webrtc_session_start_failed",
+            config::video.dd.config_revert_on_disconnect
+          );
+        }
       }
+    }
+#else
+    capture_start_error = webrtc_stream::ensure_capture_started(options);
 #endif
-      bad_request(response, request, error->c_str());
+    if (capture_start_error) {
+      bad_request(response, request, capture_start_error->c_str());
       return;
     }
     auto session = webrtc_stream::create_session(options);

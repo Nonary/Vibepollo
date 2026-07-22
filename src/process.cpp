@@ -73,6 +73,7 @@
 #endif
 #include "rtsp.h"
 #include "state_storage.h"
+#include "stream.h"
 #include "system_tray.h"
 #include "utility.h"
 #include "uuid.h"
@@ -2497,6 +2498,11 @@ namespace proc {
   }
 
   void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
+    // App termination can remove a display directly and can continue through
+    // process, undo-command, helper, watchdog, and deferred-config cleanup.
+    // Keep HTTP encoder probing out of that entire tail.
+    stream::session::cleanup_reservation_t cleanup_reservation;
+
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
     placebo = false;

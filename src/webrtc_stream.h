@@ -93,6 +93,10 @@ namespace webrtc_stream {
 
   bool has_active_sessions();
   bool has_active_or_pending_sessions();
+  bool has_capture_active();
+  // True while a WebRTC close is completing peer, media, capture, display,
+  // platform, or configuration cleanup after its active count drops.
+  bool has_teardown_in_progress();
 
   std::optional<SessionState> create_session(const SessionOptions &options);
   std::optional<std::string> ensure_capture_started(const SessionOptions &options);

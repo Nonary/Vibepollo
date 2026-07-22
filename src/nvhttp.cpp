@@ -228,8 +228,31 @@ namespace nvhttp {
       return has_active_virtual_display();
     }
 
+    bool has_stream_session_activity();
+    bool has_active_or_stopping_stream_session();
+
     video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
       if (video::has_successful_encoder_probe()) {
+        return video::advertised_encoder_capabilities(false);
+      }
+
+      // Session starts publish their pending owner while holding this gate.
+      // Hold it through the idle decision and temporary-display probe so a
+      // new start cannot enter between the counter samples below.
+      std::unique_lock<std::mutex> lifecycle_lock(
+        stream_lifecycle_mutex(),
+        std::try_to_lock
+      );
+      if (!lifecycle_lock.owns_lock()) {
+        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
+        return video::advertised_encoder_capabilities(false);
+      }
+      if (video::has_successful_encoder_probe()) {
+        return video::advertised_encoder_capabilities(false);
+      }
+
+      if (has_active_or_stopping_stream_session()) {
+        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
         return video::advertised_encoder_capabilities(false);
       }
 
@@ -258,6 +281,7 @@ namespace nvhttp {
     }
 
     void cleanup_virtual_display_state() {
+      stream::session::cleanup_reservation_t cleanup_reservation;
       if (!has_active_virtual_display()) {
         BOOST_LOG(debug) << "Skipping virtual display cleanup after cancel because no active virtual display exists.";
         return;
@@ -270,17 +294,60 @@ namespace nvhttp {
 
     }
 
-    bool has_active_or_stopping_stream_session() {
+    bool has_stream_session_activity() {
       // RTSP removes STOPPING sessions from session_count() before stream::session::join()
-      // returns; the worker count keeps display-helper work away from teardown-owned displays.
-      return rtsp_stream::session_count() > 0 ||
+      // returns; pending launches/creations reserve the process-wide runtime layer
+      // before either protocol publishes an active session.
+      return rtsp_stream::has_pending_launch_or_startup() ||
+             rtsp_stream::session_count_no_cleanup() > 0 ||
              stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-             webrtc_stream::has_active_sessions();
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+             webrtc_stream::has_active_or_pending_sessions() ||
+             webrtc_stream::has_capture_active() ||
+             webrtc_stream::has_teardown_in_progress();
+    }
+
+    bool has_active_or_stopping_stream_session() {
+      // Sample the generic/VDD cleanup signals on both sides of the protocol
+      // activity snapshot. This closes both counter handoffs:
+      //   launch: generic reservation -> pending protocol owner
+      //   teardown: protocol owner -> generic cleanup reservation
+      // Each writer publishes the successor before releasing the predecessor.
+      if (platf::virtual_display_cleanup::in_progress() ||
+          stream::session::cleanup_reservations.load(std::memory_order_acquire) != 0) {
+        return true;
+      }
+      if (has_stream_session_activity()) {
+        return true;
+      }
+      return platf::virtual_display_cleanup::in_progress() ||
+             stream::session::cleanup_reservations.load(std::memory_order_acquire) != 0;
+    }
+
+    // Same idleness test as has_active_or_stopping_stream_session() minus the
+    // generic cleanup-reservation term. Teardown-path callers hold a reservation
+    // across their whole request, so that term reports their own frame as
+    // activity and makes the predicate unconditionally true; launch()/resume()
+    // teardown guards are reservation-insensitive for the same reason. A
+    // concurrent virtual-display cleanup is still honoured, double-sampled
+    // around the activity snapshot to close the same handoff.
+    bool has_stream_session_activity_or_display_cleanup() {
+      if (platf::virtual_display_cleanup::in_progress()) {
+        return true;
+      }
+      if (has_stream_session_activity()) {
+        return true;
+      }
+      return platf::virtual_display_cleanup::in_progress();
     }
 
     void cleanup_virtual_display_if_idle() {
       try {
-        if (has_active_or_stopping_stream_session()) {
+        // Serialize the final owner check through cleanup. RTSP launch already
+        // holds launch_request_mutex before entering this path; lifecycle is
+        // the next canonical gate and also excludes a concurrent WebRTC start.
+        std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex());
+        if (has_stream_session_activity_or_display_cleanup()) {
           BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active or stopping.";
           return;
         }
@@ -1398,8 +1465,17 @@ namespace nvhttp {
     }
 
     std::mutex launch_request_mutex;
+    std::mutex stream_lifecycle_gate;
 
-    std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
+     std::mutex &capture_start_mutex() {
+       return launch_request_mutex;
+     }
+
+     std::mutex &stream_lifecycle_mutex() {
+       return stream_lifecycle_gate;
+     }
+
+     std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
       if (launch_unique_id.empty()) {
         return {};
       }
@@ -2727,6 +2803,11 @@ namespace nvhttp {
     void launch(bool &host_audio, resp_https_t response, req_https_t request) {
       print_req<SunshineHTTPS>(request);
 
+#ifdef _WIN32
+      // Keep encoder probes blocked across the complete failure unwind: virtual
+      // display removal, response publication, and any final helper restore.
+      stream::session::cleanup_reservation_t cleanup_reservation;
+#endif
       pt::ptree tree;
       bool revert_display_configuration = false;
       auto g = util::fail_guard([&]() {
@@ -2926,7 +3007,8 @@ namespace nvhttp {
       prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
 
       auto virtual_display_teardown_guard = util::fail_guard([&]() {
-        if (has_active_or_stopping_stream_session()) {
+        stream::session::cleanup_reservation_t cleanup_reservation;
+        if (has_stream_session_activity()) {
           return;
         }
 
@@ -3185,6 +3267,11 @@ namespace nvhttp {
   void resume(bool &host_audio, resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
+#ifdef _WIN32
+    // See launch(): the response fail guard can restore through the helper
+    // after the virtual-display teardown guard has already completed.
+    stream::session::cleanup_reservation_t cleanup_reservation;
+#endif
     pt::ptree tree;
     bool revert_display_configuration {false};
     auto g = util::fail_guard([&]() {
@@ -3381,7 +3468,8 @@ namespace nvhttp {
     prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
 
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
-      if (has_active_or_stopping_stream_session()) {
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      if (has_stream_session_activity()) {
         return;
       }
 
@@ -3567,6 +3655,12 @@ namespace nvhttp {
 
   void cancel(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
+
+#ifdef _WIN32
+    // Reserve cleanup before sampling process/session state and retain it
+    // through session teardown, app termination, and final display cleanup.
+    stream::session::cleanup_reservation_t cleanup_reservation;
+#endif
 
     pt::ptree tree;
     auto g = util::fail_guard([&]() {
@@ -3853,6 +3947,11 @@ namespace nvhttp {
     http_server_t http_server;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
+    // Discovery routes are observation-only, so they must not queue behind the mutating
+    // routes. A launch/resume/cancel handler can hold the lifecycle gate across unbounded
+    // work, and on a single FIFO worker that made the host undiscoverable until restart.
+    thread_pool_util::ThreadPool discovery_route_pool;
+    discovery_route_pool.start(1);
 
     // Verify certificates after establishing connection
     https_server.verify = [](req_https_t req, SSL *ssl) {
@@ -3945,8 +4044,8 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message"s, "The client is not authorized. Certificate verification failed."s);
     };
 
-    auto run_blocking_nvhttp = [&blocking_route_pool](auto task) {
-      blocking_route_pool.push([task = std::move(task)]() mutable {
+    auto run_on_blocking_pool = [](thread_pool_util::ThreadPool &pool, auto task) {
+      pool.push([task = std::move(task)]() mutable {
         try {
           task();
         } catch (const std::exception &e) {
@@ -3957,10 +4056,18 @@ namespace nvhttp {
       });
     };
 
+    auto run_blocking_nvhttp = [&blocking_route_pool, run_on_blocking_pool](auto task) {
+      run_on_blocking_pool(blocking_route_pool, std::move(task));
+    };
+
+    auto run_discovery_nvhttp = [&discovery_route_pool, run_on_blocking_pool](auto task) {
+      run_on_blocking_pool(discovery_route_pool, std::move(task));
+    };
+
     https_server.default_resource["GET"] = not_found<SunshineHTTPS>;
     https_server.default_resource["POST"] = not_found<SunshineHTTPS>;
-    https_server.resource["^/serverinfo$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+    https_server.resource["^/serverinfo$"]["GET"] = [run_discovery_nvhttp](auto resp, auto req) {
+      run_discovery_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
         serverinfo<SunshineHTTPS>(std::move(resp), std::move(req));
       });
     };
@@ -3968,21 +4075,23 @@ namespace nvhttp {
     https_server.resource["^/pair/?$"]["POST"] = pair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["GET"] = unpair<SunshineHTTPS>;
     https_server.resource["^/unpair/?$"]["POST"] = unpair<SunshineHTTPS>;
-    https_server.resource["^/applist$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+    https_server.resource["^/applist$"]["GET"] = [run_discovery_nvhttp](auto resp, auto req) {
+      run_discovery_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
         applist(std::move(resp), std::move(req));
       });
     };
     https_server.resource["^/appasset$"]["GET"] = appasset;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        std::lock_guard lock {launch_request_mutex};
+        std::lock_guard launch_lock {launch_request_mutex};
+        std::lock_guard lifecycle_lock {stream_lifecycle_gate};
         launch(host_audio, std::move(resp), std::move(req));
       });
     };
     https_server.resource["^/resume$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        std::lock_guard lock {launch_request_mutex};
+        std::lock_guard launch_lock {launch_request_mutex};
+        std::lock_guard lifecycle_lock {stream_lifecycle_gate};
         resume(host_audio, std::move(resp), std::move(req));
       });
     };
@@ -4003,8 +4112,8 @@ namespace nvhttp {
 
     http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
     http_server.default_resource["POST"] = not_found<SimpleWeb::HTTP>;
-    http_server.resource["^/serverinfo$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
-      run_blocking_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
+    http_server.resource["^/serverinfo$"]["GET"] = [run_discovery_nvhttp](auto resp, auto req) {
+      run_discovery_nvhttp([resp = std::move(resp), req = std::move(req)]() mutable {
         serverinfo<SimpleWeb::HTTP>(std::move(resp), std::move(req));
       });
     };
@@ -4048,6 +4157,8 @@ namespace nvhttp {
     tcp.join();
     blocking_route_pool.stop();
     blocking_route_pool.join();
+    discovery_route_pool.stop();
+    discovery_route_pool.join();
   }
 
   std::string request_otp(const std::string &passphrase, const std::string &deviceName) {

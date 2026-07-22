@@ -100,6 +100,19 @@ namespace stream {
 
   namespace session {
     extern std::atomic_uint running_sessions;
+    // Counts RTSP joins through their complete post-session cleanup tail.
+    // Observers use this instead of entering blocking session cleanup.
+    extern std::atomic_uint teardown_sessions;
+    extern std::atomic_uint cleanup_reservations;
+
+    class cleanup_reservation_t {
+    public:
+      cleanup_reservation_t();
+      ~cleanup_reservation_t();
+
+      cleanup_reservation_t(const cleanup_reservation_t &) = delete;
+      cleanup_reservation_t &operator=(const cleanup_reservation_t &) = delete;
+    };
 
     enum class state_e : int {
       STOPPED,  ///< The session is stopped

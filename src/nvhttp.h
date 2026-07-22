@@ -275,6 +275,23 @@ namespace nvhttp {
   std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid);
 
   /**
+   * @brief Serialize the idle-to-active capture transition across RTSP and WebRTC.
+   *
+   * The lock must be acquired before observing session state and held until the
+   * protocol has published either a pending or active capture owner.
+   */
+  std::mutex &capture_start_mutex();
+
+  /**
+   * @brief Serialize shared stream start and final teardown across RTSP and WebRTC.
+   *
+   * Acquire after the RTSP launch-request mutex, before protocol capture locks.
+   * Starts hold it from their first idle-state observation through pending-owner
+   * publication; final teardown holds it through its shared cleanup decision.
+   */
+  std::mutex &stream_lifecycle_mutex();
+
+  /**
    * @brief Persist a per-client HDR color profile selection (Windows only).
    * @return True if the client was found and updated.
    */

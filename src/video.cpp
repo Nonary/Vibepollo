@@ -2025,6 +2025,16 @@ namespace video {
   std::atomic<std::int64_t> last_negative_hdr_advertisement_probe_ns {0};
   std::mutex encoder_probe_mutex;
 
+  namespace {
+    advertised_encoder_capabilities_t current_advertised_capabilities_snapshot() {
+      return advertised_encoder_capabilities_t {
+        .hevc_mode = active_hevc_mode,
+        .av1_mode = active_av1_mode,
+        .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+      };
+    }
+  }  // namespace
+
   bool has_attempted_encoder_probe() {
     return encoder_probe_attempted.load(std::memory_order_acquire);
   }
@@ -2036,21 +2046,13 @@ namespace video {
   }
 
   advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
-    auto snapshot = []() {
-      return advertised_encoder_capabilities_t {
-        .hevc_mode = active_hevc_mode,
-        .av1_mode = active_av1_mode,
-        .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
-      };
-    };
-
-    auto caps = snapshot();
+    auto caps = current_advertised_capabilities_snapshot();
     if (probe_before_negative && caps.hevc_mode == 0 && caps.av1_mode == 0) {
       BOOST_LOG(info) << "Encoder capabilities are unprobed before advertising no HDR; probing encoders now.";
       if (probe_encoders()) {
         BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
       }
-      caps = snapshot();
+      caps = current_advertised_capabilities_snapshot();
     }
 
     if (probe_before_negative && has_attempted_encoder_probe() && caps.hevc_mode < 3 && caps.av1_mode < 3) {
@@ -2064,7 +2066,7 @@ namespace video {
         if (probe_encoders()) {
           BOOST_LOG(warning) << "Encoder re-probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
         }
-        caps = snapshot();
+        caps = current_advertised_capabilities_snapshot();
       }
     }
 

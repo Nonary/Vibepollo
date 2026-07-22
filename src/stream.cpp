@@ -244,6 +244,7 @@ namespace stream {
       const auto generation = g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
       std::thread([timeout, generation, reason = std::move(reason), enforce_display_restore, virtual_display_guid_bytes]() {
         std::this_thread::sleep_for(timeout);
+        session::cleanup_reservation_t cleanup_reservation;
 
         if (g_paused_display_cleanup_generation.load(std::memory_order_acquire) != generation) {
           return;
@@ -2681,6 +2682,16 @@ namespace stream {
 
   namespace session {
     std::atomic_uint running_sessions;
+    std::atomic_uint teardown_sessions;
+    std::atomic_uint cleanup_reservations;
+
+    cleanup_reservation_t::cleanup_reservation_t() {
+      cleanup_reservations.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    cleanup_reservation_t::~cleanup_reservation_t() {
+      cleanup_reservations.fetch_sub(1, std::memory_order_acq_rel);
+    }
 
     state_e state(session_t &session) {
       return session.state.load(std::memory_order_relaxed);
@@ -2766,6 +2777,11 @@ namespace stream {
     }
 
     void join(session_t &session) {
+      teardown_sessions.fetch_add(1, std::memory_order_acq_rel);
+      auto teardown_reservation = util::fail_guard([]() {
+        teardown_sessions.fetch_sub(1, std::memory_order_acq_rel);
+      });
+
       // Current Nvidia drivers have a bug where NVENC can deadlock the encoder thread with hardware-accelerated
       // GPU scheduling enabled. If this happens, we will terminate ourselves and the service can restart.
       // The alternative is that Sunshine can never start another session until it's manually restarted.

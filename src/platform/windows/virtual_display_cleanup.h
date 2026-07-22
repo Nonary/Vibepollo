@@ -26,6 +26,10 @@ namespace platf::virtual_display_cleanup {
     bool prefer_golden_if_current_missing = true,
     std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
   );
+
+  // Nonblocking observation for callers that must not begin display probing
+  // while any cleanup path is removing a virtual display or restoring topology.
+  bool in_progress();
 }  // namespace platf::virtual_display_cleanup
 
 #endif  // _WIN32
