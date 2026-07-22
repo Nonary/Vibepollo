@@ -1085,6 +1085,75 @@ namespace platf::playnite {
     return true;
   }
 
+  // The official per-user installer registers Playnite in the interactive user's HKCU,
+  // but keeps extensions in RoamingAppData rather than alongside LocalAppData's executable.
+  static bool has_per_user_playnite_install(HANDLE user_token) {
+    bool installed = false;
+    auto read_install = [&]() {
+      HKEY user_root = nullptr;
+      if (RegOpenCurrentUser(KEY_READ, &user_root) != ERROR_SUCCESS) {
+        return;
+      }
+      auto close_user_root = util::fail_guard([user_root]() {
+        RegCloseKey(user_root);
+      });
+
+      HKEY install_key = nullptr;
+      constexpr auto uninstall_key_path = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Playnite_is1";
+      if (RegOpenKeyExW(user_root, uninstall_key_path, 0, KEY_QUERY_VALUE, &install_key) != ERROR_SUCCESS) {
+        return;
+      }
+      auto close_install_key = util::fail_guard([install_key]() {
+        RegCloseKey(install_key);
+      });
+
+      DWORD value_type = 0;
+      DWORD byte_count = 0;
+      installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, nullptr, &byte_count) == ERROR_SUCCESS &&
+                  (value_type == REG_SZ || value_type == REG_EXPAND_SZ) && byte_count > sizeof(wchar_t);
+    };
+    if (user_token) {
+      if (const auto ec = platf::impersonate_current_user(user_token, read_install)) {
+        BOOST_LOG(debug) << "Playnite: could not open the interactive user's HKCU: " << ec.message();
+      }
+    } else {
+      read_install();
+    }
+    return installed;
+  }
+
+  static bool resolve_extensions_dir_via_per_user_install(std::filesystem::path &destOut) {
+    HANDLE user_token = nullptr;
+    if (platf::dxgi::is_running_as_system()) {
+      user_token = acquire_preferred_user_token_for_playnite();
+      if (!user_token) {
+        BOOST_LOG(debug) << "Playnite: no interactive user token for HKCU install lookup";
+        return false;
+      }
+    }
+    auto close_user_token = util::fail_guard([user_token]() {
+      if (user_token) {
+        CloseHandle(user_token);
+      }
+    });
+
+    if (!has_per_user_playnite_install(user_token)) {
+      return false;
+    }
+
+    PWSTR roaming = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token, &roaming)) || !roaming) {
+      BOOST_LOG(debug) << "Playnite: could not resolve the interactive user's RoamingAppData";
+      return false;
+    }
+    auto free_roaming = util::fail_guard([roaming]() {
+      CoTaskMemFree(roaming);
+    });
+    destOut = std::filesystem::path(roaming) / L"Playnite" / L"Extensions" / L"SunshinePlaynite";
+    BOOST_LOG(debug) << "Playnite: interactive-user HKCU install uses RoamingAppData extensions target " << destOut.string();
+    return true;
+  }
+
   // Resolve the Playnite Extensions/SunshinePlaynite directory via the "playnite" URL association.
   // Uses per-user registry views and impersonates the active user before calling AssocQueryString.
   static bool resolve_extensions_dir_via_assoc(std::filesystem::path &destOut) {
@@ -1105,7 +1174,7 @@ namespace platf::playnite {
 
   bool get_extension_target_dir(std::string &out) {
     std::filesystem::path dest;
-    if (!resolve_extensions_dir_via_assoc(dest)) {
+    if (!resolve_extensions_dir_via_per_user_install(dest) && !resolve_extensions_dir_via_assoc(dest)) {
       return false;
     }
     out = dest.string();
