@@ -65,9 +65,9 @@ namespace display_helper::v2::codec {
   // --- filtering rules ---
 
   /**
-   * @brief Save-side filtering: reject snapshots that contain active virtual displays,
-   *        drop devices without a display_name (not safe restore targets), apply the
-   *        exclusion list, and reject when nothing restorable remains.
+   * @brief Save-side filtering: omit virtual displays, drop devices without a
+   *        display_name (not safe restore targets), apply the exclusion list, and
+   *        reject when nothing restorable remains.
    * @param exclusions Normalized (normalize_device_id) exclusion list.
    * @returns Filtered snapshot, or nullopt with reject_reason set.
    */

@@ -643,10 +643,11 @@ namespace display_helper::v2::codec {
       }
     }
     if (!virtual_devices.empty()) {
-      BOOST_LOG(warning) << "Skipping display snapshot save; active virtual display device(s) are present: ["
-                         << join_ids(virtual_devices) << "]";
-      reject_reason = "active virtual display present";
-      return std::nullopt;
+      // A VDD can become visible between SNAPSHOT_CURRENT being dispatched and
+      // this capture. The physical devices in the same capture are still a
+      // valid restore baseline, so omit the VDD instead of discarding it all.
+      BOOST_LOG(info) << "Display snapshot: excluding active virtual display device(s): ["
+                      << join_ids(virtual_devices) << "]";
     }
 
     if (!exclusions.empty()) {

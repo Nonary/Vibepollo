@@ -262,19 +262,42 @@ TEST(DisplayHelperV2Codec, FilterLoadAllowsInactiveButConnectedDevices) {
   EXPECT_EQ(result->snapshot.m_topology.front().front(), "A");
 }
 
-// --- save-side filtering (f3841ad8) ---
+// --- save-side filtering ---
 
-TEST(DisplayHelperV2Codec, FilterSaveRejectsWhenActiveVirtualPresent) {
-  auto snap = make_snapshot({{"PHYS"}});
+TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
+  snap.m_origins["PHYS1"] = display_device::Point {0, 0};
+  snap.m_origins["PHYS2"] = display_device::Point {1920, 0};
+  snap.m_origins["VDD"] = display_device::Point {3840, 0};
   display_device::EnumeratedDeviceList devices {
-    make_device("PHYS", "\\\\.\\DISPLAY1", true),
-    make_device("VDD", "\\\\.\\DISPLAY2", true, "SDD"),
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("PHYS2", "\\\\.\\DISPLAY2", true),
+    make_device("VDD", "\\\\.\\DISPLAY3", true, "SDD"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->m_topology.size(), 2u);
+  EXPECT_EQ(result->m_topology[0].front(), "PHYS1");
+  EXPECT_EQ(result->m_topology[1].front(), "PHYS2");
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
+  EXPECT_EQ(result->m_hdr_states.count("VDD"), 0u);
+  EXPECT_EQ(result->m_origins.count("VDD"), 0u);
+  EXPECT_EQ(result->m_primary_device, "PHYS1");
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveRejectsVirtualOnlySnapshot) {
+  auto snap = make_snapshot({{"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("VDD", "\\\\.\\DISPLAY1", true, "SDD"),
   };
 
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
   EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(reason, "active virtual display present");
+  EXPECT_EQ(reason, "no devices with valid display_name");
 }
 
 TEST(DisplayHelperV2Codec, FilterSaveDropsDevicesWithoutDisplayName) {
