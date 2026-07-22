@@ -3706,13 +3706,31 @@ namespace confighttp {
     std::thread([response, session_id, since]() mutable {
       response->close_connection_after_response = true;
 
-      response->write({{"Content-Type", "text/event-stream"}, {"Cache-Control", "no-cache"}, {"Connection", "keep-alive"}, {"Access-Control-Allow-Origin", get_cors_origin()}});
+      response->write({
+        {"Content-Type", "text/event-stream"},
+        {"Cache-Control", "no-cache, no-transform"},
+        {"Connection", "keep-alive"},
+        {"X-Accel-Buffering", "no"},
+        {"Access-Control-Allow-Origin", get_cors_origin()},
+      });
 
       std::promise<bool> header_error;
       response->send([&header_error](const SimpleWeb::error_code &ec) {
         header_error.set_value(static_cast<bool>(ec));
       });
       if (header_error.get_future().get()) {
+        return;
+      }
+
+      // Make the initial response large enough for buffering proxies to release
+      // the stream without adding padding to every browser-visible event.
+      constexpr std::size_t sse_proxy_prelude_size = 2048;
+      *response << ':' << std::string(sse_proxy_prelude_size - 3, ' ') << "\n\n";
+      std::promise<bool> prelude_error;
+      response->send([&prelude_error](const SimpleWeb::error_code &ec) {
+        prelude_error.set_value(static_cast<bool>(ec));
+      });
+      if (prelude_error.get_future().get()) {
         return;
       }
 
