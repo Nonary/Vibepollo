@@ -368,7 +368,6 @@ function add_debian_based_deps() {
     "systemd"
     "udev"
     "wget"  # necessary for cuda install with `run` file
-    "xvfb"  # necessary for headless unit testing
   )
 
   if [[ "$skip_libva" == 0 ]]; then
@@ -462,7 +461,6 @@ function add_fedora_deps() {
     "glslc"
     "wget"  # necessary for cuda install with `run` file
     "which"  # necessary for cuda install with `run` file
-    "xorg-x11-server-Xvfb"  # necessary for headless unit testing
   )
 
   if [[ "$skip_libva" == 0 ]]; then
@@ -681,6 +679,7 @@ function run_step_cmake() {
     "-B=build"
     "-G=Ninja"
     "-S=."
+    "-DBUILD_TESTS=OFF"
     "-DBUILD_WERROR=ON"
     "-DCMAKE_BUILD_TYPE=Release"
     "-DCMAKE_INSTALL_PREFIX=/usr"

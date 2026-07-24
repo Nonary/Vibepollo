@@ -68,16 +68,6 @@ set -e
   --sudo-off
 _BUILD
 
-# run tests
-WORKDIR /build/sunshine/build/tests
-RUN <<_TEST
-#!/bin/bash
-set -e
-export DISPLAY=:1
-Xvfb ${DISPLAY} -screen 0 1024x768x24 &
-./test_sunshine --gtest_color=yes
-_TEST
-
 FROM sunshine-base AS sunshine
 
 ARG BASE

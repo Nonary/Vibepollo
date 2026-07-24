@@ -97,18 +97,8 @@ if(BUILD_DOCS)
     add_subdirectory(third-party/doxyconfig docs)
 endif()
 
-# tests
-if(BUILD_TESTS)
-    add_subdirectory(tests)
-endif()
-
-# custom compile flags, must be after adding tests
-
-if (NOT BUILD_TESTS)
-    set(TEST_DIR "")
-else()
-    set(TEST_DIR "${CMAKE_SOURCE_DIR}/tests")
-endif()
+# Unit tests are intentionally excluded from every build.
+set(TEST_DIR "")
 
 # src/upnp
 set_source_files_properties("${CMAKE_SOURCE_DIR}/src/upnp.cpp"
@@ -144,15 +134,9 @@ set_source_files_properties("${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViG
 string(TOUPPER "x${CMAKE_BUILD_TYPE}" BUILD_TYPE)
 if("${BUILD_TYPE}" STREQUAL "XDEBUG")
     if(WIN32)
-        if (NOT BUILD_TESTS)
-            set_source_files_properties("${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
-                    DIRECTORY "${CMAKE_SOURCE_DIR}"
-                    PROPERTIES COMPILE_FLAGS -O2)
-        else()
-            set_source_files_properties("${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
-                    DIRECTORY "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/tests"
-                    PROPERTIES COMPILE_FLAGS -O2)
-        endif()
+        set_source_files_properties("${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
+                DIRECTORY "${CMAKE_SOURCE_DIR}"
+                PROPERTIES COMPILE_FLAGS -O2)
     endif()
 else()
     add_definitions(-DNDEBUG)

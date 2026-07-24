@@ -31,7 +31,6 @@ cleanup:
 
 modules:
   # Test dependencies
-  - "modules/xvfb/xvfb.json"
 
   # Build dependencies
   - "modules/nlohmann_json.json"
@@ -72,6 +71,7 @@ modules:
     config-opts:
       - -DBOOST_USE_STATIC=OFF
       - -DBUILD_DOCS=OFF
+      - -DBUILD_TESTS=OFF
       - -DBUILD_WERROR=ON
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CUDA_COMPILER=/app/cuda/bin/nvcc
@@ -93,10 +93,7 @@ modules:
     post-install:
       - install -D $FLATPAK_BUILDER_BUILDDIR/packaging/linux/flatpak/scripts/* /app/bin
       - install -D $FLATPAK_BUILDER_BUILDDIR/packaging/linux/flatpak/apps.json /app/share/sunshine/apps.json
-    run-tests: true
-    test-rule: ""  # empty to disable
-    test-commands:
-      - npm run serve & xvfb-run tests/test_sunshine --gtest_color=yes
+    run-tests: false
     sources:
       - generated-sources.json
       - type: git

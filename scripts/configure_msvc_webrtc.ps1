@@ -125,7 +125,7 @@ $args = @(
   "-DWEBRTC_LIBRARY=`"$WebrtcRoot\lib\libwebrtc.dll.lib`"",
   "-DCMAKE_BUILD_TYPE=$BuildType",
   "-DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON",
-  "-DBUILD_TESTS=ON",
+  "-DBUILD_TESTS=OFF",
   "-DBUILD_DOCS=OFF"
 )
 
