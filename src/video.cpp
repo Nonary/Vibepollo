@@ -53,6 +53,21 @@ extern "C" {
   #include "src/platform/windows/virtual_display.h"
   #include "uuid.h"
 
+  #include <AMF/core/Context.h>
+  #include <AMF/core/Debug.h>
+  #include <AMF/core/Factory.h>
+  #include <AMF/core/Trace.h>
+
+  // These using-declarations must sit between the AMF headers above and
+  // hwcontext_amf.h below, and must stay outside the extern "C" block. hwcontext_amf.h
+  // refers to the AMF types unqualified, but the AMF headers that define them are C++
+  // (namespace amf), so they cannot be pulled in with C linkage. Do not reorder.
+  using amf::AMFContext;
+  using amf::AMFFactory;
+  using amf::AMF_MEMORY_TYPE;
+  using amf::AMF_SURFACE_FORMAT;
+  #include <libavutil/hwcontext_amf.h>
+
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -2419,6 +2434,150 @@ namespace video {
   }
 #endif
 
+#ifdef _WIN32
+  struct amf_main10_compatibility_override_t {
+    AVAMFDeviceContext *device_context;
+    std::int64_t runtime_version;
+  };
+
+  // AMF packs a version as major << 48 | minor << 32 | release << 16 | build, with each
+  // field 16 bits wide (see AMF/core/Version.h). Decode it so logs are human-readable.
+  static std::string describe_amf_version(std::int64_t version) {
+    std::ostringstream description;
+    description << AMF_GET_MAJOR_VERSION(version) << '.'
+                << AMF_GET_MINOR_VERSION(version) << '.'
+                << AMF_GET_SUBMINOR_VERSION(version) << '.'
+                << AMF_GET_BUILD_VERSION(version);
+    return description.str();
+  }
+
+  // FFmpeg exposes the AMF runtime version only once a device context exists, and that
+  // context is derived for the validated adapter alone. Query the runtime directly so
+  // every AMD HEVC Main10 attempt records the version the decision was made against,
+  // whichever way the decision goes.
+  static void log_amf_runtime_version(const DXGI_ADAPTER_DESC &adapter_desc) {
+    HMODULE amfrt = LoadLibraryW(AMF_DLL_NAME);
+    if (!amfrt) {
+      BOOST_LOG(info) << "AMF Main10 override: " << AMF_DLL_NAMEA << " could not be loaded; AMF runtime version unknown.";
+      return;
+    }
+
+    auto unload_amfrt = util::fail_guard([amfrt]() {
+      FreeLibrary(amfrt);
+    });
+
+    auto query_version = (AMFQueryVersion_Fn) GetProcAddress(amfrt, AMF_QUERY_VERSION_FUNCTION_NAME);
+    amf_uint64 version = 0;
+    if (!query_version || query_version(&version) != AMF_OK) {
+      BOOST_LOG(info) << "AMF Main10 override: " << AMF_QUERY_VERSION_FUNCTION_NAME
+                      << "() unavailable or failed; AMF runtime version unknown.";
+      return;
+    }
+
+    BOOST_LOG(info) << "AMF Main10 override: AMF runtime version "
+                    << describe_amf_version(static_cast<std::int64_t>(version)) << " on adapter "
+                    << std::hex << adapter_desc.VendorId << ':' << adapter_desc.DeviceId << std::dec << '.';
+  }
+
+  static std::optional<amf_main10_compatibility_override_t> enable_amf_main10_compatibility_override(
+    AVCodecContext *codec_context,
+    AVBufferRef *d3d_device_ref
+  ) {
+    constexpr UINT kAmdVendorId = 0x1002;
+    constexpr UINT kRadeonPro5500XtDeviceId = 0x7340;
+    // Only the low 16 bits of the packed version hold the build number, so masking them
+    // off compares major.minor.release alone. FFmpeg's amfenc P010 guard is a blanket
+    // ">= 1.4.32" check, so every 1.4.31.x build is refused identically and needs the
+    // same override; masking keeps 1.4.31.5 from silently falling through. Runtimes at
+    // 1.4.32.0 or newer mask to a different value and are correctly left alone.
+    constexpr std::int64_t kBuildFieldMask = 0xFFFF;
+    constexpr std::int64_t kCompatibleRuntime = AMF_MAKE_FULL_VERSION(1, 4, 31, 0);
+    constexpr std::int64_t kFfmpegMain10Minimum = AMF_MAKE_FULL_VERSION(1, 4, 32, 0);
+
+    if (!codec_context || !d3d_device_ref || !d3d_device_ref->data) {
+      return std::nullopt;
+    }
+
+    auto *device_context = reinterpret_cast<AVHWDeviceContext *>(d3d_device_ref->data);
+    if (device_context->type != AV_HWDEVICE_TYPE_D3D11VA) {
+      return std::nullopt;
+    }
+
+    auto *d3d_context = reinterpret_cast<AVD3D11VADeviceContext *>(device_context->hwctx);
+    if (!d3d_context || !d3d_context->device) {
+      return std::nullopt;
+    }
+
+    platf::dxgi::dxgi_t dxgi_device;
+    using dxgi_adapter_t = util::safe_ptr<IDXGIAdapter, platf::dxgi::Release<IDXGIAdapter>>;
+    dxgi_adapter_t dxgi_adapter;
+    if (FAILED(d3d_context->device->QueryInterface(IID_PPV_ARGS(&dxgi_device))) ||
+        FAILED(dxgi_device->GetAdapter(&dxgi_adapter))) {
+      return std::nullopt;
+    }
+
+    DXGI_ADAPTER_DESC adapter_desc {};
+    if (FAILED(dxgi_adapter->GetDesc(&adapter_desc))) {
+      return std::nullopt;
+    }
+
+    log_amf_runtime_version(adapter_desc);
+
+    // Fail closed on anything but the one adapter this workaround has been validated
+    // against, before an AMF device context is derived.
+    if (adapter_desc.VendorId != kAmdVendorId || adapter_desc.DeviceId != kRadeonPro5500XtDeviceId) {
+      BOOST_LOG(info) << "AMF Main10 override: adapter " << std::hex << adapter_desc.VendorId << ':'
+                      << adapter_desc.DeviceId << std::dec
+                      << " is not the validated Radeon Pro 5500 XT (1002:7340); leaving FFmpeg's AMF Main10 gate untouched.";
+      return std::nullopt;
+    }
+
+    avcodec_buffer_t amf_device_ref;
+    if (auto status = av_hwdevice_ctx_create_derived(&amf_device_ref, AV_HWDEVICE_TYPE_AMF, d3d_device_ref, 0)) {
+      char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
+      BOOST_LOG(warning) << "AMF Main10 override: failed to derive AMF device context for Radeon Pro 5500 XT Main10 compatibility: "
+                         << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, status);
+      return std::nullopt;
+    }
+
+    auto *amf_hw_device = reinterpret_cast<AVHWDeviceContext *>(amf_device_ref->data);
+    if (!amf_hw_device || amf_hw_device->type != AV_HWDEVICE_TYPE_AMF) {
+      return std::nullopt;
+    }
+
+    auto *amf_context = reinterpret_cast<AVAMFDeviceContext *>(amf_hw_device->hwctx);
+    if (!amf_context) {
+      return std::nullopt;
+    }
+
+    const auto runtime_version = amf_context->version;
+    if ((runtime_version & ~kBuildFieldMask) != kCompatibleRuntime) {
+      BOOST_LOG(info) << "AMF Main10 override: AMF runtime " << describe_amf_version(runtime_version)
+                      << " is outside the targeted 1.4.31.x range (FFmpeg requires "
+                      << describe_amf_version(kFfmpegMain10Minimum)
+                      << " for P010); leaving FFmpeg's AMF Main10 gate untouched.";
+      return std::nullopt;
+    }
+
+    codec_context->hw_device_ctx = av_buffer_ref(amf_device_ref.get());
+    if (!codec_context->hw_device_ctx) {
+      return std::nullopt;
+    }
+
+    // FFmpeg applies its 1.4.32 guard to every P010 encoder, but issue artifacts
+    // prove this exact adapter/runtime tuple can stream HEVC Main10. Present the
+    // guarded version only during codec validation, then restore the real value.
+    amf_context->version = kFfmpegMain10Minimum;
+    BOOST_LOG(info) << "AMF Main10 override: reporting AMF " << describe_amf_version(kFfmpegMain10Minimum)
+                    << " to FFmpeg during codec validation (real runtime " << describe_amf_version(runtime_version)
+                    << ") so HEVC Main10/HDR is not refused.";
+    return amf_main10_compatibility_override_t {
+      amf_context,
+      runtime_version
+    };
+  }
+#endif
+
   std::unique_ptr<avcodec_encode_session_t> make_avcodec_encode_session(
     platf::display_t *disp,
     const encoder_t &encoder,
@@ -2471,6 +2630,20 @@ namespace video {
     // to try applying each set.
     avcodec_ctx_t ctx;
     for (int retries = 0; retries < 2; retries++) {
+#ifdef _WIN32
+      std::optional<amf_main10_compatibility_override_t> amf_main10_compatibility_override;
+      // The override mutates AMF runtime state that must be handed back before this
+      // iteration ends, and avcodec_open2() is several hundred lines away with option
+      // handling in between. Tie the restore to the iteration scope so the fallback
+      // retry, the early return and any exception all restore the real version.
+      auto restore_amf_main10_compatibility_override = util::fail_guard([&amf_main10_compatibility_override]() {
+        if (amf_main10_compatibility_override) {
+          amf_main10_compatibility_override->device_context->version =
+            amf_main10_compatibility_override->runtime_version;
+          amf_main10_compatibility_override.reset();
+        }
+      });
+#endif
       ctx.reset(avcodec_alloc_context3(codec));
       ctx->width = config.width;
       ctx->height = config.height;
@@ -2599,6 +2772,16 @@ namespace video {
           ctx->hw_frames_ctx = av_buffer_ref(frame_ref.get());
         }
 
+#ifdef _WIN32
+        if (encoder.name == "amdvce"sv &&
+            config.videoFormat == 1 &&
+            config.dynamicRange &&
+            sw_fmt == AV_PIX_FMT_P010) {
+          amf_main10_compatibility_override =
+            enable_amf_main10_compatibility_override(ctx.get(), encoding_stream_context.get());
+        }
+#endif
+
         ctx->slices = config.slicesPerFrame;
       } else /* software */ {
         ctx->pix_fmt = sw_fmt;
@@ -2704,7 +2887,8 @@ namespace video {
       // Allow the encoding device a final opportunity to set/unset or override any options
       encode_device->init_codec_options(ctx.get(), &options);
 
-      if (auto status = avcodec_open2(ctx.get(), codec, &options)) {
+      auto status = avcodec_open2(ctx.get(), codec, &options);
+      if (status) {
         char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
 
         if (!video_format.fallback_options.empty() && retries == 0) {
