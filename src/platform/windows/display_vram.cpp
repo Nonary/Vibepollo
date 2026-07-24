@@ -649,8 +649,18 @@ namespace platf::dxgi {
                             << ", peak=" << truehdr_frame_state.peak_brightness
                             << " nits, foreground=" << truehdr_frame_state.foreground_source << ").";
           } else {
+            const char *bypass_reason = nullptr;
+            if (truehdr_frame_state.foreground_matches) {
+              bypass_reason = " because RTX HDR is disabled for the visible app/runtime override.";
+            } else if (truehdr_frame_state.foreground_source == "desktop-visible") {
+              bypass_reason = " because desktop or unrelated UI is visible above the fullscreen game.";
+            } else if (truehdr_frame_state.foreground_source == "visibility-unknown") {
+              bypass_reason = " because no unobscured fullscreen game surface could be confirmed.";
+            } else {
+              bypass_reason = " because the visible content does not match the streamed app.";
+            }
             BOOST_LOG(info) << "RTX HDR: bypassing TrueHDR conversion"
-                            << (truehdr_frame_state.foreground_matches ? " because RTX HDR is disabled for the focused app/runtime override." : " because the foreground window does not match the streamed app.")
+                            << bypass_reason
                             << " Encoding through neutral SDR-to-PQ path"
                             << " (SDR white=" << encode_input_sdr_white_nits << " nits).";
           }

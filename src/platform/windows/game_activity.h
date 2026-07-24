@@ -41,6 +41,12 @@ namespace platf::game_activity {
 
   state_t reduce_signals(std::span<const signal_t> signals);
   const char *source_name(signal_source_e source);
+  bool preserve_confirmed_game_during_display_transition(
+    const foreground_app::state_t &sample,
+    const foreground_app::state_t &last_confirmed,
+    bool transition_settling,
+    bool minimum_hold_active = false
+  );
 
   struct refresh_target_options_t {
     std::string display_name;
