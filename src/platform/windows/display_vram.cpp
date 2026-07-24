@@ -2431,6 +2431,10 @@ namespace platf::dxgi {
       return -1;
     }
 
+    if (!cursor_vs_hlsl) {
+      BOOST_LOG(error) << "Cannot create cursor vertex shader: shader bytecode is missing";
+      return -1;
+    }
     status = device->CreateVertexShader(cursor_vs_hlsl->GetBufferPointer(), cursor_vs_hlsl->GetBufferSize(), nullptr, &cursor_vs);
     if (status) {
       BOOST_LOG(error) << "Failed to create scene vertex shader [0x"sv << util::hex(status).to_string_view() << ']';
@@ -2450,6 +2454,10 @@ namespace platf::dxgi {
 
     if (config.dynamicRange && is_hdr()) {
       // This shader will normalize scRGB white levels to a user-defined white level
+      if (!cursor_ps_normalize_white_hlsl) {
+        BOOST_LOG(error) << "Cannot create cursor blending (normalized white) pixel shader: shader bytecode is missing";
+        return -1;
+      }
       status = device->CreatePixelShader(cursor_ps_normalize_white_hlsl->GetBufferPointer(), cursor_ps_normalize_white_hlsl->GetBufferSize(), nullptr, &cursor_ps);
       if (status) {
         BOOST_LOG(error) << "Failed to create cursor blending (normalized white) pixel shader [0x"sv << util::hex(status).to_string_view() << ']';
@@ -2468,6 +2476,10 @@ namespace platf::dxgi {
 
       device_ctx->PSSetConstantBuffers(1, 1, &white_multiplier);
     } else {
+      if (!cursor_ps_hlsl) {
+        BOOST_LOG(error) << "Cannot create cursor blending pixel shader: shader bytecode is missing";
+        return -1;
+      }
       status = device->CreatePixelShader(cursor_ps_hlsl->GetBufferPointer(), cursor_ps_hlsl->GetBufferSize(), nullptr, &cursor_ps);
       if (status) {
         BOOST_LOG(error) << "Failed to create cursor blending pixel shader [0x"sv << util::hex(status).to_string_view() << ']';
