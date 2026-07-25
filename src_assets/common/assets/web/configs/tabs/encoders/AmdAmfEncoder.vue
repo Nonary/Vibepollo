@@ -13,18 +13,24 @@ const config = store.config;
         <h3 class="text-sm font-medium">{{ $t('config.amd_section_title') }}</h3>
       </div>
       <div class="p-4">
-        <ConfigFieldRenderer setting-key="amd_usage" v-model="config.amd_usage" class="mb-6" />
+        <ConfigFieldRenderer v-model="config.amd_usage" setting-key="amd_usage" class="mb-6" />
 
         <section class="border-t border-dark/10 pt-5 dark:border-light/10">
           <h4 class="group-heading">
             {{ $t('config.amd_rc_group') }}
           </h4>
 
-          <ConfigFieldRenderer setting-key="amd_rc" v-model="config.amd_rc" class="mb-4" />
+          <ConfigFieldRenderer v-model="config.amd_rc" setting-key="amd_rc" class="mb-4" />
 
           <ConfigFieldRenderer
-            setting-key="amd_enforce_hrd"
+            v-model="config.amd_qvbr_quality_level"
+            setting-key="amd_qvbr_quality_level"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
             v-model="config.amd_enforce_hrd"
+            setting-key="amd_enforce_hrd"
             class="mb-0"
           />
         </section>
@@ -35,20 +41,38 @@ const config = store.config;
           </h4>
 
           <ConfigFieldRenderer
-            setting-key="amd_quality"
             v-model="config.amd_quality"
+            setting-key="amd_quality"
             class="mb-6"
           />
 
           <ConfigFieldRenderer
-            setting-key="amd_preanalysis"
             v-model="config.amd_preanalysis"
+            setting-key="amd_preanalysis"
             class="mb-3"
           />
 
-          <ConfigFieldRenderer setting-key="amd_vbaq" v-model="config.amd_vbaq" class="mb-3" />
+          <ConfigFieldRenderer v-model="config.amd_vbaq" setting-key="amd_vbaq" class="mb-3" />
 
-          <ConfigFieldRenderer setting-key="amd_coder" v-model="config.amd_coder" class="mb-0" />
+          <ConfigFieldRenderer v-model="config.amd_coder" setting-key="amd_coder" class="mb-0" />
+        </section>
+
+        <section class="border-t border-dark/10 pt-5 dark:border-light/10">
+          <h4 class="group-heading">
+            {{ $t('config.amd_native_group') }}
+          </h4>
+
+          <ConfigFieldRenderer
+            v-model="config.amd_av1_screen_content"
+            setting-key="amd_av1_screen_content"
+            class="mb-4"
+          />
+
+          <ConfigFieldRenderer
+            v-model="config.amd_av1_latency_mode"
+            setting-key="amd_av1_latency_mode"
+            class="mb-0"
+          />
         </section>
       </div>
     </div>
