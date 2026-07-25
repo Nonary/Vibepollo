@@ -3160,7 +3160,9 @@ namespace video {
         }
 
 #ifdef _WIN32
-        if (encoder.name == "amdvce"sv &&
+        // Only the FFmpeg-based rollback encoder reaches this function; native
+        // "amdvce" builds on encoder_platform_formats_amf and never gets here.
+        if (encoder.name == "amdvce_legacy"sv &&
             config.videoFormat == 1 &&
             config.dynamicRange &&
             sw_fmt == AV_PIX_FMT_P010) {

@@ -3348,12 +3348,15 @@ They appear in the Frame Limiter section of the settings UI.
 
 @note{HDR (HEVC Main10) encoding through AMF requires the AMF runtime shipped with Adrenalin 23.30
 or newer, which reports AMF 1.4.32. FFmpeg refuses 10-bit P010 surfaces on any older runtime, so HDR
-is not offered to clients even though Sunshine's own AMF check only needs 1.4.23. Update your
-graphics drivers if HDR is unavailable on an AMD GPU. Sunshine carries one narrow exception: on a
-Radeon Pro 5500 XT (PCI @code{1002:7340}) running AMF 1.4.31.x, it presents 1.4.32 to FFmpeg for the
-duration of codec validation so HEVC Main10 is not refused. The exception is applied automatically,
-has no configuration option, and does not apply to any other adapter. The detected AMF runtime
-version is written to the log on every AMD HDR HEVC attempt (search for @code{AMF Main10 override}).}
+is not offered to clients even though Vibepollo's own AMF check only needs 1.4.23. Update your
+graphics drivers if HDR is unavailable on an AMD GPU. This limitation applies to the
+@code{amdvce_legacy} rollback encoder only; the native @code{amdvce} encoder talks to AMF directly
+and is not subject to FFmpeg's 10-bit refusal. Vibepollo carries one narrow exception for the legacy
+encoder: on a Radeon Pro 5500 XT (PCI @code{1002:7340}) running AMF 1.4.31.x, it presents 1.4.32 to
+FFmpeg for the duration of codec validation so HEVC Main10 is not refused. The exception is applied
+automatically, has no configuration option, and does not apply to any other adapter. The detected AMF
+runtime version is written to the log on every AMD HDR HEVC attempt (search for
+@code{AMF Main10 override}).}
 
 ### amd_usage
 
