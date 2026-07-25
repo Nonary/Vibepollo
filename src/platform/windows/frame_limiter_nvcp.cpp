@@ -1224,6 +1224,10 @@ namespace platf::frame_limiter_nvcp {
           log_nvapi_error(mask_status, "DRS_GetSetting(SMOOTH_MOTION_MASK)");
           g_state.original_smooth_motion_mask_value.reset();
         }
+        // Value the driver is actually using right now. This decides whether the live mask still needs
+        // to be written and must never be normalized; `recorded_mask_value` below is restore/crash-recovery
+        // bookkeeping and is allowed to diverge from it.
+        const NvU32 effective_mask_value = original_mask_value;
         NvU32 recorded_mask_value = original_mask_value;
         if (mask_status == NVAPI_OK) {
           if (g_state.original_smooth_motion_mask_override && recorded_mask_value == SMOOTH_MOTION_API_MASK_OFF) {
@@ -1262,7 +1266,7 @@ namespace platf::frame_limiter_nvcp {
         }
 
         if (mask_status == NVAPI_OK) {
-          const bool mask_matches = recorded_mask_value == SMOOTH_MOTION_API_MASK_VALUE;
+          const bool mask_matches = effective_mask_value == SMOOTH_MOTION_API_MASK_VALUE;
           if (!mask_matches) {
             NVDRS_SETTING mask_setting = {};
             mask_setting.version = NVDRS_SETTING_VER;
