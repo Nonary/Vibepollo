@@ -79,7 +79,8 @@ namespace platf::game_activity {
     refresh_target_t &operator=(const refresh_target_t &) = delete;
 
     // Called by WGC when DXGI reports a display change. If a refresh-only request is
-    // in flight, wait for it to settle and consume permission for one soft refresh.
+    // in flight, wait for it to settle and authorize soft output refreshes while that
+    // mode-set finishes propagating through DXGI.
     bool wait_for_expected_refresh_change(std::chrono::milliseconds timeout);
 
   private:

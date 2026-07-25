@@ -551,7 +551,13 @@ namespace platf::game_activity {
         std::scoped_lock lock {transition_mutex};
         transition_in_progress = false;
         transition_succeeded = success;
-        if (!success) {
+        if (success) {
+          // A single Windows display mode-set can invalidate more than one DXGI
+          // factory as the display stack settles. Keep authorizing soft output
+          // refreshes for this request; each caller still verifies that adapter,
+          // output geometry, rotation, and HDR state are unchanged.
+          transition_deadline = std::chrono::steady_clock::now() + EXPECTED_TRANSITION_LIFETIME;
+        } else {
           transition_expected = false;
         }
       }
@@ -571,7 +577,6 @@ namespace platf::game_activity {
       }
       const bool accepted = transition_expected && !transition_in_progress && transition_succeeded &&
                             std::chrono::steady_clock::now() <= transition_deadline;
-      transition_expected = false;
       return accepted;
     }
 
