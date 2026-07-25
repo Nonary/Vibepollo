@@ -34,7 +34,6 @@ namespace platf::game_activity {
     constexpr auto FLAP_WINDOW = 30s;
     constexpr int FLAP_THRESHOLD = 3;
     constexpr auto FLAP_EXTRA_DELAY = 4s;
-    constexpr auto DETECTOR_PRESERVE_LIFETIME = 5s;
     constexpr auto AMBIGUOUS_SAMPLE_GRACE = 5s;
     constexpr auto DISPLAY_TRANSITION_MINIMUM_HOLD = 500ms;
     constexpr auto DISPLAY_TRANSITION_SETTLE_TIME = 1s;
@@ -46,7 +45,6 @@ namespace platf::game_activity {
       foreground_app::state_t state;
       foreground_app::state_t last_confirmed;
       std::chrono::steady_clock::time_point sampled_at {};
-      std::chrono::steady_clock::time_point last_confirmed_at {};
     };
 
     std::mutex g_foreground_cache_mutex;
@@ -89,7 +87,6 @@ namespace platf::game_activity {
             state.source != "desktop-visible" &&
             state.source != "visibility-unknown") {
           existing->last_confirmed = state;
-          existing->last_confirmed_at = now;
         }
         existing->sampled_at = now;
         return;
@@ -104,7 +101,6 @@ namespace platf::game_activity {
           state.source != "desktop-visible" &&
           state.source != "visibility-unknown") {
         entry.last_confirmed = state;
-        entry.last_confirmed_at = now;
       }
       g_foreground_cache.push_back(std::move(entry));
     }
@@ -176,35 +172,34 @@ namespace platf::game_activity {
       return wait_result == WAIT_TIMEOUT;
     }
 
-    bool detector_can_preserve(
+    bool overlay_preserves_confirmed_game(
       const fullscreen_detector::result_t &detection,
       const foreground_app::state_t &sample,
-      const foreground_app::state_t &last_confirmed,
-      const std::chrono::steady_clock::time_point last_confirmed_at,
-      const std::chrono::steady_clock::time_point now
+      const foreground_app::state_t &last_confirmed
     ) {
-      const bool ambiguous_sample =
-        sample.source == "visibility-unknown" ||
-        (sample.source == "desktop-visible" && !sample.blocker_opaque);
-      if (!ambiguous_sample ||
-          !last_confirmed.fullscreen_on_capture_display ||
-          last_confirmed_at == std::chrono::steady_clock::time_point {} ||
-          now - last_confirmed_at > DETECTOR_PRESERVE_LIFETIME ||
-          !process_is_running(last_confirmed.foreground_pid)) {
-        return false;
-      }
-      if (detection.verdict == fullscreen_detector::verdict_e::fullscreen) {
-        if (detection.source != fullscreen_detector::source_e::shell_hook &&
-            detection.source != fullscreen_detector::source_e::notification_state) {
-          return false;
-        }
-        return detection.pid != 0 &&
-               detection.pid == last_confirmed.foreground_pid;
-      }
-      if (detection.verdict != fullscreen_detector::verdict_e::unknown) {
-        return false;
-      }
-      return true;
+      return detection.verdict == fullscreen_detector::verdict_e::fullscreen &&
+             detection.source == fullscreen_detector::source_e::overlay_preserved &&
+             sample.matching_game_fullscreen &&
+             last_confirmed.fullscreen_on_capture_display &&
+             detection.pid != 0 &&
+             detection.pid == last_confirmed.foreground_pid &&
+             process_is_running(last_confirmed.foreground_pid);
+    }
+
+    foreground_app::state_t desktop_effective_foreground(
+      const foreground_app::state_t &sample,
+      const fullscreen_detector::result_t &detection
+    ) {
+      auto desktop = sample;
+      desktop.valid_window = sample.blocker_present;
+      desktop.shell_window = sample.blocker_desktop_ui;
+      desktop.fullscreen_on_capture_display = false;
+      desktop.matches_active_app = false;
+      desktop.foreground_pid =
+        sample.blocker_pid != 0 ? sample.blocker_pid : detection.pid;
+      desktop.foreground_exe = sample.blocker_exe;
+      desktop.source = "desktop-visible";
+      return desktop;
     }
   }  // namespace
 
@@ -264,7 +259,6 @@ namespace platf::game_activity {
     if (capture_rect) {
       const auto now = std::chrono::steady_clock::now();
       foreground_app::state_t last_confirmed;
-      auto last_confirmed_at = std::chrono::steady_clock::time_point {};
       {
         std::scoped_lock lock {g_foreground_cache_mutex};
         const auto cached = std::find_if(g_foreground_cache.begin(), g_foreground_cache.end(), [&](const auto &entry) {
@@ -275,7 +269,6 @@ namespace platf::game_activity {
             return cached->state;
           }
           last_confirmed = cached->last_confirmed;
-          last_confirmed_at = cached->last_confirmed_at;
         }
       }
       auto sample = foreground_app::snapshot(
@@ -284,12 +277,20 @@ namespace platf::game_activity {
         last_confirmed.foreground_exe
       );
       const auto detection = fullscreen_detector::detect(sample, *capture_rect);
-      const bool preserved =
-        detector_can_preserve(detection, sample, last_confirmed, last_confirmed_at, now);
-      if (preserved) {
+      const bool overlay_preserved =
+        overlay_preserves_confirmed_game(detection, sample, last_confirmed);
+      if (overlay_preserved) {
         sample = last_confirmed;
+      } else if (detection.verdict == fullscreen_detector::verdict_e::desktop) {
+        sample = desktop_effective_foreground(sample, detection);
       }
-      publish_foreground(*capture_rect, sample, !preserved);
+      const bool overlay_sample =
+        detection.source == fullscreen_detector::source_e::overlay_preserved;
+      publish_foreground(
+        *capture_rect,
+        sample,
+        !overlay_sample && !overlay_preserved
+      );
       return sample;
     }
     return foreground_app::snapshot(capture_rect);
@@ -317,7 +318,6 @@ namespace platf::game_activity {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
       state_t previous_state;
       foreground_app::state_t last_confirmed_foreground;
-      auto last_confirmed_foreground_at = std::chrono::steady_clock::time_point {};
       std::string previous_visibility_signature;
       auto display_transition_minimum_hold_until = std::chrono::steady_clock::time_point {};
       auto display_transition_settle_until = std::chrono::steady_clock::time_point {};
@@ -349,24 +349,28 @@ namespace platf::game_activity {
             now < display_transition_settle_until,
             now < display_transition_minimum_hold_until
           );
-        const bool preserve_through_detector =
+        const bool preserve_through_overlay =
           !preserve_through_own_transition &&
-          detector_can_preserve(
+          overlay_preserves_confirmed_game(
             detection,
             raw_foreground,
-            last_confirmed_foreground,
-            last_confirmed_foreground_at,
-            now
+            last_confirmed_foreground
           );
         if (preserve_through_own_transition) {
           foreground = last_confirmed_foreground;
-        } else if (preserve_through_detector) {
+        } else if (preserve_through_overlay) {
           foreground = last_confirmed_foreground;
+        } else if (detection.verdict == fullscreen_detector::verdict_e::desktop) {
+          foreground = desktop_effective_foreground(raw_foreground, detection);
         }
+        const bool overlay_sample =
+          detection.source == fullscreen_detector::source_e::overlay_preserved;
         publish_foreground(
           options.capture_rect,
           foreground,
-          !preserve_through_own_transition && !preserve_through_detector
+          !overlay_sample &&
+            !preserve_through_own_transition &&
+            !preserve_through_overlay
         );
 
         std::vector<signal_t> signals;
@@ -404,29 +408,45 @@ namespace platf::game_activity {
           raw_foreground.blocker_reason + "|" +
           std::to_string(raw_foreground.blocker_pid) + "|" +
           raw_foreground.blocker_exe + "|" +
+          raw_foreground.blocker_classification + "|" +
+          std::to_string(raw_foreground.blocker_coverage_percent) + "|" +
+          (raw_foreground.definite_desktop_blocker_present ? "definite-desktop|" : "no-definite-desktop|") +
           (preserve_through_own_transition ?
              "transition-held" :
-             (preserve_through_detector ? "detector-held" : "effective"));
+             (preserve_through_overlay ?
+                "overlay-held" :
+                "effective"));
         if (visibility_signature != previous_visibility_signature) {
-          if (raw_foreground.source == "desktop-visible" ||
+          if (raw_foreground.blocker_present ||
+              raw_foreground.source == "desktop-visible" ||
               raw_foreground.source == "visibility-unknown") {
             BOOST_LOG(debug) << "Game visibility: display='" << options.display_name
                              << "' classification=" << raw_foreground.source
                              << " effective="
                              << (preserve_through_own_transition ?
                                    "game-transition" :
-                                   (preserve_through_detector ? "game-detector" : raw_foreground.source))
+                                   (preserve_through_overlay ?
+                                      "game-overlay" :
+                                      foreground.source))
                              << " reason=" << raw_foreground.blocker_reason
+                             << " overlay_classification=" << raw_foreground.blocker_classification
                              << " blocker_pid=" << raw_foreground.blocker_pid
                              << " blocker_exe='" << raw_foreground.blocker_exe << "'"
                              << " blocker_class='" << raw_foreground.blocker_class << "'"
                              << " blocker_title='" << raw_foreground.blocker_title << "'"
                              << " blocker_opaque=" << (raw_foreground.blocker_opaque ? "true" : "false")
+                             << " blocker_framed=" << (raw_foreground.blocker_framed ? "true" : "false")
+                             << " blocker_passive_overlay=" << (raw_foreground.blocker_passive_overlay ? "true" : "false")
+                             << " blocker_desktop_ui=" << (raw_foreground.blocker_desktop_ui ? "true" : "false")
+                             << " blocker_coverage=" << raw_foreground.blocker_coverage_percent << '%'
+                             << " definite_desktop_blocker="
+                             << (raw_foreground.definite_desktop_blocker_present ? "true" : "false")
                              << " blocker_rect=[" << raw_foreground.blocker_rect.left << ','
                              << raw_foreground.blocker_rect.top << ','
                              << raw_foreground.blocker_rect.right << ','
                              << raw_foreground.blocker_rect.bottom << ']'
-                             << " matching_game_window_seen=" << (raw_foreground.matching_window_seen ? "true" : "false");
+                             << " matching_game_window_seen=" << (raw_foreground.matching_window_seen ? "true" : "false")
+                             << " matching_game_fullscreen=" << (raw_foreground.matching_game_fullscreen ? "true" : "false");
           }
           previous_visibility_signature = visibility_signature;
         }
@@ -444,12 +464,12 @@ namespace platf::game_activity {
         }
         if (resolved.active &&
             !preserve_through_own_transition &&
-            !preserve_through_detector &&
+            !overlay_sample &&
+            !preserve_through_overlay &&
             foreground.fullscreen_on_capture_display &&
             foreground.source != "desktop-visible" &&
             foreground.source != "visibility-unknown") {
           last_confirmed_foreground = foreground;
-          last_confirmed_foreground_at = now;
         }
 
         if (now < hold_until) {

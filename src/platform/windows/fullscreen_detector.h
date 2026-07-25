@@ -22,6 +22,7 @@ namespace platf::fullscreen_detector {
     shell_hook,
     notification_state,
     borderless_window,
+    overlay_preserved,
     desktop_window,
   };
 
@@ -34,11 +35,12 @@ namespace platf::fullscreen_detector {
   /**
    * Reconcile fullscreen evidence in confidence order:
    *  1. A full-monitor window attributed to the launched/Playnite game.
-   *  2. A missing interactive session, which precludes visible game content.
-   *  3. Definitive desktop evidence on the capture display.
-   *  4. The Windows Shell's display-scoped "rude app" activation feed.
-   *  5. The Shell's session-wide exclusive-D3D notification state.
-   *  6. A generic borderless window covering the capture monitor.
+   *  2. The composed blocker above an attributed full-monitor game.
+   *  3. A missing interactive session, which precludes visible game content.
+   *  4. Definitive desktop evidence on the capture display.
+   *  5. The Windows Shell's display-scoped "rude app" activation feed.
+   *  6. The Shell's session-wide exclusive-D3D notification state.
+   *  7. A generic borderless window covering the capture monitor.
    *
    * A borderless window is fullscreen for this policy. Ambiguous evidence
    * returns unknown rather than overriding stronger display-local evidence.

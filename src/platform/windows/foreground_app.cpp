@@ -337,6 +337,23 @@ namespace platf::foreground_app {
              window_rect.bottom >= capture_rect.bottom - EDGE_TOLERANCE;
     }
 
+    double window_coverage_percent(const RECT &window_rect, const RECT &capture_rect) {
+      RECT intersection {};
+      if (!IntersectRect(&intersection, &window_rect, &capture_rect)) {
+        return 0;
+      }
+      const auto capture_width = static_cast<long long>(capture_rect.right) - capture_rect.left;
+      const auto capture_height = static_cast<long long>(capture_rect.bottom) - capture_rect.top;
+      const auto intersection_width = static_cast<long long>(intersection.right) - intersection.left;
+      const auto intersection_height = static_cast<long long>(intersection.bottom) - intersection.top;
+      const auto capture_area = capture_width * capture_height;
+      const auto intersection_area = intersection_width * intersection_height;
+      if (capture_area <= 0 || intersection_area <= 0) {
+        return 0;
+      }
+      return std::min(100.0, static_cast<double>(intersection_area) * 100.0 / static_cast<double>(capture_area));
+    }
+
     bool process_is_windows_desktop_ui(std::string_view executable) {
       const auto basename = basename_text(executable);
       return basename == "explorer.exe" ||
@@ -353,15 +370,20 @@ namespace platf::foreground_app {
     struct visible_window_t {
       HWND hwnd {};
       DWORD pid {};
+      RECT rect {};
+      double coverage_percent {0.0};
       std::string executable;
       std::string class_name;
       std::string title;
       visible_window_evidence_t evidence;
+      bool framed {false};
     };
 
     struct visible_window_result_t {
       std::optional<visible_window_t> selected;
       std::optional<visible_window_t> blocker;
+      std::optional<visible_window_t> overlay;
+      std::optional<visible_window_t> definite_desktop_blocker;
       bool matching_window_seen {false};
       std::uint32_t ignored_passive_window_count {0};
       bool blocked {false};
@@ -380,6 +402,8 @@ namespace platf::foreground_app {
         const active_window_matcher_t &matches_active_app;
         std::optional<visible_window_t> selected;
         std::optional<visible_window_t> blocker;
+        std::optional<visible_window_t> overlay;
+        std::optional<visible_window_t> definite_desktop_blocker;
         bool matching_window_seen {false};
         std::uint32_t ignored_passive_window_count {0};
         bool blocked {false};
@@ -387,6 +411,8 @@ namespace platf::foreground_app {
         capture_rect,
         require_active_app_match,
         matches_active_app,
+        std::nullopt,
+        std::nullopt,
         std::nullopt,
         std::nullopt,
         false,
@@ -408,6 +434,9 @@ namespace platf::foreground_app {
         visible_window_t window;
         window.hwnd = hwnd;
         window.pid = pid;
+        window.rect = *window_rect;
+        window.coverage_percent =
+          window_coverage_percent(*window_rect, context.capture_rect);
         window.executable = std::move(executable);
         window.class_name = window_class_utf8(hwnd);
         window.title = window_title_utf8(hwnd);
@@ -429,6 +458,8 @@ namespace platf::foreground_app {
           window.evidence.fullscreen_on_capture_display
         );
         window.evidence.opaque = window_is_opaque(hwnd);
+        const auto style = static_cast<std::uintptr_t>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+        window.framed = (style & (WS_CAPTION | WS_THICKFRAME)) != 0;
         // DirectComposition/Electron/CEF overlays commonly keep transparent
         // top-level hosts above the game. Win32 reports these hosts as visible
         // even when they paint no pixels. Classify them by generic activation,
@@ -446,6 +477,9 @@ namespace platf::foreground_app {
             if (window.evidence.passive_host || window.evidence.transient_shell_overlay ||
                 !window.evidence.opaque) {
               ++context.ignored_passive_window_count;
+              if (!window.evidence.belongs_to_active_app && !context.overlay) {
+                context.overlay = window;
+              }
             }
             return TRUE;
           case visible_stack_decision_e::select_game:
@@ -453,15 +487,29 @@ namespace platf::foreground_app {
             return FALSE;
           case visible_stack_decision_e::block:
             context.blocked = true;
-            context.blocker = std::move(window);
-            return FALSE;
+            if (!context.definite_desktop_blocker &&
+                (window.framed ||
+                 (window.evidence.desktop_ui && window.coverage_percent > 15.0))) {
+              context.definite_desktop_blocker = window;
+            }
+            if (!context.blocker) {
+              context.blocker = std::move(window);
+            }
+            // With an attributed game, a window above it is composition
+            // evidence, not the end of the scan. Keep the first blocker and
+            // continue until the matching full-monitor game is found (or the
+            // stack is exhausted).
+            return context.require_active_app_match ? TRUE : FALSE;
         }
         return FALSE;
-      }, reinterpret_cast<LPARAM>(&context));
+      },
+                  reinterpret_cast<LPARAM>(&context));
 
       return {
         std::move(context.selected),
         std::move(context.blocker),
+        std::move(context.overlay),
+        std::move(context.definite_desktop_blocker),
         context.matching_window_seen,
         context.ignored_passive_window_count,
         context.blocked,
@@ -631,6 +679,7 @@ namespace platf::foreground_app {
                  path_equal_or_basename_match(executable, game_hint_exe);
         };
       }
+      state.tracks_active_app_window = require_active_app_match;
 
       const auto visible_result = find_top_visible_fullscreen_window(
         *capture_rect,
@@ -639,6 +688,62 @@ namespace platf::foreground_app {
       );
       state.ignored_passive_window_count =
         visible_result.ignored_passive_window_count;
+      state.matching_window_seen = visible_result.matching_window_seen;
+      state.matching_game_fullscreen = visible_result.selected.has_value();
+      state.definite_desktop_blocker_present =
+        visible_result.definite_desktop_blocker.has_value();
+      if (visible_result.definite_desktop_blocker) {
+        state.definite_desktop_blocker_pid =
+          visible_result.definite_desktop_blocker->pid;
+      }
+
+      const auto populate_blocker = [&](const visible_window_t &blocker, const bool passive_overlay) {
+        state.blocker_present = true;
+        state.blocker_pid = blocker.pid;
+        state.blocker_exe = blocker.executable;
+        state.blocker_class = blocker.class_name;
+        state.blocker_title = blocker.title;
+        state.blocker_rect = blocker.rect;
+        state.blocker_coverage_percent = blocker.coverage_percent;
+        state.blocker_opaque = blocker.evidence.opaque;
+        state.blocker_framed = blocker.framed;
+        state.blocker_passive_overlay =
+          passive_overlay || blocker.evidence.passive_host ||
+          blocker.evidence.transient_shell_overlay || !blocker.evidence.opaque;
+        state.blocker_desktop_ui = blocker.evidence.desktop_ui;
+
+        constexpr double SMALL_OVERLAY_COVERAGE_PERCENT = 15.0;
+        if (state.blocker_framed && !state.blocker_passive_overlay) {
+          state.blocker_classification = "framed-application";
+        } else if (state.blocker_desktop_ui &&
+                   !state.blocker_passive_overlay &&
+                   state.blocker_coverage_percent > SMALL_OVERLAY_COVERAGE_PERCENT) {
+          state.blocker_classification = "desktop-ui";
+        } else if (state.blocker_passive_overlay) {
+          state.blocker_classification = "passive-overlay";
+        } else if (state.blocker_coverage_percent <= SMALL_OVERLAY_COVERAGE_PERCENT) {
+          state.blocker_classification = "small-popup";
+        } else {
+          state.blocker_classification = "borderless-overlay";
+        }
+
+        if (blocker.evidence.desktop_ui) {
+          state.blocker_reason = "desktop-ui";
+        } else if (passive_overlay) {
+          state.blocker_reason = "passive-overlay";
+        } else if (require_active_app_match && !blocker.evidence.belongs_to_active_app) {
+          state.blocker_reason = "unrelated-window";
+        } else {
+          state.blocker_reason = "not-fullscreen";
+        }
+      };
+
+      if (visible_result.blocker) {
+        populate_blocker(*visible_result.blocker, false);
+      } else if (visible_result.overlay) {
+        populate_blocker(*visible_result.overlay, true);
+      }
+
       if (visible_result.selected) {
         const auto &visible_game = *visible_result.selected;
         state.valid_window = true;
@@ -661,25 +766,6 @@ namespace platf::foreground_app {
         return state;
       }
 
-      state.matching_window_seen = visible_result.matching_window_seen;
-      if (visible_result.blocker) {
-        const auto &blocker = *visible_result.blocker;
-        state.blocker_pid = blocker.pid;
-        state.blocker_exe = blocker.executable;
-        state.blocker_class = blocker.class_name;
-        state.blocker_title = blocker.title;
-        state.blocker_opaque = blocker.evidence.opaque;
-        if (blocker.evidence.desktop_ui) {
-          state.blocker_reason = "desktop-ui";
-        } else if (require_active_app_match && !blocker.evidence.belongs_to_active_app) {
-          state.blocker_reason = "unrelated-window";
-        } else {
-          state.blocker_reason = "not-fullscreen";
-        }
-        if (const auto rect = visible_window_rect(blocker.hwnd, *capture_rect)) {
-          state.blocker_rect = *rect;
-        }
-      }
       state.source = visible_result.blocked ? "desktop-visible" : "visibility-unknown";
       return state;
     }

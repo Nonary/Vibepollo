@@ -330,13 +330,65 @@ namespace platf::fullscreen_detector {
   }  // namespace
 
   result_t detect(const foreground_app::state_t &foreground, const RECT &capture_rect) {
-    // Direct display-local evidence with game identity is the strongest answer.
     const bool attributed_game_window =
       foreground.source == "playnite-visible" ||
-      foreground.source == "process-visible";
+      foreground.source == "process-visible" ||
+      (foreground.source == "fullscreen-visible" &&
+       foreground.tracks_active_app_window);
+
+    const auto notification = exact_notification_state();
+
+    // A missing interactive session precludes a visible game on this display.
+    if (notification.verdict == verdict_e::desktop) {
+      return notification;
+    }
+
+    // The Shell hook can distinguish a second fullscreen application from an
+    // overlay composed above the tracked game. Relative to that tracked game,
+    // a different rude-app PID is desktop evidence.
+    const auto shell = shell_hook_monitor().sample(capture_rect);
+    if (attributed_game_window &&
+        shell.verdict == verdict_e::fullscreen &&
+        shell.pid != 0 &&
+        foreground.foreground_pid != 0 &&
+        shell.pid != foreground.foreground_pid) {
+      return {
+        .verdict = verdict_e::desktop,
+        .source = source_e::shell_hook,
+        .pid = shell.pid,
+      };
+    }
+
+    // A matching full-monitor game can remain composed beneath another
+    // top-level window. Normal framed applications and definite desktop
+    // surfaces demote immediately; borderless, passive, and small popups are
+    // preserved without executable or vendor allowlists.
     if (attributed_game_window &&
         foreground.matches_active_app &&
         foreground.fullscreen_on_capture_display) {
+      if (foreground.blocker_present) {
+        constexpr double SMALL_OVERLAY_COVERAGE_PERCENT = 15.0;
+        const bool definite_desktop =
+          foreground.definite_desktop_blocker_present ||
+          (foreground.blocker_framed && !foreground.blocker_passive_overlay) ||
+          (foreground.blocker_desktop_ui &&
+           !foreground.blocker_passive_overlay &&
+           foreground.blocker_coverage_percent > SMALL_OVERLAY_COVERAGE_PERCENT);
+        if (definite_desktop) {
+          return {
+            .verdict = verdict_e::desktop,
+            .source = source_e::desktop_window,
+            .pid = foreground.definite_desktop_blocker_pid != 0 ?
+                     foreground.definite_desktop_blocker_pid :
+                     foreground.blocker_pid,
+          };
+        }
+        return {
+          .verdict = verdict_e::fullscreen,
+          .source = source_e::overlay_preserved,
+          .pid = foreground.foreground_pid,
+        };
+      }
       return {
         .verdict = verdict_e::fullscreen,
         .source = source_e::tracked_window,
@@ -344,11 +396,15 @@ namespace platf::fullscreen_detector {
       };
     }
 
-    const auto notification = exact_notification_state();
-
-    // A missing interactive session precludes a visible game on this display.
-    if (notification.verdict == verdict_e::desktop) {
-      return notification;
+    // Once a game is being tracked, absence of its visible full-monitor window
+    // is a definite demotion. This prevents stale Shell/notification evidence
+    // from preserving a minimized, removed, or windowed game.
+    if (foreground.tracks_active_app_window && !foreground.matching_game_fullscreen) {
+      return {
+        .verdict = verdict_e::desktop,
+        .source = source_e::desktop_window,
+        .pid = foreground.blocker_pid,
+      };
     }
 
     // Display-local desktop evidence outranks cached Shell activation and the
@@ -363,8 +419,7 @@ namespace platf::fullscreen_detector {
     }
 
     // Shell fullscreen activation is event-driven and display-scoped.
-    if (auto shell = shell_hook_monitor().sample(capture_rect);
-        shell.verdict != verdict_e::unknown) {
+    if (shell.verdict != verdict_e::unknown) {
       return shell;
     }
 
@@ -400,6 +455,8 @@ namespace platf::fullscreen_detector {
         return "notification-state";
       case source_e::borderless_window:
         return "borderless-window";
+      case source_e::overlay_preserved:
+        return "overlay-preserved";
       case source_e::desktop_window:
         return "desktop-window";
       default:
