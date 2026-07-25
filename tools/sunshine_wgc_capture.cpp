@@ -317,8 +317,8 @@ public:
   /**
    * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
    *
-   * Uses HIGH rather than REALTIME so capture work remains responsive without
-   * preempting the game's rendering queue under GPU pressure.
+   * Configures the process GPU scheduling priority to REALTIME. This is critical for maintaining
+   * capture performance when the GPU is under heavy load from games or other applications.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
@@ -335,16 +335,16 @@ public:
       return false;
     }
 
-    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH);
+    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME);
 
     HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), priority);
     if (FAILED(hr)) {
-      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to HIGH: " << hr
+      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
                          << " (may require administrator privileges for optimal performance)";
       return false;
     }
 
-    BOOST_LOG(info) << "GPU scheduling priority set to HIGH for balanced capture performance";
+    BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
     _gpu_priority_set = true;
     return true;
   }
