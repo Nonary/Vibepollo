@@ -2415,10 +2415,17 @@ namespace {
     std::atomic<long long> last_heartbeat_ms {0};
     std::atomic<bool> heartbeat_revert_armed {false};
     std::atomic<long long> heartbeat_revert_deadline_ms {0};
+    // A dropped control pipe is not proof that the host exited. The host retires and
+    // re-opens the connection routinely (cached-connection resets around capture
+    // reinit, and any reply that outruns its client-side timeout). Exiting on the
+    // first disconnect left a live stream with no helper for the rest of the session,
+    // so a disconnect with nothing to restore now waits for a reconnect instead.
+    std::atomic<long long> reconnect_exit_deadline_ms {0};
 
     static constexpr auto kRestoreWindowPrimary = std::chrono::minutes(2);
     static constexpr auto kRestoreWindowEvent = std::chrono::seconds(30);
     static constexpr auto kRestoreEventDebounce = std::chrono::milliseconds(500);
+    static constexpr auto kReconnectExitGrace = std::chrono::seconds(60);
     static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
@@ -2456,6 +2463,24 @@ namespace {
                std::chrono::steady_clock::now().time_since_epoch()
       )
         .count();
+    }
+
+    void arm_reconnect_exit_grace(const char *reason) {
+      const auto deadline = steady_now_ms() +
+                            std::chrono::duration_cast<std::chrono::milliseconds>(kReconnectExitGrace).count();
+      reconnect_exit_deadline_ms.store(deadline, std::memory_order_release);
+      BOOST_LOG(info) << "Client disconnected (" << reason << "); staying alive for "
+                      << std::chrono::duration_cast<std::chrono::seconds>(kReconnectExitGrace).count()
+                      << "s in case the host reconnects.";
+    }
+
+    void disarm_reconnect_exit_grace() {
+      reconnect_exit_deadline_ms.store(0, std::memory_order_release);
+    }
+
+    bool reconnect_exit_grace_expired() const {
+      const auto deadline = reconnect_exit_deadline_ms.load(std::memory_order_acquire);
+      return deadline != 0 && steady_now_ms() >= deadline;
     }
 
     void begin_heartbeat_monitoring() {
@@ -5385,7 +5410,7 @@ namespace {
                                       state.exit_after_revert.load(std::memory_order_acquire);
     if (!potentially_modified) {
       state.restore_requested.store(false, std::memory_order_release);
-      running.store(false, std::memory_order_release);
+      state.arm_reconnect_exit_grace("nothing to restore");
       return;
     }
 
@@ -5396,7 +5421,7 @@ namespace {
     if (!state.restore_on_disconnect.load(std::memory_order_acquire) && !explicit_restore_pending) {
       BOOST_LOG(info) << "Client disconnected with restore-on-disconnect disabled; disarming restore state.";
       state.disarm_restore_requests("Restore-on-disconnect disabled after client disconnect");
-      running.store(false, std::memory_order_release);
+      state.arm_reconnect_exit_grace("restore-on-disconnect disabled");
       return;
     }
 
@@ -5654,6 +5679,10 @@ int run_legacy_helper(int argc, char *argv[]) {
     // and tear down the server pipe before Sunshine has any chance to connect.
     async_pipe.wait_for_client_connection(15000);
     if (!async_pipe.is_connected()) {
+      if (state.reconnect_exit_grace_expired()) {
+        BOOST_LOG(info) << "No client reconnected within the post-disconnect grace window; shutting down.";
+        break;
+      }
       const auto now = std::chrono::steady_clock::now();
       if (now - last_connect_wait_log > kReconnectLogInterval) {
         BOOST_LOG(info) << "Waiting for Sunshine to connect to display helper IPC...";
@@ -5661,6 +5690,7 @@ int run_legacy_helper(int argc, char *argv[]) {
       }
       continue;
     }
+    state.disarm_reconnect_exit_grace();
 
     const auto connection_epoch = state.begin_connection_epoch();
     // Do not cancel restore polling merely because Sunshine connected. Stream start

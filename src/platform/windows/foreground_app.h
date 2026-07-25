@@ -63,7 +63,18 @@ namespace platf::foreground_app {
     bool passive_host {false};
     bool fullscreen_on_capture_display {false};
     bool opaque {true};
+    // Shell surfaces that routinely appear above a running fullscreen game for a
+    // moment (the alt-tab switcher, Task View, a taskbar strip). They are desktop
+    // UI, but treating them as a blocker turned every alt-tab keypress into a
+    // desktop verdict, so the scan looks past them at whatever they cover.
+    bool transient_shell_overlay {false};
   };
+
+  bool transient_shell_overlay_for_tests(
+    std::string_view class_name,
+    bool desktop_ui,
+    bool covers_capture_display
+  );
 
   // Evidence is ordered from topmost to bottommost in the composed window stack.
   // Returns true only when fullscreen game content is reached before any visible

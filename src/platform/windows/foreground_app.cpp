@@ -192,10 +192,38 @@ namespace platf::foreground_app {
       block,
     };
 
+    // Shell furniture that floats above a fullscreen game during an alt-tab is not
+    // evidence that the game stopped being fullscreen. If the desktop really is
+    // exposed, the window underneath (Progman/WorkerW, an explorer window, or the
+    // app the user switched to) still blocks, so looking past these costs nothing.
+    bool window_is_transient_shell_overlay(
+      const std::string_view class_name,
+      const bool desktop_ui,
+      const bool covers_capture_display
+    ) {
+      if (!desktop_ui || class_name.empty()) {
+        return false;
+      }
+      // Alt-tab switcher, Task View, snap assist, and the legacy switchers.
+      if (class_name == "XamlExplorerHostIslandWindow" ||
+          class_name == "MultitaskingViewFrame" ||
+          class_name == "TaskSwitcherWnd" ||
+          class_name == "TaskSwitcherOverlayWnd" ||
+          class_name == "ForegroundStaging") {
+        return true;
+      }
+      // A taskbar that covers a strip of the display, not the display itself.
+      return !covers_capture_display &&
+             (class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd");
+    }
+
     visible_stack_decision_e evaluate_visible_window(
       const visible_window_evidence_t &evidence,
       const bool require_active_app_match
     ) {
+      if (evidence.transient_shell_overlay) {
+        return visible_stack_decision_e::continue_scan;
+      }
       if (evidence.desktop_ui) {
         return visible_stack_decision_e::block;
       }
@@ -395,6 +423,11 @@ namespace platf::foreground_app {
           (!context.require_active_app_match && window.executable.empty());
         window.evidence.fullscreen_on_capture_display =
           window_fully_covers_capture_display(hwnd, *window_rect, context.capture_rect);
+        window.evidence.transient_shell_overlay = window_is_transient_shell_overlay(
+          window.class_name,
+          window.evidence.desktop_ui,
+          window.evidence.fullscreen_on_capture_display
+        );
         window.evidence.opaque = window_is_opaque(hwnd);
         // DirectComposition/Electron/CEF overlays commonly keep transparent
         // top-level hosts above the game. Win32 reports these hosts as visible
@@ -410,7 +443,8 @@ namespace platf::foreground_app {
 
         switch (evaluate_visible_window(window.evidence, context.require_active_app_match)) {
           case visible_stack_decision_e::continue_scan:
-            if (window.evidence.passive_host || !window.evidence.opaque) {
+            if (window.evidence.passive_host || window.evidence.transient_shell_overlay ||
+                !window.evidence.opaque) {
               ++context.ignored_passive_window_count;
             }
             return TRUE;
@@ -486,6 +520,14 @@ namespace platf::foreground_app {
     const std::uintptr_t ex_style
   ) {
     return passive_compositor_style(style, ex_style);
+  }
+
+  bool transient_shell_overlay_for_tests(
+    const std::string_view class_name,
+    const bool desktop_ui,
+    const bool covers_capture_display
+  ) {
+    return window_is_transient_shell_overlay(class_name, desktop_ui, covers_capture_display);
   }
 
   bool visible_fullscreen_game_selected_for_tests(

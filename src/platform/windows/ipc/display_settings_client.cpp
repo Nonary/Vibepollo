@@ -39,7 +39,15 @@ namespace platf::display_helper_client {
       std::chrono::duration_cast<std::chrono::milliseconds>(
         display_helper::v2::timing::kApplyOperationEnvelope).count());
     constexpr int kLegacyApplyResultTimeoutMs = 5000;
-    constexpr int kRefreshRateResultTimeoutMs = 5000;
+    // A refresh-only mode set on a virtual display serializes against the OS display
+    // stack. While an alt-tab is already changing modes, the helper has been measured
+    // at ~6s for a single apply, so a 5s budget declared a healthy helper dead and
+    // retired a connection it was about to answer.
+    constexpr int kRefreshRateResultTimeoutMs = 12000;
+    // Best-effort adaptive refresh has its own retry, so it must never pay the full
+    // connect budget (anonymous transport, then named fallback) when the helper is
+    // down: that stalls the poll loop for seconds per attempt.
+    constexpr int kRefreshRateConnectTimeoutMs = 600;
 
     bool shutdown_requested() {
       if (!mail::man) {
@@ -1341,7 +1349,7 @@ namespace platf::display_helper_client {
     }
 
     const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
-    const auto session = connected_session();
+    const auto session = connected_session(kRefreshRateConnectTimeoutMs);
     if (!session) {
       BOOST_LOG(warning) << "Display helper IPC: refresh-rate request aborted - no connection";
       return false;

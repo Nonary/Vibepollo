@@ -18,7 +18,12 @@
 // local includes
 #include "src/logging.h"
 
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 namespace platf::dxgi {
 
@@ -36,7 +41,21 @@ namespace platf::dxgi {
     bool g_resolve_attempted = false;
     // NGX TrueHDR uses process/device global runtime state. Multiple clients may have
     // separate encoder devices, so serialize all shim entry points across the process.
-    std::mutex g_truehdr_mutex;
+    std::timed_mutex g_truehdr_mutex;
+
+    // Set once a shim call has overrun its budget and been abandoned. The abandoned
+    // call still owns g_truehdr_mutex and may never give it back, so every later
+    // caller has to fail fast rather than queue behind it: one wedged feature create
+    // used to freeze the encode loop of every client sharing this process.
+    std::atomic<bool> g_shim_wedged {false};
+    std::atomic<bool> g_wedge_skip_logged {false};
+
+    // Generous, because it only has to distinguish "slow" from "never".
+    constexpr auto kCreateTimeout = std::chrono::seconds(8);
+    // A convert cannot wait on a peer: missing the deadline just means this frame
+    // takes the plain SDR->PQ path.
+    constexpr auto kConvertLockTimeout = std::chrono::milliseconds(250);
+    constexpr auto kReleaseLockTimeout = std::chrono::seconds(5);
 
     // Resolve the shim exports once per process. The DLL is shipped next to sunshine.exe,
     // so the default search path (which includes the executable directory) finds it.
@@ -73,16 +92,52 @@ namespace platf::dxgi {
     if (!device) {
       return false;
     }
-
-    std::scoped_lock lock {g_truehdr_mutex};
     if (initialized) {
       return true;
     }
-    if (!resolve_shim_locked()) {
+    if (g_shim_wedged.load(std::memory_order_acquire)) {
       return false;
     }
 
-    shim_handle = g_create(device);
+    // Creating the NGX feature reaches into D3D11 and the display stack. On a virtual
+    // display whose mode is mid-change -- which is what an alt-tab out of a fullscreen
+    // game looks like -- that call can block in the kernel for as long as the mode
+    // change takes, and nothing bounds that. Running it inline on the encode thread
+    // froze the stream outright, and because the caller held the process-global mutex
+    // across the hang, it froze every other client's convert() with it. So: create on
+    // a helper thread and abandon it if it overruns. An abandoned create leaks its
+    // thread and (if it ever completes) its feature handle; that is the deliberate
+    // trade for the host surviving. The successful handle is destroyed later by
+    // release() on the owning capture thread, which the shim serializes internally.
+    //
+    // The helper thread holds its own reference: once we abandon it, the encoder that
+    // asked for the feature is free to drop the device while the call is still inside
+    // the driver.
+    auto created = std::make_shared<std::promise<void *>>();
+    auto handle_future = created->get_future();
+    device->AddRef();
+    std::thread {[device, created]() {
+      void *handle = nullptr;
+      {
+        std::scoped_lock lock {g_truehdr_mutex};
+        if (resolve_shim_locked()) {
+          handle = g_create(device);
+        }
+      }
+      device->Release();
+      created->set_value(handle);
+    }}.detach();
+
+    if (handle_future.wait_for(kCreateTimeout) != std::future_status::ready) {
+      g_shim_wedged.store(true, std::memory_order_release);
+      BOOST_LOG(error) << "RTX HDR: TrueHDR feature creation did not complete within "
+                       << std::chrono::duration_cast<std::chrono::seconds>(kCreateTimeout).count()
+                       << "s (display stack likely mid-mode-change); abandoning it and disabling "
+                          "TrueHDR for this process. Streaming continues on the SDR-to-PQ path.";
+      return false;
+    }
+
+    shim_handle = handle_future.get();
     if (!shim_handle) {
       BOOST_LOG(info) << "RTX HDR: TrueHDR unavailable on this GPU/driver/runtime.";
       return false;
@@ -93,8 +148,17 @@ namespace platf::dxgi {
   }
 
   ID3D11Texture2D *nv_truehdr_t::convert(ID3D11Texture2D *sdr_input, const truehdr_params_t &params) {
-    std::scoped_lock lock {g_truehdr_mutex};
-    if (!initialized || !sdr_input) {
+    if (!initialized || !sdr_input || g_shim_wedged.load(std::memory_order_acquire)) {
+      return nullptr;
+    }
+    std::unique_lock lock {g_truehdr_mutex, std::defer_lock};
+    if (!lock.try_lock_for(kConvertLockTimeout)) {
+      // Someone else is inside the shim and not coming out on any schedule we can
+      // rely on. Waiting would spread their stall to this client's encode loop.
+      if (!g_wedge_skip_logged.exchange(true, std::memory_order_acq_rel)) {
+        BOOST_LOG(warning) << "RTX HDR: TrueHDR is busy in another session; streaming this frame "
+                              "through the SDR-to-PQ path instead of waiting on it.";
+      }
       return nullptr;
     }
     return g_convert(shim_handle, sdr_input, params.contrast, params.saturation,
@@ -113,10 +177,17 @@ namespace platf::dxgi {
     void *local_handle = nullptr;
     destroy_fn local_destroy = nullptr;
     {
-      std::scoped_lock lock {g_truehdr_mutex};
-      if (initialized && shim_handle && g_destroy) {
+      std::unique_lock lock {g_truehdr_mutex, std::defer_lock};
+      // A wedged shim never returns the mutex, and calling into it would hang this
+      // thread too. Drop our own state and leak the feature instead.
+      const bool locked = !g_shim_wedged.load(std::memory_order_acquire) &&
+                          lock.try_lock_for(kReleaseLockTimeout);
+      if (locked && initialized && shim_handle && g_destroy) {
         local_handle = shim_handle;
         local_destroy = g_destroy;
+      } else if (!locked && shim_handle) {
+        BOOST_LOG(warning) << "RTX HDR: abandoning the TrueHDR feature without destroying it "
+                              "because the shim is wedged.";
       }
       shim_handle = nullptr;
       initialized = false;

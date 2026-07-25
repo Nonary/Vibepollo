@@ -250,6 +250,7 @@ namespace {
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
   constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
   constexpr std::chrono::milliseconds kHelperStartFailureCooldown {30000};
+  constexpr int kHelperStartFailuresBeforeCooldown {2};
   constexpr int kMaxDeferredApplyAttempts = 6;
 
   bool shutdown_requested();
@@ -767,6 +768,11 @@ namespace {
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
   static std::atomic<std::int64_t> g_last_disarm_success_us {0};
   static std::atomic<std::int64_t> g_last_helper_start_failure_us {0};
+  // The cooldown exists to stop a hot restart loop when the helper genuinely cannot
+  // run. A single failure right after a helper that had been serving fine is a
+  // different thing - usually one lost race - and blocking restarts for 30s there
+  // leaves a live stream with no display control at all, so it costs one free retry.
+  static std::atomic<int> g_consecutive_helper_start_failures {0};
 
   // Tracks when the most recent successful APPLY completed, so the capture thread
   // can add a stabilization delay before attempting to reinit after topology changes.
@@ -811,8 +817,20 @@ namespace {
   }
 
   void note_helper_start_failure(const char *reason) {
+    const int failures = g_consecutive_helper_start_failures.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (failures < kHelperStartFailuresBeforeCooldown) {
+      BOOST_LOG(warning) << "Display helper: start failed after " << reason
+                         << "; retrying without a cooldown.";
+      return;
+    }
     g_last_helper_start_failure_us.store(now_steady_us(), std::memory_order_relaxed);
-    BOOST_LOG(warning) << "Display helper: helper start failure cooldown armed after " << reason << ".";
+    BOOST_LOG(warning) << "Display helper: helper start failure cooldown armed after " << reason
+                       << " (" << failures << " consecutive failures).";
+  }
+
+  void note_helper_start_success() {
+    g_consecutive_helper_start_failures.store(0, std::memory_order_relaxed);
+    g_last_helper_start_failure_us.store(0, std::memory_order_relaxed);
   }
 
   bool restore_expected_with_live_helper() {
@@ -1154,9 +1172,12 @@ namespace {
       return false;
     }
     const bool ipc_ready = wait_for_helper_ipc_ready_locked(cancellation_predicate);
-    if (!ipc_ready) {
+    if (ipc_ready) {
+      note_helper_start_success();
+    } else {
       note_helper_start_failure("IPC readiness timeout");
-    } else if (!legacy_engine && !cancellation_predicate) {
+    }
+    if (ipc_ready && !legacy_engine && !cancellation_predicate) {
       // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
       // log "Unknown message type" for this frame).
       (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));

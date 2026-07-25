@@ -27,6 +27,7 @@ extern "C" {
 #include "display_vram.h"
 #include "misc.h"
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  #include "game_activity.h"
   #include "nv_truehdr.h"
   #include "rtx_hdr_runtime.h"
 #endif
@@ -730,11 +731,15 @@ namespace platf::dxgi {
 
           bool truehdr_converted = false;
           bool truehdr_peak_compensated = false;
-          if (truehdr_private_input_ready && !truehdr_engine) {
+          // Creating the NGX feature is the one part of this path that can block on the
+          // display stack, so keep it out of a mode change we started ourselves. The
+          // frame just takes the SDR-to-PQ path and the next one retries.
+          if (truehdr_private_input_ready && !truehdr_engine &&
+              !platf::game_activity::display_mode_change_in_flight()) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
             truehdr_engine->init(device.get());
           }
-          if (truehdr_private_input_ready && truehdr_engine->available()) {
+          if (truehdr_private_input_ready && truehdr_engine && truehdr_engine->available()) {
             truehdr_params_t p;
             p.contrast = truehdr_frame_state.contrast;
             p.saturation = truehdr_frame_state.saturation;
