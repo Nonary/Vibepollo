@@ -156,9 +156,40 @@ jobs:
 
           $buildVersion = $env:INPUT_RELEASE_VERSION
 
+          # Callers pass the literal placeholder '0.0.0' for non-release builds,
+          # so treat it the same as unset and let the fallbacks below resolve a
+          # real version.
+          if ($buildVersion -eq '0.0.0') {
+            $buildVersion = ''
+          }
+
           if ([string]::IsNullOrWhiteSpace($buildVersion)) {
             if ($env:GITHUB_REF_VALUE -like 'refs/tags/*' -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REF_NAME_VALUE)) {
               $buildVersion = $env:GITHUB_REF_NAME_VALUE
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($buildVersion)) {
+            # Branch builds (workflow_dispatch, tester builds) have no tag ref and
+            # used to ship as 0.0.0, which made the installed build impossible to
+            # identify and left the update check comparing against nothing. Derive
+            # a real version from the last reachable tag instead, e.g. 1.18.1-61-g005b96f6.
+            # Do not pipe through Select-Object: -First terminates the pipeline
+            # early, which leaves $LASTEXITCODE unreliable and silently skipped
+            # this fallback. Judge the result by its output instead.
+            # Only consider version tags. Tester builds carry dated release
+            # tags on the same branch (e.g. native-amf-polish-20260724), and an
+            # unconstrained describe picks those, producing a "version" that
+            # nothing can compare.
+            $described = ''
+            try {
+              $described = ([string](& git describe --tags --always --match 'v[0-9]*' --match '[0-9]*' 2>$null)).Trim()
+            } catch {
+              $described = ''
+            }
+            "git describe (version tags only) => '$described'"
+            if (-not [string]::IsNullOrWhiteSpace($described)) {
+              $buildVersion = $described
             }
           }
 
@@ -459,6 +490,20 @@ jobs:
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build --target all -j "$(nproc)"
           echo "::remove-matcher owner=gcc::"
+
+      - name: Test native AMF lifecycle behavior
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          c++ \
+            -std=gnu++23 \
+            -O2 \
+            -pthread \
+            -DSUNSHINE_AMF_LIFECYCLE_STANDALONE \
+            -I. \
+            tests/unit/platform/windows/test_native_amf_review.cpp \
+            -o build/native-amf-lifecycle-test.exe
+          ./build/native-amf-lifecycle-test.exe
 
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
