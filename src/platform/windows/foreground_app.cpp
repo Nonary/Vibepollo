@@ -205,7 +205,7 @@ namespace platf::foreground_app {
 
       if (require_active_app_match) {
         if (evidence.belongs_to_active_app) {
-          return evidence.fullscreen_on_capture_display ?
+          return evidence.fullscreen_on_capture_display && evidence.opaque ?
                    visible_stack_decision_e::select_game :
                    visible_stack_decision_e::continue_scan;
         }

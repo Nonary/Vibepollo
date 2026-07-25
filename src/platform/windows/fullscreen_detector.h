@@ -32,15 +32,16 @@ namespace platf::fullscreen_detector {
   };
 
   /**
-   * Try increasingly broad fullscreen providers:
+   * Reconcile fullscreen evidence in confidence order:
    *  1. A full-monitor window attributed to the launched/Playnite game.
-   *  2. The Windows Shell's non-invasive "rude app" activation feed.
-   *  3. The Shell's exact exclusive-D3D notification state.
-   *  4. A generic borderless window covering the capture monitor.
+   *  2. A missing interactive session, which precludes visible game content.
+   *  3. Definitive desktop evidence on the capture display.
+   *  4. The Windows Shell's display-scoped "rude app" activation feed.
+   *  5. The Shell's session-wide exclusive-D3D notification state.
+   *  6. A generic borderless window covering the capture monitor.
    *
-   * A borderless window is fullscreen for this policy. Providers that cannot
-   * distinguish a game from notification/presentation policy return unknown
-   * rather than issuing a false desktop or game verdict.
+   * A borderless window is fullscreen for this policy. Ambiguous evidence
+   * returns unknown rather than overriding stronger display-local evidence.
    */
   result_t detect(const foreground_app::state_t &foreground, const RECT &capture_rect);
 

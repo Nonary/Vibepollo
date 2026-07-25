@@ -7,14 +7,19 @@
 #include "src/logging.h"
 
 #include <atomic>
+#include <chrono>
 #include <dwmapi.h>
 #include <mutex>
 #include <shellapi.h>
 #include <thread>
+#include <wtsapi32.h>
+
+using namespace std::chrono_literals;
 
 namespace platf::fullscreen_detector {
   namespace {
     constexpr LONG EDGE_TOLERANCE = 2;
+    constexpr auto SHELL_CACHE_LIFETIME = 5s;
 
     bool window_covers_capture_display(HWND hwnd, const RECT &capture_rect) {
       if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
@@ -83,16 +88,35 @@ namespace platf::fullscreen_detector {
         }
 
         HWND candidate {};
+        DWORD pid = 0;
         {
           std::scoped_lock lock {mutex_};
+          if (std::chrono::steady_clock::now() >= rude_window_deadline_) {
+            clear_rude_window();
+            return {};
+          }
           candidate = rude_window_;
+          pid = rude_window_pid_;
+          DWORD current_pid = 0;
+          if (!candidate ||
+              !GetWindowThreadProcessId(candidate, &current_pid) ||
+              current_pid == 0 ||
+              current_pid != pid) {
+            clear_rude_window();
+            return {};
+          }
         }
         if (!window_covers_capture_display(candidate, capture_rect)) {
           return {};
         }
 
-        DWORD pid = 0;
-        GetWindowThreadProcessId(candidate, &pid);
+        // Reject an HWND that was destroyed and reused after the snapshot above.
+        DWORD current_pid = 0;
+        if (!GetWindowThreadProcessId(candidate, &current_pid) ||
+            current_pid == 0 ||
+            current_pid != pid) {
+          return {};
+        }
         return {
           .verdict = verdict_e::fullscreen,
           .source = source_e::shell_hook,
@@ -120,19 +144,35 @@ namespace platf::fullscreen_detector {
           const auto activated = reinterpret_cast<HWND>(l_param);
           std::scoped_lock lock {self->mutex_};
           switch (w_param) {
-            case HSHELL_RUDEAPPACTIVATED:
-              self->rude_window_ = activated;
+            case HSHELL_RUDEAPPACTIVATED: {
+              DWORD pid = 0;
+              if (activated &&
+                  GetWindowThreadProcessId(activated, &pid) &&
+                  pid != 0) {
+                self->rude_window_ = activated;
+                self->rude_window_pid_ = pid;
+                self->rude_window_deadline_ =
+                  std::chrono::steady_clock::now() + SHELL_CACHE_LIFETIME;
+              } else {
+                self->clear_rude_window();
+              }
               break;
+            }
             case HSHELL_WINDOWACTIVATED:
+              if (activated == self->rude_window_) {
+                self->rude_window_deadline_ =
+                  std::chrono::steady_clock::now() + SHELL_CACHE_LIFETIME;
+                break;
+              }
               // Non-activating and transparent tool windows are common overlay hosts.
-              // Do not let one erase the last Shell-confirmed fullscreen window.
+              // Let them bridge a brief activation, but never indefinitely.
               if (!obvious_passive_overlay(activated)) {
-                self->rude_window_ = nullptr;
+                self->clear_rude_window();
               }
               break;
             case HSHELL_WINDOWDESTROYED:
               if (activated == self->rude_window_) {
-                self->rude_window_ = nullptr;
+                self->clear_rude_window();
               }
               break;
             default:
@@ -142,16 +182,31 @@ namespace platf::fullscreen_detector {
         }
 
         switch (message) {
+          case WM_WTSSESSION_CHANGE: {
+            std::scoped_lock lock {self->mutex_};
+            self->clear_rude_window();
+            return 0;
+          }
           case WM_CLOSE:
             DestroyWindow(hwnd);
             return 0;
           case WM_DESTROY:
+            WTSUnRegisterSessionNotification(hwnd);
             DeregisterShellHookWindow(hwnd);
             PostQuitMessage(0);
             return 0;
+          case WM_NCDESTROY:
+            self->window_.store(nullptr, std::memory_order_release);
+            return DefWindowProcW(hwnd, message, w_param, l_param);
           default:
             return DefWindowProcW(hwnd, message, w_param, l_param);
         }
+      }
+
+      void clear_rude_window() {
+        rude_window_ = nullptr;
+        rude_window_pid_ = 0;
+        rude_window_deadline_ = {};
       }
 
       void run(std::stop_token stop_token) {
@@ -186,12 +241,22 @@ namespace platf::fullscreen_detector {
           this
         );
         if (!hwnd) {
+          window_.store(nullptr, std::memory_order_release);
           BOOST_LOG(warning) << "Fullscreen detector: failed to create Shell hook window ["
                              << GetLastError() << ']';
           return;
         }
 
         shell_message_ = RegisterWindowMessageW(L"SHELLHOOK");
+        if (shell_message_ &&
+            !ChangeWindowMessageFilterEx(hwnd, shell_message_, MSGFLT_ALLOW, nullptr)) {
+          BOOST_LOG(warning) << "Fullscreen detector: failed to allow Shell hook message ["
+                             << GetLastError() << ']';
+        }
+        if (!WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
+          BOOST_LOG(warning) << "Fullscreen detector: failed to register session notifications ["
+                             << GetLastError() << ']';
+        }
         if (!shell_message_ || !RegisterShellHookWindow(hwnd)) {
           BOOST_LOG(warning) << "Fullscreen detector: Shell hook unavailable ["
                              << GetLastError() << "]; continuing with remaining providers";
@@ -223,12 +288,14 @@ namespace platf::fullscreen_detector {
         window_.store(nullptr, std::memory_order_release);
       }
 
-      std::jthread worker_;
       std::atomic<HWND> window_ {};
       std::atomic<bool> ready_ {false};
       UINT shell_message_ {0};
       std::mutex mutex_;
       HWND rude_window_ {};
+      DWORD rude_window_pid_ {0};
+      std::chrono::steady_clock::time_point rude_window_deadline_ {};
+      std::jthread worker_;
     };
 
     shell_hook_monitor_t &shell_hook_monitor() {
@@ -263,14 +330,10 @@ namespace platf::fullscreen_detector {
   }  // namespace
 
   result_t detect(const foreground_app::state_t &foreground, const RECT &capture_rect) {
-    // Provider 1: strongest answer, because it supplies both fullscreen geometry
-    // and game identity from the launched process or Playnite.
+    // Direct display-local evidence with game identity is the strongest answer.
     const bool attributed_game_window =
       foreground.source == "playnite-visible" ||
-      foreground.source == "process-visible" ||
-      foreground.source == "playnite-status" ||
-      foreground.source == "playnite-cache" ||
-      foreground.source == "process";
+      foreground.source == "process-visible";
     if (attributed_game_window &&
         foreground.matches_active_app &&
         foreground.fullscreen_on_capture_display) {
@@ -281,26 +344,39 @@ namespace platf::fullscreen_detector {
       };
     }
 
-    // Provider 2: Shell fullscreen activation. It is event-driven, does not draw an
-    // overlay, and does not inject a hook DLL into the game.
+    const auto notification = exact_notification_state();
+
+    // A missing interactive session precludes a visible game on this display.
+    if (notification.verdict == verdict_e::desktop) {
+      return notification;
+    }
+
+    // Display-local desktop evidence outranks cached Shell activation and the
+    // session-wide exclusive-D3D notification state.
+    if (foreground.source == "desktop-visible" &&
+        (foreground.blocker_reason == "desktop-ui" || foreground.blocker_opaque)) {
+      return {
+        .verdict = verdict_e::desktop,
+        .source = source_e::desktop_window,
+        .pid = foreground.blocker_pid,
+      };
+    }
+
+    // Shell fullscreen activation is event-driven and display-scoped.
     if (auto shell = shell_hook_monitor().sample(capture_rect);
         shell.verdict != verdict_e::unknown) {
       return shell;
     }
 
-    // Provider 3: exact exclusive-D3D notification state. Ambiguous notification
-    // states deliberately fall through to borderless geometry.
-    if (auto notification = exact_notification_state();
-        notification.verdict != verdict_e::unknown) {
+    // The exclusive-D3D notification is authoritative only after display-local
+    // evidence had a chance to reject it.
+    if (notification.verdict == verdict_e::fullscreen) {
       return notification;
     }
 
-    // Provider 4: generic borderless/exclusive geometry. At this point there was no
-    // attributable game, but a full-monitor surface is still fullscreen policy-wise.
+    // Generic borderless/exclusive geometry is direct evidence on this display.
     const bool generic_fullscreen_window =
-      foreground.source == "fullscreen-visible" ||
-      foreground.source == "fullscreen-foreground" ||
-      foreground.source == "playnite-fullscreen";
+      foreground.source == "fullscreen-visible";
     if (generic_fullscreen_window &&
         foreground.valid_window &&
         foreground.fullscreen_on_capture_display) {
@@ -311,34 +387,7 @@ namespace platf::fullscreen_detector {
       };
     }
 
-    // None of the four fullscreen providers succeeded. A known Windows desktop
-    // surface or a genuinely opaque unrelated window is now definitive. A
-    // translucent/unmeasurable surface remains unknown instead.
-    if (foreground.source == "desktop-visible" &&
-        (foreground.blocker_reason == "desktop-ui" || foreground.blocker_opaque)) {
-      return {
-        .verdict = verdict_e::desktop,
-        .source = source_e::desktop_window,
-        .pid = foreground.blocker_pid,
-      };
-    }
-
-    if (foreground.source == "desktop-visible") {
-      return {
-        .verdict = foreground.blocker_opaque ? verdict_e::desktop : verdict_e::unknown,
-        .source = foreground.blocker_opaque ? source_e::desktop_window : source_e::none,
-        .pid = foreground.blocker_pid,
-      };
-    }
-    if (foreground.source == "visibility-unknown") {
-      return {};
-    }
-
-    return {
-      .verdict = verdict_e::desktop,
-      .source = source_e::desktop_window,
-      .pid = foreground.foreground_pid,
-    };
+    return {};
   }
 
   const char *source_name(const source_e source) {
