@@ -149,6 +149,11 @@ namespace platf {
     }
 
     std::string select_framegen_sync_limiter(const framegen::stream_start_policy_t &policy, bool nvidia_gpu_present, bool amd_gpu_present) {
+      // Smooth Motion needs RTSS to pace the generated frames from their front edge. Do not
+      // let the generic NVIDIA virtual-display policy select Reflex for this provider.
+      if (policy.smooth_motion) {
+        return "front edge sync";
+      }
       if (policy.auto_virtual_framegen_limiter && nvidia_gpu_present && !amd_gpu_present) {
         return "nvidia reflex";
       }
