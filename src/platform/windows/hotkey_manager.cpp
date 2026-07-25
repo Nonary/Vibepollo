@@ -81,7 +81,7 @@ namespace {
     }
     // Always stop watchdog here. If helper IPC is already unavailable, keeping
     // watchdog alive can continue a failed helper restart loop.
-    display_helper_integration::stop_watchdog();
+    display_helper_integration::stop_watchdog(true);
   }
 
   void hotkey_thread_main(int initial_vk, UINT initial_modifiers, HANDLE ready_event) {

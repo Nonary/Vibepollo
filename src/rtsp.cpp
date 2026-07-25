@@ -1107,6 +1107,10 @@ namespace rtsp_stream {
     return server.session_count();
   }
 
+  int session_count_no_cleanup() {
+    return server.session_count();
+  }
+
   std::shared_ptr<stream::session_t> find_session(const std::string_view &uuid) {
     return server.find_session(uuid);
   }

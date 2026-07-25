@@ -124,7 +124,8 @@ namespace display_helper_integration {
   // and restarts/re-handshakes if it crashes. No-ops if already running.
   void start_watchdog();
 
-  // Stop the helper watchdog when no streams are active.
-  void stop_watchdog();
+  // Stop the helper watchdog when no streams are active. Forced stops are
+  // reserved for process shutdown or an explicit user-requested restore.
+  void stop_watchdog(bool force = false);
 
 }  // namespace display_helper_integration

@@ -252,6 +252,14 @@ namespace rtsp_stream {
    */
   int session_count();
 
+  /**
+   * @brief Get the number of active sessions without reaping stopped sessions.
+   *
+   * This is intended for observers that must not enter session teardown while
+   * they are making a scheduling decision of their own.
+   */
+  int session_count_no_cleanup();
+
   std::shared_ptr<stream::session_t>
     find_session(const std::string_view &uuid);
 

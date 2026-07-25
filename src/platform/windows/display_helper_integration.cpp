@@ -11,6 +11,7 @@
   #include <boost/algorithm/string/predicate.hpp>
   #include <chrono>
   #include <cmath>
+  #include <condition_variable>
   #include <cstdint>
   #include <exception>
   #include <filesystem>
@@ -36,7 +37,6 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
-  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -46,6 +46,8 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include "src/state_storage.h"
+  #include "src/stream.h"
+  #include "src/webrtc_stream.h"
 
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
@@ -68,6 +70,9 @@ namespace {
   }
 
   struct PendingSessionSnapshot {
+    std::uint32_t id = 0;
+    std::string unique_id;
+    std::string client_uuid;
     int width = 0;
     int height = 0;
     int fps = 0;
@@ -105,6 +110,19 @@ namespace {
     return state;
   }
 
+  // The queue lock only protects pending state. This second lock keeps a
+  // claimed deferred APPLY ordered with normal APPLY, REVERT, and teardown.
+  std::mutex &pending_apply_execution_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  // Requires pending_apply_execution_mutex().
+  void clear_pending_apply_queue_locked() {
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    pending_apply_state().reset();
+  }
+
   std::atomic<bool> &cold_start_resolution_deferral_armed() {
     static std::atomic<bool> armed {true};
     return armed;
@@ -127,6 +145,9 @@ namespace {
 
     if (request.session) {
       state.session_id = request.session->id;
+      state.session_snapshot.id = request.session->id;
+      state.session_snapshot.unique_id = request.session->unique_id;
+      state.session_snapshot.client_uuid = request.session->client_uuid;
       state.session_snapshot.width = request.session->width;
       state.session_snapshot.height = request.session->height;
       state.session_snapshot.fps = request.session->fps;
@@ -163,9 +184,10 @@ namespace {
     if (!request_includes_resolution(request)) {
       return;
     }
+    const auto session_id = request.session->id;
     queue_deferred_resolution_apply(request);
     BOOST_LOG(info) << "Display helper: API unavailable; queued deferred resolution apply for session "
-                    << pending_apply_state()->session_id << ".";
+                    << session_id << ".";
   }
 
   bool should_defer_resolution_apply(const display_helper_integration::DisplayApplyRequest &request) {
@@ -595,6 +617,10 @@ namespace {
   }
 
   struct session_dd_fields_t {
+    std::uint64_t generation = 0;
+    std::uint32_t launch_session_id = 0;
+    std::string session_unique_id;
+    std::string session_client_uuid;
     int width = -1;
     int height = -1;
     int fps = -1;
@@ -612,6 +638,7 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
+  static std::uint64_t g_next_active_session_generation = 0;
 
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
@@ -982,18 +1009,45 @@ namespace {
     return ipc_ready;
   }
 
-  // Watchdog state for helper liveness during active streams.
-  // g_watchdog_mutex guards g_watchdog_running and g_watchdog_thread together:
-  // start/stop are called from many threads (rtsp/webrtc session end, app
-  // termination, paused-session cleanup, hotkeys, shutdown), and an
-  // unsynchronized jthread move-assign racing joinable()/join() can make
-  // join() throw std::system_error, which escapes to std::terminate.
+  // Watchdog state for helper liveness during active streams. start/stop are
+  // called from many threads (RTSP/WebRTC session end, app termination,
+  // paused-session cleanup, hotkeys, and process shutdown). A stopping worker
+  // remains owned here until a non-worker caller joins it: detaching it would
+  // let it access helper globals after CRT teardown.
+  enum class watchdog_state_e {
+    stopped,
+    running,
+    stopping,
+  };
+
   static std::mutex g_watchdog_mutex;
-  static bool g_watchdog_running = false;
+  static std::condition_variable g_watchdog_cv;
+  static watchdog_state_e g_watchdog_state = watchdog_state_e::stopped;
   static std::jthread g_watchdog_thread;
+  static std::thread::id g_watchdog_worker_id;
+  static bool g_watchdog_reaping = false;
+  static bool g_watchdog_teardown_completed = false;
+  // The watchdog is global, but its cleanup belongs to the launch whose
+  // display state it observed. This prevents an old stream's stop from
+  // erasing a newer launch that has already applied its display request.
+  static std::optional<std::uint64_t> g_watchdog_session_generation;
+  static std::uint64_t g_watchdog_stop_epoch = 0;
   static std::chrono::steady_clock::time_point g_last_vd_reenable {};
 
   constexpr auto kVirtualDisplayReenableCooldown = std::chrono::seconds(3);
+
+  static bool stream_is_active_or_pending() {
+    return stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+           webrtc_stream::has_active_or_pending_sessions();
+  }
+
+  static void adopt_watchdog_session_generation(std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(g_watchdog_mutex);
+    if (g_watchdog_state == watchdog_state_e::running && !g_watchdog_reaping) {
+      g_watchdog_session_generation = generation;
+      g_watchdog_teardown_completed = false;
+    }
+  }
 
   bool recently_reenabled_virtual_display() {
     if (g_last_vd_reenable.time_since_epoch().count() == 0) {
@@ -1048,12 +1102,24 @@ namespace {
     std::optional<int> framegen_refresh_override = std::nullopt
   ) {
     std::lock_guard<std::mutex> lg(g_session_mutex);
+    const bool same_session =
+      g_active_session_dd &&
+      g_active_session_dd->launch_session_id == session.id &&
+      g_active_session_dd->session_unique_id == session.unique_id &&
+      g_active_session_dd->session_client_uuid == session.client_uuid;
+    const auto generation = same_session ?
+                              g_active_session_dd->generation :
+                              ++g_next_active_session_generation;
     const auto refresh_millihz = rtsp_stream::effective_display_refresh_millihz(session);
     const int effective_fps = fps_override ? *fps_override : static_cast<int>(std::min<std::uint32_t>(
       refresh_millihz,
       static_cast<std::uint32_t>(std::numeric_limits<int>::max())
     ));
     g_active_session_dd = session_dd_fields_t {
+      .generation = generation,
+      .launch_session_id = session.id,
+      .session_unique_id = session.unique_id,
+      .session_client_uuid = session.client_uuid,
       .width = width_override ? *width_override : session.width,
       .height = height_override ? *height_override : session.height,
       .fps = effective_fps,
@@ -1080,9 +1146,60 @@ namespace {
     return g_active_session_dd;
   }
 
+  static std::optional<std::uint64_t> active_session_generation() {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (!g_active_session_dd) {
+      return std::nullopt;
+    }
+    return g_active_session_dd->generation;
+  }
+
+  static std::optional<std::uint64_t> active_session_generation_for(
+    const rtsp_stream::launch_session_t &session
+  ) {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (!g_active_session_dd ||
+        g_active_session_dd->launch_session_id != session.id ||
+        g_active_session_dd->session_unique_id != session.unique_id ||
+        g_active_session_dd->session_client_uuid != session.client_uuid) {
+      return std::nullopt;
+    }
+    return g_active_session_dd->generation;
+  }
+
   static void clear_active_session() {
     std::lock_guard<std::mutex> lg(g_session_mutex);
     g_active_session_dd.reset();
+  }
+
+  // Called while g_watchdog_mutex is held. Keeping the session mutex through
+  // the connection reset prevents a newly applied launch from being cleared by
+  // a watchdog that belonged to the previous launch.
+  static bool reset_connection_and_clear_active_session_if_generation(
+    const std::optional<std::uint64_t> &expected_generation
+  ) {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (g_active_session_dd &&
+        (!expected_generation || g_active_session_dd->generation != *expected_generation)) {
+      BOOST_LOG(debug) << "Display helper: skipping stale watchdog cleanup for session generation "
+                       << (expected_generation ? std::to_string(*expected_generation) : std::string {"none"})
+                       << "; active generation is " << g_active_session_dd->generation << '.';
+      return false;
+    }
+    if (config::video.dd.config_revert_on_disconnect) {
+      platf::display_helper_client::reset_connection();
+    }
+    g_active_session_dd.reset();
+    return true;
+  }
+
+  // Requires g_watchdog_mutex.
+  static void finish_watchdog_stop_locked(const std::optional<std::uint64_t> &expected_generation) {
+    if (g_watchdog_teardown_completed) {
+      return;
+    }
+    (void) reset_connection_and_clear_active_session_if_generation(expected_generation);
+    g_watchdog_teardown_completed = true;
   }
 
   std::optional<std::string> build_helper_apply_payload(const display_helper_integration::DisplayApplyRequest &request) {
@@ -1201,7 +1318,10 @@ namespace {
           (void) platf::display_helper_client::send_ping();
         }
 
-        const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
+        // This worker only needs a snapshot to select its polling interval.
+        // session_count() reaps STOPPING sessions, whose join path can call
+        // stop_watchdog() and make this worker attempt to join itself.
+        const bool suspended = (rtsp_stream::session_count_no_cleanup() == 0) && (proc::proc.running() > 0);
         const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
         sleep_interruptible(interval);
         if (st.stop_requested()) {
@@ -1453,6 +1573,9 @@ namespace display_helper_integration {
   }
 
   bool apply(const DisplayApplyRequest &request, ApplyVerificationTicket *verification_ticket) {
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    clear_pending_apply_queue_locked();
+
     // Remember the session's virtual display before the APPLY payload is built so the
     // helper can exclude it from the pre-apply baseline it may capture.
     if (request.session) {
@@ -1467,8 +1590,9 @@ namespace display_helper_integration {
   }
 
   bool revert(bool prefer_golden_if_current_missing) {
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
-    clear_pending_apply();
+    clear_pending_apply_queue_locked();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
@@ -1541,6 +1665,11 @@ namespace display_helper_integration {
   }
 
   bool apply_pending_if_ready() {
+    // A deferred APPLY must not outlive a normal APPLY, REVERT, or session
+    // teardown. Keep ownership of the display operation until its IPC and
+    // active-session update are complete.
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    bool check_idle_stop_after_apply = false;
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
       if (!pending_apply_state()) {
@@ -1554,6 +1683,7 @@ namespace display_helper_integration {
 
     const auto now = std::chrono::steady_clock::now();
     PendingApplyState pending;
+    bool stream_was_live_when_claimed = false;
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
       if (!pending_apply_state()) {
@@ -1576,6 +1706,13 @@ namespace display_helper_integration {
         pending_apply_state().reset();
         return false;
       }
+      // The RTSP join path decrements its live-session count before it clears
+      // deferred work. Do not claim an orphaned request in that window: leave
+      // it for teardown to remove rather than publishing stale display state.
+      stream_was_live_when_claimed = stream_is_active_or_pending();
+      if (!stream_was_live_when_claimed) {
+        return false;
+      }
       pending = state;
       pending_apply_state().reset();
     }
@@ -1583,6 +1720,9 @@ namespace display_helper_integration {
     std::optional<rtsp_stream::launch_session_t> session;
     if (pending.has_session) {
       rtsp_stream::launch_session_t snapshot {};
+      snapshot.id = pending.session_snapshot.id;
+      snapshot.unique_id = pending.session_snapshot.unique_id;
+      snapshot.client_uuid = pending.session_snapshot.client_uuid;
       snapshot.width = pending.session_snapshot.width;
       snapshot.height = pending.session_snapshot.height;
       snapshot.fps = pending.session_snapshot.fps;
@@ -1606,6 +1746,16 @@ namespace display_helper_integration {
 
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
     const bool ok = apply_internal(pending.request, false, nullptr);
+    if (ok && stream_was_live_when_claimed && session) {
+      if (const auto generation = active_session_generation_for(*session)) {
+        // This retry may complete after start_watchdog() observed no active
+        // descriptor (for example while the lock screen deferred APPLY). Bind
+        // the already-live stream to its exact generation before teardown can
+        // make the liveness count drop to zero.
+        adopt_watchdog_session_generation(*generation);
+        check_idle_stop_after_apply = !stream_is_active_or_pending();
+      }
+    }
     if (!ok) {
       pending.attempts += 1;
       pending.request.session = nullptr;
@@ -1621,6 +1771,15 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: deferred APPLY failed but a newer pending configuration is queued; dropping retry.";
       }
     }
+    if (check_idle_stop_after_apply) {
+      // Do not join the watchdog while owning the display-operation gate: its
+      // worker may observe session teardown. A newer APPLY that starts first
+      // will publish a different generation, which ordinary stop preserves.
+      execution_lock.unlock();
+      if (!stream_is_active_or_pending() && proc::proc.running() <= 0) {
+        stop_watchdog();
+      }
+    }
     return ok;
   }
 
@@ -1630,8 +1789,8 @@ namespace display_helper_integration {
   }
 
   void clear_pending_apply() {
-    std::lock_guard<std::mutex> lock(pending_apply_mutex());
-    pending_apply_state().reset();
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    clear_pending_apply_queue_locked();
   }
 
   int64_t ms_since_last_apply() {
@@ -1916,32 +2075,224 @@ namespace display_helper_integration {
   }
 
   void start_watchdog() {
-    std::scoped_lock lk(g_watchdog_mutex);
-    if (g_watchdog_running) {
-      return;  // already running
+    std::uint64_t stop_epoch_at_start = 0;
+    {
+      std::lock_guard lock(g_watchdog_mutex);
+      stop_epoch_at_start = g_watchdog_stop_epoch;
     }
-    g_watchdog_running = true;
-    g_watchdog_thread = std::jthread(watchdog_proc);
+
+    for (;;) {
+      std::jthread worker_to_join;
+      std::optional<std::uint64_t> reaped_session_generation;
+      {
+        std::unique_lock lock(g_watchdog_mutex);
+        if (g_watchdog_state == watchdog_state_e::running) {
+          const auto active_generation = active_session_generation();
+          if (active_generation && g_watchdog_session_generation != active_generation) {
+            // The existing worker remains useful for the newly active launch.
+            // Its eventual cleanup must belong to that launch, not the stream
+            // that originally created the worker.
+            g_watchdog_session_generation = active_generation;
+            g_watchdog_teardown_completed = false;
+          }
+          return;
+        }
+
+        // The worker can re-enter stop_watchdog() through proc::running(). It
+        // must never wait for an external thread that is currently joining it.
+        if (g_watchdog_reaping) {
+          if (g_watchdog_worker_id == std::this_thread::get_id()) {
+            BOOST_LOG(warning) << "Display helper: watchdog restart deferred while its worker is stopping.";
+            return;
+          }
+          g_watchdog_cv.wait(lock, [] {
+            return !g_watchdog_reaping;
+          });
+          continue;
+        }
+
+        if (g_watchdog_thread.joinable()) {
+          if (g_watchdog_thread.get_id() == std::this_thread::get_id()) {
+            BOOST_LOG(warning) << "Display helper: watchdog restart deferred while its worker is stopping.";
+            return;
+          }
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_thread.request_stop();
+          reaped_session_generation = g_watchdog_session_generation;
+          worker_to_join = std::move(g_watchdog_thread);
+          g_watchdog_reaping = true;
+        } else {
+          if (g_watchdog_stop_epoch != stop_epoch_at_start) {
+            // A stop that raced this start wins. A later stream start will
+            // take a fresh epoch and may launch a new watchdog.
+            return;
+          }
+          g_watchdog_state = watchdog_state_e::stopped;
+          try {
+            g_watchdog_session_generation = active_session_generation();
+            g_watchdog_thread = std::jthread(watchdog_proc);
+            g_watchdog_worker_id = g_watchdog_thread.get_id();
+            g_watchdog_teardown_completed = false;
+            g_watchdog_state = watchdog_state_e::running;
+          } catch (const std::system_error &e) {
+            BOOST_LOG(error) << "Display helper: failed to start watchdog: " << e.what();
+            g_watchdog_session_generation.reset();
+          }
+          return;
+        }
+      }
+
+      bool joined = false;
+      try {
+        // Do not hold g_watchdog_mutex across join(): the worker may enter
+        // proc::running(), which can synchronously call stop_watchdog().
+        worker_to_join.join();
+        joined = true;
+      } catch (const std::system_error &e) {
+        BOOST_LOG(error) << "Display helper: unable to reap stopping watchdog: " << e.what();
+      }
+
+      {
+        std::lock_guard lock(g_watchdog_mutex);
+        const bool stop_requested_while_reaping = g_watchdog_stop_epoch != stop_epoch_at_start;
+        if (!joined) {
+          // Preserve ownership on the only static jthread object. A later
+          // external caller can retry; detaching would outlive CRT teardown.
+          g_watchdog_thread = std::move(worker_to_join);
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_reaping = false;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+        g_watchdog_worker_id = {};
+        finish_watchdog_stop_locked(reaped_session_generation);
+        g_watchdog_session_generation.reset();
+        if (stop_requested_while_reaping) {
+          // A later stop belongs to this stale generation too. Do not launch
+          // a replacement after that caller has observed stop completion.
+          g_watchdog_state = watchdog_state_e::stopped;
+          g_watchdog_reaping = false;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+
+        // Keep reaping asserted through replacement construction. A stop that
+        // arrives after the old worker is joined then waits here and will see
+        // (and stop) the new generation instead of being lost in a stopped
+        // no-thread gap.
+        try {
+          g_watchdog_session_generation = active_session_generation();
+          g_watchdog_thread = std::jthread(watchdog_proc);
+          g_watchdog_worker_id = g_watchdog_thread.get_id();
+          g_watchdog_teardown_completed = false;
+          g_watchdog_state = watchdog_state_e::running;
+        } catch (const std::system_error &e) {
+          g_watchdog_state = watchdog_state_e::stopped;
+          g_watchdog_session_generation.reset();
+          BOOST_LOG(error) << "Display helper: failed to start watchdog: " << e.what();
+        }
+        g_watchdog_reaping = false;
+        g_watchdog_cv.notify_all();
+        return;
+      }
+    }
   }
 
-  void stop_watchdog() {
-    std::jthread thread;
-    {
-      std::scoped_lock lk(g_watchdog_mutex);
-      if (!g_watchdog_running) {
-        return;  // not running
+  void stop_watchdog(bool force) {
+    for (;;) {
+      std::jthread worker_to_join;
+      std::optional<std::uint64_t> stopped_session_generation;
+      {
+        std::unique_lock lock(g_watchdog_mutex);
+        if (g_watchdog_state == watchdog_state_e::stopped && !g_watchdog_thread.joinable() && !g_watchdog_reaping) {
+          return;
+        }
+
+        // Callers report a stream transition after releasing their own session
+        // locks. A newer stream can therefore start between an old caller's
+        // last-session check and this stop request. Do not let that stale stop
+        // take down the watchdog the newer stream has already adopted.
+        if (!force && stream_is_active_or_pending()) {
+          BOOST_LOG(debug) << "Display helper: deferring watchdog stop while a stream is active or pending.";
+          return;
+        }
+
+        const auto active_generation = active_session_generation();
+        if (!force && active_generation &&
+            (!g_watchdog_session_generation || *active_generation != *g_watchdog_session_generation)) {
+          BOOST_LOG(debug) << "Display helper: ignoring stale watchdog stop for session generation "
+                           << (g_watchdog_session_generation ? std::to_string(*g_watchdog_session_generation) : std::string {"none"})
+                           << "; active generation is " << *active_generation << '.';
+          return;
+        }
+
+        ++g_watchdog_stop_epoch;
+        g_watchdog_state = watchdog_state_e::stopping;
+        stopped_session_generation = force ? std::nullopt : g_watchdog_session_generation;
+        const bool caller_is_worker = g_watchdog_worker_id == std::this_thread::get_id();
+        if (g_watchdog_thread.joinable()) {
+          g_watchdog_thread.request_stop();
+        }
+
+        if (caller_is_worker) {
+          // Keep the jthread owned globally; an external start/stop or main's
+          // shutdown will join it. Waiting here would deadlock the reaper.
+          finish_watchdog_stop_locked(stopped_session_generation);
+          BOOST_LOG(warning) << "Display helper: watchdog requested its own stop; deferring join to an external caller.";
+          return;
+        }
+
+        if (g_watchdog_reaping) {
+          g_watchdog_cv.wait(lock, [] {
+            return !g_watchdog_reaping;
+          });
+          if (force) {
+            // A stale reaper may have installed a replacement while we were
+            // waiting. Re-evaluate the owned watchdog before reporting a
+            // forced shutdown as complete.
+            continue;
+          }
+          return;
+        }
+
+        if (!g_watchdog_thread.joinable()) {
+          g_watchdog_worker_id = {};
+          g_watchdog_state = watchdog_state_e::stopped;
+          finish_watchdog_stop_locked(stopped_session_generation);
+          g_watchdog_session_generation.reset();
+          return;
+        }
+
+        worker_to_join = std::move(g_watchdog_thread);
+        g_watchdog_reaping = true;
       }
-      g_watchdog_running = false;
-      thread = std::move(g_watchdog_thread);
+      bool joined = false;
+      try {
+        // See start_watchdog(): proc::running() can re-enter this function from
+        // the worker, so the watchdog mutex must remain available while joining.
+        worker_to_join.join();
+        joined = true;
+      } catch (const std::system_error &e) {
+        BOOST_LOG(error) << "Display helper: failed to join watchdog thread: " << e.what();
+      }
+
+      {
+        std::lock_guard lock(g_watchdog_mutex);
+        g_watchdog_reaping = false;
+        if (!joined) {
+          g_watchdog_thread = std::move(worker_to_join);
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+        g_watchdog_worker_id = {};
+        g_watchdog_state = watchdog_state_e::stopped;
+        finish_watchdog_stop_locked(stopped_session_generation);
+        g_watchdog_session_generation.reset();
+        g_watchdog_cv.notify_all();
+      }
+      return;
     }
-    const auto stop_result = DisplayHelperWatchdog::stop_thread(thread);
-    if (stop_result == DisplayHelperWatchdog::ThreadStopResult::DetachedSelf) {
-      BOOST_LOG(debug) << "Display helper: watchdog requested its own stop; detached for safe exit.";
-    }
-    if (config::video.dd.config_revert_on_disconnect) {
-      platf::display_helper_client::reset_connection();
-    }
-    clear_active_session();
   }
 }  // namespace display_helper_integration
 

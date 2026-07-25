@@ -802,7 +802,7 @@ int main(int argc, char *argv[]) {
   // Full process shutdown cannot leave the paused-session watchdog running.
   // If it survives past main(), CRT teardown can fast-fail while the helper
   // watchdog thread is still unwinding.
-  display_helper_integration::stop_watchdog();
+  display_helper_integration::stop_watchdog(true);
 
   // The virtual display watchdog thread also lives in static storage.
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.
