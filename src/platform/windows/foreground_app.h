@@ -31,6 +31,7 @@ namespace platf::foreground_app {
     std::string blocker_class;
     std::string blocker_title;
     std::string blocker_reason;
+    bool blocker_opaque {false};
     std::string active_app_name;
     std::string active_app_exe;
     std::string source;
@@ -61,6 +62,7 @@ namespace platf::foreground_app {
     bool desktop_ui {false};
     bool passive_host {false};
     bool fullscreen_on_capture_display {false};
+    bool opaque {true};
   };
 
   // Evidence is ordered from topmost to bottommost in the composed window stack.

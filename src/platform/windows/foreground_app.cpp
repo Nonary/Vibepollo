@@ -204,12 +204,18 @@ namespace platf::foreground_app {
       }
 
       if (require_active_app_match) {
-        if (!evidence.belongs_to_active_app) {
-          return visible_stack_decision_e::block;
+        if (evidence.belongs_to_active_app) {
+          return evidence.fullscreen_on_capture_display ?
+                   visible_stack_decision_e::select_game :
+                   visible_stack_decision_e::continue_scan;
         }
-        return evidence.fullscreen_on_capture_display ?
-                 visible_stack_decision_e::select_game :
+        return evidence.opaque ?
+                 visible_stack_decision_e::block :
                  visible_stack_decision_e::continue_scan;
+      }
+
+      if (!evidence.opaque) {
+        return visible_stack_decision_e::continue_scan;
       }
 
       return evidence.fullscreen_on_capture_display ?
@@ -289,7 +295,7 @@ namespace platf::foreground_app {
 
     bool window_fully_covers_capture_display(HWND hwnd, const RECT &window_rect, const RECT &capture_rect) {
       const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-      if ((style & (WS_CAPTION | WS_THICKFRAME)) != 0 || !window_is_opaque(hwnd)) {
+      if ((style & (WS_CAPTION | WS_THICKFRAME)) != 0) {
         return false;
       }
 
@@ -389,6 +395,7 @@ namespace platf::foreground_app {
           (!context.require_active_app_match && window.executable.empty());
         window.evidence.fullscreen_on_capture_display =
           window_fully_covers_capture_display(hwnd, *window_rect, context.capture_rect);
+        window.evidence.opaque = window_is_opaque(hwnd);
         // DirectComposition/Electron/CEF overlays commonly keep transparent
         // top-level hosts above the game. Win32 reports these hosts as visible
         // even when they paint no pixels. Classify them by generic activation,
@@ -403,7 +410,7 @@ namespace platf::foreground_app {
 
         switch (evaluate_visible_window(window.evidence, context.require_active_app_match)) {
           case visible_stack_decision_e::continue_scan:
-            if (window.evidence.passive_host) {
+            if (window.evidence.passive_host || !window.evidence.opaque) {
               ++context.ignored_passive_window_count;
             }
             return TRUE;
@@ -619,6 +626,7 @@ namespace platf::foreground_app {
         state.blocker_exe = blocker.executable;
         state.blocker_class = blocker.class_name;
         state.blocker_title = blocker.title;
+        state.blocker_opaque = blocker.evidence.opaque;
         if (blocker.evidence.desktop_ui) {
           state.blocker_reason = "desktop-ui";
         } else if (require_active_app_match && !blocker.evidence.belongs_to_active_app) {
