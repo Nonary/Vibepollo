@@ -25,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -261,6 +262,7 @@ namespace webrtc_stream {
       auto make_framegen_policy = [&](bool uses_virtual_display) {
         return framegen::make_stream_start_policy({
           .fps = session->fps,
+          .display_refresh_millihz = session->client_display_refresh_millihz,
           .frame_generation_enabled = session->frame_generation_enabled,
           .gen1_framegen_fix = session->gen1_framegen_fix,
           .gen2_framegen_fix = session->gen2_framegen_fix,
@@ -284,6 +286,7 @@ namespace webrtc_stream {
       auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
         const auto framegen_policy = make_framegen_policy(uses_virtual_display);
         session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
@@ -332,17 +335,19 @@ namespace webrtc_stream {
 
       if (!request_virtual_display) {
         session->framegen_refresh_rate.reset();
+        session->framegen_refresh_millihz.reset();
         session->framegen_refresh_multiplier = 1;
         return;
       }
 
       apply_framegen_refresh_policy(true);
 
-      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
         proc::initVDisplayDriver();
-        if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
+        if (driver_status != VDISPLAY::DRIVER_STATUS::OK) {
           BOOST_LOG(warning)
-            << "SudaVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus)
+            << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status)
             << "). Continuing with best-effort virtual display creation.";
         }
       }
@@ -453,24 +458,18 @@ namespace webrtc_stream {
           virtual_display_hdr_requested = source_hdr_requested;
         }
       }
-      uint32_t base_vd_fps = session->fps > 0 ? static_cast<uint32_t>(session->fps) : 0u;
-      uint32_t base_vd_fps_millihz = base_vd_fps;
-      if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {
-        base_vd_fps_millihz *= 1000u;
-      }
-      uint32_t vd_fps = 0;
-      if (session->framegen_refresh_rate && *session->framegen_refresh_rate > 0) {
-        vd_fps = static_cast<uint32_t>(*session->framegen_refresh_rate);
-      } else if (base_vd_fps > 0) {
-        vd_fps = base_vd_fps;
-      } else {
+      const uint32_t base_vd_fps_millihz = session->client_display_refresh_millihz > 0 ?
+                                                 session->client_display_refresh_millihz :
+                                                 (session->fps > 0 ?
+                                                    framegen::saturating_refresh_millihz(static_cast<uint32_t>(session->fps), 1000) :
+                                                    0u);
+      uint32_t vd_fps = rtsp_stream::effective_display_refresh_millihz(*session);
+      if (vd_fps == 0) {
         vd_fps = 60000u;
       }
-      if (vd_fps < 1000u) {
-        vd_fps *= 1000u;
-      }
       const bool framegen_refresh_active =
-        session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
+        (session->framegen_refresh_millihz && *session->framegen_refresh_millihz > 0) ||
+        (session->framegen_refresh_rate && *session->framegen_refresh_rate > 0);
       const int refresh_multiplier =
         framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1;
       if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
@@ -596,6 +595,7 @@ namespace webrtc_stream {
       session->virtual_display_device_id.clear();
       session->virtual_display_ready_since.reset();
       session->framegen_refresh_rate.reset();
+      session->framegen_refresh_millihz.reset();
       session->framegen_refresh_multiplier = 1;
     }
 #endif
@@ -2643,6 +2643,7 @@ namespace webrtc_stream {
       launch_session->virtual_display_ready_since.reset();
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
       launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;

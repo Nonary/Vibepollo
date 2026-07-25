@@ -891,7 +891,7 @@ namespace proc {
   std::string terminate_app_id_str;
 
 #ifdef _WIN32
-  VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
+  std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
   namespace {
     std::atomic_bool deferred_display_revert {false};
   }
@@ -909,7 +909,7 @@ namespace proc {
   }
 
   void onVDisplayWatchdogFailed() {
-    vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
+    vDisplayDriverStatus.store(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED, std::memory_order_release);
     VDISPLAY::closeVDisplayDevice();
   }
 
@@ -918,8 +918,8 @@ namespace proc {
     if (!VDISPLAY::ensure_driver_is_ready()) {
       BOOST_LOG(warning) << "Sunshine virtual display driver reported unavailable during initialization; attempting to continue.";
     }
-    vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
-    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+    vDisplayDriverStatus.store(VDISPLAY::openVDisplayDevice(), std::memory_order_release);
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
       if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
         onVDisplayWatchdogFailed();
         return;
@@ -1383,11 +1383,11 @@ namespace proc {
     // Display helper APPLY is handled in nvhttp to avoid duplicate helper restarts.
 
     if (should_use_virtual_display && !dd_api_handled && !already_has_virtual_guid) {
-      if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      if (vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
         initVDisplayDriver();
       }
 
-      if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
         if (!config::video.adapter_name.empty()) {
           (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
         } else {
@@ -1440,24 +1440,17 @@ namespace proc {
         std::memcpy(&display_guid, device_uuid.b8, sizeof(display_guid));
         std::copy_n(device_uuid.b8, launch_session->virtual_display_guid_bytes.size(), launch_session->virtual_display_guid_bytes.begin());
 
-        int target_fps = 0;
-        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-          target_fps = *launch_session->framegen_refresh_rate;
-        } else if (launch_session->fps > 0) {
-          target_fps = launch_session->fps;
-        } else {
-          target_fps = 60000;
+        uint32_t target_fps = rtsp_stream::effective_display_refresh_millihz(*launch_session);
+        if (target_fps == 0) {
+          target_fps = 60000u;
         }
 
-        if (target_fps < 1000) {
-          target_fps *= 1000;
-        }
-
-        uint32_t base_fps_millihz = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
-        if (base_fps_millihz > 0 && base_fps_millihz < 1000u) {
-          base_fps_millihz *= 1000u;
-        }
-        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+        const uint32_t base_fps_millihz = launch_session->client_display_refresh_millihz > 0 ?
+                                                  launch_session->client_display_refresh_millihz :
+                                                  framegen::normalize_refresh_millihz(launch_session->fps);
+        const bool framegen_refresh_active =
+          (launch_session->framegen_refresh_millihz && *launch_session->framegen_refresh_millihz > 0) ||
+          (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0);
         // Virtual displays always run at 4x the requested refresh (or the highest the driver
         // can provide) so frame pacing stays smooth; frame generation reuses the same target.
         const int refresh_multiplier = std::max(
@@ -1515,7 +1508,8 @@ namespace proc {
           BOOST_LOG(warning) << "Virtual display creation failed.";
         }
       } else {
-        BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
+        BOOST_LOG(warning) << "SudoVDA driver unavailable (status="
+                           << static_cast<int>(vDisplayDriverStatus.load(std::memory_order_acquire)) << ")";
       }
     } else if (already_has_virtual_guid) {
       std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
@@ -3862,7 +3856,7 @@ namespace proc {
 
     // Virtual Display entry
 #ifdef _WIN32
-    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
       proc::ctx_t ctx {};
       ctx.idx = std::to_string(i);
       ctx.uuid = VIRTUAL_DISPLAY_UUID;
@@ -3984,9 +3978,9 @@ namespace proc {
 
 #ifdef _WIN32
     size_t fail_count = 0;
-    while (fail_count < 5 && vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+    while (fail_count < 5 && vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
       initVDisplayDriver();
-      if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
         break;
       }
 

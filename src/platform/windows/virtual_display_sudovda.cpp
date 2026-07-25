@@ -2443,10 +2443,10 @@ namespace VDISPLAY_SUDOVDA {
         return false;
       }
 
-      proc::vDisplayDriverStatus = openVDisplayDevice();
-      if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+      proc::vDisplayDriverStatus.store(openVDisplayDevice(), std::memory_order_release);
+      if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
-                           << static_cast<int>(proc::vDisplayDriverStatus) << ") for "
+                           << static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire)) << ") for "
                            << state.describe_target();
         return false;
       }
@@ -4318,10 +4318,10 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
     return result;
   }
 
-  if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
+  if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
     proc::initVDisplayDriver();
-    if (proc::vDisplayDriverStatus != DRIVER_STATUS::OK) {
-      BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure (status=" << static_cast<int>(proc::vDisplayDriverStatus) << "). Continuing with best-effort ensure.";
+    if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
+      BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure (status=" << static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire)) << "). Continuing with best-effort ensure.";
     }
   }
 

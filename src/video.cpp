@@ -73,7 +73,7 @@ extern "C" {
 }
 
 namespace proc {
-  extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+  extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
   void initVDisplayDriver();
 }  // namespace proc
 #endif

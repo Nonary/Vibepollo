@@ -7,13 +7,18 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <stop_token>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -1348,6 +1353,69 @@ namespace config {
     }
   }
 
+  void frame_limit_millihz_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::uint32_t &input) {
+    std::string value;
+    string_f(vars, name, value);
+    boost::algorithm::trim(value);
+    if (value.empty()) {
+      return;
+    }
+
+    constexpr std::uint32_t kMaxMillihz = 1'000'000;
+    const auto parse_unsigned = [](std::string_view text, std::uint32_t maximum, std::uint32_t &result) {
+      if (text.empty()) {
+        return false;
+      }
+      std::uint64_t parsed = 0;
+      for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+          return false;
+        }
+        const auto digit = static_cast<unsigned int>(ch - '0');
+        if (digit > maximum || parsed > (maximum - digit) / 10) {
+          return false;
+        }
+        parsed = parsed * 10 + digit;
+      }
+      result = static_cast<std::uint32_t>(parsed);
+      return true;
+    };
+
+    const std::string_view text {value};
+    const auto decimal_point = text.find('.');
+    std::uint32_t millihz = 0;
+    if (decimal_point == std::string_view::npos) {
+      std::uint32_t whole_hertz = 0;
+      if (!parse_unsigned(text, 1000, whole_hertz)) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      millihz = whole_hertz * 1000;
+    } else {
+      if (text.find('.', decimal_point + 1) != std::string_view::npos) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      std::uint32_t whole_hertz = 0;
+      std::uint32_t fractional_millihz = 0;
+      const auto fractional = text.substr(decimal_point + 1);
+      if (fractional.empty() || fractional.size() > 3 ||
+          !parse_unsigned(text.substr(0, decimal_point), 1000, whole_hertz) ||
+          !parse_unsigned(fractional, 999, fractional_millihz)) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      const auto scale = fractional.size() == 1 ? 100u : fractional.size() == 2 ? 10u : 1u;
+      millihz = whole_hertz * 1000 + fractional_millihz * scale;
+    }
+
+    if (millihz > kMaxMillihz) {
+      BOOST_LOG(warning) << "Ignoring out-of-range frame_limiter_fps_limit '" << value << "'.";
+      return;
+    }
+    input = millihz;
+  }
+
   void list_string_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::vector<std::string> &input) {
     std::string string;
     string_f(vars, name, string);
@@ -1776,7 +1844,7 @@ namespace config {
     if (frame_limiter.provider.empty()) {
       frame_limiter.provider = "auto";
     }
-    int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
+    frame_limit_millihz_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit_millihz);
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     {

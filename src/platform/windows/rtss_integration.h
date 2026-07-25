@@ -22,11 +22,11 @@ namespace platf {
     bool process_running;  // RTSS process currently running
   };
 
-  // Apply RTSS frame limit and related settings at stream start.
-  bool rtss_streaming_start(int scaled_limit, int denominator);
+  // Apply an RTSS frame limit represented as numerator / denominator.
+  bool rtss_streaming_start(int numerator, int denominator);
 
   // Re-apply RTSS frame limit and related settings without resetting originals.
-  bool rtss_streaming_refresh(int fps);
+  bool rtss_streaming_refresh(int numerator, int denominator);
 
   // True when the most recent stream start/refresh abandoned RTSS hooks after
   // the response deadline. Callers may use this to select another provider.

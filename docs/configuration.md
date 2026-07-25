@@ -2744,7 +2744,9 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Optional FPS limit to apply while streaming. Set to 0 to use the stream's requested FPS.
+            Optional FPS limit to apply while streaming. RTSS supports fractional values with up to
+            three decimal places; NVIDIA Control Panel rounds them to the nearest whole FPS.
+            Set to 0 to use a client display-mode override when present, otherwise the stream's requested FPS.
         </td>
     </tr>
     <tr>
@@ -2754,7 +2756,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            frame_limiter_fps_limit = 120
+            frame_limiter_fps_limit = 59.94
             @endcode</td>
     </tr>
 </table>

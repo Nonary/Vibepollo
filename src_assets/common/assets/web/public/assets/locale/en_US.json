@@ -1315,7 +1315,7 @@
     "providerLabel": "Limiter provider",
     "providerHint": "Auto prefers RTSS whenever it is available and falls back to the NVIDIA driver's limiter when it isn't. RTSS is recommended: its limiter — including the NVIDIA Reflex mode used on virtual screens — delivers the most consistent frame pacing.",
     "limitLabel": "FPS limit override",
-    "limitHint": "Optional global FPS limit for NVIDIA or RTSS. Set to 0 to use the stream's requested FPS.",
+    "limitHint": "Optional global FPS limit for NVIDIA or RTSS. RTSS supports decimals; NVIDIA rounds to a whole FPS. Set to 0 to use the client display override or requested stream FPS.",
     "limitPlaceholder": "0",
     "autoVirtualFramegenLabel": "Smoother capture for virtual displays",
     "autoVirtualFramegenHint": "Enabled uses 4× refresh while a game is active and 1× on the desktop. Stream FPS stays the same, so overall performance should not be affected; games with uneven frame pacing can capture much more smoothly. Disabled turns off these automatic adjustments and the virtual-display limiter. Legacy uses a fixed 2× refresh for the entire stream.",

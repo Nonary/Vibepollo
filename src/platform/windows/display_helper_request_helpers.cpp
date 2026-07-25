@@ -97,6 +97,7 @@ namespace display_helper_integration::helpers {
       snapshot.appid = session.appid;
       snapshot.app_metadata = session.app_metadata;
       snapshot.client_display_mode_override = session.client_display_mode_override;
+      snapshot.client_display_refresh_millihz = session.client_display_refresh_millihz;
       snapshot.virtual_display = session.virtual_display;
       snapshot.virtual_display_failed = session.virtual_display_failed;
       snapshot.virtual_display_mode_override = session.virtual_display_mode_override;
@@ -110,6 +111,7 @@ namespace display_helper_integration::helpers {
       snapshot.gen1_framegen_fix = session.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = session.gen2_framegen_fix;
       snapshot.framegen_refresh_rate = session.framegen_refresh_rate;
+      snapshot.framegen_refresh_millihz = session.framegen_refresh_millihz;
       snapshot.framegen_refresh_multiplier = session.framegen_refresh_multiplier;
       return snapshot;
     }
@@ -295,11 +297,14 @@ namespace display_helper_integration::helpers {
     if (session_.height > 0) {
       overrides.height_override = session_.height;
     }
-    if (session_.framegen_refresh_rate && *session_.framegen_refresh_rate > 0) {
+    const auto effective_display_millihz = rtsp_stream::effective_display_refresh_millihz(session_);
+    const auto display_fps = static_cast<int>(std::min<std::uint32_t>(
+      effective_display_millihz,
+      static_cast<std::uint32_t>(std::numeric_limits<int>::max())
+    ));
+    if (display_fps > 0) {
       overrides.framegen_refresh_override = session_.framegen_refresh_rate;
-      overrides.fps_override = session_.framegen_refresh_rate;
-    } else if (session_.fps > 0) {
-      overrides.fps_override = session_.fps;
+      overrides.fps_override = display_fps;
     }
     overrides.virtual_display_override = session_.virtual_display;
 
@@ -307,14 +312,19 @@ namespace display_helper_integration::helpers {
     BOOST_LOG(debug) << "effective_width: " << effective_width;
     const int effective_height = session_.height;
     BOOST_LOG(debug) << "effective_height: " << effective_height;
-    const int base_fps = session_.fps;
+    const int base_fps = static_cast<int>(std::min<std::uint32_t>(
+      framegen::normalize_refresh_millihz(session_.fps),
+      static_cast<std::uint32_t>(std::numeric_limits<int>::max())
+    ));
     BOOST_LOG(debug) << "base_fps: " << base_fps;
     std::optional<int> framegen_refresh = session_.framegen_refresh_rate;
-    const bool framegen_active = framegen_refresh && *framegen_refresh > 0;
+    const bool framegen_active =
+      (session_.framegen_refresh_millihz && *session_.framegen_refresh_millihz > 0) ||
+      (framegen_refresh && *framegen_refresh > 0);
     BOOST_LOG(debug) << "framegen_refresh: " << (framegen_refresh ? std::to_string(*framegen_refresh) : "nullopt");
-    const int framegen_display_fps = framegen_active ? *framegen_refresh : 0;
-    const int display_fps = framegen_display_fps > 0 ? framegen_display_fps : base_fps;
-    BOOST_LOG(debug) << "display_fps: " << display_fps;
+    const int framegen_display_fps = framegen_active ? display_fps : 0;
+    const int requested_display_fps = framegen_display_fps > 0 ? framegen_display_fps : base_fps;
+    BOOST_LOG(debug) << "display_fps: " << requested_display_fps;
 
     const auto config_mode = effective_video_config_.virtual_display_mode;
     BOOST_LOG(debug) << "config_mode: " << static_cast<int>(config_mode);
@@ -330,11 +340,11 @@ namespace display_helper_integration::helpers {
       framegen_active ? rtsp_stream::framegen_refresh_multiplier(session_) : 1;
     const int minimum_fps = refresh_multiplier > 1 ? rtsp_stream::saturating_refresh_fps(base_fps, refresh_multiplier) : base_fps;
     // Use the higher of display_fps (which may already be raised by framegen) or the minimum
-    const int effective_virtual_display_fps = std::max(display_fps, minimum_fps);
+    const int effective_virtual_display_fps = std::max(requested_display_fps, minimum_fps);
     BOOST_LOG(debug) << "refresh_multiplier: " << refresh_multiplier;
     BOOST_LOG(debug) << "minimum_fps: " << minimum_fps;
     BOOST_LOG(debug) << "effective_display_fps: "
-                     << (session_requests_virtual ? effective_virtual_display_fps : display_fps);
+                     << (session_requests_virtual ? effective_virtual_display_fps : requested_display_fps);
 
     if (session_requests_virtual) {
       return configure_virtual_display(
@@ -346,7 +356,7 @@ namespace display_helper_integration::helpers {
         minimum_fps
       );
     }
-    return configure_standard(builder, effective_layout, effective_width, effective_height, display_fps);
+    return configure_standard(builder, effective_layout, effective_width, effective_height, requested_display_fps);
   }
 
   bool SessionDisplayConfigurationHelper::configure_virtual_display(

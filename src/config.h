@@ -8,6 +8,7 @@
 #include <array>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -322,8 +323,8 @@ namespace config {
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
     std::string provider;
 
-    // Optional FPS limit override. 0 uses the stream's requested FPS.
-    int fps_limit {0};
+    // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
+    std::uint32_t fps_limit_millihz {0};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.

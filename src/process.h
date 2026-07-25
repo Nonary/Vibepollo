@@ -51,7 +51,7 @@ namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
 #ifdef _WIN32
-  extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+  extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
   void initVDisplayDriver();
 #endif
 

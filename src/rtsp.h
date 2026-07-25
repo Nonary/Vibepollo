@@ -82,6 +82,9 @@ namespace rtsp_stream {
     bool force_sdr = false;
     bool enable_sops;
     bool client_display_mode_override;
+    // Exact refresh requested by a per-client display-mode override, expressed
+    // in millihertz. The existing fps field remains the legacy stream cadence.
+    std::uint32_t client_display_refresh_millihz = 0;
     bool client_requests_virtual_display;
     bool virtual_display;
     uint32_t scale_factor;
@@ -107,6 +110,7 @@ namespace rtsp_stream {
     bool frame_generation_enabled = false;
     bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
@@ -175,10 +179,25 @@ namespace rtsp_stream {
   }
 
   inline int framegen_refresh_multiplier(const launch_session_t &session) {
-    if (!session.framegen_refresh_rate || *session.framegen_refresh_rate <= 0) {
+    const bool has_integer_rate = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0;
+    const bool has_exact_rate = session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0;
+    if (!has_integer_rate && !has_exact_rate) {
       return 1;
     }
     return session.framegen_refresh_multiplier > 1 ? session.framegen_refresh_multiplier : 1;
+  }
+
+  inline std::uint32_t effective_display_refresh_millihz(const launch_session_t &session) {
+    if (session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0) {
+      return *session.framegen_refresh_millihz;
+    }
+    if (session.client_display_refresh_millihz > 0) {
+      return session.client_display_refresh_millihz;
+    }
+    if (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) {
+      return framegen::normalize_refresh_millihz(*session.framegen_refresh_rate);
+    }
+    return framegen::normalize_refresh_millihz(session.fps);
   }
 
   inline int saturating_refresh_fps(int fps, int multiplier) {
@@ -195,6 +214,8 @@ namespace rtsp_stream {
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
+      .fps_scaled = session.fps,
+      .display_refresh_millihz = session.client_display_refresh_millihz,
       .frame_generation_enabled = session.frame_generation_enabled,
       .gen1_framegen_fix = session.gen1_framegen_fix,
       .gen2_framegen_fix = session.gen2_framegen_fix,

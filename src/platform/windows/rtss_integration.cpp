@@ -9,14 +9,16 @@
   #include <array>
   #include <atomic>
   #include <chrono>
-  #include <cstdio>
   #include <cwchar>
   #include <filesystem>
   #include <fstream>
   #include <future>
+  #include <memory>
   #include <nlohmann/json.hpp>
   #include <optional>
+  #include <mutex>
   #include <string>
+  #include <string_view>
   #include <system_error>
   #include <thread>
   #include <type_traits>
@@ -45,9 +47,6 @@ namespace platf {
     // RTSS' profile SDK declares load/save as void. Treating their undefined
     // return registers as BOOL makes successful operations look like failures.
     using fn_LoadProfile = VOID(__cdecl *)(LPCSTR profileName);
-    using fn_SaveProfile = VOID(__cdecl *)(LPCSTR profileName);
-    using fn_GetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
-    using fn_SetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
     using fn_UpdateProfiles = VOID(__cdecl *)();
     using fn_GetFlags = DWORD(__cdecl *)();
     using fn_SetFlags = DWORD(__cdecl *)(DWORD, DWORD);
@@ -55,15 +54,12 @@ namespace platf {
     struct hooks_t {
       HMODULE module = nullptr;
       fn_LoadProfile LoadProfile = nullptr;
-      fn_SaveProfile SaveProfile = nullptr;
-      fn_GetProfileProperty GetProfileProperty = nullptr;
-      fn_SetProfileProperty SetProfileProperty = nullptr;
       fn_UpdateProfiles UpdateProfiles = nullptr;
       fn_GetFlags GetFlags = nullptr;
       fn_SetFlags SetFlags = nullptr;
 
       explicit operator bool() const {
-        return module && LoadProfile && SaveProfile && GetProfileProperty && SetProfileProperty && UpdateProfiles && GetFlags && SetFlags;
+        return module && LoadProfile && UpdateProfiles && GetFlags && SetFlags;
       }
     };
 
@@ -75,6 +71,7 @@ namespace platf {
     bool g_denominator_modified = false;
     bool g_limit_modified = false;
     bool g_sync_limiter_modified = false;
+    std::recursive_mutex g_rtss_lifecycle_mutex;
 
     // Remember original values so we can restore on stream end
     std::optional<int> g_original_limit;
@@ -88,12 +85,23 @@ namespace platf {
 
     PROCESS_INFORMATION g_rtss_process_info {};
     bool g_rtss_started_by_sunshine = false;
-    std::atomic<unsigned int> g_active_hook_calls {0};
+    struct hook_call_state_t {
+      std::atomic<unsigned int> active_calls {0};
+    };
+
+    // Timed-out RTSS calls must be allowed to finish without touching a
+    // destroyed static atomic during CRT teardown. Each detached call owns a
+    // shared reference to this state until it has returned.
+    std::shared_ptr<hook_call_state_t> g_hook_call_state = std::make_shared<hook_call_state_t>();
     bool g_hooks_failed = false;
 
     constexpr DWORD k_rtss_shutdown_timeout_ms = 5000;
     constexpr auto k_rtss_response_timeout = std::chrono::seconds(1);
     constexpr DWORD k_rtss_flag_limiter_disabled = 4;
+    constexpr char k_rtss_limit_profile_key[] = "Limit";
+    constexpr char k_rtss_denominator_profile_key[] = "LimitDenominator";
+    constexpr char k_rtss_sync_limiter_profile_key[] = "SyncLimiter";
+    constexpr char k_rtss_framerate_section[] = "[Framerate]";
 
     const std::array<const wchar_t *, 2> k_rtss_process_names = {L"RTSS.exe", L"RTSS64.exe"};
     const std::array<const wchar_t *, 2> k_rtss_executable_names = {L"RTSS.exe", L"RTSS64.exe"};
@@ -106,33 +114,38 @@ namespace platf {
     bool hooks_available();
     std::optional<DWORD> get_hook_flags();
     std::optional<DWORD> set_hook_flags(DWORD and_mask, DWORD xor_mask);
-    bool update_profiles();
-    std::optional<int> set_limit_denominator(const fs::path &root, int new_denominator);
-    std::optional<int> set_profile_property_int(const char *name, int new_value);
-    bool write_profile_value_int(const fs::path &root, const char *key, int new_value);
+    bool write_framerate_values(
+      const fs::path &root,
+      const std::optional<int> *limit,
+      const std::optional<int> *denominator,
+      const std::optional<int> *sync_limiter
+    );
+    bool reload_profiles_from_disk();
     fs::path resolve_rtss_root();
 
     template<typename Result, typename Callable>
     std::optional<Result> call_rtss_hooks(const char *operation, Callable &&callable) {
       std::promise<Result> promise;
       auto result = promise.get_future();
-      g_active_hook_calls.fetch_add(1, std::memory_order_acq_rel);
+      auto call_state = g_hook_call_state;
+      call_state->active_calls.fetch_add(1, std::memory_order_acq_rel);
 
       std::thread worker;
       try {
         worker = std::thread([
                                promise = std::move(promise),
-                               callable = std::forward<Callable>(callable)
+                               callable = std::forward<Callable>(callable),
+                               call_state
                              ]() mutable {
           try {
             promise.set_value(callable());
           } catch (...) {
             promise.set_exception(std::current_exception());
           }
-          g_active_hook_calls.fetch_sub(1, std::memory_order_acq_rel);
+          call_state->active_calls.fetch_sub(1, std::memory_order_acq_rel);
         });
       } catch (const std::exception &ex) {
-        g_active_hook_calls.fetch_sub(1, std::memory_order_acq_rel);
+        call_state->active_calls.fetch_sub(1, std::memory_order_acq_rel);
         BOOST_LOG(error) << "Unable to start RTSS hooks operation '" << operation << "': " << ex.what();
         g_hooks_failed = true;
         return std::nullopt;
@@ -160,7 +173,7 @@ namespace platf {
     }
 
     bool hooks_available() {
-      return static_cast<bool>(g_hooks) && !g_hooks_failed && g_active_hook_calls.load(std::memory_order_acquire) == 0;
+      return static_cast<bool>(g_hooks) && !g_hooks_failed && g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0;
     }
 
     std::optional<DWORD> get_hook_flags() {
@@ -181,17 +194,6 @@ namespace platf {
       return call_rtss_hooks<DWORD>("SetFlags", [set_flags, and_mask, xor_mask]() {
         return set_flags(and_mask, xor_mask);
       });
-    }
-
-    bool update_profiles() {
-      if (!hooks_available()) {
-        return false;
-      }
-      auto update = g_hooks.UpdateProfiles;
-      return call_rtss_hooks<bool>("UpdateProfiles", [update]() {
-               update();
-               return true;
-             }).value_or(false);
     }
 
     struct recovery_snapshot_t {
@@ -280,16 +282,31 @@ namespace platf {
       encode("limit", snapshot.limit_modified, snapshot.original_limit);
       encode("sync_limiter", snapshot.sync_limiter_modified, snapshot.original_sync_limiter);
 
-      std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
-      if (!out.is_open()) {
-        BOOST_LOG(warning) << "RTSS overrides: failed to open recovery file for write";
-        return false;
-      }
-
       try {
-        out << j.dump();
-        if (!out.good()) {
-          BOOST_LOG(warning) << "RTSS overrides: failed to write recovery file";
+        // The recovery snapshot is the commit point for a profile mutation.
+        // Never truncate its live copy in place: a power loss between truncate
+        // and write would make the pre-stream limit unrecoverable.
+        const fs::path temporary_path = file_path.wstring() + L".sunshine." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+        {
+          std::ofstream out(temporary_path, std::ios::binary | std::ios::trunc);
+          if (!out.is_open()) {
+            BOOST_LOG(warning) << "RTSS overrides: failed to open recovery file for write";
+            return false;
+          }
+          out << j.dump();
+          out.flush();
+          if (!out.good()) {
+            BOOST_LOG(warning) << "RTSS overrides: failed to write recovery file";
+            std::error_code remove_ec;
+            fs::remove(temporary_path, remove_ec);
+            return false;
+          }
+        }
+        if (!MoveFileExW(temporary_path.c_str(), file_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+          const auto error = GetLastError();
+          std::error_code remove_ec;
+          fs::remove(temporary_path, remove_ec);
+          BOOST_LOG(warning) << "RTSS overrides: failed to atomically replace recovery file (winerr=" << error << ").";
           return false;
         }
       } catch (const std::exception &ex) {
@@ -381,7 +398,7 @@ namespace platf {
 
       bool hooks_loaded = false;
       auto unload_hooks = [&]() {
-        if (hooks_loaded && g_hooks.module && g_active_hook_calls.load(std::memory_order_acquire) == 0) {
+        if (hooks_loaded && g_hooks.module && g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0) {
           FreeLibrary(g_hooks.module);
           g_hooks = {};
         }
@@ -400,35 +417,15 @@ namespace platf {
 
       bool success = true;
 
-      if (snapshot.denominator_modified && snapshot.original_denominator.has_value()) {
-        if (!set_limit_denominator(root, *snapshot.original_denominator).has_value()) {
+      const auto *limit = snapshot.limit_modified ? &snapshot.original_limit : nullptr;
+      const auto *denominator = snapshot.denominator_modified ? &snapshot.original_denominator : nullptr;
+      const auto *sync_limiter = snapshot.sync_limiter_modified ? &snapshot.original_sync_limiter : nullptr;
+      if (limit || denominator || sync_limiter) {
+        if (!write_framerate_values(root, limit, denominator, sync_limiter)) {
           success = false;
-        }
-      }
-
-      if (snapshot.limit_modified) {
-        int value = snapshot.original_limit.value_or(0);
-        bool applied = false;
-        if (ensure_hooks_loaded()) {
-          applied = set_profile_property_int("FramerateLimit", value).has_value();
-        }
-        if (!applied && write_profile_value_int(root, "FramerateLimit", value)) {
-          applied = true;
-        }
-        if (!applied) {
-          success = false;
-        }
-      }
-
-      if (snapshot.sync_limiter_modified && snapshot.original_sync_limiter.has_value()) {
-        bool applied = false;
-        if (ensure_hooks_loaded()) {
-          applied = set_profile_property_int("SyncLimiter", *snapshot.original_sync_limiter).has_value();
-        }
-        if (!applied && write_profile_value_int(root, "SyncLimiter", *snapshot.original_sync_limiter)) {
-          applied = true;
-        }
-        if (!applied) {
+        } else if (!ensure_hooks_loaded() || !reload_profiles_from_disk()) {
+          // Keep the durable recovery file if RTSS could not acknowledge the
+          // atomic profile transaction. A later process start can retry.
           success = false;
         }
       }
@@ -490,69 +487,196 @@ namespace platf {
       }
     }
 
-    std::optional<int> read_profile_value_int(const fs::path &root, const char *key) {
-      auto path = profile_path(root);
-      if (!fs::exists(path)) {
+    std::string_view trim_profile_line(std::string_view line) {
+      while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+        line.remove_prefix(1);
+      }
+      while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) {
+        line.remove_suffix(1);
+      }
+      return line;
+    }
+
+    size_t find_framerate_section_body(const std::string &content) {
+      size_t pos = 0;
+      while (pos <= content.size()) {
+        const auto end = content.find_first_of("\r\n", pos);
+        const auto length = (end == std::string::npos ? content.size() : end) - pos;
+        if (trim_profile_line(std::string_view(content).substr(pos, length)) == k_rtss_framerate_section) {
+          if (end == std::string::npos) {
+            return content.size();
+          }
+          const auto body = content.find_first_not_of("\r\n", end);
+          return body == std::string::npos ? content.size() : body;
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        pos = end + 1;
+      }
+      return std::string::npos;
+    }
+
+    size_t find_framerate_key(const std::string &content, size_t section_body, std::string_view key) {
+      if (section_body == std::string::npos) {
+        return std::string::npos;
+      }
+      const std::string prefix = std::string(key) + '=';
+      size_t pos = section_body;
+      while (pos < content.size()) {
+        const auto end = content.find_first_of("\r\n", pos);
+        const auto length = (end == std::string::npos ? content.size() : end) - pos;
+        const auto line = std::string_view(content).substr(pos, length);
+        if (!line.empty() && line.front() == '[') {
+          return std::string::npos;
+        }
+        if (line.compare(0, prefix.size(), prefix) == 0) {
+          return pos;
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        pos = end + 1;
+      }
+      return std::string::npos;
+    }
+
+    std::optional<int> parse_profile_value(const std::string &content, size_t pos) {
+      const auto end = content.find_first_of("\r\n", pos);
+      const auto line = content.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+      const auto equals = line.find('=');
+      if (equals == std::string::npos) {
         return std::nullopt;
       }
       try {
-        std::string content;
-        {
-          std::ifstream in(path, std::ios::in | std::ios::binary);
-          content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        std::string needle = std::string(key) + '=';
-        auto pos = content.find(needle);
-        if (pos == std::string::npos) {
-          return std::nullopt;
-        }
-        auto end = content.find_first_of("\r\n", pos);
-        auto line = content.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-        auto eq = line.find('=');
-        if (eq == std::string::npos) {
-          return std::nullopt;
-        }
-        try {
-          return std::stoi(line.substr(eq + 1));
-        } catch (...) {
-          return std::nullopt;
-        }
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Failed reading RTSS profile value '"sv << key << "': "sv << e.what();
+        size_t consumed = 0;
+        const int value = std::stoi(line.substr(equals + 1), &consumed);
+        return consumed == line.size() - equals - 1 ? std::optional<int> {value} : std::nullopt;
+      } catch (...) {
         return std::nullopt;
       }
     }
 
-    bool write_profile_value_int(const fs::path &root, const char *key, int new_value) {
+    bool set_framerate_key(std::string &content, std::string_view key, const std::optional<int> &value) {
+      const auto body = find_framerate_section_body(content);
+      if (body == std::string::npos) {
+        return false;
+      }
+      const auto pos = find_framerate_key(content, body, key);
+      if (!value) {
+        if (pos == std::string::npos) {
+          return true;
+        }
+        auto end = content.find_first_of("\r\n", pos);
+        if (end == std::string::npos) {
+          content.erase(pos);
+        } else {
+          while (end < content.size() && (content[end] == '\r' || content[end] == '\n')) {
+            ++end;
+          }
+          content.erase(pos, end - pos);
+        }
+        return true;
+      }
+
+      char replacement[64];
+      snprintf(replacement, sizeof(replacement), "%.*s=%d", static_cast<int>(key.size()), key.data(), *value);
+      if (pos != std::string::npos) {
+        const auto end = content.find_first_of("\r\n", pos);
+        content.replace(pos, (end == std::string::npos ? content.size() : end) - pos, replacement);
+      } else {
+        const auto eol = content.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+        content.insert(body, std::string(replacement) + eol);
+      }
+      return true;
+    }
+
+    bool write_profile_content_atomically(const fs::path &path, const std::string &content) {
+      const fs::path temporary_path = path.wstring() + L".sunshine." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+      try {
+        {
+          std::ofstream out(temporary_path, std::ios::out | std::ios::binary | std::ios::trunc);
+          if (!out) {
+            return false;
+          }
+          out.write(content.data(), static_cast<std::streamsize>(content.size()));
+          out.flush();
+          if (!out.good()) {
+            return false;
+          }
+        }
+        if (!MoveFileExW(temporary_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+          const auto error = GetLastError();
+          std::error_code ec;
+          fs::remove(temporary_path, ec);
+          BOOST_LOG(warning) << "Failed atomically replacing RTSS Global profile (winerr=" << error << ").";
+          return false;
+        }
+        return true;
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Failed atomically writing RTSS Global profile: "sv << e.what();
+        return false;
+      }
+    }
+
+    bool write_framerate_values(
+      const fs::path &root,
+      const std::optional<int> *limit,
+      const std::optional<int> *denominator,
+      const std::optional<int> *sync_limiter
+    ) {
       try {
         if (!ensure_profile_exists(root)) {
           return false;
         }
-        auto path = profile_path(root);
-        std::string content;
-        {
-          std::ifstream in(path, std::ios::in | std::ios::binary);
-          content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        const auto path = profile_path(root);
+        std::ifstream in(path, std::ios::in | std::ios::binary);
+        if (!in) {
+          return false;
         }
-        std::string needle = std::string(key) + '=';
-        auto pos = content.find(needle);
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%s=%d", key, new_value);
-        if (pos != std::string::npos) {
-          auto end = content.find_first_of("\r\n", pos);
-          auto line = content.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-          content.replace(pos, line.size(), buf);
-        } else {
-          content.append("\n");
-          content.append(buf);
-          content.append("\n");
+        std::string content {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        if ((limit && !set_framerate_key(content, k_rtss_limit_profile_key, *limit)) ||
+            (denominator && !set_framerate_key(content, k_rtss_denominator_profile_key, *denominator)) ||
+            (sync_limiter && !set_framerate_key(content, k_rtss_sync_limiter_profile_key, *sync_limiter))) {
+          BOOST_LOG(warning) << "RTSS Global profile has no [Framerate] section.";
+          return false;
         }
-        std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
-        out.write(content.data(), (std::streamsize) content.size());
-        return true;
+        return write_profile_content_atomically(path, content);
       } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Failed writing RTSS profile value '"sv << key << "': "sv << e.what();
+        BOOST_LOG(warning) << "Failed updating RTSS Global profile: "sv << e.what();
         return false;
+      }
+    }
+
+    bool reload_profiles_from_disk() {
+      if (!hooks_available()) {
+        return false;
+      }
+      const auto load_profile = g_hooks.LoadProfile;
+      const auto update = g_hooks.UpdateProfiles;
+      return call_rtss_hooks<bool>("LoadProfile/UpdateProfiles", [load_profile, update]() {
+               load_profile("");
+               update();
+               return true;
+             }).value_or(false);
+    }
+
+    std::optional<int> read_profile_value_int(const fs::path &root, const char *key) {
+      const auto path = profile_path(root);
+      if (!fs::exists(path)) {
+        return std::nullopt;
+      }
+      try {
+        std::ifstream in(path, std::ios::in | std::ios::binary);
+        if (!in) {
+          return std::nullopt;
+        }
+        std::string content {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        const auto pos = find_framerate_key(content, find_framerate_section_body(content), key);
+        return pos == std::string::npos ? std::nullopt : parse_profile_value(content, pos);
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Failed reading RTSS profile value '"sv << key << "': "sv << e.what();
+        return std::nullopt;
       }
     }
 
@@ -748,7 +872,7 @@ namespace platf {
       if (hooks_available()) {
         return true;
       }
-      if (g_hooks.module || g_active_hook_calls.load(std::memory_order_acquire) != 0 || g_hooks_failed) {
+      if (g_hooks.module || g_hook_call_state->active_calls.load(std::memory_order_acquire) != 0 || g_hooks_failed) {
         return false;
       }
 
@@ -760,9 +884,6 @@ namespace platf {
         }
         g_hooks.module = m;
         g_hooks.LoadProfile = (fn_LoadProfile) GetProcAddress(m, "LoadProfile");
-        g_hooks.SaveProfile = (fn_SaveProfile) GetProcAddress(m, "SaveProfile");
-        g_hooks.GetProfileProperty = (fn_GetProfileProperty) GetProcAddress(m, "GetProfileProperty");
-        g_hooks.SetProfileProperty = (fn_SetProfileProperty) GetProcAddress(m, "SetProfileProperty");
         g_hooks.UpdateProfiles = (fn_UpdateProfiles) GetProcAddress(m, "UpdateProfiles");
         g_hooks.GetFlags = (fn_GetFlags) GetProcAddress(m, "GetFlags");
         g_hooks.SetFlags = (fn_SetFlags) GetProcAddress(m, "SetFlags");
@@ -783,131 +904,6 @@ namespace platf {
         }
       }
       return true;
-    }
-
-    // Read and replace LimitDenominator in the RTSS Global profile. Returns previous value (or 1 if missing).
-    std::optional<int> set_limit_denominator(const fs::path &root, int new_denominator) {
-      try {
-        if (!ensure_profile_exists(root)) {
-          return std::nullopt;
-        }
-        auto global_path = profile_path(root);
-        std::string content;
-        {
-          std::ifstream in(global_path, std::ios::in | std::ios::binary);
-          content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-
-        // Find current denominator
-        int old_den = 1;
-        {
-          auto pos = content.find("LimitDenominator=");
-          if (pos != std::string::npos) {
-            auto end = content.find_first_of("\r\n", pos);
-            auto line = content.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
-            auto eq = line.find('=');
-            if (eq != std::string::npos) {
-              try {
-                old_den = std::stoi(line.substr(eq + 1));
-              } catch (...) {
-                old_den = 1;
-              }
-            }
-            // Replace existing value
-            char buf[64];
-            snprintf(buf, sizeof(buf), "LimitDenominator=%d", new_denominator);
-            content.replace(pos, line.size(), buf);
-          } else {
-            // Append setting if not present
-            char buf[64];
-            snprintf(buf, sizeof(buf), "\nLimitDenominator=%d\n", new_denominator);
-            content.append(buf);
-          }
-        }
-
-        {
-          std::ofstream out(global_path, std::ios::out | std::ios::binary | std::ios::trunc);
-          out.write(content.data(), (std::streamsize) content.size());
-        }
-
-        BOOST_LOG(info) << "RTSS LimitDenominator set to "sv << new_denominator << ", original "sv << old_den;
-        return old_den;
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Failed updating RTSS Global profile: "sv << e.what();
-        return std::nullopt;
-      }
-    }
-
-    // Helper: read integer profile property, returns value if present
-    std::optional<int> get_profile_property_int(const char *name) {
-      if (!hooks_available()) {
-        return std::nullopt;
-      }
-
-      auto load_profile = g_hooks.LoadProfile;
-      auto get_property = g_hooks.GetProfileProperty;
-      std::string property_name(name);
-      auto result = call_rtss_hooks<std::optional<int>>(name, [load_profile, get_property, property_name = std::move(property_name)]() {
-        int value = 0;
-        load_profile("");
-        if (get_property(property_name.c_str(), &value, sizeof(value))) {
-          return std::optional<int> {value};
-        }
-        return std::optional<int> {};
-      });
-      return result.value_or(std::nullopt);
-    }
-
-    // Helper: set integer profile property and return previous value if present
-    std::optional<int> set_profile_property_int(const char *name, int new_value) {
-      if (!hooks_available()) {
-        return std::nullopt;
-      }
-
-      struct set_result_t {
-        int old_value;
-        bool had_old;
-        bool applied;
-      };
-
-      auto load_profile = g_hooks.LoadProfile;
-      auto get_property = g_hooks.GetProfileProperty;
-      auto set_property = g_hooks.SetProfileProperty;
-      auto save_profile = g_hooks.SaveProfile;
-      auto update = g_hooks.UpdateProfiles;
-      std::string property_name(name);
-      auto result = call_rtss_hooks<set_result_t>(name, [
-                                                         load_profile,
-                                                         get_property,
-                                                         set_property,
-                                                         save_profile,
-                                                         update,
-                                                         property_name = std::move(property_name),
-                                                         new_value
-                                                       ]() mutable {
-        set_result_t state {0, false, false};
-        // Empty string selects the global profile as in the RTSS UI.
-        load_profile("");
-        state.had_old = get_property(property_name.c_str(), &state.old_value, sizeof(state.old_value)) != FALSE;
-        if (!set_property(property_name.c_str(), &new_value, sizeof(new_value))) {
-          return state;
-        }
-        save_profile("");
-        update();
-        state.applied = true;
-        return state;
-      });
-      if (!result || !result->applied) {
-        return std::nullopt;
-      }
-
-      if (result->had_old) {
-        BOOST_LOG(info) << "RTSS property "sv << name << " set to "sv << new_value << ", original "sv << result->old_value;
-      } else {
-        BOOST_LOG(info) << "RTSS property "sv << name << " set to "sv << new_value << ", original (implicit) 0"sv;
-      }
-      // Always return the previous value (0 if not present) so callers can restore it
-      return result->old_value;
     }
 
     // Resolve RTSS root path from config (absolute path or relative to Program Files)
@@ -950,10 +946,12 @@ namespace platf {
   }  // namespace
 
   void rtss_restore_pending_overrides() {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     maybe_restore_from_overrides_file();
   }
 
   void rtss_set_sync_limiter_override(std::optional<std::string> value) {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     if (value && value->empty()) {
       g_sync_limiter_override.reset();
     } else {
@@ -962,10 +960,12 @@ namespace platf {
   }
 
   std::optional<std::string> rtss_get_sync_limiter_override() {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     return g_sync_limiter_override;
   }
 
   bool rtss_warmup_process() {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     g_rtss_root = resolve_rtss_root();
     if (!fs::exists(g_rtss_root)) {
       BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
@@ -974,8 +974,9 @@ namespace platf {
     return ensure_rtss_running(g_rtss_root);
   }
 
-  bool rtss_streaming_start(int scaled_limit, int denominator) {
-    if (g_active_hook_calls.load(std::memory_order_acquire) == 0) {
+  bool rtss_streaming_start(int numerator, int denominator) {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
+    if (g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0) {
       g_hooks_failed = false;
     }
     g_limit_active = false;
@@ -986,7 +987,7 @@ namespace platf {
     g_sync_limiter_modified = false;
     maybe_restore_from_overrides_file();
 
-    if (!config::frame_limiter.enable) {
+    if (!config::frame_limiter.enable || numerator <= 0 || denominator <= 0) {
       return false;
     }
 
@@ -995,293 +996,172 @@ namespace platf {
       BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
       return false;
     }
-
     ensure_rtss_running(g_rtss_root);
-
     if (!load_hooks(g_rtss_root)) {
-      // We can still change Global profile denominator even if hooks are missing
-      BOOST_LOG(warning) << "RTSSHooks not loaded; will only update Global profile denominator"sv;
+      BOOST_LOG(warning) << "RTSSHooks could not be loaded; exact frame limits cannot be acknowledged.";
+      return false;
     }
 
-    if (hooks_available()) {
-      auto current_flags = get_hook_flags();
-      g_original_flags = current_flags;
-      if (current_flags && (*current_flags & k_rtss_flag_limiter_disabled)) {
-        constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
-        auto updated_flags = set_hook_flags(~limiter_mask, 0);
-        if (!updated_flags || (*updated_flags & limiter_mask)) {
-          BOOST_LOG(warning) << "Failed to enable RTSS limiter via SetFlags"sv;
-          // A timed-out call may still have reached RTSS before it stalled, so retain
-          // enough state to restore the original flags later.
-          g_flags_modified = true;
-          g_settings_dirty = true;
-        } else {
-          BOOST_LOG(info) << "RTSS limiter enabled via hooks (originally disabled)"sv;
-          g_flags_modified = true;
-          g_settings_dirty = true;
-        }
-      }
-    } else {
-      g_original_flags.reset();
-    }
-
-    int current_denominator = denominator > 0 ? denominator : 1;
-    int applied_limit = scaled_limit;
-    if (applied_limit < 0) {
-      applied_limit = 0;
-    }
-
-    // Update LimitDenominator in Global profile and remember previous value
-    g_original_denominator = set_limit_denominator(g_rtss_root, current_denominator);
-    if (g_original_denominator.has_value() && *g_original_denominator != current_denominator) {
-      g_denominator_modified = true;
-      g_settings_dirty = true;
-    }
-    if (hooks_available()) {
-      // Nudge RTSS to reload profiles after file change
-      (void) update_profiles();
-    }
-
-    // If hooks are available, capture original values BEFORE making further changes
-    if (hooks_available()) {
-      g_original_limit = get_profile_property_int("FramerateLimit");
-      g_original_sync_limiter = get_profile_property_int("SyncLimiter");
-    }
-    if (hooks_available()) {
-      BOOST_LOG(info) << "RTSS original values: limit="
-                      << (g_original_limit.has_value() ? std::to_string(*g_original_limit) : std::string("<unset>"))
-                      << ", syncLimiter="
-                      << (g_original_sync_limiter.has_value() ? std::to_string(*g_original_sync_limiter) : std::string("<unset>"));
-    } else {
-      g_original_limit = read_profile_value_int(g_rtss_root, "FramerateLimit");
-      g_original_sync_limiter = read_profile_value_int(g_rtss_root, "SyncLimiter");
-      BOOST_LOG(info) << "RTSS profile snapshot: limit="
-                      << (g_original_limit.has_value() ? std::to_string(*g_original_limit) : std::string("<unset>"))
-                      << ", syncLimiter="
-                      << (g_original_sync_limiter.has_value() ? std::to_string(*g_original_sync_limiter) : std::string("<unset>"));
-    }
+    const std::optional<int> requested_limit {numerator};
+    const std::optional<int> requested_denominator {denominator};
+    g_original_limit = read_profile_value_int(g_rtss_root, k_rtss_limit_profile_key);
+    g_original_denominator = read_profile_value_int(g_rtss_root, k_rtss_denominator_profile_key);
+    g_original_sync_limiter = read_profile_value_int(g_rtss_root, k_rtss_sync_limiter_profile_key);
+    g_original_flags = get_hook_flags();
 
     std::optional<int> sync_limiter_value;
     std::optional<std::string> sync_limiter_label;
     if (g_sync_limiter_override && !g_sync_limiter_override->empty()) {
-      if (auto mapped = map_sync_limiter(*g_sync_limiter_override)) {
-        sync_limiter_value = mapped;
+      sync_limiter_value = map_sync_limiter(*g_sync_limiter_override);
+      if (sync_limiter_value) {
         sync_limiter_label = *g_sync_limiter_override;
       } else {
         BOOST_LOG(warning) << "RTSS SyncLimiter override ignored; unknown mode: "sv << *g_sync_limiter_override;
       }
     }
     if (!sync_limiter_value) {
-      if (auto v = map_sync_limiter(config::rtss.frame_limit_type)) {
-        sync_limiter_value = v;
-        if (!config::rtss.frame_limit_type.empty()) {
-          sync_limiter_label = config::rtss.frame_limit_type;
-        }
-      }
-    }
-    if (sync_limiter_value) {
-      bool already_set = g_original_sync_limiter.has_value() && *g_original_sync_limiter == *sync_limiter_value;
-      bool applied = false;
-      if (!already_set) {
-        if (hooks_available()) {
-          applied = set_profile_property_int("SyncLimiter", *sync_limiter_value).has_value();
-        }
-        if (!applied && write_profile_value_int(g_rtss_root, "SyncLimiter", *sync_limiter_value)) {
-          applied = true;
-        }
-        if (applied) {
-          g_sync_limiter_modified = true;
-          g_settings_dirty = true;
-        }
-      } else {
-        applied = true;
-      }
-      if (applied) {
-        if (sync_limiter_label) {
-          BOOST_LOG(info) << (already_set ? "RTSS SyncLimiter already set ("sv : "RTSS SyncLimiter applied ("sv)
-                          << *sync_limiter_label << ')';
-        } else {
-          BOOST_LOG(info) << (already_set ? "RTSS SyncLimiter already set"sv : "RTSS SyncLimiter applied"sv);
-        }
+      sync_limiter_value = map_sync_limiter(config::rtss.frame_limit_type);
+      if (sync_limiter_value && !config::rtss.frame_limit_type.empty()) {
+        sync_limiter_label = config::rtss.frame_limit_type;
       }
     }
 
-    // Apply framerate limit
-    bool limit_already_set = g_original_limit.has_value() && *g_original_limit == applied_limit;
-    double limit_fps = current_denominator > 0 ? (double) applied_limit / current_denominator : 0.0;
-
-    if (hooks_available()) {
-      if (limit_already_set) {
-        BOOST_LOG(info) << "RTSS framerate limit already at " << limit_fps << "Hz (raw=" << applied_limit << ", denominator=" << current_denominator << ")";
-        g_limit_active = true;
-      } else {
-        if (set_profile_property_int("FramerateLimit", applied_limit).has_value()) {
-          BOOST_LOG(info) << "RTSS applied framerate limit=" << limit_fps << "Hz (raw=" << applied_limit << ", denominator=" << current_denominator << ")";
-          g_limit_active = true;
-          g_limit_modified = true;
-          g_settings_dirty = true;
-        }
-      }
-    }
-    if (!g_limit_active) {
-      if (limit_already_set) {
-        BOOST_LOG(info) << "RTSS profile framerate limit already "sv << applied_limit << " ("sv << limit_fps << "Hz)"sv;
-        g_limit_active = true;
-      } else if (write_profile_value_int(g_rtss_root, "FramerateLimit", applied_limit)) {
-        BOOST_LOG(info) << "RTSS profile framerate limit set to "sv << applied_limit << " ("sv << limit_fps << "Hz)"sv;
-        g_limit_active = true;
-        g_limit_modified = true;
-        g_settings_dirty = true;
-      }
-    }
-    
+    g_flags_modified = g_original_flags && (*g_original_flags & k_rtss_flag_limiter_disabled);
+    g_limit_modified = g_original_limit != requested_limit;
+    g_denominator_modified = g_original_denominator != requested_denominator;
+    g_sync_limiter_modified = sync_limiter_value && g_original_sync_limiter != sync_limiter_value;
+    g_settings_dirty = g_flags_modified || g_limit_modified || g_denominator_modified || g_sync_limiter_modified;
     if (g_settings_dirty) {
       recovery_snapshot_t snapshot;
-      snapshot.flags_modified = g_flags_modified && g_original_flags.has_value();
+      snapshot.flags_modified = g_flags_modified;
       snapshot.original_flags = g_original_flags;
-      snapshot.denominator_modified = g_denominator_modified && g_original_denominator.has_value();
+      snapshot.denominator_modified = g_denominator_modified;
       snapshot.original_denominator = g_original_denominator;
       snapshot.limit_modified = g_limit_modified;
       snapshot.original_limit = g_original_limit;
       snapshot.sync_limiter_modified = g_sync_limiter_modified;
       snapshot.original_sync_limiter = g_original_sync_limiter;
+      // Do not alter RTSS until the original pair is recoverable after a
+      // crash. Numerator and denominator must never be restored separately.
       g_recovery_file_owned = write_overrides_file(snapshot);
+      if (!g_recovery_file_owned) {
+        BOOST_LOG(error) << "RTSS overrides: refusing to apply changes without a durable recovery snapshot.";
+        return false;
+      }
     } else {
       g_recovery_file_owned = false;
     }
-    // A profile-file write cannot prove that a stalled RTSS process consumed
-    // the change. Report failure so the provider orchestrator can use a driver
-    // fallback while retaining our recovery snapshot for stream cleanup.
-    return g_limit_active && !g_hooks_failed;
-  }
 
-  bool rtss_streaming_refresh(int fps) {
-    if (!config::frame_limiter.enable) {
-      return false;
+    if (g_flags_modified) {
+      constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
+      const auto updated_flags = set_hook_flags(~limiter_mask, 0);
+      if (!updated_flags || (*updated_flags & limiter_mask)) {
+        BOOST_LOG(warning) << "Failed to enable RTSS limiter via SetFlags.";
+        return false;
+      }
     }
 
+    const auto *limit_to_write = g_limit_modified ? &requested_limit : nullptr;
+    const auto *denominator_to_write = g_denominator_modified ? &requested_denominator : nullptr;
+    const auto *sync_to_write = g_sync_limiter_modified ? &sync_limiter_value : nullptr;
+    if (limit_to_write || denominator_to_write || sync_to_write) {
+      if (!write_framerate_values(g_rtss_root, limit_to_write, denominator_to_write, sync_to_write) ||
+          !reload_profiles_from_disk()) {
+        BOOST_LOG(warning) << "RTSS did not acknowledge the atomic frame-limit profile update.";
+        return false;
+      }
+    }
+
+    g_limit_active = true;
+    BOOST_LOG(info) << "RTSS applied framerate limit=" << (static_cast<double>(numerator) / denominator)
+                    << " Hz (raw=" << numerator << ", denominator=" << denominator << ")";
+    if (sync_limiter_label) {
+      BOOST_LOG(info) << "RTSS SyncLimiter applied (" << *sync_limiter_label << ')';
+    }
+    return !g_hooks_failed;
+  }
+
+  bool rtss_streaming_refresh(int numerator, int denominator) {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
+    if (!config::frame_limiter.enable || numerator <= 0 || denominator <= 0) {
+      return false;
+    }
     if (!g_limit_active && !g_settings_dirty) {
-      return rtss_streaming_start(fps, 1);
+      return rtss_streaming_start(numerator, denominator);
     }
 
     g_rtss_root = resolve_rtss_root();
-    if (!fs::exists(g_rtss_root)) {
-      BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
+    if (!fs::exists(g_rtss_root) || !load_hooks(g_rtss_root)) {
       return false;
     }
 
-    ensure_rtss_running(g_rtss_root);
-
-    if (!hooks_available()) {
-      (void) load_hooks(g_rtss_root);
+    const std::optional<int> requested_limit {numerator};
+    const std::optional<int> requested_denominator {denominator};
+    const auto current_limit = read_profile_value_int(g_rtss_root, k_rtss_limit_profile_key);
+    const auto current_denominator = read_profile_value_int(g_rtss_root, k_rtss_denominator_profile_key);
+    const bool write_limit = current_limit != requested_limit;
+    const bool write_denominator = current_denominator != requested_denominator;
+    if (!write_limit && !write_denominator) {
+      return g_limit_active && !g_hooks_failed;
     }
 
-    bool dirty = false;
-
-    if (hooks_available()) {
-      auto current_flags = get_hook_flags();
-      if (current_flags && !g_original_flags.has_value()) {
-        g_original_flags = *current_flags;
-      }
-      if (current_flags && (*current_flags & k_rtss_flag_limiter_disabled)) {
-        constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
-        auto updated_flags = set_hook_flags(~limiter_mask, 0);
-        if (updated_flags && !(*updated_flags & limiter_mask)) {
-          g_flags_modified = true;
-          dirty = true;
-        } else if (!updated_flags) {
-          // Treat a timed-out write as potentially applied so cleanup restores it.
-          g_flags_modified = true;
-          dirty = true;
-        }
-      }
-    }
-
-    int current_denominator = 1;
-    auto old_den = set_limit_denominator(g_rtss_root, current_denominator);
-    if (old_den.has_value() && *old_den != current_denominator) {
-      if (!g_original_denominator.has_value()) {
-        g_original_denominator = *old_den;
-      }
-      g_denominator_modified = true;
-      dirty = true;
-    }
-    if (hooks_available()) {
-      (void) update_profiles();
-    }
-
-    std::optional<int> sync_limiter_value;
-    std::optional<std::string> sync_limiter_label;
-    if (g_sync_limiter_override && !g_sync_limiter_override->empty()) {
-      if (auto mapped = map_sync_limiter(*g_sync_limiter_override)) {
-        sync_limiter_value = mapped;
-        sync_limiter_label = *g_sync_limiter_override;
-      }
-    }
-    if (!sync_limiter_value) {
-      if (auto v = map_sync_limiter(config::rtss.frame_limit_type)) {
-        sync_limiter_value = v;
-        if (!config::rtss.frame_limit_type.empty()) {
-          sync_limiter_label = config::rtss.frame_limit_type;
-        }
-      }
-    }
-    if (sync_limiter_value) {
-      bool applied = false;
-      if (hooks_available()) {
-        applied = set_profile_property_int("SyncLimiter", *sync_limiter_value).has_value();
-      }
-      if (!applied && write_profile_value_int(g_rtss_root, "SyncLimiter", *sync_limiter_value)) {
-        applied = true;
-      }
-      if (applied) {
-        g_sync_limiter_modified = true;
-        dirty = true;
-        if (sync_limiter_label) {
-          BOOST_LOG(info) << "RTSS SyncLimiter refreshed ("sv << *sync_limiter_label << ')';
-        } else {
-          BOOST_LOG(info) << "RTSS SyncLimiter refreshed";
-        }
-      }
-    }
-
-    int scaled_limit = fps;
-    bool applied_limit = false;
-    if (hooks_available()) {
-      applied_limit = set_profile_property_int("FramerateLimit", scaled_limit).has_value();
-    }
-    if (!applied_limit && write_profile_value_int(g_rtss_root, "FramerateLimit", scaled_limit)) {
-      applied_limit = true;
-    }
-    if (applied_limit) {
-      g_limit_active = true;
-      g_limit_modified = true;
-      dirty = true;
-      BOOST_LOG(info) << "RTSS refreshed framerate limit=" << scaled_limit << " (denominator=" << current_denominator << ")";
-    }
-
-    if (dirty && !g_settings_dirty) {
-      g_settings_dirty = true;
+    // If another program changed a profile key that this stream did not own
+    // yet, refresh is about to take ownership of it. Capture that *current*
+    // value and persist the expanded recovery snapshot before overwriting the
+    // raw numerator/denominator pair.
+    const bool acquiring_limit = write_limit && !g_limit_modified;
+    const bool acquiring_denominator = write_denominator && !g_denominator_modified;
+    const auto next_original_limit = acquiring_limit ? current_limit : g_original_limit;
+    const auto next_original_denominator = acquiring_denominator ? current_denominator : g_original_denominator;
+    const bool next_limit_modified = g_limit_modified || write_limit;
+    const bool next_denominator_modified = g_denominator_modified || write_denominator;
+    const bool needs_snapshot = !g_settings_dirty || !g_recovery_file_owned || acquiring_limit || acquiring_denominator;
+    if (needs_snapshot) {
       recovery_snapshot_t snapshot;
-      snapshot.flags_modified = g_flags_modified && g_original_flags.has_value();
+      snapshot.flags_modified = g_flags_modified;
       snapshot.original_flags = g_original_flags;
-      snapshot.denominator_modified = g_denominator_modified && g_original_denominator.has_value();
-      snapshot.original_denominator = g_original_denominator;
-      snapshot.limit_modified = g_limit_modified;
-      snapshot.original_limit = g_original_limit;
+      snapshot.limit_modified = next_limit_modified;
+      snapshot.original_limit = next_original_limit;
+      snapshot.denominator_modified = next_denominator_modified;
+      snapshot.original_denominator = next_original_denominator;
       snapshot.sync_limiter_modified = g_sync_limiter_modified;
       snapshot.original_sync_limiter = g_original_sync_limiter;
-      g_recovery_file_owned = write_overrides_file(snapshot);
+      if (!write_overrides_file(snapshot)) {
+        BOOST_LOG(error) << "RTSS overrides: refusing to refresh without a durable recovery snapshot.";
+        return false;
+      }
+      g_recovery_file_owned = true;
     }
 
-    return applied_limit && !g_hooks_failed;
+    g_original_limit = next_original_limit;
+    g_original_denominator = next_original_denominator;
+    g_limit_modified = next_limit_modified;
+    g_denominator_modified = next_denominator_modified;
+    g_settings_dirty = true;
+
+    if (!write_framerate_values(
+          g_rtss_root,
+          write_limit ? &requested_limit : nullptr,
+          write_denominator ? &requested_denominator : nullptr,
+          nullptr
+        ) ||
+        !reload_profiles_from_disk()) {
+      return false;
+    }
+
+    g_limit_active = true;
+    BOOST_LOG(info) << "RTSS refreshed framerate limit=" << (static_cast<double>(numerator) / denominator)
+                    << " Hz (raw=" << numerator << ", denominator=" << denominator << ")";
+    return !g_hooks_failed;
   }
 
   bool rtss_hooks_stalled() {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     return g_hooks_failed;
   }
 
   void rtss_streaming_stop(bool keep_process_running) {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     g_sync_limiter_override.reset();
     auto cleanup = [&]() {
       g_original_limit.reset();
@@ -1294,7 +1174,7 @@ namespace platf {
       g_denominator_modified = false;
       g_limit_modified = false;
       g_sync_limiter_modified = false;
-      if (g_hooks.module && g_active_hook_calls.load(std::memory_order_acquire) == 0) {
+      if (g_hooks.module && g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0) {
         FreeLibrary(g_hooks.module);
         g_hooks = {};
       }
@@ -1314,7 +1194,25 @@ namespace platf {
 
     bool restore_success = true;
 
-    if (hooks_available() && g_flags_modified && g_original_flags.has_value()) {
+    // Limit and LimitDenominator represent one rate. Restore every changed
+    // [Framerate] key in one file replacement and reload once, so a reader
+    // never observes the old numerator with the restored denominator (or the
+    // reverse). A null original value removes the key rather than inventing a
+    // zero that was not present before the stream.
+    const auto *limit_to_restore = g_limit_modified ? &g_original_limit : nullptr;
+    const auto *denominator_to_restore = g_denominator_modified ? &g_original_denominator : nullptr;
+    const auto *sync_to_restore = g_sync_limiter_modified ? &g_original_sync_limiter : nullptr;
+    if (limit_to_restore || denominator_to_restore || sync_to_restore) {
+      if (!write_framerate_values(g_rtss_root, limit_to_restore, denominator_to_restore, sync_to_restore) ||
+          !reload_profiles_from_disk()) {
+        BOOST_LOG(warning) << "RTSS did not acknowledge the atomic frame-limit restore.";
+        restore_success = false;
+      } else {
+        BOOST_LOG(info) << "RTSS restored frame-limit profile values atomically.";
+      }
+    }
+
+    if (g_flags_modified && g_original_flags.has_value() && hooks_available()) {
       constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
       bool limiter_disabled = (*g_original_flags & limiter_mask) != 0;
       DWORD xor_mask = limiter_disabled ? limiter_mask : 0;
@@ -1329,50 +1227,6 @@ namespace platf {
       // Flags have no profile-file fallback. Keep the recovery snapshot so a
       // later run can restore them after RTSS begins responding again.
       restore_success = false;
-    }
-
-    if (g_denominator_modified && g_original_denominator.has_value()) {
-      if (!set_limit_denominator(g_rtss_root, *g_original_denominator).has_value()) {
-        restore_success = false;
-      }
-    }
-
-    if (g_sync_limiter_modified && g_original_sync_limiter.has_value()) {
-      bool restored = false;
-      if (hooks_available()) {
-        restored = set_profile_property_int("SyncLimiter", *g_original_sync_limiter).has_value();
-      }
-      if (!restored && write_profile_value_int(g_rtss_root, "SyncLimiter", *g_original_sync_limiter)) {
-        restored = true;
-        BOOST_LOG(info) << "RTSS profile SyncLimiter restored to "sv << *g_original_sync_limiter;
-        if (hooks_available()) {
-          (void) update_profiles();
-        }
-      }
-      restore_success = restore_success && restored;
-    }
-
-    if (g_limit_modified) {
-      const int original_limit = g_original_limit.value_or(0);
-      bool restored = false;
-      if (hooks_available()) {
-        restored = set_profile_property_int("FramerateLimit", original_limit).has_value();
-      }
-      if (!restored && write_profile_value_int(g_rtss_root, "FramerateLimit", original_limit)) {
-        restored = true;
-        BOOST_LOG(info) << "RTSS profile framerate limit restored to "sv << original_limit;
-        if (hooks_available()) {
-          (void) update_profiles();
-        }
-      }
-      if (restored) {
-        if (g_original_limit.has_value()) {
-          BOOST_LOG(info) << "RTSS restored framerate limit=" << original_limit;
-        } else {
-          BOOST_LOG(info) << "RTSS restored framerate limit=<unset> (set 0)";
-        }
-      }
-      restore_success = restore_success && restored;
     }
 
     if (restore_success) {
@@ -1391,6 +1245,7 @@ namespace platf {
   }
 
   rtss_status_t rtss_get_status() {
+    std::scoped_lock lock {g_rtss_lifecycle_mutex};
     rtss_status_t st {};
     st.enabled = config::frame_limiter.enable;
     st.configured_path = config::rtss.install_path;
