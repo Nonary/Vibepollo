@@ -24,12 +24,25 @@ $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 $script:rebootRequired = $false
+$script:apolloServiceWasRunning = $false
 $script:virtualDisplayBrokerWasRunning = $false
 
 trap {
+    $failure = $_
+    try {
+        Start-VirtualDisplayBrokerIfNeeded
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Unable to restore the virtual display broker after failure: $($_.Exception.Message)"
+    }
+    try {
+        Start-ApolloServiceIfNeeded
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Unable to restore the Apollo service after failure: $($_.Exception.Message)"
+    }
+
     if ($InstallerBestEffort) {
         Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Optional virtual display driver setup did not complete.'
-        Write-Warning "[SunshineVirtualDisplay] Installer best-effort driver action failed: $($_.Exception.Message)"
+        Write-Warning "[SunshineVirtualDisplay] Installer best-effort driver action failed: $($failure.Exception.Message)"
         exit 0
     }
 
@@ -416,30 +429,59 @@ function Remove-CertificateIfPresent {
     }
 }
 
-function Stop-SunshineForDriverInstall {
-    $service = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue
+function Stop-ApolloForDriverInstall {
+    $service = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        $script:apolloServiceWasRunning = $true
+    }
     if ($service -and $service.Status -ne 'Stopped') {
-        Write-Host '[SunshineVirtualDisplay] Stopping Sunshine service before driver replacement.'
-        Stop-Service -Name 'SunshineService' -Force -ErrorAction Stop
+        Write-Host '[SunshineVirtualDisplay] Stopping Apollo service before driver repair.'
+        Stop-Service -Name 'ApolloService' -Force -ErrorAction Stop
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
 
     foreach ($process in @(Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue)) {
-        Write-Host "[SunshineVirtualDisplay] Stopping Sunshine process $($process.Id) before driver replacement."
+        Write-Host "[SunshineVirtualDisplay] Stopping Sunshine process $($process.Id) before driver repair."
         Stop-Process -Id $process.Id -Force -ErrorAction Stop
     }
 }
 
-function Stop-VirtualDisplayBrokerForDriverInstall {
-    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
-    if (-not $service -or $service.Status -eq 'Stopped') {
+function Start-ApolloServiceIfNeeded {
+    if (-not $script:apolloServiceWasRunning) {
         return
     }
 
-    $script:virtualDisplayBrokerWasRunning = $true
-    Write-Host '[SunshineVirtualDisplay] Stopping virtual display broker before driver replacement.'
-    Stop-Service -Name 'SunshineVirtualDisplayBroker' -Force -ErrorAction Stop
-    $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    $service = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue
+    if (-not $service) {
+        $script:apolloServiceWasRunning = $false
+        return
+    }
+    if ($service.Status -eq 'Running') {
+        $script:apolloServiceWasRunning = $false
+        return
+    }
+
+    Write-Host '[SunshineVirtualDisplay] Restarting Apollo service after driver repair.'
+    Start-Service -Name 'ApolloService' -ErrorAction Stop
+    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    $script:apolloServiceWasRunning = $false
+}
+
+function Stop-VirtualDisplayBrokerForDriverInstall {
+    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        $script:virtualDisplayBrokerWasRunning = $true
+    }
+    if ($service -and $service.Status -ne 'Stopped') {
+        Write-Host '[SunshineVirtualDisplay] Stopping virtual display broker before driver repair.'
+        Stop-Service -Name 'SunshineVirtualDisplayBroker' -Force -ErrorAction Stop
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+
+    foreach ($process in @(Get-Process -Name 'virtualdisplay_broker' -ErrorAction SilentlyContinue)) {
+        Write-Host "[SunshineVirtualDisplay] Stopping stale virtual display broker process $($process.Id)."
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    }
 }
 
 function Start-VirtualDisplayBrokerIfNeeded {
@@ -448,13 +490,19 @@ function Start-VirtualDisplayBrokerIfNeeded {
     }
 
     $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
-    if (-not $service -or $service.Status -eq 'Running') {
+    if (-not $service) {
+        $script:virtualDisplayBrokerWasRunning = $false
+        return
+    }
+    if ($service.Status -eq 'Running') {
+        $script:virtualDisplayBrokerWasRunning = $false
         return
     }
 
     Write-Host '[SunshineVirtualDisplay] Starting virtual display broker after driver replacement.'
     Start-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction Stop
     $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    $script:virtualDisplayBrokerWasRunning = $false
 }
 
 function Stop-SunshineVirtualDisplayDriverHost {
@@ -900,16 +948,16 @@ function Get-SunshineDeviceInstanceId {
 }
 
 function Reset-SunshineVirtualDisplayDeviceNode {
-    Write-Host '[SunshineVirtualDisplay] Recreating stale device node after failed runtime revive.'
+    Write-Host '[SunshineVirtualDisplay] Clean-restaging the driver and device node after failed runtime revive.'
 
     try {
         Stop-VirtualDisplayBrokerForDriverInstall
         Remove-DeviceNode
-
-        try {
-            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
-        } catch {
-            Write-Warning $_.Exception.Message
+        Remove-DriverPackage
+        Install-DriverPackage
+        if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
+            Write-DriverStorePayloadDiagnostics
+            throw '[SunshineVirtualDisplay] DriverStore payload did not match the packaged driver after recovery restaging.'
         }
 
         Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
@@ -920,11 +968,11 @@ function Reset-SunshineVirtualDisplayDeviceNode {
 
         if (Test-TemporaryVirtualDisplay) {
             $script:rebootRequired = $false
-            Write-Host '[SunshineVirtualDisplay] Device-node recreation restored the virtual display driver without a restart.'
+            Write-Host '[SunshineVirtualDisplay] Clean driver and device-node restaging restored the virtual display driver without a restart.'
             return $true
         }
     } catch {
-        Write-Warning "[SunshineVirtualDisplay] Device-node recreation failed: $($_.Exception.Message)"
+        Write-Warning "[SunshineVirtualDisplay] Clean driver and device-node restaging failed: $($_.Exception.Message)"
     } finally {
         try {
             Start-VirtualDisplayBrokerIfNeeded
@@ -1082,10 +1130,14 @@ Register-VulkanLayer
 
 $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
 $deviceNodePresent = Test-DeviceNodePresent
+Stop-ApolloForDriverInstall
+Stop-VirtualDisplayBrokerForDriverInstall
 
 if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     Initialize-DriverStateRegistryAccess
     Invoke-InstallerHealthCheck
+    Start-VirtualDisplayBrokerIfNeeded
+    Start-ApolloServiceIfNeeded
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
     if ($script:rebootRequired) {
         Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
@@ -1093,8 +1145,6 @@ if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     exit 0
 }
 
-Stop-SunshineForDriverInstall
-Stop-VirtualDisplayBrokerForDriverInstall
 Install-DriverPackage
 
 if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
@@ -1120,6 +1170,8 @@ Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
 Restart-SunshineVirtualDisplayRuntime
 Initialize-DriverStateRegistryAccess
 Invoke-InstallerHealthCheck
+Start-VirtualDisplayBrokerIfNeeded
+Start-ApolloServiceIfNeeded
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
 if ($script:rebootRequired) {
