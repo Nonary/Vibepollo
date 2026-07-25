@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -90,6 +91,7 @@ namespace VDISPLAY {
     std::optional<std::string> client_name;
     std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
+    bool confirmed_active = false;
     std::chrono::steady_clock::time_point ready_since;
   };
 
@@ -108,8 +110,13 @@ namespace VDISPLAY {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
     std::optional<std::wstring> monitor_device_path;
+    bool confirmed_active_at_schedule = false;
     unsigned int max_attempts = 3;
-    std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
+    // A successful callback may publish state (such as a runtime output
+    // override) before the monitor makes its final cancellation decision.
+    // Return rollback work for the monitor to invoke if that final decision
+    // rejects the recreation; discard it on a committed recovery.
+    std::function<std::function<void()>(const VirtualDisplayCreationResult &, std::stop_token)> on_recovery_success;
     std::function<bool()> should_abort;
   };
 
@@ -143,6 +150,8 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void request_virtual_display_recovery_shutdown();
+  void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);

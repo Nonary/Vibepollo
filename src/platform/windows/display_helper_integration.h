@@ -12,6 +12,7 @@
 #include <display_device/types.h>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -28,13 +29,21 @@ namespace display_helper_integration {
 
   // Launch the helper (if needed) and process the provided builder request.
   // Returns true if the helper accepted the command; false to allow fallback.
-  bool apply(const DisplayApplyRequest &request, ApplyVerificationTicket *verification_ticket = nullptr);
+  // A cancellation predicate is intended for recovery workers during shutdown.
+  // It interrupts helper IPC waits and disables the potentially blocking
+  // in-process fallback for that caller.
+  bool apply(
+    const DisplayApplyRequest &request,
+    ApplyVerificationTicket *verification_ticket = nullptr,
+    std::function<bool()> cancellation_predicate = {});
 
   // Returns true if a deferred APPLY request is currently queued.
   bool has_pending_apply();
 
-  // Retry a deferred APPLY request once a user session is available.
-  bool apply_pending_if_ready();
+  // Retry a deferred APPLY request once a user session is available. The
+  // optional predicate lets an owned shutdown worker abandon a long helper
+  // operation before teardown begins.
+  bool apply_pending_if_ready(std::function<bool()> cancellation_predicate = {});
 
   // Clear any deferred APPLY request (used when sessions end).
   void clear_pending_apply();
@@ -45,7 +54,7 @@ namespace display_helper_integration {
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.
-  bool disarm_pending_restore();
+  bool disarm_pending_restore(std::function<bool()> cancellation_predicate = {});
 
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();

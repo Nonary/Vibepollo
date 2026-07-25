@@ -485,4 +485,18 @@ namespace config {
   void set_runtime_output_name_override(std::optional<std::string> output_name);
   std::optional<std::string> runtime_output_name_override();
   std::string get_active_output_name();
+
+#ifdef _WIN32
+  // A recovery worker can publish a temporary virtual-output override.  The
+  // lease makes rollback conditional so an older recovery cannot erase an
+  // override installed by a newer session.
+  using runtime_output_override_lease_t = std::uint64_t;
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
+  bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
+
+  // The lock-screen virtual-output retry worker is owned work.  Main stops
+  // and joins it before configuration, display-helper, and mail teardown.
+  void request_deferred_virtual_output_reapply_shutdown();
+  void join_deferred_virtual_output_reapply_worker();
+#endif
 }  // namespace config

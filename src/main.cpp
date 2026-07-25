@@ -794,6 +794,16 @@ int main(int argc, char *argv[]) {
   session_monitor_join_thread_guard.disable();
 #endif
 
+#ifdef _WIN32
+  // Stop the owned lock-screen virtual-output worker before recovery workers
+  // can publish more overrides. Both use configuration, the display helper,
+  // and mail, all of which remain live until these joins complete.
+  config::request_deferred_virtual_output_reapply_shutdown();
+  VDISPLAY::request_virtual_display_recovery_shutdown();
+  config::join_deferred_virtual_output_reapply_worker();
+  VDISPLAY::join_virtual_display_recovery_monitors();
+#endif
+
   httpThread.join();
   configThread.join();
   rtspThread.join();

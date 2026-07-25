@@ -2338,7 +2338,9 @@ namespace config {
     std::optional<std::string> g_runtime_output_name_override;
 #ifdef _WIN32
     std::optional<std::string> g_deferred_virtual_output_name_override;
-    std::atomic<bool> g_virtual_output_retry_worker_running {false};
+    std::uint64_t g_next_runtime_output_override_lease {0};
+    std::uint64_t g_runtime_output_override_lease {0};
+    std::uint64_t g_deferred_virtual_output_override_lease {0};
 #endif
 
     // Runtime config override map applied on top of config file values (not persisted).
@@ -2523,36 +2525,94 @@ namespace config {
       return VDISPLAY::is_virtual_display_output(*output_name);
     }
 
-    void schedule_deferred_virtual_output_reapply() {
-      bool expected = false;
-      if (!g_virtual_output_retry_worker_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        return;
+    struct deferred_virtual_output_reapply_worker_t {
+      // `worker` is declared last so its destructor requests stop and joins
+      // while the mutex/condition variable it uses are still alive.
+      std::mutex mutex;
+      std::condition_variable wake;
+      bool shutdown_requested {false};
+      std::jthread worker;
+
+      ~deferred_virtual_output_reapply_worker_t() {
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          shutdown_requested = true;
+          if (worker.joinable()) {
+            worker.request_stop();
+          }
+        }
+        wake.notify_all();
+        if (worker.joinable() && worker.get_id() != std::this_thread::get_id()) {
+          worker.join();
+        }
       }
+    };
 
-      std::thread([]() {
-        auto reset_running = util::fail_guard([]() {
-          g_virtual_output_retry_worker_running.store(false, std::memory_order_release);
-        });
+    deferred_virtual_output_reapply_worker_t &deferred_virtual_output_reapply_worker() {
+      // Function-local lifetime ensures that the fallback destructor runs
+      // before configuration globals initialized during startup.
+      static deferred_virtual_output_reapply_worker_t worker;
+      return worker;
+    }
 
-        constexpr auto kPollInterval = std::chrono::milliseconds(250);
-        // If we have any deferred display-helper APPLY work (e.g. resolution/HDR/exclusivity),
-        // ensure it runs before we force capture to reinit/retarget. Applying can itself cause
-        // a capture reinit, so order matters.
-        constexpr auto kPendingApplyMaxWait = std::chrono::seconds(8);
+    bool deferred_virtual_output_reapply_should_stop(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token
+    ) {
+      if (stop_token.stop_requested()) {
+        return true;
+      }
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      return worker.shutdown_requested;
+    }
 
-        for (;;) {
-          std::optional<std::string> deferred_output;
+    bool wait_for_deferred_virtual_output_reapply(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token,
+      std::chrono::steady_clock::duration delay
+    ) {
+      std::unique_lock<std::mutex> lock(worker.mutex);
+      worker.wake.wait_for(lock, delay, [&] {
+        return worker.shutdown_requested || stop_token.stop_requested();
+      });
+      return worker.shutdown_requested || stop_token.stop_requested();
+    }
+
+    void run_deferred_virtual_output_reapply_worker(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token
+    ) {
+      constexpr auto kPollInterval = std::chrono::milliseconds(250);
+      constexpr auto kIdleWakeInterval = std::chrono::hours(24);
+      // If we have any deferred display-helper APPLY work (e.g. resolution/HDR/exclusivity),
+      // ensure it runs before we force capture to reinit/retarget. Applying can itself cause
+      // a capture reinit, so order matters.
+      constexpr auto kPendingApplyMaxWait = std::chrono::seconds(8);
+
+      const auto cancelled = [&] {
+        return deferred_virtual_output_reapply_should_stop(worker, stop_token);
+      };
+
+      while (!cancelled()) {
+        try {
+          bool has_deferred_output = false;
           {
             std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
-            deferred_output = g_deferred_virtual_output_name_override;
+            has_deferred_output = g_deferred_virtual_output_name_override &&
+                                  !g_deferred_virtual_output_name_override->empty();
           }
 
-          if (!deferred_output || deferred_output->empty()) {
-            return;
+          if (!has_deferred_output) {
+            if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kIdleWakeInterval)) {
+              return;
+            }
+            continue;
           }
 
           if (platf::is_lock_screen_active()) {
-            std::this_thread::sleep_for(kPollInterval);
+            if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+              return;
+            }
             continue;
           }
 
@@ -2560,43 +2620,139 @@ namespace config {
           {
             std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
             if (!g_deferred_virtual_output_name_override || g_deferred_virtual_output_name_override->empty()) {
-              return;
+              continue;
             }
             if (!platf::is_lock_screen_active()) {
               g_runtime_output_name_override = g_deferred_virtual_output_name_override;
+              g_runtime_output_override_lease = g_deferred_virtual_output_override_lease;
               g_deferred_virtual_output_name_override.reset();
+              g_deferred_virtual_output_override_lease = 0;
               applied = true;
             }
           }
 
-          if (applied) {
-            BOOST_LOG(info) << "Lock screen cleared; applied deferred virtual output override.";
+          if (!applied) {
+            continue;
+          }
 
-            // Ensure any queued helper APPLY runs before we request capture reinit, otherwise
-            // we can retarget capture first and then deadlock when APPLY triggers a reinit.
-            if (display_helper_integration::has_pending_apply()) {
-              const auto deadline = std::chrono::steady_clock::now() + kPendingApplyMaxWait;
-              while (display_helper_integration::has_pending_apply() &&
-                     std::chrono::steady_clock::now() < deadline) {
-                (void) display_helper_integration::apply_pending_if_ready();
-                std::this_thread::sleep_for(kPollInterval);
-              }
-              if (display_helper_integration::has_pending_apply()) {
-                BOOST_LOG(warning) << "Deferred virtual output override applied, but deferred display-helper APPLY is still pending; proceeding with capture retarget.";
+          if (cancelled()) {
+            return;
+          }
+          BOOST_LOG(info) << "Lock screen cleared; applied deferred virtual output override.";
+
+          // Ensure any queued helper APPLY runs before we request capture reinit, otherwise
+          // we can retarget capture first and then deadlock when APPLY triggers a reinit.
+          if (display_helper_integration::has_pending_apply()) {
+            const auto deadline = std::chrono::steady_clock::now() + kPendingApplyMaxWait;
+            while (!cancelled() && display_helper_integration::has_pending_apply() &&
+                   std::chrono::steady_clock::now() < deadline) {
+              (void) display_helper_integration::apply_pending_if_ready(cancelled);
+              if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+                return;
               }
             }
-
-            if (mail::man) {
-              // -1 means "reinit only; keep display selection logic intact".
-              mail::man->event<int>(mail::switch_display)->raise(-1);
-              BOOST_LOG(info) << "Requested capture reinit after deferred virtual output override reapply.";
+            if (!cancelled() && display_helper_integration::has_pending_apply()) {
+              BOOST_LOG(warning) << "Deferred virtual output override applied, but deferred display-helper APPLY is still pending; proceeding with capture retarget.";
             }
+          }
+
+          if (cancelled()) {
+            return;
+          }
+          if (mail::man) {
+            // -1 means "reinit only; keep display selection logic intact".
+            mail::man->event<int>(mail::switch_display)->raise(-1);
+            BOOST_LOG(info) << "Requested capture reinit after deferred virtual output override reapply.";
+          }
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Deferred virtual output reapply worker failed: " << e.what();
+          if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+            return;
+          }
+        } catch (...) {
+          BOOST_LOG(error) << "Deferred virtual output reapply worker failed with an unknown exception.";
+          if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
             return;
           }
         }
-      }).detach();
+      }
+    }
+
+    void schedule_deferred_virtual_output_reapply() {
+      auto &worker = deferred_virtual_output_reapply_worker();
+      {
+        std::lock_guard<std::mutex> lock(worker.mutex);
+        if (worker.shutdown_requested) {
+          return;
+        }
+        if (!worker.worker.joinable()) {
+          try {
+            worker.worker = std::jthread([&worker](std::stop_token stop_token) {
+              run_deferred_virtual_output_reapply_worker(worker, stop_token);
+            });
+          } catch (const std::system_error &e) {
+            BOOST_LOG(error) << "Unable to create deferred virtual output reapply worker: " << e.what();
+            return;
+          }
+        }
+      }
+      worker.wake.notify_all();
     }
 #endif
+
+    std::uint64_t set_runtime_output_name_override_impl(std::optional<std::string> output_name) {
+      bool should_schedule_deferred_reapply = false;
+      std::uint64_t lease = 0;
+
+      std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
+#ifdef _WIN32
+      // Increment for every publication or clear. A recovery rollback can
+      // therefore clear only the exact override it published, even if a
+      // newer session selects the same device id.
+      lease = ++g_next_runtime_output_override_lease;
+#endif
+      if (!output_name) {
+        g_runtime_output_name_override.reset();
+#ifdef _WIN32
+        g_runtime_output_override_lease = 0;
+        g_deferred_virtual_output_name_override.reset();
+        g_deferred_virtual_output_override_lease = 0;
+#endif
+        return lease;
+      }
+
+#ifdef _WIN32
+      // Lock screen can black out external outputs. Defer virtual override only when we
+      // have a usable physical fallback; otherwise keep virtual to avoid capture loss.
+      if (is_virtual_output_override(output_name) &&
+          platf::is_lock_screen_active() &&
+          VDISPLAY::has_active_physical_display()) {
+        if (!g_deferred_virtual_output_name_override || *g_deferred_virtual_output_name_override != *output_name) {
+          BOOST_LOG(info) << "Lock screen active; deferring virtual output override until unlock.";
+        }
+        g_deferred_virtual_output_name_override = std::move(output_name);
+        g_deferred_virtual_output_override_lease = lease;
+        g_runtime_output_name_override.reset();
+        g_runtime_output_override_lease = 0;
+        should_schedule_deferred_reapply = true;
+      } else {
+        g_runtime_output_name_override = std::move(output_name);
+        g_runtime_output_override_lease = lease;
+        g_deferred_virtual_output_name_override.reset();
+        g_deferred_virtual_output_override_lease = 0;
+      }
+#else
+      g_runtime_output_name_override = std::move(output_name);
+#endif
+
+#ifdef _WIN32
+      lock.unlock();
+      if (should_schedule_deferred_reapply) {
+        schedule_deferred_virtual_output_reapply();
+      }
+#endif
+      return lease;
+    }
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
@@ -2605,44 +2761,60 @@ namespace config {
   }
 
   void set_runtime_output_name_override(std::optional<std::string> output_name) {
-    bool should_schedule_deferred_reapply = false;
+    (void) set_runtime_output_name_override_impl(std::move(output_name));
+  }
+
+#ifdef _WIN32
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name) {
+    return set_runtime_output_name_override_impl(std::move(output_name));
+  }
+
+  bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease) {
+    if (lease == 0) {
+      return false;
+    }
 
     std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
-    if (!output_name) {
+    bool cleared = false;
+    if (g_runtime_output_override_lease == lease) {
       g_runtime_output_name_override.reset();
-#ifdef _WIN32
+      g_runtime_output_override_lease = 0;
+      cleared = true;
+    }
+    if (g_deferred_virtual_output_override_lease == lease) {
       g_deferred_virtual_output_name_override.reset();
-#endif
-      return;
+      g_deferred_virtual_output_override_lease = 0;
+      cleared = true;
     }
-
-#ifdef _WIN32
-    // Lock screen can black out external outputs. Defer virtual override only when we
-    // have a usable physical fallback; otherwise keep virtual to avoid capture loss.
-    if (is_virtual_output_override(output_name) &&
-        platf::is_lock_screen_active() &&
-        VDISPLAY::has_active_physical_display()) {
-      if (!g_deferred_virtual_output_name_override || *g_deferred_virtual_output_name_override != *output_name) {
-        BOOST_LOG(info) << "Lock screen active; deferring virtual output override until unlock.";
-      }
-      g_deferred_virtual_output_name_override = std::move(output_name);
-      g_runtime_output_name_override.reset();
-      should_schedule_deferred_reapply = true;
-    } else {
-      g_runtime_output_name_override = std::move(output_name);
-      g_deferred_virtual_output_name_override.reset();
-    }
-#else
-    g_runtime_output_name_override = std::move(output_name);
-#endif
-
-#ifdef _WIN32
-    lock.unlock();
-    if (should_schedule_deferred_reapply) {
-      schedule_deferred_virtual_output_reapply();
-    }
-#endif
+    return cleared;
   }
+
+  void request_deferred_virtual_output_reapply_shutdown() {
+    auto &worker = deferred_virtual_output_reapply_worker();
+    {
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      worker.shutdown_requested = true;
+      if (worker.worker.joinable()) {
+        worker.worker.request_stop();
+      }
+    }
+    worker.wake.notify_all();
+  }
+
+  void join_deferred_virtual_output_reapply_worker() {
+    request_deferred_virtual_output_reapply_shutdown();
+
+    auto &worker = deferred_virtual_output_reapply_worker();
+    std::jthread worker_to_join;
+    {
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      worker_to_join = std::move(worker.worker);
+    }
+    if (worker_to_join.joinable()) {
+      worker_to_join.join();
+    }
+  }
+#endif
 
   std::optional<std::string> runtime_output_name_override() {
     std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);

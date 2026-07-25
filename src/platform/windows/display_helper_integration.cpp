@@ -15,6 +15,7 @@
   #include <cstdint>
   #include <exception>
   #include <filesystem>
+  #include <functional>
   #include <limits>
   #include <mutex>
   #include <optional>
@@ -76,17 +77,17 @@ namespace {
     int width = 0;
     int height = 0;
     int fps = 0;
-    bool enable_hdr = false;
-    bool enable_sops = false;
     bool client_display_mode_override = false;
     std::uint32_t client_display_refresh_millihz = 0;
+    bool enable_hdr = false;
+    bool enable_sops = false;
     bool virtual_display = false;
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<int> framegen_refresh_rate;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     bool gen1_framegen_fix = false;
-    std::optional<std::uint32_t> framegen_refresh_millihz;
     bool gen2_framegen_fix = false;
   };
 
@@ -110,14 +111,16 @@ namespace {
     return state;
   }
 
-  // The queue lock only protects pending state. This second lock keeps a
-  // claimed deferred APPLY ordered with normal APPLY, REVERT, and teardown.
+  // Serializes a claimed deferred APPLY with cancellation/revert. The pending
+  // state lock only protects the queue; this lock covers the actual IPC work.
   std::mutex &pending_apply_execution_mutex() {
     static std::mutex m;
     return m;
   }
 
-  // Requires pending_apply_execution_mutex().
+  // Requires pending_apply_execution_mutex(). A display operation owns that
+  // mutex across its IPC work, so clearing the queue here cannot race an
+  // in-flight deferred request or a newer normal APPLY/REVERT.
   void clear_pending_apply_queue_locked() {
     std::lock_guard<std::mutex> lock(pending_apply_mutex());
     pending_apply_state().reset();
@@ -151,17 +154,17 @@ namespace {
       state.session_snapshot.width = request.session->width;
       state.session_snapshot.height = request.session->height;
       state.session_snapshot.fps = request.session->fps;
-      state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
-      state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.client_display_mode_override = request.session->client_display_mode_override;
       state.session_snapshot.client_display_refresh_millihz = request.session->client_display_refresh_millihz;
+      state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
+      state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.virtual_display = request.session->virtual_display;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
       state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
-      state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
     }
 
@@ -250,11 +253,23 @@ namespace {
   constexpr int kMaxDeferredApplyAttempts = 6;
 
   bool shutdown_requested();
-  bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
+  bool ensure_helper_started(
+    bool force_restart = false,
+    bool force_enable = false,
+    const std::function<bool()> &cancellation_predicate = {});
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
 
-  bool helper_process_running() {
-    std::lock_guard<std::mutex> lg(helper_mutex());
+  bool helper_process_running(const std::function<bool()> &cancellation_predicate = {}) {
+    std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+    while (!lg.try_lock()) {
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    if (cancellation_predicate && cancellation_predicate()) {
+      return false;
+    }
     if (HANDLE h = helper_proc().get_process_handle()) {
       return WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
     }
@@ -516,24 +531,91 @@ namespace {
 
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
-  bool wait_for_helper_ipc_ready_locked() {
+  bool cancellation_requested(const std::function<bool()> &cancellation_predicate) {
+    return cancellation_predicate && cancellation_predicate();
+  }
+
+  bool sleep_with_cancellation(
+    std::chrono::milliseconds duration,
+    const std::function<bool()> &cancellation_predicate) {
+    constexpr auto slice = std::chrono::milliseconds(50);
+    for (auto elapsed = std::chrono::milliseconds::zero(); elapsed < duration; elapsed += slice) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::min(slice, duration - elapsed));
+    }
+    return !cancellation_requested(cancellation_predicate);
+  }
+
+  // Recovery owns a stop token and main joins it before it joins stream
+  // threads. Do not let that join wait behind a regular display operation:
+  // ordinary callers retain blocking serialization, while cancellable callers
+  // poll the gate and leave promptly after their owner requests stop.
+  bool lock_pending_apply_execution(
+    std::unique_lock<std::mutex> &lock,
+    const std::function<bool()> &cancellation_predicate) {
+    if (!cancellation_predicate) {
+      lock.lock();
+      return true;
+    }
+    while (!lock.try_lock()) {
+      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+        return false;
+      }
+    }
+    return !cancellation_requested(cancellation_predicate);
+  }
+
+  bool wait_for_process_with_cancellation(
+    HANDLE process,
+    DWORD timeout_ms,
+    const std::function<bool()> &cancellation_predicate,
+    DWORD &wait_result) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        wait_result = WAIT_TIMEOUT;
+        return true;
+      }
+      wait_result = WaitForSingleObject(process, static_cast<DWORD>(std::min<std::int64_t>(remaining.count(), 50)));
+      if (wait_result != WAIT_TIMEOUT) {
+        return true;
+      }
+    }
+  }
+
+  bool wait_for_helper_ipc_ready_locked(const std::function<bool()> &cancellation_predicate = {}) {
     const auto deadline = std::chrono::steady_clock::now() + kHelperIpcReadyTimeout;
     int attempts = 0;
 
-    platf::display_helper_client::reset_connection();
+    if (cancellation_requested(cancellation_predicate) ||
+        !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+      return false;
+    }
     while (std::chrono::steady_clock::now() < deadline) {
-      if (shutdown_requested()) {
+      if (shutdown_requested() || cancellation_requested(cancellation_predicate)) {
         return false;
       }
-      if (platf::display_helper_client::send_ping()) {
+      const bool ping_ok = cancellation_predicate ?
+                             platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                             platf::display_helper_client::send_ping();
+      if (ping_ok) {
         if (attempts > 0) {
           BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
         }
         return true;
       }
       ++attempts;
-      std::this_thread::sleep_for(kHelperIpcReadyPoll);
-      platf::display_helper_client::reset_connection();
+      if (!sleep_with_cancellation(kHelperIpcReadyPoll, cancellation_predicate) ||
+          !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+        return false;
+      }
     }
 
     BOOST_LOG(warning) << "Display helper IPC did not respond within " << kHelperIpcReadyTimeout.count()
@@ -558,14 +640,21 @@ namespace {
     }
   }
 
-  void kill_all_helper_processes() {
+  bool kill_all_helper_processes(const std::function<bool()> &cancellation_predicate = {}) {
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     helper_proc().terminate();
+
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
       DWORD err = GetLastError();
       BOOST_LOG(error) << "Display helper: failed to snapshot processes for cleanup (winerr=" << err << ").";
-      return;
+      return !cancellation_requested(cancellation_predicate);
     }
 
     PROCESSENTRY32W entry {};
@@ -589,6 +678,9 @@ namespace {
     CloseHandle(snapshot);
 
     for (DWORD pid : targets) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
       HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
       if (!h) {
         DWORD err = GetLastError();
@@ -604,7 +696,11 @@ namespace {
           DWORD err = GetLastError();
           BOOST_LOG(error) << "Display helper: TerminateProcess failed for pid=" << pid << " (winerr=" << err << ").";
         } else {
-          DWORD wait_res = WaitForSingleObject(h, kHelperForceKillWaitMs);
+          DWORD wait_res = WAIT_TIMEOUT;
+          if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_res)) {
+            CloseHandle(h);
+            return false;
+          }
           if (wait_res != WAIT_OBJECT_0) {
             BOOST_LOG(warning) << "Display helper: external instance pid=" << pid
                                << " did not exit within " << kHelperForceKillWaitMs << " ms.";
@@ -614,6 +710,7 @@ namespace {
 
       CloseHandle(h);
     }
+    return !cancellation_requested(cancellation_predicate);
   }
 
   struct session_dd_fields_t {
@@ -763,12 +860,15 @@ namespace {
     }
   }
 
-  bool disarm_helper_restore_if_running() {
-    if (shutdown_requested()) {
+  bool disarm_helper_restore_if_running(const std::function<bool()> &cancellation_predicate = {}) {
+    if (shutdown_requested() || cancellation_requested(cancellation_predicate)) {
       return false;
     }
 
-    const bool helper_running = helper_process_running();
+    const bool helper_running = helper_process_running(cancellation_predicate);
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     if (!helper_running) {
       g_restore_expected.store(false, std::memory_order_relaxed);
       return false;
@@ -813,6 +913,10 @@ namespace {
     const bool ok = platf::display_helper_client::send_disarm_restore_fast(
       static_cast<int>(kDisarmRestoreBudget.count()));
 
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
+
     if (ok) {
       g_last_disarm_success_us.store(now_us, std::memory_order_relaxed);
       g_disarm_generation_sent.store(restore_generation, std::memory_order_relaxed);
@@ -828,7 +932,15 @@ namespace {
       BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
                          << kDisarmRestoreBudget.count() << "ms; terminating helper to stop restore activity.";
       {
-        std::lock_guard<std::mutex> lg(helper_mutex());
+        std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+        while (!lg.try_lock()) {
+          if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+            return false;
+          }
+        }
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
         helper_proc().terminate();
       }
       g_restore_expected.store(false, std::memory_order_relaxed);
@@ -837,12 +949,23 @@ namespace {
     return false;
   }
 
-  bool ensure_helper_started(bool force_restart, bool force_enable) {
+  bool ensure_helper_started(
+    bool force_restart,
+    bool force_enable,
+    const std::function<bool()> &cancellation_predicate) {
     if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
     const bool shutting_down = shutdown_requested();
-    std::lock_guard<std::mutex> lg(helper_mutex());
+    std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+    while (!lg.try_lock()) {
+      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+        return false;
+      }
+    }
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
       BOOST_LOG(debug) << "Display helper: checking existing process handle...";
@@ -854,15 +977,22 @@ namespace {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
-            ping_ok = platf::display_helper_client::send_ping();
-            if (!ping_ok) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (cancellation_requested(cancellation_predicate)) {
+              return false;
+            }
+            ping_ok = cancellation_predicate ?
+                        platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                        platf::display_helper_client::send_ping();
+            if (!ping_ok && !sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+              return false;
             }
           }
           if (ping_ok) {
             return true;
           }
-          platf::display_helper_client::reset_connection();
+          if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+            return false;
+          }
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
           note_helper_start_failure("failed ping");
           return false;
@@ -872,15 +1002,22 @@ namespace {
           BOOST_LOG(debug) << "Display helper hard restart skipped because existing helper accepted a fast ping.";
           return true;
         }
-        platf::display_helper_client::reset_connection();
+        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+          return false;
+        }
         BOOST_LOG(warning) << "Display helper hard restart requested because existing helper did not accept a fast ping.";
 
         BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
                            << ") with no grace period.";
-        platf::display_helper_client::reset_connection();
+        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+          return false;
+        }
         helper_proc().terminate();
 
-        DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
+        DWORD wait_result = WAIT_TIMEOUT;
+        if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_result)) {
+          return false;
+        }
         if (wait_result == WAIT_OBJECT_0) {
           DWORD exit_code = 0;
           GetExitCodeProcess(h, &exit_code);
@@ -895,7 +1032,9 @@ namespace {
         }
 
         // Small delay to reduce the chance of named pipe / mutex conflicts during rapid restart.
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!sleep_with_cancellation(std::chrono::milliseconds(100), cancellation_predicate)) {
+          return false;
+        }
       } else {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
@@ -903,7 +1042,7 @@ namespace {
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
     }
-    if (shutting_down) {
+    if (shutting_down || cancellation_requested(cancellation_predicate)) {
       return false;
     }
 
@@ -911,7 +1050,9 @@ namespace {
       return false;
     }
 
-    kill_all_helper_processes();
+    if (!kill_all_helper_processes(cancellation_predicate)) {
+      return false;
+    }
 
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
@@ -938,12 +1079,17 @@ namespace {
     statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
                      << " " << platf::to_utf8(helper_args);
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     bool started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        if (!sleep_with_cancellation(std::chrono::milliseconds(150), cancellation_predicate)) {
+          return false;
+        }
         started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
       }
     }
@@ -966,6 +1112,9 @@ namespace {
     // Give the helper process time to initialize and create its named pipe server
     // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
     for (int check = 0; check < 6; ++check) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
       DWORD wait = WaitForSingleObject(h, 50);
       if (wait == WAIT_OBJECT_0) {
         DWORD exit_code = 0;
@@ -973,7 +1122,9 @@ namespace {
         if (exit_code == 3) {
           BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
                              << "Retrying after extended cleanup delay...";
-          std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+          if (!sleep_with_cancellation(std::chrono::milliseconds(1000), cancellation_predicate)) {
+            return false;
+          }
 
           const bool retry_started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
           if (!retry_started) {
@@ -985,7 +1136,9 @@ namespace {
           if (h) {
             pid = GetProcessId(h);
             BOOST_LOG(info) << "Display helper retry succeeded (pid=" << pid << ")";
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            if (!sleep_with_cancellation(std::chrono::milliseconds(300), cancellation_predicate)) {
+              return false;
+            }
           }
           break;
         } else {
@@ -997,11 +1150,13 @@ namespace {
     }
 
     // Final initialization delay for pipe server creation
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    const bool ipc_ready = wait_for_helper_ipc_ready_locked();
+    if (!sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+      return false;
+    }
+    const bool ipc_ready = wait_for_helper_ipc_ready_locked(cancellation_predicate);
     if (!ipc_ready) {
       note_helper_start_failure("IPC readiness timeout");
-    } else if (!legacy_engine) {
+    } else if (!legacy_engine && !cancellation_predicate) {
       // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
       // log "Unknown message type" for this frame).
       (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));
@@ -1101,43 +1256,46 @@ namespace {
     std::optional<bool> virtual_display_override = std::nullopt,
     std::optional<int> framegen_refresh_override = std::nullopt
   ) {
-    std::lock_guard<std::mutex> lg(g_session_mutex);
-    const bool same_session =
-      g_active_session_dd &&
-      g_active_session_dd->launch_session_id == session.id &&
-      g_active_session_dd->session_unique_id == session.unique_id &&
-      g_active_session_dd->session_client_uuid == session.client_uuid;
-    const auto generation = same_session ?
-                              g_active_session_dd->generation :
-                              ++g_next_active_session_generation;
-    const auto refresh_millihz = rtsp_stream::effective_display_refresh_millihz(session);
-    const int effective_fps = fps_override ? *fps_override : static_cast<int>(std::min<std::uint32_t>(
-      refresh_millihz,
-      static_cast<std::uint32_t>(std::numeric_limits<int>::max())
-    ));
-    g_active_session_dd = session_dd_fields_t {
-      .generation = generation,
-      .launch_session_id = session.id,
-      .session_unique_id = session.unique_id,
-      .session_client_uuid = session.client_uuid,
-      .width = width_override ? *width_override : session.width,
-      .height = height_override ? *height_override : session.height,
-      .fps = effective_fps,
-      .refresh_millihz = refresh_millihz,
-      .enable_hdr = rtsp_stream::effective_hdr_requested(session),
-      .enable_sops = session.enable_sops,
-      .virtual_display = virtual_display_override ? *virtual_display_override : session.virtual_display,
-      .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
-      .framegen_refresh_rate = framegen_refresh_override ? framegen_refresh_override : session.framegen_refresh_rate,
-      .framegen_refresh_millihz = session.framegen_refresh_millihz,
-      .framegen_refresh_multiplier = session.framegen_refresh_multiplier,
-      .gen1_framegen_fix = session.gen1_framegen_fix,
-      .gen2_framegen_fix = session.gen2_framegen_fix,
-    };
-    if (!g_active_session_dd->virtual_display_device_id.empty()) {
-      // Persist so the helper (including the boot-time restore task) can exclude this
-      // device from snapshots/baselines even when its EDID is not classifiable.
-      statefile::remember_virtual_display_device(g_active_session_dd->virtual_display_device_id);
+    std::uint64_t generation = 0;
+    {
+      std::lock_guard<std::mutex> lg(g_session_mutex);
+      const bool same_session =
+        g_active_session_dd &&
+        g_active_session_dd->launch_session_id == session.id &&
+        g_active_session_dd->session_unique_id == session.unique_id &&
+        g_active_session_dd->session_client_uuid == session.client_uuid;
+      generation = same_session ?
+                     g_active_session_dd->generation :
+                     ++g_next_active_session_generation;
+      const auto refresh_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+      const int effective_fps = fps_override ? *fps_override : static_cast<int>(std::min<std::uint32_t>(
+        refresh_millihz,
+        static_cast<std::uint32_t>(std::numeric_limits<int>::max())
+      ));
+      g_active_session_dd = session_dd_fields_t {
+        .generation = generation,
+        .launch_session_id = session.id,
+        .session_unique_id = session.unique_id,
+        .session_client_uuid = session.client_uuid,
+        .width = width_override ? *width_override : session.width,
+        .height = height_override ? *height_override : session.height,
+        .fps = effective_fps,
+        .refresh_millihz = refresh_millihz,
+        .enable_hdr = rtsp_stream::effective_hdr_requested(session),
+        .enable_sops = session.enable_sops,
+        .virtual_display = virtual_display_override ? *virtual_display_override : session.virtual_display,
+        .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
+        .framegen_refresh_rate = framegen_refresh_override ? framegen_refresh_override : session.framegen_refresh_rate,
+        .framegen_refresh_millihz = session.framegen_refresh_millihz,
+        .framegen_refresh_multiplier = session.framegen_refresh_multiplier,
+        .gen1_framegen_fix = session.gen1_framegen_fix,
+        .gen2_framegen_fix = session.gen2_framegen_fix,
+      };
+      if (!g_active_session_dd->virtual_display_device_id.empty()) {
+        // Persist so the helper (including the boot-time restore task) can exclude this
+        // device from snapshots/baselines even when its EDID is not classifiable.
+        statefile::remember_virtual_display_device(g_active_session_dd->virtual_display_device_id);
+      }
     }
   }
 
@@ -1193,7 +1351,9 @@ namespace {
     return true;
   }
 
-  // Requires g_watchdog_mutex.
+  // Requires g_watchdog_mutex. A stopped watchdog must finish its IPC/session
+  // teardown before another generation can begin, otherwise an old disconnect
+  // can erase the newly started stream's active-session state.
   static void finish_watchdog_stop_locked(const std::optional<std::uint64_t> &expected_generation) {
     if (g_watchdog_teardown_completed) {
       return;
@@ -1359,9 +1519,13 @@ namespace display_helper_integration {
     bool apply_internal(
       const DisplayApplyRequest &request,
       bool allow_resolution_deferral,
-      ApplyVerificationTicket *verification_ticket) {
+      ApplyVerificationTicket *verification_ticket,
+      const std::function<bool()> &cancellation_predicate = {}) {
       if (verification_ticket) {
         *verification_ticket = {};
+      }
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
       }
       if (request.action == DisplayApplyAction::Skip) {
         BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
@@ -1423,13 +1587,23 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: reusing existing helper because an unconfirmed restore is pending; APPLY will supersede it.";
       }
 
-      bool helper_ready = ensure_helper_started(hard_restart, true);
+      bool helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
       if (!helper_ready && hard_restart) {
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
         BOOST_LOG(warning) << "Display helper: hard restart path unavailable; retrying helper start without restart.";
-        helper_ready = ensure_helper_started(false, true);
+        helper_ready = ensure_helper_started(false, true, cancellation_predicate);
       }
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(hard_restart, true);
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
+        helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
+      }
+
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
       }
 
       if (helper_ready) {
@@ -1447,8 +1621,13 @@ namespace display_helper_integration {
           *payload,
           &helper_apply_request_id,
           &client_wait_generation,
-          &connection_generation);
+          &connection_generation,
+          cancellation_predicate);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
+        if (ok && cancellation_requested(cancellation_predicate)) {
+          BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
+          return false;
+        }
         // The client identifies the live helper protocol from its ApplyResult.
         // A non-zero id means this specific connection confirmed v2's
         // token/verification protocol; an untagged legacy acknowledgement
@@ -1460,6 +1639,10 @@ namespace display_helper_integration {
           verification_ticket->connection_generation = connection_generation;
         }
         if (ok && request.session) {
+          if (cancellation_requested(cancellation_predicate)) {
+            BOOST_LOG(debug) << "Display helper: APPLY session-state publication was cancelled.";
+            return false;
+          }
           g_restore_expected.store(false, std::memory_order_relaxed);
           note_successful_apply();
           set_active_session(
@@ -1475,6 +1658,9 @@ namespace display_helper_integration {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
         }
+        if (!ok && cancellation_predicate && cancellation_predicate()) {
+          return false;
+        }
         if (!ok && allow_resolution_deferral && request.session && platf::is_lock_screen_active()) {
           BOOST_LOG(info) << "Display helper: APPLY failed during lock screen; queuing deferred apply for retry after unlock.";
           queue_deferred_resolution_apply(request);
@@ -1485,6 +1671,11 @@ namespace display_helper_integration {
       if (system_no_user_session) {
         BOOST_LOG(warning) << "Display helper: helper unavailable in SYSTEM context without user session; skipping in-process APPLY fallback.";
         maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
+        return false;
+      }
+
+      if (cancellation_predicate) {
+        BOOST_LOG(debug) << "Display helper: recovery APPLY will not fall back to synchronous in-process display APIs.";
         return false;
       }
 
@@ -1572,8 +1763,17 @@ namespace display_helper_integration {
     return before != 0 && before == after && verified == after && eligible == after;
   }
 
-  bool apply(const DisplayApplyRequest &request, ApplyVerificationTicket *verification_ticket) {
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+  bool apply(
+    const DisplayApplyRequest &request,
+    ApplyVerificationTicket *verification_ticket,
+    std::function<bool()> cancellation_predicate) {
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+      return false;
+    }
     clear_pending_apply_queue_locked();
 
     // Remember the session's virtual display before the APPLY payload is built so the
@@ -1586,7 +1786,7 @@ namespace display_helper_integration {
         statefile::remember_virtual_display_device(vd_id);
       }
     }
-    return apply_internal(request, true, verification_ticket);
+    return apply_internal(request, true, verification_ticket, cancellation_predicate);
   }
 
   bool revert(bool prefer_golden_if_current_missing) {
@@ -1610,9 +1810,12 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool disarm_pending_restore() {
+  bool disarm_pending_restore(std::function<bool()> cancellation_predicate) {
+    if (cancellation_predicate && cancellation_predicate()) {
+      return false;
+    }
     invalidate_apply_verification();
-    return disarm_helper_restore_if_running();
+    return disarm_helper_restore_if_running(cancellation_predicate);
   }
 
   bool export_golden_restore() {
@@ -1664,12 +1867,25 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool apply_pending_if_ready() {
+  bool apply_pending_if_ready(std::function<bool()> cancellation_predicate) {
+    const auto cancelled = [&] {
+      return cancellation_predicate && cancellation_predicate();
+    };
+    if (cancelled()) {
+      return false;
+    }
+
     // A deferred APPLY must not outlive a normal APPLY, REVERT, or session
     // teardown. Keep ownership of the display operation until its IPC and
     // active-session update are complete.
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+      return false;
+    }
     bool check_idle_stop_after_apply = false;
+    if (cancelled()) {
+      return false;
+    }
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
       if (!pending_apply_state()) {
@@ -1677,7 +1893,7 @@ namespace display_helper_integration {
       }
     }
 
-    if (platf::is_running_as_system() && !user_session_ready()) {
+    if (cancelled() || (platf::is_running_as_system() && !user_session_ready())) {
       return false;
     }
 
@@ -1686,6 +1902,9 @@ namespace display_helper_integration {
     bool stream_was_live_when_claimed = false;
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (cancelled()) {
+        return false;
+      }
       if (!pending_apply_state()) {
         return false;
       }
@@ -1717,6 +1936,15 @@ namespace display_helper_integration {
       pending_apply_state().reset();
     }
 
+    if (cancelled()) {
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        pending.request.session = nullptr;
+        pending_apply_state() = std::move(pending);
+      }
+      return false;
+    }
+
     std::optional<rtsp_stream::launch_session_t> session;
     if (pending.has_session) {
       rtsp_stream::launch_session_t snapshot {};
@@ -1745,7 +1973,7 @@ namespace display_helper_integration {
     }
 
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
-    const bool ok = apply_internal(pending.request, false, nullptr);
+    const bool ok = apply_internal(pending.request, false, nullptr, cancellation_predicate);
     if (ok && stream_was_live_when_claimed && session) {
       if (const auto generation = active_session_generation_for(*session)) {
         // This retry may complete after start_watchdog() observed no active
@@ -1757,6 +1985,14 @@ namespace display_helper_integration {
       }
     }
     if (!ok) {
+      if (cancelled()) {
+        pending.request.session = nullptr;
+        std::lock_guard<std::mutex> lock(pending_apply_mutex());
+        if (!pending_apply_state()) {
+          pending_apply_state() = std::move(pending);
+        }
+        return false;
+      }
       pending.attempts += 1;
       pending.request.session = nullptr;
       const auto delay = deferred_apply_retry_delay(pending.attempts);

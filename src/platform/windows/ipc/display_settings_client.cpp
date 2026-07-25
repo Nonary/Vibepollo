@@ -775,12 +775,28 @@ namespace platf::display_helper_client {
   // write lease. If the active helper has not yet identified its protocol,
   // retire it in the same critical section so an untagged legacy reply cannot
   // cross this control boundary.
-  static std::uint64_t cancel_or_begin_apply_wait() {
+  static std::optional<std::uint64_t> cancel_or_begin_apply_wait_cancellable(const std::function<bool()> &cancelled) {
     SessionPtr retired;
     std::uint64_t generation = 0;
     {
-      std::lock_guard<std::timed_mutex> write_lock(write_mutex());
-      std::lock_guard<std::timed_mutex> connection_lock(connection_mutex());
+      std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
+      while (!write_lock.try_lock_for(std::chrono::milliseconds(100))) {
+        if (cancelled && cancelled()) {
+          return std::nullopt;
+        }
+      }
+      if (cancelled && cancelled()) {
+        return std::nullopt;
+      }
+      std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
+      while (!connection_lock.try_lock_for(std::chrono::milliseconds(100))) {
+        if (cancelled && cancelled()) {
+          return std::nullopt;
+        }
+      }
+      if (cancelled && cancelled()) {
+        return std::nullopt;
+      }
       retired = retire_untagged_response_session_if_needed_locked();
       generation = apply_wait_generation().fetch_add(1, std::memory_order_acq_rel) + 1;
     }
@@ -788,6 +804,13 @@ namespace platf::display_helper_client {
       reset_log_level_cache();
     }
     return generation;
+  }
+
+  static std::uint64_t cancel_or_begin_apply_wait() {
+    // The non-cancellable command paths preserve their existing blocking
+    // serialization semantics. The helper always returns a generation when
+    // no predicate is supplied.
+    return *cancel_or_begin_apply_wait_cancellable({});
   }
 
   // Ensure connected while holding connection_mutex(). Returns true on success.
@@ -852,8 +875,18 @@ namespace platf::display_helper_client {
     return false;
   }
 
-  static SessionPtr connected_session(std::optional<int> connect_timeout_override_ms = std::nullopt) {
-    std::unique_lock<std::timed_mutex> lock(connection_mutex());
+  static SessionPtr connected_session(
+    std::optional<int> connect_timeout_override_ms = std::nullopt,
+    const std::function<bool()> &cancelled = {}) {
+    std::unique_lock<std::timed_mutex> lock(connection_mutex(), std::defer_lock);
+    while (!lock.try_lock_for(std::chrono::milliseconds(100))) {
+      if (cancelled && cancelled()) {
+        return {};
+      }
+    }
+    if (cancelled && cancelled()) {
+      return {};
+    }
     if (!ensure_connected_locked(connect_timeout_override_ms)) {
       return {};
     }
@@ -954,16 +987,33 @@ namespace platf::display_helper_client {
     std::optional<int> send_timeout_override_ms = std::nullopt,
     std::optional<std::uint64_t> expected_apply_generation = std::nullopt,
     std::uint64_t *connection_generation_out = nullptr,
-    bool begins_untagged_response = false
+    bool begins_untagged_response = false,
+    const std::function<bool()> &cancelled = {}
   ) {
     if (!session || !session->pipe) {
       return false;
     }
-    std::lock_guard<std::timed_mutex> write_lock(write_mutex());
+    std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
+    while (!write_lock.try_lock_for(std::chrono::milliseconds(100))) {
+      if (cancelled && cancelled()) {
+        return false;
+      }
+    }
+    if (cancelled && cancelled()) {
+      return false;
+    }
     // Serialize command ownership with connection retirement. Hold the
     // connection lease through send_message too: an expected-generation check
     // must not be invalidated between the check and the frame write.
-    std::lock_guard<std::timed_mutex> connection_lock(connection_mutex());
+    std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
+    while (!connection_lock.try_lock_for(std::chrono::milliseconds(100))) {
+      if (cancelled && cancelled()) {
+        return false;
+      }
+    }
+    if (cancelled && cancelled()) {
+      return false;
+    }
     if (session_singleton() != session ||
         !session_is_current(session) ||
         (expected_apply_generation &&
@@ -1045,14 +1095,30 @@ namespace platf::display_helper_client {
     }
   }
 
-  void reset_connection() {
+  bool reset_connection_cancellable(std::function<bool()> cancellation_predicate) {
     SessionPtr retired;
     {
       // The wait-generation change and retirement are one ordered control
       // decision. A fresh APPLY therefore either wins before this reset starts
       // or sees a new/no session; it cannot write to a pipe about to retire.
-      std::lock_guard<std::timed_mutex> write_lock(write_mutex());
-      std::lock_guard<std::timed_mutex> connection_lock(connection_mutex());
+      std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
+      while (!write_lock.try_lock_for(std::chrono::milliseconds(100))) {
+        if (cancellation_predicate && cancellation_predicate()) {
+          return false;
+        }
+      }
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
+      }
+      std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
+      while (!connection_lock.try_lock_for(std::chrono::milliseconds(100))) {
+        if (cancellation_predicate && cancellation_predicate()) {
+          return false;
+        }
+      }
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
+      }
       (void) apply_wait_generation().fetch_add(1, std::memory_order_acq_rel);
       if (session_singleton()) {
         BOOST_LOG(debug) << "Display helper IPC: resetting cached connection";
@@ -1062,6 +1128,11 @@ namespace platf::display_helper_client {
     if (retired) {
       reset_log_level_cache();
     }
+    return true;
+  }
+
+  void reset_connection() {
+    (void) reset_connection_cancellable({});
   }
   std::optional<bool> wait_for_verification_result(
     int timeout_ms,
@@ -1149,10 +1220,9 @@ namespace platf::display_helper_client {
     const std::string &json,
     std::uint64_t *request_id_out,
     std::uint64_t *wait_generation_out,
-    std::uint64_t *connection_generation_out) {
+    std::uint64_t *connection_generation_out,
+    std::function<bool()> cancellation_predicate) {
     BOOST_LOG(debug) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
-    const auto wait_generation = cancel_or_begin_apply_wait();
-    const auto request_id = next_apply_request_id().fetch_add(1, std::memory_order_relaxed);
     if (request_id_out) {
       *request_id_out = 0;
     }
@@ -1162,6 +1232,14 @@ namespace platf::display_helper_client {
     if (connection_generation_out) {
       *connection_generation_out = 0;
     }
+    if (cancellation_predicate && cancellation_predicate()) {
+      return false;
+    }
+    const auto wait_generation = cancel_or_begin_apply_wait_cancellable(cancellation_predicate);
+    if (!wait_generation) {
+      return false;
+    }
+    const auto request_id = next_apply_request_id().fetch_add(1, std::memory_order_relaxed);
 
     std::vector<uint8_t> payload;
     try {
@@ -1186,7 +1264,9 @@ namespace platf::display_helper_client {
     // Hold this session's response reader before sending APPLY. A superseded
     // v2 verification wait releases it in short slices; a known legacy helper
     // deliberately keeps its untagged lane serial until the old reply arrives.
-    const auto session = connected_session();
+    const auto session = connected_session(
+      cancellation_predicate ? std::optional<int> {kShutdownIpcTimeoutMs} : std::nullopt,
+      cancellation_predicate);
     if (!session) {
       BOOST_LOG(warning) << "Display helper IPC: APPLY aborted - no connection";
       return false;
@@ -1201,7 +1281,11 @@ namespace platf::display_helper_client {
           session,
           response_lock,
           reader_deadline,
-          [session] { return !session_is_current(session); })) {
+          [session, wait_generation = *wait_generation, cancellation_predicate] {
+            return (cancellation_predicate && cancellation_predicate()) ||
+                   !session_is_current(session) ||
+                   apply_wait_generation().load(std::memory_order_acquire) != wait_generation;
+          })) {
       return false;
     }
     std::uint64_t sent_connection_generation = 0;
@@ -1209,15 +1293,16 @@ namespace platf::display_helper_client {
           session,
           MsgType::Apply,
           payload,
-          std::nullopt,
-          wait_generation,
+          cancellation_predicate ? std::optional<int> {kShutdownIpcTimeoutMs} : std::nullopt,
+          *wait_generation,
           &sent_connection_generation,
-          true)) {
+          true,
+          cancellation_predicate)) {
       return false;
     }
     remember_issued_apply_request_id(request_id);
     if (wait_generation_out) {
-      *wait_generation_out = wait_generation;
+      *wait_generation_out = *wait_generation;
     }
     if (connection_generation_out) {
       *connection_generation_out = sent_connection_generation;
@@ -1228,8 +1313,9 @@ namespace platf::display_helper_client {
           request_id,
           protocol,
           response_timeout_ms,
-          [session, wait_generation, protocol] {
-            return !session_is_current(session) ||
+          [session, wait_generation = *wait_generation, protocol, cancellation_predicate] {
+            return (cancellation_predicate && cancellation_predicate()) ||
+                   !session_is_current(session) ||
                    (protocol != ApplyResponseProtocol::Legacy &&
                     apply_wait_generation().load(std::memory_order_acquire) != wait_generation);
           }
@@ -1241,7 +1327,7 @@ namespace platf::display_helper_client {
     }
 
     if (protocol != ApplyResponseProtocol::Legacy &&
-        apply_wait_generation().load(std::memory_order_acquire) != wait_generation) {
+        apply_wait_generation().load(std::memory_order_acquire) != *wait_generation) {
       BOOST_LOG(debug) << "Display helper IPC: APPLY result wait superseded by a newer control command.";
       return false;
     }
@@ -1472,6 +1558,23 @@ namespace platf::display_helper_client {
     const auto session = connected_session();
     std::vector<uint8_t> payload;
     return send_serialized(session, MsgType::Ping, payload);
+  }
+
+  bool send_ping_cancellable(int timeout_ms, std::function<bool()> cancellation_predicate) {
+    if (timeout_ms <= 0 || (cancellation_predicate && cancellation_predicate())) {
+      return false;
+    }
+    const auto session = connected_session(timeout_ms, cancellation_predicate);
+    std::vector<uint8_t> payload;
+    return send_serialized(
+      session,
+      MsgType::Ping,
+      payload,
+      timeout_ms,
+      std::nullopt,
+      nullptr,
+      false,
+      cancellation_predicate);
   }
 
   bool send_ping_fast(int timeout_ms) {

@@ -720,10 +720,44 @@ namespace nvhttp {
             auto recovery_session = std::make_shared<rtsp_stream::launch_session_t>(
               display_helper_integration::helpers::make_display_request_session_snapshot(*launch_session)
             );
-            recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result) {
+            recovery_params.confirmed_active_at_schedule = display_info->confirmed_active;
+            recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result, std::stop_token stop_token) -> std::function<void()> {
+              const auto cancelled = [&] {
+                return stop_token.stop_requested();
+              };
+              std::optional<config::runtime_output_override_lease_t> recovery_output_override_lease;
+              auto clear_recovery_output_override = util::fail_guard([&] {
+                if (recovery_output_override_lease) {
+                  (void) config::clear_runtime_output_name_override_if_lease(*recovery_output_override_lease);
+                }
+              });
+              const auto wait_or_cancel = [&](std::chrono::milliseconds delay) {
+                const auto deadline = std::chrono::steady_clock::now() + delay;
+                while (!cancelled()) {
+                  const auto now = std::chrono::steady_clock::now();
+                  if (now >= deadline) {
+                    return false;
+                  }
+                  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+                  std::this_thread::sleep_for(std::min(std::max(remaining, std::chrono::milliseconds(1)), std::chrono::milliseconds(50)));
+                }
+                return true;
+              };
+
+              if (cancelled()) {
+                return {};
+              }
               if (result.device_id && !result.device_id->empty()) {
                 recovery_session->virtual_display_device_id = *result.device_id;
-                config::set_runtime_output_name_override(recovery_session->virtual_display_device_id);
+                if (cancelled()) {
+                  return {};
+                }
+                recovery_output_override_lease = config::set_runtime_output_name_override_with_lease(
+                  recovery_session->virtual_display_device_id
+                );
+              }
+              if (cancelled()) {
+                return {};
               }
               recovery_session->virtual_display_ready_since = result.ready_since;
               if (recovery_session->virtual_display) {
@@ -736,36 +770,62 @@ namespace nvhttp {
                 bool applied = false;
 
                 for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
-                  (void) display_helper_integration::disarm_pending_restore();
+                  if (cancelled()) {
+                    return {};
+                  }
+                  (void) display_helper_integration::disarm_pending_restore(cancelled);
+                  if (cancelled()) {
+                    return {};
+                  }
 
                   auto request = display_helper_integration::helpers::build_request_from_session(config::video, *recovery_session);
                   if (!request) {
                     BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
                                        << attempt << "/" << kMaxApplyAttempts << ").";
-                    std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                    if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                      return {};
+                    }
                     continue;
                   }
 
-                  if (display_helper_integration::apply(*request)) {
+                  if (cancelled()) {
+                    return {};
+                  }
+                  if (display_helper_integration::apply(*request, nullptr, cancelled)) {
                     BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
                     applied = true;
                     break;
                   }
+                  if (cancelled()) {
+                    return {};
+                  }
 
                   BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
                                      << attempt << "/" << kMaxApplyAttempts << ").";
-                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                  if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                    return {};
+                  }
                 }
 
-                if (mail::man) {
+                if (!cancelled() && mail::man) {
                   mail::man->event<int>(mail::switch_display)->raise(-1);
+                }
+                if (cancelled()) {
+                  return {};
                 }
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
                                 << (applied ? "." : " (apply did not succeed).");
               }
-
+              std::function<void()> rollback_output_override;
+              if (recovery_output_override_lease) {
+                const auto lease = *recovery_output_override_lease;
+                rollback_output_override = [lease] {
+                  (void) config::clear_runtime_output_name_override_if_lease(lease);
+                };
+              }
+              clear_recovery_output_override.disable();
+              return rollback_output_override;
             };
-
 
             VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
           } else {

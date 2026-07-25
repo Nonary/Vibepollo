@@ -20,7 +20,8 @@ namespace platf::display_helper_client {
     const std::string &json,
     std::uint64_t *request_id_out = nullptr,
     std::uint64_t *wait_generation_out = nullptr,
-    std::uint64_t *connection_generation_out = nullptr);
+    std::uint64_t *connection_generation_out = nullptr,
+    std::function<bool()> cancellation_predicate = {});
 
   // Wait for helper verification result after APPLY (v2 engine only).
   // Returns nullopt on timeout/unavailable.
@@ -78,11 +79,18 @@ namespace platf::display_helper_client {
   // This does not wait for a reply; it only validates a healthy send path.
   bool send_ping();
 
+  // Cancellation-aware liveness probe. Both connection and send work are
+  // bounded by timeout_ms and the predicate is observed between lock waits.
+  bool send_ping_cancellable(int timeout_ms, std::function<bool()> cancellation_predicate);
+
   // Fast liveness probe using only an already-connected cached pipe.
   bool send_ping_fast(int timeout_ms);
 
   // Reset the cached connection so the next send will reconnect.
   void reset_connection();
+
+  // Cancellation-aware variant used by bounded recovery paths.
+  bool reset_connection_cancellable(std::function<bool()> cancellation_predicate);
 }  // namespace platf::display_helper_client
 
 #endif

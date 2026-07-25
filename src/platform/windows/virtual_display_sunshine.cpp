@@ -1,4 +1,5 @@
 #include "virtual_display.h"
+#include "virtual_display_recovery_registry.h"
 
 #include <virtual_display/driver/control_client.h>
 #include <virtual_display/driver/windows_control_client.h>
@@ -52,6 +53,8 @@
 #include <physicalmonitorenumerationapi.h>
 #include <setupapi.h>
 #include <sstream>
+#include <stop_token>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -108,6 +111,11 @@ namespace VDISPLAY_SUNSHINE {
     bool replace_existing = true
   );
   bool removeVirtualDisplay(const GUID &guid);
+  static bool remove_virtual_display_impl(
+    const GUID &guid,
+    bool cancel_recovery_monitor,
+    std::stop_token stop_token = {}
+  );
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
   bool removeAllVirtualDisplays();
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
@@ -134,7 +142,25 @@ namespace VDISPLAY_SUNSHINE {
     wait,
   };
 
-  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior);
+  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token = {});
+  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token);
+  static bool start_ping_thread_impl(std::function<void()> fail_cb, std::stop_token stop_token);
+  static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
+    const char *s_client_uid,
+    const char *s_client_name,
+    const char *s_hdr_profile,
+    uint32_t width,
+    uint32_t height,
+    uint32_t fps,
+    const GUID &guid,
+    uint32_t base_fps_millihz,
+    bool framegen_refresh_active,
+    int framegen_refresh_multiplier,
+    bool hdr_requested,
+    bool allow_pending_enumeration,
+    bool replace_existing,
+    std::stop_token stop_token
+  );
 
   namespace {
     constexpr auto WATCHDOG_INIT_GRACE = std::chrono::seconds(30);
@@ -152,6 +178,8 @@ namespace VDISPLAY_SUNSHINE {
     constexpr std::uint16_t REQUIRED_DRIVER_PROTOCOL_MINOR = sunshine_driver::kMinimumCompatibleProtocolVersionMinor;
     constexpr std::uint16_t SECURE_RECLAIM_DRIVER_PROTOCOL_MINOR = 7;
 
+    bool wait_for_monitor_stop(std::stop_token stop_token, std::chrono::steady_clock::duration duration);
+
     std::atomic<bool> g_watchdog_feed_requested {false};
     std::atomic<bool> g_watchdog_stop_requested {false};
     std::atomic<std::int64_t> g_watchdog_grace_deadline_ns {0};
@@ -163,6 +191,7 @@ namespace VDISPLAY_SUNSHINE {
     std::thread g_watchdog_thread;
     std::shared_ptr<sunshine_driver::WindowsControlTransport> g_watchdog_transport;
     std::function<void()> g_watchdog_fail_cb;
+    std::atomic_bool g_watchdog_failure_callback_pending {false};
     bool g_watchdog_start_in_progress = false;
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
@@ -171,6 +200,21 @@ namespace VDISPLAY_SUNSHINE {
     bool g_ensure_display_retained = false;
     GUID g_ensure_display_guid {};
     int g_ensure_display_failure_count = 0;
+
+    vdisplay_recovery::monitor_registry_t &watchdog_failure_callbacks() {
+      static vdisplay_recovery::monitor_registry_t callbacks;
+      return callbacks;
+    }
+
+    // Recovery can recreate a display before Windows publishes its monitor
+    // path. Keep the resulting deferred HDR work owned so main can cancel and
+    // join it before tearing down configuration, display-helper, and logging
+    // state. Ordinary best-effort profile work keeps its existing detached
+    // behavior.
+    vdisplay_recovery::monitor_registry_t &deferred_hdr_profile_workers() {
+      static vdisplay_recovery::monitor_registry_t workers;
+      return workers;
+    }
 
     bool guid_equal(const GUID &lhs, const GUID &rhs) {
       return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
@@ -192,10 +236,13 @@ namespace VDISPLAY_SUNSHINE {
       g_last_teardown_ns.store(steady_ticks_from_time(std::chrono::steady_clock::now()), std::memory_order_release);
     }
 
-    void enforce_teardown_cooldown_if_needed() {
+    bool enforce_teardown_cooldown_if_needed(std::stop_token stop_token = {}) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       const auto last_teardown = g_last_teardown_ns.load(std::memory_order_acquire);
       if (last_teardown <= 0) {
-        return;
+        return true;
       }
 
       const auto last_time = time_from_steady_ticks(last_teardown);
@@ -205,8 +252,11 @@ namespace VDISPLAY_SUNSHINE {
         const auto sleep_for = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
         BOOST_LOG(debug) << "Delaying virtual display creation for " << sleep_for.count()
                          << " ms to let teardown settle.";
-        std::this_thread::sleep_for(sleep_for);
+        if (wait_for_monitor_stop(stop_token, sleep_for)) {
+          return false;
+        }
       }
+      return !stop_token.stop_requested();
     }
 
     bool within_grace_period(std::chrono::steady_clock::time_point now) {
@@ -252,7 +302,7 @@ namespace VDISPLAY_SUNSHINE {
       return g_watchdog_stop_requested.load(std::memory_order_acquire);
     }
 
-    void stop_watchdog_thread(bool wait_for_exit) {
+    void stop_watchdog_thread() {
       std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
       set_watchdog_stop_requested(true);
 
@@ -260,13 +310,19 @@ namespace VDISPLAY_SUNSHINE {
       std::shared_ptr<sunshine_driver::WindowsControlTransport> watchdog_transport;
       {
         std::lock_guard<std::mutex> lock(g_watchdog_thread_mutex);
-        watchdog_transport = std::move(g_watchdog_transport);
         if (!g_watchdog_thread.joinable()) {
+          watchdog_transport = std::move(g_watchdog_transport);
           if (watchdog_transport) {
             watchdog_transport->cancel_pending_io();
           }
           return;
         }
+        if (g_watchdog_thread.get_id() == std::this_thread::get_id()) {
+          // A current worker cannot join itself. Keep its std::thread owned
+          // in static storage so the next external lifecycle call can reap it.
+          return;
+        }
+        watchdog_transport = std::move(g_watchdog_transport);
         watchdog_thread = std::move(g_watchdog_thread);
       }
 
@@ -278,17 +334,7 @@ namespace VDISPLAY_SUNSHINE {
         return;
       }
 
-      if (watchdog_thread.get_id() == std::this_thread::get_id()) {
-        // Failure callbacks can tear down the driver from within the watchdog itself.
-        watchdog_thread.detach();
-        return;
-      }
-
-      if (wait_for_exit) {
-        watchdog_thread.join();
-      } else {
-        watchdog_thread.detach();
-      }
+      watchdog_thread.join();
     }
 
     std::function<void()> copy_watchdog_fail_cb() {
@@ -313,7 +359,10 @@ namespace VDISPLAY_SUNSHINE {
       return g_watchdog_thread.joinable();
     }
 
-    bool ensure_watchdog_thread_active_for_lease() {
+    bool ensure_watchdog_thread_active_for_lease(std::stop_token stop_token = {}) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       if (watchdog_thread_running()) {
         return true;
       }
@@ -324,7 +373,7 @@ namespace VDISPLAY_SUNSHINE {
         fail_cb = default_watchdog_fail_cb();
       }
 
-      if (!startPingThread(std::move(fail_cb))) {
+      if (!start_ping_thread_impl(std::move(fail_cb), stop_token)) {
         BOOST_LOG(warning) << "Sunshine virtual display lease-feed thread could not be started for an active temporary display.";
         return false;
       }
@@ -336,23 +385,37 @@ namespace VDISPLAY_SUNSHINE {
       if (!fail_cb || !*fail_cb) {
         return;
       }
+      bool expected = false;
+      if (!g_watchdog_failure_callback_pending.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        // The pending callback is already closing the same failed driver.
+        // Never synchronously replace/join it from a watchdog worker.
+        return;
+      }
 
-      try {
-        std::thread([fail_cb = std::move(fail_cb)]() {
-          try {
-            if (*fail_cb) {
-              (*fail_cb)();
+      if (!watchdog_failure_callbacks().start(
+            "watchdog-failure",
+            [fail_cb = std::move(fail_cb)](std::stop_token stop_token) {
+              const auto clear_pending = [] {
+                g_watchdog_failure_callback_pending.store(false, std::memory_order_release);
+              };
+              if (stop_token.stop_requested()) {
+                clear_pending();
+                return;
+              }
+              try {
+                if (*fail_cb) {
+                  (*fail_cb)();
+                }
+              } catch (const std::exception &err) {
+                BOOST_LOG(error) << "Sunshine virtual display lease-feed failure callback threw: " << err.what();
+              } catch (...) {
+                BOOST_LOG(error) << "Sunshine virtual display lease-feed failure callback threw an unknown exception.";
+              }
+              clear_pending();
             }
-          } catch (const std::exception &err) {
-            BOOST_LOG(error) << "Sunshine virtual display lease-feed failure callback threw: " << err.what();
-          } catch (...) {
-            BOOST_LOG(error) << "Sunshine virtual display lease-feed failure callback threw an unknown exception.";
-          }
-        }).detach();
-      } catch (const std::system_error &err) {
-        BOOST_LOG(error) << "Sunshine virtual display lease-feed: failed to dispatch failure callback thread: " << err.what();
-        // Never invoke the callback inline on the watchdog thread: a concurrent
-        // stopper may be joining it while holding the lifecycle lock.
+          )) {
+        g_watchdog_failure_callback_pending.store(false, std::memory_order_release);
+        BOOST_LOG(error) << "Sunshine virtual display lease-feed: failed to queue failure callback.";
       }
     }
 
@@ -849,7 +912,10 @@ namespace VDISPLAY_SUNSHINE {
      * Unlike restart_virtual_display_device(), this only performs DICS_ENABLE (no disable first)
      * since the device is already disabled.
      */
-    bool try_reenable_disabled_device(const std::wstring &instance_id) {
+    bool try_reenable_disabled_device(const std::wstring &instance_id, std::stop_token stop_token = {}) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       BOOST_LOG(warning) << "Sunshine virtual display device is stuck disabled (CM_PROB_DISABLED); attempting re-enable.";
 
       DevInfoHandle dev_set(SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES));
@@ -869,7 +935,9 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       // Give the device time to initialize after re-enable
-      std::this_thread::sleep_for(DEVICE_RESTART_SETTLE_DELAY * 2);
+      if (wait_for_monitor_stop(stop_token, DEVICE_RESTART_SETTLE_DELAY * 2)) {
+        return false;
+      }
 
       // Verify it's no longer disabled
       if (is_device_disabled(instance_id)) {
@@ -1084,19 +1152,30 @@ namespace VDISPLAY_SUNSHINE {
       return active_virtual_display_tracker().other_than(guid);
     }
 
-    void teardown_conflicting_virtual_displays(const uuid_util::uuid_t &guid) {
+    bool teardown_conflicting_virtual_displays(const uuid_util::uuid_t &guid, std::stop_token stop_token = {}) {
       auto conflicts = collect_conflicting_virtual_displays(guid);
       for (const auto &entry : conflicts) {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
         GUID native_guid = uuid_to_guid(entry);
-        (void) removeVirtualDisplay(native_guid);
+        (void) remove_virtual_display_impl(native_guid, true, stop_token);
       }
+      return !stop_token.stop_requested();
     }
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices_for_client(const char *client_name);
 
-    void release_retained_ensure_display_for_stream(const GUID &guid, const char *client_uid) {
+    bool release_retained_ensure_display_for_stream(
+      const GUID &guid,
+      const char *client_uid,
+      std::stop_token stop_token = {}
+    ) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       if (is_ensure_display_client(client_uid)) {
-        return;
+        return true;
       }
 
       GUID guid_to_remove = uuid_to_guid(persistentVirtualDisplayUuid());
@@ -1117,14 +1196,18 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       if (!should_remove) {
-        return;
+        return !stop_token.stop_requested();
       }
 
       BOOST_LOG(info) << "Removing encoder-probe virtual display before creating stream display guid="
                       << guid_to_uuid(guid).string() << '.';
-      if (!removeVirtualDisplay(guid_to_remove)) {
+      if (!remove_virtual_display_impl(guid_to_remove, true, stop_token)) {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
         BOOST_LOG(warning) << "Failed to remove retained encoder-probe virtual display before stream creation.";
       }
+      return !stop_token.stop_requested();
     }
 
     bool adopt_existing_driver_lease(
@@ -1440,7 +1523,8 @@ namespace VDISPLAY_SUNSHINE {
       const std::optional<std::string> &device_id,
       int attempts = 5,
       std::chrono::milliseconds delay = std::chrono::milliseconds(100),
-      const std::optional<std::string> &client_name = std::nullopt
+      const std::optional<std::string> &client_name = std::nullopt,
+      std::stop_token stop_token = {}
     );
 
     std::optional<std::wstring> resolve_virtual_display_name_from_devices();
@@ -1699,8 +1783,13 @@ namespace VDISPLAY_SUNSHINE {
       const std::optional<std::string> &client_name_utf8,
       const std::optional<std::string> &hdr_profile_utf8,
       bool is_virtual_display = true,
-      bool wait_for_completion = false
+      bool wait_for_completion = false,
+      std::stop_token stop_token = {},
+      std::optional<std::string> deferred_worker_key = std::nullopt
     ) {
+      if (stop_token.stop_requested()) {
+        return;
+      }
       // Physical outputs are left untouched unless the user explicitly selected
       // a profile. Virtual outputs are different: Windows can reuse a monitor
       // class instance whose registry association belongs to an older display,
@@ -1725,29 +1814,38 @@ namespace VDISPLAY_SUNSHINE {
 
       // For virtual displays, clear mismatched associations (Windows can reuse IDs).
       const bool should_clear_mismatched = is_virtual_display;
+      // Recovery work is bound to one GUID. If that display disappears, never
+      // fall back to an arbitrary active virtual target: it may belong to a
+      // newer session that reused the driver while this worker was winding down.
+      const bool allow_active_virtual_display_fallback = !deferred_worker_key.has_value();
 
       auto apply_profile_work = [profile_path,
                                  client_name,
                                  monitor_path = monitor_device_path,
                                  display_name,
                                  device_id,
-                                 should_clear_mismatched]() {
+                                 should_clear_mismatched,
+                                 allow_active_virtual_display_fallback](std::stop_token work_stop_token) {
+        if (work_stop_token.stop_requested()) {
+          return;
+        }
         std::optional<std::wstring> device_name_w = monitor_path;
         if (!device_name_w || device_name_w->empty()) {
           // Resolve monitor path - allow up to 5 seconds for display to be enumerable
           if (should_clear_mismatched) {
             // Virtual displays: avoid relying on the client name (it may be stale/incorrect) and instead target the
             // active Sunshine virtual display when present. Prefer the explicit display identifiers first.
-            device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+            device_name_w = resolve_monitor_device_path(display_name, device_id, 50, std::chrono::milliseconds(100), std::nullopt, work_stop_token);
 
-            if (!device_name_w || device_name_w->empty()) {
+            if (allow_active_virtual_display_fallback &&
+                !work_stop_token.stop_requested() && (!device_name_w || device_name_w->empty())) {
               const auto active_vd_name = resolve_virtual_display_name_from_devices();
               const auto active_vd_device_id = resolveAnyVirtualDisplayDeviceId();
               if (active_vd_name || active_vd_device_id) {
                 BOOST_LOG(debug) << "HDR profile: virtual display monitor path unresolved; falling back to active virtual display."
                                  << " active_name='" << (active_vd_name ? platf::to_utf8(*active_vd_name) : std::string("(none)"))
                                  << "' active_device_id='" << (active_vd_device_id ? *active_vd_device_id : std::string("(none)")) << "'.";
-                device_name_w = resolve_monitor_device_path(active_vd_name, active_vd_device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+                device_name_w = resolve_monitor_device_path(active_vd_name, active_vd_device_id, 50, std::chrono::milliseconds(100), std::nullopt, work_stop_token);
               }
             }
           } else {
@@ -1762,8 +1860,11 @@ namespace VDISPLAY_SUNSHINE {
                                << "' display_name='" << (physical_display_name ? platf::to_utf8(*physical_display_name) : std::string("(none)"))
                                << "' device_id='" << (physical_device_id ? *physical_device_id : std::string("(none)")) << "'.";
             }
-            device_name_w = resolve_monitor_device_path(physical_display_name, physical_device_id, 50, std::chrono::milliseconds(100), std::nullopt);
+            device_name_w = resolve_monitor_device_path(physical_display_name, physical_device_id, 50, std::chrono::milliseconds(100), std::nullopt, work_stop_token);
           }
+        }
+        if (work_stop_token.stop_requested()) {
+          return;
         }
         if (!device_name_w || device_name_w->empty()) {
           if (profile_path) {
@@ -1782,6 +1883,9 @@ namespace VDISPLAY_SUNSHINE {
         const bool running_as_system = platf::is_running_as_system();
 
         auto apply_profile_for_scope = [&](color_profile_scope_e scope) -> std::pair<bool, bool> {
+          if (work_stop_token.stop_requested()) {
+            return {false, false};
+          }
           bool local_success = false;
           bool local_access_denied = false;
 
@@ -1815,6 +1919,9 @@ namespace VDISPLAY_SUNSHINE {
               // If no profile for this client, or existing doesn't match expected, clear it
               if (expected_filename.empty() ||
                   _wcsicmp(fs::path(*existing).filename().c_str(), expected_filename.c_str()) != 0) {
+                if (work_stop_token.stop_requested()) {
+                  return {false, false};
+                }
                 BOOST_LOG(debug) << "HDR profile: clearing mismatched profile '" << platf::to_utf8(*existing)
                                  << "' from virtual display for client '" << client_name << "'.";
                 if (clear_color_profile_association(*device_name_w, existing, scope)) {
@@ -1829,6 +1936,9 @@ namespace VDISPLAY_SUNSHINE {
 
           // If we have a profile to apply, do it
           if (profile_path) {
+            if (work_stop_token.stop_requested()) {
+              return {false, false};
+            }
             const auto profile_filename = profile_path->filename().wstring();
 
             const bool desired_already_associated =
@@ -1852,6 +1962,10 @@ namespace VDISPLAY_SUNSHINE {
               }
             }
 
+            if (work_stop_token.stop_requested()) {
+              return {false, false};
+            }
+
             // Advanced Color associations notify Windows to consume the MHC2 luminance metadata.
             // Keep the registry write only as a compatibility fallback for older systems.
             LSTATUS reg_status = ERROR_SUCCESS;
@@ -1869,10 +1983,13 @@ namespace VDISPLAY_SUNSHINE {
         };
 
         auto apply_profile = [&]() {
+          if (work_stop_token.stop_requested()) {
+            return;
+          }
           const auto [local_success, local_access_denied] = apply_profile_for_scope(color_profile_scope_e::current_user);
           success = local_success;
 
-          if (!success && should_clear_mismatched && running_as_system && local_access_denied) {
+          if (!work_stop_token.stop_requested() && !success && should_clear_mismatched && running_as_system && local_access_denied) {
             BOOST_LOG(debug) << "HDR profile: access denied in current-user scope; retrying system-wide association for monitor '"
                              << platf::to_utf8(*device_name_w) << "'.";
             const auto [system_success, _] = apply_profile_for_scope(color_profile_scope_e::system_wide);
@@ -1899,6 +2016,9 @@ namespace VDISPLAY_SUNSHINE {
           apply_profile();
         }
 
+        if (work_stop_token.stop_requested()) {
+          return;
+        }
         if (success && profile_path) {
           if (already_associated) {
             BOOST_LOG(info) << "HDR color profile '" << platf::to_utf8(profile_path->filename().wstring())
@@ -1914,7 +2034,7 @@ namespace VDISPLAY_SUNSHINE {
 
       const bool monitor_path_ready = monitor_device_path && !monitor_device_path->empty();
       if (wait_for_completion && monitor_path_ready) {
-        apply_profile_work();
+        apply_profile_work(stop_token);
       } else {
         if (wait_for_completion) {
           // A newly enumerated virtual target may not have a monitor device path until the
@@ -1922,7 +2042,30 @@ namespace VDISPLAY_SUNSHINE {
           // returns, so waiting here would only exhaust the resolver's retry budget.
           BOOST_LOG(debug) << "HDR profile: deferring virtual display profile work until the pending monitor path becomes available.";
         }
-        std::thread(std::move(apply_profile_work)).detach();
+        if (deferred_worker_key) {
+          const auto started = deferred_hdr_profile_workers().start(
+            std::move(*deferred_worker_key),
+            [work = std::move(apply_profile_work), parent_stop_token = stop_token](std::stop_token worker_stop_token) mutable {
+              std::stop_source combined_stop_source;
+              std::stop_callback parent_stop_callback {
+                parent_stop_token,
+                [&combined_stop_source] { combined_stop_source.request_stop(); }
+              };
+              std::stop_callback worker_stop_callback {
+                worker_stop_token,
+                [&combined_stop_source] { combined_stop_source.request_stop(); }
+              };
+              work(combined_stop_source.get_token());
+            }
+          );
+          if (!started) {
+            BOOST_LOG(debug) << "HDR profile: deferred recovery work was not started because shutdown is in progress.";
+          }
+        } else {
+          std::thread([work = std::move(apply_profile_work)]() mutable {
+            work({});
+          }).detach();
+        }
       }
     }
 
@@ -2423,7 +2566,10 @@ namespace VDISPLAY_SUNSHINE {
       return result;
     }
 
-    bool request_hdr10_advanced_color(const DisplayConfigTarget &output) {
+    bool request_hdr10_advanced_color(const DisplayConfigTarget &output, std::stop_token stop_token = {}) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       const bool hdr_state_set = set_hdr_state(output, true);
       if (!hdr_state_set) {
         BOOST_LOG(debug) << "Sunshine virtual display HDR: SET_HDR_STATE was not accepted for target " << output.TargetId
@@ -2439,9 +2585,15 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Sunshine virtual display HDR: failed to request HDR/Advanced Color for target " << output.TargetId << ".";
         return false;
       }
+      if (stop_token.stop_requested()) {
+        return false;
+      }
 
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
       do {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
         if (auto info = query_advanced_color(output)) {
           BOOST_LOG(debug) << "Sunshine virtual display HDR: target=" << output.TargetId
                            << " supported=" << info->supported
@@ -2457,7 +2609,9 @@ namespace VDISPLAY_SUNSHINE {
             return true;
           }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (wait_for_monitor_stop(stop_token, std::chrono::milliseconds(50))) {
+          return false;
+        }
       } while (std::chrono::steady_clock::now() < deadline);
 
       BOOST_LOG(warning) << "Sunshine virtual display HDR: Windows did not report HDR support/enabled at 10-bit for target "
@@ -2550,18 +2704,30 @@ namespace VDISPLAY_SUNSHINE {
 
     std::optional<DisplayConfigIdentity> wait_for_display_config_identity(
       const DisplayConfigTarget &output,
-      std::chrono::steady_clock::duration timeout = std::chrono::milliseconds(250)
+      std::chrono::steady_clock::duration timeout = std::chrono::milliseconds(250),
+      std::stop_token stop_token = {}
     ) {
+      if (stop_token.stop_requested()) {
+        return std::nullopt;
+      }
       const auto deadline = std::chrono::steady_clock::now() + timeout;
       do {
+        if (stop_token.stop_requested()) {
+          return std::nullopt;
+        }
         if (auto identity = query_display_config_identity(output)) {
           if (display_config_identity_has_display_name(*identity)) {
             return identity;
           }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (wait_for_monitor_stop(stop_token, std::chrono::milliseconds(50))) {
+          return std::nullopt;
+        }
       } while (std::chrono::steady_clock::now() < deadline);
 
+      if (stop_token.stop_requested()) {
+        return std::nullopt;
+      }
       return query_display_config_identity(output);
     }
 
@@ -2765,15 +2931,37 @@ namespace VDISPLAY_SUNSHINE {
       const std::optional<std::string> &device_id,
       int attempts,
       std::chrono::milliseconds delay,
-      const std::optional<std::string> &client_name
+      const std::optional<std::string> &client_name,
+      std::stop_token stop_token
     ) {
+      const auto wait_or_stop = [&]() {
+        if (!stop_token.stop_possible()) {
+          std::this_thread::sleep_for(delay);
+          return false;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + delay;
+        while (!stop_token.stop_requested()) {
+          const auto now = std::chrono::steady_clock::now();
+          if (now >= deadline) {
+            return false;
+          }
+          const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+          std::this_thread::sleep_for(std::min(std::max(remaining, std::chrono::milliseconds(1)), std::chrono::milliseconds(50)));
+        }
+        return true;
+      };
+
       // Try without impersonation first (faster if already in user context)
       for (int i = 0; i < attempts; ++i) {
+        if (stop_token.stop_requested()) {
+          return std::nullopt;
+        }
         if (auto path = resolve_monitor_device_path_once(display_name, device_id, client_name)) {
           return path;
         }
-        if (i + 1 < attempts) {
-          std::this_thread::sleep_for(delay);
+        if (i + 1 < attempts && wait_or_stop()) {
+          return std::nullopt;
         }
       }
 
@@ -2786,12 +2974,15 @@ namespace VDISPLAY_SUNSHINE {
       std::optional<std::wstring> result;
       (void) platf::impersonate_current_user(user_token, [&]() {
         for (int i = 0; i < attempts; ++i) {
+          if (stop_token.stop_requested()) {
+            return;
+          }
           if (auto path = resolve_monitor_device_path_once(display_name, device_id, client_name)) {
             result = path;
             return;
           }
-          if (i + 1 < attempts) {
-            std::this_thread::sleep_for(delay);
+          if (i + 1 < attempts && wait_or_stop()) {
+            return;
           }
         }
       });
@@ -3631,40 +3822,23 @@ namespace VDISPLAY_SUNSHINE {
     constexpr auto RECOVERY_MAX_BACKOFF = std::chrono::seconds(60);
     constexpr auto DRIVER_RECOVERY_WARMUP_DELAY = std::chrono::milliseconds(500);
 
-    std::mutex g_virtual_display_recovery_abort_mutex;
-    std::map<uuid_util::uuid_t, std::weak_ptr<std::atomic_bool>> g_virtual_display_recovery_abort;
-
-    std::shared_ptr<std::atomic_bool> reset_recovery_monitor_abort_flag(const uuid_util::uuid_t &guid_uuid) {
-      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
-      auto &entry = g_virtual_display_recovery_abort[guid_uuid];
-      if (auto existing = entry.lock()) {
-        existing->store(true, std::memory_order_release);
-      }
-      auto flag = std::make_shared<std::atomic_bool>(false);
-      entry = flag;
-      return flag;
+    vdisplay_recovery::monitor_registry_t &recovery_monitors() {
+      // Function-local lifetime ensures the fallback destructor runs before
+      // later-initialized driver transport globals are destroyed.
+      static vdisplay_recovery::monitor_registry_t monitors;
+      return monitors;
     }
 
     void abort_recovery_monitor(const uuid_util::uuid_t &guid_uuid) {
-      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
-      auto it = g_virtual_display_recovery_abort.find(guid_uuid);
-      if (it == g_virtual_display_recovery_abort.end()) {
-        return;
-      }
-      if (auto flag = it->second.lock()) {
-        flag->store(true, std::memory_order_release);
-      }
-      g_virtual_display_recovery_abort.erase(it);
+      // Do not join here: callers can hold the virtual-display operation
+      // mutex while the monitor is waiting to acquire that same mutex.
+      recovery_monitors().request_stop(guid_uuid.string());
+      deferred_hdr_profile_workers().request_stop(guid_uuid.string());
     }
 
     void abort_all_recovery_monitors() {
-      std::lock_guard<std::mutex> lock(g_virtual_display_recovery_abort_mutex);
-      for (auto &[_, weak_flag] : g_virtual_display_recovery_abort) {
-        if (auto flag = weak_flag.lock()) {
-          flag->store(true, std::memory_order_release);
-        }
-      }
-      g_virtual_display_recovery_abort.clear();
+      recovery_monitors().request_stop_all();
+      deferred_hdr_profile_workers().request_stop_all();
     }
 
     struct RecoveryMonitorState {
@@ -3733,8 +3907,42 @@ namespace VDISPLAY_SUNSHINE {
       }
     };
 
-    bool monitor_should_abort(const RecoveryMonitorState &state) {
-      return state.params.should_abort && state.params.should_abort();
+    bool monitor_should_abort(const RecoveryMonitorState &state, std::stop_token stop_token) {
+      return stop_token.stop_requested() || (state.params.should_abort && state.params.should_abort());
+    }
+
+    bool wait_for_monitor_stop(std::stop_token stop_token, std::chrono::steady_clock::duration duration) {
+      const auto deadline = std::chrono::steady_clock::now() + std::max(duration, std::chrono::steady_clock::duration::zero());
+      while (!stop_token.stop_requested()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+          return false;
+        }
+        const auto remaining = deadline - now;
+        const auto sleep_for = std::max(
+          std::chrono::duration_cast<std::chrono::milliseconds>(remaining),
+          std::chrono::milliseconds(1)
+        );
+        std::this_thread::sleep_for(std::min(sleep_for, std::chrono::milliseconds(50)));
+      }
+      return true;
+    }
+
+    bool lock_recovery_operation(
+      std::unique_lock<std::recursive_mutex> &operation_lock,
+      const RecoveryMonitorState &state,
+      std::stop_token stop_token
+    ) {
+      while (!operation_lock.try_lock()) {
+        if (monitor_should_abort(state, stop_token) || wait_for_monitor_stop(stop_token, std::chrono::milliseconds(25))) {
+          return false;
+        }
+      }
+      if (monitor_should_abort(state, stop_token)) {
+        operation_lock.unlock();
+        return false;
+      }
+      return true;
     }
 
     enum class MonitorTargetPresence {
@@ -3743,20 +3951,6 @@ namespace VDISPLAY_SUNSHINE {
       present_active,
       unknown,
     };
-
-    const char *monitor_target_presence_name(const MonitorTargetPresence presence) {
-      switch (presence) {
-        case MonitorTargetPresence::missing:
-          return "missing";
-        case MonitorTargetPresence::present_inactive:
-          return "inactive";
-        case MonitorTargetPresence::present_active:
-          return "active";
-        case MonitorTargetPresence::unknown:
-          return "unknown";
-      }
-      return "unknown";
-    }
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
@@ -3831,21 +4025,28 @@ namespace VDISPLAY_SUNSHINE {
       return matched_inactive ? MonitorTargetPresence::present_inactive : MonitorTargetPresence::missing;
     }
 
-    bool attempt_virtual_display_recovery(RecoveryMonitorState &state) {
-      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
-      if (monitor_should_abort(state)) {
+    bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token) {
+      std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
+      if (!lock_recovery_operation(operation_lock, state, stop_token)) {
         return false;
       }
-      if (!ensure_driver_is_ready()) {
+      if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::skip, stop_token)) {
         BOOST_LOG(warning) << "Virtual display recovery: driver not ready for " << state.describe_target();
         return false;
       }
+      if (monitor_should_abort(state, stop_token)) {
+        return false;
+      }
 
-      proc::vDisplayDriverStatus.store(openVDisplayDevice(), std::memory_order_release);
-      if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
+      proc::vDisplayDriverStatus.store(open_vdisplay_device_impl(stop_token), std::memory_order_release);
+      const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
+      if (driver_status != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
-                           << static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire)) << ") for "
+                           << static_cast<int>(driver_status) << ") for "
                            << state.describe_target();
+        return false;
+      }
+      if (monitor_should_abort(state, stop_token)) {
         return false;
       }
 
@@ -3853,14 +4054,17 @@ namespace VDISPLAY_SUNSHINE {
       // The old ping thread is still feeding a stale duplicated handle;
       // startPingThread stops it and duplicates the freshly opened handle.
       if (auto watchdog_fail_cb = copy_watchdog_fail_cb(); watchdog_fail_cb) {
-        if (!startPingThread(std::move(watchdog_fail_cb))) {
+        if (!start_ping_thread_impl(std::move(watchdog_fail_cb), stop_token)) {
           BOOST_LOG(warning) << "Virtual display recovery: failed to restart watchdog ping thread for "
                              << state.describe_target();
         }
       }
+      if (monitor_should_abort(state, stop_token)) {
+        return false;
+      }
 
       setWatchdogFeedingEnabled(true);
-      auto recreation = createVirtualDisplay(
+      auto recreation = create_virtual_display_with_stop(
         state.params.client_uid.c_str(),
         state.params.client_name.c_str(),
         state.params.hdr_profile ? state.params.hdr_profile->c_str() : nullptr,
@@ -3871,25 +4075,71 @@ namespace VDISPLAY_SUNSHINE {
         state.params.base_fps_millihz,
         state.params.framegen_refresh_active,
         state.params.framegen_refresh_multiplier,
-        state.params.hdr_requested
+        state.params.hdr_requested,
+        false,
+        true,
+        stop_token
       );
       if (!recreation) {
         BOOST_LOG(warning) << "Virtual display recovery: createVirtualDisplay failed for " << state.describe_target();
         return false;
       }
 
+      const auto remove_recreated_display = [&] {
+        BOOST_LOG(debug) << "Virtual display recovery cleaning up a recreated display for " << state.describe_target();
+        if (!remove_virtual_display_impl(state.params.guid, false, stop_token)) {
+          BOOST_LOG(warning) << "Virtual display recovery could not remove the cancelled recreation for "
+                             << state.describe_target();
+        }
+      };
       state.update_identifiers(recreation->display_name, recreation->device_id, recreation->monitor_device_path);
-      if (monitor_should_abort(state)) {
+      if (monitor_should_abort(state, stop_token)) {
         BOOST_LOG(debug) << "Virtual display recovery aborted after recreation for " << state.describe_target();
+        remove_recreated_display();
         return false;
       }
+      std::function<void()> rollback_recovery_publication;
+      const auto rollback_recovery_publication_if_needed = [&] {
+        if (!rollback_recovery_publication) {
+          return;
+        }
+
+        try {
+          rollback_recovery_publication();
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Virtual display recovery publication rollback failed for "
+                           << state.describe_target() << ": " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Virtual display recovery publication rollback failed for "
+                           << state.describe_target() << '.';
+        }
+        rollback_recovery_publication = {};
+      };
       if (state.params.on_recovery_success) {
-        state.params.on_recovery_success(*recreation);
+        try {
+          rollback_recovery_publication = state.params.on_recovery_success(*recreation, stop_token);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Virtual display recovery callback failed for " << state.describe_target() << ": " << e.what();
+          rollback_recovery_publication_if_needed();
+          remove_recreated_display();
+          return false;
+        } catch (...) {
+          BOOST_LOG(error) << "Virtual display recovery callback failed for " << state.describe_target() << '.';
+          rollback_recovery_publication_if_needed();
+          remove_recreated_display();
+          return false;
+        }
+      }
+      if (monitor_should_abort(state, stop_token)) {
+        BOOST_LOG(debug) << "Virtual display recovery aborted after callback for " << state.describe_target();
+        rollback_recovery_publication_if_needed();
+        remove_recreated_display();
+        return false;
       }
       return true;
     }
 
-    void run_virtual_display_recovery_monitor(RecoveryMonitorState state) {
+    void run_virtual_display_recovery_monitor(RecoveryMonitorState state, std::stop_token stop_token) {
       unsigned int attempts = 0;
       unsigned int backoff_cycles = 0;
       constexpr unsigned int MAX_RECOVERY_BACKOFF_CYCLES = 5;
@@ -3900,8 +4150,34 @@ namespace VDISPLAY_SUNSHINE {
       std::optional<std::chrono::steady_clock::time_point> missing_since;
       auto recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_INITIAL_SETTLE_GRACE;
 
+      // Recovery is intentionally forbidden during the initial settle grace. Avoid
+      // contending with the helper's topology work by checking only for cancellation
+      // when activity was already confirmed. An initially inactive target still needs
+      // presence observations so a brief helper activation establishes recovery history.
+      while (std::chrono::steady_clock::now() < recovery_cooldown_until) {
+        if (monitor_should_abort(state, stop_token)) {
+          BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
+          return;
+        }
+        if (!observed_active && monitor_target_presence(state) == MonitorTargetPresence::present_active) {
+          observed_active = true;
+          active_since = std::chrono::steady_clock::now();
+          BOOST_LOG(debug) << "Virtual display recovery monitor observed initial activation for "
+                           << state.describe_target() << ".";
+        }
+        const auto remaining = std::max(
+          std::chrono::milliseconds(1),
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            recovery_cooldown_until - std::chrono::steady_clock::now()
+          )
+        );
+        if (wait_for_monitor_stop(stop_token, std::min(RECOVERY_CHECK_INTERVAL, remaining))) {
+          return;
+        }
+      }
+
       while (true) {
-        if (monitor_should_abort(state)) {
+        if (monitor_should_abort(state, stop_token)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
@@ -3910,7 +4186,9 @@ namespace VDISPLAY_SUNSHINE {
         const auto presence = monitor_target_presence(state);
 
         if (presence == MonitorTargetPresence::unknown) {
-          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
           continue;
         }
 
@@ -3924,11 +4202,23 @@ namespace VDISPLAY_SUNSHINE {
           } else if (now - *active_since >= RECOVERY_STABLE_REQUIREMENT) {
             attempts = 0;
           }
-          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
           continue;
         }
 
         active_since.reset();
+
+      // A newly created target may be enumerated before the helper activates it.
+        // Keep the monitor dormant until this exact target has been observed active;
+        // never recover an identity that has not established active history.
+        if (!observed_active) {
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
+          continue;
+      }
 
         // Defer recovery attempts for a short grace window after a successful recovery. This allows
         // the display stack and helper APPLY to stabilize without immediately retriggering recovery.
@@ -3938,7 +4228,9 @@ namespace VDISPLAY_SUNSHINE {
           } else {
             inactive_since.reset();
           }
-          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
           continue;
         }
 
@@ -3959,13 +4251,17 @@ namespace VDISPLAY_SUNSHINE {
 
         if (!issue_since->has_value()) {
           *issue_since = now;
-          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
           continue;
         }
 
         const auto issue_for = now - **issue_since;
         if (issue_for < required_grace) {
-          std::this_thread::sleep_for(RECOVERY_CHECK_INTERVAL);
+          if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
+            return;
+          }
           continue;
         }
 
@@ -3991,7 +4287,9 @@ namespace VDISPLAY_SUNSHINE {
           recovery_cooldown_until = std::chrono::steady_clock::now() + backoff;
           inactive_since.reset();
           missing_since.reset();
-          std::this_thread::sleep_for(backoff);
+          if (wait_for_monitor_stop(stop_token, backoff)) {
+            return;
+          }
           continue;
         }
 
@@ -4002,11 +4300,11 @@ namespace VDISPLAY_SUNSHINE {
                            << attempts << '/' << state.params.max_attempts
                            << ", " << issue_label << "_for=" << issue_ms << "ms).";
 
-        if (monitor_should_abort(state)) {
+        if (monitor_should_abort(state, stop_token)) {
           BOOST_LOG(debug) << "Virtual display recovery monitor aborted for " << state.describe_target();
           return;
         }
-        const bool recovered = attempt_virtual_display_recovery(state);
+        const bool recovered = attempt_virtual_display_recovery(state, stop_token);
         inactive_since.reset();
         missing_since.reset();
         active_since.reset();
@@ -4018,7 +4316,9 @@ namespace VDISPLAY_SUNSHINE {
           recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_RETRY_DELAY;
         }
 
-        std::this_thread::sleep_for(RECOVERY_RETRY_DELAY);
+        if (wait_for_monitor_stop(stop_token, RECOVERY_RETRY_DELAY)) {
+          return;
+        }
       }
     }
   }  // namespace
@@ -4110,6 +4410,10 @@ namespace VDISPLAY_SUNSHINE {
     if (params.max_attempts == 0) {
       return;
     }
+    if (recovery_monitors().shutdown_requested()) {
+      BOOST_LOG(debug) << "Virtual display recovery monitor skipped during process shutdown.";
+      return;
+    }
 
     const auto guid_uuid = guid_to_uuid(params.guid);
     const bool has_device_id = params.device_id && !params.device_id->empty();
@@ -4121,38 +4425,39 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     RecoveryMonitorState initial_state(params);
-    if (monitor_should_abort(initial_state)) {
+    if (monitor_should_abort(initial_state, {})) {
       BOOST_LOG(debug) << "Virtual display recovery monitor skipped for " << initial_state.describe_target()
                        << ": already aborted before scheduling.";
       return;
     }
 
-    const auto initial_presence = monitor_target_presence(initial_state);
-    if (initial_presence != MonitorTargetPresence::present_active) {
-      BOOST_LOG(info) << "Virtual display recovery monitor not armed for " << initial_state.describe_target()
-                      << ": display was not confirmed active at schedule time (presence="
-                      << monitor_target_presence_name(initial_presence) << ").";
-      return;
-    }
+    initial_state.confirmed_active_at_schedule = params.confirmed_active_at_schedule;
 
-    const auto abort_flag = reset_recovery_monitor_abort_flag(guid_uuid);
-    VirtualDisplayRecoveryParams wrapped = params;
-    const auto external_abort = params.should_abort;
-    wrapped.should_abort = [abort_flag, external_abort]() {
-      if (abort_flag->load(std::memory_order_acquire)) {
-        return true;
-      }
-      return external_abort ? external_abort() : false;
-    };
-
-    RecoveryMonitorState state(wrapped);
-    state.confirmed_active_at_schedule = true;
+    RecoveryMonitorState state(params);
+    state.confirmed_active_at_schedule = initial_state.confirmed_active_at_schedule;
     BOOST_LOG(debug) << "Virtual display recovery monitor scheduled for " << state.describe_target()
-                     << " (max_attempts=" << params.max_attempts << ").";
-    std::thread monitor_thread([state = std::move(state)]() mutable {
-      run_virtual_display_recovery_monitor(std::move(state));
-    });
-    monitor_thread.detach();
+                     << " (max_attempts=" << params.max_attempts
+                     << (state.confirmed_active_at_schedule ? ", active confirmed)." : ", awaiting first active observation).");
+    if (!recovery_monitors().start(
+          guid_uuid.string(),
+          [state = std::move(state)](std::stop_token stop_token) mutable {
+            run_virtual_display_recovery_monitor(std::move(state), stop_token);
+          }
+        )) {
+      BOOST_LOG(warning) << "Virtual display recovery monitor could not be started for " << guid_uuid.string() << '.';
+    }
+  }
+
+  void request_virtual_display_recovery_shutdown() {
+    recovery_monitors().request_shutdown();
+    watchdog_failure_callbacks().request_shutdown();
+    deferred_hdr_profile_workers().request_shutdown();
+  }
+
+  void join_virtual_display_recovery_monitors() {
+    recovery_monitors().join_all();
+    watchdog_failure_callbacks().join_all();
+    deferred_hdr_profile_workers().join_all();
   }
 
   // {dff7fd29-5b75-41d1-9731-b32a17a17104}
@@ -4262,14 +4567,17 @@ namespace VDISPLAY_SUNSHINE {
 
   void closeVDisplayDevice() {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
-    stop_watchdog_thread(true);
+    stop_watchdog_thread();
     set_watchdog_feed_requested(false, false);
     g_watchdog_grace_deadline_ns.store(0, std::memory_order_release);
     clear_control_transport();
   }
 
-  bool ensure_control_transport_responsive(std::string_view operation) {
+  bool ensure_control_transport_responsive(std::string_view operation, std::stop_token stop_token = {}) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
+    if (stop_token.stop_requested()) {
+      return false;
+    }
     auto transport = control_transport_snapshot();
     if (driver_transport_responsive(transport.get())) {
       return true;
@@ -4280,7 +4588,7 @@ namespace VDISPLAY_SUNSHINE {
       closeVDisplayDevice();
     }
 
-    const auto status = openVDisplayDevice();
+    const auto status = open_vdisplay_device_impl(stop_token);
     if (status != DRIVER_STATUS::OK) {
       BOOST_LOG(warning) << operation << ": failed to open Sunshine virtual display driver transport (status="
                          << static_cast<int>(status) << ").";
@@ -4301,18 +4609,21 @@ namespace VDISPLAY_SUNSHINE {
     // The Sunshine driver is runtime-only in this pass and does not require registry defaults.
   }
 
-  DRIVER_STATUS openVDisplayDevice() {
+  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     std::shared_ptr<sunshine_driver::WindowsControlTransport> transport;
     uint32_t retryInterval = 20;
     bool attempted_recovery = false;
     while (true) {
+      if (stop_token.stop_requested()) {
+        return DRIVER_STATUS::FAILED;
+      }
       auto opened = sunshine_driver::open_first_control_device();
       if (!opened.ok()) {
         if (retryInterval > 320) {
           if (!attempted_recovery) {
             attempted_recovery = true;
-            if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
+            if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token)) {
               retryInterval = 20;
               continue;
             }
@@ -4324,7 +4635,9 @@ namespace VDISPLAY_SUNSHINE {
           return DRIVER_STATUS::FAILED;
         }
         retryInterval *= 2;
-        Sleep(retryInterval);
+        if (wait_for_monitor_stop(stop_token, std::chrono::milliseconds(retryInterval))) {
+          return DRIVER_STATUS::FAILED;
+        }
         continue;
       }
 
@@ -4381,8 +4694,15 @@ namespace VDISPLAY_SUNSHINE {
     return DRIVER_STATUS::OK;
   }
 
-  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior) {
+  DRIVER_STATUS openVDisplayDevice() {
+    return open_vdisplay_device_impl({});
+  }
+
+  static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
+    if (stop_token.stop_requested()) {
+      return false;
+    }
     auto transport = control_transport_snapshot();
     if (driver_transport_responsive(transport.get())) {
       return true;
@@ -4401,10 +4721,12 @@ namespace VDISPLAY_SUNSHINE {
     {
       auto instance_id = find_virtual_display_device_instance_id();
       if (instance_id && is_device_disabled(*instance_id)) {
-        if (try_reenable_disabled_device(*instance_id)) {
+        if (try_reenable_disabled_device(*instance_id, stop_token)) {
           if (probe_driver_responsive_once()) {
             BOOST_LOG(info) << "Sunshine virtual display driver responded after re-enabling disabled device.";
-            std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+            if (wait_for_monitor_stop(stop_token, DRIVER_RECOVERY_WARMUP_DELAY)) {
+              return false;
+            }
             return true;
           }
         }
@@ -4412,6 +4734,9 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     for (int attempt = 1; attempt <= DRIVER_RESTART_MAX_ATTEMPTS; ++attempt) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       const auto now = std::chrono::steady_clock::now();
       std::chrono::milliseconds cooldown_remaining {0};
       if (should_skip_restart_attempt(now, cooldown_remaining)) {
@@ -4423,7 +4748,9 @@ namespace VDISPLAY_SUNSHINE {
 
         BOOST_LOG(info) << "Delaying Sunshine virtual display restart attempt for " << cooldown_remaining.count()
                         << " ms due to restart cooldown.";
-        std::this_thread::sleep_for(cooldown_remaining);
+        if (wait_for_monitor_stop(stop_token, cooldown_remaining)) {
+          return false;
+        }
         if (probe_driver_responsive_once()) {
           return true;
         }
@@ -4439,20 +4766,33 @@ namespace VDISPLAY_SUNSHINE {
       BOOST_LOG(info) << "Attempting to restart Sunshine virtual display adapter " << platf::to_utf8(*instance_id) << " (attempt "
                       << attempt << '/' << DRIVER_RESTART_MAX_ATTEMPTS << ").";
 
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       if (!restart_virtual_display_device(*instance_id)) {
         BOOST_LOG(error) << "Sunshine virtual display adapter restart failed; streaming will continue with the active display. A reboot may be required.";
         note_restart_failure(std::chrono::steady_clock::now());
         continue;
       }
+      if (stop_token.stop_requested()) {
+        return false;
+      }
 
       const auto deadline = std::chrono::steady_clock::now() + DRIVER_RESTART_TIMEOUT;
       while (std::chrono::steady_clock::now() < deadline) {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
         if (probe_driver_responsive_once()) {
           BOOST_LOG(info) << "Sunshine virtual display driver responded after restart.";
-          std::this_thread::sleep_for(DRIVER_RECOVERY_WARMUP_DELAY);
+          if (wait_for_monitor_stop(stop_token, DRIVER_RECOVERY_WARMUP_DELAY)) {
+            return false;
+          }
           return true;
         }
-        std::this_thread::sleep_for(DRIVER_RESTART_POLL_INTERVAL);
+        if (wait_for_monitor_stop(stop_token, DRIVER_RESTART_POLL_INTERVAL)) {
+          return false;
+        }
       }
 
       BOOST_LOG(error) << "Sunshine virtual display driver did not respond within the restart timeout; streaming will continue with the active display. A reboot may be required.";
@@ -4466,8 +4806,11 @@ namespace VDISPLAY_SUNSHINE {
     return ensure_driver_is_ready_impl(RestartCooldownBehavior::skip);
   }
 
-  bool startPingThread(std::function<void()> failCb) {
+  static bool start_ping_thread_impl(std::function<void()> failCb, std::stop_token stop_token) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
+    if (stop_token.stop_requested()) {
+      return false;
+    }
     if (g_watchdog_start_in_progress) {
       return watchdog_thread_running();
     }
@@ -4475,13 +4818,13 @@ namespace VDISPLAY_SUNSHINE {
     auto clear_start_in_progress = util::fail_guard([]() {
       g_watchdog_start_in_progress = false;
     });
-    stop_watchdog_thread(true);
+    stop_watchdog_thread();
 
     // Save the callback so recovery can restart the lease feed thread with the same callback.
     store_watchdog_fail_cb(failCb);
     auto failure_cb = std::make_shared<std::function<void()>>(std::move(failCb));
 
-    if (!ensure_control_transport_responsive("Sunshine virtual display lease feed")) {
+    if (!ensure_control_transport_responsive("Sunshine virtual display lease feed", stop_token)) {
       return false;
     }
 
@@ -4490,6 +4833,9 @@ namespace VDISPLAY_SUNSHINE {
       printf("[SunshineVirtualDisplay] Lease feed: failed to open control device (status=%s, error=%lu).\n",
              sunshine_driver::to_string(opened.status),
              static_cast<unsigned long>(opened.native_error));
+      return false;
+    }
+    if (stop_token.stop_requested()) {
       return false;
     }
 
@@ -4579,6 +4925,10 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     return true;
+  }
+
+  bool startPingThread(std::function<void()> failCb) {
+    return start_ping_thread_impl(std::move(failCb), {});
   }
 
   void setWatchdogFeedingEnabled(bool enable) {
@@ -4729,8 +5079,16 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<std::string> &device_id,
     uint32_t width,
     uint32_t height,
-    const DisplayConfigIdentity *display_config_identity = nullptr
+    const DisplayConfigIdentity *display_config_identity = nullptr,
+    bool *confirmed_active = nullptr,
+    std::stop_token stop_token = {}
   ) {
+    if (stop_token.stop_requested()) {
+      return false;
+    }
+    if (confirmed_active) {
+      *confirmed_active = false;
+    }
     std::optional<std::string> normalized_name;
     if (display_name && !display_name->empty()) {
       normalized_name = normalize_display_name(platf::to_utf8(*display_name));
@@ -4760,6 +5118,9 @@ namespace VDISPLAY_SUNSHINE {
       (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
     while (true) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       const auto now = std::chrono::steady_clock::now();
       if (!enumerated_at && now - start >= enumeration_timeout) {
         BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate virtual display.";
@@ -4784,7 +5145,14 @@ namespace VDISPLAY_SUNSHINE {
         if (candidate.m_info) {
           if (candidate.m_info->m_resolution.m_width == width &&
               candidate.m_info->m_resolution.m_height == height) {
+            if (confirmed_active) {
+              *confirmed_active = true;
+            }
             return true;
+          }
+
+          if (confirmed_active) {
+            *confirmed_active = true;
           }
 
           BOOST_LOG(debug) << "Virtual display candidate "
@@ -4884,13 +5252,16 @@ namespace VDISPLAY_SUNSHINE {
         }
       }
 
-      std::this_thread::sleep_for(poll_interval);
+      if (wait_for_monitor_stop(stop_token, poll_interval)) {
+        return false;
+      }
     }
   }
 
   bool wait_for_virtual_display_teardown(
     const std::wstring &display_name,
-    std::chrono::steady_clock::duration timeout
+    std::chrono::steady_clock::duration timeout,
+    std::stop_token stop_token = {}
   ) {
     if (display_name.empty()) {
       return true;
@@ -4903,6 +5274,9 @@ namespace VDISPLAY_SUNSHINE {
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
       bool present = false;
       if (auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
         for (const auto &device : *devices) {
@@ -4924,7 +5298,9 @@ namespace VDISPLAY_SUNSHINE {
         return true;
       }
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (wait_for_monitor_stop(stop_token, std::chrono::milliseconds(100))) {
+        return false;
+      }
     }
 
     return false;
@@ -4982,7 +5358,8 @@ namespace VDISPLAY_SUNSHINE {
     bool confirm_virtual_display_persistence(
       const VirtualDisplayCreationResult &result,
       uint32_t width,
-      uint32_t height
+      uint32_t height,
+      std::stop_token stop_token = {}
     ) {
       (void) width;
       (void) height;
@@ -4991,15 +5368,17 @@ namespace VDISPLAY_SUNSHINE {
       const auto device_utf8 = result.device_id ? *result.device_id : std::string("(unknown)");
       const auto delay_ms = std::chrono::duration_cast<std::chrono::milliseconds>(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY).count();
 
-      if (!is_virtual_display_present(result.display_name, result.device_id)) {
+      if (stop_token.stop_requested() || !is_virtual_display_present(result.display_name, result.device_id)) {
         BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
                            << "' missing immediately after creation.";
         return false;
       }
 
-      std::this_thread::sleep_for(VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY);
+      if (wait_for_monitor_stop(stop_token, VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY)) {
+        return false;
+      }
 
-      if (!is_virtual_display_present(result.display_name, result.device_id)) {
+      if (stop_token.stop_requested() || !is_virtual_display_present(result.display_name, result.device_id)) {
         BOOST_LOG(warning) << "Virtual display '" << name_utf8 << "' device_id='" << device_utf8
                            << "' disappeared within " << delay_ms << "ms of confirmation.";
         return false;
@@ -5028,8 +5407,12 @@ namespace VDISPLAY_SUNSHINE {
       bool hdr_requested,
       bool allow_pending_enumeration,
       bool replace_existing,
-      bool &allow_driver_recovery
+      bool &allow_driver_recovery,
+      std::stop_token stop_token = {}
     ) {
+      if (stop_token.stop_requested()) {
+        return std::nullopt;
+      }
       auto transport = control_transport_snapshot();
       if (!transport || !transport->valid()) {
         return std::nullopt;
@@ -5037,6 +5420,8 @@ namespace VDISPLAY_SUNSHINE {
 
       uuid_util::uuid_t requested_uuid {};
       std::memcpy(requested_uuid.b8, &guid, sizeof(requested_uuid.b8));
+      const std::optional<std::string> deferred_hdr_profile_worker_key =
+        stop_token.stop_possible() ? std::make_optional(requested_uuid.string()) : std::nullopt;
 
       // Log entry and inputs for deeper diagnostics
       BOOST_LOG(debug) << "createVirtualDisplay called: client_uid='" << (s_client_uid ? s_client_uid : "(null)")
@@ -5046,10 +5431,16 @@ namespace VDISPLAY_SUNSHINE {
                        << " hdr_requested=" << hdr_requested
                        << " guid=" << requested_uuid.string();
 
-      release_retained_ensure_display_for_stream(guid, s_client_uid);
-      teardown_conflicting_virtual_displays(requested_uuid);
+      if (!release_retained_ensure_display_for_stream(guid, s_client_uid, stop_token)) {
+        return std::nullopt;
+      }
+      if (!teardown_conflicting_virtual_displays(requested_uuid, stop_token)) {
+        return std::nullopt;
+      }
       BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
-      enforce_teardown_cooldown_if_needed();
+      if (!enforce_teardown_cooldown_if_needed(stop_token)) {
+        return std::nullopt;
+      }
 
       // Conflict teardown may have reopened the global control handle. Refresh
       // this operation's shared snapshot before issuing any driver requests.
@@ -5118,7 +5509,7 @@ namespace VDISPLAY_SUNSHINE {
             if (replace_existing) {
               BOOST_LOG(info) << "Securely releasing the prior owned virtual display before replacing guid="
                               << requested_uuid.string() << '.';
-              if (!removeVirtualDisplay(guid)) {
+              if (!remove_virtual_display_impl(guid, false, stop_token)) {
                 return std::nullopt;
               }
               recovery_entries.clear();
@@ -5272,7 +5663,8 @@ namespace VDISPLAY_SUNSHINE {
                            << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
                            << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
           std::optional<std::wstring> display_name = reuse_name;
-          if (wait_for_virtual_display_ready(display_name, device_id, width, height)) {
+          bool confirmed_active = false;
+          if (wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, &confirmed_active, stop_token)) {
             if (display_name) {
               if (reclaimed_for_reuse) {
                 wprintf(L"[SunshineVirtualDisplay] Reusing securely reclaimed virtual display: %ls\n", display_name->c_str());
@@ -5320,12 +5712,26 @@ namespace VDISPLAY_SUNSHINE {
               }
             }
 
-            result.monitor_device_path = resolve_monitor_device_path(display_name, result.device_id);
+            result.monitor_device_path = resolve_monitor_device_path(
+              display_name,
+              result.device_id,
+              5,
+              std::chrono::milliseconds(100),
+              std::nullopt,
+              stop_token
+            );
+            if (stop_token.stop_requested()) {
+              return std::nullopt;
+            }
             result.reused_existing = true;
+            result.confirmed_active = confirmed_active;
             result.ready_since = ready_since;
             if (!adopt_existing_driver_lease(client, requested_uuid, display_id, result.display_name, result.device_id, result.monitor_device_path)) {
               BOOST_LOG(warning) << "Refusing to reuse existing Sunshine virtual display for guid="
                                  << requested_uuid.string() << " because its driver lease could not be adopted.";
+              return std::nullopt;
+            }
+            if (stop_token.stop_requested()) {
               return std::nullopt;
             }
             if (dpi_snapshot) {
@@ -5342,8 +5748,13 @@ namespace VDISPLAY_SUNSHINE {
               result.client_name,
               hdr_profile,
               true,
-              true
+              true,
+              stop_token,
+              deferred_hdr_profile_worker_key
             );
+            if (stop_token.stop_requested()) {
+              return std::nullopt;
+            }
             return result;
           }
         }
@@ -5351,6 +5762,16 @@ namespace VDISPLAY_SUNSHINE {
         printf("[SunshineVirtualDisplay] Failed to add virtual display (status=%s, error=%lu).\n",
                sunshine_driver::to_string(create_result.status),
                static_cast<unsigned long>(error_code));
+        return std::nullopt;
+      }
+
+      const auto rollback_created_display = [&] {
+        if (!remove_virtual_display_impl(guid, false, stop_token)) {
+          BOOST_LOG(warning) << "Virtual display creation cleanup failed for guid=" << requested_uuid.string() << '.';
+        }
+      };
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
         return std::nullopt;
       }
 
@@ -5380,9 +5801,20 @@ namespace VDISPLAY_SUNSHINE {
           std::nullopt
         }
       );
-      (void) ensure_watchdog_thread_active_for_lease();
+      if (!ensure_watchdog_thread_active_for_lease(stop_token) || stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
 
-      auto display_config_identity = wait_for_display_config_identity(output);
+      auto display_config_identity = wait_for_display_config_identity(
+        output,
+        std::chrono::milliseconds(250),
+        stop_token
+      );
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
 
       std::optional<std::wstring> resolved_display_name;
       if (display_config_identity) {
@@ -5411,13 +5843,23 @@ namespace VDISPLAY_SUNSHINE {
         }
       }
 
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+
       const auto has_target_identity = display_config_identity && display_config_identity_has_display_name(*display_config_identity);
       const auto display_config_ptr = has_target_identity ? &*display_config_identity : nullptr;
       if (!resolved_display_name && !device_id && !has_target_identity) {
         BOOST_LOG(debug) << "Sunshine temporary display created before Windows exposed a target-specific display identity; waiting for virtual display enumeration.";
       }
 
-      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr)) {
+      bool confirmed_active = false;
+      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, &confirmed_active, stop_token)) {
+        if (stop_token.stop_requested()) {
+          rollback_created_display();
+          return std::nullopt;
+        }
         if (allow_pending_enumeration) {
           BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
 
@@ -5437,12 +5879,22 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         printf("[SunshineVirtualDisplay] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
-        (void) removeVirtualDisplay(guid);
+        rollback_created_display();
         return std::nullopt;
       }
 
-      if (hdr_requested && !request_hdr10_advanced_color(output)) {
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+
+      if (hdr_requested && !request_hdr10_advanced_color(output, stop_token) && !stop_token.stop_requested()) {
         BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
+      }
+
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
       }
 
       if (dpi_snapshot) {
@@ -5452,11 +5904,19 @@ namespace VDISPLAY_SUNSHINE {
       // Prefer a real GDI display name (\\.\DISPLAYx) over GUID placeholders once enumeration is complete.
       if (resolved_display_name && !resolved_display_name->empty() && !is_gdi_display_name(*resolved_display_name)) {
         std::optional<std::wstring> gdi_name;
-        if (auto identity = wait_for_display_config_identity(output, std::chrono::milliseconds(250))) {
+        if (auto identity = wait_for_display_config_identity(
+              output,
+              std::chrono::milliseconds(250),
+              stop_token
+            )) {
           if (identity->source_gdi_device_name && !identity->source_gdi_device_name->empty()) {
             gdi_name = identity->source_gdi_device_name;
             display_config_identity = identity;
           }
+        }
+        if (stop_token.stop_requested()) {
+          rollback_created_display();
+          return std::nullopt;
         }
         if (gdi_name && !gdi_name->empty() && is_gdi_display_name(*gdi_name)) {
           BOOST_LOG(debug) << "Virtual display: resolved GDI name '" << platf::to_utf8(*gdi_name) << "' after creation.";
@@ -5491,7 +5951,12 @@ namespace VDISPLAY_SUNSHINE {
           result.monitor_device_path = identity->monitor_device_path;
         }
       }
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
       result.reused_existing = false;
+      result.confirmed_active = confirmed_active;
       result.ready_since = ready_since;
       std::optional<std::string> hdr_profile;
       if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
@@ -5504,15 +5969,21 @@ namespace VDISPLAY_SUNSHINE {
         result.client_name,
         hdr_profile,
         true,
-        true
+        true,
+        stop_token,
+        deferred_hdr_profile_worker_key
       );
+      if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
       driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
       return result;
     }
 
   }  // namespace
 
-  std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
+  static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *s_client_uid,
     const char *s_client_name,
     const char *s_hdr_profile,
@@ -5525,9 +5996,13 @@ namespace VDISPLAY_SUNSHINE {
     int framegen_refresh_multiplier,
     bool hdr_requested,
     bool allow_pending_enumeration,
-    bool replace_existing
+    bool replace_existing,
+    std::stop_token stop_token
   ) {
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (stop_token.stop_requested()) {
+      return std::nullopt;
+    }
     if (!ensure_virtual_display_process_ownership()) {
       BOOST_LOG(error) << "Virtual display creation refused because another process owns the recovery journal.";
       return std::nullopt;
@@ -5537,7 +6012,10 @@ namespace VDISPLAY_SUNSHINE {
     const auto requested_uuid = guid_to_uuid(guid);
 
     for (int attempt = 1; attempt <= kMaxInitializationAttempts; ++attempt) {
-      if (!ensure_control_transport_responsive("Sunshine virtual display creation")) {
+      if (stop_token.stop_requested()) {
+        return std::nullopt;
+      }
+      if (!ensure_control_transport_responsive("Sunshine virtual display creation", stop_token)) {
         BOOST_LOG(warning) << "Unable to open Sunshine virtual display driver transport for virtual display creation.";
         return std::nullopt;
       }
@@ -5557,9 +6035,13 @@ namespace VDISPLAY_SUNSHINE {
         hdr_requested,
         allow_pending_enumeration,
         replace_existing,
-        allow_driver_recovery
+        allow_driver_recovery,
+        stop_token
       );
       if (!result) {
+        if (stop_token.stop_requested()) {
+          return std::nullopt;
+        }
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
                            << " failed.";
 
@@ -5575,12 +6057,12 @@ namespace VDISPLAY_SUNSHINE {
 
         closeVDisplayDevice();
 
-        if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
+        if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token)) {
           BOOST_LOG(warning) << "Driver recovery failed after virtual display creation failure.";
           return std::nullopt;
         }
 
-        if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+        if (open_vdisplay_device_impl(stop_token) != DRIVER_STATUS::OK) {
           BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
           return std::nullopt;
         }
@@ -5590,10 +6072,35 @@ namespace VDISPLAY_SUNSHINE {
         continue;
       }
 
-      if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height)) {
+      if (stop_token.stop_requested()) {
+        if (!result->reused_existing) {
+          (void) remove_virtual_display_impl(guid, false, stop_token);
+        }
+        return std::nullopt;
+      }
+      if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height, stop_token)) {
+        if (stop_token.stop_requested()) {
+          if (!result->reused_existing) {
+            (void) remove_virtual_display_impl(guid, false, stop_token);
+          }
+          return std::nullopt;
+        }
         if (config::video.dd.virtual_display_scale_percent > 0) {
           if (!result->monitor_device_path) {
-            result->monitor_device_path = resolve_monitor_device_path(result->display_name, result->device_id);
+            result->monitor_device_path = resolve_monitor_device_path(
+              result->display_name,
+              result->device_id,
+              5,
+              std::chrono::milliseconds(100),
+              std::nullopt,
+              stop_token
+            );
+          }
+          if (stop_token.stop_requested()) {
+            if (!result->reused_existing) {
+              (void) remove_virtual_display_impl(guid, false, stop_token);
+            }
+            return std::nullopt;
           }
           if (result->monitor_device_path) {
             const auto scale_result = VDISPLAY::set_display_scale_percent(
@@ -5615,8 +6122,21 @@ namespace VDISPLAY_SUNSHINE {
             BOOST_LOG(warning) << "Virtual display scale: monitor device path was unavailable; Windows scale was not applied.";
           }
         }
+        if (stop_token.stop_requested()) {
+          if (!result->reused_existing) {
+            (void) remove_virtual_display_impl(guid, false, stop_token);
+          }
+          return std::nullopt;
+        }
         track_virtual_display_created(requested_uuid);
         return result;
+      }
+
+      if (stop_token.stop_requested()) {
+        if (!result->reused_existing) {
+          (void) remove_virtual_display_impl(guid, false, stop_token);
+        }
+        return std::nullopt;
       }
 
       const auto name_utf8 = result->display_name ? platf::to_utf8(*result->display_name) : std::string("(pending)");
@@ -5629,12 +6149,12 @@ namespace VDISPLAY_SUNSHINE {
 
       closeVDisplayDevice();
 
-      if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait)) {
+      if (!ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token)) {
         BOOST_LOG(warning) << "Driver recovery failed after virtual display vanished.";
         return std::nullopt;
       }
 
-      if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_impl(stop_token) != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
         return std::nullopt;
       }
@@ -5647,14 +6167,49 @@ namespace VDISPLAY_SUNSHINE {
     return std::nullopt;
   }
 
+  std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
+    const char *s_client_uid,
+    const char *s_client_name,
+    const char *s_hdr_profile,
+    uint32_t width,
+    uint32_t height,
+    uint32_t fps,
+    const GUID &guid,
+    uint32_t base_fps_millihz,
+    bool framegen_refresh_active,
+    int framegen_refresh_multiplier,
+    bool hdr_requested,
+    bool allow_pending_enumeration,
+    bool replace_existing
+  ) {
+    return create_virtual_display_with_stop(
+      s_client_uid,
+      s_client_name,
+      s_hdr_profile,
+      width,
+      height,
+      fps,
+      guid,
+      base_fps_millihz,
+      framegen_refresh_active,
+      framegen_refresh_multiplier,
+      hdr_requested,
+      allow_pending_enumeration,
+      replace_existing,
+      {}
+    );
+  }
+
   bool removeAllVirtualDisplays() {
+    // Request cancellation before taking the operation lock. A recovery
+    // monitor may be waiting to take it after an external driver call.
+    abort_all_recovery_monitors();
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
     if (!ensure_virtual_display_process_ownership()) {
       BOOST_LOG(error) << "Virtual display cleanup refused because another process owns the recovery journal.";
       return false;
     }
 
-    abort_all_recovery_monitors();
     auto all_guids = active_virtual_display_tracker().all();
     std::vector<VirtualDisplayRecoveryEntry> recovery_entries;
     const auto recovery_load = load_virtual_display_recovery_journal(recovery_entries);
@@ -5691,14 +6246,37 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    return remove_virtual_display_impl(guid, true);
+  }
+
+  static bool remove_virtual_display_impl(
+    const GUID &guid,
+    bool cancel_recovery_monitor,
+    std::stop_token stop_token
+  ) {
+    const auto guid_uuid = guid_to_uuid(guid);
+    // A recovery-owned rollback must complete removal even after its monitor
+    // has been stopped. Otherwise a stale transport at exactly that point can
+    // orphan the display the cancelled recovery just created. External
+    // removal, by contrast, may abandon before opening a new transport.
+    const std::stop_token reopen_stop_token = cancel_recovery_monitor ? stop_token : std::stop_token {};
+    // Always cancel profile work for a display being removed. The recovery
+    // monitor may already have completed, so its stop token alone is not a
+    // sufficient lifetime boundary for this deferred work.
+    deferred_hdr_profile_workers().request_stop(guid_uuid.string());
+    if (cancel_recovery_monitor && stop_token.stop_requested()) {
+      return false;
+    }
+    // Do not make cancellation wait behind the operation mutex held by a
+    // monitor that is about to perform its recovery callback.
+    if (cancel_recovery_monitor) {
+      abort_recovery_monitor(guid_uuid);
+    }
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
     if (!ensure_virtual_display_process_ownership()) {
       BOOST_LOG(error) << "Virtual display removal refused because another process owns the recovery journal.";
       return false;
     }
-
-    abort_recovery_monitor(guid_to_uuid(guid));
-    const auto guid_uuid = guid_to_uuid(guid);
 
     auto transport = control_transport_snapshot();
     const bool initial_transport_invalid = !driver_transport_responsive(transport.get());
@@ -5710,12 +6288,16 @@ namespace VDISPLAY_SUNSHINE {
         return true;
       }
 
+      if (cancel_recovery_monitor && stop_token.stop_requested()) {
+        return false;
+      }
+
       if (transport) {
         printf("[SunshineVirtualDisplay] Cached driver transport is not responsive while removing virtual display; reopening.\n");
         closeVDisplayDevice();
       }
 
-      if (openVDisplayDevice() != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_impl(reopen_stop_token) != DRIVER_STATUS::OK) {
         printf("[SunshineVirtualDisplay] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -5807,7 +6389,8 @@ namespace VDISPLAY_SUNSHINE {
     if (!removed && error_code == ERROR_INVALID_HANDLE) {
       printf("[SunshineVirtualDisplay] Driver transport became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
-      if (openVDisplayDevice() == DRIVER_STATUS::OK) {
+      if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
+          open_vdisplay_device_impl(reopen_stop_token) == DRIVER_STATUS::OK) {
         opened_handle = true;
         transport = control_transport_snapshot();
         auto retry_result = perform_remove();
@@ -5826,7 +6409,12 @@ namespace VDISPLAY_SUNSHINE {
       printf("[SunshineVirtualDisplay] Virtual display removed successfully.\n");
       if (cached_display_name) {
         constexpr auto teardown_timeout = std::chrono::seconds(2);
-        if (!wait_for_virtual_display_teardown(*cached_display_name, teardown_timeout)) {
+        if (!wait_for_virtual_display_teardown(*cached_display_name, teardown_timeout, stop_token)) {
+          if (stop_token.stop_requested()) {
+            BOOST_LOG(debug) << "Virtual display teardown wait cancelled for '"
+                             << platf::to_utf8(*cached_display_name) << "'.";
+            return true;
+          }
           BOOST_LOG(warning) << "Virtual display '" << platf::to_utf8(*cached_display_name)
                              << "' still reported by Windows after teardown wait.";
         } else {
@@ -6259,8 +6847,9 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
 
   if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
     proc::initVDisplayDriver();
-    if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != DRIVER_STATUS::OK) {
-      BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure (status=" << static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire)) << "). Continuing with best-effort ensure.";
+    const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
+    if (driver_status != DRIVER_STATUS::OK) {
+      BOOST_LOG(warning) << "Virtual display driver unavailable for display ensure (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort ensure.";
     }
   }
 
