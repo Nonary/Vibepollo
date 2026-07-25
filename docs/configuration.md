@@ -2647,7 +2647,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="5">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>nvenc</td>
         <td>For NVIDIA graphics cards</td>
     </tr>
@@ -2657,7 +2657,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>amdvce</td>
-        <td>For AMD graphics cards</td>
+        <td>For AMD graphics cards (native AMF encoder)</td>
+    </tr>
+    <tr>
+        <td>amdvce_legacy</td>
+        <td>Explicit rollback to the FFmpeg-based AMD AMF encoder. Never selected automatically —
+            automatic probing and `amdvce` fail closed instead of silently falling back.
+            @note{Applies to Windows only.}</td>
     </tr>
     <tr>
         <td>vaapi</td>
@@ -3422,7 +3428,7 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>cqp</td>
         <td>constant qp mode</td>
     </tr>
@@ -3437,6 +3443,48 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
     <tr>
         <td>vbr_peak</td>
         <td>variable bitrate, peak constrained</td>
+    </tr>
+    <tr>
+        <td>qvbr</td>
+        <td>quality-defined variable bitrate (see amd_qvbr_quality_level)</td>
+    </tr>
+    <tr>
+        <td>hqvbr</td>
+        <td>high quality variable bitrate</td>
+    </tr>
+    <tr>
+        <td>hqcbr</td>
+        <td>high quality constant bitrate</td>
+    </tr>
+</table>
+
+### amd_qvbr_quality_level
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The target quality level used by the `qvbr` rate control method, where 1 is the lowest quality and 51
+            is the highest. Higher values spend more bits to preserve quality.
+            @note{This option only applies to AMD [encoders](#encoder) with `amd_rc` set to `qvbr`. Native `amdvce` automatically enables PreAnalysis with a one-frame low-latency lookahead for `qvbr`, `hqvbr`, and `hqcbr`.}
+            @note{Leave this at `0` to keep the encoder default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1-51 (0 to use the encoder default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_qvbr_quality_level = 18
+            @endcode</td>
     </tr>
 </table>
 
@@ -3472,6 +3520,7 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
         <td>Description</td>
         <td colspan="2">
             The quality profile controls the tradeoff between speed and quality of encoding.
+            `auto` leaves the quality property unset so the selected AMF usage preset can choose it.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3488,7 +3537,11 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="4">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
         <td>speed</td>
         <td>prefer speed</td>
     </tr>
@@ -3508,8 +3561,9 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Preanalysis can increase encoding quality at the cost of latency.
-            @note{This option only applies when using amdvce [encoder](#encoder).}
+            Preanalysis can increase encoding quality at the cost of latency. Native `amdvce` uses a one-frame
+            low-latency lookahead; it is enabled automatically by `qvbr`, `hqvbr`, and `hqcbr`. The setting is
+            also forwarded to `amdvce_legacy`.
         </td>
     </tr>
     <tr>
@@ -3534,6 +3588,8 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
         <td colspan="2">
             Variance Based Adaptive Quantization (VBAQ) can increase subjective visual quality by prioritizing
             allocation of more bits to smooth areas compared to more textured areas.
+            `auto` leaves the property unset so the selected AMF usage preset can choose it. VBAQ is enabled
+            by default.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3548,6 +3604,19 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
         <td colspan="2">@code{}
             amd_vbaq = enabled
             @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>enable VBAQ</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>disable VBAQ</td>
     </tr>
 </table>
 
@@ -3577,7 +3646,7 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
     <tr>
         <td rowspan="3">Choices</td>
         <td>auto</td>
-        <td>let ffmpeg decide</td>
+        <td>leave the encoder default</td>
     </tr>
     <tr>
         <td>cabac</td>
@@ -3586,6 +3655,91 @@ version is written to the log on every AMD HDR HEVC attempt (search for @code{AM
     <tr>
         <td>cavlc</td>
         <td>context adaptive variable-length coding - higher quality</td>
+    </tr>
+</table>
+
+### amd_av1_screen_content
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable AV1 screen-content coding tools, which can improve efficiency and text/UI clarity for desktop and
+            screen-heavy content.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_screen_content = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force screen-content tools on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force screen-content tools off</td>
+    </tr>
+</table>
+
+### amd_av1_latency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            AV1 encoding-latency tier. Lower tiers finish each frame faster at the cost of higher power draw.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_latency_mode = lowest
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>none</td>
+        <td>balance latency and power</td>
+    </tr>
+    <tr>
+        <td>power_saving</td>
+        <td>real-time with lower power</td>
+    </tr>
+    <tr>
+        <td>realtime</td>
+        <td>real-time</td>
+    </tr>
+    <tr>
+        <td>lowest</td>
+        <td>lowest latency (highest power)</td>
     </tr>
 </table>
 
