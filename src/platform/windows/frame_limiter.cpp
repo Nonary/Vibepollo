@@ -15,6 +15,10 @@
   #include <algorithm>
   #include <array>
   #include <cctype>
+  #include <cmath>
+  #include <cstdint>
+  #include <mutex>
+  #include <numeric>
   #include <optional>
   #include <numeric>
   #include <string>
@@ -24,7 +28,53 @@ namespace platf {
 
   namespace {
 
+    struct frame_limit_t {
+      std::uint32_t millihz = 0;
+      int rtss_numerator = 0;
+      int rtss_denominator = 1;
+      int nvcp_fps = 0;
+
+      [[nodiscard]] double fps() const {
+        return rtss_denominator > 0 ? static_cast<double>(rtss_numerator) / rtss_denominator : 0.0;
+      }
+
+      [[nodiscard]] bool is_fractional() const {
+        return millihz > 0 && millihz % 1000 != 0;
+      }
+    };
+
+    frame_limit_t make_frame_limit(std::uint32_t millihz) {
+      if (millihz == 0) {
+        return {};
+      }
+
+      constexpr std::uint32_t kMillihzPerHertz = 1000;
+      constexpr std::uint32_t kMaxFrameLimitMillihz = 1'000'000;
+      // Network-provided FPS can be much larger than the UI/configuration
+      // range. Clamp before reducing/casting to RTSS's signed integer fields.
+      millihz = std::min(millihz, kMaxFrameLimitMillihz);
+      const auto divisor = std::gcd(millihz, kMillihzPerHertz);
+      return {
+        .millihz = millihz,
+        .rtss_numerator = static_cast<int>(millihz / divisor),
+        .rtss_denominator = static_cast<int>(kMillihzPerHertz / divisor),
+        .nvcp_fps = std::max(1, framegen::rounded_fps_from_millihz(millihz)),
+      };
+    }
+
+    std::uint32_t integer_fps_to_millihz(int fps) {
+      return fps > 0 ? framegen::saturating_refresh_millihz(static_cast<std::uint32_t>(fps), 1000) : 0;
+    }
+
+    void log_nvcp_fractional_rounding(const frame_limit_t &limit) {
+      if (limit.is_fractional()) {
+        BOOST_LOG(warning) << "NVIDIA Control Panel only supports whole-number frame limits; rounding "
+                           << limit.fps() << " FPS to " << limit.nvcp_fps << " FPS.";
+      }
+    }
+
     frame_limiter_provider g_active_provider = frame_limiter_provider::none;
+    std::mutex g_lifecycle_mutex;
     unsigned int g_stream_owner_count = 0;
     bool g_nvcp_started = false;
     bool g_rtss_cleanup_needed = false;
@@ -33,7 +83,7 @@ namespace platf {
     bool g_gen1_framegen_fix_active = false;
     bool g_gen2_framegen_fix_active = false;
     bool g_stream_policy_overrides_active = false;
-    int g_last_effective_limit = 0;
+    frame_limit_t g_last_effective_limit;
     bool g_prev_frame_limiter_enabled = false;
     std::string g_prev_frame_limiter_provider;
     bool g_prev_frame_limiter_provider_set = false;
@@ -128,6 +178,7 @@ namespace platf {
   }
 
   void frame_limiter_streaming_start(const framegen::stream_start_policy_t &policy) {
+    std::scoped_lock lock {g_lifecycle_mutex};
     if (g_stream_owner_count > 0) {
       ++g_stream_owner_count;
       BOOST_LOG(debug) << "Frame limiter start requested while already active; reusing existing overrides (owners=" << g_stream_owner_count << ")";
@@ -203,45 +254,24 @@ namespace platf {
     g_nvcp_apply_smooth_motion = want_smooth_motion;
 
     bool nvcp_already_invoked = false;
-    int effective_limit = (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0) ? *policy.lossless_rtss_limit : policy.fps;
-    if (config::frame_limiter.fps_limit > 0) {
-      effective_limit = config::frame_limiter.fps_limit;
+    std::uint32_t effective_limit_millihz = policy.frame_limit_millihz > 0 ?
+                                                policy.frame_limit_millihz :
+                                                (policy.fps_scaled > 0 ?
+                                                   static_cast<std::uint32_t>(policy.fps_scaled) :
+                                                   framegen::normalize_refresh_millihz(policy.fps));
+    if (policy.lossless_rtss_limit && *policy.lossless_rtss_limit > 0) {
+      effective_limit_millihz = integer_fps_to_millihz(*policy.lossless_rtss_limit);
     }
+    if (config::frame_limiter.fps_limit_millihz > 0) {
+      effective_limit_millihz = config::frame_limiter.fps_limit_millihz;
+    }
+    const auto effective_limit = make_frame_limit(effective_limit_millihz);
     g_last_effective_limit = effective_limit;
-
-    int rtss_limit_value = effective_limit;
-    int rtss_limit_denominator = 1;
-
-    if ((!policy.lossless_rtss_limit || *policy.lossless_rtss_limit <= 0) && config::frame_limiter.fps_limit <= 0) {
-      if (policy.fps_scaled > 0) {
-        rtss_limit_value = policy.fps_scaled;
-        rtss_limit_denominator = 1000;
-
-        if (rtss_limit_value % 1000 == 0) {
-          rtss_limit_value /= 1000;
-          rtss_limit_denominator = 1;
-        } else if (rtss_limit_value % 100 == 0) {
-          rtss_limit_value /= 100;
-          rtss_limit_denominator = 10;
-        } else if (rtss_limit_value % 10 == 0) {
-          rtss_limit_value /= 10;
-          rtss_limit_denominator = 100;
-        }
-
-        int gcd_value = std::gcd(rtss_limit_value, rtss_limit_denominator);
-        if (gcd_value > 1) {
-          rtss_limit_value /= gcd_value;
-          rtss_limit_denominator /= gcd_value;
-        }
-      } else {
-        rtss_limit_value = effective_limit;
-        rtss_limit_denominator = 1;
-      }
-    }
 
     BOOST_LOG(debug) << "Frame limiter decision: configured_provider="
                      << frame_limiter_provider_to_string(parse_provider(config::frame_limiter.provider))
-                     << " effective_limit=" << effective_limit
+                     << " effective_limit=" << effective_limit.fps()
+                     << " effective_limit_millihz=" << effective_limit.millihz
                      << " capture_fix=" << capture_fix_enabled
                      << " lossless_rtss_limit=" << (policy.lossless_rtss_limit ? *policy.lossless_rtss_limit : 0)
                      << " frame_generation_provider=" << policy.frame_generation_provider
@@ -288,8 +318,9 @@ namespace platf {
         }
 
         if (provider == frame_limiter_provider::nvidia_control_panel) {
+          log_nvcp_fractional_rounding(effective_limit);
           bool ok = frame_limiter_nvcp::streaming_start(
-            effective_limit,
+            effective_limit.nvcp_fps,
             true,
             false,
             want_nv_vsync_override,
@@ -305,7 +336,7 @@ namespace platf {
           }
         } else if (provider == frame_limiter_provider::rtss) {
           g_rtss_cleanup_needed = true;
-          bool ok = rtss_streaming_start(rtss_limit_value, rtss_limit_denominator);
+          bool ok = rtss_streaming_start(effective_limit.rtss_numerator, effective_limit.rtss_denominator);
           if (ok) {
             g_active_provider = frame_limiter_provider::rtss;
             applied = true;
@@ -335,7 +366,7 @@ namespace platf {
 
     if ((want_disable_nv_frame_limit || want_nv_vsync_override || want_smooth_motion) && !nvcp_already_invoked) {
       bool nvcp_result = frame_limiter_nvcp::streaming_start(
-        effective_limit,
+        effective_limit.nvcp_fps,
         false,
         want_disable_nv_frame_limit,
         want_nv_vsync_override,
@@ -404,6 +435,7 @@ namespace platf {
   }
 
   void frame_limiter_streaming_stop(bool keep_rtss_running) {
+    std::scoped_lock lock {g_lifecycle_mutex};
     if (g_stream_owner_count == 0) {
       return;
     }
@@ -447,15 +479,16 @@ namespace platf {
     g_rtss_cleanup_needed = false;
     g_nvcp_force_vsync_off = false;
     g_nvcp_apply_smooth_motion = false;
-    g_last_effective_limit = 0;
+    g_last_effective_limit = {};
   }
 
   void frame_limiter_streaming_refresh() {
-    if (g_active_provider != frame_limiter_provider::rtss || g_last_effective_limit <= 0) {
+    std::scoped_lock lock {g_lifecycle_mutex};
+    if (g_active_provider != frame_limiter_provider::rtss || g_last_effective_limit.millihz == 0) {
       return;
     }
 
-    if (rtss_streaming_refresh(g_last_effective_limit)) {
+    if (rtss_streaming_refresh(g_last_effective_limit.rtss_numerator, g_last_effective_limit.rtss_denominator)) {
       BOOST_LOG(info) << "Frame limiter provider 'rtss' refreshed";
     } else if (rtss_hooks_stalled() && frame_limiter_nvcp::is_available()) {
       BOOST_LOG(warning) << "RTSS stalled while refreshing the frame limit; falling back to the NVIDIA driver";
@@ -463,8 +496,9 @@ namespace platf {
         frame_limiter_nvcp::streaming_stop();
         g_nvcp_started = false;
       }
+      log_nvcp_fractional_rounding(g_last_effective_limit);
       if (frame_limiter_nvcp::streaming_start(
-            g_last_effective_limit,
+            g_last_effective_limit.nvcp_fps,
             true,
             false,
             g_nvcp_force_vsync_off,
@@ -481,10 +515,12 @@ namespace platf {
   }
 
   frame_limiter_provider frame_limiter_active_provider() {
+    std::scoped_lock lock {g_lifecycle_mutex};
     return g_active_provider;
   }
 
   frame_limiter_status_t frame_limiter_get_status() {
+    std::scoped_lock lock {g_lifecycle_mutex};
     frame_limiter_status_t status {};
     status.enabled = config::frame_limiter.enable;
     status.configured_provider = parse_provider(config::frame_limiter.provider);

@@ -20,6 +20,9 @@ namespace platf::game_activity {
 
   enum class signal_source_e : std::uint8_t {
     none = 0,
+    // The detector middleware reported fullscreen but could not attribute the
+    // launched game, so it ranks below every identity-bearing signal.
+    shell_fullscreen = 5,
     fullscreen_foreground = 10,
     tracked_process = 20,
     playnite = 30,

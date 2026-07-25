@@ -4,11 +4,16 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <codecvt>
+#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <system_error>
+#include <thread>
 
 // local includes
 #include "confighttp.h"
@@ -74,6 +79,102 @@ void on_signal(int sig, FN &&fn) {
   std::signal(sig, on_signal_forwarder);
 }
 
+namespace {
+  static_assert(std::atomic_bool::is_always_lock_free, "shutdown signal flag must be lock-free in a signal handler");
+
+  class shutdown_deadline_t {
+  public:
+    explicit shutdown_deadline_t(std::atomic_bool *signal_requested):
+        signal_requested_ {signal_requested} {
+      try {
+        worker_ = std::jthread([this](std::stop_token) {
+          run();
+        });
+      } catch (const std::system_error &e) {
+        BOOST_LOG(error) << "Unable to create the shutdown deadline watchdog: " << e.what();
+      }
+    }
+
+    shutdown_deadline_t(const shutdown_deadline_t &) = delete;
+    shutdown_deadline_t &operator=(const shutdown_deadline_t &) = delete;
+
+    ~shutdown_deadline_t() {
+      complete();
+    }
+
+    void arm() {
+      if (!worker_.joinable()) {
+        return;
+      }
+      std::lock_guard lock {mutex_};
+      if (state_ == state_e::idle) {
+        state_ = state_e::armed;
+        cv_.notify_one();
+      }
+    }
+
+    void complete() {
+      {
+        std::lock_guard lock {mutex_};
+        if (state_ != state_e::firing) {
+          state_ = state_e::completed;
+        }
+        cv_.notify_one();
+      }
+
+      // This object is owned by main(), never by its worker. Joining here
+      // prevents a deadline thread from escaping into CRT/static teardown.
+      if (worker_.joinable()) {
+        worker_.join();
+      }
+    }
+
+  private:
+    enum class state_e {
+      idle,
+      armed,
+      completed,
+      firing,
+    };
+
+    void run() {
+      std::unique_lock lock {mutex_};
+      while (state_ == state_e::idle && (!signal_requested_ || !signal_requested_->load(std::memory_order_relaxed))) {
+        // std::signal handlers cannot notify a condition variable safely. Poll
+        // the signal-safe flag so startup work is covered before main reaches
+        // shutdown_event->view().
+        cv_.wait_for(lock, std::chrono::milliseconds(50));
+      }
+      if (state_ == state_e::idle) {
+        state_ = state_e::armed;
+      }
+      if (state_ != state_e::armed) {
+        return;
+      }
+
+      constexpr auto kShutdownDeadline = std::chrono::seconds(10);
+      if (cv_.wait_until(lock, std::chrono::steady_clock::now() + kShutdownDeadline, [this] {
+            return state_ != state_e::armed;
+          })) {
+        return;
+      }
+
+      // Completion and expiry serialize through mutex_. A recovered shutdown
+      // therefore cannot leave a stale timer behind to trap later.
+      state_ = state_e::firing;
+      lock.unlock();
+      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
+      lifetime::debug_trap();
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    state_e state_ {state_e::idle};
+    std::atomic_bool *signal_requested_ = nullptr;
+    std::jthread worker_;
+  };
+}  // namespace
+
 std::map<std::string_view, std::function<int(const char *name, int argc, char **argv)>> cmd_to_func {
   {"creds"sv, [](const char *name, int argc, char **argv) {
      return args::creds(name, argc, argv);
@@ -138,8 +239,6 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 
 int main(int argc, char *argv[]) {
   lifetime::argv = argv;
-
-  task_pool_util::TaskPool::task_id_t force_shutdown = nullptr;
 
 #ifdef _WIN32
   // Avoid searching the PATH in case a user has configured their system insecurely
@@ -230,6 +329,13 @@ int main(int argc, char *argv[]) {
 
   // Display configuration is managed by the external Windows helper; no in-process init.
 
+  // Construct the process-owned shutdown deadline before the session monitor.
+  // Its cleanup guard also runs on early startup returns, so it must be able
+  // to bound that join as well as the ordinary shutdown path below.
+  auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+  std::atomic_bool shutdown_signal_requested {false};
+  shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested};
+
 #ifdef WIN32
   // Modify relevant NVIDIA control panel settings if the system has corresponding gpu
   if (nvprefs_instance.load()) {
@@ -304,7 +410,16 @@ int main(int argc, char *argv[]) {
     }
   });
 
-  auto session_monitor_join_thread_guard = util::fail_guard([&]() {
+  auto shutdown_session_monitor = [&]() {
+    if (!session_monitor_thread.joinable()) {
+      return;
+    }
+
+    // This cleanup guard covers early returns before shutdown_event->view().
+    // Arm the owned deadline before any potentially unbounded join so that a
+    // pathological message loop cannot hang process teardown indefinitely.
+    shutdown_deadline.arm();
+
     auto request_session_monitor_shutdown = [&](bool force_quit_only) {
       if (!force_quit_only) {
         if (session_monitor_hwnd_future.wait_for(1s) == std::future_status::ready) {
@@ -351,16 +466,20 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "session_monitor_join_thread_future reached timeout";
     request_session_monitor_shutdown(true);
 
-    // Detaching a thread that is still running causes undefined behavior
-    // when main() returns (CRT atexit cleanup may abort).  Join with a
-    // generous timeout so the thread has time to finish even on slow
-    // systems.  If it still hasn't exited, detach as a last resort.
+    // This thread owns a window/message queue and may access logging and
+    // process globals. It must never escape into CRT teardown. The shutdown
+    // deadline is armed before the normal call site below, so an unexpected
+    // stuck message loop is diagnosed instead of being detached unsafely.
     if (session_monitor_join_thread_future.wait_for(5s) == std::future_status::ready) {
       session_monitor_thread.join();
     } else {
-      BOOST_LOG(warning) << "session_monitor_thread still running after extended wait; detaching";
-      session_monitor_thread.detach();
+      BOOST_LOG(error) << "session_monitor_thread still running after forced WM_QUIT; waiting for owned thread exit";
+      session_monitor_thread.join();
     }
+  };
+
+  auto session_monitor_join_thread_guard = util::fail_guard([&]() {
+    shutdown_session_monitor();
   });
 
 #endif
@@ -389,21 +508,14 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
-  // Create signal handler after logging has been initialized
-  auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  on_signal(SIGINT, [&force_shutdown, shutdown_event]() {
+  // Create signal handlers after logging has been initialized.
+  on_signal(SIGINT, [&shutdown_signal_requested, shutdown_event]() {
+    shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
-    };
-
+    // Preserve Vibepollo's eager application cleanup; the owned deadline above
+    // replaces the detached task-pool watchdog that used to follow it.
     proc::proc.terminate();
-
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
-
     // Break out of the main loop
     shutdown_event->raise(true);
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -413,15 +525,9 @@ int main(int argc, char *argv[]) {
 #endif
   });
 
-  on_signal(SIGTERM, [&force_shutdown, shutdown_event]() {
+  on_signal(SIGTERM, [&shutdown_signal_requested, shutdown_event]() {
+    shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Terminate handler called"sv;
-
-    auto task = []() {
-      BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
-      logging::log_flush();
-      lifetime::debug_trap();
-    };
-    force_shutdown = task_pool.pushDelayed(task, 10s).task_id;
 
     // Break out of the main loop
     shutdown_event->raise(true);
@@ -677,6 +783,26 @@ int main(int argc, char *argv[]) {
 
   // Wait for shutdown
   shutdown_event->view();
+  // Arm the owned watchdog from main so signal handlers never construct
+  // watchdog threads or queue watchdog work from signal context.
+  shutdown_deadline.arm();
+
+#ifdef WIN32
+  // Join the hidden shutdown-notification window while the deadline watchdog
+  // is still armed. The guard remains for early-return paths only.
+  shutdown_session_monitor();
+  session_monitor_join_thread_guard.disable();
+#endif
+
+#ifdef _WIN32
+  // Stop the owned lock-screen virtual-output worker before recovery workers
+  // can publish more overrides. Both use configuration, the display helper,
+  // and mail, all of which remain live until these joins complete.
+  config::request_deferred_virtual_output_reapply_shutdown();
+  VDISPLAY::request_virtual_display_recovery_shutdown();
+  config::join_deferred_virtual_output_reapply_worker();
+  VDISPLAY::join_virtual_display_recovery_monitors();
+#endif
 
   httpThread.join();
   configThread.join();
@@ -686,7 +812,7 @@ int main(int argc, char *argv[]) {
   // Full process shutdown cannot leave the paused-session watchdog running.
   // If it survives past main(), CRT teardown can fast-fail while the helper
   // watchdog thread is still unwinding.
-  display_helper_integration::stop_watchdog();
+  display_helper_integration::stop_watchdog(true);
 
   // The virtual display watchdog thread also lives in static storage.
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.

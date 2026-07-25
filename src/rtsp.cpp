@@ -191,6 +191,8 @@ namespace rtsp_stream {
     snapshot->unique_id = unique_id;
     snapshot->client_uuid = client_uuid;
     snapshot->device_name = device_name;
+    snapshot->client_display_mode_override = client_display_mode_override;
+    snapshot->client_display_refresh_millihz = client_display_refresh_millihz;
     snapshot->enable_hdr = enable_hdr;
     snapshot->prefer_sdr_10bit = prefer_sdr_10bit;
     snapshot->force_sdr = force_sdr;
@@ -206,6 +208,9 @@ namespace rtsp_stream {
     snapshot->gen2_framegen_fix = gen2_framegen_fix;
     snapshot->frame_generation_enabled = frame_generation_enabled;
     snapshot->lossless_scaling_framegen = lossless_scaling_framegen;
+    snapshot->framegen_refresh_rate = framegen_refresh_rate;
+    snapshot->framegen_refresh_millihz = framegen_refresh_millihz;
+    snapshot->framegen_refresh_multiplier = framegen_refresh_multiplier;
     snapshot->frame_generation_provider = frame_generation_provider;
     snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
     snapshot->lossless_scaling_rtss_limit = lossless_scaling_rtss_limit;
@@ -1099,6 +1104,10 @@ namespace rtsp_stream {
     // Ensure session_count is up-to-date
     server.clear(false);
 
+    return server.session_count();
+  }
+
+  int session_count_no_cleanup() {
     return server.session_count();
   }
 

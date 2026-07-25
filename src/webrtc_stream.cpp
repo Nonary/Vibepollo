@@ -25,6 +25,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stop_token>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -261,6 +262,7 @@ namespace webrtc_stream {
       auto make_framegen_policy = [&](bool uses_virtual_display) {
         return framegen::make_stream_start_policy({
           .fps = session->fps,
+          .display_refresh_millihz = session->client_display_refresh_millihz,
           .frame_generation_enabled = session->frame_generation_enabled,
           .gen1_framegen_fix = session->gen1_framegen_fix,
           .gen2_framegen_fix = session->gen2_framegen_fix,
@@ -284,6 +286,7 @@ namespace webrtc_stream {
       auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
         const auto framegen_policy = make_framegen_policy(uses_virtual_display);
         session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
       BOOST_LOG(debug) << "Display helper: WebRTC session prep client='" << session->client_name
@@ -332,17 +335,19 @@ namespace webrtc_stream {
 
       if (!request_virtual_display) {
         session->framegen_refresh_rate.reset();
+        session->framegen_refresh_millihz.reset();
         session->framegen_refresh_multiplier = 1;
         return;
       }
 
       apply_framegen_refresh_policy(true);
 
-      if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
         proc::initVDisplayDriver();
-        if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
+        if (driver_status != VDISPLAY::DRIVER_STATUS::OK) {
           BOOST_LOG(warning)
-            << "SudaVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus)
+            << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status)
             << "). Continuing with best-effort virtual display creation.";
         }
       }
@@ -453,24 +458,18 @@ namespace webrtc_stream {
           virtual_display_hdr_requested = source_hdr_requested;
         }
       }
-      uint32_t base_vd_fps = session->fps > 0 ? static_cast<uint32_t>(session->fps) : 0u;
-      uint32_t base_vd_fps_millihz = base_vd_fps;
-      if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {
-        base_vd_fps_millihz *= 1000u;
-      }
-      uint32_t vd_fps = 0;
-      if (session->framegen_refresh_rate && *session->framegen_refresh_rate > 0) {
-        vd_fps = static_cast<uint32_t>(*session->framegen_refresh_rate);
-      } else if (base_vd_fps > 0) {
-        vd_fps = base_vd_fps;
-      } else {
+      const uint32_t base_vd_fps_millihz = session->client_display_refresh_millihz > 0 ?
+                                                 session->client_display_refresh_millihz :
+                                                 (session->fps > 0 ?
+                                                    framegen::saturating_refresh_millihz(static_cast<uint32_t>(session->fps), 1000) :
+                                                    0u);
+      uint32_t vd_fps = rtsp_stream::effective_display_refresh_millihz(*session);
+      if (vd_fps == 0) {
         vd_fps = 60000u;
       }
-      if (vd_fps < 1000u) {
-        vd_fps *= 1000u;
-      }
       const bool framegen_refresh_active =
-        session->framegen_refresh_rate && *session->framegen_refresh_rate > 0;
+        (session->framegen_refresh_millihz && *session->framegen_refresh_millihz > 0) ||
+        (session->framegen_refresh_rate && *session->framegen_refresh_rate > 0);
       const int refresh_multiplier =
         framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*session) : 1;
       if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
@@ -532,6 +531,7 @@ namespace webrtc_stream {
         recovery_params.hdr_profile = session->hdr_profile;
         recovery_params.display_name = display_info->display_name;
         recovery_params.monitor_device_path = display_info->monitor_device_path;
+        recovery_params.confirmed_active_at_schedule = display_info->confirmed_active;
         if (display_info->device_id && !display_info->device_id->empty()) {
           recovery_params.device_id = *display_info->device_id;
         } else if (!session->virtual_display_device_id.empty()) {
@@ -546,10 +546,43 @@ namespace webrtc_stream {
         auto recovery_session = std::make_shared<rtsp_stream::launch_session_t>(
           display_helper_integration::helpers::make_display_request_session_snapshot(*session)
         );
-        recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result) {
+        recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result, std::stop_token stop_token) -> std::function<void()> {
+            const auto cancelled = [&] {
+              return stop_token.stop_requested();
+            };
+            std::optional<config::runtime_output_override_lease_t> recovery_output_override_lease;
+            auto clear_recovery_output_override = util::fail_guard([&] {
+              if (recovery_output_override_lease) {
+                (void) config::clear_runtime_output_name_override_if_lease(*recovery_output_override_lease);
+              }
+            });
+            const auto wait_or_cancel = [&](std::chrono::milliseconds delay) {
+              const auto deadline = std::chrono::steady_clock::now() + delay;
+              while (!cancelled()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= deadline) {
+                  return false;
+                }
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+                std::this_thread::sleep_for(std::min(std::max(remaining, std::chrono::milliseconds(1)), std::chrono::milliseconds(50)));
+              }
+              return true;
+            };
+
+            if (cancelled()) {
+              return {};
+            }
             if (result.device_id && !result.device_id->empty()) {
               recovery_session->virtual_display_device_id = *result.device_id;
-              config::set_runtime_output_name_override(recovery_session->virtual_display_device_id);
+              if (cancelled()) {
+                return {};
+              }
+              recovery_output_override_lease = config::set_runtime_output_name_override_with_lease(
+                recovery_session->virtual_display_device_id
+              );
+            }
+            if (cancelled()) {
+              return {};
             }
             recovery_session->virtual_display_ready_since = result.ready_since;
             if (recovery_session->virtual_display) {
@@ -557,33 +590,61 @@ namespace webrtc_stream {
               bool applied = false;
 
               for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
-                (void) display_helper_integration::disarm_pending_restore();
+                if (cancelled()) {
+                  return {};
+                }
+                (void) display_helper_integration::disarm_pending_restore(cancelled);
+                if (cancelled()) {
+                  return {};
+                }
 
                 auto request = display_helper_integration::helpers::build_request_from_session(config::video, *recovery_session);
                 if (!request) {
                   BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild WebRTC display request after recreation (attempt "
                                      << attempt << "/" << kMaxApplyAttempts << ").";
-                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                  if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                    return {};
+                  }
                   continue;
                 }
 
-                if (display_helper_integration::apply(*request)) {
+                if (cancelled()) {
+                  return {};
+                }
+                if (display_helper_integration::apply(*request, nullptr, cancelled)) {
                   BOOST_LOG(info) << "Virtual display recovery: re-applied WebRTC display configuration after recreation.";
                   applied = true;
                   break;
                 }
+                if (cancelled()) {
+                  return {};
+                }
 
                 BOOST_LOG(warning) << "Virtual display recovery: WebRTC display helper apply failed after recreation (attempt "
                                    << attempt << "/" << kMaxApplyAttempts << ").";
-                std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                  return {};
+                }
               }
 
-              if (mail::man) {
+              if (!cancelled() && mail::man) {
                 mail::man->event<int>(mail::switch_display)->raise(-1);
+              }
+              if (cancelled()) {
+                return {};
               }
               BOOST_LOG(info) << "Virtual display recovery: requested WebRTC capture reinit to pick up recreated display"
                               << (applied ? "." : " (apply did not succeed).");
             }
+            std::function<void()> rollback_output_override;
+            if (recovery_output_override_lease) {
+              const auto lease = *recovery_output_override_lease;
+              rollback_output_override = [lease] {
+                (void) config::clear_runtime_output_name_override_if_lease(lease);
+              };
+            }
+            clear_recovery_output_override.disable();
+            return rollback_output_override;
         };
 
         VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
@@ -596,6 +657,7 @@ namespace webrtc_stream {
       session->virtual_display_device_id.clear();
       session->virtual_display_ready_since.reset();
       session->framegen_refresh_rate.reset();
+      session->framegen_refresh_millihz.reset();
       session->framegen_refresh_multiplier = 1;
     }
 #endif
@@ -2643,6 +2705,7 @@ namespace webrtc_stream {
       launch_session->virtual_display_ready_since.reset();
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
       launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;

@@ -287,12 +287,13 @@ namespace display_device {
 
       // Client display_mode override takes highest priority
       if (session.client_display_mode_override) {
-        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-        if (target_fps >= 0) {
-          config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
-          BOOST_LOG(debug) << "Using client display mode override for refresh rate: " << target_fps / 1000.0 << " Hz";
+        const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+        if (target_millihz > 0) {
+          config.m_refresh_rate = Rational {target_millihz, 1000u};
+          BOOST_LOG(debug) << "Using client display mode override for refresh rate: "
+                           << (static_cast<double>(target_millihz) / 1000.0) << " Hz";
         } else {
-          BOOST_LOG(error) << "FPS value provided by client display mode override is invalid: " << target_fps;
+          BOOST_LOG(error) << "Refresh value provided by client display mode override is invalid.";
           return false;
         }
         return true;
@@ -301,11 +302,11 @@ namespace display_device {
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
           {
-            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-            if (target_fps >= 0) {
-              config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
+            const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+            if (target_millihz > 0) {
+              config.m_refresh_rate = Rational {target_millihz, 1000u};
             } else {
-              BOOST_LOG(error) << "FPS value provided by client session config is invalid: " << target_fps;
+              BOOST_LOG(error) << "Refresh value provided by client session config is invalid.";
               return false;
             }
             break;
@@ -795,11 +796,11 @@ namespace display_device {
       return false;
     }
 
-    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-    if (target_fps < 0) {
+    const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+    if (target_millihz == 0) {
       return false;
     }
-    const FloatingPoint requested_fps = Rational {static_cast<unsigned int>(target_fps), 1u};
+    const FloatingPoint requested_fps = Rational {target_millihz, 1000u};
 
     for (const auto &entry : remapping_list) {
       const auto parsed_entry {parse_remapping_entry(entry, *remapping_type)};

@@ -474,6 +474,8 @@ namespace VDISPLAY_SUNSHINE {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void request_virtual_display_recovery_shutdown();
+  void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
@@ -530,6 +532,8 @@ namespace VDISPLAY_SUDOVDA {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void request_virtual_display_recovery_shutdown();
+  void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
@@ -645,6 +649,16 @@ namespace VDISPLAY {
     } else {
       VDISPLAY_SUDOVDA::schedule_virtual_display_recovery_monitor(params);
     }
+  }
+
+  void request_virtual_display_recovery_shutdown() {
+    VDISPLAY_SUNSHINE::request_virtual_display_recovery_shutdown();
+    VDISPLAY_SUDOVDA::request_virtual_display_recovery_shutdown();
+  }
+
+  void join_virtual_display_recovery_monitors() {
+    VDISPLAY_SUNSHINE::join_virtual_display_recovery_monitors();
+    VDISPLAY_SUDOVDA::join_virtual_display_recovery_monitors();
   }
 
   bool is_virtual_display_guid_tracked(const GUID &guid) {
