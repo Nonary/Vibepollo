@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { $tp } from '@/platform-i18n';
 import { useI18n } from 'vue-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
@@ -51,26 +51,6 @@ async function loadDisplayDevices() {
   }
 }
 
-onMounted(() => {
-  // Proactively load once on mount; backend gracefully handles non-Windows
-  if (!loading.value && devices.value.length === 0) void loadDisplayDevices();
-});
-
-// If platform metadata arrives after mount, load then
-const stopWatch = watch(
-  () => platform.value,
-  (p) => {
-    if (p === 'windows' && devices.value.length === 0 && !loading.value) {
-      void loadDisplayDevices();
-    }
-  },
-  { immediate: false },
-);
-
-onBeforeUnmount(() => {
-  stopWatch();
-});
-
 const outputNamePlaceholder = computed(() =>
   platform.value === 'windows' ? '{de9bb7e2-186e-505b-9e93-f48793333810}' : '0',
 );
@@ -112,6 +92,18 @@ function toOptions() {
         displayName,
         id: guid && dispName ? `${guid} — ${dispName}` : guid || dispName,
       });
+  }
+
+  // Keep an existing manual value visible until the user opens the selector
+  // and the deferred device lookup supplies its friendly label.
+  const selectedOutput = String(config.output_name || '').trim();
+  if (selectedOutput && !opts.some((option) => option.value === selectedOutput)) {
+    opts.push({
+      label: selectedOutput,
+      value: selectedOutput,
+      displayName: selectedOutput,
+      id: selectedOutput,
+    });
   }
 
   return opts;

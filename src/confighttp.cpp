@@ -4778,6 +4778,13 @@ namespace confighttp {
     std::string current_mismatch_reason;
     std::optional<golden_restore_status_t> restore_status;
     try {
+      const auto query = request->parse_query_string();
+      const auto compare_current_it = query.find("compare_current");
+      const bool compare_current = compare_current_it != query.end() &&
+                                   (boost::iequals(compare_current_it->second, "1") ||
+                                    boost::iequals(compare_current_it->second, "true") ||
+                                    boost::iequals(compare_current_it->second, "yes"));
+
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
           exists = true;
@@ -4790,7 +4797,11 @@ namespace confighttp {
             if (needs_layout_upgrade) {
               out_of_date_reason = "schema_upgrade_required";
             }
-            if (!has_active_stream_sessions()) {
+            // A current-topology comparison walks QDC_ALL_PATHS. On a system
+            // with stale CCD paths, doing that for every ordinary Settings
+            // status refresh can monopolize the single HTTPS I/O thread. It
+            // is diagnostic-only, so retain it behind an explicit request.
+            if (compare_current && !has_active_stream_sessions()) {
               if (auto mismatch = snapshot_current_mismatch_reason(*root)) {
                 comparison_available = true;
                 if (!mismatch->empty()) {
@@ -5480,7 +5491,7 @@ namespace confighttp {
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
-    register_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
+    register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
 #endif
     register_api_route("^/api/password$", "POST", savePassword);

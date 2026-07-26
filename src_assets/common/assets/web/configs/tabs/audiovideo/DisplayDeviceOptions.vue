@@ -294,10 +294,7 @@ async function deleteGolden(): Promise<void> {
 }
 
 onMounted(() => {
-  loadGoldenStatus();
-  if (!snapshotDevicesLoading.value && snapshotDevices.value.length === 0) {
-    void loadSnapshotDevices();
-  }
+  void loadGoldenStatus();
 });
 
 // Build translated option lists as computeds so they react to locale changes
