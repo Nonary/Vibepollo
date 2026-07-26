@@ -3976,18 +3976,12 @@ namespace proc {
       proc.terminate(false, false);
     }
 
-#ifdef _WIN32
-    size_t fail_count = 0;
-    while (fail_count < 5 && vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
-      initVDisplayDriver();
-      if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
-        break;
-      }
-
-      fail_count += 1;
-      std::this_thread::sleep_for(1s);
-    }
-#endif
+    // The virtual display driver is deliberately not initialized here. refresh()
+    // only parses apps.json, and it runs during startup before the HTTP and RTSP
+    // listeners exist, as well as inside web UI request handlers. Retrying a
+    // non-responsive driver from this call stack delayed the configuration UI by
+    // minutes and stalled apps.json saves. Every consumer already initializes the
+    // driver lazily when it actually needs a virtual display.
 
     auto proc_opt = proc::parse(file_name);
 
