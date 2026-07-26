@@ -852,6 +852,10 @@ namespace platf::dxgi {
     auto output_name = utf_utils::from_utf8(display_name);
 
     const auto adapter_luid_override = dxgi::get_dxgi_adapter_luid_override();
+    // Tracked purely for diagnostics: capture never substitutes a different GPU for a configured
+    // adapter_name, so a failure has to say whether the GPU is missing or merely output-less.
+    bool configured_adapter_present = false;
+    bool configured_adapter_has_output = false;
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
       for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
@@ -864,8 +868,11 @@ namespace platf::dxgi {
           continue;
         }
 
-        if (!adapter_name.empty() && adapter_desc.Description != adapter_name) {
-          continue;
+        if (!adapter_name.empty()) {
+          if (adapter_desc.Description != adapter_name) {
+            continue;
+          }
+          configured_adapter_present = true;
         }
 
         dxgi::output_t::pointer output_p;
@@ -874,6 +881,10 @@ namespace platf::dxgi {
 
           DXGI_OUTPUT_DESC desc;
           output_tmp->GetDesc(&desc);
+
+          if (desc.AttachedToDesktop && !adapter_name.empty()) {
+            configured_adapter_has_output = true;
+          }
 
           if (!output_name.empty() && desc.DeviceName != output_name) {
             continue;
@@ -927,6 +938,22 @@ namespace platf::dxgi {
     if (!output) {
       if (adapter_luid_override) {
         BOOST_LOG(warning) << "DXGI adapter override did not match any adapter for output '" << display_name << '\'';
+      }
+      // A LUID override narrows enumeration on its own, so these counters only describe the
+      // configured adapter when no override was in play.
+      if (!adapter_name.empty() && !adapter_luid_override) {
+        // Say exactly which half of the contract failed instead of leaving a bare
+        // "no output device" for a user who deliberately pinned a GPU.
+        if (!configured_adapter_present) {
+          BOOST_LOG(error)
+            << "Configured adapter_name '"sv << config::video.adapter_name
+            << "' does not match any GPU on this system. Correct or clear the Adapter Name setting."sv;
+        } else if (!configured_adapter_has_output) {
+          BOOST_LOG(error)
+            << "Configured adapter_name '"sv << config::video.adapter_name
+            << "' has no display attached to the desktop. Capture will not silently switch to another GPU; "sv
+            << "power on a display wired to that GPU, or let the virtual display be created on it."sv;
+        }
       }
       BOOST_LOG(error) << "Failed to locate an output device"sv;
       return -1;

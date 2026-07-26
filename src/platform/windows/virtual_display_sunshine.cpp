@@ -5229,8 +5229,13 @@ namespace VDISPLAY_SUNSHINE {
   void apply_configured_render_adapter_preference(std::string_view context = "display ensure") {
     if (!config::video.adapter_name.empty()) {
       if (!setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))) {
-        BOOST_LOG(warning) << "Sunshine virtual display could not use configured render adapter '"
-                           << config::video.adapter_name << "' for " << context << ".";
+        // Never silently retarget another GPU here: capture is pinned to adapter_name, so a
+        // virtual display rendered elsewhere would be invisible to the encoder.
+        BOOST_LOG(error) << "Sunshine virtual display could not use configured render adapter '"
+                         << config::video.adapter_name
+                         << "' for " << context
+                         << ". The virtual display will be created on the driver's current adapter, "
+                         << "which capture will refuse to use. Verify the Adapter Name setting.";
       }
       return;
     }
@@ -7040,19 +7045,27 @@ bool VDISPLAY_SUNSHINE::has_active_physical_display() {
     return false;
   }
 
+  std::vector<std::string> active_physical_displays;
   for (const auto &device : *devices) {
     bool is_virtual = is_virtual_display_device(device);
     if (!is_virtual) {
       bool is_active = !device.m_display_name.empty();
       BOOST_LOG(debug) << "Physical device: " << device.m_display_name << ", is_active: " << is_active;
       if (is_active) {
-        return true;
+        active_physical_displays.push_back(device.m_display_name);
       }
     }
   }
 
-  BOOST_LOG(debug) << "No active physical display found, returning false";
-  return false;
+  if (active_physical_displays.empty()) {
+    BOOST_LOG(debug) << "No active physical display found, returning false";
+    return false;
+  }
+
+  // A configured adapter_name pins capture to one GPU. A display on some other GPU is not
+  // capturable there, so it must not suppress the virtual display that would give the configured
+  // adapter an output of its own.
+  return platf::configured_capture_adapter_has_output(active_physical_displays);
 }
 
 bool VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() {

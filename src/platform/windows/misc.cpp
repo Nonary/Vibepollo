@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
@@ -47,6 +48,7 @@
 #include "misc.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/boost_process_shim.h"
+#include "src/config.h"
 #include "src/display_helper_integration.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
@@ -2215,6 +2217,168 @@ namespace platf {
       }
     }
     return false;
+  }
+
+  std::optional<bool> adapter_drives_any_output(const std::string &adapter_description, const std::vector<std::string> &output_names) {
+    if (adapter_description.empty()) {
+      return std::nullopt;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+      return std::nullopt;
+    }
+
+    // display_base_t::init() compares the raw DXGI description, so match it the same way to
+    // avoid reporting "the adapter is fine" for a name capture would never accept.
+    const std::wstring wanted = from_utf8(adapter_description);
+
+    std::vector<LUID> adapter_luids;
+    for (UINT index = 0;; ++index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      const auto enum_result = factory->EnumAdapters1(index, adapter.GetAddressOf());
+      if (enum_result == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(enum_result) || !adapter) {
+        return std::nullopt;
+      }
+
+      DXGI_ADAPTER_DESC1 desc {};
+      if (FAILED(adapter->GetDesc1(&desc))) {
+        continue;
+      }
+      if (std::wstring_view(desc.Description) != wanted) {
+        continue;
+      }
+
+      adapter_luids.push_back(desc.AdapterLuid);
+    }
+
+    if (adapter_luids.empty()) {
+      return std::nullopt;
+    }
+
+    // Resolve outputs through the CCD API instead of IDXGIAdapter::EnumOutputs. On hybrid and
+    // multi-GPU hosts DXGI reparents outputs onto whichever GPU the process is configured to
+    // prefer, and the capture backend's hybrid-preference hook that suppresses that is not
+    // guaranteed to be installed yet this early in startup. CCD always reports the adapter the
+    // display is physically wired to, and its adapterId is the same LUID DXGI reports.
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    LONG query_result = ERROR_INSUFFICIENT_BUFFER;
+    constexpr int kMaxTopologyQueryAttempts = 3;
+    for (int attempt = 0; attempt < kMaxTopologyQueryAttempts && query_result == ERROR_INSUFFICIENT_BUFFER; ++attempt) {
+      UINT32 path_count = 0;
+      UINT32 mode_count = 0;
+      if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS) {
+        return std::nullopt;
+      }
+
+      // QueryDisplayConfig requires both array pointers to be non-null even
+      // when a headless topology reports zero entries.
+      path_count = std::max<UINT32>(path_count, 1);
+      mode_count = std::max<UINT32>(mode_count, 1);
+      paths.resize(path_count);
+      modes.resize(mode_count);
+      query_result = QueryDisplayConfig(
+        QDC_ONLY_ACTIVE_PATHS,
+        &path_count,
+        paths.data(),
+        &mode_count,
+        modes.data(),
+        nullptr
+      );
+      if (query_result == ERROR_SUCCESS) {
+        paths.resize(path_count);
+        modes.resize(mode_count);
+      }
+    }
+    if (query_result != ERROR_SUCCESS) {
+      return std::nullopt;
+    }
+
+    const auto matches_configured_adapter = [&adapter_luids](const LUID &candidate) {
+      return std::any_of(adapter_luids.begin(), adapter_luids.end(), [&candidate](const LUID &luid) {
+        return luid.LowPart == candidate.LowPart && luid.HighPart == candidate.HighPart;
+      });
+    };
+
+    for (const auto &path : paths) {
+      // The target adapter is the GPU that owns the physical monitor output.
+      // The source adapter identifies the desktop source and is still required
+      // below to resolve its GDI display name.
+      if (!matches_configured_adapter(path.targetInfo.adapterId)) {
+        continue;
+      }
+      if (output_names.empty()) {
+        return true;
+      }
+
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source_name {};
+      source_name.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      source_name.header.size = sizeof(source_name);
+      source_name.header.adapterId = path.sourceInfo.adapterId;
+      source_name.header.id = path.sourceInfo.id;
+      if (DisplayConfigGetDeviceInfo(&source_name.header) != ERROR_SUCCESS) {
+        continue;
+      }
+
+      const auto device_name = to_utf8(std::wstring {source_name.viewGdiDeviceName});
+      for (const auto &candidate : output_names) {
+        if (boost::iequals(candidate, device_name)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  bool configured_capture_adapter_has_output(const std::vector<std::string> &display_names) {
+    if (display_names.empty()) {
+      return false;
+    }
+
+    const auto configured = config::video.adapter_name;
+    if (configured.empty()) {
+      return true;
+    }
+
+    // -1 unlogged, 0 wrong GPU, 1 satisfied, 2 adapter absent. These predicates are polled from
+    // several places, so only log when the answer actually changes.
+    static std::atomic<int> last_logged_state {-1};
+    const auto log_once = [](int state, auto &&emit) {
+      if (last_logged_state.exchange(state) != state) {
+        emit();
+      }
+    };
+
+    const auto drives = adapter_drives_any_output(configured, display_names);
+    if (!drives) {
+      log_once(2, [&]() {
+        BOOST_LOG(warning)
+          << "Configured capture adapter '" << configured
+          << "' does not match any GPU reported by DXGI; falling back to adapter-agnostic display detection. "
+          << "Check the Adapter Name setting in Audio/Video.";
+      });
+      return true;
+    }
+
+    if (!*drives) {
+      log_once(0, [&]() {
+        BOOST_LOG(info)
+          << "Active physical display(s) belong to a different GPU than the configured capture adapter '"
+          << configured
+          << "'. Honoring the configured adapter and treating this host as displayless so a virtual display can be created on it.";
+      });
+      return false;
+    }
+
+    log_once(1, [&]() {
+      BOOST_LOG(debug) << "Configured capture adapter '" << configured << "' drives an active physical display.";
+    });
+    return true;
   }
 
   windows_version_info_t query_windows_version() {

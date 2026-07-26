@@ -215,6 +215,64 @@ TEST(SunshineVirtualDisplay, EnsureDisplayAppliesConfiguredRenderAdapterBeforeTe
   expect_contains(sudo_source, "setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))");
 }
 
+TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredAdapter) {
+  // Regression (#265): a display attached to the *other* GPU used to satisfy
+  // has_active_physical_display(), so no virtual display was created and capture — which is pinned
+  // to adapter_name — then failed with "Failed to locate an output device".
+  for (const auto &relative_path : {
+         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
+         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
+       }) {
+    const auto source = read_source(relative_path);
+    const auto detection_pos = source.find("has_active_physical_display() {");
+    ASSERT_NE(detection_pos, std::string::npos) << relative_path;
+    const auto detection_end = source.find("should_auto_enable_virtual_display", detection_pos);
+    ASSERT_NE(detection_end, std::string::npos) << relative_path;
+    const auto detection_body = source.substr(detection_pos, detection_end - detection_pos);
+
+    EXPECT_NE(detection_body.find("platf::configured_capture_adapter_has_output(active_physical_displays)"), std::string::npos)
+      << relative_path << " does not scope active display detection to the configured adapter";
+  }
+
+  const auto misc_source = read_source("src/platform/windows/misc.cpp");
+  expect_contains(misc_source, "bool configured_capture_adapter_has_output(");
+  expect_contains(misc_source, "std::optional<bool> adapter_drives_any_output(");
+  // Hosts without a configured adapter must keep the legacy adapter-agnostic answer.
+  expect_contains(misc_source, "if (configured.empty()) {");
+}
+
+TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
+  for (const auto &relative_path : {
+         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
+         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
+       }) {
+    const auto source = read_source(relative_path);
+    const auto preference_pos = source.find("void apply_configured_render_adapter_preference(");
+    ASSERT_NE(preference_pos, std::string::npos) << relative_path;
+
+    const auto branch_pos = source.find("if (!config::video.adapter_name.empty())", preference_pos);
+    ASSERT_NE(branch_pos, std::string::npos) << relative_path;
+    const auto return_pos = source.find("return;", branch_pos);
+    const auto error_pos = source.find("BOOST_LOG(error)", branch_pos);
+    const auto fallback_pos = source.find("setRenderAdapterWithMostDedicatedMemory", branch_pos);
+    ASSERT_NE(return_pos, std::string::npos) << relative_path;
+    ASSERT_NE(error_pos, std::string::npos) << relative_path;
+    ASSERT_NE(fallback_pos, std::string::npos) << relative_path;
+
+    // An unusable configured adapter must be reported loudly...
+    EXPECT_LT(error_pos, return_pos) << relative_path << " does not log an error for an unusable adapter";
+    // ...and the highest-VRAM auto-selection must stay unreachable once adapter_name is set.
+    EXPECT_LT(return_pos, fallback_pos) << relative_path << " can fall back to another GPU despite an explicit adapter_name";
+  }
+
+  // The capture path must name the exact reason a pinned adapter could not be honored.
+  const auto display_base_source = read_source("src/platform/windows/display_base.cpp");
+  expect_contains(display_base_source, "bool configured_adapter_present = false;");
+  expect_contains(display_base_source, "bool configured_adapter_has_output = false;");
+  expect_contains(display_base_source, "does not match any GPU on this system.");
+  expect_contains(display_base_source, "has no display attached to the desktop.");
+}
+
 TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
   const auto rtsp_source = read_source("src/nvhttp.cpp");
   expect_contains(

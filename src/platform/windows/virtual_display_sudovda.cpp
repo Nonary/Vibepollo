@@ -3426,6 +3426,7 @@ namespace VDISPLAY_SUDOVDA {
     Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
     DXGI_ADAPTER_DESC desc;
     int i = 0;
+    bool adapter_found = false;
     while (SUCCEEDED(factory->EnumAdapters(i, &adapter))) {
       i += 1;
 
@@ -3437,9 +3438,21 @@ namespace VDISPLAY_SUDOVDA {
         continue;
       }
 
+      adapter_found = true;
       if (SetRenderAdapter(SUDOVDA_DRIVER_HANDLE, desc.AdapterLuid)) {
+        BOOST_LOG(info) << "SudoVDA virtual display render adapter set to '"
+                        << platf::to_utf8(adapterName) << "'.";
         return true;
       }
+
+      BOOST_LOG(warning) << "SudoVDA driver rejected render adapter '"
+                         << platf::to_utf8(adapterName) << "'.";
+    }
+
+    if (!adapter_found) {
+      BOOST_LOG(warning) << "SudoVDA virtual display render adapter named '"
+                         << platf::to_utf8(adapterName)
+                         << "' was not found.";
     }
 
     return false;
@@ -3510,8 +3523,12 @@ namespace VDISPLAY_SUDOVDA {
   void apply_configured_render_adapter_preference() {
     if (!config::video.adapter_name.empty()) {
       if (!setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))) {
-        BOOST_LOG(warning) << "SudoVDA virtual display could not use configured render adapter '"
-                           << config::video.adapter_name << "' for display ensure.";
+        // Never silently retarget another GPU here: capture is pinned to adapter_name, so a
+        // virtual display rendered elsewhere would be invisible to the encoder.
+        BOOST_LOG(error) << "SudoVDA virtual display could not use configured render adapter '"
+                         << config::video.adapter_name
+                         << "'. The virtual display will be created on the driver's current adapter, "
+                         << "which capture will refuse to use. Verify the Adapter Name setting.";
       }
       return;
     }
@@ -4864,19 +4881,27 @@ bool VDISPLAY_SUDOVDA::has_active_physical_display() {
     return false;
   }
 
+  std::vector<std::string> active_physical_displays;
   for (const auto &device : *devices) {
     bool is_virtual = is_virtual_display_device(device);
     if (!is_virtual) {
       bool is_active = !device.m_display_name.empty();
       BOOST_LOG(debug) << "Physical device: " << device.m_display_name << ", is_active: " << is_active;
       if (is_active) {
-        return true;
+        active_physical_displays.push_back(device.m_display_name);
       }
     }
   }
 
-  BOOST_LOG(debug) << "No active physical display found, returning false";
-  return false;
+  if (active_physical_displays.empty()) {
+    BOOST_LOG(debug) << "No active physical display found, returning false";
+    return false;
+  }
+
+  // A configured adapter_name pins capture to one GPU. A display on some other GPU is not
+  // capturable there, so it must not suppress the virtual display that would give the configured
+  // adapter an output of its own.
+  return platf::configured_capture_adapter_has_output(active_physical_displays);
 }
 
 bool VDISPLAY_SUDOVDA::should_auto_enable_virtual_display() {

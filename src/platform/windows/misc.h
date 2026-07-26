@@ -207,6 +207,37 @@ namespace platf {
 
   std::vector<gpu_info_t> enumerate_gpus();
   bool has_nvidia_gpu();
+
+  /**
+   * @brief Determine whether a specific GPU currently drives an active desktop output.
+   *
+   * The adapter is located by DXGI description, but its outputs are resolved through the CCD API
+   * so the answer reflects the physical wiring rather than DXGI's hybrid-GPU output reparenting.
+   *
+   * @param adapter_description DXGI adapter description to look for, matched exactly (UTF-8).
+   * @param output_names GDI device names (e.g. `\\.\DISPLAY1`) to restrict the check to. An empty
+   *                     list matches any active output on that adapter.
+   * @return `std::nullopt` when the adapter could not be inspected (DXGI/CCD failure, or no adapter
+   *         carries that description), otherwise whether it drives one of `output_names`.
+   * @examples
+   * const auto drives = platf::adapter_drives_any_output("NVIDIA GeForce RTX 5080", {});
+   * @examples_end
+   */
+  std::optional<bool> adapter_drives_any_output(const std::string &adapter_description, const std::vector<std::string> &output_names);
+
+  /**
+   * @brief Decide whether the user's configured capture GPU can see one of the given displays.
+   *
+   * `config::video.adapter_name` pins capture to a single GPU (see `display_base_t::init`), so an
+   * active display wired to a *different* GPU is not capturable and must not be treated as proof
+   * that a display is available. Returns `true` when no adapter is configured, when the configured
+   * adapter cannot be inspected at all, or when the configured adapter drives one of `display_names`.
+   *
+   * @param display_names GDI device names of the currently active physical displays.
+   * @return `true` when the configured adapter is satisfied by one of `display_names`.
+   */
+  bool configured_capture_adapter_has_output(const std::vector<std::string> &display_names);
+
   windows_version_info_t query_windows_version();
   bool is_windows_11_or_later();
 }  // namespace platf
