@@ -11,9 +11,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -54,6 +56,16 @@ namespace platf::game_activity {
     // refresh target that owns the transition.
     std::atomic<int> g_mode_changes_in_flight {0};
     std::atomic<long long> g_mode_change_settled_at_ms {0};
+
+    std::mutex g_refresh_targets_mutex;
+    std::unordered_map<std::string, std::weak_ptr<refresh_target_t>> g_refresh_targets;
+
+    std::string refresh_target_key(std::string device_id) {
+      std::ranges::transform(device_id, device_id.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+      });
+      return device_id;
+    }
 
     long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -618,7 +630,25 @@ namespace platf::game_activity {
         options.high_refresh_denominator == 0) {
       return {};
     }
-    return std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
+
+    const auto target_key = refresh_target_key(options.device_id);
+    std::scoped_lock lock {g_refresh_targets_mutex};
+    std::erase_if(g_refresh_targets, [](const auto &entry) {
+      return entry.second.expired();
+    });
+    if (const auto existing = g_refresh_targets.find(target_key);
+        existing != g_refresh_targets.end()) {
+      if (auto target = existing->second.lock()) {
+        BOOST_LOG(debug) << "Virtual display refresh: display='" << options.display_name
+                         << "' reusing active controller for device='" << options.device_id
+                         << "'; original stream retains refresh policy ownership";
+        return target;
+      }
+    }
+
+    auto target = std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
+    g_refresh_targets[target_key] = target;
+    return target;
   }
 
 }  // namespace platf::game_activity
