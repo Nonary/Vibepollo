@@ -1870,6 +1870,8 @@ function boolPairFromValue(value: unknown): BoolPair | null {
 }
 
 function selectOptions(key: string, target: EditTarget = 'live'): OverrideSelectOption[] {
+  if (NUMERIC_OVERRIDE_KEYS.has(key)) return [];
+
   const cur = rawOverrideValueFor(target, key);
   const global = getGlobalValue(key);
   const currentValue = cur !== undefined ? cur : global;
