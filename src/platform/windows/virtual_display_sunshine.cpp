@@ -3844,6 +3844,12 @@ namespace VDISPLAY_SUNSHINE {
     // much shorter condition (RECOVERY_MISSING_GRACE).
     constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(12);
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
+    // An empty libdisplaydevice result is ambiguous because it also represents a failed
+    // CCD query. The monitor only enters the no-devices state after a separate successful
+    // active-path query returns zero paths. Keep a longer grace for that confirmed
+    // topology gap so session teardown can restore the physical layout, while a genuinely
+    // headless host still recovers after the zero-path result persists.
+    constexpr auto RECOVERY_NO_DEVICES_GRACE = std::chrono::seconds(20);
     constexpr auto RECOVERY_INITIAL_SETTLE_GRACE = std::chrono::seconds(6);
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
     constexpr auto RECOVERY_MAX_ATTEMPTS_BACKOFF = std::chrono::seconds(5);
@@ -3977,21 +3983,64 @@ namespace VDISPLAY_SUNSHINE {
 
     enum class MonitorTargetPresence {
       missing,
+      no_devices,
       present_inactive,
       present_active,
       unknown,
     };
 
+    std::optional<bool> ccd_has_active_paths() {
+      constexpr UINT flags = QDC_ONLY_ACTIVE_PATHS;
+      constexpr int MAX_QUERY_ATTEMPTS = 3;
+
+      for (int attempt = 0; attempt < MAX_QUERY_ATTEMPTS; ++attempt) {
+        UINT32 path_count = 0;
+        UINT32 mode_count = 0;
+        if (GetDisplayConfigBufferSizes(flags, &path_count, &mode_count) != ERROR_SUCCESS) {
+          return std::nullopt;
+        }
+
+        // QueryDisplayConfig requires both array pointers to be non-null even
+        // when a headless topology reports zero entries.
+        path_count = std::max<UINT32>(path_count, 1);
+        mode_count = std::max<UINT32>(mode_count, 1);
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
+        const LONG query_result = QueryDisplayConfig(
+          flags,
+          &path_count,
+          paths.data(),
+          &mode_count,
+          modes.data(),
+          nullptr
+        );
+        if (query_result == ERROR_INSUFFICIENT_BUFFER) {
+          continue;
+        }
+        if (query_result != ERROR_SUCCESS) {
+          return std::nullopt;
+        }
+        return path_count != 0;
+      }
+
+      return std::nullopt;
+    }
+
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) {
-        // Enumeration failed, so the target's presence cannot be determined yet.
+        // Enumeration threw, so the target's presence cannot be determined yet.
         return MonitorTargetPresence::unknown;
       }
       if (devices->empty()) {
-        // A successful empty enumeration is definitive on a headless system. Let the
-        // normal missing-target grace period recreate the virtual display.
-        return MonitorTargetPresence::missing;
+        // libdisplaydevice collapses both query failure and a genuinely empty topology
+        // onto an empty list. Only accept a separate successful zero-active-path query as
+        // evidence of a headless topology; otherwise interrupt the recovery grace.
+        const auto has_active_paths = ccd_has_active_paths();
+        if (!has_active_paths || *has_active_paths) {
+          return MonitorTargetPresence::unknown;
+        }
+        return MonitorTargetPresence::no_devices;
       }
 
       bool matched_inactive = false;
@@ -4185,6 +4234,7 @@ namespace VDISPLAY_SUNSHINE {
         state.confirmed_active_at_schedule ? std::make_optional(std::chrono::steady_clock::now()) : std::nullopt;
       std::optional<std::chrono::steady_clock::time_point> inactive_since;
       std::optional<std::chrono::steady_clock::time_point> missing_since;
+      std::optional<std::chrono::steady_clock::time_point> no_devices_since;
       auto recovery_cooldown_until = std::chrono::steady_clock::now() + RECOVERY_INITIAL_SETTLE_GRACE;
 
       // Recovery is intentionally forbidden during the initial settle grace. Avoid
@@ -4223,6 +4273,10 @@ namespace VDISPLAY_SUNSHINE {
         const auto presence = monitor_target_presence(state);
 
         if (presence == MonitorTargetPresence::unknown) {
+          active_since.reset();
+          inactive_since.reset();
+          missing_since.reset();
+          no_devices_since.reset();
           if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
             return;
           }
@@ -4233,6 +4287,7 @@ namespace VDISPLAY_SUNSHINE {
           observed_active = true;
           backoff_cycles = 0;
           missing_since.reset();
+          no_devices_since.reset();
           inactive_since.reset();
           if (!active_since) {
             active_since = now;
@@ -4262,6 +4317,8 @@ namespace VDISPLAY_SUNSHINE {
         if (now < recovery_cooldown_until) {
           if (presence == MonitorTargetPresence::missing) {
             missing_since.reset();
+          } else if (presence == MonitorTargetPresence::no_devices) {
+            no_devices_since.reset();
           } else {
             inactive_since.reset();
           }
@@ -4276,11 +4333,22 @@ namespace VDISPLAY_SUNSHINE {
         const char *issue_label = "unknown";
         if (presence == MonitorTargetPresence::missing) {
           inactive_since.reset();
+          no_devices_since.reset();
           issue_since = &missing_since;
           required_grace = RECOVERY_MISSING_GRACE;
           issue_label = "missing";
+        } else if (presence == MonitorTargetPresence::no_devices) {
+          // A direct successful CCD query confirmed that the active topology is empty.
+          // Keep a longer grace than a target that vanished from an otherwise healthy
+          // device list so a session teardown can restore the physical layout.
+          inactive_since.reset();
+          missing_since.reset();
+          issue_since = &no_devices_since;
+          required_grace = RECOVERY_NO_DEVICES_GRACE;
+          issue_label = "no_devices";
         } else {
           missing_since.reset();
+          no_devices_since.reset();
           issue_since = &inactive_since;
           required_grace = observed_active ? RECOVERY_INACTIVE_GRACE : RECOVERY_NO_ACTIVE_GRACE;
           issue_label = "inactive";
@@ -4324,6 +4392,7 @@ namespace VDISPLAY_SUNSHINE {
           recovery_cooldown_until = std::chrono::steady_clock::now() + backoff;
           inactive_since.reset();
           missing_since.reset();
+          no_devices_since.reset();
           if (wait_for_monitor_stop(stop_token, backoff)) {
             return;
           }
@@ -4344,6 +4413,7 @@ namespace VDISPLAY_SUNSHINE {
         const bool recovered = attempt_virtual_display_recovery(state, stop_token);
         inactive_since.reset();
         missing_since.reset();
+        no_devices_since.reset();
         active_since.reset();
 
         if (recovered) {
