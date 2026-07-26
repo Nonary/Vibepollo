@@ -216,6 +216,16 @@ namespace VDISPLAY_SUNSHINE {
       return workers;
     }
 
+    // Windows scale can only be applied once the target is active and Windows has
+    // exposed its monitor device path, which does not happen until the display
+    // helper's APPLY activates it — after creation has already returned. Keyed by
+    // display GUID and stopped with the recovery monitors so a session teardown
+    // cancels a finalizer still waiting on activation.
+    vdisplay_recovery::monitor_registry_t &deferred_scale_workers() {
+      static vdisplay_recovery::monitor_registry_t workers;
+      return workers;
+    }
+
     bool guid_equal(const GUID &lhs, const GUID &rhs) {
       return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
     }
@@ -3814,7 +3824,13 @@ namespace VDISPLAY_SUNSHINE {
     constexpr auto RECOVERY_CHECK_INTERVAL = std::chrono::milliseconds(150);
     constexpr auto RECOVERY_RETRY_DELAY = std::chrono::milliseconds(350);
     constexpr auto RECOVERY_MISSING_GRACE = std::chrono::milliseconds(500);
-    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(1);
+    // A configured virtual display goes inactive while the display helper switches
+    // topology, mode, or HDR state, and recreating it there races the helper into
+    // another exclusive-layout transition. The helper's own apply/verify path runs a
+    // re-apply ladder out to 5.5s, so tolerate an inactive target well past that
+    // before treating it as driver loss. A truly missing output is a separate,
+    // much shorter condition (RECOVERY_MISSING_GRACE).
+    constexpr auto RECOVERY_INACTIVE_GRACE = std::chrono::seconds(12);
     constexpr auto RECOVERY_NO_ACTIVE_GRACE = std::chrono::seconds(10);
     constexpr auto RECOVERY_INITIAL_SETTLE_GRACE = std::chrono::seconds(6);
     constexpr auto RECOVERY_POST_SUCCESS_GRACE = std::chrono::seconds(3);
@@ -3834,11 +3850,13 @@ namespace VDISPLAY_SUNSHINE {
       // mutex while the monitor is waiting to acquire that same mutex.
       recovery_monitors().request_stop(guid_uuid.string());
       deferred_hdr_profile_workers().request_stop(guid_uuid.string());
+      deferred_scale_workers().request_stop(guid_uuid.string());
     }
 
     void abort_all_recovery_monitors() {
       recovery_monitors().request_stop_all();
       deferred_hdr_profile_workers().request_stop_all();
+      deferred_scale_workers().request_stop_all();
     }
 
     struct RecoveryMonitorState {
@@ -5725,7 +5743,9 @@ namespace VDISPLAY_SUNSHINE {
             }
             result.reused_existing = true;
             result.confirmed_active = confirmed_active;
-            result.ready_since = ready_since;
+            if (confirmed_active) {
+              result.ready_since = ready_since;
+            }
             if (!adopt_existing_driver_lease(client, requested_uuid, display_id, result.display_name, result.device_id, result.monitor_device_path)) {
               BOOST_LOG(warning) << "Refusing to reuse existing Sunshine virtual display for guid="
                                  << requested_uuid.string() << " because its driver lease could not be adopted.";
@@ -5863,7 +5883,8 @@ namespace VDISPLAY_SUNSHINE {
         if (allow_pending_enumeration) {
           BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
 
-          const auto ready_since = std::chrono::steady_clock::now();
+          // Enumeration never succeeded here, so activation was definitively not
+          // observed. Leave ready_since unset rather than stamping "now".
           VirtualDisplayCreationResult result;
           result.display_name = resolved_display_name;
           if (device_id && !device_id->empty()) {
@@ -5873,7 +5894,6 @@ namespace VDISPLAY_SUNSHINE {
             result.client_name = std::string(s_client_name);
           }
           result.reused_existing = false;
-          result.ready_since = ready_since;
           driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
           return result;
         }
@@ -5889,7 +5909,14 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       if (hdr_requested && !request_hdr10_advanced_color(output, stop_token) && !stop_token.stop_requested()) {
-        BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
+        if (confirmed_active) {
+          BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
+        } else {
+          // The target is enumerated but the helper has not activated it yet, so a
+          // direct HDR request cannot stick. This is not a failure: the helper's
+          // APPLY carries the same HDR request and the capture gate waits for it.
+          BOOST_LOG(debug) << "Sunshine virtual display HDR: target is not active yet, so the direct HDR request was not applied; deferring to the display helper's APPLY.";
+        }
       }
 
       if (stop_token.stop_requested()) {
@@ -5957,7 +5984,9 @@ namespace VDISPLAY_SUNSHINE {
       }
       result.reused_existing = false;
       result.confirmed_active = confirmed_active;
-      result.ready_since = ready_since;
+      if (confirmed_active) {
+        result.ready_since = ready_since;
+      }
       std::optional<std::string> hdr_profile;
       if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
         hdr_profile = std::string(s_hdr_profile);
@@ -6086,6 +6115,23 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
         if (config::video.dd.virtual_display_scale_percent > 0) {
+          const auto scale_percent = static_cast<std::uint32_t>(config::video.dd.virtual_display_scale_percent);
+
+          auto apply_scale_to_path = [scale_percent](const std::wstring &path) {
+            const auto scale_result = VDISPLAY::set_display_scale_percent(path, scale_percent);
+            if (scale_result.applied) {
+              BOOST_LOG(info) << "Virtual display scale: requested " << scale_result.requested_percent
+                              << "%, recommended " << scale_result.recommended_percent
+                              << "%, previous " << scale_result.previous_percent
+                              << "%, current " << scale_result.current_percent << "%.";
+            } else {
+              BOOST_LOG(warning) << "Virtual display scale: unable to apply "
+                                 << scale_result.requested_percent << "% (status=" << scale_result.status
+                                 << ", target_found=" << scale_result.target_found
+                                 << ", queried=" << scale_result.queried << ").";
+            }
+          };
+
           if (!result->monitor_device_path) {
             result->monitor_device_path = resolve_monitor_device_path(
               result->display_name,
@@ -6102,24 +6148,55 @@ namespace VDISPLAY_SUNSHINE {
             }
             return std::nullopt;
           }
-          if (result->monitor_device_path) {
-            const auto scale_result = VDISPLAY::set_display_scale_percent(
-              *result->monitor_device_path,
-              static_cast<std::uint32_t>(config::video.dd.virtual_display_scale_percent)
+
+          if (result->confirmed_active && result->monitor_device_path) {
+            apply_scale_to_path(*result->monitor_device_path);
+          } else {
+            // The target is not active yet, so its monitor path either does not
+            // resolve or does not belong to a live output. The display helper's
+            // APPLY is what activates it, and that cannot happen until creation
+            // returns — so finish the scale from a bounded background worker
+            // instead of turning a pending activation into a terminal result.
+            BOOST_LOG(debug) << "Virtual display scale: target is not active yet; deferring scale application until the display helper activates it.";
+            const auto started = deferred_scale_workers().start(
+              requested_uuid.string(),
+              [display_name = result->display_name,
+               device_id = result->device_id,
+               apply_scale_to_path](std::stop_token worker_stop_token) mutable {
+                constexpr auto kActivationBudget = std::chrono::seconds(15);
+                constexpr auto kRetryInterval = std::chrono::milliseconds(250);
+                const auto deadline = std::chrono::steady_clock::now() + kActivationBudget;
+
+                while (!worker_stop_token.stop_requested()) {
+                  auto path = resolve_monitor_device_path(
+                    display_name,
+                    device_id,
+                    1,
+                    std::chrono::milliseconds(0),
+                    std::nullopt,
+                    worker_stop_token
+                  );
+                  if (path && !path->empty()) {
+                    apply_scale_to_path(*path);
+                    return;
+                  }
+                  if (std::chrono::steady_clock::now() >= deadline) {
+                    BOOST_LOG(warning) << "Virtual display scale: monitor device path did not become available within "
+                                       << std::chrono::duration_cast<std::chrono::seconds>(kActivationBudget).count()
+                                       << "s; Windows scale was not applied.";
+                    return;
+                  }
+                  if (wait_for_monitor_stop(worker_stop_token, kRetryInterval)) {
+                    BOOST_LOG(debug) << "Virtual display scale: deferred application cancelled.";
+                    return;
+                  }
+                }
+                BOOST_LOG(debug) << "Virtual display scale: deferred application cancelled.";
+              }
             );
-            if (scale_result.applied) {
-              BOOST_LOG(info) << "Virtual display scale: requested " << scale_result.requested_percent
-                              << "%, recommended " << scale_result.recommended_percent
-                              << "%, previous " << scale_result.previous_percent
-                              << "%, current " << scale_result.current_percent << "%.";
-            } else {
-              BOOST_LOG(warning) << "Virtual display scale: unable to apply "
-                                 << scale_result.requested_percent << "% (status=" << scale_result.status
-                                 << ", target_found=" << scale_result.target_found
-                                 << ", queried=" << scale_result.queried << ").";
+            if (!started) {
+              BOOST_LOG(debug) << "Virtual display scale: deferred application was not started because shutdown is in progress.";
             }
-          } else if (!allow_pending_enumeration) {
-            BOOST_LOG(warning) << "Virtual display scale: monitor device path was unavailable; Windows scale was not applied.";
           }
         }
         if (stop_token.stop_requested()) {

@@ -92,7 +92,10 @@ namespace VDISPLAY {
     std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
     bool confirmed_active = false;
-    std::chrono::steady_clock::time_point ready_since;
+    // Set only when this exact target was observed active. Consumers treat it as
+    // an activation hint and skip their own activation wait, so publishing it for
+    // a merely-enumerated target lets them skip a wait that was never satisfied.
+    std::optional<std::chrono::steady_clock::time_point> ready_since;
   };
 
   struct VirtualDisplayRecoveryParams {

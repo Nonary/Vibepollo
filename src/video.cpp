@@ -95,6 +95,62 @@ namespace video {
 
   namespace {
 #ifdef _WIN32
+    void wait_for_recent_display_apply_stability() {
+      constexpr auto kFallbackSettleWindow = std::chrono::milliseconds(1500);
+      constexpr auto kVerificationPollInterval = std::chrono::milliseconds(25);
+      // The helper re-applies HDR at 750/2500/5500ms after APPLY when its synchronous
+      // verification does not stick. Cover the 2500ms retry: past that, streaming SDR
+      // beats holding a black screen, and part of the point of waiting is to avoid a
+      // mid-stream SDR->HDR flip that costs some clients a full display mode-set.
+      constexpr auto kHdrReadyWindow = std::chrono::milliseconds(3000);
+
+      auto elapsed = std::chrono::milliseconds(display_helper_integration::ms_since_last_apply());
+
+      if (display_helper_integration::last_apply_requested_hdr()) {
+        const auto output_name = display_device::map_output_name(config::get_active_output_name());
+        if (platf::dxgi::is_hdr_active_for_output(output_name)) {
+          return;
+        }
+        if (elapsed >= kHdrReadyWindow) {
+          return;
+        }
+
+        BOOST_LOG(info) << "Display apply requested HDR; waiting up to "
+                        << (kHdrReadyWindow - elapsed).count()
+                        << "ms for the output to report HDR before starting capture";
+        while (elapsed < kHdrReadyWindow) {
+          std::this_thread::sleep_for(std::min(kVerificationPollInterval, kHdrReadyWindow - elapsed));
+          if (platf::dxgi::is_hdr_active_for_output(output_name)) {
+            BOOST_LOG(debug) << "Display output reported HDR active after "
+                             << display_helper_integration::ms_since_last_apply()
+                             << "ms; starting capture.";
+            return;
+          }
+          elapsed = std::chrono::milliseconds(display_helper_integration::ms_since_last_apply());
+        }
+
+        BOOST_LOG(warning) << "Display apply requested HDR but the output did not report HDR within "
+                           << kHdrReadyWindow.count() << "ms; starting capture in SDR.";
+        return;
+      }
+
+      if (elapsed >= kFallbackSettleWindow || display_helper_integration::last_apply_is_capture_stable()) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Display topology recently changed; waiting up to "
+                      << (kFallbackSettleWindow - elapsed).count()
+                      << "ms for helper verification or display-settle fallback";
+      while (elapsed < kFallbackSettleWindow) {
+        if (display_helper_integration::last_apply_is_capture_stable()) {
+          BOOST_LOG(debug) << "Display topology verification completed; ending settle wait early.";
+          return;
+        }
+        std::this_thread::sleep_for(std::min(kVerificationPollInterval, kFallbackSettleWindow - elapsed));
+        elapsed = std::chrono::milliseconds(display_helper_integration::ms_since_last_apply());
+      }
+    }
+
     bool should_prefer_virtual_display() {
       if (platf::is_lock_screen_active() && VDISPLAY::has_active_physical_display()) {
         return false;

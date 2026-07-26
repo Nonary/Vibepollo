@@ -392,18 +392,21 @@ namespace {
     return false;
   }
 
+  bool any_virtual_display_active() {
+    auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
+    return std::any_of(
+      virtual_displays.begin(),
+      virtual_displays.end(),
+      [](const VDISPLAY::VirtualDisplayInfo &info) {
+        return info.is_active;
+      }
+    );
+  }
+
   bool wait_for_virtual_display_activation(std::chrono::steady_clock::duration timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
-      bool any_active = std::any_of(
-        virtual_displays.begin(),
-        virtual_displays.end(),
-        [](const VDISPLAY::VirtualDisplayInfo &info) {
-          return info.is_active;
-        }
-      );
-      if (any_active) {
+      if (any_virtual_display_active()) {
         return true;
       }
 
@@ -436,8 +439,10 @@ namespace {
     }
 
     if (session.virtual_display) {
+      // The hint records a past observation, so confirm the display is still active
+      // before skipping the wait. Mirrors the device_id branch above.
       const bool hint_ready = session.virtual_display_ready_since.has_value();
-      if (hint_ready) {
+      if (hint_ready && any_virtual_display_active()) {
         BOOST_LOG(debug) << "Display helper: virtual display ready hint satisfied. Skipping activation wait.";
         return true;
       }
@@ -780,6 +785,7 @@ namespace {
   static std::atomic<std::uint64_t> g_last_apply_generation {0};
   static std::atomic<std::uint64_t> g_last_verified_apply_generation {0};
   static std::atomic<std::uint64_t> g_capture_stable_eligible_apply_generation {0};
+  static std::atomic<std::uint64_t> g_hdr_requested_apply_generation {0};
 
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
@@ -797,6 +803,7 @@ namespace {
     g_last_apply_generation.fetch_add(1, std::memory_order_acq_rel);
     g_last_verified_apply_generation.store(0, std::memory_order_release);
     g_capture_stable_eligible_apply_generation.store(0, std::memory_order_release);
+    g_hdr_requested_apply_generation.store(0, std::memory_order_release);
   }
   bool helper_start_failure_cooldown_active() {
     const auto last_us = g_last_helper_start_failure_us.load(std::memory_order_relaxed);
@@ -1587,6 +1594,13 @@ namespace display_helper_integration {
         exclusive_virtual && source_hdr_explicitly_disabled ? apply_generation : 0,
         std::memory_order_release
       );
+      const bool source_hdr_requested =
+        request.configuration && request.configuration->m_hdr_state == display_device::HdrState::Enabled;
+      g_hdr_requested_apply_generation.store(
+        source_hdr_requested ? apply_generation : 0,
+        std::memory_order_release
+      );
+
       // Prefer the helper for APPLY, even when running as SYSTEM without an interactive user session.
       // In-process display APIs frequently return ERROR_ACCESS_DENIED in that context.
       const bool system_no_user_session = platf::is_running_as_system() && !user_session_ready();
@@ -1782,6 +1796,13 @@ namespace display_helper_integration {
     const auto eligible = g_capture_stable_eligible_apply_generation.load(std::memory_order_acquire);
     const auto after = g_last_apply_generation.load(std::memory_order_acquire);
     return before != 0 && before == after && verified == after && eligible == after;
+  }
+
+  bool last_apply_requested_hdr() {
+    const auto before = g_last_apply_generation.load(std::memory_order_acquire);
+    const auto hdr = g_hdr_requested_apply_generation.load(std::memory_order_acquire);
+    const auto after = g_last_apply_generation.load(std::memory_order_acquire);
+    return before != 0 && before == after && hdr == after;
   }
 
   bool apply(

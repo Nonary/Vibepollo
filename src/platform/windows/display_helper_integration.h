@@ -100,6 +100,11 @@ namespace display_helper_integration {
   // True when the most recent successful APPLY is verified and has no pending
   // HDR/topology workaround that requires the settling fallback.
   bool last_apply_is_capture_stable();
+
+  // True when the most recent APPLY asked for HDR to be enabled. Capture start
+  // uses this to wait for HDR to actually come up rather than for a fixed
+  // interval, so a session never begins in SDR and transitions mid-stream.
+  bool last_apply_requested_hdr();
 #endif
 
 #ifdef _WIN32

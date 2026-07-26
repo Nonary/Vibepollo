@@ -1175,6 +1175,46 @@ namespace platf::dxgi {
     return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
   }
 
+  bool is_hdr_active_for_output(const std::string &output_name) {
+    dxgi::factory1_t factory;
+    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory))) {
+      return false;
+    }
+
+    dxgi::adapter_t::pointer adapter_p {};
+    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
+      dxgi::adapter_t adapter {adapter_p};
+
+      dxgi::output_t::pointer output_p {};
+      for (int y = 0; adapter->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
+        dxgi::output_t output {output_p};
+
+        DXGI_OUTPUT_DESC desc;
+        if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) {
+          continue;
+        }
+        if (!output_name.empty() && utf_utils::to_utf8(desc.DeviceName) != output_name) {
+          continue;
+        }
+
+        dxgi::output6_t output6 {};
+        if (FAILED(output->QueryInterface(IID_IDXGIOutput6, (void **) &output6))) {
+          continue;
+        }
+
+        DXGI_OUTPUT_DESC1 desc1;
+        if (FAILED(output6->GetDesc1(&desc1))) {
+          continue;
+        }
+        if (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   bool display_base_t::get_hdr_metadata(SS_HDR_METADATA &metadata) {
     dxgi::output6_t output6 {};
 

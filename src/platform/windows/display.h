@@ -633,4 +633,13 @@ namespace platf::dxgi {
   using shared_handle_data_t = platf::dxgi::shared_handle_data_t;
   using config_data_t = platf::dxgi::config_data_t;
 
+  /**
+   * @brief Check whether HDR is currently active on an output, without creating a capture device.
+   * @details Uses the same DXGI colorspace predicate as display_base_t::is_hdr(), so a caller that
+   *          waits on this will reach the same conclusion the capture path does. Cheap enough to poll.
+   * @param output_name GDI display name (e.g. `\\.\DISPLAY1`). Empty matches any attached output.
+   * @return true if the matched output reports the HDR10 colorspace.
+   */
+  bool is_hdr_active_for_output(const std::string &output_name);
+
 }  // namespace platf::dxgi

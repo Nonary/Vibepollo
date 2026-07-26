@@ -3525,10 +3525,14 @@ namespace VDISPLAY_SUDOVDA {
     uint32_t width,
     uint32_t height,
     const DisplayConfigIdentity *display_config_identity = nullptr,
+    bool *confirmed_active = nullptr,
     std::stop_token stop_token = {}
   ) {
     if (stop_token.stop_requested()) {
       return false;
+    }
+    if (confirmed_active) {
+      *confirmed_active = false;
     }
     std::optional<std::string> normalized_name;
     if (display_name && !display_name->empty()) {
@@ -3585,10 +3589,16 @@ namespace VDISPLAY_SUDOVDA {
         if (candidate.m_info) {
           if (candidate.m_info->m_resolution.m_width == width &&
               candidate.m_info->m_resolution.m_height == height) {
+            if (confirmed_active) {
+              *confirmed_active = true;
+            }
             return true;
           }
         }
 
+        // Returning on the activation grace means the target was enumerated but
+        // never observed active; leave confirmed_active false so callers do not
+        // publish an activation hint they cannot back up.
         if (enumerated_at && now - *enumerated_at >= activation_grace) {
           return true;
         }
@@ -3903,7 +3913,8 @@ namespace VDISPLAY_SUDOVDA {
                            << (reuse_name ? platf::to_utf8(*reuse_name) : std::string("(none)"))
                            << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
           std::optional<std::wstring> display_name = reuse_name;
-          if (wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, stop_token)) {
+          bool confirmed_active = false;
+          if (wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, &confirmed_active, stop_token)) {
             if (stop_token.stop_requested()) {
               return std::nullopt;
             }
@@ -3958,7 +3969,10 @@ namespace VDISPLAY_SUDOVDA {
               return std::nullopt;
             }
             result.reused_existing = true;
-            result.ready_since = ready_since;
+            result.confirmed_active = confirmed_active;
+            if (confirmed_active) {
+              result.ready_since = ready_since;
+            }
             std::optional<std::string> hdr_profile;
             if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
               hdr_profile = std::string(s_hdr_profile);
@@ -4073,7 +4087,8 @@ namespace VDISPLAY_SUDOVDA {
 
       const auto display_config_ptr = display_config_identity ? &*display_config_identity : nullptr;
 
-      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, stop_token)) {
+      bool confirmed_active = false;
+      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, &confirmed_active, stop_token)) {
         if (!stop_token.stop_requested()) {
           printf("[SUDOVDA] Timed out waiting for Windows to enumerate the new virtual display; reverting creation.\n");
         }
@@ -4122,7 +4137,10 @@ namespace VDISPLAY_SUDOVDA {
         }
       }
       result.reused_existing = false;
-      result.ready_since = ready_since;
+      result.confirmed_active = confirmed_active;
+      if (confirmed_active) {
+        result.ready_since = ready_since;
+      }
       std::optional<std::string> hdr_profile;
       if (s_hdr_profile && std::strlen(s_hdr_profile) > 0) {
         hdr_profile = std::string(s_hdr_profile);
