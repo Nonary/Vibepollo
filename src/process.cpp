@@ -27,6 +27,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // lib includes
@@ -942,6 +943,7 @@ namespace proc {
 #ifdef _WIN32
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
+      _runtime_output_override_lease(std::exchange(other._runtime_output_override_lease, std::nullopt)),
 #endif
       _pipe(std::move(other._pipe)),
       _app_prep_it(other._app_prep_it),
@@ -980,6 +982,10 @@ namespace proc {
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
 #ifdef _WIN32
+      if (_runtime_output_override_lease) {
+        (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
+      }
+      _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1274,6 +1280,18 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
+    // Web UI launches do not resolve the app through make_launch_session().
+    // Carry app display policy into the session here so every launch path makes
+    // the same physical-versus-virtual decision before creating a display.
+    if (_app.output_name_override) {
+      launch_session->output_name_override = _app.output_name_override;
+    }
+    if (!launch_session->virtual_display_mode_override && _app.virtual_display_mode_override) {
+      launch_session->virtual_display_mode_override = _app.virtual_display_mode_override;
+    }
+    if (!launch_session->dd_config_option_override && _app.dd_config_option_override) {
+      launch_session->dd_config_option_override = _app.dd_config_option_override;
+    }
     std::optional<double> effective_lossless_target = launch_session->lossless_scaling_target_fps;
     if (
       (!effective_lossless_target || *effective_lossless_target <= 0) &&
@@ -1341,42 +1359,96 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    using dd_config_option_e = config::video_t::dd_t::config_option_e;
-    const auto dd_config_option = config::video.dd.configuration_option;
-    const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
-    const bool headless_mode = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
-    const bool dd_conflicts_with_virtual_display =
-      dd_config_option == dd_config_option_e::ensure_only_display &&
-      dd_config_option != dd_config_option_e::disabled &&
-      !headless_mode;
-    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-    const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
-    const bool session_requests_virtual = launch_session->virtual_display;
-
-    if (forced_sudavda_virtual_display) {
-      launch_session->virtual_display = true;
-    }
-
-    bool should_use_virtual_display =
-      headless_mode ||
-      app_requests_virtual ||
-      metadata_requests_virtual ||
-      session_requests_virtual ||
-      !video::allow_encoder_probing() ||
-      VDISPLAY::should_auto_enable_virtual_display();
-
-    const bool already_has_virtual_guid = std::any_of(
+    bool already_has_virtual_guid = std::any_of(
       launch_session->virtual_display_guid_bytes.begin(),
       launch_session->virtual_display_guid_bytes.end(),
       [](std::uint8_t b) { return b != 0; }
     );
 
-    if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
-      if (session_requests_virtual || app_requests_virtual) {
-        BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
+    // Preserve an upstream resolver's decision. For Web UI and WebRTC launches,
+    // resolve the same app/client display policy locally before any VDD exists.
+    bool should_use_virtual_display = launch_session->virtual_display;
+    if (!launch_session->virtual_display_request_resolved) {
+      using dd_config_option_e = config::video_t::dd_t::config_option_e;
+      const auto dd_config_option =
+        launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
+      const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+      const auto effective_virtual_display_mode =
+        launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool headless_mode =
+        effective_virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+      const bool dd_conflicts_with_virtual_display =
+        dd_config_option == dd_config_option_e::ensure_only_display &&
+        dd_config_option != dd_config_option_e::disabled &&
+        !headless_mode;
+      const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+      const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
+      const bool client_requests_virtual = launch_session->client_requests_virtual_display;
+      const bool session_requests_virtual = launch_session->virtual_display;
+      std::optional<std::string> output_override;
+      if (launch_session->output_name_override) {
+        output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
       }
-      launch_session->virtual_display = false;
-      should_use_virtual_display = headless_mode || !video::allow_encoder_probing();
+      const bool output_selects_virtual =
+        output_override && !output_override->empty() && VDISPLAY::is_virtual_display_selection(*output_override);
+      const bool output_selects_physical =
+        output_override && (output_override->empty() || !output_selects_virtual);
+      const auto framegen_policy = framegen::make_stream_start_policy({
+        .fps = launch_session->fps,
+        .fps_scaled = launch_session->fps,
+        .display_refresh_millihz = launch_session->client_display_refresh_millihz,
+        .frame_generation_enabled = launch_session->frame_generation_enabled,
+        .gen1_framegen_fix = launch_session->gen1_framegen_fix,
+        .gen2_framegen_fix = launch_session->gen2_framegen_fix,
+        .lossless_scaling_framegen = launch_session->lossless_scaling_framegen,
+        .lossless_rtss_limit = launch_session->lossless_scaling_rtss_limit,
+        .frame_generation_provider = launch_session->frame_generation_provider,
+        .uses_virtual_display =
+          output_selects_physical ?
+            false :
+            (session_requests_virtual || headless_mode || app_requests_virtual || output_selects_virtual),
+        .capture_mode = config::video.capture,
+        .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+        .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+        .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+      });
+      const bool framegen_requires_virtual = framegen_policy.requires_virtual_display;
+
+      if (forced_sudavda_virtual_display || output_selects_virtual) {
+        launch_session->virtual_display = true;
+      }
+
+      if (output_selects_physical && !framegen_requires_virtual) {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_failed = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+        launch_session->virtual_display_ready_since.reset();
+        already_has_virtual_guid = false;
+        should_use_virtual_display = false;
+        _runtime_output_override_lease =
+          config::set_runtime_output_name_override_with_lease(*output_override);
+      } else {
+        should_use_virtual_display =
+          headless_mode ||
+          app_requests_virtual ||
+          metadata_requests_virtual ||
+          client_requests_virtual ||
+          session_requests_virtual ||
+          output_selects_virtual ||
+          framegen_requires_virtual ||
+          !video::allow_encoder_probing() ||
+          VDISPLAY::should_auto_enable_virtual_display();
+
+        if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
+          if (session_requests_virtual || app_requests_virtual || client_requests_virtual) {
+            BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
+          }
+          launch_session->virtual_display = false;
+          should_use_virtual_display = headless_mode || !video::allow_encoder_probing();
+        }
+      }
+      launch_session->virtual_display_request_resolved = true;
     }
 
     bool dd_api_handled = false;
@@ -1398,7 +1470,10 @@ namespace proc {
         std::string device_uuid_str;
         uuid_util::uuid_t device_uuid;
 
-        const bool use_shared_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+        const auto effective_virtual_display_mode =
+          launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+        const bool use_shared_display =
+          effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
 
         if (use_shared_display) {
           if (http::shared_virtual_display_guid.empty()) {
@@ -2543,6 +2618,10 @@ namespace proc {
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;
+    }
+    if (_runtime_output_override_lease) {
+      (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
+      _runtime_output_override_lease.reset();
     }
 #endif
 

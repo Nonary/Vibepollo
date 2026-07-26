@@ -228,11 +228,27 @@ namespace webrtc_stream {
 #ifdef _WIN32
     void prepare_virtual_display_for_webrtc_session(
       const std::shared_ptr<rtsp_stream::launch_session_t> &session,
-      bool allow_display_changes
+      bool allow_display_changes,
+      std::optional<config::runtime_output_override_lease_t> &output_override_lease
     ) {
       if (!session) {
         return;
       }
+
+      auto disable_virtual_display_request = [&]() {
+        session->virtual_display = false;
+        session->virtual_display_failed = false;
+        session->virtual_display_guid_bytes.fill(0);
+        session->virtual_display_device_id.clear();
+        session->virtual_display_ready_since.reset();
+      };
+      auto publish_output_override = [&](std::string output_name) {
+        if (output_override_lease) {
+          (void) config::clear_runtime_output_name_override_if_lease(*output_override_lease);
+        }
+        output_override_lease =
+          config::set_runtime_output_name_override_with_lease(std::move(output_name));
+      };
 
       std::optional<std::string> app_output_override;
       if (session->output_name_override) {
@@ -253,9 +269,13 @@ namespace webrtc_stream {
         config_requests_virtual =
           *session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
       }
+      const bool forced_sudavda_virtual_display =
+        config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+      const bool client_requests_virtual = session->client_requests_virtual_display;
       const bool metadata_requests_virtual = session->app_metadata && session->app_metadata->virtual_screen;
       bool request_virtual_display =
-        session->virtual_display || config_requests_virtual || metadata_requests_virtual;
+        session->virtual_display || config_requests_virtual || client_requests_virtual || metadata_requests_virtual ||
+        forced_sudavda_virtual_display;
       const std::string virtual_display_stable_id =
         !session->unique_id.empty() ? session->unique_id : session->client_uuid;
       bool has_app_output_override = app_output_override.has_value();
@@ -276,7 +296,8 @@ namespace webrtc_stream {
           .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
         });
       };
-      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const auto requested_display_framegen_policy =
+        make_framegen_policy(has_app_output_override ? false : request_virtual_display);
       const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
       if (framegen_requires_virtual_display) {
         request_virtual_display = true;
@@ -299,6 +320,7 @@ namespace webrtc_stream {
                        << "'.";
       if (has_app_output_override && !framegen_requires_virtual_display) {
         request_virtual_display = false;
+        disable_virtual_display_request();
         if (!session->virtual_display_mode_override) {
           session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
         }
@@ -313,7 +335,7 @@ namespace webrtc_stream {
             session->virtual_display_device_id = *existing_device;
             session->virtual_display_ready_since = std::chrono::steady_clock::now();
             session->virtual_display_needs_resume_apply = true;
-            config::set_runtime_output_name_override(session->virtual_display_device_id);
+            publish_output_override(session->virtual_display_device_id);
             apply_framegen_refresh_policy(true);
             BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
                             << *existing_device << ").";
@@ -325,7 +347,10 @@ namespace webrtc_stream {
                           << " recreating one on demand.";
           session->virtual_display_recreated_on_demand = true;
         } else if (app_output_override) {
-          config::set_runtime_output_name_override(*app_output_override);
+          // Do not assume a process-owned lease is still in force: proc::execute() only
+          // takes one when it resolves the display request itself, and NVHTTP launches
+          // resolve it first. Republish so resume captures the app's physical output.
+          publish_output_override(*app_output_override);
           apply_framegen_refresh_policy(false);
           BOOST_LOG(info) << "Display helper: preserving output override for WebRTC resume: "
                           << (app_output_override->empty() ? "primary display" : *app_output_override);
@@ -334,9 +359,15 @@ namespace webrtc_stream {
       }
 
       if (!request_virtual_display) {
+        disable_virtual_display_request();
         session->framegen_refresh_rate.reset();
         session->framegen_refresh_millihz.reset();
         session->framegen_refresh_multiplier = 1;
+        if (app_output_override) {
+          publish_output_override(*app_output_override);
+          BOOST_LOG(info) << "Display helper: pinning WebRTC capture to app output override: "
+                          << (app_output_override->empty() ? "primary display" : *app_output_override);
+        }
         return;
       }
 
@@ -514,7 +545,7 @@ namespace webrtc_stream {
         }
         session->virtual_display_ready_since = display_info->ready_since;
         if (!session->virtual_display_device_id.empty()) {
-          config::set_runtime_output_name_override(session->virtual_display_device_id);
+          publish_output_override(session->virtual_display_device_id);
         }
 
         VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
@@ -797,6 +828,7 @@ namespace webrtc_stream {
       std::atomic_size_t pending_session_creations {0};
 #ifdef _WIN32
       std::atomic_bool owns_frame_limiter {false};
+      std::optional<config::runtime_output_override_lease_t> output_override_lease;
 #endif
       std::shared_ptr<safe::mail_raw_t> mail;
       std::shared_ptr<rtsp_stream::launch_session_t> launch_session;
@@ -2667,6 +2699,8 @@ namespace webrtc_stream {
 #endif
       }
       launch_session->client_name = requested_name.empty() ? launch_session->device_name : requested_name;
+      launch_session->client_requests_virtual_display =
+        !requested_uuid.empty() && nvhttp::get_client_always_use_virtual_display(requested_uuid);
       launch_session->width = options.width.value_or(kDefaultWidth);
       launch_session->height = options.height.value_or(kDefaultHeight);
       launch_session->fps = options.fps.value_or(kDefaultFps);
@@ -2741,7 +2775,7 @@ namespace webrtc_stream {
             if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
               launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
             }
-            if (!launch_session->output_name_override && app_ctx->output_name_override) {
+            if (app_ctx->output_name_override) {
               launch_session->output_name_override = *app_ctx->output_name_override;
             }
             launch_session->app_metadata = std::move(metadata);
@@ -2880,7 +2914,16 @@ namespace webrtc_stream {
 #endif
 
       if (allow_platform_teardown) {
+#ifdef _WIN32
+        if (webrtc_capture.output_override_lease) {
+          (void) config::clear_runtime_output_name_override_if_lease(
+            *webrtc_capture.output_override_lease
+          );
+          webrtc_capture.output_override_lease.reset();
+        }
+#else
         config::set_runtime_output_name_override(std::nullopt);
+#endif
         config::maybe_apply_deferred();
       }
     }
@@ -2983,17 +3026,21 @@ namespace webrtc_stream {
       webrtc_capture.stream_start_params = std::move(stream_start_params);
       auto launch_session = build_launch_session(options, effective_app_id, audio_channels, prefer_10bit_sdr);
 
-      const bool allow_display_changes = !rtsp_active && !resume_only;
-      if (allow_display_changes && launch_session->output_name_override) {
 #ifdef _WIN32
-        if (launch_session->output_name_override->empty() ||
-            !VDISPLAY::is_virtual_display_selection(*launch_session->output_name_override)) {
-          config::set_runtime_output_name_override(*launch_session->output_name_override);
+      std::optional<config::runtime_output_override_lease_t> pending_output_override_lease;
+      auto output_override_guard = util::fail_guard([&]() {
+        if (pending_output_override_lease) {
+          (void) config::clear_runtime_output_name_override_if_lease(*pending_output_override_lease);
         }
-#else
-        config::set_runtime_output_name_override(*launch_session->output_name_override);
+      });
 #endif
+
+      const bool allow_display_changes = !rtsp_active && !resume_only;
+#ifndef _WIN32
+      if (allow_display_changes && launch_session->output_name_override) {
+        config::set_runtime_output_name_override(*launch_session->output_name_override);
       }
+#endif
 
       if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
         const auto &apps = proc::proc.get_apps();
@@ -3020,7 +3067,11 @@ namespace webrtc_stream {
         auto _hot_apply_gate = config::acquire_apply_read_gate();
 
 #ifdef _WIN32
-        prepare_virtual_display_for_webrtc_session(launch_session, allow_display_changes);
+        prepare_virtual_display_for_webrtc_session(
+          launch_session,
+          allow_display_changes,
+          pending_output_override_lease
+        );
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
         }
@@ -3033,9 +3084,6 @@ namespace webrtc_stream {
                                                             "resume virtual-display recreation" :
                                                             "resume virtual-display refresh"))
                            << " for client '" << launch_session->client_name << "'.";
-          if (launch_session->output_name_override) {
-            config::set_runtime_output_name_override(*launch_session->output_name_override);
-          }
           (void) display_helper_integration::disarm_pending_restore();
           auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
           bool applied = false;
@@ -3091,6 +3139,12 @@ namespace webrtc_stream {
       webrtc_capture.app_id = effective_app_id > 0 ? std::optional<int> {effective_app_id} : std::nullopt;
       webrtc_capture.config_key = desired_key;
       webrtc_capture.published_bitrate_kbps.reset();
+#ifdef _WIN32
+      if (pending_output_override_lease) {
+        webrtc_capture.output_override_lease = pending_output_override_lease;
+      }
+      output_override_guard.disable();
+#endif
       webrtc_capture.feedback_shutdown.store(false, std::memory_order_release);
 #ifdef SUNSHINE_ENABLE_WEBRTC
       webrtc_capture.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);

@@ -301,6 +301,11 @@ namespace nvhttp {
       std::optional<std::string> &pending_output_override
     ) {
 
+      // This routine is the authoritative resolver for normal NVHTTP launch
+      // and resume requests. proc::execute must not later re-enable a virtual
+      // display after a per-app physical output override selected one.
+      launch_session->virtual_display_request_resolved = true;
+
       auto disable_virtual_display_request = [&]() {
         launch_session->virtual_display = false;
         launch_session->virtual_display_failed = false;
@@ -326,10 +331,13 @@ namespace nvhttp {
         config_requests_virtual =
           *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
       }
+      const bool forced_sudavda_virtual_display =
+        config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
       const bool client_requests_virtual = launch_session->client_requests_virtual_display;
       const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
       bool request_virtual_display =
-        launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual;
+        launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual ||
+        forced_sudavda_virtual_display;
       const auto requested_virtual_display_mode =
         launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       const bool shared_virtual_display_mode =
@@ -357,7 +365,8 @@ namespace nvhttp {
           .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
         });
       };
-      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const auto requested_display_framegen_policy =
+        make_framegen_policy(has_app_output_override ? false : request_virtual_display);
       const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
       if (framegen_requires_virtual_display) {
         request_virtual_display = true;
@@ -392,11 +401,13 @@ namespace nvhttp {
         return;
       }
 
-      if (has_app_output_override && !client_requests_virtual && !framegen_requires_virtual_display) {
+      bool pinned_virtual_display_mode_disabled = false;
+      if (has_app_output_override && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         disable_virtual_display_request();
         if (!launch_session->virtual_display_mode_override) {
           launch_session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+          pinned_virtual_display_mode_disabled = true;
         }
       }
 
@@ -458,7 +469,7 @@ namespace nvhttp {
       BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
       const auto requested_output_name = app_output_override ? *app_output_override : config::get_active_output_name();
-      if (has_app_output_override && !client_requests_virtual) {
+      if (has_app_output_override) {
         request_virtual_display = false;
         disable_virtual_display_request();
       }
@@ -842,9 +853,31 @@ namespace nvhttp {
           }
         };
 
+        // A per-app physical output override must never suppress this fallback:
+        // should_auto_enable_virtual_display() only returns true when no capturable
+        // physical display is active at all, so the pinned output cannot exist and the
+        // session would otherwise land on the generic temporary probe display.
         if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
           BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
           request_virtual_display = true;
+          if (has_app_output_override) {
+            BOOST_LOG(info) << "Dropping unsatisfiable per-app display override '"
+                            << (app_output_override && !app_output_override->empty() ? *app_output_override : std::string {"primary display"})
+                            << "' because no physical display is available.";
+            // Release the pin so capture targets the virtual display created below
+            // instead of an output that does not exist.
+            config::set_runtime_output_name_override(std::nullopt);
+            pending_output_override.reset();
+            app_output_override.reset();
+            has_app_output_override = false;
+            launch_session->output_name_override.reset();
+            if (pinned_virtual_display_mode_disabled) {
+              // Restore the mode this session would have had without the override so
+              // shared/per-client identity stays consistent with virtual_display_stable_id.
+              launch_session->virtual_display_mode_override.reset();
+              pinned_virtual_display_mode_disabled = false;
+            }
+          }
         }
         if (allow_display_changes) {
           apply_framegen_refresh_policy(request_virtual_display);
@@ -1703,7 +1736,7 @@ namespace nvhttp {
             if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
               launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
             }
-            if (!launch_session->output_name_override && app_ctx->output_name_override) {
+            if (app_ctx->output_name_override) {
               launch_session->output_name_override = *app_ctx->output_name_override;
             }
             launch_session->app_metadata = std::move(metadata);
@@ -3291,6 +3324,51 @@ namespace nvhttp {
       launch_session->client_undo_cmds.clear();
     }
 
+    // A resume request carries no appid or appuuid, so make_launch_session() cannot resolve the
+    // app and leaves every per-app setting at its default. Seed them from the app that is still
+    // running, before the display is prepared below. Without this the session silently falls
+    // back to the global output setting on reconnect and ignores the app's display policy.
+    if (launch_session->appid <= 0 && current_appid > 0) {
+      try {
+        if (auto app_ctx = proc::proc.resolve_app(current_appid)) {
+          launch_session->appid = (int) util::from_view(app_ctx->id);
+          launch_session->gen1_framegen_fix = app_ctx->gen1_framegen_fix;
+          launch_session->gen2_framegen_fix = app_ctx->gen2_framegen_fix;
+          launch_session->frame_generation_enabled = app_ctx->frame_generation_enabled;
+          launch_session->lossless_scaling_framegen = app_ctx->lossless_scaling_framegen;
+          launch_session->lossless_scaling_target_fps = app_ctx->lossless_scaling_target_fps;
+          launch_session->lossless_scaling_rtss_limit = app_ctx->lossless_scaling_rtss_limit;
+          launch_session->frame_generation_provider = app_ctx->frame_generation_provider;
+          rtsp_stream::launch_session_t::app_metadata_t metadata;
+          metadata.id = app_ctx->id;
+          metadata.name = app_ctx->name;
+          metadata.virtual_screen = app_ctx->virtual_screen || app_ctx->virtual_display;
+          metadata.has_command = !app_ctx->cmd.empty();
+          metadata.has_playnite = !app_ctx->playnite_id.empty();
+          metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
+          // launch_session->virtual_display is deliberately left alone: the launch path assigns
+          // it from the app and then immediately overwrites it with the request's virtualDisplay
+          // argument and the per-client setting, both of which are already resolved here.
+          if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
+            launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
+          }
+          if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
+            launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
+          }
+          if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+            launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+          }
+          if (app_ctx->output_name_override) {
+            launch_session->output_name_override = *app_ctx->output_name_override;
+          }
+          launch_session->app_metadata = std::move(metadata);
+          BOOST_LOG(debug) << "Resume request carried no app id; applying settings from running app ["sv
+                           << app_ctx->name << "] (id " << app_ctx->id << ")."sv;
+        }
+      } catch (...) {
+      }
+    }
+
 #ifdef _WIN32
     if (allow_display_changes) {
       // Stop any in-flight helper restore loop before resuming display changes.
@@ -4026,6 +4104,16 @@ namespace nvhttp {
     for (const auto &named_cert : client_root.named_devices) {
       if (named_cert->uuid == uuid) {
         return true;
+      }
+    }
+    return false;
+  }
+
+  bool get_client_always_use_virtual_display(const std::string &uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert->uuid == uuid) {
+        return named_cert->always_use_virtual_display;
       }
     }
     return false;

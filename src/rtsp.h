@@ -90,6 +90,9 @@ namespace rtsp_stream {
     uint32_t scale_factor;
     bool virtual_display_failed;
     bool virtual_display_detach_with_app;
+    // True only after the NVHTTP display-preparation path has resolved the
+    // effective virtual/physical output request for this launch.
+    bool virtual_display_request_resolved = false;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;

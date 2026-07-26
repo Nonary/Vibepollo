@@ -232,6 +232,7 @@ namespace nvhttp {
    */
   std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
   bool has_client_uuid(std::string_view uuid);
+  bool get_client_always_use_virtual_display(const std::string &uuid);
 
   /**
    * @brief Get all paired clients.

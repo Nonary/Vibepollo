@@ -267,6 +267,7 @@ namespace proc {
 #ifdef _WIN32
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
+    std::optional<config::runtime_output_override_lease_t> _runtime_output_override_lease;
 #endif
 
     file_t _pipe;
