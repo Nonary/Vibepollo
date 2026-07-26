@@ -2545,18 +2545,7 @@ namespace video {
               disp.reset();
 
 #ifdef _WIN32
-              // After a recent display-helper APPLY (topology change), give the display
-              // subsystem time to settle before trying to reinit. Without this, DXGI
-              // may not yet reflect the new topology, causing repeated failures that
-              // leave the stream frozen.
-              {
-                const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
-                if (ms_since_apply < 1500) {
-                  auto settle_ms = std::max<int64_t>(0, 1500 - ms_since_apply);
-                  BOOST_LOG(info) << "Display topology recently changed; waiting " << settle_ms << "ms for display subsystem to settle";
-                  std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
-                }
-              }
+              wait_for_recent_display_apply_stability();
 #endif
 
               // Refresh display names since a display removal might have caused the reinitialization
@@ -4854,15 +4843,7 @@ namespace video {
 
     while (encode_session_ctx_queue.running()) {
 #ifdef _WIN32
-      // After a recent display-helper APPLY, give the display subsystem time to settle.
-      {
-        const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
-        if (ms_since_apply < 1500) {
-          auto settle_ms = std::max<int64_t>(0, 1500 - ms_since_apply);
-          BOOST_LOG(info) << "Display topology recently changed; waiting " << settle_ms << "ms for display subsystem to settle";
-          std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
-        }
-      }
+      wait_for_recent_display_apply_stability();
 #endif
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
