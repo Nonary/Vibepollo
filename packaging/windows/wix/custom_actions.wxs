@@ -284,12 +284,14 @@
                                     Id="FE_VibepolloExe"
                                     Name="Vibepollo"
                                     Program="[INSTALL_ROOT]sunshine.exe"
+                                    IgnoreFailure="yes"
                                     Profile="all"
                                     Scope="any" />
         <Firewall:FirewallException xmlns:Firewall="http://schemas.microsoft.com/wix/FirewallExtension"
                                     Id="FE_VibepolloSvcExe"
                                     Name="Vibepollo Service"
                                     Program="[INSTALL_ROOT]tools\sunshinesvc.exe"
+                                    IgnoreFailure="yes"
                                     Profile="all"
                                     Scope="any" />
       </Component>
