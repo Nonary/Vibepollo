@@ -313,13 +313,28 @@ namespace platf {
 
       bool applied = false;
       for (auto provider : order) {
-        if (!provider_available(provider)) {
+        // RTSS start also audits its durable recovery snapshot. Always enter
+        // that path so a broken or removed RTSS install cannot bypass an
+        // unresolved prior mutation and hand the stream to another limiter.
+        if (provider != frame_limiter_provider::rtss && !provider_available(provider)) {
           BOOST_LOG(warning) << "Frame limiter provider '" << frame_limiter_provider_to_string(provider)
                              << "' not available";
           if (configured != frame_limiter_provider::auto_detect) {
             break;
           }
           continue;
+        }
+        if (provider != frame_limiter_provider::rtss) {
+          // Recovery may launch RTSS solely to drive its hooks. Always retain
+          // lifecycle cleanup even when the audit succeeds and another
+          // provider is selected.
+          g_rtss_cleanup_needed = true;
+          if (rtss_audit_pending_recovery() == rtss_recovery_audit_result::retained_exclusive) {
+            g_active_provider = frame_limiter_provider::rtss;
+            applied = true;
+            BOOST_LOG(warning) << "An unresolved RTSS recovery snapshot blocked the configured frame-limiter provider";
+            break;
+          }
         }
 
         if (provider == frame_limiter_provider::nvidia_control_panel) {
@@ -341,11 +356,16 @@ namespace platf {
           }
         } else if (provider == frame_limiter_provider::rtss) {
           g_rtss_cleanup_needed = true;
-          bool ok = rtss_streaming_start(effective_limit.rtss_numerator, effective_limit.rtss_denominator);
-          if (ok) {
+          const auto result =
+            rtss_streaming_start(effective_limit.rtss_numerator, effective_limit.rtss_denominator);
+          if (result != rtss_apply_result::safe_to_fallback) {
             g_active_provider = frame_limiter_provider::rtss;
             applied = true;
-            BOOST_LOG(info) << "Frame limiter provider 'rtss' applied";
+            if (result == rtss_apply_result::applied) {
+              BOOST_LOG(info) << "Frame limiter provider 'rtss' applied";
+            } else {
+              BOOST_LOG(warning) << "RTSS retained exclusive frame-limiter ownership, but the requested limit was not confirmed";
+            }
             break;
           }
         }
@@ -493,9 +513,17 @@ namespace platf {
       return;
     }
 
-    if (rtss_streaming_refresh(g_last_effective_limit.rtss_numerator, g_last_effective_limit.rtss_denominator)) {
+    const auto result =
+      rtss_streaming_refresh(g_last_effective_limit.rtss_numerator, g_last_effective_limit.rtss_denominator);
+    if (result == rtss_apply_result::applied) {
       BOOST_LOG(info) << "Frame limiter provider 'rtss' refreshed";
+    } else if (result == rtss_apply_result::retained_exclusive) {
+      BOOST_LOG(warning) << "RTSS refresh was not confirmed; keeping RTSS as the exclusive frame-limiter provider";
     } else if (rtss_hooks_stalled() && frame_limiter_nvcp::is_available()) {
+      if (rtss_audit_pending_recovery() == rtss_recovery_audit_result::retained_exclusive) {
+        BOOST_LOG(warning) << "RTSS recovery remains unresolved; refusing NVIDIA limiter fallback";
+        return;
+      }
       BOOST_LOG(warning) << "RTSS stalled while refreshing the frame limit; falling back to the NVIDIA driver";
       if (g_nvcp_started) {
         frame_limiter_nvcp::streaming_stop();
@@ -516,6 +544,8 @@ namespace platf {
       } else {
         BOOST_LOG(warning) << "NVIDIA driver frame limiter failed after RTSS refresh failure";
       }
+    } else {
+      BOOST_LOG(warning) << "RTSS frame-limit refresh failed without a safe fallback provider transition";
     }
   }
 
