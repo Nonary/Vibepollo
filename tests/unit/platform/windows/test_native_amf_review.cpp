@@ -223,11 +223,12 @@ namespace {
            h264.minimum_reference_frames == 2 && h264.disable_ltr &&
            h264_odd.blocks_per_slot && *h264_odd.blocks_per_slot == 28 &&
            hevc.enabled && hevc.blocks_per_slot && *hevc.blocks_per_slot == 2 &&
-           hevc.minimum_reference_frames == 0 && !hevc.disable_ltr &&
+           hevc.minimum_reference_frames == 0 && hevc.disable_ltr &&
            av1.enabled && !av1.blocks_per_slot &&
            av1.av1_mode && *av1.av1_mode == amf::lifecycle::av1_continuous_intra_refresh_mode &&
            av1.av1_cycle_frames &&
-           *av1.av1_cycle_frames == amf::lifecycle::intra_refresh_period_frames;
+           *av1.av1_cycle_frames == amf::lifecycle::intra_refresh_period_frames &&
+           av1.disable_ltr;
   }
 
   bool effective_reference_frame_limit_matches_configure_and_verify() {
@@ -495,10 +496,11 @@ namespace {
     amf::lifecycle::native_runtime_gate_t gate;
     if (!gate.try_begin_initialization()) return false;
     const auto start = std::chrono::steady_clock::now();
-    const bool entered = gate.begin_teardown_until(start + 2ms);
+    const auto admission = gate.begin_teardown_until(start + 2ms);
     const auto elapsed = std::chrono::steady_clock::now() - start;
     gate.cancel_initialization();
-    return !entered && elapsed < 2s && !gate.is_quarantined() &&
+    return admission == amf::lifecycle::teardown_admission_e::contended &&
+           elapsed < 2s && !gate.is_quarantined() &&
            gate.runtime_is_idle();
   }
 
