@@ -248,7 +248,7 @@ namespace amf::lifecycle {
         av1_continuous_intra_refresh_mode,
         intra_refresh_period_frames,
         0,
-        false,
+        true,
       };
     }
 
@@ -263,13 +263,21 @@ namespace amf::lifecycle {
     const int64_t refresh_frames = std::min<int64_t>(block_count, intra_refresh_duration_frames);
     const int blocks_per_slot = static_cast<int>((block_count + refresh_frames - 1) / refresh_frames);
 
+    // User-controlled LTR is mutually exclusive with intra refresh on every
+    // codec, not just H.264. AMF_Video_Encode_API.md:714 (AVC),
+    // AMF_Video_Encode_HEVC_API.md:718 and AMF_Video_Encode_AV1_API.md:674 all
+    // state "With user control of LTR, Intra-refresh features are not
+    // supported." AMF stores both property sets verbatim, so a driver that
+    // honours only one is invisible to the post-Init readback contract — the
+    // interlock has to be applied here. Only the minimum-reference-frame floor
+    // is genuinely H.264-specific.
     return {
       true,
       blocks_per_slot,
       std::nullopt,
       std::nullopt,
       video_format == 0 ? 2 : 0,
-      video_format == 0,
+      true,
     };
   }
 
