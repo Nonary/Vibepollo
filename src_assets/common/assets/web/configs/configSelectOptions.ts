@@ -7,11 +7,6 @@ export type ConfigSelectOptionsContext = {
   currentValue?: unknown;
 };
 
-function translateOr(t: (key: string) => string, key: string, fallback: string): string {
-  const translated = t(key);
-  return translated && translated !== key ? translated : fallback;
-}
-
 function isSelectValue(value: unknown): value is string | number {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 }
@@ -342,15 +337,15 @@ export function getConfigSelectOptions(
           value: 'vbr_latency',
         },
         { label: t('config.amd_rc_vbr_peak'), value: 'vbr_peak' },
-        { label: translateOr(t, 'config.amd_rc_qvbr', 'QVBR'), value: 'qvbr' },
-        { label: translateOr(t, 'config.amd_rc_hqvbr', 'HQ-VBR'), value: 'hqvbr' },
-        { label: translateOr(t, 'config.amd_rc_hqcbr', 'HQ-CBR'), value: 'hqcbr' },
+        { label: t('config.amd_rc_qvbr'), value: 'qvbr' },
+        { label: t('config.amd_rc_hqvbr'), value: 'hqvbr' },
+        { label: t('config.amd_rc_hqcbr'), value: 'hqcbr' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_quality': {
       const options = [
-        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
+        { label: t('config.amd_opt_auto'), value: 'auto' },
         { label: t('config.amd_quality_speed'), value: 'speed' },
         { label: t('config.amd_quality_balanced'), value: 'balanced' },
         { label: t('config.amd_quality_quality'), value: 'quality' },
@@ -359,34 +354,34 @@ export function getConfigSelectOptions(
     }
     case 'amd_vbaq': {
       const options = [
-        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'config.amd_opt_enabled', 'Enabled'), value: 'enabled' },
-        { label: translateOr(t, 'config.amd_opt_disabled', 'Disabled'), value: 'disabled' },
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_opt_enabled'), value: 'enabled' },
+        { label: t('config.amd_opt_disabled'), value: 'disabled' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_av1_screen_content': {
       const options = [
-        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'config.amd_opt_enabled', 'Enabled'), value: 'enabled' },
-        { label: translateOr(t, 'config.amd_opt_disabled', 'Disabled'), value: 'disabled' },
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_opt_enabled'), value: 'enabled' },
+        { label: t('config.amd_opt_disabled'), value: 'disabled' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_av1_latency_mode': {
       const options = [
-        { label: translateOr(t, 'config.amd_opt_auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'config.amd_av1_latency_none', 'None'), value: 'none' },
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_av1_latency_none'), value: 'none' },
         {
-          label: translateOr(t, 'config.amd_av1_latency_power_saving', 'Power saving (real-time)'),
+          label: t('config.amd_av1_latency_power_saving'),
           value: 'power_saving',
         },
         {
-          label: translateOr(t, 'config.amd_av1_latency_realtime', 'Real-time'),
+          label: t('config.amd_av1_latency_realtime'),
           value: 'realtime',
         },
         {
-          label: translateOr(t, 'config.amd_av1_latency_lowest', 'Lowest latency'),
+          label: t('config.amd_av1_latency_lowest'),
           value: 'lowest',
         },
       ];

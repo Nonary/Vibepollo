@@ -1,6 +1,7 @@
 {
   "literalValues": [
     "AMD AMF/VCE",
+    "AMD AMF/VCE (legacy FFmpeg)",
     "AMD VCN",
     "API",
     "AV1",
