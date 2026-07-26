@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <Psapi.h>
@@ -13,6 +14,7 @@
 #include <Shlwapi.h>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <wincrypt.h>
 #include <winsock2.h>
 #include <windows.h>
@@ -22,6 +24,34 @@ namespace playnite_launcher::playnite {
     constexpr wchar_t cleanup_watchdog_filename[] = L"playnite-cleanup-watchdog.exe";
     constexpr wchar_t cleanup_watchdog_cache_directory[] = L"playnite-watchdogs";
     constexpr wchar_t cleanup_watchdog_cache_mutex[] = L"Local\\VibepolloPlayniteWatchdogCache-v1";
+    constexpr wchar_t cleanup_lease_mutex_prefix[] = L"Local\\VibepolloPlayniteCleanupLease-v1-";
+
+    std::optional<std::wstring> cleanup_lease_mutex_name(const std::string &install_dir_utf8) {
+      if (install_dir_utf8.empty()) {
+        return std::nullopt;
+      }
+
+      try {
+        auto normalized = platf::dxgi::utf8_to_wide(install_dir_utf8);
+        if (normalized.empty()) {
+          return std::nullopt;
+        }
+
+        std::uint64_t hash = 1469598103934665603ull;
+        for (auto &ch : normalized) {
+          if (ch == L'/') {
+            ch = L'\\';
+          } else if (ch >= L'A' && ch <= L'Z') {
+            ch = static_cast<wchar_t>(ch - L'A' + L'a');
+          }
+          hash ^= static_cast<std::uint16_t>(ch);
+          hash *= 1099511628211ull;
+        }
+        return std::wstring(cleanup_lease_mutex_prefix) + std::to_wstring(hash);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
 
     struct staged_watchdog_t {
       std::filesystem::path path;
@@ -294,6 +324,76 @@ namespace playnite_launcher::playnite {
       return quoted;
     }
   }  // namespace
+
+  cleanup_lease_t::cleanup_lease_t(cleanup_lease_t &&other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+
+  cleanup_lease_t &cleanup_lease_t::operator=(cleanup_lease_t &&other) noexcept {
+    if (this != &other) {
+      if (handle_) {
+        ReleaseMutex(handle_);
+        CloseHandle(handle_);
+      }
+      handle_ = std::exchange(other.handle_, nullptr);
+    }
+    return *this;
+  }
+
+  cleanup_lease_t::~cleanup_lease_t() {
+    if (handle_) {
+      ReleaseMutex(handle_);
+      CloseHandle(handle_);
+    }
+  }
+
+  std::optional<cleanup_lease_t> cleanup_lease_t::acquire(const std::string &install_dir_utf8) {
+    const auto mutex_name = cleanup_lease_mutex_name(install_dir_utf8);
+    if (!mutex_name) {
+      return std::nullopt;
+    }
+
+    HANDLE handle = CreateMutexW(nullptr, FALSE, mutex_name->c_str());
+    if (!handle) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to create mutex for install directory";
+      return std::nullopt;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle, 0);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      return cleanup_lease_t {handle};
+    }
+
+    if (wait_result != WAIT_TIMEOUT) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to acquire mutex, error=" << wait_result;
+    }
+    CloseHandle(handle);
+    return std::nullopt;
+  }
+
+  bool cleanup_lease_t::held_by_another_launcher(const std::string &install_dir_utf8) {
+    const auto mutex_name = cleanup_lease_mutex_name(install_dir_utf8);
+    if (!mutex_name) {
+      return false;
+    }
+
+    HANDLE handle = CreateMutexW(nullptr, FALSE, mutex_name->c_str());
+    if (!handle) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to inspect mutex for install directory";
+      return false;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle, 0);
+    if (wait_result == WAIT_TIMEOUT) {
+      CloseHandle(handle);
+      return true;
+    }
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      ReleaseMutex(handle);
+    } else {
+      BOOST_LOG(warning) << "Cleanup lease: failed to inspect mutex, error=" << wait_result;
+    }
+    CloseHandle(handle);
+    return false;
+  }
 
   bool is_playnite_running() {
     try {

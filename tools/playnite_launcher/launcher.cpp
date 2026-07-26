@@ -156,6 +156,7 @@ namespace playnite_launcher {
 
     int run_cleanup_mode(const LauncherConfig &config, const lossless::lossless_scaling_options &lossless_options) {
       BOOST_LOG(info) << "Cleanup mode: starting (installDir='" << config.install_dir << "' fullscreen=" << (config.fullscreen ? 1 : 0) << ")";
+      bool waited_for_parent = false;
       if (!config.wait_for_pid.empty()) {
         try {
           DWORD wpid = static_cast<DWORD>(std::stoul(config.wait_for_pid));
@@ -166,6 +167,7 @@ namespace playnite_launcher {
               DWORD wr = WaitForSingleObject(hp, INFINITE);
               CloseHandle(hp);
               BOOST_LOG(info) << "Cleanup mode: wait result=" << wr;
+              waited_for_parent = true;
             } else {
               BOOST_LOG(warning) << "Cleanup mode: unable to open PID for wait: " << wpid;
             }
@@ -177,6 +179,24 @@ namespace playnite_launcher {
       std::wstring install_dir_w;
       if (!config.install_dir.empty()) {
         install_dir_w = platf::dxgi::utf8_to_wide(config.install_dir);
+      }
+      if (waited_for_parent && !config.install_dir.empty()) {
+        // The previous launcher may have exited because a client disconnected
+        // just as another client resumed the same game. Give the successor time
+        // to claim the install directory before closing any of its processes.
+        constexpr auto successor_grace = 10s;
+        const auto deadline = std::chrono::steady_clock::now() + successor_grace;
+        while (std::chrono::steady_clock::now() < deadline) {
+          if (playnite::cleanup_lease_t::held_by_another_launcher(config.install_dir)) {
+            BOOST_LOG(info) << "Cleanup mode: successor launcher claimed install directory; skipping cleanup";
+            return 0;
+          }
+          std::this_thread::sleep_for(250ms);
+        }
+        if (playnite::cleanup_lease_t::held_by_another_launcher(config.install_dir)) {
+          BOOST_LOG(info) << "Cleanup mode: successor launcher claimed install directory; skipping cleanup";
+          return 0;
+        }
       }
       if (!config.fullscreen && !install_dir_w.empty()) {
         cleanup::cleanup_graceful_then_forceful_in_dir(install_dir_w, config.exit_timeout_secs);
@@ -846,6 +866,24 @@ namespace playnite_launcher {
       bool lossless_profiles_applied = false;
 
       std::atomic<bool> watcher_spawned {false};
+      std::optional<playnite::cleanup_lease_t> cleanup_lease;
+      std::string cleanup_lease_install_dir;
+
+      auto ensure_cleanup_lease = [&]() {
+        if (last_install_dir.empty()) {
+          return;
+        }
+        if (cleanup_lease_install_dir != last_install_dir) {
+          cleanup_lease.reset();
+          cleanup_lease_install_dir = last_install_dir;
+        }
+        if (!cleanup_lease) {
+          if (auto lease = playnite::cleanup_lease_t::acquire(last_install_dir)) {
+            cleanup_lease = std::move(*lease);
+            BOOST_LOG(debug) << "Cleanup lease: acquired for install directory '" << last_install_dir << "'";
+          }
+        }
+      };
 
       auto send_launch_command = [&](std::string_view reason) -> bool {
         nlohmann::json j;
@@ -922,6 +960,7 @@ namespace playnite_launcher {
           if (!msg.status_install_dir.empty()) {
             bool changed = last_install_dir != msg.status_install_dir;
             last_install_dir = msg.status_install_dir;
+            ensure_cleanup_lease();
             if (!watcher_spawned.load()) {
               bool expected = false;
               if (watcher_spawned.compare_exchange_strong(expected, true)) {
@@ -1318,6 +1357,7 @@ namespace playnite_launcher {
       std::optional<std::chrono::steady_clock::time_point> game_missing_since;
       const auto game_missing_grace = std::chrono::seconds(15);
       while (!should_exit.load()) {
+        ensure_cleanup_lease();
         focus_game_after_start();
         if (!got_started.load() && std::chrono::steady_clock::now() >= deadline) {
           break;
@@ -1370,7 +1410,7 @@ namespace playnite_launcher {
       }
 
       BOOST_LOG(info) << "Playnite reported gameStopped or timeout; scheduling cleanup and exiting";
-      if (!last_install_dir.empty()) {
+      if (!last_install_dir.empty() && !watcher_spawned.load()) {
         WCHAR selfPath[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
         static_cast<void>(playnite::spawn_cleanup_watchdog_process(selfPath, last_install_dir, exit_timeout_secs, false, std::nullopt));
