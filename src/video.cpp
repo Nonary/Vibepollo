@@ -3460,6 +3460,12 @@ namespace video {
     return false;
   }
 
+  template<typename Owned>
+  void defer_contended_amf_teardown(
+    Owned owned,
+    std::shared_ptr<platf::display_t> display_lease,
+    std::string_view reason);
+
   std::unique_ptr<amf_encode_session_t> make_amf_encode_session(
     const config_t &client_config,
     std::unique_ptr<platf::amf_encode_device_t> encode_device,
@@ -3586,9 +3592,15 @@ namespace video {
     if (!native_amf_lifecycle_gate.finish_initialization()) {
       BOOST_LOG(error) << "AMF: initialization completed after a teardown/quarantine fence; discarding the native device"sv;
       const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-      if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-        (void) encode_device.release();
-        return nullptr;
+      switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+        case amf::lifecycle::teardown_admission_e::granted:
+          break;
+        case amf::lifecycle::teardown_admission_e::quarantined:
+          (void) encode_device.release();
+          return nullptr;
+        case amf::lifecycle::teardown_admission_e::contended:
+          defer_contended_amf_teardown(std::move(encode_device), std::move(display_lease), "discarded native device"sv);
+          return nullptr;
       }
       // Fresh destruction budget once the fence is held — gate contention is
       // not driver teardown time.
@@ -3657,6 +3669,83 @@ namespace video {
     // The leaked encoder/device is detached from capture. Releasing this external
     // lease is required so display reinitialization can reach use_count()==1.
     display_lease.reset();
+  }
+
+  // Fence contention is not a wedged runtime, so the session waiting on it is
+  // still healthy and still destroyable. Abandoning it would strand an AMF
+  // hardware encode session (a finite VCN resource), its ID3D11Device, its
+  // input-surface ring and its parked output-pump thread for the life of the
+  // process -- and because no quarantine is set, the host keeps streaming and
+  // repeats the leak on every later contended teardown until the GPU runs out of
+  // concurrent encode sessions.
+  //
+  // Hand ownership to a detached supervisor instead. The display lease is
+  // dropped immediately, exactly as an abandon would, so capture reinitialization
+  // still converges on use_count()==1 at the same moment it does today; only the
+  // destruction is deferred. The supervisor takes the runtime fence before
+  // touching the vendor runtime, and additionally holds
+  // encode_session_teardown_mutex so the late destructor cannot race the capture
+  // side's shared-surface release.
+  template<typename Owned>
+  void defer_contended_amf_teardown(
+    Owned owned,
+    std::shared_ptr<platf::display_t> display_lease,
+    std::string_view reason) {
+    if (!owned) {
+      return;
+    }
+
+    display_lease.reset();
+
+    BOOST_LOG(warning) << "AMF: " << reason
+                       << " teardown could not acquire the AMD runtime fence before its deadline; "
+                          "deferring destruction instead of abandoning a healthy session"sv;
+
+    // std::thread's constructor moves the callable into its shared state before
+    // it can throw, so the owned pointer has to survive independently of the
+    // lambda for the launch-failure path to be able to fall back.
+    struct deferred_teardown_t {
+      Owned owned;
+      std::string reason;
+    };
+
+    auto deferred = std::make_shared<deferred_teardown_t>(
+      deferred_teardown_t {std::move(owned), std::string {reason}}
+    );
+
+    try {
+      std::thread supervisor {[deferred]() mutable {
+        // Nothing watchdogs this thread, so it can outwait a peer initialization
+        // that the caller's five-second budget could not.
+        const auto gate_deadline = std::chrono::steady_clock::now() + 30s;
+        if (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline) !=
+            amf::lifecycle::teardown_admission_e::granted) {
+          BOOST_LOG(error) << "AMF: deferred " << deferred->reason
+                           << " teardown never acquired the runtime fence; abandoning the session"sv;
+          (void) deferred->owned.release();
+          return;
+        }
+
+        const bool completed = amf::lifecycle::run_with_timeout(
+          [deferred]() mutable {
+            std::lock_guard lg {encode_session_teardown_mutex};
+            deferred->owned.reset();
+          },
+          5s);
+        native_amf_lifecycle_gate.finish_teardown(completed);
+        if (completed) {
+          BOOST_LOG(info) << "AMF: deferred " << deferred->reason << " teardown completed"sv;
+        } else {
+          BOOST_LOG(error) << "AMF: deferred " << deferred->reason
+                           << " teardown exceeded 5 seconds; quarantining AMD encoding until host restart"sv;
+        }
+      }};
+      supervisor.detach();
+    } catch (...) {
+      BOOST_LOG(error) << "AMF: could not start the deferred " << reason
+                       << " teardown supervisor; abandoning the session"sv;
+      (void) deferred->owned.release();
+    }
   }
 
 #ifdef _WIN32
@@ -3779,9 +3868,17 @@ namespace video {
     if (!session) return true;
     auto display_lease = static_cast<avcodec_encode_session_t *>(session.get())->release_display_lease_for_driver_work();
     const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-    if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-      abandon_quarantined_session(session, std::move(display_lease));
-      return false;
+    switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+      case amf::lifecycle::teardown_admission_e::granted:
+        break;
+      case amf::lifecycle::teardown_admission_e::quarantined:
+        BOOST_LOG(error) << "AMF: abandoning the legacy " << reason
+                         << " session because the AMD runtime is quarantined"sv;
+        abandon_quarantined_session(session, std::move(display_lease));
+        return false;
+      case amf::lifecycle::teardown_admission_e::contended:
+        defer_contended_amf_teardown(std::move(session), std::move(display_lease), reason);
+        return false;
     }
     // Fresh destruction budget once the fence is held — gate contention is
     // not driver teardown time.
@@ -3821,9 +3918,17 @@ namespace video {
       // allowed its own watchdog interval, so acquire the fence before starting
       // the independent five-second destruction deadline.
       const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-      if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-        abandon_quarantined_session(owned_session, std::move(display_lease));
-        return false;
+      switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+        case amf::lifecycle::teardown_admission_e::granted:
+          break;
+        case amf::lifecycle::teardown_admission_e::quarantined:
+          BOOST_LOG(error) << "AMF: abandoning the native " << reason
+                           << " session because the AMD runtime is quarantined"sv;
+          abandon_quarantined_session(owned_session, std::move(display_lease));
+          return false;
+        case amf::lifecycle::teardown_admission_e::contended:
+          defer_contended_amf_teardown(std::move(owned_session), std::move(display_lease), reason);
+          return false;
       }
       // Fresh destruction budget once the fence is held — gate contention is
       // not driver teardown time.
@@ -3942,9 +4047,16 @@ namespace video {
             // refuse to re-enter either AMF backend instead of accumulating more
             // calls into the same wedged AMD runtime.
             const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-            if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-              abandon_quarantined_session(session, std::move(display_lease));
-              return;
+            switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+              case amf::lifecycle::teardown_admission_e::granted:
+                break;
+              case amf::lifecycle::teardown_admission_e::quarantined:
+                BOOST_LOG(error) << "AMF: abandoning the native session in async teardown because the AMD runtime is quarantined"sv;
+                abandon_quarantined_session(session, std::move(display_lease));
+                return;
+              case amf::lifecycle::teardown_admission_e::contended:
+                defer_contended_amf_teardown(std::move(session), std::move(display_lease), "async native AMF"sv);
+                return;
             }
             // Fresh destruction budget once the fence is held — gate contention
             // is not driver teardown time.
@@ -3960,9 +4072,16 @@ namespace video {
             }
           } else if (legacy_amf_session) {
             const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-            if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-              abandon_quarantined_session(session, std::move(display_lease));
-              return;
+            switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+              case amf::lifecycle::teardown_admission_e::granted:
+                break;
+              case amf::lifecycle::teardown_admission_e::quarantined:
+                BOOST_LOG(error) << "AMF: abandoning the legacy session in async teardown because the AMD runtime is quarantined"sv;
+                abandon_quarantined_session(session, std::move(display_lease));
+                return;
+              case amf::lifecycle::teardown_admission_e::contended:
+                defer_contended_amf_teardown(std::move(session), std::move(display_lease), "async legacy AMF"sv);
+                return;
             }
             // Fresh destruction budget once the fence is held — gate contention
             // is not driver teardown time.
@@ -4013,9 +4132,16 @@ namespace video {
                                         nullptr;
           if (legacy_amf_session) {
             const auto gate_deadline = std::chrono::steady_clock::now() + 5s;
-            if (!native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
-              abandon_quarantined_session(session, std::move(legacy_display_lease));
-              return;
+            switch (native_amf_lifecycle_gate.begin_teardown_until(gate_deadline)) {
+              case amf::lifecycle::teardown_admission_e::granted:
+                break;
+              case amf::lifecycle::teardown_admission_e::quarantined:
+                BOOST_LOG(error) << "AMF: abandoning the legacy session in sync teardown because the AMD runtime is quarantined"sv;
+                abandon_quarantined_session(session, std::move(legacy_display_lease));
+                return;
+              case amf::lifecycle::teardown_admission_e::contended:
+                defer_contended_amf_teardown(std::move(session), std::move(legacy_display_lease), "sync legacy AMF"sv);
+                return;
             }
             std::thread teardown_thread {[session = std::move(session), done = std::move(done), display_lease = std::move(legacy_display_lease)]() mutable {
               std::lock_guard lg {encode_session_teardown_mutex};

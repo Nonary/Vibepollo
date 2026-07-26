@@ -24,6 +24,24 @@
 
 namespace amf::lifecycle {
 
+  /**
+   * @brief Outcome of an attempt to acquire the process-wide AMF teardown fence.
+   *
+   * `quarantined` and `contended` are failures for very different reasons and
+   * must not be collapsed. Under `quarantined` the runtime has an abandoned
+   * vendor call and re-entering it can hang or crash, so leaking the session is
+   * the lesser evil. Under `contended` nothing is wrong with the runtime at all
+   * — another session's initialization or teardown simply still held the fence
+   * when this caller's deadline expired — and leaking there permanently strands
+   * an AMF hardware encode session, its D3D11 device, its input-surface ring and
+   * its output-pump thread.
+   */
+  enum class teardown_admission_e {
+    granted,      ///< Fence acquired; the caller owes a matching finish_teardown().
+    quarantined,  ///< The AMD runtime has an abandoned vendor call; never re-enter it.
+    contended,    ///< The fence was still held by a healthy peer at the deadline.
+  };
+
   class native_runtime_gate_t {
   public:
     template<typename Rep, typename Period>
@@ -65,23 +83,31 @@ namespace amf::lifecycle {
     }
 
     template<typename Clock, typename Duration>
-    bool begin_teardown_until(const std::chrono::time_point<Clock, Duration> &deadline) {
+    teardown_admission_e begin_teardown_until(const std::chrono::time_point<Clock, Duration> &deadline) {
       std::unique_lock lock(mutex);
       ++pending_teardowns;
       const bool available = state_changed.wait_until(lock, deadline, [&]() {
         return quarantined || (!initialization_in_progress && teardowns_in_progress == 0);
       });
       --pending_teardowns;
-      if (!available || quarantined) {
+      if (quarantined) {
         state_changed.notify_all();
-        return false;
+        return teardown_admission_e::quarantined;
+      }
+      if (!available) {
+        // A healthy peer still owns the fence. This is NOT an abandoned vendor
+        // call, and callers must not treat it as one: the session waiting here
+        // is intact and destroying it is still both possible and necessary.
+        state_changed.notify_all();
+        return teardown_admission_e::contended;
       }
       ++teardowns_in_progress;
-      return true;
+      return teardown_admission_e::granted;
     }
 
     bool begin_teardown() {
-      return begin_teardown_until(std::chrono::steady_clock::time_point::max());
+      return begin_teardown_until(std::chrono::steady_clock::time_point::max()) ==
+             teardown_admission_e::granted;
     }
 
     void finish_teardown(bool completed) {
