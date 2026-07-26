@@ -995,6 +995,37 @@ namespace video {
       return device && device->amf && device->amf->set_bitrate(bitrate_kbps);
     }
 
+    // Without this the live RTX-HDR refresh path is a no-op on native AMF: the
+    // control-channel SS_HDR_METADATA and the forced IDR still go out, but the
+    // bitstream keeps carrying the session-start mastering-display values, so the
+    // client tone-maps against a peak the stream never declares. The legacy
+    // FFmpeg AMD path honoured this, and INPUT_HDR_METADATA is a per-submit
+    // component property, so it is writable after Init.
+    void set_hdr_metadata(const SS_HDR_METADATA &metadata) override {
+      if (!device || !device->amf) {
+        return;
+      }
+
+      device->hdr_metadata = metadata;
+      device->hdr_metadata_valid = true;
+
+      amf::amf_hdr_metadata amf_metadata;
+      for (int i = 0; i < 3; i++) {
+        amf_metadata.displayPrimaries[i].x = metadata.displayPrimaries[i].x;
+        amf_metadata.displayPrimaries[i].y = metadata.displayPrimaries[i].y;
+      }
+      amf_metadata.whitePoint.x = metadata.whitePoint.x;
+      amf_metadata.whitePoint.y = metadata.whitePoint.y;
+      amf_metadata.maxDisplayLuminance = metadata.maxDisplayLuminance;
+      amf_metadata.minDisplayLuminance = metadata.minDisplayLuminance;
+      amf_metadata.maxContentLightLevel = metadata.maxContentLightLevel;
+      amf_metadata.maxFrameAverageLightLevel = metadata.maxFrameAverageLightLevel;
+
+      if (!device->amf->set_hdr_metadata(std::optional<amf::amf_hdr_metadata> {amf_metadata})) {
+        BOOST_LOG(warning) << "AMF: failed to update live HDR mastering metadata; the bitstream keeps the previous values"sv;
+      }
+    }
+
     amf::amf_encode_result encode_frames(uint64_t frame_index) {
       if (!device || !device->amf) {
         return {};
