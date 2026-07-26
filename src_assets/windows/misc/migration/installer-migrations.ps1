@@ -4,6 +4,32 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Windows PowerShell 5.1 treats UTF-8 files without a BOM as ANSI when using
+# Get-Content. Configuration and JSON files are UTF-8, so use explicit .NET
+# APIs for every upgrade migration read/write and keep the result BOM-free.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Read-Utf8TextFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+}
+
+function Write-Utf8TextFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
+}
+
 function Convert-InstallerBooleanValue {
     param(
         [AllowNull()]
@@ -40,11 +66,11 @@ function Set-SunshineConfigOption {
 
     $line = '{0} = {1}' -f $Name, $Value
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
-        Set-Content -LiteralPath $ConfigPath -Value ($line + [Environment]::NewLine) -NoNewline -Encoding UTF8
+        Write-Utf8TextFile -Path $ConfigPath -Value ($line + [Environment]::NewLine)
         return $true
     }
 
-    $original = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop
+    $original = Read-Utf8TextFile -Path $ConfigPath
     $pattern = '(?im)^(\s*)' + [System.Text.RegularExpressions.Regex]::Escape($Name) + '(\s*=\s*)([^#;\r\n]*)(\s*(?:[#;].*)?)$'
     $updated = [System.Text.RegularExpressions.Regex]::Replace(
         $original,
@@ -71,7 +97,7 @@ function Set-SunshineConfigOption {
         return $false
     }
 
-    Set-Content -LiteralPath $ConfigPath -Value $updated -NoNewline -Encoding UTF8
+    Write-Utf8TextFile -Path $ConfigPath -Value $updated
     return $true
 }
 
@@ -143,7 +169,7 @@ function Update-SplitFrameEncodingInConfig {
         return $false
     }
 
-    $original = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop
+    $original = Read-Utf8TextFile -Path $ConfigPath
     if ([string]::IsNullOrWhiteSpace($original)) {
         return $false
     }
@@ -167,7 +193,7 @@ function Update-SplitFrameEncodingInConfig {
         return $false
     }
 
-    Set-Content -LiteralPath $ConfigPath -Value $updated -NoNewline -Encoding UTF8
+    Write-Utf8TextFile -Path $ConfigPath -Value $updated
     return $true
 }
 
@@ -235,7 +261,7 @@ function Update-SplitFrameEncodingInJson {
         return $false
     }
 
-    $original = Get-Content -LiteralPath $JsonPath -Raw -ErrorAction Stop
+    $original = Read-Utf8TextFile -Path $JsonPath
     if ([string]::IsNullOrWhiteSpace($original)) {
         return $false
     }
@@ -253,7 +279,7 @@ function Update-SplitFrameEncodingInJson {
     }
 
     $serialized = $updated | ConvertTo-Json -Depth 100
-    Set-Content -LiteralPath $JsonPath -Value $serialized -NoNewline -Encoding UTF8
+    Write-Utf8TextFile -Path $JsonPath -Value $serialized
     return $true
 }
 
