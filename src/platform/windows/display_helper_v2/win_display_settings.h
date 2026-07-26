@@ -74,7 +74,9 @@ namespace display_helper::v2 {
     void collect_all_device_ids(std::set<std::string> &out) const;
 
     static std::optional<double> floating_to_double(const display_device::FloatingPoint &value);
-    static bool nearly_equal(double lhs, double rhs);
+    static bool refresh_rates_match(
+      const display_device::FloatingPoint &desired,
+      const display_device::FloatingPoint &actual);
     ApplyStatus map_apply_result(display_device::SettingsManagerInterface::ApplyResult result) const;
 
     mutable std::once_flag init_once_;

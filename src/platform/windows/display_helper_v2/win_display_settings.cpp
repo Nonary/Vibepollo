@@ -395,9 +395,7 @@ namespace display_helper::v2 {
             return false;
           }
           if (config.m_refresh_rate && refresh_hdr_device_ids.count(device_id)) {
-            const auto desired = floating_to_double(*config.m_refresh_rate);
-            const auto actual = floating_to_double(mode.m_refresh_rate);
-            if (!desired || !actual || !nearly_equal(*desired, *actual)) {
+            if (!refresh_rates_match(*config.m_refresh_rate, mode.m_refresh_rate)) {
               return false;
             }
           }
@@ -752,10 +750,24 @@ namespace display_helper::v2 {
     return static_cast<double>(rat.m_numerator) / static_cast<double>(rat.m_denominator);
   }
 
-  bool WinDisplaySettings::nearly_equal(double lhs, double rhs) {
-    const double diff = std::abs(lhs - rhs);
-    const double scale = std::max({1.0, std::abs(lhs), std::abs(rhs)});
-    return diff <= scale * 1e-4;
+  bool WinDisplaySettings::refresh_rates_match(
+    const display_device::FloatingPoint &desired,
+    const display_device::FloatingPoint &actual
+  ) {
+    const auto *desired_rational = std::get_if<display_device::Rational>(&desired);
+    const auto *actual_rational = std::get_if<display_device::Rational>(&actual);
+    if (desired_rational && actual_rational) {
+      return display_device::win_utils::fuzzyCompareRefreshRates(*desired_rational, *actual_rational);
+    }
+
+    // Production display configurations and active Windows modes are rational,
+    // but retain equivalent semantics for any legacy double-valued caller.
+    constexpr double kRefreshRateToleranceHz = 0.9;
+    const auto desired_value = floating_to_double(desired);
+    const auto actual_value = floating_to_double(actual);
+    return desired_value &&
+           actual_value &&
+           std::abs(*desired_value - *actual_value) <= kRefreshRateToleranceHz;
   }
 
   namespace {
