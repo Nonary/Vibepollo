@@ -1549,8 +1549,10 @@ namespace display_helper_integration {
       bool allow_resolution_deferral,
       ApplyVerificationTicket *verification_ticket,
       const std::function<bool()> &cancellation_predicate = {}) {
+      const auto startup_deadline = std::chrono::steady_clock::now() + kApplyVerificationTimeout;
       if (verification_ticket) {
         *verification_ticket = {};
+        verification_ticket->startup_deadline = startup_deadline;
       }
       if (cancellation_predicate && cancellation_predicate()) {
         return false;
@@ -1652,12 +1654,19 @@ namespace display_helper_integration {
         std::uint64_t helper_apply_request_id = 0;
         std::uint64_t client_wait_generation = 0;
         std::uint64_t connection_generation = 0;
+        const auto remaining_apply_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
+          startup_deadline - std::chrono::steady_clock::now());
+        if (remaining_apply_budget <= std::chrono::milliseconds::zero()) {
+          BOOST_LOG(warning) << "Display helper: stream-start APPLY budget expired before dispatch.";
+          return false;
+        }
         const bool ok = platf::display_helper_client::send_apply_json(
           *payload,
           &helper_apply_request_id,
           &client_wait_generation,
           &connection_generation,
-          cancellation_predicate);
+          cancellation_predicate,
+          static_cast<int>(remaining_apply_budget.count()));
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
         if (ok && cancellation_requested(cancellation_predicate)) {
           BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
@@ -1764,7 +1773,17 @@ namespace display_helper_integration {
       return ApplyVerificationStatus::Unknown;
     }
 
-    const int timeout_ms = static_cast<int>(std::max<long long>(timeout.count(), 0LL));
+    auto effective_timeout = std::max(timeout, std::chrono::milliseconds::zero());
+    if (ticket.startup_deadline != std::chrono::steady_clock::time_point {}) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        ticket.startup_deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        BOOST_LOG(warning) << "Display helper: verification skipped because the shared stream-start budget expired.";
+        return ApplyVerificationStatus::Unknown;
+      }
+      effective_timeout = std::min(effective_timeout, remaining);
+    }
+    const int timeout_ms = static_cast<int>(effective_timeout.count());
     const auto result = platf::display_helper_client::wait_for_verification_result(
       timeout_ms,
       [generation = ticket.generation] {

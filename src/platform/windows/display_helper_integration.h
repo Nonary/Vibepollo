@@ -25,6 +25,7 @@ namespace display_helper_integration {
     std::uint64_t client_wait_generation {0};
     std::uint64_t connection_generation {0};
     bool uses_v2_helper {false};
+    std::chrono::steady_clock::time_point startup_deadline {};
   };
 
   // Launch the helper (if needed) and process the provided builder request.
@@ -85,9 +86,9 @@ namespace display_helper_integration {
     Unknown
   };
 
-  // Keep capture gated until the same conservative whole-operation envelope
-  // used by the v2 IPC acknowledgement has finished.
-  inline constexpr auto kApplyVerificationTimeout = display_helper::v2::timing::kApplyOperationEnvelope;
+  // APPLY acknowledgement and verification share this single stream-start
+  // budget; verification receives only the time left after APPLY.
+  inline constexpr auto kApplyVerificationTimeout = display_helper::v2::timing::kApplyStartupBudget;
   inline constexpr auto kApplyVerificationGateWaitTimeout =
     kApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
 

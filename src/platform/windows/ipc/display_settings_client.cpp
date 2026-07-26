@@ -37,7 +37,7 @@ namespace platf::display_helper_client {
     constexpr int kShutdownIpcTimeoutMs = 500;
     constexpr int kV2ApplyResultTimeoutMs = static_cast<int>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
-        display_helper::v2::timing::kApplyOperationEnvelope).count());
+        display_helper::v2::timing::kApplyStartupBudget).count());
     constexpr int kLegacyApplyResultTimeoutMs = 5000;
     // A refresh-only mode set on a virtual display serializes against the OS display
     // stack. While an alt-tab is already changing modes, the helper has been measured
@@ -1229,7 +1229,8 @@ namespace platf::display_helper_client {
     std::uint64_t *request_id_out,
     std::uint64_t *wait_generation_out,
     std::uint64_t *connection_generation_out,
-    std::function<bool()> cancellation_predicate) {
+    std::function<bool()> cancellation_predicate,
+    int response_timeout_ms) {
     BOOST_LOG(debug) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
     if (request_id_out) {
       *request_id_out = 0;
@@ -1280,10 +1281,13 @@ namespace platf::display_helper_client {
       return false;
     }
     const auto protocol = current_apply_response_protocol(session);
-    const int response_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
+    const int protocol_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
                                       kLegacyApplyResultTimeoutMs :
                                       kV2ApplyResultTimeoutMs;
-    const auto reader_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(response_timeout_ms);
+    const int effective_response_timeout_ms = response_timeout_ms > 0 ?
+                                                std::min(protocol_timeout_ms, response_timeout_ms) :
+                                                protocol_timeout_ms;
+    const auto reader_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(effective_response_timeout_ms);
     std::unique_lock<std::timed_mutex> response_lock;
     if (!lock_response_reader_until(
           session,
@@ -1320,7 +1324,7 @@ namespace platf::display_helper_client {
           session,
           request_id,
           protocol,
-          response_timeout_ms,
+          effective_response_timeout_ms,
           [session, wait_generation = *wait_generation, protocol, cancellation_predicate] {
             return (cancellation_predicate && cancellation_predicate()) ||
                    !session_is_current(session) ||

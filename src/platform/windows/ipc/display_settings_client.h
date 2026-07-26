@@ -21,7 +21,8 @@ namespace platf::display_helper_client {
     std::uint64_t *request_id_out = nullptr,
     std::uint64_t *wait_generation_out = nullptr,
     std::uint64_t *connection_generation_out = nullptr,
-    std::function<bool()> cancellation_predicate = {});
+    std::function<bool()> cancellation_predicate = {},
+    int response_timeout_ms = 0);
 
   // Wait for helper verification result after APPLY (v2 engine only).
   // Returns nullopt on timeout/unavailable.
