@@ -142,9 +142,18 @@ namespace VDISPLAY_SUNSHINE {
     wait,
   };
 
+  enum class OpenRecoveryBehavior {
+    transport_only,
+    recover_driver,
+  };
+
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token = {});
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token);
-  static bool start_ping_thread_impl(std::function<void()> fail_cb, std::stop_token stop_token);
+  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior);
+  static bool start_ping_thread_impl(
+    std::function<void()> fail_cb,
+    std::stop_token stop_token,
+    OpenRecoveryBehavior recovery_behavior
+  );
   static std::optional<VirtualDisplayCreationResult> create_virtual_display_with_stop(
     const char *s_client_uid,
     const char *s_client_name,
@@ -369,7 +378,10 @@ namespace VDISPLAY_SUNSHINE {
       return g_watchdog_thread.joinable();
     }
 
-    bool ensure_watchdog_thread_active_for_lease(std::stop_token stop_token = {}) {
+    bool ensure_watchdog_thread_active_for_lease(
+      std::stop_token stop_token = {},
+      OpenRecoveryBehavior recovery_behavior = OpenRecoveryBehavior::recover_driver
+    ) {
       if (stop_token.stop_requested()) {
         return false;
       }
@@ -383,7 +395,7 @@ namespace VDISPLAY_SUNSHINE {
         fail_cb = default_watchdog_fail_cb();
       }
 
-      if (!start_ping_thread_impl(std::move(fail_cb), stop_token)) {
+      if (!start_ping_thread_impl(std::move(fail_cb), stop_token, recovery_behavior)) {
         BOOST_LOG(warning) << "Sunshine virtual display lease-feed thread could not be started for an active temporary display.";
         return false;
       }
@@ -4056,7 +4068,10 @@ namespace VDISPLAY_SUNSHINE {
         return false;
       }
 
-      proc::vDisplayDriverStatus.store(open_vdisplay_device_impl(stop_token), std::memory_order_release);
+      proc::vDisplayDriverStatus.store(
+        open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only),
+        std::memory_order_release
+      );
       const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
       if (driver_status != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Virtual display recovery: failed to reopen driver (status="
@@ -4072,7 +4087,11 @@ namespace VDISPLAY_SUNSHINE {
       // The old ping thread is still feeding a stale duplicated handle;
       // startPingThread stops it and duplicates the freshly opened handle.
       if (auto watchdog_fail_cb = copy_watchdog_fail_cb(); watchdog_fail_cb) {
-        if (!start_ping_thread_impl(std::move(watchdog_fail_cb), stop_token)) {
+        if (!start_ping_thread_impl(
+              std::move(watchdog_fail_cb),
+              stop_token,
+              OpenRecoveryBehavior::transport_only
+            )) {
           BOOST_LOG(warning) << "Virtual display recovery: failed to restart watchdog ping thread for "
                              << state.describe_target();
         }
@@ -4591,7 +4610,11 @@ namespace VDISPLAY_SUNSHINE {
     clear_control_transport();
   }
 
-  bool ensure_control_transport_responsive(std::string_view operation, std::stop_token stop_token = {}) {
+  bool ensure_control_transport_responsive(
+    std::string_view operation,
+    std::stop_token stop_token = {},
+    OpenRecoveryBehavior recovery_behavior = OpenRecoveryBehavior::recover_driver
+  ) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     if (stop_token.stop_requested()) {
       return false;
@@ -4606,7 +4629,7 @@ namespace VDISPLAY_SUNSHINE {
       closeVDisplayDevice();
     }
 
-    const auto status = open_vdisplay_device_impl(stop_token);
+    const auto status = open_vdisplay_device_impl(stop_token, recovery_behavior);
     if (status != DRIVER_STATUS::OK) {
       BOOST_LOG(warning) << operation << ": failed to open Sunshine virtual display driver transport (status="
                          << static_cast<int>(status) << ").";
@@ -4627,7 +4650,7 @@ namespace VDISPLAY_SUNSHINE {
     // The Sunshine driver is runtime-only in this pass and does not require registry defaults.
   }
 
-  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token) {
+  static DRIVER_STATUS open_vdisplay_device_impl(std::stop_token stop_token, OpenRecoveryBehavior recovery_behavior) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     std::shared_ptr<sunshine_driver::WindowsControlTransport> transport;
     uint32_t retryInterval = 20;
@@ -4639,7 +4662,7 @@ namespace VDISPLAY_SUNSHINE {
       auto opened = sunshine_driver::open_first_control_device();
       if (!opened.ok()) {
         if (retryInterval > 320) {
-          if (!attempted_recovery) {
+          if (recovery_behavior == OpenRecoveryBehavior::recover_driver && !attempted_recovery) {
             attempted_recovery = true;
             if (ensure_driver_is_ready_impl(RestartCooldownBehavior::wait, stop_token)) {
               retryInterval = 20;
@@ -4706,14 +4729,17 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     if (!g_watchdog_start_in_progress && !driver_lease_tracker().all().empty()) {
-      (void) ensure_watchdog_thread_active_for_lease();
+      (void) ensure_watchdog_thread_active_for_lease(stop_token, recovery_behavior);
     }
 
     return DRIVER_STATUS::OK;
   }
 
   DRIVER_STATUS openVDisplayDevice() {
-    return open_vdisplay_device_impl({});
+    // proc::initVDisplayDriver() probes/restarts the adapter immediately before
+    // this call. Limit this phase to opening the transport so one initialization
+    // attempt cannot enter a second PnP recovery cycle.
+    return open_vdisplay_device_impl({}, OpenRecoveryBehavior::transport_only);
   }
 
   static bool ensure_driver_is_ready_impl(RestartCooldownBehavior cooldown_behavior, std::stop_token stop_token) {
@@ -4824,7 +4850,11 @@ namespace VDISPLAY_SUNSHINE {
     return ensure_driver_is_ready_impl(RestartCooldownBehavior::skip);
   }
 
-  static bool start_ping_thread_impl(std::function<void()> failCb, std::stop_token stop_token) {
+  static bool start_ping_thread_impl(
+    std::function<void()> failCb,
+    std::stop_token stop_token,
+    OpenRecoveryBehavior recovery_behavior
+  ) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(g_watchdog_lifecycle_mutex);
     if (stop_token.stop_requested()) {
       return false;
@@ -4842,7 +4872,11 @@ namespace VDISPLAY_SUNSHINE {
     store_watchdog_fail_cb(failCb);
     auto failure_cb = std::make_shared<std::function<void()>>(std::move(failCb));
 
-    if (!ensure_control_transport_responsive("Sunshine virtual display lease feed", stop_token)) {
+    if (!ensure_control_transport_responsive(
+          "Sunshine virtual display lease feed",
+          stop_token,
+          recovery_behavior
+        )) {
       return false;
     }
 
@@ -4946,7 +4980,11 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool startPingThread(std::function<void()> failCb) {
-    return start_ping_thread_impl(std::move(failCb), {});
+    return start_ping_thread_impl(
+      std::move(failCb),
+      {},
+      OpenRecoveryBehavior::recover_driver
+    );
   }
 
   void setWatchdogFeedingEnabled(bool enable) {
@@ -4967,10 +5005,42 @@ namespace VDISPLAY_SUNSHINE {
     (void) ensure_watchdog_thread_active_for_lease();
   }
 
+  // Records which render adapter has already been pushed to the driver, keyed on the
+  // control transport instance that accepted it. The driver keeps its preferred render
+  // adapter in memory only, so every transport replacement (driver restart, PnP recovery,
+  // stale-handle reopen) drops it and the preference must be applied again. Keying on the
+  // transport instance makes re-application automatic across those events while keeping a
+  // repeat request against a live transport a no-op.
+  std::mutex g_applied_render_adapter_mutex;
+  std::weak_ptr<sunshine_driver::WindowsControlTransport> g_applied_render_adapter_transport;
+  LUID g_applied_render_adapter_luid {};
+
+  bool render_adapter_already_applied(
+    const std::shared_ptr<sunshine_driver::WindowsControlTransport> &transport,
+    const LUID &adapter_luid
+  ) {
+    if (!transport) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(g_applied_render_adapter_mutex);
+    return g_applied_render_adapter_transport.lock() == transport &&
+           g_applied_render_adapter_luid.LowPart == adapter_luid.LowPart &&
+           g_applied_render_adapter_luid.HighPart == adapter_luid.HighPart;
+  }
+
   bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
     auto transport = control_transport_snapshot();
     if (!transport || !transport->valid()) {
       return false;
+    }
+
+    // The driver re-runs IddCxAdapterSetRenderAdapter adapter-wide for every request, so a
+    // redundant apply can disturb a live adapter that another session is already using.
+    if (render_adapter_already_applied(transport, adapter_luid)) {
+      BOOST_LOG(debug) << "Sunshine virtual display render adapter '"
+                       << platf::to_utf8(adapter_name)
+                       << "' is already applied to the current driver transport.";
+      return true;
     }
 
     sunshine_driver::ControlClient client {*transport};
@@ -4983,6 +5053,12 @@ namespace VDISPLAY_SUNSHINE {
                          << "' (status=" << sunshine_driver::to_string(result.status)
                          << ", native_error=" << result.native_error << ").";
       return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(g_applied_render_adapter_mutex);
+      g_applied_render_adapter_transport = transport;
+      g_applied_render_adapter_luid = adapter_luid;
     }
 
     const unsigned long long dedicated_mib = static_cast<unsigned long long>(dedicated_memory / (1024ull * 1024ull));
@@ -5080,11 +5156,11 @@ namespace VDISPLAY_SUNSHINE {
     return set_render_adapter_luid(best_luid, best_name, best_dedicated, best_shared);
   }
 
-  void apply_configured_render_adapter_preference() {
+  void apply_configured_render_adapter_preference(std::string_view context = "display ensure") {
     if (!config::video.adapter_name.empty()) {
       if (!setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))) {
         BOOST_LOG(warning) << "Sunshine virtual display could not use configured render adapter '"
-                           << config::video.adapter_name << "' for display ensure.";
+                           << config::video.adapter_name << "' for " << context << ".";
       }
       return;
     }
@@ -5466,6 +5542,11 @@ namespace VDISPLAY_SUNSHINE {
       if (!transport || !transport->valid()) {
         return std::nullopt;
       }
+      // A reopened handle means the caller applied the configured render adapter to the
+      // previous transport, and a restarted driver comes back on its default adapter.
+      // Re-apply against the refreshed transport so the display below is created on the
+      // configured GPU. This is a no-op when teardown left the transport alone.
+      apply_configured_render_adapter_preference("virtual display creation (post-teardown)");
       sunshine_driver::ControlClient client {*transport};
       if (config::video.dd.virtual_display_permanent_count_configured &&
           !set_permanent_display_count(
@@ -6054,6 +6135,14 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
+      // The launch path applies the configured render adapter before creation, but that
+      // only lands when the transport was already open; a transport that is opened or
+      // recovered here (including the per-attempt driver restarts below) starts on the
+      // driver's default adapter. Re-apply the preference now that the transport is known
+      // good so the display is never created on the wrong GPU. Applying it again against
+      // an unchanged transport is a no-op.
+      apply_configured_render_adapter_preference("virtual display creation");
+
       bool allow_driver_recovery = true;
       auto result = create_virtual_display_once(
         s_hdr_profile,
@@ -6096,7 +6185,7 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
 
-        if (open_vdisplay_device_impl(stop_token) != DRIVER_STATUS::OK) {
+        if (open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
           BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
           return std::nullopt;
         }
@@ -6240,7 +6329,7 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
-      if (open_vdisplay_device_impl(stop_token) != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_impl(stop_token, OpenRecoveryBehavior::transport_only) != DRIVER_STATUS::OK) {
         BOOST_LOG(warning) << "Failed to re-open Sunshine virtual display driver after recovery.";
         return std::nullopt;
       }
@@ -6346,6 +6435,9 @@ namespace VDISPLAY_SUNSHINE {
     // orphan the display the cancelled recovery just created. External
     // removal, by contrast, may abandon before opening a new transport.
     const std::stop_token reopen_stop_token = cancel_recovery_monitor ? stop_token : std::stop_token {};
+    const auto reopen_recovery_behavior = cancel_recovery_monitor ?
+                                            OpenRecoveryBehavior::transport_only :
+                                            OpenRecoveryBehavior::recover_driver;
     // Always cancel profile work for a display being removed. The recovery
     // monitor may already have completed, so its stop token alone is not a
     // sufficient lifetime boundary for this deferred work.
@@ -6383,7 +6475,7 @@ namespace VDISPLAY_SUNSHINE {
         closeVDisplayDevice();
       }
 
-      if (open_vdisplay_device_impl(reopen_stop_token) != DRIVER_STATUS::OK) {
+      if (open_vdisplay_device_impl(reopen_stop_token, reopen_recovery_behavior) != DRIVER_STATUS::OK) {
         printf("[SunshineVirtualDisplay] Failed to open driver while removing virtual display.\n");
         return false;
       }
@@ -6476,7 +6568,7 @@ namespace VDISPLAY_SUNSHINE {
       printf("[SunshineVirtualDisplay] Driver transport became invalid while removing virtual display; retrying.\n");
       closeVDisplayDevice();
       if ((!cancel_recovery_monitor || !stop_token.stop_requested()) &&
-          open_vdisplay_device_impl(reopen_stop_token) == DRIVER_STATUS::OK) {
+          open_vdisplay_device_impl(reopen_stop_token, reopen_recovery_behavior) == DRIVER_STATUS::OK) {
         opened_handle = true;
         transport = control_transport_snapshot();
         auto retry_result = perform_remove();

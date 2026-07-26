@@ -4063,15 +4063,11 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    size_t fail_count = 0;
-    while (fail_count < 5 && vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
+    // initVDisplayDriver() already performs one bounded readiness/recovery pass.
+    // Repeating it here can outlive the restart cooldown and launch a fresh PnP
+    // cycle on every parse, which stalls secondary instances for minutes.
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
       initVDisplayDriver();
-      if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
-        break;
-      }
-
-      fail_count += 1;
-      std::this_thread::sleep_for(1s);
     }
 #endif
 
