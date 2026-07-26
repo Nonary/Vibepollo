@@ -5,6 +5,7 @@
 #define INITGUID
 
 // standard includes
+#include <array>
 #include <format>
 #include <mutex>
 #include <thread>
@@ -339,12 +340,12 @@ namespace platf::audio {
     return audio_client;
   }
 
-  device_t default_device(device_enum_t &device_enum) {
+  device_t default_device(device_enum_t &device_enum, ERole role = eConsole) {
     device_t device;
     HRESULT status;
     status = device_enum->GetDefaultAudioEndpoint(
       eRender,
-      eConsole,
+      role,
       &device
     );
 
@@ -355,6 +356,12 @@ namespace platf::audio {
     }
 
     return device;
+  }
+
+  using role_device_ids_t = std::array<std::wstring, static_cast<std::size_t>(ERole_enum_count)>;
+
+  constexpr std::size_t role_index(ERole role) {
+    return static_cast<std::size_t>(role);
   }
 
   /**
@@ -791,32 +798,29 @@ namespace platf::audio {
     std::optional<sink_t> sink_info() override {
       sink_t sink;
 
-      // Fill host sink name with the device_id of the current default audio device.
-      {
-        auto device = default_device(device_enum);
-        if (!device) {
-          return std::nullopt;
-        }
-
-        audio::wstring_t id;
-        device->GetId(&id);
-
-        std::wstring host_id = id.get();
-        auto matched_steam = find_device_id(match_steam_speakers());
-        if (matched_steam && host_id == matched_steam->second) {
-          auto pending_preferred_id = pending_preferred_restore_id();
-          if (pending_preferred_id) {
-            host_id = *pending_preferred_id;
-          }
-        } else {
-          clear_pending_preferred_restore();
-        }
-
-        sink.host = utf_utils::to_utf8(host_id.c_str());
-        // Pre-populate the restore-cache so we have property snapshots even if
-        // the device disappears before reset_default_device runs.
-        (void) preferred_device_match_list(host_id);
+      // Capture each render role before the virtual sink replaces them. The
+      // console path below retains its existing pending-restore behavior.
+      auto default_device_ids = current_default_device_ids();
+      auto &host_id = default_device_ids[role_index(eConsole)];
+      if (host_id.empty()) {
+        return std::nullopt;
       }
+
+      auto matched_steam = find_device_id(match_steam_speakers());
+      if (matched_steam && host_id == matched_steam->second) {
+        auto pending_preferred_id = pending_preferred_restore_id();
+        if (pending_preferred_id) {
+          host_id = *pending_preferred_id;
+        }
+      } else {
+        clear_pending_preferred_restore();
+      }
+
+      sink.host = utf_utils::to_utf8(host_id.c_str());
+      // Pre-populate the restore-cache so we have property snapshots even if
+      // the device disappears before reset_default_device runs.
+      (void) preferred_device_match_list(host_id);
+      captured_default_device_ids = std::move(default_device_ids);
 
       // Prepare to search for the device_id of the virtual audio sink device,
       // this device can be either user-configured or
@@ -977,6 +981,12 @@ namespace platf::audio {
         return -1;
       }
 
+      // The initial setup happens before microphone callbacks exist. Later
+      // callbacks reapply the same sink, so retain the first assigned ID.
+      if (assigned_device_id.empty()) {
+        assigned_device_id = *device_id;
+      }
+
       int failure {};
       for (int x = 0; x < (int) ERole_enum_count; ++x) {
         auto status = policy->SetDefaultEndpoint(device_id->c_str(), (ERole) x);
@@ -996,6 +1006,34 @@ namespace platf::audio {
       // back after another application changes it
       if (!failure) {
         assigned_sink = sink;
+      }
+
+      return failure;
+    }
+
+    int restore_sink(const std::string &) override {
+      // Preserve the old teardown order: stop a pending retry before writing
+      // the captured role defaults.
+      cancel_pending_restore_task();
+
+      int failure {};
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        const auto role = static_cast<ERole>(x);
+        if (assigned_device_id.empty() || !is_default_device(assigned_device_id, role)) {
+          continue;
+        }
+
+        const auto &captured_device_id = captured_default_device_ids[role_index(role)];
+        if (captured_device_id.empty() || captured_device_id == assigned_device_id) {
+          continue;
+        }
+
+        const auto status = policy->SetDefaultEndpoint(captured_device_id.c_str(), role);
+        if (FAILED(status)) {
+          BOOST_LOG(warning) << "Couldn't restore captured audio endpoint for role ["sv << x
+                             << "]: 0x"sv << util::hex(status).to_string_view();
+          ++failure;
+        }
       }
 
       return failure;
@@ -1066,6 +1104,23 @@ namespace platf::audio {
       if (preferred_id.empty() || pending_id == preferred_id) {
         pending_id.clear();
       }
+    }
+
+    role_device_ids_t current_default_device_ids() {
+      role_device_ids_t device_ids;
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        const auto role = static_cast<ERole>(x);
+        auto device = default_device(device_enum, role);
+        if (!device) {
+          continue;
+        }
+
+        audio::wstring_t id;
+        if (SUCCEEDED(device->GetId(&id)) && id) {
+          device_ids[role_index(role)] = id.get();
+        }
+      }
+      return device_ids;
     }
 
     static void append_match_field(match_fields_list_t &match_list, match_field_e field, const wchar_t *value) {
@@ -1227,8 +1282,8 @@ namespace platf::audio {
     }
 
   private:
-    bool is_default_device(const std::wstring &device_id) {
-      auto current_default_dev = default_device(device_enum);
+    bool is_default_device(const std::wstring &device_id, ERole role = eConsole) {
+      auto current_default_dev = default_device(device_enum, role);
       if (!current_default_dev) {
         return false;
       }
@@ -1632,7 +1687,9 @@ namespace platf::audio {
 
     policy_t policy;
     audio::device_enum_t device_enum;
+    role_device_ids_t captured_default_device_ids;
     std::string assigned_sink;
+    std::wstring assigned_device_id;
   };
 }  // namespace platf::audio
 

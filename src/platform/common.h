@@ -629,6 +629,15 @@ namespace platf {
     virtual std::optional<sink_t> sink_info() = 0;
 
     /**
+     * @brief Restores the host audio sink after streaming stops.
+     * @note Most platforms restore a single sink. Windows overrides this to
+     *       restore the endpoint captured for each audio role.
+     */
+    virtual int restore_sink(const std::string &sink) {
+      return set_sink(sink);
+    }
+
+    /**
      * @brief Resets the default audio device away from virtual streaming speakers.
      * Implementations may continue trying in the background to restore the
      * preferred device after moving the default away from virtual speakers.
