@@ -677,22 +677,49 @@ namespace amf::lifecycle {
   // abandoning that session is safer than wedging the host process.
   template<typename Work, typename Rep, typename Period>
   bool run_with_timeout(Work &&work, std::chrono::duration<Rep, Period> timeout) {
-    std::promise<void> done;
-    auto done_future = done.get_future();
-    std::thread worker {
-      [work = std::forward<Work>(work), done = std::move(done)]() mutable {
-        try {
-          work();
-        } catch (...) {
-          // Cleanup is best-effort; completion still releases the waiter.
-        }
-        try {
-          done.set_value();
-        } catch (...) {
-          // The waiter may already have abandoned the shared state.
-        }
-      }
+    // std::thread's constructor throws std::system_error when the OS cannot
+    // create a thread, and two callers run inside a `noexcept` fail-guard
+    // destructor, where that would be an unconditional std::terminate. Keep the
+    // work in shared state so a failed thread launch can still fall back to the
+    // caller's own stack: the callable is moved into std::thread's shared state
+    // before it can throw, so it cannot be reused directly.
+    struct pending_work_t {
+      std::decay_t<Work> work;
+      std::promise<void> done;
     };
+
+    auto pending = std::make_shared<pending_work_t>(
+      pending_work_t {std::forward<Work>(work), std::promise<void>()}
+    );
+    auto done_future = pending->done.get_future();
+
+    std::thread worker;
+    try {
+      worker = std::thread {
+        [pending]() mutable {
+          try {
+            pending->work();
+          } catch (...) {
+            // Cleanup is best-effort; completion still releases the waiter.
+          }
+          try {
+            pending->done.set_value();
+          } catch (...) {
+            // The waiter may already have abandoned the shared state.
+          }
+        }
+      };
+    } catch (...) {
+      // Thread exhaustion is a transient host condition, not a wedged driver.
+      // Running the cleanup here can block, but that is what every unbounded
+      // teardown path already does, and it neither aborts the process nor
+      // quarantines the AMD runtime for the rest of its lifetime.
+      try {
+        pending->work();
+      } catch (...) {
+      }
+      return true;
+    }
 
     if (done_future.wait_for(timeout) == std::future_status::ready) {
       worker.join();
