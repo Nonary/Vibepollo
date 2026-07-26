@@ -3086,12 +3086,10 @@ namespace nvhttp {
           }
 
         } else {
-          const auto &apps = proc::proc.get_apps();
-          auto app_iter = std::find_if(apps.begin(), apps.end(), [&appid_str, &appuuid_str](const auto _app) {
-            return _app.id == appid_str || _app.uuid == appuuid_str;
-          });
-
-          if (app_iter == apps.end()) {
+          // Resolve once at the request boundary, then carry that canonical app
+          // through launch. An old artwork-versioned ID is an alias, so looking
+          // it up again by the raw request value would reject valid legacy clients.
+          if (!requested_app) {
             BOOST_LOG(error) << "Couldn't find app with ID ["sv << appid_str << "] or UUID ["sv << appuuid_str << ']';
             tree.put("root.<xmlattr>.status_code", 404);
             tree.put("root.<xmlattr>.status_message", "Cannot find requested application");
@@ -3099,7 +3097,7 @@ namespace nvhttp {
             return;
           }
 
-          if (!app_iter->allow_client_commands) {
+          if (!requested_app->allow_client_commands || !named_cert_p->allow_client_commands) {
             launch_session->client_do_cmds.clear();
             launch_session->client_undo_cmds.clear();
           }
@@ -3107,7 +3105,7 @@ namespace nvhttp {
 #ifdef _WIN32
           rtsp_stream::set_vulkan_hdr_layer_pending_stream(rtsp_stream::effective_hdr_requested(*launch_session));
 #endif
-          auto err = proc::proc.execute(*app_iter, launch_session);
+          auto err = proc::proc.execute(*requested_app, launch_session);
           if (err) {
             tree.put("root.<xmlattr>.status_code", err);
             tree.put(

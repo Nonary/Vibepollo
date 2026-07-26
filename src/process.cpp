@@ -3457,6 +3457,7 @@ namespace proc {
     bool app_id_alias_state_changed = false;
     int i = 0;
 
+    bool apps_parsed_ok = false;
     size_t fail_count = 0;
     do {
       // Read the JSON file into a tree.
@@ -3787,6 +3788,7 @@ namespace proc {
         }
 
         fail_count = 0;
+        apps_parsed_ok = true;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "Error happened during app loading: "sv << e.what();
 
@@ -3960,9 +3962,14 @@ namespace proc {
       apps.emplace_back(std::move(ctx));
     }
 
-    prune_and_filter_app_id_alias_state(apps, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
-    if (app_id_alias_state_changed) {
-      save_app_id_alias_state(app_id_alias_state);
+    // Only reconcile the persisted alias map when apps.json actually parsed. A failed or partial
+    // parse leaves active_app_uuids empty or incomplete, so pruning here would erase the aliases of
+    // apps that still exist and permanently break their cover-versioned IDs on the next good parse.
+    if (apps_parsed_ok) {
+      prune_and_filter_app_id_alias_state(apps, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
+      if (app_id_alias_state_changed) {
+        save_app_id_alias_state(app_id_alias_state);
+      }
     }
 
     return proc::proc_t {
