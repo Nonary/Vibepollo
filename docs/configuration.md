@@ -925,13 +925,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             **Windows:**
             <br>
-            Enter the following command in command prompt or PowerShell.
+            The Audio/Video tab lists every detected GPU in a dropdown, so this value normally does not
+            need to be typed by hand. The same names can also be listed with:
             @code{}
             %ProgramFiles%\Sunshine\tools\dxgi-info.exe
             @endcode
             For hybrid graphics systems, DXGI reports the outputs are connected to whichever graphics
             adapter that the application is configured to use, so it's not a reliable indicator of how the
             display is physically connected.
+            <br>
+            <br>
+            Once an adapter is selected, capture stays pinned to it. If that GPU currently has no display
+            attached (for example a TV that is powered off), Vibepollo does **not** fall back to another
+            GPU; it treats the host as displayless and creates the virtual display on the selected adapter.
             }
         </td>
     </tr>
