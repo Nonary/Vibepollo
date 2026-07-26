@@ -13,6 +13,7 @@
   #include <filesystem>
   #include <fstream>
   #include <future>
+  #include <limits>
   #include <memory>
   #include <nlohmann/json.hpp>
   #include <optional>
@@ -591,6 +592,36 @@ namespace platf {
       return true;
     }
 
+    bool write_profile_content_in_place(const fs::path &path, const std::string &content) {
+      const HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+        nullptr
+      );
+      if (file == INVALID_HANDLE_VALUE) {
+        BOOST_LOG(warning) << "Failed opening RTSS Global profile for in-place update (winerr=" << GetLastError() << ").";
+        return false;
+      }
+
+      DWORD written = 0;
+      const bool success =
+        content.size() <= std::numeric_limits<DWORD>::max() &&
+        WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr) &&
+        written == content.size() &&
+        SetEndOfFile(file) &&
+        FlushFileBuffers(file);
+      const auto error = success ? ERROR_SUCCESS : GetLastError();
+      CloseHandle(file);
+      if (!success) {
+        BOOST_LOG(warning) << "Failed writing RTSS Global profile in place (winerr=" << error << ").";
+      }
+      return success;
+    }
+
     bool write_profile_content_atomically(const fs::path &path, const std::string &content) {
       const fs::path temporary_path = path.wstring() + L".sunshine." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
       try {
@@ -609,6 +640,16 @@ namespace platf {
           const auto error = GetLastError();
           std::error_code ec;
           fs::remove(temporary_path, ec);
+          if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION) {
+            // RTSS opens the selected profile without delete sharing, which
+            // prevents replacing its directory entry while the UI is running.
+            // Updating the complete profile in one write is compatible with
+            // that lock; RTSS does not consume it until UpdateProfiles below.
+            if (write_profile_content_in_place(path, content)) {
+              BOOST_LOG(info) << "Updated RTSS Global profile in place because RTSS blocked atomic replacement.";
+              return true;
+            }
+          }
           BOOST_LOG(warning) << "Failed atomically replacing RTSS Global profile (winerr=" << error << ").";
           return false;
         }
