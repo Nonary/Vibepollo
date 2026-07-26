@@ -213,7 +213,7 @@ ChartJS.register(
   zoomPlugin,
 );
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 type LooseLineComponent = new () => {
   $props: {
     data?: unknown;
@@ -355,6 +355,7 @@ watchEffect(() => {
   }
 
   chartHistoryProps.windowMinutes = selectedRangeMinutes.value;
+  chartHistoryProps.locale = locale.value;
 });
 
 const {

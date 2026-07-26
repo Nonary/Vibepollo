@@ -3,13 +3,15 @@ export function formatBitrate(kbps: number): string {
   return `${kbps} Kbps`;
 }
 
-export function formatNumber(n: number): string {
+export function formatNumber(n: unknown): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '--';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
 
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: unknown): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '--';
   if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
   if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
   if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;

@@ -250,12 +250,19 @@ onUnmounted(() => {
 
 .stats-flow {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
 .stats-grid {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+}
+
+.stats-flow > *,
+.stats-grid > * {
+  min-width: 0;
 }
 
 @media (min-width: 1280px) {

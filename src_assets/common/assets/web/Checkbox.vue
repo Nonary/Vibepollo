@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { NCheckbox } from 'naive-ui';
+import { useI18n } from 'vue-i18n';
 
 const model = defineModel({ required: true });
 const slots = defineSlots();
+const i18n = useI18n();
+const t: typeof i18n.t = i18n.t.bind(i18n);
+const te: typeof i18n.te = i18n.te.bind(i18n);
 interface Props {
   id: string;
   label?: string | null;
@@ -108,9 +112,23 @@ const parsedDefaultPropValue = (() => {
   return null as boolean | null;
 })();
 
-const labelField = computed(() => props.label ?? `${props.localePrefix}.${props.id}`);
-const descField = computed(() => props.desc ?? `${props.localePrefix}.${props.id}_desc`);
-const showDesc = computed(() => props.desc !== '' || Boolean(slots['default']));
+function translateIfPresent(key: string): string {
+  return te(key) ? t(key) : '';
+}
+
+const labelText = computed(() => {
+  if (props.label !== null && props.label !== undefined) {
+    return te(props.label) ? t(props.label) : props.label;
+  }
+  return translateIfPresent(`${props.localePrefix}.${props.id}`) || props.id;
+});
+const descText = computed(() => {
+  if (props.desc !== null && props.desc !== undefined) {
+    return te(props.desc) ? t(props.desc) : props.desc;
+  }
+  return translateIfPresent(`${props.localePrefix}.${props.id}_desc`);
+});
+const showDesc = computed(() => descText.value !== '' || Boolean(slots['default']));
 const showActions = computed(() => Boolean(slots['actions']));
 const showMeta = computed(() => Boolean(slots['meta']));
 const showDefValue = parsedDefaultPropValue !== null;
@@ -130,10 +148,10 @@ const defValue = parsedDefaultPropValue ? '_common.enabled_def_cbox' : '_common.
         </div>
         <div class="min-w-0 flex-1 space-y-1">
           <label :for="`${props.id}_cb`" class="form-label cursor-pointer leading-snug">
-            {{ $t(labelField) }}
+            {{ labelText }}
           </label>
           <div v-if="showDesc" class="form-text mt-0">
-            {{ $t(descField) }}
+            {{ descText }}
             <slot />
           </div>
           <div v-if="showDefValue" class="form-text mt-0">

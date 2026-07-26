@@ -32,7 +32,7 @@
       </div>
 
       <!-- Gauges -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         <n-tooltip trigger="hover" placement="top">
           <template #trigger>
             <div class="gauge-cell">

@@ -520,6 +520,7 @@ import {
   selectPreferredVideoLatencySignal,
   type VideoLatencyControlSource,
 } from '@/utils/webrtc/latency';
+import { toIntlLocale } from '@/utils/intlLocale';
 import {
   applyGamepadFeedback,
   attachInputCapture,
@@ -539,9 +540,17 @@ import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const dialog = useDialog();
 const message = useMessage();
+const videoEventTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+);
 
 // UI State
 const showSettings = ref(false);
@@ -2299,7 +2308,7 @@ function displayValue(value: unknown): string {
 }
 
 function pushVideoEvent(label: string): void {
-  const stamp = new Date().toLocaleTimeString();
+  const stamp = videoEventTimeFormatter.value.format(new Date());
   videoEvents.value = [`${stamp} ${label}`, ...videoEvents.value].slice(0, 8);
   videoStateTick.value += 1;
 }
@@ -4111,6 +4120,27 @@ watch(
   font-size: 0.6875rem;
   color: var(--text-2);
   cursor: pointer;
+}
+
+@media (max-width: 840px) {
+  .quick-actions {
+    flex-wrap: wrap;
+  }
+
+  .action-btn.primary {
+    min-width: 0;
+  }
+
+  .action-btn.primary span {
+    overflow-wrap: anywhere;
+  }
+
+  .quick-toggles {
+    min-width: 0;
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
 }
 
 /* Compact Metrics */

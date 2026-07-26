@@ -1,14 +1,15 @@
 <template>
   <div v-if="sessions.length > 0" class="mb-4">
-    <div class="flex items-center gap-2 mb-3">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
       <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
       <span class="text-sm font-medium">
         {{ t('sessions.rtsp_active', { count: sessions.length }) }}
       </span>
-      <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-        <span class="inline-flex items-center"
-          ><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span
-        >
+      <n-tag v-if="appRunning" type="success" size="small" :bordered="false" class="max-w-full">
+        <span class="inline-flex min-w-0 max-w-full items-center">
+          <i class="fas fa-gamepad mr-1 flex-shrink-0" />
+          <span class="truncate">{{ appName || t('sessions.app_running') }}</span>
+        </span>
       </n-tag>
     </div>
 
@@ -32,7 +33,7 @@
           <n-tag type="default" size="small" :bordered="false">{{ session.state }}</n-tag>
         </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
           <StatCell
             v-if="session.width && session.height"
             :label="t('sessions.resolution')"
@@ -81,16 +82,8 @@
             :tip="t('sessions.tip_audio_channels')"
           />
           <StatCell :label="t('sessions.encode_latency')" :tip="t('sessions.tip_encode_latency')">
-            <span
-              :class="
-                session.encode_latency_ms > 16
-                  ? 'text-danger'
-                  : session.encode_latency_ms > 8
-                    ? 'text-warning'
-                    : ''
-              "
-            >
-              {{ session.encode_latency_ms.toFixed(1) }}ms
+            <span :class="encodeLatencyClass(session.encode_latency_ms)">
+              {{ formatEncodeLatency(session.encode_latency_ms) }}
             </span>
           </StatCell>
           <StatCell
@@ -156,15 +149,16 @@
     />
   </div>
   <div v-else-if="rtspCount > 0" class="mb-4">
-    <div class="flex items-center gap-2 mb-3">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
       <n-tag type="info" size="small" :bordered="false">RTSP</n-tag>
       <span class="text-sm font-medium">
         {{ t('sessions.rtsp_active', { count: rtspCount }) }}
       </span>
-      <n-tag v-if="appRunning" type="success" size="small" :bordered="false">
-        <span class="inline-flex items-center"
-          ><i class="fas fa-gamepad mr-1" />{{ appName || t('sessions.app_running') }}</span
-        >
+      <n-tag v-if="appRunning" type="success" size="small" :bordered="false" class="max-w-full">
+        <span class="inline-flex min-w-0 max-w-full items-center">
+          <i class="fas fa-gamepad mr-1 flex-shrink-0" />
+          <span class="truncate">{{ appName || t('sessions.app_running') }}</span>
+        </span>
       </n-tag>
     </div>
   </div>
@@ -191,4 +185,20 @@ defineEmits<{
 }>();
 
 const { t } = useI18n();
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function encodeLatencyClass(value: unknown): string {
+  if (!isFiniteNumber(value)) return '';
+  if (value > 16) return 'text-danger';
+  if (value > 8) return 'text-warning';
+  return '';
+}
+
+function formatEncodeLatency(value: unknown): string {
+  if (!isFiniteNumber(value)) return t('_common.unknown');
+  return `${value.toFixed(1)}ms`;
+}
 </script>

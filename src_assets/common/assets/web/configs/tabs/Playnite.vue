@@ -558,7 +558,7 @@
                   <span v-else-if="gamesSource === 'cache'"
                     >{{ $t('playnite.games_loaded_cache')
                     }}<template v-if="gamesCacheTime">
-                      — {{ new Date(gamesCacheTime).toLocaleString() }}</template
+                      — {{ formatGamesCacheTime(gamesCacheTime) }}</template
                     ></span
                   >
                   <span v-else>{{ $t('playnite.games_not_available') }}</span>
@@ -706,13 +706,27 @@ import { useConfigStore } from '@/stores/config';
 import { storeToRefs } from 'pinia';
 import { http } from '@/http';
 import PlayniteReinstallButton from '@/components/PlayniteReinstallButton.vue';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 const store = useConfigStore();
 const { config, metadata } = storeToRefs(store);
 const platform = computed(() =>
   (metadata.value?.platform || config.value?.platform || '').toLowerCase(),
 );
-const { t } = useI18n();
+const { t, locale } = useI18n();
+const gamesCacheTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+);
+
+function formatGamesCacheTime(value: string | number | Date): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return gamesCacheTimeFormatter.value.format(date);
+}
 
 const status = reactive<{
   installed: boolean | null;
