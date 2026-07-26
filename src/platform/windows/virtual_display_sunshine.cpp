@@ -5581,6 +5581,11 @@ namespace VDISPLAY_SUNSHINE {
       }
       const auto dpi_settings_prefix = virtual_display_dpi_settings_prefix(display_id);
       const auto configured_scale = config::video.dd.virtual_display_scale_percent;
+      const auto effective_scale = VDISPLAY::effective_virtual_display_scale_percent(
+        configured_scale,
+        width,
+        height
+      );
       const auto dpi_snapshot = configured_scale == 0 ?
         read_virtual_display_dpi_value(dpi_settings_prefix) :
         std::nullopt;
@@ -5590,8 +5595,8 @@ namespace VDISPLAY_SUNSHINE {
       create_request.display_id = display_id;
       create_request.width = width;
       create_request.height = height;
-      if (configured_scale > 0) {
-        const auto dpi = 96.0 * static_cast<double>(configured_scale) / 100.0;
+      if (effective_scale > 0) {
+        const auto dpi = 96.0 * static_cast<double>(effective_scale) / 100.0;
         create_request.physical_width_mm = std::clamp(
           static_cast<std::uint32_t>(std::lround(static_cast<double>(width) * 25.4 / dpi)),
           sunshine_driver::kMinPhysicalSizeMillimeters,
@@ -5614,7 +5619,7 @@ namespace VDISPLAY_SUNSHINE {
       BOOST_LOG(debug) << "Calling Sunshine temporary display create (driver transport present, display_id="
                        << display_id
                        << ", HDR peak=" << create_request.hdr_max_luminance_nits << " nits"
-                       << ", scale=" << configured_scale << "%"
+                       << ", scale=" << effective_scale << "%"
                        << ", physical=" << create_request.physical_width_mm << 'x'
                        << create_request.physical_height_mm << " mm).";
       sunshine_driver::ControlResult<sunshine_driver::CreateTemporaryDisplayResult> create_result;
@@ -6114,8 +6119,12 @@ namespace VDISPLAY_SUNSHINE {
           }
           return std::nullopt;
         }
-        if (config::video.dd.virtual_display_scale_percent > 0) {
-          const auto scale_percent = static_cast<std::uint32_t>(config::video.dd.virtual_display_scale_percent);
+        const auto scale_percent = VDISPLAY::effective_virtual_display_scale_percent(
+          config::video.dd.virtual_display_scale_percent,
+          width,
+          height
+        );
+        if (scale_percent > 0) {
 
           auto apply_scale_to_path = [scale_percent](const std::wstring &path) {
             const auto scale_result = VDISPLAY::set_display_scale_percent(path, scale_percent);

@@ -63,6 +63,14 @@ namespace VDISPLAY {
     std::uint32_t scale_percent
   );
 
+  // Resolve the configured virtual-display scale. -1 selects a resolution-based
+  // recommendation, 0 preserves Windows' existing choice, and positive values are exact.
+  std::uint32_t effective_virtual_display_scale_percent(
+    int configured_scale_percent,
+    std::uint32_t width,
+    std::uint32_t height
+  );
+
   // Read the MHC2 peak-luminance value from a Windows HDR calibration profile selection.
   std::optional<std::uint32_t> hdr_profile_peak_luminance_nits(std::string_view selection);
 

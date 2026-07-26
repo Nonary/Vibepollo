@@ -58,6 +58,19 @@ TEST(SunshineVirtualDisplay, ClientUuidDisplayIdIsStableAndNonZero) {
   EXPECT_EQ(first, second);
 }
 
+TEST(SunshineVirtualDisplay, RecommendedScaleTracksTheShortResolutionEdge) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 1920, 1080), 125u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1440), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 3840, 2160), 250u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 3440, 1440), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 1440, 2560), 175u);
+}
+
+TEST(SunshineVirtualDisplay, ConfiguredScalePreservesAutomaticAndExactValues) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(0, 3840, 2160), 0u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(200, 1920, 1080), 200u);
+}
+
 TEST(SunshineVirtualDisplay, PerClientDisplayIdsDifferByClientUuid) {
   EXPECT_NE(
     VDISPLAY::client_uuid_to_virtual_display_id(kClientGuid),

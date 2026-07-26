@@ -151,7 +151,7 @@ const defaultGroups = [
       dd_use_sunshine_virtual_display_driver: true,
       vulkan_hdr_layer: true,
       dd_activate_virtual_display: false,
-      dd_virtual_display_scale: 250,
+      dd_virtual_display_scale: -1,
       dd_virtual_display_permanent_count: 0,
       dd_mode_remapping: {
         mixed: [] as Array<Record<string, string>>,

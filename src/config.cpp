@@ -931,7 +931,7 @@ namespace config {
 #endif
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
-      250,  // virtual_display_scale_percent
+      -1,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
@@ -1889,12 +1889,12 @@ namespace config {
     {
       int value = video.dd.virtual_display_scale_percent;
       int_f(vars, "dd_virtual_display_scale", value);
-      constexpr std::array allowed_scales {0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
+      constexpr std::array allowed_scales {-1, 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
       if (std::ranges::find(allowed_scales, value) != allowed_scales.end()) {
         video.dd.virtual_display_scale_percent = value;
       } else {
         BOOST_LOG(warning) << "Ignoring unsupported virtual display scale " << value
-                           << "%; use 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
+                           << "%; use -1 (recommended), 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
       }
     }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);

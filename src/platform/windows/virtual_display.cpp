@@ -213,6 +213,30 @@ namespace {
 namespace VDISPLAY {
   HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
 
+  std::uint32_t effective_virtual_display_scale_percent(
+    const int configured_scale_percent,
+    const std::uint32_t width,
+    const std::uint32_t height
+  ) {
+    if (configured_scale_percent >= 0) {
+      return static_cast<std::uint32_t>(configured_scale_percent);
+    }
+
+    // Keep the shorter effective desktop edge near 864 logical pixels. This
+    // makes common modes comfortable without over-scaling below 4K:
+    // 1080p -> 125%, 1440p -> 175%, 2160p -> 250%.
+    const auto short_edge = (std::min)(width, height);
+    const auto ideal_scale = static_cast<double>(short_edge) * 100.0 / 864.0;
+    const auto closest = std::ranges::min_element(
+      kWindowsScalePercentages,
+      [ideal_scale](const auto lhs, const auto rhs) {
+        return std::abs(static_cast<double>(lhs) - ideal_scale) <
+               std::abs(static_cast<double>(rhs) - ideal_scale);
+      }
+    );
+    return closest != kWindowsScalePercentages.end() ? *closest : 100u;
+  }
+
   std::optional<std::wstring> get_advanced_color_profile(
     const std::wstring &monitor_device_path,
     const bool system_wide

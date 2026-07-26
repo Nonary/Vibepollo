@@ -4250,7 +4250,12 @@ namespace VDISPLAY_SUDOVDA {
           }
           return std::nullopt;
         }
-        if (config::video.dd.virtual_display_scale_percent > 0) {
+        const auto scale_percent = VDISPLAY::effective_virtual_display_scale_percent(
+          config::video.dd.virtual_display_scale_percent,
+          width,
+          height
+        );
+        if (scale_percent > 0) {
           if (!result->monitor_device_path) {
             result->monitor_device_path = resolve_monitor_device_path(
               result->display_name,
@@ -4270,7 +4275,7 @@ namespace VDISPLAY_SUDOVDA {
           if (result->monitor_device_path) {
             const auto scale_result = VDISPLAY::set_display_scale_percent(
               *result->monitor_device_path,
-              static_cast<std::uint32_t>(config::video.dd.virtual_display_scale_percent)
+              scale_percent
             );
             if (scale_result.applied) {
               BOOST_LOG(info) << "Virtual display scale: requested " << scale_result.requested_percent

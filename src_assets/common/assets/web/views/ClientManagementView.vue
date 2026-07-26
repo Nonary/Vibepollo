@@ -768,23 +768,17 @@
                     :label="t('clients.virtual_display_scale_label')"
                   >
                     <n-select
-                      :value="clientNumericOverride(client, 'dd_virtual_display_scale', 0, 500)"
+                      :value="clientNumericOverride(client, 'dd_virtual_display_scale', -1, 500)"
                       :options="clientVirtualDisplayScaleOptions"
                       clearable
-                      :placeholder="
-                        globalVirtualDisplayScale > 0
-                          ? t('clients.virtual_display_scale_placeholder', {
-                              scale: globalVirtualDisplayScale,
-                            })
-                          : t('config.virtual_display_scale_auto')
-                      "
+                      :placeholder="globalVirtualDisplayScaleLabel"
                       @update:value="
                         (value) =>
                           setClientNumericOverride(
                             client,
                             'dd_virtual_display_scale',
                             value,
-                            0,
+                            -1,
                             500,
                           )
                       "
@@ -1448,10 +1442,23 @@ const globalVirtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>(
 
 const globalVirtualDisplayScale = computed<number>(() => {
   const value = Number(configValue('dd_virtual_display_scale'));
-  return Number.isFinite(value) ? value : 250;
+  return Number.isFinite(value) ? value : -1;
+});
+
+const globalVirtualDisplayScaleLabel = computed(() => {
+  if (globalVirtualDisplayScale.value < 0) {
+    return t('config.virtual_display_scale_recommended');
+  }
+  if (globalVirtualDisplayScale.value === 0) {
+    return t('config.virtual_display_scale_auto');
+  }
+  return t('clients.virtual_display_scale_placeholder', {
+    scale: globalVirtualDisplayScale.value,
+  });
 });
 
 const clientVirtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_recommended'), value: -1 },
   { label: t('config.virtual_display_scale_auto'), value: 0 },
   ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
     label: `${value}%`,
