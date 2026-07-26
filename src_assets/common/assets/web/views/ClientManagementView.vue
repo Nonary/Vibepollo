@@ -261,7 +261,8 @@
                       round
                     >
                       [ {{ permToStr(client.perm) }} ]
-                    </n-tag>                  </div>
+                    </n-tag>
+                  </div>
                   <div class="client-record__meta">
                     <span class="client-record__meta-item">
                       <i class="fas fa-clock" />
@@ -951,6 +952,7 @@ import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
 import { useAuthStore } from '@/stores/auth';
+import { toIntlLocale } from '@/utils/intlLocale';
 import { useConfigStore } from '@/stores/config';
 
 type ClientDisplaySelection = 'physical' | 'virtual';
@@ -1136,7 +1138,8 @@ interface ClientUpdatePayload {
   perm: number;
   allow_client_commands: boolean;
   do: ClientCommandEntry[];
-  undo: ClientCommandEntry[];  output_name_override: string;
+  undo: ClientCommandEntry[];
+  output_name_override: string;
   always_use_virtual_display: boolean;
   virtual_display_mode: string | null;
   virtual_display_layout: string | null;
@@ -1146,7 +1149,7 @@ interface ClientUpdatePayload {
 
 type UnknownRecord = Record<string, unknown>;
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
@@ -1703,23 +1706,29 @@ function compareByName(a: ClientViewModel, b: ClientViewModel): number {
   return nameA.localeCompare(nameB);
 }
 
-const clientTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
-
-const clientRefreshTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  timeStyle: 'short',
-});
+const clientIntlLocale = computed(() => toIntlLocale(locale.value));
+const clientTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(clientIntlLocale.value, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+);
+const clientRefreshTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(clientIntlLocale.value, {
+      timeStyle: 'short',
+    }),
+);
 
 function formatClientTimestamp(seconds: number): string {
-  return clientTimeFormatter.format(new Date(seconds * 1000));
+  return clientTimeFormatter.value.format(new Date(seconds * 1000));
 }
 
 const lastRefreshedLabel = computed(() => {
   if (!lastRefreshedAt.value) return t('clients.last_updated_never');
   return t('clients.last_updated', {
-    time: clientRefreshTimeFormatter.format(new Date(lastRefreshedAt.value)),
+    time: clientRefreshTimeFormatter.value.format(new Date(lastRefreshedAt.value)),
   });
 });
 
@@ -1980,7 +1989,8 @@ async function saveClient(client: ClientViewModel): Promise<void> {
           elevated: !!entry?.elevated,
         });
         return result;
-      }, []),      output_name_override: '',
+      }, []),
+      output_name_override: '',
       always_use_virtual_display: false,
       virtual_display_mode: '',
       virtual_display_layout: '',
@@ -2400,6 +2410,21 @@ onBeforeUnmount(() => {
   .clients-toolbar__search,
   .clients-toolbar :deep(.n-button) {
     width: 100%;
+  }
+
+  .clients-toolbar :deep(.n-button) {
+    min-width: 0;
+    height: auto;
+    min-height: var(--n-height);
+    padding-block: 0.375rem;
+  }
+
+  .clients-toolbar :deep(.n-button__content) {
+    min-width: 0;
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
   }
 }
 

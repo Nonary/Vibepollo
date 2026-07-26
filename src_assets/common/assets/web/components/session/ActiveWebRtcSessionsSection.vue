@@ -1,6 +1,6 @@
 <template>
   <div v-if="sessions.length > 0">
-    <div class="flex items-center gap-2 mb-3">
+    <div class="flex flex-wrap items-center gap-2 mb-3">
       <n-tag type="warning" size="small" :bordered="false">WebRTC</n-tag>
       <span class="text-sm font-medium">
         {{ t('sessions.webrtc_active', { count: sessions.length }) }}
@@ -32,7 +32,7 @@
           <n-tag v-if="session.yuv444" type="info" size="small" :bordered="false">YUV444</n-tag>
         </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
           <StatCell
             v-if="session.width && session.height"
             :label="t('sessions.resolution')"

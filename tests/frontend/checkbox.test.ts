@@ -1,12 +1,22 @@
 import { mount } from '@vue/test-utils';
+import { createI18n } from '@web/node_modules/vue-i18n/dist/vue-i18n.mjs';
 import Checkbox from '@web/Checkbox.vue';
 
 describe('Checkbox.vue', () => {
-  const mountWith = (model: any, props: any = {}) =>
-    mount(Checkbox as any, {
-      props: { id: 'flag', localePrefix: 'playnite', label: 'Label', modelValue: model, ...props },
-      global: { mocks: { $t: (k: string) => k } },
+  const mountWith = (model: any, props: any = {}) => {
+    const i18n = createI18n({
+      legacy: false,
+      locale: 'en',
+      missingWarn: false,
+      fallbackWarn: false,
+      messages: { en: {} },
     });
+
+    return mount(Checkbox as any, {
+      props: { id: 'flag', localePrefix: 'playnite', label: 'Label', modelValue: model, ...props },
+      global: { plugins: [i18n] },
+    });
+  };
 
   test('maps boolean model to true/false values', async () => {
     const w = mountWith(true);

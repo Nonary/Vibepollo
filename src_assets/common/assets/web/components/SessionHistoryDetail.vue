@@ -221,8 +221,9 @@ import { fetchSessionDetail, deleteSessionHistory } from '@/services/sessionsApi
 import type { SessionDetail } from '@/types/sessions';
 import SessionCharts from './SessionCharts.vue';
 import StatCell from './StatCell.vue';
+import { toIntlLocale } from '@/utils/intlLocale';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const props = defineProps<{
   uuid: string;
@@ -259,6 +260,14 @@ const bitrateRequestedKbps = computed(() => {
     ? d.requested_bitrate_kbps
     : d.encoder_bitrate_kbps;
 });
+const eventTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+);
 
 const bitrateEncodeSubValue = computed(() => {
   const d = detail.value;
@@ -355,7 +364,9 @@ async function exportJson(): Promise<void> {
   let exportDetail = detail.value;
   if (detail.value.samples_truncated || detail.value.events_truncated) {
     if (isGroupMode.value && (props.groupUuids?.length ?? 0) > 0) {
-      const valid = await fetchDetailsWithConcurrency(props.groupUuids!, { full: true }).catch(() => []);
+      const valid = await fetchDetailsWithConcurrency(props.groupUuids!, { full: true }).catch(
+        () => [],
+      );
       if (valid.length > 0) {
         exportDetail = mergeGroupDetails(valid);
       }
@@ -498,11 +509,7 @@ function formatBitrate(kbps: number): string {
 }
 
 function formatEventTime(unixTime: number): string {
-  return new Date(unixTime * 1000).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return eventTimeFormatter.value.format(new Date(unixTime * 1000));
 }
 
 function eventTimelineType(

@@ -45,7 +45,7 @@
             <h2
               class="text-xl sm:text-2xl font-semibold tracking-tight mx-auto text-center break-words"
             >
-              {{ 'Version ' + displayVersion }}
+              {{ $t('changelog.current_version_title', { version: displayVersion }) }}
             </h2>
           </template>
           <div class="space-y-4 text-sm">
@@ -514,6 +514,7 @@ import { useAppsStore } from '@/stores/apps';
 import { http } from '@/http';
 import type { CrashDumpStatus } from '@/utils/crashDump';
 import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
 const githubRelease = ref<GitHubRelease | null>(null);
@@ -592,7 +593,14 @@ const appsStore = useAppsStore();
 let started = false; // prevent duplicate concurrent checks
 const message = useMessage();
 const dialog = useDialog();
-const { t: $t } = useI18n();
+const { t: $t, locale } = useI18n();
+const crashDumpTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object';
@@ -1032,7 +1040,7 @@ const crashDumpDetails = computed(() => {
   if (crashDump.value.captured_at) {
     const captured = new Date(crashDump.value.captured_at);
     if (!Number.isNaN(captured.getTime())) {
-      parts.push(captured.toLocaleString());
+      parts.push(crashDumpTimeFormatter.value.format(captured));
     }
   }
   return parts.join(' • ');

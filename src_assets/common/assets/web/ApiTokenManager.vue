@@ -381,6 +381,7 @@ import {
 } from 'naive-ui';
 import { http } from '@/http';
 import { useAuthStore } from '@/stores/auth';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 type RouteDef = { path: string; methods: string[] };
 type Scope = { path: string; methods: string[] };
@@ -388,7 +389,7 @@ type TokenRecord = { hash: string; scopes: Scope[]; createdAt?: string | number 
 
 const METHOD_ORDER = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const message = useMessage();
 const authStore = useAuthStore();
 
@@ -398,6 +399,13 @@ const routeCatalogError = ref('');
 
 const routeSelectOptions = computed(() =>
   routeCatalog.value.map((route) => ({ label: route.path, value: route.path })),
+);
+const tokenTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
 );
 const getRouteOptions = computed(() =>
   routeCatalog.value
@@ -840,7 +848,7 @@ function formatTime(rawValue: any): string {
       return '—';
     }
 
-    return date.toLocaleString();
+    return tokenTimeFormatter.value.format(date);
   } catch {
     return '—';
   }
@@ -1016,6 +1024,16 @@ watch(
 
 .token-hero__tag {
   margin-top: 0.1rem;
+  max-width: 100%;
+  height: auto;
+  padding-block: 0.25rem;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.token-hero__tag :deep(.n-tag__content) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .token-panel {

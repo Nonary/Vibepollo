@@ -1147,6 +1147,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
   }
   return payload;
 }
+let liveRtxHdrSuppress = false;
 // Normalize cmd to single string; rehydrate typed form when props.app changes while open
 watch(
   () => props.app,
@@ -1219,7 +1220,6 @@ type RtxHdrLiveStatus = 'idle' | 'queued' | 'applying' | 'applied' | 'error';
 const liveRtxHdrStatus = ref<RtxHdrLiveStatus>('idle');
 const liveRtxHdrError = ref('');
 let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
-let liveRtxHdrSuppress = false;
 let liveRtxHdrLastSentKey = '';
 let liveRtxHdrQueue: Promise<void> = Promise.resolve();
 let liveRtxHdrProgrammaticClose = false;

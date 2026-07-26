@@ -1,4 +1,5 @@
 import { http } from '@/http';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 type LocaleMessages = Record<string, unknown>;
 type I18nInstance = {
@@ -36,7 +37,7 @@ export async function ensureLocaleLoaded(locale: string): Promise<void> {
       }
     }
     i18n.global.locale.value = locale;
-    document.querySelector('html')?.setAttribute('lang', locale);
+    document.querySelector('html')?.setAttribute('lang', toIntlLocale(locale) ?? locale);
   } catch (e) {
     console.error('ensureLocaleLoaded failed', e);
   }

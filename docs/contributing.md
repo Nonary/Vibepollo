@@ -119,6 +119,27 @@ The following is a simple example of how to use it.
   > More formatting examples can be found in the
   > [Vue I18n guide](https://kazupon.github.io/vue-i18n/guide/formatting.html).
 
+##### Web UI Localization Review
+When reviewing localized Web UI pages, treat all visible user-facing copy as localizable. Hard-coded English in Vue
+templates, page headers, button labels, placeholders, empty states, saving/loading states, and status labels should be
+moved behind Vue I18n keys with `$t(...)`.
+
+Prefer adding keys under the existing page or component namespace, for example `settings`, `apps`, `index`,
+`resource_card`, `webrtc`, or the relevant configuration tab. Use named placeholders for dynamic values, such as
+`$t('index.version', { version })`, so translators can reorder text naturally.
+
+For normal source changes, add new strings only to `en.json` and let CrowdIn handle translated locale files. For
+explicit localization review branches where translated locale files are in scope, update the target locale files at the
+same time and keep terminology consistent across related UI surfaces.
+
+For Chinese locale review:
+
+* Preserve product, protocol, executable, and service names such as `Playnite`, `WebRTC`, `GitHub Issues`, `H.264`,
+  and `LosslessScaling.exe`.
+* In Simplified Chinese, use `故障排查` for troubleshooting UI and `崩溃诊断包` for crash diagnostics bundles.
+* In Traditional Chinese, use `指令` for command UI, `當機診斷套件` for crash diagnostics bundles, and `記錄檔` for
+  log-file UI.
+
 ##### C++
 
 There should be minimal cases where strings need to be extracted from C++ source code; however it may be necessary in

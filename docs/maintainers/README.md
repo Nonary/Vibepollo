@@ -9,6 +9,9 @@ workflows, and procedures that are not relevant to end users or general contribu
 Instructions for creating and managing Sunshine releases, including the steps to convert pre-releases to stable releases
 and an overview of the automated workflows that are triggered during the release process.
 
+### [Chinese Web UI Localization Review](chinese-web-ui-localization.md)
+Notes for reviewing Simplified and Traditional Chinese translations against the rendered Web UI.
+
 ---
 
 > [!NOTE]

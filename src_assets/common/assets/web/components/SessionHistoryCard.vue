@@ -24,6 +24,7 @@
         :row-key="rowKey"
         :row-props="rowProps"
         :bordered="false"
+        :scroll-x="900"
         size="small"
       />
     </n-spin>
@@ -59,8 +60,9 @@ import { fetchSessionHistory } from '@/services/sessionsApi';
 import type { SessionSummary } from '@/types/sessions';
 import { useAuthStore } from '@/stores/auth';
 import SessionHistoryDetail from './SessionHistoryDetail.vue';
+import { toIntlLocale } from '@/utils/intlLocale';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const auth = useAuthStore();
 
 const PAGE_SIZE = 25;
@@ -220,6 +222,15 @@ const rows = computed<GroupedRow[]>(() => buildGroups(sessions.value));
 const rowKey = (row: GroupedRow) => row.key;
 
 const pageCount = computed(() => Math.max(1, Math.ceil(totalCount.value / PAGE_SIZE)));
+const startTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }),
+);
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -232,12 +243,7 @@ function formatDuration(seconds: number): string {
 
 function formatStartTime(unixTime: number): string {
   const date = new Date(unixTime * 1000);
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return startTimeFormatter.value.format(date);
 }
 
 function verdictType(verdict?: string): 'success' | 'warning' | 'error' | 'default' {

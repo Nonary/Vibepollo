@@ -96,9 +96,10 @@ import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import { useDialog, useMessage, NCard, NButton, NSpin, NTag } from 'naive-ui';
 import { useAuthStore, type AuthSession } from '@/stores/auth';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 const auth = useAuthStore();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const dialog = useDialog();
 const message = useMessage();
 
@@ -114,15 +115,18 @@ const errorMessage = computed(() => {
   return sessionsError.value;
 });
 
-const formatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
+const formatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+);
 
 function formatTimestamp(seconds?: number): string {
   if (!seconds) return t('auth.sessions_time_unknown');
   if (!Number.isFinite(seconds)) return t('auth.sessions_time_unknown');
-  return formatter.format(new Date(seconds * 1000));
+  return formatter.value.format(new Date(seconds * 1000));
 }
 
 function sessionExpiry(session: AuthSession): number | undefined {
