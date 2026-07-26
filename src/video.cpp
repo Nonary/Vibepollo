@@ -468,6 +468,13 @@ namespace video {
       append_optional("amd_sav", config::video.amd.amd_smart_access_video);
       append_optional("amd_av1_screen", config::video.amd.amd_av1_screen_content);
       append_optional("amd_av1_latency", config::video.amd.amd_av1_latency_mode);
+      // Quarantine changes encoder selection, so it belongs in the key. Once the
+      // gate latches, `amdvce` can no longer build a session; a cached success
+      // from before the quarantine would keep handing back `chosen_encoder =
+      // &amdvce` and every later stream would end before its first packet, even
+      // though the software encoder would have validated. Re-key so the next
+      // probe re-runs and selection can degrade to software as designed.
+      oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
       return oss.str();
     }
 
