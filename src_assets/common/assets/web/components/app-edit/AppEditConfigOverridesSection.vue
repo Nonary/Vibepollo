@@ -133,6 +133,7 @@
             :setting-key="entry.key"
             :label="entry.label"
             :desc="entry.desc"
+            v-bind="editorKindProps(entry.key)"
             :options="selectOptions(entry.key)"
             :default-value="entry.globalValue"
             :size="'small'"
@@ -396,6 +397,7 @@
                       :setting-key="entry.key"
                       :label="entry.label"
                       :desc="entry.desc"
+                      v-bind="editorKindProps(entry.key, 'draft')"
                       :options="selectOptions(entry.key, 'draft')"
                       :default-value="entry.globalValue"
                       :size="'small'"
@@ -733,10 +735,12 @@ import ConfigSelectField from '@/ConfigSelectField.vue';
 import { computed, nextTick, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { NButton, NInput } from 'naive-ui';
+import { type ConfigFieldKind } from '@/configs/configFieldSchema';
 import { useConfigStore } from '@/stores/config';
 import {
   buildOverrideOptionsText,
   getOverrideSelectOptions,
+  isBooleanOverrideKey,
   type OverrideSelectOption,
 } from './configOverrideOptions';
 
@@ -1892,6 +1896,7 @@ function editorKind(
 
   const gv = getGlobalValue(key);
   if (NUMERIC_OVERRIDE_KEYS.has(key)) return 'number';
+  if (isBooleanOverrideKey(key)) return 'boolean';
   if (typeof gv === 'number') return 'number';
   if (boolPairFromValue(gv)) return 'boolean';
   if (typeof gv === 'string') return 'string';
@@ -1903,6 +1908,13 @@ function editorKind(
   if (typeof ov === 'string') return 'string';
   if (ov && typeof ov === 'object') return 'json';
   return 'string';
+}
+
+// Bind the renderer's optional `kind` prop by presence rather than by value.
+// `exactOptionalPropertyTypes` rejects an explicit `undefined` for an optional
+// prop, so a non-boolean editor must omit the property entirely.
+function editorKindProps(key: string, target: EditTarget = 'live'): { kind?: ConfigFieldKind } {
+  return editorKind(key, target) === 'boolean' ? { kind: 'checkbox' } : {};
 }
 
 function overridePlaceholder(key: string, target: EditTarget = 'live'): string {

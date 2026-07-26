@@ -55,6 +55,22 @@ describe('configFieldSchema', () => {
   });
 
   test.each([
+    'frame_limiter_enable',
+    'frame_limiter_disable_vsync',
+    'rtx_hdr',
+    'rtx_hdr_force_sdr',
+  ])('allows override rendering to force %s through the checkbox path', (settingKey) => {
+    expect(
+      getConfigFieldDefinition(settingKey, {
+        ...baseContext,
+        kind: 'checkbox',
+        defaultValue: 'enabled',
+        currentValue: 'disabled',
+      }).kind,
+    ).toBe('checkbox');
+  });
+
+  test.each([
     'amd_quality',
     'amd_vbaq',
     'amd_av1_screen_content',

@@ -44,6 +44,19 @@ describe('Checkbox.vue', () => {
     expect(w.emitted()['update:modelValue'][0][0]).toBe(0);
   });
 
+  test.each([
+    ['disabled', 'enabled'],
+    ['false', 'true'],
+    ['0', '1'],
+    ['off', 'on'],
+  ])('preserves the %s string representation when enabled', async (model, expected) => {
+    const w = mountWith(model);
+    const input = w.get('[role="checkbox"]');
+    expect(input.attributes('aria-checked')).toBe('false');
+    await input.trigger('click');
+    expect(w.emitted()['update:modelValue'][0][0]).toBe(expected);
+  });
+
   test('shows default value hint based on `default` prop', () => {
     const w = mountWith(true, { default: 'enabled' });
     expect(w.text()).toContain('_common.enabled_def_cbox');
