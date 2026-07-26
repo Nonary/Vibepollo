@@ -1251,12 +1251,24 @@ namespace platf::audio {
       return thread;
     }
 
+    static void retire_pending_restore_task(std::jthread old_thread) {
+      if (!old_thread.joinable()) {
+        return;
+      }
+
+      old_thread.request_stop();
+      std::thread([old_thread = std::move(old_thread)]() mutable {
+        old_thread.join();
+      }).detach();
+    }
+
     static void cancel_pending_restore_task() {
       std::jthread old_thread;
       {
         std::scoped_lock lock(pending_restore_mutex_ref());
         old_thread = std::move(pending_restore_thread_ref());
       }
+      retire_pending_restore_task(std::move(old_thread));
     }
 
     static void start_pending_restore_task(const std::wstring &steam_device_id, const std::wstring &preferred_id) {
@@ -1264,6 +1276,7 @@ namespace platf::audio {
       {
         std::scoped_lock lock(pending_restore_mutex_ref());
         old_thread = std::move(pending_restore_thread_ref());
+        old_thread.request_stop();
         // Run on a process-scoped worker with its own audio_control_t. The
         // caller's audio_control_t is destroyed shortly after teardown returns,
         // so the worker cannot safely capture `this`.
@@ -1276,6 +1289,7 @@ namespace platf::audio {
           restore_control.run_pending_restore_task(stop_token, steam_device_id, preferred_id);
         });
       }
+      retire_pending_restore_task(std::move(old_thread));
     }
 
     void run_pending_restore_task(std::stop_token stop_token, const std::wstring &steam_device_id, const std::wstring &preferred_id) {
@@ -1400,22 +1414,15 @@ namespace platf::audio {
         }
       }
 
-      auto result = try_reset_from_steam(steam_device_id);
-      if (result == reset_result_e::success) {
-        if (try_preferred_restore && wait_for_device) {
-          start_pending_restore_task(steam_device_id, preferred_id);
-        }
-        return;
-      }
-      if (result == reset_result_e::fatal) {
+      // SetEndpointVisibility() is an unbounded RPC into the Windows audio
+      // service. Keep it off the session audio thread so a stalled policy call
+      // cannot prevent session teardown from completing.
+      if (wait_for_device) {
+        start_pending_restore_task(steam_device_id, {});
         return;
       }
 
-      if (!wait_for_device) {
-        return;
-      }
-
-      start_pending_restore_task(steam_device_id, {});
+      (void) try_reset_from_steam(steam_device_id);
     }
 
     enum class reset_result_e {
