@@ -224,13 +224,6 @@ namespace nvhttp {
    */
   bool unpair_client(std::string_view uuid);
 
-  /**
-
-   * @brief Get a client's prefer_10bit_sdr override.
-   * @param uuid The UUID of the client.
-   * @return The client's override value, or std::nullopt to inherit the global value.
-   */
-  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
   bool has_client_uuid(std::string_view uuid);
   bool get_client_always_use_virtual_display(const std::string &uuid);
 
@@ -261,7 +254,7 @@ namespace nvhttp {
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
-    std::optional<bool> prefer_10bit_sdr,
+    bool prefer_10bit_sdr,
     std::optional<std::string> hdr_profile
   );
 
@@ -272,9 +265,9 @@ namespace nvhttp {
   bool disconnect_client(const std::string &uuid);
 
   /**
-   * @brief Get a client's prefer_10bit_sdr override.
+   * @brief Whether a paired client is opted into 10-bit SDR instead of HDR.
    */
-  std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid);
+  bool get_client_prefer_10bit_sdr(const std::string &uuid);
 
   /**
    * @brief Get a copy of a client's runtime config overrides.
@@ -358,7 +351,7 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const std::optional<bool> prefer_10bit_sdr
+    const bool prefer_10bit_sdr
   );
 
   /**

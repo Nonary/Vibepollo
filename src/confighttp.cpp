@@ -2590,11 +2590,9 @@ namespace confighttp {
       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      std::optional<bool> prefer_10bit_sdr;
+      bool prefer_10bit_sdr = false;
       if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
         prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
-      } else {
-        prefer_10bit_sdr.reset();
       }
       std::optional<std::unordered_map<std::string, std::string>> config_overrides;
       if (input_tree.contains("config_overrides")) {

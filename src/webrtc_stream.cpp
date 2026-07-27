@@ -2478,10 +2478,7 @@ namespace webrtc_stream {
 #endif
 
     bool resolve_prefer_10bit_sdr(const SessionOptions &options) {
-      const auto client_override = options.client_uuid ?
-                                     nvhttp::get_client_prefer_10bit_sdr_override(*options.client_uuid) :
-                                     std::nullopt;
-      return client_override.value_or(config::video.prefer_10bit_sdr);
+      return options.client_uuid && nvhttp::get_client_prefer_10bit_sdr(*options.client_uuid);
     }
 
     video::config_t build_video_config(const SessionOptions &options, std::optional<bool> resolved_prefer_10bit_sdr = std::nullopt) {
@@ -2531,12 +2528,12 @@ namespace webrtc_stream {
       );
       if (effective_10bit_sdr) {
         if (supports_main10) {
-          BOOST_LOG(info) << "Preferring 10-bit SDR encode for an SDR WebRTC request";
+          BOOST_LOG(info) << "WebRTC client requested HDR, but 10-bit SDR is enabled for it; encoding Main10 without HDR";
           config.dynamicRange = 1;
           config.prefer_sdr_10bit = true;
         } else {
           config.dynamicRange = 0;
-          BOOST_LOG(info) << "10-bit SDR preference active for WebRTC, but Main10 is unavailable; using 8-bit SDR encode";
+          BOOST_LOG(info) << "10-bit SDR is enabled for this WebRTC client, but Main10 is unavailable; using 8-bit SDR encode";
         }
       }
 

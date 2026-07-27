@@ -439,7 +439,6 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
     <div class="space-y-4">
       <ConfigFieldRenderer setting-key="capture" v-model="config.capture" />
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
-      <ConfigFieldRenderer setting-key="prefer_10bit_sdr" v-model="config.prefer_10bit_sdr" />
 
       <section
         v-if="platform === 'windows' && hasNvidia"

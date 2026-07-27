@@ -963,7 +963,6 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'min_threads',
   'hevc_mode',
   'av1_mode',
-  'prefer_10bit_sdr',
   'capture',
   'encoder',
 

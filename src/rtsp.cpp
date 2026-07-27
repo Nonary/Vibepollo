@@ -1637,13 +1637,13 @@ namespace rtsp_stream {
     config.monitor.force_sdr = session->force_sdr;
     if (prefer_10bit_sdr) {
       if (supports_10bit_dynamic_range) {
-        BOOST_LOG(info) << "Preferring 10-bit SDR encode for an SDR client request";
+        BOOST_LOG(info) << "Client requested HDR, but 10-bit SDR is enabled for it; encoding Main10 without HDR";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;
       } else {
         config.monitor.dynamicRange = 0;
         config.monitor.prefer_sdr_10bit = false;
-        BOOST_LOG(info) << "10-bit SDR preference active, but Main10 is unavailable; using 8-bit SDR encode";
+        BOOST_LOG(info) << "10-bit SDR is enabled for this client, but Main10 is unavailable; using 8-bit SDR encode";
       }
     } else if (config.monitor.dynamicRange == 0) {
       if (session->enable_hdr && supports_10bit_dynamic_range) {

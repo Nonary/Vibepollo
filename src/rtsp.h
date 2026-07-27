@@ -75,8 +75,13 @@ namespace rtsp_stream {
     int surround_info;
     std::string surround_params;
     bool continuous_audio;
+    // The client's `hdrMode=1` launch flag. Every Moonlight client derives this bit from
+    // `supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT`, so it is also the only wire signal
+    // telling us the client negotiated a 10-bit decoder profile.
     bool enable_hdr;
-    // Resolved global/per-client preference for Main10 SDR when the client requests SDR.
+    // Per-client opt-in: stream an HDR-requesting client as 10-bit SDR instead. The display
+    // stays out of HDR and the encode stays Main10, which the client can decode because it
+    // asked for HDR in the first place.
     bool prefer_sdr_10bit = false;
     // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
     bool force_sdr = false;
@@ -157,20 +162,38 @@ namespace rtsp_stream {
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
 
-  inline bool effective_hdr_requested(const bool client_hdr_requested, const bool force_sdr) {
-    return client_hdr_requested && !force_sdr;
+  /**
+   * @brief Whether the session should put the display (and the stream) into HDR.
+   *
+   * `prefer_sdr_10bit` deliberately suppresses this: the whole point of that opt-in is to
+   * take an HDR request and serve it as 10-bit SDR, so the display must never be switched
+   * to HDR for such a session.
+   */
+  inline bool effective_hdr_requested(
+    const bool client_hdr_requested,
+    const bool prefer_sdr_10bit,
+    const bool force_sdr
+  ) {
+    return client_hdr_requested && !prefer_sdr_10bit && !force_sdr;
   }
 
   inline bool effective_hdr_requested(const launch_session_t &session) {
-    return effective_hdr_requested(session.enable_hdr, session.force_sdr);
+    return effective_hdr_requested(session.enable_hdr, session.prefer_sdr_10bit, session.force_sdr);
   }
 
+  /**
+   * @brief Whether the session should be encoded as Main10 with an SDR colorspace.
+   *
+   * Requires the client to have requested HDR, because that flag is also the client's only
+   * statement that it negotiated a 10-bit decoder. Promoting a client that asked for SDR
+   * would hand a Main10 bitstream to a decoder configured for an 8-bit profile.
+   */
   inline bool effective_10bit_sdr_requested(
     const bool prefer_sdr_10bit,
     const bool client_hdr_requested,
     const bool force_sdr
   ) {
-    return prefer_sdr_10bit && !effective_hdr_requested(client_hdr_requested, force_sdr);
+    return prefer_sdr_10bit && client_hdr_requested && !force_sdr;
   }
 
   inline bool effective_10bit_sdr_requested(const launch_session_t &session) {

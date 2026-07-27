@@ -35,7 +35,6 @@ const BOOLEAN_OVERRIDE_KEYS = new Set<string>([
   'nvenc_opengl_vulkan_on_dxgi',
   'nvenc_realtime_hags',
   'nvenc_spatial_aq',
-  'prefer_10bit_sdr',
   'qsv_slow_hevc',
   'rtx_hdr',
   'rtx_hdr_force_sdr',
