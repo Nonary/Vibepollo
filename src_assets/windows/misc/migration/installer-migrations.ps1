@@ -197,58 +197,81 @@ function Update-SplitFrameEncodingInConfig {
     return $true
 }
 
-function Convert-SplitFrameEncodingJsonNode {
+# Normalizes one raw JSON scalar token for the split encode option. Tokens that
+# do not map to a known legacy value are returned verbatim, so the migration
+# never rewrites user data it does not understand.
+function Convert-LegacySplitEncodeJsonToken {
+    param(
+        [AllowEmptyString()]
+        [string]$Token
+    )
+
+    if ([string]::IsNullOrEmpty($Token)) {
+        return $Token
+    }
+
+    try {
+        $decoded = ('{"value":' + $Token + '}' | ConvertFrom-Json).value
+    } catch {
+        return $Token
+    }
+
+    if ($null -eq $decoded) {
+        return $Token
+    }
+
+    $converted = Convert-LegacySplitEncodeValue $decoded
+    if ($converted -is [string]) {
+        if ($converted -ceq 'enabled') {
+            return '"enabled"'
+        }
+        if ($converted -ceq 'disabled') {
+            return '"disabled"'
+        }
+    }
+
+    return $Token
+}
+
+# Read-only probe that reports whether any object already carries both the legacy
+# and the modern key. Renaming in place would emit a duplicate JSON key there, and
+# the modern value is the one that already wins, so such files are left untouched.
+function Test-SplitFrameEncodingKeyCollision {
     param(
         [AllowNull()]
-        [object]$Node,
-        [ref]$Changed
+        [object]$Node
     )
 
     if ($null -eq $Node) {
-        return $null
+        return $false
     }
 
     if ($Node -is [System.Management.Automation.PSCustomObject]) {
-        $result = [ordered]@{}
+        $names = @($Node.PSObject.Properties | ForEach-Object { $_.Name })
+        if (($names -ccontains 'nvenc_force_split_encode') -and ($names -ccontains 'nvenc_split_encode')) {
+            return $true
+        }
+
         foreach ($property in $Node.PSObject.Properties) {
-            $isLegacySplitEncodeProperty = $property.Name -eq 'nvenc_force_split_encode'
-            $targetName = if ($isLegacySplitEncodeProperty) {
-                $Changed.Value = $true
-                'nvenc_split_encode'
-            } else {
-                $property.Name
-            }
-
-            $value = Convert-SplitFrameEncodingJsonNode -Node $property.Value -Changed $Changed
-            if ($targetName -eq 'nvenc_split_encode') {
-                $converted = Convert-LegacySplitEncodeValue $value
-                if (($converted -is [string]) -or ($converted -ne $value)) {
-                    if (-not (($converted -is [string]) -and ($value -is [string]) -and $converted -ceq $value)) {
-                        $Changed.Value = $true
-                    }
-                }
-                $value = $converted
-            }
-
-            if (-not $result.Contains($targetName)) {
-                $result[$targetName] = $value
-            } elseif ($targetName -eq 'nvenc_split_encode' -and -not $isLegacySplitEncodeProperty) {
-                $result[$targetName] = $value
-                $Changed.Value = $true
+            if (Test-SplitFrameEncodingKeyCollision -Node $property.Value) {
+                return $true
             }
         }
-        return [pscustomobject]$result
+
+        return $false
     }
 
     if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
-        $result = @()
         foreach ($item in $Node) {
-            $result += ,(Convert-SplitFrameEncodingJsonNode -Node $item -Changed $Changed)
+            if (Test-SplitFrameEncodingKeyCollision -Node $item) {
+                return $true
+            }
         }
-        return $result
+
+        return $false
     }
 
-    return $Node
+    return $false
 }
 
 function Update-SplitFrameEncodingInJson {
@@ -266,20 +289,55 @@ function Update-SplitFrameEncodingInJson {
         return $false
     }
 
+    # Never rebuild these documents from the PowerShell object model. Windows
+    # PowerShell 5.1 cannot round-trip JSON: ConvertTo-Json has no -AsArray, and a
+    # function that returns an array has that array unrolled into the pipeline, so
+    # single element arrays come back as scalars and empty arrays come back as
+    # $null. In apps.json that turns "apps" and "prep-cmd" into objects, which
+    # process.cpp rejects with its is_array() guards, and its v1->v2 migration then
+    # writes the emptied app list back to disk. Rewrite only the legacy key in the
+    # raw text instead, exactly like the sunshine.conf migration above, so every
+    # other byte of the user's file is preserved.
+    $keyPattern = '(?<!\\)"nvenc_force_split_encode"'
+    if ($original -cnotmatch ($keyPattern + '\s*:')) {
+        return $false
+    }
+
     try {
         $parsed = $original | ConvertFrom-Json
     } catch {
         return $false
     }
 
-    $changed = $false
-    $updated = Convert-SplitFrameEncodingJsonNode -Node $parsed -Changed ([ref]$changed)
-    if (-not $changed) {
+    if (Test-SplitFrameEncodingKeyCollision -Node $parsed) {
         return $false
     }
 
-    $serialized = $updated | ConvertTo-Json -Depth 100
-    Write-Utf8TextFile -Path $JsonPath -Value $serialized
+    $jsonScalar = '"(?:[^"\\]|\\.)*"|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?'
+    $updated = [System.Text.RegularExpressions.Regex]::Replace(
+        $original,
+        ($keyPattern + '(\s*:\s*)(' + $jsonScalar + ')?'),
+        {
+            param($match)
+
+            return '"nvenc_split_encode"{0}{1}' -f `
+                $match.Groups[1].Value, `
+                (Convert-LegacySplitEncodeJsonToken -Token $match.Groups[2].Value)
+        }
+    )
+
+    if ($updated -ceq $original) {
+        return $false
+    }
+
+    # Fail safe: never write a document that stopped parsing.
+    try {
+        [void]($updated | ConvertFrom-Json)
+    } catch {
+        return $false
+    }
+
+    Write-Utf8TextFile -Path $JsonPath -Value $updated
     return $true
 }
 
