@@ -5,8 +5,12 @@
 #define INITGUID
 
 // standard includes
+#include <atomic>
 #include <array>
+#include <cstdint>
 #include <format>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -365,9 +369,16 @@ namespace platf::audio {
     ERole role;
     std::wstring preferred_id;
     std::wstring expected_current_id;
+    bool fallback_transition = false;
   };
 
   using pending_role_restores_t = std::vector<pending_role_restore_t>;
+
+  struct pending_role_restore_handoff_t {
+    std::wstring steam_device_id;
+    pending_role_restores_t role_restores;
+    std::uint64_t assignment_epoch = 0;
+  };
 
   constexpr std::size_t role_index(ERole role) {
     return static_cast<std::size_t>(role);
@@ -986,23 +997,57 @@ namespace platf::audio {
     }
 
     int set_sink(const std::string &sink) override {
-      // Cancel any background restore — it would fight us moving to Steam.
-      cancel_pending_restore_task();
-
       auto device_id = set_format(sink);
       if (!device_id) {
         return -1;
       }
 
+      // Cancel immediately before replacing the defaults so a failed format
+      // setup leaves the existing recovery worker intact.
+      const auto current_default_ids = current_default_device_ids();
+      role_device_ids_t desired_device_ids;
+      desired_device_ids.fill(*device_id);
+      auto pending_restore_handoff = begin_policy_assignment(std::move(desired_device_ids));
+      const auto assignment_epoch = pending_restore_handoff.assignment_epoch;
+      pending_role_restores_t transferred_role_restores;
+      if (!pending_restore_handoff.role_restores.empty()) {
+        transferred_role_restores = normalize_pending_role_restores(
+          std::move(pending_restore_handoff.role_restores),
+          pending_restore_handoff.steam_device_id,
+          current_default_ids
+        );
+      }
+
       // The initial setup happens before microphone callbacks exist. Later
-      // callbacks reapply the same sink, so retain the first assigned ID.
+      // callbacks reapply the same sink, so capture defaults only on the first
+      // assignment. If a previous session was still restoring a role, preserve
+      // its preferred endpoint while the worker-owned fallback remains selected.
       if (assigned_device_id.empty()) {
+        for (std::size_t index = 0; index < current_default_ids.size(); ++index) {
+          if (!current_default_ids[index].empty()) {
+            captured_default_device_ids[index] = current_default_ids[index];
+          }
+        }
+
+        for (const auto &role_restore : transferred_role_restores) {
+          const auto index = role_index(role_restore.role);
+          captured_default_device_ids[index] = role_restore.preferred_id;
+        }
+
         assigned_device_id = *device_id;
       }
 
       int failure {};
+      bool assignment_active = true;
+      pending_role_restores_t failed_role_restores;
       for (int x = 0; x < (int) ERole_enum_count; ++x) {
-        auto status = policy->SetDefaultEndpoint(device_id->c_str(), (ERole) x);
+        const auto role = static_cast<ERole>(x);
+        auto result = set_default_endpoint_for_assignment(assignment_epoch, role, *device_id);
+        if (!result) {
+          assignment_active = false;
+          break;
+        }
+        const auto status = *result;
         if (status) {
           // Depending on the format of the string, we could get either of these errors
           if (status == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || status == E_INVALIDARG) {
@@ -1012,13 +1057,34 @@ namespace platf::audio {
           }
 
           ++failure;
+          for (const auto &role_restore : transferred_role_restores) {
+            if (role_restore.role == role) {
+              failed_role_restores.push_back(role_restore);
+              break;
+            }
+          }
         }
+      }
+
+      if (assignment_active &&
+          !failed_role_restores.empty() &&
+          !pending_restore_handoff.steam_device_id.empty()) {
+        // This role never transferred to the new stream, so keep its prior
+        // recovery alive instead of dropping the preferred endpoint.
+        start_pending_role_restore_task(
+          pending_restore_handoff.steam_device_id,
+          std::move(failed_role_restores),
+          assignment_epoch
+        );
       }
 
       // Remember the assigned sink name, so we have it for later if we need to set it
       // back after another application changes it
-      if (!failure) {
-        assigned_sink = sink;
+      if (assignment_active && !failure) {
+        std::scoped_lock lock(pending_restore_mutex_ref());
+        if (policy_assignment_epoch_ref() == assignment_epoch) {
+          assigned_sink = sink;
+        }
       }
 
       return failure;
@@ -1026,13 +1092,29 @@ namespace platf::audio {
 
     int restore_sink(const std::string &) override {
       // Preserve the old teardown order: stop a pending retry before writing
-      // the captured role defaults.
-      cancel_pending_restore_task();
+      // the captured role defaults. Publish every intended role before the
+      // calls so an older in-flight worker can repair to this assignment.
+      const auto current_default_ids = current_default_device_ids();
+      auto desired_device_ids = current_default_ids;
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        const auto role = static_cast<ERole>(x);
+        const auto index = role_index(role);
+        const auto &captured_device_id = captured_default_device_ids[index];
+        if (!assigned_device_id.empty() &&
+            current_default_ids[index] == assigned_device_id &&
+            !captured_device_id.empty() &&
+            captured_device_id != assigned_device_id) {
+          desired_device_ids[index] = captured_device_id;
+        }
+      }
+      pending_role_restore_handoff = begin_policy_assignment(std::move(desired_device_ids));
+      const auto assignment_epoch = pending_role_restore_handoff.assignment_epoch;
 
       int failure {};
       for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
         const auto role = static_cast<ERole>(x);
-        if (assigned_device_id.empty() || !is_default_device(assigned_device_id, role)) {
+        if (assigned_device_id.empty() ||
+            current_default_ids[role_index(role)] != assigned_device_id) {
           continue;
         }
 
@@ -1041,7 +1123,15 @@ namespace platf::audio {
           continue;
         }
 
-        const auto status = policy->SetDefaultEndpoint(captured_device_id.c_str(), role);
+        auto result = set_default_endpoint_for_assignment(
+          assignment_epoch,
+          role,
+          captured_device_id
+        );
+        if (!result) {
+          break;
+        }
+        const auto status = *result;
         if (FAILED(status)) {
           BOOST_LOG(warning) << "Couldn't restore captured audio endpoint for role ["sv << x
                              << "]: 0x"sv << util::hex(status).to_string_view();
@@ -1134,6 +1224,40 @@ namespace platf::audio {
         }
       }
       return device_ids;
+    }
+
+    static pending_role_restores_t normalize_pending_role_restores(
+      pending_role_restores_t role_restores,
+      const std::wstring &steam_device_id,
+      const role_device_ids_t &current_default_ids
+    ) {
+      pending_role_restores_t normalized;
+      normalized.reserve(role_restores.size());
+      for (auto &role_restore : role_restores) {
+        const auto &current_id = current_default_ids[role_index(role_restore.role)];
+        if (role_restore.preferred_id.empty() || current_id.empty()) {
+          continue;
+        }
+
+        const bool retained_endpoint =
+          current_id == role_restore.expected_current_id ||
+          current_id == role_restore.preferred_id;
+        const bool worker_fallback_transition =
+          role_restore.fallback_transition &&
+          !steam_device_id.empty() &&
+          role_restore.expected_current_id == steam_device_id;
+        if (!retained_endpoint && !worker_fallback_transition) {
+          // A mismatch outside the worker-published visibility transition is a
+          // newer user or system choice. Never replace it with the old target.
+          continue;
+        }
+
+        // The live default is now the ownership guard for a restarted worker.
+        role_restore.expected_current_id = current_id;
+        role_restore.fallback_transition = false;
+        normalized.push_back(std::move(role_restore));
+      }
+      return normalized;
     }
 
     static void append_match_field(match_fields_list_t &match_list, match_field_e field, const wchar_t *value) {
@@ -1327,6 +1451,83 @@ namespace platf::audio {
       return thread;
     }
 
+    using pending_restore_token_t = std::shared_ptr<std::atomic_bool>;
+
+    static pending_restore_token_t &pending_restore_token_ref() {
+      static pending_restore_token_t token;
+      return token;
+    }
+
+    static pending_role_restores_t &pending_role_restores_ref() {
+      static pending_role_restores_t role_restores;
+      return role_restores;
+    }
+
+    static std::wstring &pending_restore_steam_device_id_ref() {
+      static std::wstring steam_device_id;
+      return steam_device_id;
+    }
+
+    static std::uint64_t &policy_assignment_epoch_ref() {
+      static std::uint64_t epoch = 0;
+      return epoch;
+    }
+
+    static role_device_ids_t &policy_assignment_desired_ids_ref() {
+      static role_device_ids_t desired_ids;
+      return desired_ids;
+    }
+
+    static void deactivate_pending_restore_worker_locked() {
+      auto &token = pending_restore_token_ref();
+      if (token) {
+        token->store(false, std::memory_order_release);
+        token.reset();
+      }
+      pending_role_restores_ref().clear();
+      pending_restore_steam_device_id_ref().clear();
+    }
+
+    static bool pending_restore_worker_owns_state_locked(const pending_restore_token_t &token, std::uint64_t assignment_epoch) {
+      return token &&
+             token->load(std::memory_order_acquire) &&
+             pending_restore_token_ref() == token &&
+             pending_restore_thread_ref().get_id() == std::this_thread::get_id() &&
+             policy_assignment_epoch_ref() == assignment_epoch;
+    }
+
+    static bool pending_restore_worker_can_write(
+      const std::stop_token &stop_token,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      if (stop_token.stop_requested() || !token || !token->load(std::memory_order_acquire)) {
+        return false;
+      }
+
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      return pending_restore_worker_owns_state_locked(token, assignment_epoch);
+    }
+
+    // The caller holds pending_restore_mutex_ref(). Only roll back the marker
+    // when this worker is still the registered owner, so a failed handoff
+    // cannot clear a newer worker's pending restore. Clear unconditionally:
+    // a failed assignment can leave the old marker intact.
+    static std::jthread rollback_pending_restore_worker_locked(const pending_restore_token_t &token) {
+      if (pending_restore_token_ref() != token) {
+        return {};
+      }
+
+      token->store(false, std::memory_order_release);
+      clear_pending_preferred_restore();
+      pending_role_restores_ref().clear();
+      pending_restore_steam_device_id_ref().clear();
+
+      auto failed_thread = std::move(pending_restore_thread_ref());
+      pending_restore_token_ref().reset();
+      return failed_thread;
+    }
+
     static void retire_pending_restore_task(std::jthread old_thread) {
       if (!old_thread.joinable()) {
         return;
@@ -1338,62 +1539,361 @@ namespace platf::audio {
       }).detach();
     }
 
-    static void cancel_pending_restore_task() {
+    static pending_role_restore_handoff_t begin_policy_assignment(role_device_ids_t desired_ids) {
       std::jthread old_thread;
+      pending_role_restore_handoff_t handoff;
       {
         std::scoped_lock lock(pending_restore_mutex_ref());
+        handoff.steam_device_id = std::move(pending_restore_steam_device_id_ref());
+        handoff.role_restores = std::move(pending_role_restores_ref());
+        deactivate_pending_restore_worker_locked();
         old_thread = std::move(pending_restore_thread_ref());
+
+        auto &assignment_epoch = policy_assignment_epoch_ref();
+        if (++assignment_epoch == 0) {
+          ++assignment_epoch;
+        }
+        policy_assignment_desired_ids_ref() = std::move(desired_ids);
+        handoff.assignment_epoch = assignment_epoch;
       }
       retire_pending_restore_task(std::move(old_thread));
+      return handoff;
     }
 
-    static void start_pending_restore_task(const std::wstring &steam_device_id, const std::wstring &preferred_id) {
+    static bool policy_assignment_role_is_current(
+      std::uint64_t assignment_epoch,
+      ERole role,
+      const std::wstring &desired_id
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      return policy_assignment_epoch_ref() == assignment_epoch &&
+             policy_assignment_desired_ids_ref()[role_index(role)] == desired_id;
+    }
+
+    static bool policy_assignment_is_current(std::uint64_t assignment_epoch) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      return policy_assignment_epoch_ref() == assignment_epoch;
+    }
+
+    static bool publish_policy_assignment_role(
+      std::uint64_t assignment_epoch,
+      ERole role,
+      const std::wstring &desired_id
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (policy_assignment_epoch_ref() != assignment_epoch) {
+        return false;
+      }
+      policy_assignment_desired_ids_ref()[role_index(role)] = desired_id;
+      return true;
+    }
+
+    static bool remember_pending_preferred_restore_for_assignment(
+      const std::wstring &preferred_id,
+      const std::wstring &steam_device_id,
+      std::uint64_t assignment_epoch
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (policy_assignment_epoch_ref() != assignment_epoch) {
+        return false;
+      }
+      remember_pending_preferred_restore(preferred_id, steam_device_id);
+      return true;
+    }
+
+    static void clear_pending_preferred_restore_for_assignment(
+      std::uint64_t assignment_epoch,
+      const std::wstring &preferred_id = {}
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (policy_assignment_epoch_ref() == assignment_epoch) {
+        clear_pending_preferred_restore(preferred_id);
+      }
+    }
+
+    void reassert_current_policy_assignment_role(ERole role) {
+      // A policy call may return after a newer assignment has already written.
+      // Follow the epoch until one repair lands for a still-current target.
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        std::uint64_t assignment_epoch;
+        std::wstring desired_id;
+        {
+          std::scoped_lock lock(pending_restore_mutex_ref());
+          assignment_epoch = policy_assignment_epoch_ref();
+          desired_id = policy_assignment_desired_ids_ref()[role_index(role)];
+        }
+        if (desired_id.empty()) {
+          return;
+        }
+
+        const auto status = policy->SetDefaultEndpoint(desired_id.c_str(), role);
+        if (FAILED(status)) {
+          BOOST_LOG(warning) << "Couldn't reassert the current audio endpoint for role ["sv
+                             << static_cast<int>(role) << "]: 0x"sv
+                             << util::hex(status).to_string_view();
+        }
+        if (SUCCEEDED(status) &&
+            policy_assignment_role_is_current(assignment_epoch, role, desired_id)) {
+          return;
+        }
+      }
+    }
+
+    void reassert_current_policy_assignment() {
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        reassert_current_policy_assignment_role(static_cast<ERole>(x));
+      }
+    }
+
+    std::optional<HRESULT> set_default_endpoint_for_assignment(
+      std::uint64_t assignment_epoch,
+      ERole role,
+      const std::wstring &desired_id
+    ) {
+      if (!publish_policy_assignment_role(assignment_epoch, role, desired_id)) {
+        return std::nullopt;
+      }
+
+      const auto status = policy->SetDefaultEndpoint(desired_id.c_str(), role);
+      if (!policy_assignment_role_is_current(assignment_epoch, role, desired_id)) {
+        reassert_current_policy_assignment_role(role);
+        return std::nullopt;
+      }
+      return status;
+    }
+
+    bool publish_policy_assignment_role_for_worker(
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch,
+      ERole role,
+      const std::wstring &desired_id
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (!pending_restore_worker_owns_state_locked(token, assignment_epoch)) {
+        return false;
+      }
+      policy_assignment_desired_ids_ref()[role_index(role)] = desired_id;
+      return true;
+    }
+
+    bool adopt_current_policy_endpoint_for_worker(
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch,
+      ERole role
+    ) {
+      std::wstring current_id;
+      auto current_device = default_device(device_enum, role);
+      if (current_device) {
+        audio::wstring_t device_id;
+        if (SUCCEEDED(current_device->GetId(&device_id)) && device_id) {
+          current_id = device_id.get();
+        }
+      }
+      return publish_policy_assignment_role_for_worker(
+        token,
+        assignment_epoch,
+        role,
+        current_id
+      );
+    }
+
+    bool adopt_current_policy_endpoint_for_assignment(
+      std::uint64_t assignment_epoch,
+      ERole role
+    ) {
+      std::wstring current_id;
+      auto current_device = default_device(device_enum, role);
+      if (current_device) {
+        audio::wstring_t device_id;
+        if (SUCCEEDED(current_device->GetId(&device_id)) && device_id) {
+          current_id = device_id.get();
+        }
+      }
+      return publish_policy_assignment_role(assignment_epoch, role, current_id);
+    }
+
+    std::optional<HRESULT> set_default_endpoint_for_worker(
+      const std::stop_token &stop_token,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch,
+      ERole role,
+      const std::wstring &desired_id
+    ) {
+      if (stop_token.stop_requested() ||
+          !publish_policy_assignment_role_for_worker(token, assignment_epoch, role, desired_id)) {
+        return std::nullopt;
+      }
+
+      const auto status = policy->SetDefaultEndpoint(desired_id.c_str(), role);
+      if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch) ||
+          !policy_assignment_role_is_current(assignment_epoch, role, desired_id)) {
+        reassert_current_policy_assignment_role(role);
+        return std::nullopt;
+      }
+      return status;
+    }
+
+    static void start_pending_restore_task(
+      const std::wstring &steam_device_id,
+      const std::wstring &preferred_id,
+      std::uint64_t assignment_epoch
+    ) {
+      const bool publish_preferred_id = !preferred_id.empty() && preferred_id != steam_device_id;
+      auto token = std::make_shared<std::atomic_bool>(true);
+      auto start_promise = std::make_shared<std::promise<bool>>();
+      auto start_signal = start_promise->get_future().share();
       std::jthread old_thread;
-      {
-        std::scoped_lock lock(pending_restore_mutex_ref());
-        old_thread = std::move(pending_restore_thread_ref());
-        old_thread.request_stop();
-        // Run on a process-scoped worker with its own audio_control_t. The
-        // caller's audio_control_t is destroyed shortly after teardown returns,
-        // so the worker cannot safely capture `this`.
-        pending_restore_thread_ref() = std::jthread([steam_device_id, preferred_id](std::stop_token stop_token) {
+      std::jthread new_thread;
+      std::jthread failed_thread;
+      try {
+        // The thread is gated until the old worker is invalidated and this
+        // worker's marker/token are registered below.
+        new_thread = std::jthread([steam_device_id, preferred_id, publish_preferred_id, token, start_signal, assignment_epoch](std::stop_token stop_token) {
+          if (!start_signal.get() || !pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+            return;
+          }
+
           co_init_t co_init;
           audio_control_t restore_control;
           if (restore_control.init() != 0) {
+            if (publish_preferred_id) {
+              audio_control_t::clear_pending_preferred_restore_for_worker(
+                preferred_id,
+                token,
+                assignment_epoch
+              );
+            }
             return;
           }
-          restore_control.run_pending_restore_task(stop_token, steam_device_id, preferred_id);
+          restore_control.run_pending_restore_task(stop_token, steam_device_id, preferred_id, token, assignment_epoch);
         });
+
+        {
+          std::scoped_lock lock(pending_restore_mutex_ref());
+          if (policy_assignment_epoch_ref() != assignment_epoch) {
+            token->store(false, std::memory_order_release);
+            start_promise->set_value(false);
+          } else {
+            deactivate_pending_restore_worker_locked();
+            old_thread = std::move(pending_restore_thread_ref());
+            old_thread.request_stop();
+            pending_restore_thread_ref() = std::move(new_thread);
+            pending_restore_token_ref() = token;
+            if (publish_preferred_id) {
+              remember_pending_preferred_restore(preferred_id, steam_device_id);
+            }
+            start_promise->set_value(true);
+          }
+        }
+
+      } catch (...) {
+        token->store(false, std::memory_order_release);
+        try {
+          start_promise->set_value(false);
+        } catch (...) {
+        }
+        {
+          std::scoped_lock lock(pending_restore_mutex_ref());
+          failed_thread = rollback_pending_restore_worker_locked(token);
+        }
+        retire_pending_restore_task(std::move(new_thread));
+        retire_pending_restore_task(std::move(failed_thread));
+        retire_pending_restore_task(std::move(old_thread));
+        throw;
       }
       retire_pending_restore_task(std::move(old_thread));
     }
 
-    static void start_pending_role_restore_task(const std::wstring &steam_device_id, pending_role_restores_t role_restores) {
+    static void start_pending_role_restore_task(
+      const std::wstring &steam_device_id,
+      pending_role_restores_t role_restores,
+      std::uint64_t assignment_epoch
+    ) {
+      auto published_role_restores = role_restores;
+      std::optional<std::wstring> console_preferred_id;
+      for (const auto &role_restore : role_restores) {
+        if (role_restore.role == eConsole && !role_restore.preferred_id.empty()) {
+          console_preferred_id = role_restore.preferred_id;
+          break;
+        }
+      }
+
+      auto token = std::make_shared<std::atomic_bool>(true);
+      auto start_promise = std::make_shared<std::promise<bool>>();
+      auto start_signal = start_promise->get_future().share();
       std::jthread old_thread;
-      {
-        std::scoped_lock lock(pending_restore_mutex_ref());
-        old_thread = std::move(pending_restore_thread_ref());
-        old_thread.request_stop();
-        // As with the legacy retry, use a fresh controller because the
-        // session controller is destroyed shortly after teardown returns.
-        pending_restore_thread_ref() = std::jthread([steam_device_id, role_restores = std::move(role_restores)](std::stop_token stop_token) mutable {
+      std::jthread new_thread;
+      std::jthread failed_thread;
+      try {
+        // The thread starts immediately, but it cannot initialize COM or
+        // touch policy until the protected handoff below signals it.
+        new_thread = std::jthread([steam_device_id, role_restores = std::move(role_restores), token, start_signal, assignment_epoch](std::stop_token stop_token) mutable {
+          if (!start_signal.get() || !pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+            return;
+          }
+
           co_init_t co_init;
           audio_control_t restore_control;
           if (restore_control.init() != 0) {
+            audio_control_t::clear_pending_role_restores_for_worker(
+              role_restores,
+              token,
+              assignment_epoch
+            );
             return;
           }
-          restore_control.run_pending_role_restore_task(stop_token, steam_device_id, std::move(role_restores));
+          restore_control.run_pending_role_restore_task(stop_token, steam_device_id, std::move(role_restores), token, assignment_epoch);
         });
+
+        {
+          std::scoped_lock lock(pending_restore_mutex_ref());
+          if (policy_assignment_epoch_ref() != assignment_epoch) {
+            token->store(false, std::memory_order_release);
+            start_promise->set_value(false);
+          } else {
+            deactivate_pending_restore_worker_locked();
+            old_thread = std::move(pending_restore_thread_ref());
+            old_thread.request_stop();
+            pending_restore_thread_ref() = std::move(new_thread);
+            pending_restore_token_ref() = token;
+            pending_restore_steam_device_id_ref() = steam_device_id;
+            pending_role_restores_ref() = std::move(published_role_restores);
+            if (console_preferred_id) {
+              remember_pending_preferred_restore(*console_preferred_id, steam_device_id);
+            } else {
+              clear_pending_preferred_restore();
+            }
+            start_promise->set_value(true);
+          }
+        }
+
+      } catch (...) {
+        token->store(false, std::memory_order_release);
+        try {
+          start_promise->set_value(false);
+        } catch (...) {
+        }
+        {
+          std::scoped_lock lock(pending_restore_mutex_ref());
+          failed_thread = rollback_pending_restore_worker_locked(token);
+        }
+        retire_pending_restore_task(std::move(new_thread));
+        retire_pending_restore_task(std::move(failed_thread));
+        retire_pending_restore_task(std::move(old_thread));
+        throw;
       }
       retire_pending_restore_task(std::move(old_thread));
     }
 
-    void run_pending_restore_task(std::stop_token stop_token, const std::wstring &steam_device_id, const std::wstring &preferred_id) {
+    void run_pending_restore_task(
+      std::stop_token stop_token,
+      const std::wstring &steam_device_id,
+      const std::wstring &preferred_id,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
       bool try_preferred_restore = !preferred_id.empty() && preferred_id != steam_device_id;
       bool retry_fallback_reset = true;
-      if (try_preferred_restore) {
-        remember_pending_preferred_restore(preferred_id, steam_device_id);
-      }
 
       device_arrival_notification_t arrival_notifier(steam_device_id);
       HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -1430,14 +1930,27 @@ namespace platf::audio {
         BOOST_LOG(info) << "Waiting in background for a non-Steam audio device to appear"sv;
       }
 
-      while (!stop_token.stop_requested()) {
+      while (pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
         if (try_preferred_restore) {
-          auto preferred_result = try_restore_preferred(preferred_id);
+          auto preferred_result = try_restore_preferred(
+            preferred_id,
+            steam_device_id,
+            assignment_epoch,
+            &stop_token,
+            token
+          );
           if (preferred_result == reset_result_e::success) {
             return;
           }
           if (preferred_result == reset_result_e::fatal) {
-            clear_pending_preferred_restore(preferred_id);
+            clear_pending_preferred_restore_for_worker(
+              preferred_id,
+              token,
+              assignment_epoch
+            );
+            return;
+          }
+          if (preferred_result == reset_result_e::inactive) {
             return;
           }
 
@@ -1446,8 +1959,16 @@ namespace platf::audio {
         }
 
         if (retry_fallback_reset && is_default_device(steam_device_id)) {
-          auto fallback_result = try_reset_from_steam(steam_device_id);
+          auto fallback_result = try_reset_from_steam(
+            steam_device_id,
+            assignment_epoch,
+            &stop_token,
+            token
+          );
           if (fallback_result == reset_result_e::fatal) {
+            return;
+          }
+          if (fallback_result == reset_result_e::inactive) {
             return;
           }
           if (fallback_result == reset_result_e::success && !try_preferred_restore) {
@@ -1460,46 +1981,90 @@ namespace platf::audio {
           return;
         }
 
-        if (arrival_notifier.wait(cancel_event, 1000)) {
+        // If notification registration failed, use the timed wait as a polling
+        // backoff so a fallback endpoint that appears later is still retried.
+        if (arrival_notifier.wait(cancel_event, 1000) || !have_notifications) {
           retry_fallback_reset = true;
         }
       }
     }
 
     void reset_failed_default_roles() {
-      auto matched_steam = find_device_id(match_steam_speakers());
-      if (!matched_steam) {
+      auto inherited_handoff = std::move(pending_role_restore_handoff);
+      pending_role_restore_handoff = {};
+      if (inherited_handoff.assignment_epoch == 0) {
+        inherited_handoff = begin_policy_assignment(current_default_device_ids());
+      } else if (!policy_assignment_is_current(inherited_handoff.assignment_epoch)) {
         return;
       }
 
-      const auto &steam_device_id = matched_steam->second;
-      pending_role_restores_t role_restores;
-      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
-        const auto role = static_cast<ERole>(x);
-        if (!is_default_device(assigned_device_id, role)) {
-          continue;
-        }
-
-        const auto &captured_device_id = captured_default_device_ids[role_index(role)];
-        role_restores.push_back({
-          role,
-          captured_device_id == assigned_device_id ? std::wstring {} : captured_device_id,
-          assigned_device_id,
-        });
+      auto matched_steam = find_device_id(match_steam_speakers());
+      std::wstring steam_device_id = inherited_handoff.steam_device_id;
+      if (matched_steam) {
+        steam_device_id = matched_steam->second;
+      }
+      if (steam_device_id.empty()) {
+        clear_pending_preferred_restore_for_assignment(
+          inherited_handoff.assignment_epoch
+        );
+        return;
       }
 
-      if (role_restores.empty() || assigned_device_id != steam_device_id) {
-        clear_pending_preferred_restore();
+      auto current_default_ids = current_default_device_ids();
+      pending_role_restores_t role_restores;
+      if (assigned_device_id == steam_device_id) {
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          if (current_default_ids[role_index(role)] != assigned_device_id) {
+            continue;
+          }
+
+          const auto &captured_device_id = captured_default_device_ids[role_index(role)];
+          role_restores.push_back({
+            role,
+            captured_device_id == assigned_device_id ? std::wstring {} : captured_device_id,
+            assigned_device_id,
+          });
+        }
+      }
+
+      auto inherited_role_restores = normalize_pending_role_restores(
+        std::move(inherited_handoff.role_restores),
+        inherited_handoff.steam_device_id,
+        current_default_ids
+      );
+      for (auto &inherited_restore : inherited_role_restores) {
+        bool already_queued = false;
+        for (const auto &role_restore : role_restores) {
+          if (role_restore.role == inherited_restore.role) {
+            already_queued = true;
+            break;
+          }
+        }
+        if (!already_queued) {
+          role_restores.push_back(std::move(inherited_restore));
+        }
+      }
+
+      if (role_restores.empty()) {
+        clear_pending_preferred_restore_for_assignment(
+          inherited_handoff.assignment_epoch
+        );
         return;
       }
 
       // SetEndpointVisibility() is an unbounded RPC into the Windows audio
       // service, so keep every role-specific fallback off the session thread.
-      start_pending_role_restore_task(steam_device_id, std::move(role_restores));
+      start_pending_role_restore_task(
+        steam_device_id,
+        std::move(role_restores),
+        inherited_handoff.assignment_epoch
+      );
     }
 
     void reset_default_device_impl(bool wait_for_device, const std::wstring &preferred_id) {
-      cancel_pending_restore_task();
+      auto assignment_handoff = begin_policy_assignment(current_default_device_ids());
+      const auto assignment_epoch = assignment_handoff.assignment_epoch;
 
       auto matched_steam = find_device_id(match_steam_speakers());
       if (!matched_steam) {
@@ -1510,7 +2075,7 @@ namespace platf::audio {
       // If the user already switched away from Steam speakers, leave the newer
       // default alone instead of restoring the previously recorded endpoint.
       if (!is_default_device(steam_device_id)) {
-        clear_pending_preferred_restore();
+        clear_pending_preferred_restore_for_assignment(assignment_epoch);
         return;
       }
 
@@ -1526,16 +2091,34 @@ namespace platf::audio {
       bool try_preferred_restore = !effective_preferred_id.empty() && effective_preferred_id != steam_device_id;
 
       if (try_preferred_restore) {
-        remember_pending_preferred_restore(effective_preferred_id, steam_device_id);
+        if (!remember_pending_preferred_restore_for_assignment(
+              effective_preferred_id,
+              steam_device_id,
+              assignment_epoch)) {
+          return;
+        }
 
-        auto result = try_restore_preferred(effective_preferred_id);
+        auto result = try_restore_preferred(
+          effective_preferred_id,
+          steam_device_id,
+          assignment_epoch
+        );
         if (result == reset_result_e::success) {
           return;
         }
         if (result == reset_result_e::fatal) {
-          clear_pending_preferred_restore(effective_preferred_id);
+          clear_pending_preferred_restore_for_assignment(
+            assignment_epoch,
+            effective_preferred_id
+          );
+        } else if (result == reset_result_e::inactive) {
+          return;
         } else if (wait_for_device) {
-          start_pending_restore_task(steam_device_id, effective_preferred_id);
+          start_pending_restore_task(
+            steam_device_id,
+            effective_preferred_id,
+            assignment_epoch
+          );
           return;
         } else {
           return;
@@ -1546,29 +2129,90 @@ namespace platf::audio {
       // service. Keep it off the session audio thread so a stalled policy call
       // cannot prevent session teardown from completing.
       if (wait_for_device) {
-        start_pending_restore_task(steam_device_id, {});
+        start_pending_restore_task(steam_device_id, {}, assignment_epoch);
         return;
       }
 
-      (void) try_reset_from_steam(steam_device_id);
+      (void) try_reset_from_steam(steam_device_id, assignment_epoch);
     }
 
     enum class reset_result_e {
       success,       ///< A non-Steam device was set as default
       no_device,     ///< No non-Steam device is available yet (retriable)
+      inactive,      ///< A superseded background worker must not write
       fatal,         ///< Unrecoverable failure (do not retry)
     };
 
     /**
-     * @brief Attempts to set a specific device as the default for all roles.
+     * @brief Retires the pending preferred-restore marker for whichever owner
+     * is running, so the background worker and the session-thread assignment
+     * release it under exactly the same ownership rules.
+     */
+    static void clear_pending_preferred_restore_for_caller(
+      const std::wstring &preferred_id,
+      std::uint64_t assignment_epoch,
+      const std::stop_token *stop_token,
+      const pending_restore_token_t &token
+    ) {
+      if (stop_token) {
+        clear_pending_preferred_restore_for_worker(
+          preferred_id,
+          token,
+          assignment_epoch
+        );
+      } else {
+        clear_pending_preferred_restore_for_assignment(
+          assignment_epoch,
+          preferred_id
+        );
+      }
+    }
+
+    /**
+     * @brief Attempts to set a specific device as the default for the roles
+     * Steam Streaming Speakers still owns.
      * Used to restore the user's original default device after a streaming
      * session ends. Verifies the device is currently active before touching the
-     * policy so we don't bind to a missing endpoint.
+     * policy so we don't bind to a missing endpoint. Only the roles that are
+     * still assigned to Steam speakers are rewritten. A role the user points at
+     * another endpoint (commonly a separate default communications headset) is
+     * adopted as-is and must never be overwritten with the preferred endpoint.
      * @param preferred_id Endpoint device_id of the device to restore.
-     * @return success if the device was restored, no_device if the device isn't
-     *         active right now, fatal if the policy call rejected it.
+     * @param steam_device_id The device ID of Steam Streaming Speakers.
+     * @return success if every Steam-owned role was restored or released,
+     *         no_device if the device isn't active right now, fatal if the
+     *         policy call rejected it.
      */
-    reset_result_e try_restore_preferred(const std::wstring &preferred_id) {
+    reset_result_e try_restore_preferred(
+      const std::wstring &preferred_id,
+      const std::wstring &steam_device_id,
+      std::uint64_t assignment_epoch,
+      const std::stop_token *stop_token = nullptr,
+      const pending_restore_token_t &token = {}
+    ) {
+      // Record which roles are actually on Steam before resolving anything.
+      // Every other role belongs to the user and stays untouched by this
+      // restore, exactly like the role-aware fallback reset.
+      std::vector<ERole> steam_roles;
+      for (int x = 0; x < (int) ERole_enum_count; ++x) {
+        const auto role = static_cast<ERole>(x);
+        if (is_default_device(steam_device_id, role)) {
+          steam_roles.push_back(role);
+        }
+      }
+      if (steam_roles.empty()) {
+        // Steam speakers no longer hold any role, so this restore is already
+        // satisfied. Retire the marker instead of waiting for the preferred
+        // endpoint just to overwrite the newer defaults with it.
+        clear_pending_preferred_restore_for_caller(
+          preferred_id,
+          assignment_epoch,
+          stop_token,
+          token
+        );
+        return reset_result_e::success;
+      }
+
       auto match_list = preferred_device_match_list(preferred_id);
       if (!match_list) {
         return reset_result_e::no_device;
@@ -1582,70 +2226,205 @@ namespace platf::audio {
       const auto &resolved_id = matched->second;
 
       int failure = 0;
-      for (int x = 0; x < (int) ERole_enum_count; ++x) {
-        auto hr = policy->SetDefaultEndpoint(resolved_id.c_str(), (ERole) x);
+      int restored = 0;
+      for (const auto role : steam_roles) {
+        // Re-check ownership immediately before writing. The user may have
+        // moved this role while the preferred endpoint was re-enumerated, so
+        // adopt that newer default instead of replacing it.
+        if (!is_default_device(steam_device_id, role)) {
+          const bool adopted =
+            stop_token ?
+              adopt_current_policy_endpoint_for_worker(token, assignment_epoch, role) :
+              adopt_current_policy_endpoint_for_assignment(assignment_epoch, role);
+          if (!adopted) {
+            return reset_result_e::inactive;
+          }
+          continue;
+        }
+
+        std::optional<HRESULT> result;
+        if (stop_token) {
+          result = set_default_endpoint_for_worker(
+            *stop_token,
+            token,
+            assignment_epoch,
+            role,
+            resolved_id
+          );
+        } else {
+          result = set_default_endpoint_for_assignment(
+            assignment_epoch,
+            role,
+            resolved_id
+          );
+        }
+        if (!result) {
+          return reset_result_e::inactive;
+        }
+        const auto hr = *result;
         if (FAILED(hr)) {
-          BOOST_LOG(warning) << "Couldn't restore preferred audio endpoint for role ["sv << x
+          BOOST_LOG(warning) << "Couldn't restore preferred audio endpoint for role ["sv << static_cast<int>(role)
                              << "]: 0x"sv << util::hex(hr).to_string_view();
           ++failure;
+          continue;
         }
+        ++restored;
       }
 
       if (failure) {
         return reset_result_e::fatal;
       }
 
-      if (resolved_id != preferred_id) {
-        BOOST_LOG(info) << "Restored original default audio device via re-enumerated endpoint"sv;
-      } else {
-        BOOST_LOG(info) << "Restored original default audio device"sv;
+      if (restored) {
+        if (resolved_id != preferred_id) {
+          BOOST_LOG(info) << "Restored original default audio device via re-enumerated endpoint"sv;
+        } else {
+          BOOST_LOG(info) << "Restored original default audio device"sv;
+        }
       }
-      clear_pending_preferred_restore(preferred_id);
+      clear_pending_preferred_restore_for_caller(
+        preferred_id,
+        assignment_epoch,
+        stop_token,
+        token
+      );
       return reset_result_e::success;
     }
 
     /**
      * @brief Attempts to move the default audio device away from Steam Streaming Speakers.
      * Temporarily disables Steam speakers so the OS picks another default,
-     * then re-enables them and confirms the new default.
+     * then re-enables them and confirms the new default. Only the roles that are
+     * still assigned to Steam speakers are rewritten, and each of those roles is
+     * moved to the fallback Windows picked for that role. A role the user points
+     * at another endpoint (commonly a separate default communications headset)
+     * must never be overwritten with the playback fallback.
      * @param steam_device_id The device ID of Steam Streaming Speakers.
      * @return Result indicating success, retriable failure, or fatal failure.
      */
-    reset_result_e try_reset_from_steam(const std::wstring &steam_device_id) {
-      // Disable Steam speakers temporarily to let the OS pick a new default
-      auto hr = policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
-      if (FAILED(hr)) {
-        BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv << util::hex(hr).to_string_view();
-        return reset_result_e::fatal;
+    reset_result_e try_reset_from_steam(
+      const std::wstring &steam_device_id,
+      std::uint64_t assignment_epoch,
+      const std::stop_token *stop_token = nullptr,
+      const pending_restore_token_t &token = {}
+    ) {
+      if ((stop_token &&
+           !pending_restore_worker_can_write(*stop_token, token, assignment_epoch)) ||
+          (!stop_token && !policy_assignment_is_current(assignment_epoch))) {
+        return reset_result_e::inactive;
       }
 
-      auto new_default_dev = default_device(device_enum);
-
-      // Re-enable Steam speakers
-      hr = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
-      if (FAILED(hr)) {
-        BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv << util::hex(hr).to_string_view();
-        return reset_result_e::fatal;
-      }
-
-      if (!new_default_dev) {
-        return reset_result_e::no_device;
-      }
-
-      audio::wstring_t new_default_id;
-      new_default_dev->GetId(&new_default_id);
-
-      int failure = 0;
+      // Record which roles are actually on Steam before hiding it. Every other
+      // role belongs to the user and stays untouched by this recovery.
+      std::vector<ERole> steam_roles;
       for (int x = 0; x < (int) ERole_enum_count; ++x) {
-        auto status = policy->SetDefaultEndpoint(new_default_id.get(), (ERole) x);
+        const auto role = static_cast<ERole>(x);
+        if (is_default_device(steam_device_id, role)) {
+          steam_roles.push_back(role);
+        }
+      }
+      if (steam_roles.empty()) {
+        return reset_result_e::success;
+      }
+
+      // Always issue the matching enable call, even when the hide call reports
+      // failure or the assignment is superseded while Windows is servicing it.
+      role_device_ids_t fallback_device_ids;
+      const auto hide_status =
+        policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
+      if (SUCCEEDED(hide_status)) {
+        for (const auto role : steam_roles) {
+          auto new_default_dev = default_device(device_enum, role);
+          if (!new_default_dev) {
+            continue;
+          }
+
+          audio::wstring_t new_default_id;
+          if (SUCCEEDED(new_default_dev->GetId(&new_default_id)) && new_default_id) {
+            fallback_device_ids[role_index(role)] = new_default_id.get();
+          }
+        }
+      }
+      const auto show_status =
+        policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+
+      const bool assignment_active =
+        stop_token ?
+          pending_restore_worker_can_write(*stop_token, token, assignment_epoch) :
+          policy_assignment_is_current(assignment_epoch);
+      if (!assignment_active) {
+        reassert_current_policy_assignment();
+        return reset_result_e::inactive;
+      }
+      if (FAILED(hide_status)) {
+        BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv
+                           << util::hex(hide_status).to_string_view();
+        if (FAILED(show_status)) {
+          BOOST_LOG(warning) << "Failed to enable Steam audio device after the hide failure: "sv
+                             << util::hex(show_status).to_string_view();
+        }
+        return reset_result_e::fatal;
+      }
+      if (FAILED(show_status)) {
+        BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv
+                           << util::hex(show_status).to_string_view();
+        return reset_result_e::fatal;
+      }
+
+      bool no_device = false;
+      int failure = 0;
+      for (const auto role : steam_roles) {
+        // Windows may have kept the endpoint it selected while Steam was
+        // hidden, or the user may have picked another device. Adopt that newer
+        // default for this role instead of replacing it with the fallback.
+        if (!is_default_device(steam_device_id, role)) {
+          const bool adopted =
+            stop_token ?
+              adopt_current_policy_endpoint_for_worker(token, assignment_epoch, role) :
+              adopt_current_policy_endpoint_for_assignment(assignment_epoch, role);
+          if (!adopted) {
+            return reset_result_e::inactive;
+          }
+          continue;
+        }
+
+        const auto &new_default_id = fallback_device_ids[role_index(role)];
+        if (new_default_id.empty()) {
+          no_device = true;
+          continue;
+        }
+
+        std::optional<HRESULT> result;
+        if (stop_token) {
+          result = set_default_endpoint_for_worker(
+            *stop_token,
+            token,
+            assignment_epoch,
+            role,
+            new_default_id
+          );
+        } else {
+          result = set_default_endpoint_for_assignment(
+            assignment_epoch,
+            role,
+            new_default_id
+          );
+        }
+        if (!result) {
+          return reset_result_e::inactive;
+        }
+        const auto status = *result;
         if (FAILED(status)) {
-          BOOST_LOG(warning) << "Couldn't set new default audio endpoint for role ["sv << x << "]: 0x"sv << util::hex(status).to_string_view();
+          BOOST_LOG(warning) << "Couldn't set new default audio endpoint for role ["sv << static_cast<int>(role) << "]: 0x"sv << util::hex(status).to_string_view();
           ++failure;
         }
       }
 
       if (failure) {
         return reset_result_e::fatal;
+      }
+      if (no_device) {
+        return reset_result_e::no_device;
       }
 
       BOOST_LOG(info) << "Successfully reset default audio device"sv;
@@ -1657,10 +2436,111 @@ namespace platf::audio {
       no_device,
       no_longer_owned,
       failed,
+      inactive,
     };
 
-    role_restore_result_e try_restore_pending_role(const pending_role_restore_t &role_restore) {
+    static void clear_pending_preferred_restore_for_worker(
+      const std::wstring &preferred_id,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      if (preferred_id.empty()) {
+        return;
+      }
+
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (pending_restore_worker_owns_state_locked(token, assignment_epoch)) {
+        clear_pending_preferred_restore(preferred_id);
+      }
+    }
+
+    static bool update_pending_role_restore_for_worker(
+      const pending_role_restore_t &role_restore,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch,
+      bool publish_expected_endpoint = true
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (!pending_restore_worker_owns_state_locked(token, assignment_epoch)) {
+        return false;
+      }
+
+      for (auto &published_restore : pending_role_restores_ref()) {
+        if (published_restore.role == role_restore.role) {
+          published_restore = role_restore;
+          if (publish_expected_endpoint) {
+            policy_assignment_desired_ids_ref()[role_index(role_restore.role)] =
+              role_restore.expected_current_id;
+          }
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    static void clear_pending_role_restore_for_worker(
+      const pending_role_restore_t &role_restore,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (!pending_restore_worker_owns_state_locked(token, assignment_epoch)) {
+        return;
+      }
+
+      auto &published_restores = pending_role_restores_ref();
+      for (auto it = published_restores.begin(); it != published_restores.end(); ++it) {
+        if (it->role == role_restore.role) {
+          published_restores.erase(it);
+          break;
+        }
+      }
+      if (published_restores.empty()) {
+        pending_restore_steam_device_id_ref().clear();
+      }
+
+      if (role_restore.role == eConsole && !role_restore.preferred_id.empty()) {
+        clear_pending_preferred_restore(role_restore.preferred_id);
+      }
+    }
+
+    static void clear_pending_role_restores_for_worker(
+      const pending_role_restores_t &role_restores,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      std::scoped_lock lock(pending_restore_mutex_ref());
+      if (!pending_restore_worker_owns_state_locked(token, assignment_epoch)) {
+        return;
+      }
+
+      pending_role_restores_ref().clear();
+      pending_restore_steam_device_id_ref().clear();
+      for (const auto &role_restore : role_restores) {
+        if (role_restore.role == eConsole && !role_restore.preferred_id.empty()) {
+          clear_pending_preferred_restore(role_restore.preferred_id);
+        }
+      }
+    }
+
+    role_restore_result_e try_restore_pending_role(
+      const pending_role_restore_t &role_restore,
+      const std::stop_token &stop_token,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+        return role_restore_result_e::inactive;
+      }
+
       if (!is_default_device(role_restore.expected_current_id, role_restore.role)) {
+        if (!adopt_current_policy_endpoint_for_worker(
+              token,
+              assignment_epoch,
+              role_restore.role)) {
+          return role_restore_result_e::inactive;
+        }
         return role_restore_result_e::no_longer_owned;
       }
       if (role_restore.preferred_id.empty()) {
@@ -1680,10 +2560,25 @@ namespace platf::audio {
       // The user may have selected another device while the preferred endpoint
       // was being re-enumerated. Never write over that newer choice.
       if (!is_default_device(role_restore.expected_current_id, role_restore.role)) {
+        if (!adopt_current_policy_endpoint_for_worker(
+              token,
+              assignment_epoch,
+              role_restore.role)) {
+          return role_restore_result_e::inactive;
+        }
         return role_restore_result_e::no_longer_owned;
       }
-
-      const auto status = policy->SetDefaultEndpoint(matched->second.c_str(), role_restore.role);
+      auto result = set_default_endpoint_for_worker(
+        stop_token,
+        token,
+        assignment_epoch,
+        role_restore.role,
+        matched->second
+      );
+      if (!result) {
+        return role_restore_result_e::inactive;
+      }
+      const auto status = *result;
       if (FAILED(status)) {
         BOOST_LOG(warning) << "Couldn't restore captured audio endpoint for role ["sv
                            << static_cast<int>(role_restore.role) << "]: 0x"sv
@@ -1701,7 +2596,17 @@ namespace platf::audio {
       return role_restore_result_e::restored;
     }
 
-    reset_result_e try_reset_pending_roles_from_steam(const std::wstring &steam_device_id, pending_role_restores_t &role_restores) {
+    reset_result_e try_reset_pending_roles_from_steam(
+      const std::wstring &steam_device_id,
+      pending_role_restores_t &role_restores,
+      const std::stop_token &stop_token,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
+      if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+        return reset_result_e::inactive;
+      }
+
       std::vector<std::size_t> steam_role_indexes;
       for (std::size_t i = 0; i < role_restores.size(); ++i) {
         const auto &role_restore = role_restores[i];
@@ -1713,35 +2618,73 @@ namespace platf::audio {
         return reset_result_e::success;
       }
 
-      auto hr = policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
-      if (FAILED(hr)) {
-        BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv << util::hex(hr).to_string_view();
-        return reset_result_e::fatal;
+      if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+        return reset_result_e::inactive;
+      }
+
+      // Publish ownership of the whole visibility transition before Windows
+      // moves any role away from Steam. A new stream can then normalize the
+      // transferred record against the live fallback without waiting here.
+      for (const auto index : steam_role_indexes) {
+        auto &role_restore = role_restores[index];
+        role_restore.fallback_transition = true;
+        if (!update_pending_role_restore_for_worker(
+              role_restore,
+              token,
+              assignment_epoch,
+              false)) {
+          return reset_result_e::inactive;
+        }
       }
 
       std::vector<std::wstring> fallback_device_ids(role_restores.size());
-      for (const auto index : steam_role_indexes) {
-        auto &role_restore = role_restores[index];
-        auto new_default_dev = default_device(device_enum, role_restore.role);
-        if (!new_default_dev) {
-          continue;
-        }
+      const auto hide_status =
+        policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
+      if (SUCCEEDED(hide_status)) {
+        for (const auto index : steam_role_indexes) {
+          auto &role_restore = role_restores[index];
+          auto new_default_dev = default_device(device_enum, role_restore.role);
+          if (!new_default_dev) {
+            continue;
+          }
 
-        audio::wstring_t new_default_id;
-        if (SUCCEEDED(new_default_dev->GetId(&new_default_id)) && new_default_id) {
-          fallback_device_ids[index] = new_default_id.get();
+          audio::wstring_t new_default_id;
+          if (SUCCEEDED(new_default_dev->GetId(&new_default_id)) && new_default_id) {
+            fallback_device_ids[index] = new_default_id.get();
+          }
         }
       }
 
-      hr = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
-      if (FAILED(hr)) {
-        BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv << util::hex(hr).to_string_view();
+      // Always re-enable Steam after hiding it, even if cancellation races
+      // with the fallback or the hide call reports failure.
+      const auto show_status =
+        policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+        reassert_current_policy_assignment();
+        return reset_result_e::inactive;
+      }
+      if (FAILED(hide_status)) {
+        BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv
+                           << util::hex(hide_status).to_string_view();
+        if (FAILED(show_status)) {
+          BOOST_LOG(warning) << "Failed to enable Steam audio device after the hide failure: "sv
+                             << util::hex(show_status).to_string_view();
+        }
+        return reset_result_e::fatal;
+      }
+      if (FAILED(show_status)) {
+        BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv
+                           << util::hex(show_status).to_string_view();
         return reset_result_e::fatal;
       }
 
       bool no_device = false;
       int failure = 0;
       for (const auto index : steam_role_indexes) {
+        if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
+          return reset_result_e::inactive;
+        }
+
         auto &role_restore = role_restores[index];
         const auto &fallback_device_id = fallback_device_ids[index];
 
@@ -1751,13 +2694,41 @@ namespace platf::audio {
           // candidate we observed; otherwise leave the newer default alone.
           if (!fallback_device_id.empty() && is_default_device(fallback_device_id, role_restore.role)) {
             role_restore.expected_current_id = fallback_device_id;
+            role_restore.fallback_transition = false;
+            if (!update_pending_role_restore_for_worker(
+                  role_restore,
+                  token,
+                  assignment_epoch)) {
+              reassert_current_policy_assignment_role(role_restore.role);
+              return reset_result_e::inactive;
+            }
           } else {
+            if (!adopt_current_policy_endpoint_for_worker(
+                  token,
+                  assignment_epoch,
+                  role_restore.role)) {
+              return reset_result_e::inactive;
+            }
             role_restore.expected_current_id.clear();
+            role_restore.fallback_transition = false;
+            clear_pending_role_restore_for_worker(
+              role_restore,
+              token,
+              assignment_epoch
+            );
           }
           continue;
         }
 
         if (fallback_device_id.empty()) {
+          role_restore.fallback_transition = false;
+          if (!update_pending_role_restore_for_worker(
+                role_restore,
+                token,
+                assignment_epoch)) {
+            reassert_current_policy_assignment_role(role_restore.role);
+            return reset_result_e::inactive;
+          }
           no_device = true;
           continue;
         }
@@ -1765,29 +2736,74 @@ namespace platf::audio {
         // Check the role again immediately before writing so a user change
         // cannot be replaced by the fallback chosen for another role.
         if (!is_default_device(steam_device_id, role_restore.role)) {
+          if (!adopt_current_policy_endpoint_for_worker(
+                token,
+                assignment_epoch,
+                role_restore.role)) {
+            return reset_result_e::inactive;
+          }
           role_restore.expected_current_id.clear();
+          role_restore.fallback_transition = false;
+          clear_pending_role_restore_for_worker(
+            role_restore,
+            token,
+            assignment_epoch
+          );
           continue;
         }
-
-        const auto status = policy->SetDefaultEndpoint(fallback_device_id.c_str(), role_restore.role);
+        auto result = set_default_endpoint_for_worker(
+          stop_token,
+          token,
+          assignment_epoch,
+          role_restore.role,
+          fallback_device_id
+        );
+        if (!result) {
+          return reset_result_e::inactive;
+        }
+        const auto status = *result;
         if (FAILED(status)) {
           BOOST_LOG(warning) << "Couldn't set new default audio endpoint for role ["sv
                              << static_cast<int>(role_restore.role) << "]: 0x"sv
                              << util::hex(status).to_string_view();
+          role_restore.fallback_transition = false;
+          if (!update_pending_role_restore_for_worker(
+                role_restore,
+                token,
+                assignment_epoch)) {
+            reassert_current_policy_assignment_role(role_restore.role);
+            return reset_result_e::inactive;
+          }
           ++failure;
           continue;
         }
 
         role_restore.expected_current_id = fallback_device_id;
+        role_restore.fallback_transition = false;
+        if (!update_pending_role_restore_for_worker(
+              role_restore,
+              token,
+              assignment_epoch)) {
+          reassert_current_policy_assignment_role(role_restore.role);
+          return reset_result_e::inactive;
+        }
       }
 
       if (failure) {
-        return reset_result_e::fatal;
+        BOOST_LOG(warning) << "Keeping "sv << failure
+                           << " failed role-specific audio fallback reset(s) queued for retry"sv;
+        return reset_result_e::success;
       }
       return no_device ? reset_result_e::no_device : reset_result_e::success;
     }
 
-    void run_pending_role_restore_task(std::stop_token stop_token, const std::wstring &steam_device_id, pending_role_restores_t role_restores) {
+    void run_pending_role_restore_task(
+      std::stop_token stop_token,
+      const std::wstring &steam_device_id,
+      pending_role_restores_t role_restores,
+      const pending_restore_token_t &token,
+      std::uint64_t assignment_epoch
+    ) {
       device_arrival_notification_t arrival_notifier(steam_device_id);
       HANDLE cancel_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
       if (!cancel_event) {
@@ -1819,20 +2835,52 @@ namespace platf::audio {
 
       BOOST_LOG(info) << "Waiting in background to restore failed audio roles"sv;
       bool retry_fallback_reset = true;
-      while (!stop_token.stop_requested() && !role_restores.empty()) {
+      while (pending_restore_worker_can_write(stop_token, token, assignment_epoch) &&
+             !role_restores.empty()) {
         bool needs_fallback = false;
         for (auto it = role_restores.begin(); it != role_restores.end();) {
-          const auto result = try_restore_pending_role(*it);
+          const auto result = try_restore_pending_role(
+            *it,
+            stop_token,
+            token,
+            assignment_epoch
+          );
           if (result == role_restore_result_e::restored || result == role_restore_result_e::no_longer_owned) {
+            clear_pending_role_restore_for_worker(
+              *it,
+              token,
+              assignment_epoch
+            );
             it = role_restores.erase(it);
             continue;
+          }
+          if (result == role_restore_result_e::inactive) {
+            return;
           }
           if (result == role_restore_result_e::failed) {
             // A direct restore can fail even after the endpoint is visible.
             // While the role is still product-owned Steam, fall back from it
             // instead of leaving that role stuck there.
             if (it->expected_current_id != steam_device_id) {
-              return;
+              // Keep retrying a captured endpoint while the exact fallback we
+              // selected remains active. Only a newer live choice releases it.
+              if (is_default_device(it->expected_current_id, it->role)) {
+                ++it;
+                continue;
+              }
+              if (!adopt_current_policy_endpoint_for_worker(
+                    token,
+                    assignment_epoch,
+                    it->role)) {
+                return;
+              }
+              clear_pending_role_restore_for_worker(
+                *it,
+                token,
+                assignment_epoch
+              );
+              it = role_restores.erase(it);
+              continue;
             }
             needs_fallback = true;
             ++it;
@@ -1844,8 +2892,22 @@ namespace platf::audio {
         }
 
         if (needs_fallback && retry_fallback_reset) {
-          const auto fallback_result = try_reset_pending_roles_from_steam(steam_device_id, role_restores);
+          const auto fallback_result = try_reset_pending_roles_from_steam(
+            steam_device_id,
+            role_restores,
+            stop_token,
+            token,
+            assignment_epoch
+          );
           if (fallback_result == reset_result_e::fatal) {
+            clear_pending_role_restores_for_worker(
+              role_restores,
+              token,
+              assignment_epoch
+            );
+            return;
+          }
+          if (fallback_result == reset_result_e::inactive) {
             return;
           }
           if (fallback_result == reset_result_e::no_device) {
@@ -1861,6 +2923,11 @@ namespace platf::audio {
         // returns, but only while its expected fallback remains selected.
         for (auto it = role_restores.begin(); it != role_restores.end();) {
           if (it->expected_current_id.empty() || (it->preferred_id.empty() && it->expected_current_id != steam_device_id)) {
+            clear_pending_role_restore_for_worker(
+              *it,
+              token,
+              assignment_epoch
+            );
             it = role_restores.erase(it);
           } else {
             ++it;
@@ -1870,7 +2937,9 @@ namespace platf::audio {
           return;
         }
 
-        if (arrival_notifier.wait(cancel_event, 1000)) {
+        // If notification registration failed, use the timed wait as a polling
+        // backoff so a fallback endpoint that appears later is still retried.
+        if (arrival_notifier.wait(cancel_event, 1000) || !have_notifications) {
           retry_fallback_reset = true;
         }
       }
@@ -1901,8 +2970,9 @@ namespace platf::audio {
         return false;
       }
 
-      // Get the current default audio device (if present)
-      auto old_default_dev = default_device(device_enum);
+      // Capture each role separately because installing the driver may replace
+      // only some of the current policy endpoints.
+      const auto old_default_ids = current_default_device_ids();
 
       // Install the Steam Streaming Speakers driver
       WCHAR driver_path[MAX_PATH] = {};
@@ -1914,14 +2984,22 @@ namespace platf::audio {
         // modifying the default audio device or enumerating devices again.
         Sleep(5000);
 
-        // If there was a previous default device, restore that original device as the
-        // default output device just in case installing the new one changed it.
-        if (old_default_dev) {
-          audio::wstring_t old_default_id;
-          old_default_dev->GetId(&old_default_id);
+        // Restore only roles that Windows moved to the newly installed endpoint.
+        // Recheck immediately before each write so a concurrent user choice wins.
+        if (auto matched_steam = find_device_id(match_steam_speakers())) {
+          for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+            const auto role = static_cast<ERole>(x);
+            const auto &old_default_id = old_default_ids[role_index(role)];
+            if (old_default_id.empty() || !is_default_device(matched_steam->second, role)) {
+              continue;
+            }
 
-          for (int x = 0; x < (int) ERole_enum_count; ++x) {
-            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
+            const auto status = policy->SetDefaultEndpoint(old_default_id.c_str(), role);
+            if (FAILED(status)) {
+              BOOST_LOG(warning) << "Couldn't restore pre-install audio endpoint for role ["sv
+                                 << x << "]: 0x"sv
+                                 << util::hex(status).to_string_view();
+            }
           }
         }
 
@@ -1985,6 +3063,7 @@ namespace platf::audio {
     policy_t policy;
     audio::device_enum_t device_enum;
     role_device_ids_t captured_default_device_ids;
+    pending_role_restore_handoff_t pending_role_restore_handoff;
     std::string assigned_sink;
     std::wstring assigned_device_id;
   };
