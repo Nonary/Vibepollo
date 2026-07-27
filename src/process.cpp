@@ -931,7 +931,7 @@ namespace proc {
 
   // Custom move operations to allow global proc replacement if ever needed
   proc_t::proc_t(proc_t &&other) noexcept:
-      _app_id(other._app_id),
+      _app_id(other._app_id.load(std::memory_order_acquire)),
       _env(std::move(other._env)),
       _apps(std::move(other._apps)),
       _app(std::move(other._app)),
@@ -969,7 +969,7 @@ namespace proc {
 #ifdef _WIN32
       stop_lossless_scaling_support();
 #endif
-      _app_id = other._app_id;
+      _app_id.store(other._app_id.load(std::memory_order_acquire), std::memory_order_release);
       _env = std::move(other._env);
       _apps = std::move(other._apps);
       _app = std::move(other._app);
@@ -4100,8 +4100,17 @@ namespace proc {
     // until terminate() runs the undo prep commands.
     {
       std::scoped_lock lk(_apps_mutex);
+      const bool app_was_running = _app_id > 0;
+      if (app_was_running && !_app.uuid.empty()) {
+        const auto refreshed_app = std::find_if(apps.begin(), apps.end(), [&](const ctx_t &candidate) {
+          return candidate.uuid == _app.uuid;
+        });
+        if (refreshed_app != apps.end()) {
+          _app_id = util::from_view(refreshed_app->id);
+        }
+      }
       _apps = std::move(apps);
-      if (_app_id <= 0) {
+      if (!app_was_running) {
         _env = std::move(env);
       }
     }

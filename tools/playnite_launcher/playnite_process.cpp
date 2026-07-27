@@ -37,13 +37,23 @@ namespace playnite_launcher::playnite {
           return std::nullopt;
         }
 
-        std::uint64_t hash = 1469598103934665603ull;
         for (auto &ch : normalized) {
           if (ch == L'/') {
             ch = L'\\';
           } else if (ch >= L'A' && ch <= L'Z') {
             ch = static_cast<wchar_t>(ch - L'A' + L'a');
           }
+        }
+        while (
+          normalized.size() > 1 &&
+          normalized.back() == L'\\' &&
+          !(normalized.size() == 3 && normalized[1] == L':')
+        ) {
+          normalized.pop_back();
+        }
+
+        std::uint64_t hash = 1469598103934665603ull;
+        for (const auto ch : normalized) {
           hash ^= static_cast<std::uint16_t>(ch);
           hash *= 1099511628211ull;
         }

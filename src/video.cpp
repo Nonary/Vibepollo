@@ -2902,6 +2902,7 @@ namespace video {
 
 #ifdef _WIN32
   struct amf_main10_compatibility_override_t {
+    avcodec_buffer_t device_ref;
     AVAMFDeviceContext *device_context;
     std::int64_t runtime_version;
   };
@@ -3038,6 +3039,7 @@ namespace video {
                     << " to FFmpeg during codec validation (real runtime " << describe_amf_version(runtime_version)
                     << ") so HEVC Main10/HDR is not refused.";
     return amf_main10_compatibility_override_t {
+      std::move(amf_device_ref),
       amf_context,
       runtime_version
     };

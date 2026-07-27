@@ -239,7 +239,7 @@ namespace proc {
   private:
     int launch_app_commands();
 
-    int _app_id = 0;
+    std::atomic<int> _app_id {0};
     std::string _app_name;
 
     bp::environment _env;

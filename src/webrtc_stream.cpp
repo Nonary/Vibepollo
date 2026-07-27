@@ -207,7 +207,8 @@ namespace webrtc_stream {
     }
 
     struct WebRtcCaptureConfigKey {
-      int app_id = 0;
+      std::string app_uuid;
+      int legacy_app_id = 0;
       int width = 0;
       int height = 0;
       int framerate = 0;
@@ -2807,7 +2808,14 @@ namespace webrtc_stream {
       const SessionOptions &options
     ) {
       WebRtcCaptureConfigKey key;
-      key.app_id = app_id;
+      if (app_id > 0) {
+        const auto app_ctx = proc::proc.resolve_app(app_id);
+        if (app_ctx && !app_ctx->uuid.empty()) {
+          key.app_uuid = app_ctx->uuid;
+        } else {
+          key.legacy_app_id = app_id;
+        }
+      }
       key.width = video_config.width;
       key.height = video_config.height;
       key.framerate = video_config.framerate;
