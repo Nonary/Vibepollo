@@ -217,13 +217,36 @@ namespace amf {
     preanalysis_enabled = false;
     preanalysis_lookahead_depth = 0;
 
-    const auto preanalysis_plan = lifecycle::resolve_preanalysis(config.rc_mode, config.preanalysis);
+    const bool suppress_preanalysis_for_10bit = colorspace.bit_depth == 10;
+    if (suppress_preanalysis_for_10bit &&
+        (config.preanalysis.value_or(0) != 0 ||
+         (config.rc_mode && lifecycle::rate_control_requires_preanalysis(*config.rc_mode)))) {
+      BOOST_LOG(info) << "AMF: disabling PreAnalysis for a 10-bit encode session "
+                      << "because the PreAnalysis component only consumes NV12";
+    }
+    // QVBR/HQVBR/HQCBR are documented as supported only while PreAnalysis is
+    // enabled, so disabling PA alone still leaves Init returning
+    // AMF_NOT_SUPPORTED on a 10-bit session. Demote the mode as well; SDR is
+    // untouched because the suppression only triggers at bit_depth == 10.
+    const auto effective_rc_mode = lifecycle::effective_rate_control(
+      config.rc_mode,
+      suppress_preanalysis_for_10bit);
+    if (config.rc_mode && effective_rc_mode != config.rc_mode) {
+      BOOST_LOG(warning) << "AMF: rate-control mode " << *config.rc_mode
+                         << " requires PreAnalysis, which cannot run on a 10-bit (P010) pipeline;"
+                         << " demoting to PEAK_CONSTRAINED_VBR (" << *effective_rc_mode
+                         << ") so the HDR session can initialize";
+    }
+    const auto preanalysis_plan = lifecycle::resolve_preanalysis(
+      config.rc_mode,
+      config.preanalysis,
+      suppress_preanalysis_for_10bit);
     // PreAnalysis needs shader-readable inputs and lookahead surface headroom,
     // not a deeper submission queue, so the user's low-latency queue choice is
     // used as-is; the surface pool expands on its own if a runtime retains more.
     const auto effective_input_queue_size = config.input_queue_size;
     const bool adaptive_quantization_supported =
-      lifecycle::rate_control_supports_adaptive_quantization(config.rc_mode);
+      lifecycle::rate_control_supports_adaptive_quantization(effective_rc_mode);
     if (!adaptive_quantization_supported && config.vbaq && *config.vbaq) {
       BOOST_LOG(info) << "AMF: disabling adaptive quantization because CQP rate control is selected";
     }
@@ -710,8 +733,9 @@ namespace amf {
                                   std::max(1, config.pa_lookahead_depth.value_or(preanalysis_plan.lookahead_depth)) :
                                   0;
     if (!lifecycle::apply_rate_control_and_preanalysis(
-          config.rc_mode,
-          config.preanalysis.has_value() || preanalysis_plan.enabled,
+          effective_rc_mode,
+          config.preanalysis.has_value() || preanalysis_plan.enabled ||
+            suppress_preanalysis_for_10bit,
           preanalysis_plan,
           requested_depth,
           [&](int value) {
@@ -740,7 +764,9 @@ namespace amf {
       return false;
     }
 
-    if (config.qvbr_quality_level && config.rc_mode && *config.rc_mode == 4) {
+    // Gate on the mode that was actually written: a 10-bit demotion away from
+    // QVBR makes the quality level meaningless and some runtimes reject it.
+    if (config.qvbr_quality_level && effective_rc_mode && *effective_rc_mode == 4) {
       const wchar_t *qvbr_quality_property = video_format == 0 ? AMF_VIDEO_ENCODER_QVBR_QUALITY_LEVEL :
                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_QVBR_QUALITY_LEVEL :
                                                                    AMF_VIDEO_ENCODER_AV1_QVBR_QUALITY_LEVEL;
@@ -926,8 +952,19 @@ namespace amf {
     // Some runtimes accept a property before Init but substitute a different
     // value while constructing the hardware pipeline. Verify the semantic pair
     // again after Init so probing cannot advertise a mode the driver did not keep.
-    const auto applied_preanalysis_plan = lifecycle::resolve_preanalysis(config.rc_mode, config.preanalysis);
-    if (config.preanalysis || applied_preanalysis_plan.enabled) {
+    const bool suppress_preanalysis_for_10bit = colorspace.bit_depth == 10;
+    const auto applied_preanalysis_plan = lifecycle::resolve_preanalysis(
+      config.rc_mode,
+      config.preanalysis,
+      suppress_preanalysis_for_10bit);
+    // Verify against the mode configure_encoder actually requested. On a 10-bit
+    // session that is the PA-free demotion, not config.rc_mode; comparing the
+    // readback against the raw request would fail our own substitution closed.
+    const auto effective_rc_mode = lifecycle::effective_rate_control(
+      config.rc_mode,
+      suppress_preanalysis_for_10bit);
+    if (config.preanalysis || applied_preanalysis_plan.enabled ||
+        suppress_preanalysis_for_10bit) {
       const wchar_t *preanalysis_property = video_format == 0 ? AMF_VIDEO_ENCODER_PRE_ANALYSIS_ENABLE :
                                             video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE :
                                                                 AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE;
@@ -964,15 +1001,15 @@ namespace amf {
       }
     }
 
-    if (config.rc_mode) {
+    if (effective_rc_mode) {
       const wchar_t *rate_control_property = video_format == 0 ? AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD :
                                              video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD :
                                                                  AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD;
       amf_int64 applied_rate_control = -1;
       const auto rate_control_result = encoder->GetProperty(rate_control_property, &applied_rate_control);
-      if (rate_control_result != AMF_OK || applied_rate_control != *config.rc_mode) {
+      if (rate_control_result != AMF_OK || applied_rate_control != *effective_rc_mode) {
         BOOST_LOG(error) << "AMF: driver changed the requested rate-control mode after Init"
-                         << " (requested=" << *config.rc_mode << ", applied=" << applied_rate_control
+                         << " (requested=" << *effective_rc_mode << ", applied=" << applied_rate_control
                          << ", result=" << rate_control_result << ')';
         return false;
       }
@@ -999,7 +1036,7 @@ namespace amf {
     }
 
     const bool adaptive_quantization_supported_after_init =
-      lifecycle::rate_control_supports_adaptive_quantization(config.rc_mode);
+      lifecycle::rate_control_supports_adaptive_quantization(effective_rc_mode);
     if (!adaptive_quantization_supported_after_init) {
       if (video_format == 2) {
         amf_int64 applied_aq_mode = AMF_VIDEO_ENCODER_AV1_AQ_MODE_CAQ;
@@ -1037,7 +1074,9 @@ namespace amf {
       }
     }
 
-    if (config.qvbr_quality_level && config.rc_mode && *config.rc_mode == 4) {
+    // Mirrors the configure-time gate: the QVBR quality level is only written,
+    // and therefore only verifiable, when QVBR survived the 10-bit demotion.
+    if (config.qvbr_quality_level && effective_rc_mode && *effective_rc_mode == 4) {
       const wchar_t *qvbr_quality_property = video_format == 0 ? AMF_VIDEO_ENCODER_QVBR_QUALITY_LEVEL :
                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_QVBR_QUALITY_LEVEL :
                                                                    AMF_VIDEO_ENCODER_AV1_QVBR_QUALITY_LEVEL;
