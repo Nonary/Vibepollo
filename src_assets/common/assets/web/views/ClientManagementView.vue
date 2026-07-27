@@ -1163,6 +1163,8 @@ const clientsReady = ref<boolean>(false);
 const clientsRefreshing = ref<boolean>(false);
 const clientsLoadError = ref<string>('');
 const lastRefreshedAt = ref<number | null>(null);
+let clientsRefreshGeneration = 0;
+let clientsRefreshRequestsInFlight = 0;
 const platform = ref<string>('');
 const clientSearchQuery = ref<string>('');
 const clientStatusFilter = ref<ClientStatusFilter>('all');
@@ -1638,9 +1640,12 @@ function showClientsLoadError(error: unknown, notify: boolean): void {
   }
 }
 
-async function refreshClients(options: { manual?: boolean } = {}): Promise<void> {
+async function refreshClients(
+  options: { manual?: boolean; background?: boolean } = {},
+): Promise<void> {
   const auth = useAuthStore();
   if (!auth.isAuthenticated) {
+    clientsRefreshGeneration += 1;
     auth.requireLogin();
     clientsReady.value = true;
     clientsLoading.value = false;
@@ -1648,6 +1653,12 @@ async function refreshClients(options: { manual?: boolean } = {}): Promise<void>
     return;
   }
   if (options.manual && clientsRefreshing.value) return;
+  // Timer-driven polling must not continually supersede a slow request. User
+  // actions and mutation follow-ups remain free to start a newer generation.
+  if (options.background && clientsRefreshRequestsInFlight > 0) return;
+
+  const requestGeneration = ++clientsRefreshGeneration;
+  clientsRefreshRequestsInFlight += 1;
   if (options.manual) {
     clientsRefreshing.value = true;
   }
@@ -1655,7 +1666,17 @@ async function refreshClients(options: { manual?: boolean } = {}): Promise<void>
     clientsLoading.value = true;
   }
   try {
-    const r = await http.get<ClientsListResponse>('/api/clients/list');
+    // Force revalidation of older releases' cacheable responses. The endpoint
+    // returns mutable pairing state, so a cached empty list is never useful.
+    const r = await http.get<ClientsListResponse>('/api/clients/list', {
+      // Bound the request so the in-flight guard above can always drain. A
+      // request that never settles would otherwise suppress every later
+      // background poll for the lifetime of the page.
+      timeout: 15000,
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (requestGeneration !== clientsRefreshGeneration) return;
+
     const response = r.data || ({} as ClientsListResponse);
     if (typeof response.platform === 'string') {
       platform.value = response.platform;
@@ -1680,11 +1701,18 @@ async function refreshClients(options: { manual?: boolean } = {}): Promise<void>
       showClientsLoadError(null, !!options.manual);
     }
   } catch (error: unknown) {
-    showClientsLoadError(error, !!options.manual);
+    if (requestGeneration === clientsRefreshGeneration) {
+      showClientsLoadError(error, !!options.manual);
+    }
   } finally {
-    clientsReady.value = true;
-    clientsLoading.value = false;
-    clientsRefreshing.value = false;
+    clientsRefreshRequestsInFlight = Math.max(0, clientsRefreshRequestsInFlight - 1);
+    if (options.manual) {
+      clientsRefreshing.value = false;
+    }
+    if (requestGeneration === clientsRefreshGeneration) {
+      clientsReady.value = true;
+      clientsLoading.value = false;
+    }
   }
 }
 
@@ -2199,7 +2227,7 @@ onMounted(async () => {
   }
   if (refreshIntervalId === null) {
     refreshIntervalId = setInterval(() => {
-      void refreshClients();
+      void refreshClients({ background: true });
     }, 5000);
   }
 });
