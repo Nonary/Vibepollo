@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "generatedAt": "2026-07-18T00:11:12.286Z",
-  "issueCount": 354,
+  "generatedAt": "2026-07-27T18:40:29.779Z",
+  "issueCount": 395,
   "issues": [
     {
       "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.collect_playnite_logs_desc|Export Vibepollo, Playnite, plugin, and display-helper logs.||",
@@ -274,15 +274,6 @@
       "message": "Hard-coded template text should use i18n: tools\\audio-info.exe"
     },
     {
-      "fingerprint": "hardcoded-template-text|configs/tabs/audiovideo/AdapterNameSelector.vue|||tools\\dxgi-info.exe||",
-      "rule": "hardcoded-template-text",
-      "file": "configs/tabs/audiovideo/AdapterNameSelector.vue",
-      "locale": null,
-      "key": null,
-      "value": "tools\\dxgi-info.exe",
-      "message": "Hard-coded template text should use i18n: tools\\dxgi-info.exe"
-    },
-    {
       "fingerprint": "hardcoded-ui-prop|components/app-edit/lossless.ts|||Lossless Scaling||",
       "rule": "hardcoded-ui-prop",
       "file": "components/app-edit/lossless.ts",
@@ -409,6 +400,78 @@
       "message": "Hard-coded UI property \"label\" should use i18n: ${displayName} - ${value}${suffix}"
     },
     {
+      "fingerprint": "locale-missing-key|public/assets/locale/bg.json|bg|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "bg.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/bg.json|bg|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "bg.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/cs.json|cs|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "cs.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/cs.json|cs|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "cs.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/de.json|de|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "de.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/de.json|de|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "de.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "en_GB.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "en_GB.json is missing key config.adapter_name_not_detected"
+    },
+    {
       "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|config.legacy_ordering_desc||Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly, and with third-party integrations that match app names literally, such as MoonDeck and the Moonlight CLI. Artemis clients support this by default.|",
       "rule": "locale-missing-key",
       "file": "public/assets/locale/en_GB.json",
@@ -445,6 +508,24 @@
       "message": "en_GB.json is missing key pin.enable_legacy_ordering"
     },
     {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "en_US.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "en_US.json is missing key config.adapter_name_not_detected"
+    },
+    {
       "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|config.legacy_ordering_desc||Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly, and with third-party integrations that match app names literally, such as MoonDeck and the Moonlight CLI. Artemis clients support this by default.|",
       "rule": "locale-missing-key",
       "file": "public/assets/locale/en_US.json",
@@ -479,6 +560,294 @@
       "key": "pin.enable_legacy_ordering",
       "value": null,
       "message": "en_US.json is missing key pin.enable_legacy_ordering"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/es.json|es|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "es.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/es.json|es|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "es.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/fr.json|fr|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "fr.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/fr.json|fr|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "fr.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/hu.json|hu|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "hu.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/hu.json|hu|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "hu.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/it.json|it|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "it.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/it.json|it|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "it.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ja.json|ja|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ja.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ja.json|ja|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ja.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ko.json|ko|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ko.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ko.json|ko|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ko.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pl.json|pl|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pl.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pl.json|pl|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pl.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pt_BR.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pt_BR.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt.json|pt|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pt.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt.json|pt|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pt.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ru.json|ru|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ru.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ru.json|ru|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ru.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/sv.json|sv|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "sv.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/sv.json|sv|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "sv.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/tr.json|tr|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "tr.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/tr.json|tr|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "tr.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/uk.json|uk|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "uk.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/uk.json|uk|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "uk.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/vi.json|vi|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "vi.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/vi.json|vi|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "vi.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "zh_TW.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "zh_TW.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh.json|zh|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "zh.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh.json|zh|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "zh.json is missing key config.adapter_name_not_detected"
     },
     {
       "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
