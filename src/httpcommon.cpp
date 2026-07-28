@@ -374,9 +374,9 @@ namespace http {
     // writing the private key, so the key is created under a restrictive ACL even if
     // the installer's hardening step was skipped/failed. fs::permissions below only
     // toggles the read-only attribute on Windows and does not set an ACL.
-    statefile::secure_private_directory(pkey_dir.string());
+    (void) statefile::secure_private_directory(pkey_dir.string());
     if (cert_dir != pkey_dir) {
-      statefile::secure_private_directory(cert_dir.string());
+      (void) statefile::secure_private_directory(cert_dir.string());
     }
 
     if (file_handler::write_file(pkey.c_str(), creds.pkey)) {

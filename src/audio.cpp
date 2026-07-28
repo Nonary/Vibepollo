@@ -339,8 +339,10 @@ namespace audio {
     // Change back to the host sink, unless there was none
     const std::string &sink = ctx.sink.host.empty() ? config::audio.sink : ctx.sink.host;
     if (!sink.empty()) {
-      // Best effort, it's allowed to fail
-      ctx.control->set_sink(sink);
+      // Best effort, it's allowed to fail. Windows restores the endpoint
+      // captured for each role instead of applying the console sink to all of
+      // them.
+      ctx.control->restore_sink(sink);
     }
 
     // Ensure none of our virtual sinks (Steam Streaming Speakers / Microphone)

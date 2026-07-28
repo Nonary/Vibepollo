@@ -575,6 +575,35 @@ TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesDesktopBrightnessForRtxStream
   EXPECT_EQ(fake.resolve_calls, 1);
 }
 
+TEST(RtxHdrRuntimeScheduler, ForegroundMismatchRetainsProfileForSameAppResume) {
+  rtx_hdr_config_guard_t config_guard;
+  enable_rtx_hdr_app_override();
+  fake_runtime_t fake;
+  fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
+  fake.profiles[fake.foreground.active_app_exe] = enabled_profile(fake.foreground.active_app_exe, 150);
+
+  fake.runtime.poll_foreground_for_tests();
+  ASSERT_TRUE(fake.runtime.run_pending_profile_lookup_for_tests());
+  auto frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_TRUE(frame.enabled);
+  ASSERT_EQ(frame.contrast, 150);
+  ASSERT_EQ(fake.resolve_calls, 1);
+
+  fake.foreground = mismatched_foreground();
+  fake.runtime.poll_foreground_for_tests();
+  frame = fake.runtime.update_for_frame(std::nullopt);
+  ASSERT_FALSE(frame.enabled);
+
+  fake.foreground = matching_foreground("C:/Games/Foo/foo.exe");
+  fake.runtime.poll_foreground_for_tests();
+  frame = fake.runtime.update_for_frame(std::nullopt);
+
+  EXPECT_TRUE(frame.enabled);
+  EXPECT_TRUE(frame.lookup_available);
+  EXPECT_EQ(frame.contrast, 150);
+  EXPECT_EQ(fake.resolve_calls, 1);
+}
+
 TEST(RtxHdrRuntimeScheduler, DisabledRtxHdrStillBypassesDuringForegroundMismatch) {
   rtx_hdr_config_guard_t config_guard;
   config::video.rtx_hdr.enabled = false;

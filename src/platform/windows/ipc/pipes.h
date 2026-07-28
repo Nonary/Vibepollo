@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <thread>
@@ -241,6 +242,9 @@ namespace platf::dxgi {
      */
     bool establish_connection();
 
+    /// Disconnect only between complete serialized writes.
+    void disconnect_pipe();
+
     /**
      * @brief Processes a received message.
      * @param bytes The message span to process.
@@ -255,6 +259,9 @@ namespace platf::dxgi {
     void safe_execute_operation(const std::string &operation_name, const std::function<void()> &operation) const noexcept;
 
     std::unique_ptr<INamedPipe> _pipe;
+    // The control pipes use byte mode. A full framed message must therefore be
+    // written atomically with respect to other AsyncNamedPipe::send callers.
+    std::mutex _send_mutex;
     std::atomic<bool> _running {false};
     std::jthread _worker;
     MessageCallback _onMessage;
@@ -585,10 +592,14 @@ namespace platf::dxgi {
     bool is_connected() override;
 
   private:
-    bool ensure_connected();
-    void reconnect();
+    /// Return a stable transport snapshot without reconnecting. Connection
+    /// replacement is owned by the display-helper client so its outer pipe
+    /// identity remains the transaction/response-routing generation.
+    std::shared_ptr<INamedPipe> acquire_inner();
+    void create_inner_locked();
 
     Creator _creator;
-    std::unique_ptr<INamedPipe> _inner;
+    std::mutex _inner_mutex;
+    std::shared_ptr<INamedPipe> _inner;
   };
 }  // namespace platf::dxgi

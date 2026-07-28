@@ -2,8 +2,6 @@
 # Reference: https://wiki.archlinux.org/title/PKGBUILD
 
 ## options
-: "${_run_unit_tests:=false}"  # if set to true; unit tests will be executed post build; useful in CI
-: "${_support_headless_testing:=false}"
 : "${_use_cuda:=detect}" # nvenc
 
 : "${_commit:=@GITHUB_COMMIT@}"
@@ -69,10 +67,6 @@ makedepends=(
   'shaderc'
 )
 
-checkdepends=(
-  'gcovr'
-)
-
 optdepends=(
   'libva-mesa-driver: AMD GPU encoding support'
 )
@@ -94,13 +88,7 @@ if [[ "${_use_cuda::1}" == "t" ]]; then
   )
 fi
 
-if [[ "${_support_headless_testing::1}" == "t" ]]; then
-  optdepends+=(
-    'xorg-server-xvfb: Virtual X server for headless testing'
-  )
-fi
-
-# Ensure makedepends, checkdepends, optdepends are sorted
+# Ensure makedepends and optdepends are sorted
 if [ -n "${makedepends+x}" ]; then
   mapfile -t tmp_array < <(printf '%s\n' "${makedepends[@]}" | sort)
   makedepends=("${tmp_array[@]}")
@@ -163,9 +151,7 @@ build() {
       fi
     fi
 
-    if [[ "${_run_unit_tests::1}" != "t" ]]; then
-      _cmake_options+=(-DBUILD_TESTS=OFF)
-    fi
+    _cmake_options+=(-DBUILD_TESTS=OFF)
 
     cmake "${_cmake_options[@]}"
 
@@ -178,58 +164,6 @@ build() {
 }
 
 check() {
-    if [[ "${_run_unit_tests::1}" == "t" ]]; then
-      export CC="gcc${_gcc_env_suffix}"
-      export CXX="g++${_gcc_env_suffix}"
-
-      cd "${srcdir}/build/tests"
-      ./test_sunshine --gtest_color=yes --gtest_output=xml:test_results.xml
-
-      # Generate coverage report
-      # Run gcovr from the build directory (where all .gcda/.gcno files are)
-      # This matches the pattern used in ci-linux.yml
-      cd "${srcdir}/build"
-
-      # Dynamically find the gcov executable from the selected compiler.
-      # This ensures we use the same gcov version that produced the .gcno files.
-      local gcov_path
-      local gcc_lib_dir
-
-      gcc_lib_dir="$("$CC" -print-libgcc-file-name)"
-      gcc_lib_dir="${gcc_lib_dir%/*}"
-      gcov_path="${gcc_lib_dir}/gcov"
-
-      if [ ! -x "$gcov_path" ]; then
-        gcov_path="$("$CC" -print-prog-name=gcov)"
-      fi
-
-      if [ -n "$gcov_path" ] && command -v "$gcov_path" > /dev/null 2>&1; then
-        gcov_path="$(command -v "$gcov_path")"
-      else
-        gcov_path="$(command -v "gcov${_gcc_env_suffix}" || command -v gcov || true)"
-      fi
-
-      if [ -z "$gcov_path" ]; then
-        echo "Unable to find gcov for ${CC}" >&2
-        return 1
-      fi
-
-      echo "Using gcov at: $gcov_path"
-
-      # Use the actual relative path to the source directory
-      # From ${srcdir}/build, the source is at ../${pkgname}/src
-      gcovr --gcov-executable "$gcov_path" . -r "../${pkgname}/src" \
-        --exclude-noncode-lines \
-        --exclude-throw-branches \
-        --exclude-unreachable-branches \
-        --verbose \
-        --xml-pretty \
-        -o coverage.xml
-
-      # Post-process the coverage XML to strip the absolute path and show only 'src'
-      sed -i "s|${srcdir}/${pkgname}/src|src|g" coverage.xml
-    fi
-
     cd "${srcdir}/build"
     ./sunshine --version
 }

@@ -17,8 +17,6 @@ jobs:
     name: Archlinux
     env:
       _use_cuda: true
-      _run_unit_tests: true
-      _support_headless_testing: true
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
@@ -61,8 +59,7 @@ jobs:
             cmake \
             cuda \
             git \
-            namcap \
-            xorg-server-xvfb
+            namcap
           pacman -Scc --noconfirm
 
       - name: Checkout
@@ -115,8 +112,6 @@ jobs:
           tar -czf sunshine.pkg.tar.gz -C pkg .
 
       - name: Build PKGBUILD
-        env:
-          DISPLAY: :1
         id: build
         shell: bash
         working-directory: pkg
@@ -126,22 +121,15 @@ jobs:
 
           source /etc/profile  # ensure cuda is in the PATH
 
-          # Run Xvfb for headless testing
-          Xvfb "${DISPLAY}" -screen 0 1024x768x24 &
-
           # Check PKGBUILD
           sudo -u builder namcap -i PKGBUILD
 
           # Export PKGBUILD options so they're available to makepkg
           export _use_cuda="${_use_cuda}"
-          export _run_unit_tests="${_run_unit_tests}"
-          export _support_headless_testing="${_support_headless_testing}"
 
           # Build the package as builder user (pass through environment variables)
           sudo -u builder env \
             _use_cuda="${_use_cuda}" \
-            _run_unit_tests="${_run_unit_tests}" \
-            _support_headless_testing="${_support_headless_testing}" \
             makepkg -si --noconfirm
 
           # Remove debug package
@@ -149,18 +137,6 @@ jobs:
 
           # Remove problem matcher
           echo "::remove-matcher owner=gcc::"
-
-      - name: Upload coverage artifact
-        if: >-
-          always() &&
-          (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: coverage-Archlinux
-          path: |
-            pkg/src/build/coverage.xml
-            pkg/src/build/tests/test_results.xml
-          if-no-files-found: error
 
       - name: Copy Artifacts
         shell: bash

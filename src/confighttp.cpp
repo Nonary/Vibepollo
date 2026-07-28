@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -394,7 +395,7 @@ namespace confighttp {
     }
 
     bool has_active_stream_sessions() {
-      return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
+      return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_or_pending_sessions();
     }
 
     bool is_rtx_hdr_live_key(std::string_view key) {
@@ -565,11 +566,18 @@ namespace confighttp {
    * @param response The HTTP response object.
    * @param output_tree The JSON tree to send.
    */
-  void send_response(resp_https_t response, const nlohmann::json &output_tree) {
+  void send_response(resp_https_t response, const nlohmann::json &output_tree, std::string_view cache_control) {
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json; charset=utf-8");
+    if (!cache_control.empty()) {
+      headers.emplace("Cache-Control", cache_control);
+    }
     add_cors_headers(headers);
     response->write(success_ok, output_tree.dump(), headers);
+  }
+
+  void send_response(resp_https_t response, const nlohmann::json &output_tree) {
+    send_response(response, output_tree, {});
   }
 
   nlohmann::json load_webrtc_ice_servers() {
@@ -2377,7 +2385,9 @@ namespace confighttp {
 #endif
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
-    send_response(response, output_tree);
+    // The list changes immediately after pair/unpair. Avoid serving an old empty
+    // list from an HTTP cache after the client state has changed.
+    send_response(response, output_tree, "no-store");
   }
 
 #ifdef _WIN32
@@ -2580,11 +2590,9 @@ namespace confighttp {
       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
       bool allow_client_commands = input_tree.value("allow_client_commands", true);
       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
-      std::optional<bool> prefer_10bit_sdr;
+      bool prefer_10bit_sdr = false;
       if (input_tree.contains("prefer_10bit_sdr") && !input_tree["prefer_10bit_sdr"].is_null()) {
         prefer_10bit_sdr = util::get_non_string_json_value<bool>(input_tree, "prefer_10bit_sdr", false);
-      } else {
-        prefer_10bit_sdr.reset();
       }
       std::optional<std::unordered_map<std::string, std::string>> config_overrides;
       if (input_tree.contains("config_overrides")) {
@@ -2728,7 +2736,7 @@ namespace confighttp {
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
 #ifdef _WIN32
-    output_tree["vdisplayStatus"] = (int) proc::vDisplayDriverStatus;
+    output_tree["vdisplayStatus"] = static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire));
 #endif
     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
     for (auto &[name, value] : vars) {
@@ -3314,6 +3322,18 @@ namespace confighttp {
         if (input.contains("app_id")) {
           options.app_id = input.at("app_id").get<int>();
         }
+        if (input.contains("client_uuid")) {
+          if (!input.at("client_uuid").is_string()) {
+            bad_request(response, request, "client_uuid must be a string");
+            return;
+          }
+          auto client_uuid = input.at("client_uuid").get<std::string>();
+          if (client_uuid.empty() || !nvhttp::has_client_uuid(client_uuid)) {
+            bad_request(response, request, "Unknown paired client UUID");
+            return;
+          }
+          options.client_uuid = std::move(client_uuid);
+        }
         if (input.contains("resume")) {
           options.resume = input.at("resume").get<bool>();
         }
@@ -3409,7 +3429,7 @@ namespace confighttp {
 #ifdef _WIN32
       // Lifecycle gap: if capture start fails after a virtual display was created/applied but
       // before a session exists, ensure we don't leave the virtual display behind.
-      if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
+      if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_or_pending_sessions()) {
         (void) platf::virtual_display_cleanup::run(
           "webrtc_session_start_failed",
           config::video.dd.config_revert_on_disconnect
@@ -3694,13 +3714,31 @@ namespace confighttp {
     std::thread([response, session_id, since]() mutable {
       response->close_connection_after_response = true;
 
-      response->write({{"Content-Type", "text/event-stream"}, {"Cache-Control", "no-cache"}, {"Connection", "keep-alive"}, {"Access-Control-Allow-Origin", get_cors_origin()}});
+      response->write({
+        {"Content-Type", "text/event-stream"},
+        {"Cache-Control", "no-cache, no-transform"},
+        {"Connection", "keep-alive"},
+        {"X-Accel-Buffering", "no"},
+        {"Access-Control-Allow-Origin", get_cors_origin()},
+      });
 
       std::promise<bool> header_error;
       response->send([&header_error](const SimpleWeb::error_code &ec) {
         header_error.set_value(static_cast<bool>(ec));
       });
       if (header_error.get_future().get()) {
+        return;
+      }
+
+      // Make the initial response large enough for buffering proxies to release
+      // the stream without adding padding to every browser-visible event.
+      constexpr std::size_t sse_proxy_prelude_size = 2048;
+      *response << ':' << std::string(sse_proxy_prelude_size - 3, ' ') << "\n\n";
+      std::promise<bool> prelude_error;
+      response->send([&prelude_error](const SimpleWeb::error_code &ec) {
+        prelude_error.set_value(static_cast<bool>(ec));
+      });
+      if (prelude_error.get_future().get()) {
         return;
       }
 
@@ -4748,6 +4786,13 @@ namespace confighttp {
     std::string current_mismatch_reason;
     std::optional<golden_restore_status_t> restore_status;
     try {
+      const auto query = request->parse_query_string();
+      const auto compare_current_it = query.find("compare_current");
+      const bool compare_current = compare_current_it != query.end() &&
+                                   (boost::iequals(compare_current_it->second, "1") ||
+                                    boost::iequals(compare_current_it->second, "true") ||
+                                    boost::iequals(compare_current_it->second, "yes"));
+
       for (const auto &p : golden_snapshot_candidates()) {
         if (file_exists_nofail(p)) {
           exists = true;
@@ -4760,7 +4805,11 @@ namespace confighttp {
             if (needs_layout_upgrade) {
               out_of_date_reason = "schema_upgrade_required";
             }
-            if (!has_active_stream_sessions()) {
+            // A current-topology comparison walks QDC_ALL_PATHS. On a system
+            // with stale CCD paths, doing that for every ordinary Settings
+            // status refresh can monopolize the single HTTPS I/O thread. It
+            // is diagnostic-only, so retain it behind an explicit request.
+            if (compare_current && !has_active_stream_sessions()) {
               if (auto mismatch = snapshot_current_mismatch_reason(*root)) {
                 comparison_available = true;
                 if (!mismatch->empty()) {
@@ -5450,7 +5499,7 @@ namespace confighttp {
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
-    register_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
+    register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
 #endif
     register_api_route("^/api/password$", "POST", savePassword);

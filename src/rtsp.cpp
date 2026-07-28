@@ -191,6 +191,8 @@ namespace rtsp_stream {
     snapshot->unique_id = unique_id;
     snapshot->client_uuid = client_uuid;
     snapshot->device_name = device_name;
+    snapshot->client_display_mode_override = client_display_mode_override;
+    snapshot->client_display_refresh_millihz = client_display_refresh_millihz;
     snapshot->enable_hdr = enable_hdr;
     snapshot->prefer_sdr_10bit = prefer_sdr_10bit;
     snapshot->force_sdr = force_sdr;
@@ -206,6 +208,9 @@ namespace rtsp_stream {
     snapshot->gen2_framegen_fix = gen2_framegen_fix;
     snapshot->frame_generation_enabled = frame_generation_enabled;
     snapshot->lossless_scaling_framegen = lossless_scaling_framegen;
+    snapshot->framegen_refresh_rate = framegen_refresh_rate;
+    snapshot->framegen_refresh_millihz = framegen_refresh_millihz;
+    snapshot->framegen_refresh_multiplier = framegen_refresh_multiplier;
     snapshot->frame_generation_provider = frame_generation_provider;
     snapshot->lossless_scaling_target_fps = lossless_scaling_target_fps;
     snapshot->lossless_scaling_rtss_limit = lossless_scaling_rtss_limit;
@@ -1102,6 +1107,10 @@ namespace rtsp_stream {
     return server.session_count();
   }
 
+  int session_count_no_cleanup() {
+    return server.session_count();
+  }
+
   std::shared_ptr<stream::session_t> find_session(const std::string_view &uuid) {
     return server.find_session(uuid);
   }
@@ -1621,20 +1630,20 @@ namespace rtsp_stream {
 
     config.audio.input_only = session->input_only;
 
-    const bool prefer_10bit_sdr = session->prefer_sdr_10bit;
+    const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;
     const bool av1_main10 = config.monitor.videoFormat == 2 && video::active_av1_mode >= 3;
     const bool supports_10bit_dynamic_range = hevc_main10 || av1_main10;
     config.monitor.force_sdr = session->force_sdr;
     if (prefer_10bit_sdr) {
       if (supports_10bit_dynamic_range) {
-        BOOST_LOG(info) << "Preferring 10-bit SDR encode for compatible client request";
+        BOOST_LOG(info) << "Client requested HDR, but 10-bit SDR is enabled for it; encoding Main10 without HDR";
         config.monitor.dynamicRange = 1;
         config.monitor.prefer_sdr_10bit = true;
       } else {
         config.monitor.dynamicRange = 0;
         config.monitor.prefer_sdr_10bit = false;
-        BOOST_LOG(info) << "10-bit SDR preference active, but Main10 is unavailable; using 8-bit SDR encode";
+        BOOST_LOG(info) << "10-bit SDR is enabled for this client, but Main10 is unavailable; using 8-bit SDR encode";
       }
     } else if (config.monitor.dynamicRange == 0) {
       if (session->enable_hdr && supports_10bit_dynamic_range) {

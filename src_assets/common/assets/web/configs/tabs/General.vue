@@ -89,7 +89,7 @@ function removeServerCommand(index: number) {
       v-model="config.sunshine_name"
       setting-key="sunshine_name"
       class="mb-6"
-      placeholder="Vibeshine"
+      placeholder="Vibepollo"
     />
 
     <ConfigFieldRenderer v-model="config.min_log_level" setting-key="min_log_level" class="mb-6" />
@@ -112,7 +112,9 @@ function removeServerCommand(index: number) {
           class="rounded-md border border-dark/10 dark:border-light/10 p-3 space-y-3"
         >
           <div class="flex items-center justify-between gap-2">
-            <div class="text-xs opacity-70">Step {{ index + 1 }}</div>
+            <div class="text-xs opacity-70">
+              {{ $t('apps.prep_step', { number: index + 1 }) }}
+            </div>
             <div class="flex items-center gap-2">
               <Checkbox
                 v-if="platform === 'windows'"

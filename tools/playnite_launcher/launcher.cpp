@@ -20,7 +20,9 @@
 #include <optional>
 #include <ShlObj.h>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <windows.h>
 
@@ -115,20 +117,68 @@ namespace playnite_launcher {
       return s;
     }
 
+    nlohmann::json snapshot_process_environment() {
+      nlohmann::json environment = nlohmann::json::object();
+      LPWCH block = GetEnvironmentStringsW();
+      if (!block) {
+        BOOST_LOG(warning) << "Unable to capture environment for Playnite launch, error=" << GetLastError();
+        return environment;
+      }
+
+      auto free_block = util::fail_guard([block]() {
+        FreeEnvironmentStringsW(block);
+      });
+
+      for (const wchar_t *entry = block; *entry != L'\0'; entry += wcslen(entry) + 1) {
+        std::wstring_view pair(entry);
+        auto separator = pair.find(L'=');
+        // Windows environment blocks can contain drive-current-directory entries
+        // (for example, "=C:=C:\\working"). They are not regular variables and
+        // cannot be set through the .NET process-environment API used by Playnite.
+        if (separator == 0) {
+          separator = pair.find(L'=', 1);
+        }
+        if (separator == std::wstring_view::npos || separator == 0) {
+          continue;
+        }
+
+        try {
+          std::wstring_view name = pair.substr(0, separator);
+          std::wstring_view value = pair.substr(separator + 1);
+          environment[platf::dxgi::wide_to_utf8(std::wstring(name))] =
+            platf::dxgi::wide_to_utf8(std::wstring(value));
+        } catch (...) {
+          BOOST_LOG(warning) << "Unable to serialize an environment variable for Playnite launch";
+        }
+      }
+
+      return environment;
+    }
+
     int run_cleanup_mode(const LauncherConfig &config, const lossless::lossless_scaling_options &lossless_options) {
       BOOST_LOG(info) << "Cleanup mode: starting (installDir='" << config.install_dir << "' fullscreen=" << (config.fullscreen ? 1 : 0) << ")";
+      bool parent_bound_watchdog = false;
       if (!config.wait_for_pid.empty()) {
         try {
-          DWORD wpid = static_cast<DWORD>(std::stoul(config.wait_for_pid));
-          if (wpid != 0 && wpid != GetCurrentProcessId()) {
-            HANDLE hp = OpenProcess(SYNCHRONIZE, FALSE, wpid);
-            if (hp) {
-              BOOST_LOG(info) << "Cleanup mode: waiting for PID=" << wpid << " to exit";
-              DWORD wr = WaitForSingleObject(hp, INFINITE);
-              CloseHandle(hp);
-              BOOST_LOG(info) << "Cleanup mode: wait result=" << wr;
+          if (config.wait_for_pid.find_first_not_of("0123456789") != std::string::npos) {
+            BOOST_LOG(warning) << "Cleanup mode: invalid --wait-for-pid value: '" << config.wait_for_pid << "'";
+          } else {
+            DWORD wpid = static_cast<DWORD>(std::stoul(config.wait_for_pid));
+            if (wpid == 0 || wpid == GetCurrentProcessId()) {
+              BOOST_LOG(warning) << "Cleanup mode: refusing zero/self --wait-for-pid value: " << wpid;
             } else {
-              BOOST_LOG(warning) << "Cleanup mode: unable to open PID for wait: " << wpid;
+              parent_bound_watchdog = true;
+              HANDLE hp = OpenProcess(SYNCHRONIZE, FALSE, wpid);
+              if (hp) {
+                BOOST_LOG(info) << "Cleanup mode: waiting for PID=" << wpid << " to exit";
+                DWORD wr = WaitForSingleObject(hp, INFINITE);
+                CloseHandle(hp);
+                BOOST_LOG(info) << "Cleanup mode: wait result=" << wr;
+              } else {
+                const auto error = GetLastError();
+                BOOST_LOG(info) << "Cleanup mode: parent PID is no longer waitable; continuing to successor grace. PID="
+                                << wpid << " error=" << error;
+              }
             }
           }
         } catch (...) {
@@ -138,6 +188,24 @@ namespace playnite_launcher {
       std::wstring install_dir_w;
       if (!config.install_dir.empty()) {
         install_dir_w = platf::dxgi::utf8_to_wide(config.install_dir);
+      }
+      if (parent_bound_watchdog && !config.install_dir.empty()) {
+        // The previous launcher may have exited because a client disconnected
+        // just as another client resumed the same game. Give the successor time
+        // to claim the install directory before closing any of its processes.
+        constexpr auto successor_grace = 10s;
+        const auto deadline = std::chrono::steady_clock::now() + successor_grace;
+        while (std::chrono::steady_clock::now() < deadline) {
+          if (playnite::cleanup_lease_t::held_by_another_launcher(config.install_dir)) {
+            BOOST_LOG(info) << "Cleanup mode: successor launcher claimed install directory; skipping cleanup";
+            return 0;
+          }
+          std::this_thread::sleep_for(250ms);
+        }
+        if (playnite::cleanup_lease_t::held_by_another_launcher(config.install_dir)) {
+          BOOST_LOG(info) << "Cleanup mode: successor launcher claimed install directory; skipping cleanup";
+          return 0;
+        }
       }
       if (!config.fullscreen && !install_dir_w.empty()) {
         cleanup::cleanup_graceful_then_forceful_in_dir(install_dir_w, config.exit_timeout_secs);
@@ -159,6 +227,7 @@ namespace playnite_launcher {
       BOOST_LOG(info) << "Fullscreen mode: preparing IPC connection to Playnite plugin";
 
       platf::playnite::IpcClient client;
+      const auto fullscreen_launch_environment = snapshot_process_environment();
       std::atomic<bool> pipe_connected {false};
 
       std::atomic<bool> game_start_signal {false};
@@ -181,6 +250,40 @@ namespace playnite_launcher {
         std::string exe_path;
         std::string cleanup_dir;
       } game_state;
+
+      std::string fullscreen_install_dir_utf8;
+      std::optional<playnite::cleanup_lease_t> fullscreen_cleanup_lease;
+      std::string fullscreen_cleanup_lease_install_dir;
+      std::optional<playnite::cleanup_lease_t> game_cleanup_lease;
+      std::string game_cleanup_lease_install_dir;
+
+      auto ensure_cleanup_leases = [&]() {
+        std::string game_install_dir;
+        {
+          std::lock_guard<std::mutex> lk(game_mutex);
+          game_install_dir = game_state.cleanup_dir;
+        }
+
+        auto ensure_lease = [&](const std::string &install_dir, auto &lease, std::string &lease_install_dir) {
+          if (lease_install_dir != install_dir) {
+            lease.reset();
+            lease_install_dir = install_dir;
+          }
+          if (!install_dir.empty() && !lease) {
+            if (auto acquired = playnite::cleanup_lease_t::acquire(install_dir)) {
+              lease = std::move(*acquired);
+              BOOST_LOG(debug) << "Fullscreen cleanup lease: acquired for install directory '" << install_dir << "'";
+            }
+          }
+        };
+
+        ensure_lease(
+          fullscreen_install_dir_utf8,
+          fullscreen_cleanup_lease,
+          fullscreen_cleanup_lease_install_dir
+        );
+        ensure_lease(game_install_dir, game_cleanup_lease, game_cleanup_lease_install_dir);
+      };
 
       std::mutex cleanup_mutex;
       std::string active_cleanup_dir;
@@ -332,6 +435,17 @@ namespace playnite_launcher {
           hello["pid"] = static_cast<uint32_t>(GetCurrentProcessId());
           hello["mode"] = "fullscreen";
           client.send_json_line(hello.dump());
+
+          // Keep the session environment active while this fullscreen helper is
+          // connected. This covers games and other child processes started from
+          // Playnite's fullscreen UI, including manually selected games.
+          nlohmann::json environment_command;
+          environment_command["type"] = "command";
+          environment_command["command"] = "set-environment";
+          environment_command["env"] = fullscreen_launch_environment;
+          if (!client.send_json_line(environment_command.dump())) {
+            BOOST_LOG(warning) << "Fullscreen mode: failed to send persistent environment to Playnite";
+          }
         } catch (...) {}
       });
 
@@ -341,7 +455,6 @@ namespace playnite_launcher {
 
       client.start();
 
-      std::string fullscreen_install_dir_utf8;
       auto launch_playnite_fullscreen = [&]() -> bool {
         bool started = false;
         try {
@@ -350,6 +463,7 @@ namespace playnite_launcher {
             std::filesystem::path assoc_path(assocExe);
             std::filesystem::path base = assoc_path.parent_path();
             fullscreen_install_dir_utf8 = platf::dxgi::wide_to_utf8(base.wstring());
+            ensure_cleanup_leases();
             std::filesystem::path desktopExe = base / L"Playnite.DesktopApp.exe";
             std::filesystem::path targetExe = desktopExe;
             if (!std::filesystem::exists(targetExe) && std::filesystem::exists(assoc_path)) {
@@ -378,6 +492,7 @@ namespace playnite_launcher {
 
       BOOST_LOG(info) << "Fullscreen mode requested; attempting to start Playnite.DesktopApp.exe --startfullscreen";
       (void) launch_playnite_fullscreen();
+      ensure_cleanup_leases();
 
       WCHAR selfPath[MAX_PATH] = {};
       GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
@@ -409,6 +524,7 @@ namespace playnite_launcher {
 
       auto wait_deadline = std::chrono::steady_clock::now() + 10s;
       while (std::chrono::steady_clock::now() < wait_deadline) {
+        ensure_cleanup_leases();
         auto pids = platf::dxgi::find_process_ids_by_name(L"Playnite.FullscreenApp.exe");
         if (!pids.empty()) {
           break;
@@ -417,9 +533,12 @@ namespace playnite_launcher {
       }
 
       auto cancel_fullscreen_focus = [&]() {
+        ensure_cleanup_leases();
         return active_game_flag.load();
       };
+      ensure_cleanup_leases();
       bool focused = focus::focus_process_by_name_extended(L"Playnite.FullscreenApp.exe", config.focus_attempts, config.focus_timeout_secs, config.focus_exit_on_first, cancel_fullscreen_focus);
+      ensure_cleanup_leases();
       BOOST_LOG(info) << (focused ? "Fullscreen focus applied" : "Fullscreen focus not confirmed");
 
       int fullscreen_successes_left = std::max(0, config.focus_attempts);
@@ -507,6 +626,7 @@ namespace playnite_launcher {
       };
 
       while (true) {
+        ensure_cleanup_leases();
         bool fs_running = false;
         std::vector<DWORD> fs_pids;
         try {
@@ -542,7 +662,8 @@ namespace playnite_launcher {
             auto grace = long_session ? game_missing_grace_short : game_missing_grace_long;
             game_alive = (now - *game_missing_since) < grace;
           }
-        } else {
+        }
+        else {
           // gameStarted signaled but the process has not been observed yet; trust IPC + grace.
           game_alive = active_game_now;
         }
@@ -609,8 +730,7 @@ namespace playnite_launcher {
 
         if (fs_running || game_alive || in_grace || waiting_for_pipe) {
           consecutive_missing = 0;
-        }
-        else {
+        } else {
           consecutive_missing++;
         }
 
@@ -772,9 +892,12 @@ namespace playnite_launcher {
       BOOST_LOG(info) << "Launcher mode: preparing IPC connection to Playnite plugin";
 
       platf::playnite::IpcClient client;
+      const auto launch_environment = snapshot_process_environment();
 
       std::atomic<bool> should_exit {false};
       std::atomic<bool> got_started {false};
+      std::atomic<bool> game_stop_pending {false};
+      std::atomic<bool> explicit_stop_requested {false};
       std::atomic<bool> launch_command_sent {false};
       std::atomic<int> launch_retry_budget {2};
       std::atomic<bool> request_game_focus {false};
@@ -785,21 +908,73 @@ namespace playnite_launcher {
       std::atomic<DWORD> last_confirmed_focus_pid {0};
       std::atomic<int64_t> focus_retry_deadline_ms {0};
       std::atomic<int64_t> next_focus_attempt_ms {std::numeric_limits<int64_t>::min()};
+      std::mutex game_info_mutex;
       std::string last_install_dir;
       std::string last_game_exe;
       bool focus_exit_on_first_flag = config.focus_exit_on_first;
       int exit_timeout_secs = config.exit_timeout_secs;
 
+      auto snapshot_game_info = [&]() {
+        std::lock_guard<std::mutex> lock(game_info_mutex);
+        return std::pair {last_install_dir, last_game_exe};
+      };
+
+      std::mutex lossless_backup_mutex;
       lossless::lossless_scaling_profile_backup active_lossless_backup {};
-      bool lossless_profiles_applied = false;
+      std::atomic<bool> lossless_profiles_applied {false};
+
+      // Restores the user's Lossless Scaling configuration and stops the processes
+      // this launcher started. The IPC handler thread and the main loop both reach
+      // this, so the applied flag is claimed with an exchange and the backup is
+      // taken under the mutex; only the winning caller restores, which keeps a
+      // deferred cleanup from double-restoring an already consumed backup.
+      auto teardown_lossless_scaling = [&]() {
+        if (!lossless_profiles_applied.exchange(false, std::memory_order_acq_rel)) {
+          return;
+        }
+        lossless::lossless_scaling_profile_backup backup;
+        {
+          std::lock_guard<std::mutex> lock(lossless_backup_mutex);
+          backup = active_lossless_backup;
+          active_lossless_backup = {};
+        }
+        auto runtime = lossless::capture_lossless_scaling_state();
+        if (!runtime.running_pids.empty()) {
+          lossless::lossless_scaling_stop_processes(runtime);
+        }
+        (void) lossless::lossless_scaling_restore_global_profile(backup);
+      };
 
       std::atomic<bool> watcher_spawned {false};
+      std::optional<playnite::cleanup_lease_t> cleanup_lease;
+      std::string cleanup_lease_install_dir;
+
+      auto ensure_cleanup_lease = [&]() {
+        const auto install_dir = snapshot_game_info().first;
+        if (install_dir.empty()) {
+          return;
+        }
+        if (cleanup_lease_install_dir != install_dir) {
+          cleanup_lease.reset();
+          cleanup_lease_install_dir = install_dir;
+        }
+        if (!cleanup_lease) {
+          if (auto lease = playnite::cleanup_lease_t::acquire(install_dir)) {
+            cleanup_lease = std::move(*lease);
+            BOOST_LOG(debug) << "Cleanup lease: acquired for install directory '" << install_dir << "'";
+          }
+        }
+      };
 
       auto send_launch_command = [&](std::string_view reason) -> bool {
         nlohmann::json j;
         j["type"] = "command";
         j["command"] = "launch";
         j["id"] = config.game_id;
+        // Playnite is usually already running, so its children would otherwise
+        // inherit Playnite's stale environment instead of the per-session
+        // environment Sunshine gave this helper.
+        j["env"] = launch_environment;
         launch_command_sent.store(true, std::memory_order_release);
         if (!client.send_json_line(j.dump())) {
           BOOST_LOG(error) << "Failed to send launch command for id=" << config.game_id << " reason=" << reason;
@@ -864,14 +1039,20 @@ namespace playnite_launcher {
             BOOST_LOG(info) << "Accepting active game sync before launch for id=" << msg.status_game_id;
           }
           if (!msg.status_install_dir.empty()) {
-            bool changed = last_install_dir != msg.status_install_dir;
-            last_install_dir = msg.status_install_dir;
+            bool changed;
+            std::string install_dir;
+            {
+              std::lock_guard<std::mutex> lock(game_info_mutex);
+              changed = last_install_dir != msg.status_install_dir;
+              last_install_dir = msg.status_install_dir;
+              install_dir = last_install_dir;
+            }
             if (!watcher_spawned.load()) {
               bool expected = false;
               if (watcher_spawned.compare_exchange_strong(expected, true)) {
                 WCHAR selfPath[MAX_PATH] = {};
                 GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
-                if (!playnite::spawn_cleanup_watchdog_process(selfPath, last_install_dir, exit_timeout_secs, false, GetCurrentProcessId())) {
+                if (!playnite::spawn_cleanup_watchdog_process(selfPath, install_dir, exit_timeout_secs, false, GetCurrentProcessId())) {
                   watcher_spawned.store(false);
                 }
               }
@@ -881,14 +1062,19 @@ namespace playnite_launcher {
             }
           }
           if (!msg.status_exe.empty()) {
-            bool changed = last_game_exe != msg.status_exe;
-            last_game_exe = msg.status_exe;
+            bool changed;
+            {
+              std::lock_guard<std::mutex> lock(game_info_mutex);
+              changed = last_game_exe != msg.status_exe;
+              last_game_exe = msg.status_exe;
+            }
             if (changed) {
               schedule_focus_retry();
             }
           }
           if (msg.status_name == "gameStarted") {
             got_started.store(true);
+            game_stop_pending.store(false, std::memory_order_release);
             launch_retry_budget.store(0, std::memory_order_release);
             schedule_focus_retry();
             // Wait for user to unlock if they launched the game while locked
@@ -907,7 +1093,7 @@ namespace playnite_launcher {
             if (was_locked) {
               BOOST_LOG(info) << "User unlocked. Proceeding with Lossless Scaling and autofocus.";
             }
-            if (lossless_options.enabled && !lossless_profiles_applied) {
+            if (lossless_options.enabled && !lossless_profiles_applied.load(std::memory_order_acquire)) {
               if (lossless_options.launch_delay_seconds > 0) {
                 BOOST_LOG(info) << "Lossless Scaling: delaying launch by " << lossless_options.launch_delay_seconds << " seconds after gameStarted";
                 auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(lossless_options.launch_delay_seconds);
@@ -922,29 +1108,46 @@ namespace playnite_launcher {
               if (!runtime.running_pids.empty()) {
                 lossless::lossless_scaling_stop_processes(runtime);
               }
+              const auto [install_dir, game_exe] = snapshot_game_info();
               lossless::lossless_scaling_profile_backup backup;
-              bool changed = lossless::lossless_scaling_apply_global_profile(lossless_options, last_install_dir, last_game_exe, backup);
-              if (backup.valid) {
-                active_lossless_backup = backup;
-                lossless_profiles_applied = true;
-              } else {
-                active_lossless_backup = {};
+              bool changed = lossless::lossless_scaling_apply_global_profile(lossless_options, install_dir, game_exe, backup);
+              {
+                std::lock_guard<std::mutex> lock(lossless_backup_mutex);
+                if (backup.valid) {
+                  active_lossless_backup = backup;
+                } else {
+                  active_lossless_backup = {};
+                }
               }
+              lossless_profiles_applied.store(backup.valid, std::memory_order_release);
               DWORD focus_pid = last_confirmed_focus_pid.load(std::memory_order_acquire);
               if (!focus_pid) {
-                if (auto selected = lossless::lossless_scaling_select_focus_pid(last_install_dir, last_game_exe, std::nullopt)) {
+                if (auto selected = lossless::lossless_scaling_select_focus_pid(install_dir, game_exe, std::nullopt)) {
                   focus_pid = *selected;
                 }
               }
               lossless::lossless_scaling_restart_foreground(
                 runtime,
                 changed,
-                last_install_dir,
-                last_game_exe,
+                install_dir,
+                game_exe,
                 focus_pid,
                 lossless_options.legacy_auto_detect
               );
             }
+          }
+          if (msg.status_name == "stopRequested") {
+            BOOST_LOG(info) << "Explicit stop requested for id=" << config.game_id;
+            explicit_stop_requested.store(true, std::memory_order_release);
+            should_exit.store(true, std::memory_order_release);
+            request_game_focus.store(false, std::memory_order_release);
+            game_focus_confirmed.store(false, std::memory_order_release);
+            game_focus_successes_left.store(0, std::memory_order_release);
+            lossless_refocus_pending.store(false, std::memory_order_release);
+            focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
+            next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
+            teardown_lossless_scaling();
+            return;
           }
           if (msg.status_name == "gameStopped") {
             if (!got_started.load(std::memory_order_acquire)) {
@@ -963,24 +1166,23 @@ namespace playnite_launcher {
                                << " (retry budget exhausted)";
               return;
             }
-            should_exit.store(true);
+            // Treat the plugin notification as a request to verify that the
+            // launched process is actually gone. Some launchers emit a
+            // transient stop while handing off to the real game process.
+            game_stop_pending.store(true, std::memory_order_release);
             request_game_focus.store(false, std::memory_order_release);
             game_focus_confirmed.store(false, std::memory_order_release);
             game_focus_successes_left.store(0, std::memory_order_release);
             lossless_refocus_pending.store(false, std::memory_order_release);
-            had_focus_success.store(false, std::memory_order_release);
-            last_confirmed_focus_pid.store(0, std::memory_order_release);
             focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
             next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
-            if (lossless_profiles_applied) {
-              auto runtime = lossless::capture_lossless_scaling_state();
-              if (!runtime.running_pids.empty()) {
-                lossless::lossless_scaling_stop_processes(runtime);
-              }
-              (void) lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
-              active_lossless_backup = {};
-              lossless_profiles_applied = false;
-            }
+            // Process verification is deferred, but the Lossless Scaling overrides are
+            // not: Sunshine force-kills this process group at exit_timeout (10s by
+            // default), which is shorter than the verification grace, so a deferred
+            // restore would never run and would leave the user's Settings.xml mutated
+            // and LosslessScaling.exe alive. Restore now; a resumed game re-applies on
+            // the next gameStarted.
+            teardown_lossless_scaling();
           }
         }
       });
@@ -1023,6 +1225,7 @@ namespace playnite_launcher {
       // Wait for user to unlock if they launched the game while locked
       bool was_initially_locked = false;
       while (platf::dxgi::is_secure_desktop_active()) {
+        ensure_cleanup_lease();
         if (!was_initially_locked) {
           BOOST_LOG(info) << "Secure desktop detected at launch (user locked screen). Waiting for unlock before proceeding...";
           was_initially_locked = true;
@@ -1048,16 +1251,17 @@ namespace playnite_launcher {
       }
 
       auto restart_lossless_after_refocus = [&]() {
-        if (!lossless_options.enabled || !lossless_profiles_applied) {
+        if (!lossless_options.enabled || !lossless_profiles_applied.load(std::memory_order_acquire)) {
           return;
         }
+        const auto [install_dir, game_exe] = snapshot_game_info();
         auto runtime = lossless::capture_lossless_scaling_state();
         if (!runtime.running_pids.empty()) {
           lossless::lossless_scaling_stop_processes(runtime);
         }
         DWORD focus_pid = last_confirmed_focus_pid.load(std::memory_order_acquire);
         if (!focus_pid) {
-          if (auto selected = lossless::lossless_scaling_select_focus_pid(last_install_dir, last_game_exe, std::nullopt)) {
+          if (auto selected = lossless::lossless_scaling_select_focus_pid(install_dir, game_exe, std::nullopt)) {
             focus_pid = *selected;
           }
         }
@@ -1065,8 +1269,8 @@ namespace playnite_launcher {
         lossless::lossless_scaling_restart_foreground(
           runtime,
           true,
-          last_install_dir,
-          last_game_exe,
+          install_dir,
+          game_exe,
           focus_pid,
           lossless_options.legacy_auto_detect
         );
@@ -1104,6 +1308,38 @@ namespace playnite_launcher {
         return normalized_path.compare(0, normalized_dir.size(), normalized_dir) == 0;
       };
 
+      auto process_path_matches_game = [&](const std::wstring &image_path, const std::string &install_dir, const std::string &game_exe) {
+        if (image_path.empty()) {
+          return false;
+        }
+        if (!game_exe.empty()) {
+          try {
+            if (path_equals(image_path, platf::dxgi::utf8_to_wide(game_exe))) {
+              return true;
+            }
+          } catch (...) {
+          }
+        }
+        if (!install_dir.empty()) {
+          try {
+            if (path_starts_with_dir(image_path, platf::dxgi::utf8_to_wide(install_dir))) {
+              return true;
+            }
+          } catch (...) {
+          }
+        }
+        return false;
+      };
+
+      auto process_matches_game = [&](DWORD pid, const std::string &install_dir, const std::string &game_exe) {
+        if (!pid) {
+          return false;
+        }
+        std::wstring image_path;
+        return focus::get_process_image_path(pid, image_path) &&
+               process_path_matches_game(image_path, install_dir, game_exe);
+      };
+
       auto foreground_pid = [&]() -> DWORD {
         HWND fg = GetForegroundWindow();
         if (!fg || !IsWindowVisible(fg) || IsIconic(fg) || GetWindow(fg, GW_OWNER) != nullptr) {
@@ -1119,29 +1355,8 @@ namespace playnite_launcher {
         if (!pid) {
           return false;
         }
-        std::wstring img;
-        if (!focus::get_process_image_path(pid, img)) {
-          return false;
-        }
-        if (!last_game_exe.empty()) {
-          try {
-            std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
-            if (path_equals(img, wexe)) {
-              return true;
-            }
-          } catch (...) {
-          }
-        }
-        if (!last_install_dir.empty()) {
-          try {
-            std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
-            if (path_starts_with_dir(img, wdir)) {
-              return true;
-            }
-          } catch (...) {
-          }
-        }
-        return false;
+        const auto [install_dir, game_exe] = snapshot_game_info();
+        return process_matches_game(pid, install_dir, game_exe);
       };
 
       auto focus_game_after_start = [&]() {
@@ -1222,9 +1437,10 @@ namespace playnite_launcher {
         auto cancel = [&]() {
           return should_exit.load();
         };
-        if (!applied && !last_game_exe.empty()) {
+        const auto [install_dir, game_exe] = snapshot_game_info();
+        if (!applied && !game_exe.empty()) {
           try {
-            std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
+            std::wstring wexe = platf::dxgi::utf8_to_wide(game_exe);
             std::filesystem::path p = wexe;
             std::wstring base = p.filename().wstring();
             if (!base.empty()) {
@@ -1233,9 +1449,9 @@ namespace playnite_launcher {
           } catch (...) {
           }
         }
-        if (!applied && !last_install_dir.empty()) {
+        if (!applied && !install_dir.empty()) {
           try {
-            std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
+            std::wstring wdir = platf::dxgi::utf8_to_wide(install_dir);
             applied = focus::focus_by_install_dir_extended(wdir, 1, slice, true, cancel, &confirmed_focus_pid);
           } catch (...) {
           }
@@ -1254,49 +1470,72 @@ namespace playnite_launcher {
       };
 
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.timeout_sec);
-      // While the plugin connection is active, gameStarted/gameStopped is authoritative.
-      // Process paths reported by launchers and mod managers can point somewhere other
-      // than the actual game, so treating a local scan miss as game exit would tear down
-      // a healthy stream. If Playnite or its IPC goes away, fall back to the process scan
-      // so quit-on-launch configurations can still clean themselves up.
+      // While the plugin connection is active, gameStarted is authoritative.
+      // A gameStopped notification starts local process verification rather
+      // than tearing the session down immediately, because launch handoffs can
+      // emit a transient stop while the actual game remains alive.
       std::optional<std::chrono::steady_clock::time_point> game_missing_since;
+      std::optional<std::chrono::steady_clock::time_point> game_verification_deadline;
       const auto game_missing_grace = std::chrono::seconds(15);
+      const auto game_verification_limit = std::chrono::seconds(std::max(30, config.timeout_sec));
       while (!should_exit.load()) {
+        ensure_cleanup_lease();
         focus_game_after_start();
         if (!got_started.load() && std::chrono::steady_clock::now() >= deadline) {
           break;
         }
         if (got_started.load()) {
-          if (client.is_active()) {
+          const bool verify_game_processes =
+            !client.is_active() || game_stop_pending.load(std::memory_order_acquire);
+          if (!verify_game_processes) {
             game_missing_since.reset();
+            game_verification_deadline.reset();
             std::this_thread::sleep_for(250ms);
             continue;
           }
+          const auto now = std::chrono::steady_clock::now();
+          const auto [install_dir, game_exe] = snapshot_game_info();
           bool any_game_proc = false;
-          if (!last_install_dir.empty()) {
+          const auto confirmed_focus_pid = last_confirmed_focus_pid.load(std::memory_order_acquire);
+          if (confirmed_focus_pid && process_matches_game(confirmed_focus_pid, install_dir, game_exe)) {
+            any_game_proc = true;
+          }
+          if (!install_dir.empty()) {
             try {
-              std::wstring wdir = platf::dxgi::utf8_to_wide(last_install_dir);
+              std::wstring wdir = platf::dxgi::utf8_to_wide(install_dir);
               if (!focus::find_pids_under_install_dir_sorted(wdir, false).empty()) {
                 any_game_proc = true;
               }
             } catch (...) {
             }
           }
-          if (!any_game_proc && !last_game_exe.empty()) {
+          if (!any_game_proc && !game_exe.empty()) {
             try {
-              std::wstring wexe = platf::dxgi::utf8_to_wide(last_game_exe);
+              std::wstring wexe = platf::dxgi::utf8_to_wide(game_exe);
               std::filesystem::path p(wexe);
               std::wstring base = p.filename().wstring();
-              if (!base.empty() && !platf::dxgi::find_process_ids_by_name(base.c_str()).empty()) {
-                any_game_proc = true;
+              if (!base.empty()) {
+                for (const auto pid : platf::dxgi::find_process_ids_by_name(base.c_str())) {
+                  if (process_matches_game(pid, install_dir, game_exe)) {
+                    any_game_proc = true;
+                    break;
+                  }
+                }
               }
             } catch (...) {
             }
           }
           if (any_game_proc) {
             game_missing_since.reset();
-          } else if (!last_install_dir.empty() || !last_game_exe.empty()) {
-            auto now = std::chrono::steady_clock::now();
+            game_verification_deadline = now + game_verification_limit;
+          } else {
+            if (!game_verification_deadline) {
+              game_verification_deadline = now + game_verification_limit;
+            } else if (now >= *game_verification_deadline) {
+              BOOST_LOG(warning) << "Game process verification deadline reached; proceeding to cleanup";
+              should_exit.store(true);
+              break;
+            }
             if (!game_missing_since) {
               game_missing_since = now;
             } else if (now - *game_missing_since >= game_missing_grace) {
@@ -1313,19 +1552,39 @@ namespace playnite_launcher {
         BOOST_LOG(warning) << (got_started.load() ? "Timeout after start unexpectedly; exiting" : "Timeout waiting for game start; exiting");
       }
 
-      BOOST_LOG(info) << "Playnite reported gameStopped or timeout; scheduling cleanup and exiting";
-      if (!last_install_dir.empty()) {
+      request_game_focus.store(false, std::memory_order_release);
+      game_focus_confirmed.store(false, std::memory_order_release);
+      game_focus_successes_left.store(0, std::memory_order_release);
+      lossless_refocus_pending.store(false, std::memory_order_release);
+      had_focus_success.store(false, std::memory_order_release);
+      last_confirmed_focus_pid.store(0, std::memory_order_release);
+      focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
+      next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
+
+      const auto install_dir = snapshot_game_info().first;
+      if (explicit_stop_requested.load(std::memory_order_acquire)) {
+        if (!install_dir.empty()) {
+          try {
+            BOOST_LOG(info) << "Explicit stop requested; beginning graceful cleanup immediately";
+            cleanup::cleanup_graceful_then_forceful_in_dir(
+              platf::dxgi::utf8_to_wide(install_dir),
+              exit_timeout_secs
+            );
+          } catch (...) {
+            BOOST_LOG(warning) << "Explicit stop requested; immediate graceful cleanup failed";
+          }
+        } else {
+          BOOST_LOG(warning) << "Explicit stop requested without an install directory; falling back to cleanup watcher";
+        }
+      }
+
+      BOOST_LOG(info) << "Playnite launcher is scheduling fallback cleanup and exiting";
+      if (!install_dir.empty() && !watcher_spawned.load()) {
         WCHAR selfPath[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
-        static_cast<void>(playnite::spawn_cleanup_watchdog_process(selfPath, last_install_dir, exit_timeout_secs, false, std::nullopt));
+        static_cast<void>(playnite::spawn_cleanup_watchdog_process(selfPath, install_dir, exit_timeout_secs, false, GetCurrentProcessId()));
       }
-      if (lossless_profiles_applied) {
-        auto runtime = lossless::capture_lossless_scaling_state();
-        if (!runtime.running_pids.empty()) {
-          lossless::lossless_scaling_stop_processes(runtime);
-        }
-        (void) lossless::lossless_scaling_restore_global_profile(active_lossless_backup);
-      }
+      teardown_lossless_scaling();
       int exit_code = should_exit.load() ? 0 : 4;
       client.stop();
       return exit_code;

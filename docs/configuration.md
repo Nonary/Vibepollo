@@ -925,13 +925,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             **Windows:**
             <br>
-            Enter the following command in command prompt or PowerShell.
+            The Audio/Video tab lists every detected GPU in a dropdown, so this value normally does not
+            need to be typed by hand. The same names can also be listed with:
             @code{}
             %ProgramFiles%\Sunshine\tools\dxgi-info.exe
             @endcode
             For hybrid graphics systems, DXGI reports the outputs are connected to whichever graphics
             adapter that the application is configured to use, so it's not a reliable indicator of how the
             display is physically connected.
+            <br>
+            <br>
+            Once an adapter is selected, capture stays pinned to it. If that GPU currently has no display
+            attached (for example a TV that is powered off), Vibepollo does **not** fall back to another
+            GPU; it treats the host as displayless and creates the virtual display on the selected adapter.
             }
         </td>
     </tr>
@@ -2509,32 +2515,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### prefer_10bit_sdr
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Capture and encode SDR sessions in 10-bit when the client and encoder negotiate HEVC/AV1 Main10 support.
-            @note{HDR stays disabled.}
-            @note{Applies to HEVC or AV1 only; H.264 streaming remains 8-bit.}
-            @warning{May cause crashes on client devices with older GPUs that don't support HEVC 10-bit decoding.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            disabled
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            prefer_10bit_sdr = enabled
-            @endcode</td>
-    </tr>
-</table>
-
 ### capture
 
 <table>
@@ -2647,7 +2627,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="5">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>nvenc</td>
         <td>For NVIDIA graphics cards</td>
     </tr>
@@ -2657,7 +2637,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>amdvce</td>
-        <td>For AMD graphics cards</td>
+        <td>For AMD graphics cards (native AMF encoder)</td>
+    </tr>
+    <tr>
+        <td>amdvce_legacy</td>
+        <td>Explicit rollback to the FFmpeg-based AMD AMF encoder. Never selected automatically —
+            automatic probing and `amdvce` fail closed instead of silently falling back.
+            @note{Applies to Windows only.}</td>
     </tr>
     <tr>
         <td>vaapi</td>
@@ -2744,7 +2730,9 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Optional FPS limit to apply while streaming. Set to 0 to use the stream's requested FPS.
+            Optional FPS limit to apply while streaming. RTSS supports fractional values with up to
+            three decimal places; NVIDIA Control Panel rounds them to the nearest whole FPS.
+            Set to 0 to use a client display-mode override when present, otherwise the stream's requested FPS.
         </td>
     </tr>
     <tr>
@@ -2754,7 +2742,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            frame_limiter_fps_limit = 120
+            frame_limiter_fps_limit = 59.94
             @endcode</td>
     </tr>
 </table>
@@ -3338,6 +3326,18 @@ They appear in the Frame Limiter section of the settings UI.
 
 ## AMD AMF Encoder
 
+@note{HDR (HEVC Main10) encoding through AMF requires the AMF runtime shipped with Adrenalin 23.30
+or newer, which reports AMF 1.4.32. FFmpeg refuses 10-bit P010 surfaces on any older runtime, so HDR
+is not offered to clients even though Vibepollo's own AMF check only needs 1.4.23. Update your
+graphics drivers if HDR is unavailable on an AMD GPU. This limitation applies to the
+@code{amdvce_legacy} rollback encoder only; the native @code{amdvce} encoder talks to AMF directly
+and is not subject to FFmpeg's 10-bit refusal. Vibepollo carries one narrow exception for the legacy
+encoder: on a Radeon Pro 5500 XT (PCI @code{1002:7340}) running AMF 1.4.31.x, it presents 1.4.32 to
+FFmpeg for the duration of codec validation so HEVC Main10 is not refused. The exception is applied
+automatically, has no configuration option, and does not apply to any other adapter. The detected AMF
+runtime version is written to the log on every AMD HDR HEVC attempt (search for
+@code{AMF Main10 override}).}
+
 ### amd_usage
 
 <table>
@@ -3411,7 +3411,7 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>cqp</td>
         <td>constant qp mode</td>
     </tr>
@@ -3426,6 +3426,48 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>vbr_peak</td>
         <td>variable bitrate, peak constrained</td>
+    </tr>
+    <tr>
+        <td>qvbr</td>
+        <td>quality-defined variable bitrate (see amd_qvbr_quality_level)</td>
+    </tr>
+    <tr>
+        <td>hqvbr</td>
+        <td>high quality variable bitrate</td>
+    </tr>
+    <tr>
+        <td>hqcbr</td>
+        <td>high quality constant bitrate</td>
+    </tr>
+</table>
+
+### amd_qvbr_quality_level
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The target quality level used by the `qvbr` rate control method, where 1 is the lowest quality and 51
+            is the highest. Higher values spend more bits to preserve quality.
+            @note{This option only applies to AMD [encoders](#encoder) with `amd_rc` set to `qvbr`. Native `amdvce` automatically enables PreAnalysis with a one-frame low-latency lookahead for `qvbr`, `hqvbr`, and `hqcbr`.}
+            @note{Leave this at `0` to keep the encoder default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1-51 (0 to use the encoder default)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_qvbr_quality_level = 18
+            @endcode</td>
     </tr>
 </table>
 
@@ -3461,6 +3503,7 @@ They appear in the Frame Limiter section of the settings UI.
         <td>Description</td>
         <td colspan="2">
             The quality profile controls the tradeoff between speed and quality of encoding.
+            `auto` leaves the quality property unset so the selected AMF usage preset can choose it.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3477,7 +3520,11 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="4">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
         <td>speed</td>
         <td>prefer speed</td>
     </tr>
@@ -3497,8 +3544,9 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Preanalysis can increase encoding quality at the cost of latency.
-            @note{This option only applies when using amdvce [encoder](#encoder).}
+            Preanalysis can increase encoding quality at the cost of latency. Native `amdvce` uses a one-frame
+            low-latency lookahead; it is enabled automatically by `qvbr`, `hqvbr`, and `hqcbr`. The setting is
+            also forwarded to `amdvce_legacy`.
         </td>
     </tr>
     <tr>
@@ -3523,6 +3571,8 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">
             Variance Based Adaptive Quantization (VBAQ) can increase subjective visual quality by prioritizing
             allocation of more bits to smooth areas compared to more textured areas.
+            `auto` leaves the property unset so the selected AMF usage preset can choose it. VBAQ is enabled
+            by default.
             @note{This option only applies when using amdvce [encoder](#encoder).}
         </td>
     </tr>
@@ -3537,6 +3587,19 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">@code{}
             amd_vbaq = enabled
             @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>follow the selected AMF usage preset</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>enable VBAQ</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>disable VBAQ</td>
     </tr>
 </table>
 
@@ -3566,7 +3629,7 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td rowspan="3">Choices</td>
         <td>auto</td>
-        <td>let ffmpeg decide</td>
+        <td>leave the encoder default</td>
     </tr>
     <tr>
         <td>cabac</td>
@@ -3575,6 +3638,91 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>cavlc</td>
         <td>context adaptive variable-length coding - higher quality</td>
+    </tr>
+</table>
+
+### amd_av1_screen_content
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Enable AV1 screen-content coding tools, which can improve efficiency and text/UI clarity for desktop and
+            screen-heavy content.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_screen_content = enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>force screen-content tools on</td>
+    </tr>
+    <tr>
+        <td>disabled</td>
+        <td>force screen-content tools off</td>
+    </tr>
+</table>
+
+### amd_av1_latency_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            AV1 encoding-latency tier. Lower tiers finish each frame faster at the cost of higher power draw.
+            @note{AV1 only. This option only applies to the native amdvce [encoder](#encoder) (not amdvce_legacy).}
+            @note{Leave at `auto` to use the driver default.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            amd_av1_latency_mode = lowest
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>auto</td>
+        <td>leave the driver default</td>
+    </tr>
+    <tr>
+        <td>none</td>
+        <td>balance latency and power</td>
+    </tr>
+    <tr>
+        <td>power_saving</td>
+        <td>real-time with lower power</td>
+    </tr>
+    <tr>
+        <td>realtime</td>
+        <td>real-time</td>
+    </tr>
+    <tr>
+        <td>lowest</td>
+        <td>lowest latency (highest power)</td>
     </tr>
 </table>
 

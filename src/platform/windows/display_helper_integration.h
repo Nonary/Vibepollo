@@ -6,23 +6,45 @@
 
 #include "src/config.h"
 #include "src/display_helper_builder.h"
+#include "src/platform/windows/display_helper_v2/timing.h"
 #include "src/rtsp.h"
 
 #include <display_device/types.h>
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
 namespace display_helper_integration {
+  /// Per-APPLY identity for the v2 capture gate. It is intentionally owned by
+  /// the launching session rather than looked up through mutable global state.
+  struct ApplyVerificationTicket {
+    std::uint64_t generation {0};
+    std::uint64_t helper_request_id {0};
+    std::uint64_t client_wait_generation {0};
+    std::uint64_t connection_generation {0};
+    bool uses_v2_helper {false};
+    std::chrono::steady_clock::time_point startup_deadline {};
+  };
+
   // Launch the helper (if needed) and process the provided builder request.
   // Returns true if the helper accepted the command; false to allow fallback.
-  bool apply(const DisplayApplyRequest &request);
+  // A cancellation predicate is intended for recovery workers during shutdown.
+  // It interrupts helper IPC waits and disables the potentially blocking
+  // in-process fallback for that caller.
+  bool apply(
+    const DisplayApplyRequest &request,
+    ApplyVerificationTicket *verification_ticket = nullptr,
+    std::function<bool()> cancellation_predicate = {});
 
   // Returns true if a deferred APPLY request is currently queued.
   bool has_pending_apply();
 
-  // Retry a deferred APPLY request once a user session is available.
-  bool apply_pending_if_ready();
+  // Retry a deferred APPLY request once a user session is available. The
+  // optional predicate lets an owned shutdown worker abandon a long helper
+  // operation before teardown begins.
+  bool apply_pending_if_ready(std::function<bool()> cancellation_predicate = {});
 
   // Clear any deferred APPLY request (used when sessions end).
   void clear_pending_apply();
@@ -33,7 +55,7 @@ namespace display_helper_integration {
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
   // Returns true if a DISARM command was sent successfully.
-  bool disarm_pending_restore();
+  bool disarm_pending_restore(std::function<bool()> cancellation_predicate = {});
 
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
@@ -64,9 +86,26 @@ namespace display_helper_integration {
     Unknown
   };
 
+  // APPLY acknowledgement and verification share this single stream-start
+  // budget; verification receives only the time left after APPLY.
+  inline constexpr auto kApplyVerificationTimeout = display_helper::v2::timing::kApplyStartupBudget;
+  inline constexpr auto kApplyVerificationGateWaitTimeout =
+    kApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
+
   // Wait for helper verification to finish after APPLY (v2 engine only).
-  // Returns Unknown on timeout/unavailable/legacy engine.
-  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout);
+  // Returns Unknown on timeout, legacy engine, or when verification is unavailable.
+  ApplyVerificationStatus wait_for_apply_verification(
+    const ApplyVerificationTicket &ticket,
+    std::chrono::milliseconds timeout);
+
+  // True when the most recent successful APPLY is verified and has no pending
+  // HDR/topology workaround that requires the settling fallback.
+  bool last_apply_is_capture_stable();
+
+  // True when the most recent APPLY asked for HDR to be enabled. Capture start
+  // uses this to wait for HDR to actually come up rather than for a fixed
+  // interval, so a session never begins in SDR and transitions mid-stream.
+  bool last_apply_requested_hdr();
 #endif
 
 #ifdef _WIN32
@@ -100,7 +139,8 @@ namespace display_helper_integration {
   // and restarts/re-handshakes if it crashes. No-ops if already running.
   void start_watchdog();
 
-  // Stop the helper watchdog when no streams are active.
-  void stop_watchdog();
+  // Stop the helper watchdog when no streams are active. Forced stops are
+  // reserved for process shutdown or an explicit user-requested restore.
+  void stop_watchdog(bool force = false);
 
 }  // namespace display_helper_integration

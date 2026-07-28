@@ -6,6 +6,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace display_helper::v2 {
@@ -13,37 +14,108 @@ namespace display_helper::v2 {
   public:
     virtual ~IDisplaySettings() = default;
 
+    /// Apply the non-topology portion of a configuration after the requested
+    /// topology is active and its devices have finished enumerating.
     virtual ApplyStatus apply(const SingleDisplayConfiguration &config) = 0;
     virtual ApplyStatus apply_topology(const ActiveTopology &topology) = 0;
     virtual EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) = 0;
     virtual ActiveTopology capture_topology() = 0;
+    /// Validate a topology stored in a restore snapshot. Structurally invalid
+    /// snapshots must be rejected; transient OS validation failures should be
+    /// retried by the staged restore path rather than discarded permanently.
     virtual bool validate_topology(const ActiveTopology &topology) = 0;
+
+    /// Strict OS validation for a user-requested topology transition. Unlike
+    /// restore validation, transient SDC_VALIDATE failures are not accepted.
+    virtual bool validate_topology_for_apply(const ActiveTopology &topology) {
+      return validate_topology(topology);
+    }
+
     virtual Snapshot capture_snapshot() = 0;
     virtual bool apply_snapshot(const Snapshot &snapshot) = 0;
+
+    /// Apply snapshot settings after its topology has been activated and
+    /// settled. The default preserves compatibility with simple test fakes.
+    virtual bool apply_snapshot_settings(const Snapshot &snapshot) {
+      return apply_snapshot(snapshot);
+    }
+
     virtual bool snapshot_matches_current(const Snapshot &snapshot) = 0;
     virtual bool configuration_matches(const SingleDisplayConfiguration &config) = 0;
+    /// Verify configuration fields using the target scope that survived the
+    /// staged topology activation. The default keeps small test/alternate
+    /// backends compatible while preserving empty-id primary-group semantics
+    /// for callers that implement the richer overload.
+    virtual bool configuration_matches(
+      const SingleDisplayConfiguration &config,
+      const ResolvedConfigurationTarget &target) {
+      if (target.duplicate_device_ids.empty()) {
+        return configuration_matches(config);
+      }
+      for (const auto &device_id : target.duplicate_device_ids) {
+        auto scoped = config;
+        scoped.m_device_id = device_id;
+        if (!configuration_matches(scoped)) {
+          return false;
+        }
+      }
+      return true;
+    }
     virtual bool set_display_origin(const std::string &device_id, const display_device::Point &origin) = 0;
     virtual std::optional<ActiveTopology> compute_expected_topology(
       const SingleDisplayConfiguration &config,
       const std::optional<ActiveTopology> &base_topology = std::nullopt) = 0;
+
+    /// Resolve the requested topology together with the concrete device that
+    /// SettingsManager would configure. The default keeps simple fakes and
+    /// alternate backends compatible; Windows overrides it so an empty
+    /// device_id still has an enforceable target after OS adjustment.
+    virtual std::optional<ApplyTopologyPlan> compute_apply_topology_plan(
+      const SingleDisplayConfiguration &config,
+      const std::optional<ActiveTopology> &base_topology = std::nullopt) {
+      auto topology = compute_expected_topology(config, base_topology);
+      if (!topology) {
+        return std::nullopt;
+      }
+      return ApplyTopologyPlan {
+        .topology = std::move(*topology),
+        .activation_target = TopologyActivationTarget {
+          .kind = config.m_device_id.empty() ?
+                    DeviceTargetKind::DefaultPrimaryGroup :
+                    DeviceTargetKind::ExplicitDevice,
+          .acceptable_device_ids = config.m_device_id.empty() ?
+                                     std::set<std::string> {} :
+                                     std::set<std::string> {config.m_device_id},
+        },
+      };
+    }
     virtual bool is_topology_same(const ActiveTopology &lhs, const ActiveTopology &rhs) = 0;
 
-    // --- legacy engine capabilities (defaulted so test fakes only override what they assert on) ---
+    // --- staged engine capabilities (defaulted so test fakes only override what they assert on) ---
 
-    /// Cheap structural validity check (isTopologyValid), as opposed to the
-    /// OS-level SDC_VALIDATE performed by validate_topology().
+    /// Cheap structural validity check (isTopologyValid).
     virtual bool topology_is_valid(const ActiveTopology &topology) {
       return !topology.empty();
     }
 
-    /// SDC_VALIDATE soft-test of a configuration against an optional base topology.
-    virtual bool soft_test(const SingleDisplayConfiguration &, const std::optional<ActiveTopology> &) {
+    /// Attempt a display stack recovery between failed topology stages.
+    virtual bool recover_display_stack() {
+      return false;
+    }
+
+    /// Capture the stable session topology used to compute consecutive APPLYs.
+    virtual bool prepare_staged_apply(const ActiveTopology &) {
       return true;
     }
 
-    /// Attempt a display stack recovery (used before retrying a failed soft-test).
-    virtual bool recover_display_stack() {
-      return false;
+    /// Clear session-scoped settings state after a confirmed restore.
+    virtual bool reset_staged_apply_state() {
+      return true;
+    }
+
+    /// Check primary state during final verification.
+    virtual bool is_primary_device(const std::string &) {
+      return true;
     }
 
     /// Capture per-device rotation (degrees) for the given device ids.

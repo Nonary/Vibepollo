@@ -8,7 +8,7 @@
           : 'bg-dark/30 dark:bg-light/30',
       ]"
     />
-    <span class="font-medium" v-text="streaming ? 'Live' : 'Idle'" />
+    <span class="font-medium" v-text="$t(streaming ? 'sessions.live' : 'sessions.idle')" />
   </div>
 </template>
 <script setup lang="ts">

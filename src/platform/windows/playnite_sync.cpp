@@ -643,11 +643,9 @@ namespace platf::playnite::sync {
       ++matched;
       matched_ids.insert(playnite_id_key(g->id));
       apply_game_metadata_to_app(*g, app);
-      int flags = 0;
       if (auto it = source_flags.find(playnite_id_key(g->id)); it != source_flags.end()) {
-        flags = it->second;
+        mark_app_as_playnite_auto(app, it->second);
       }
-      mark_app_as_playnite_auto(app, flags);
       changed = true;
     }
   }
@@ -759,7 +757,7 @@ namespace platf::playnite::sync {
 }  // namespace platf::playnite::sync
 
 namespace platf::playnite::sync {
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out) {
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out, bool manage_membership) {
     if (!root.contains("apps") || !root["apps"].is_array()) {
       root["apps"] = nlohmann::json::array();
     }
@@ -768,7 +766,9 @@ namespace platf::playnite::sync {
     for (auto &app : root["apps"]) {
       ensure_app_uuid(app, changed);
     }
-    dedupe_auto_apps_by_playnite_id(root, changed);
+    if (manage_membership) {
+      dedupe_auto_apps_by_playnite_id(root, changed);
+    }
     // Build installed and uninstalled sets
     std::vector<Game> installed;
     std::unordered_set<std::string> uninstalled_lower;
@@ -846,14 +846,32 @@ namespace platf::playnite::sync {
     for (auto &kv : by_id) {
       selected.push_back(*kv.second);
     }
+    if (!manage_membership) {
+      selected.clear();
+      source_flags.clear();
+    }
 
-    // Build indexes
+    // Build selection indexes for automatic membership matching.
     std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id_idx, by_unique_name;
     build_game_indexes(selected, by_exe, by_dir, by_id_idx, by_unique_name);
+
+    // Existing Playnite-linked apps must refresh metadata from any game in the complete
+    // snapshot, even when that game is outside the automatic membership selection.
+    // Keep the broader lookup ID-only so an unrelated manual app cannot be claimed by
+    // a coincidental name, executable, or working-directory match.
+    for (const auto &g : all_games) {
+      if (!g.id.empty()) {
+        by_id_idx[playnite_id_key(g.id)] = GameRef {&g};
+      }
+    }
 
     // Update existing
     std::unordered_set<std::string> matched_ids;
     iterate_existing_apps(root, by_id_idx, by_exe, by_dir, by_unique_name, source_flags, matched_out, matched_ids, changed);
+
+    if (!manage_membership) {
+      return;
+    }
 
     // Purge
     auto last_played_map = build_last_played_map(installed);

@@ -7,12 +7,6 @@ export type ConfigSelectOptionsContext = {
   currentValue?: unknown;
 };
 
-export function translateOr(t: (key: string) => string, key: string, fallback: string): string {
-  const value = t(key);
-  if (!value || value === key) return fallback;
-  return value;
-}
-
 function isSelectValue(value: unknown): value is string | number {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
 }
@@ -53,28 +47,28 @@ function gpuFlags(metadata: any) {
 }
 
 const localeOptions: ConfigSelectOption[] = [
-  { label: 'Български (Bulgarian)', value: 'bg' },
-  { label: 'Čeština (Czech)', value: 'cs' },
-  { label: 'Deutsch (German)', value: 'de' },
+  { label: 'Български', value: 'bg' },
+  { label: 'Čeština', value: 'cs' },
+  { label: 'Deutsch', value: 'de' },
   { label: 'English', value: 'en' },
-  { label: 'English, UK', value: 'en_GB' },
-  { label: 'English, US', value: 'en_US' },
-  { label: 'Español (Spanish)', value: 'es' },
-  { label: 'Français (French)', value: 'fr' },
-  { label: 'Magyar (Hungarian)', value: 'hu' },
-  { label: 'Italiano (Italian)', value: 'it' },
-  { label: '日本語 (Japanese)', value: 'ja' },
-  { label: '한국어 (Korean)', value: 'ko' },
-  { label: 'Polski (Polish)', value: 'pl' },
-  { label: 'Português (Portuguese)', value: 'pt' },
-  { label: 'Português, Brasileiro (Portuguese, Brazilian)', value: 'pt_BR' },
-  { label: 'Русский (Russian)', value: 'ru' },
-  { label: 'svenska (Swedish)', value: 'sv' },
-  { label: 'Türkçe (Turkish)', value: 'tr' },
-  { label: 'Українська (Ukrainian)', value: 'uk' },
-  { label: 'Tiếng Việt (Vietnamese)', value: 'vi' },
-  { label: '简体中文 (Chinese Simplified)', value: 'zh' },
-  { label: '繁體中文 (Chinese Traditional)', value: 'zh_TW' },
+  { label: 'English (UK)', value: 'en_GB' },
+  { label: 'English (US)', value: 'en_US' },
+  { label: 'Español', value: 'es' },
+  { label: 'Français', value: 'fr' },
+  { label: 'Magyar', value: 'hu' },
+  { label: 'Italiano', value: 'it' },
+  { label: '日本語', value: 'ja' },
+  { label: '한국어', value: 'ko' },
+  { label: 'Polski', value: 'pl' },
+  { label: 'Português', value: 'pt' },
+  { label: 'Português (Brasil)', value: 'pt_BR' },
+  { label: 'Русский', value: 'ru' },
+  { label: 'Svenska', value: 'sv' },
+  { label: 'Türkçe', value: 'tr' },
+  { label: 'Українська', value: 'uk' },
+  { label: 'Tiếng Việt', value: 'vi' },
+  { label: '简体中文', value: 'zh' },
+  { label: '繁體中文', value: 'zh_TW' },
 ];
 
 export function getConfigSelectOptions(
@@ -89,51 +83,51 @@ export function getConfigSelectOptions(
       return ensureIncludesCurrentValue(localeOptions, ctx.currentValue);
     case 'min_log_level': {
       const options = [0, 1, 2, 3, 4, 5, 6].map((value) => ({
-        label: translateOr(t, `config.min_log_level_${value}`, String(value)),
+        label: t(`config.min_log_level_${value}`),
         value,
       }));
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'address_family': {
       const options = [
-        { label: translateOr(t, 'config.address_family_ipv4', 'IPv4'), value: 'ipv4' },
-        { label: translateOr(t, 'config.address_family_both', 'Both'), value: 'both' },
+        { label: t('config.address_family_ipv4'), value: 'ipv4' },
+        { label: t('config.address_family_both'), value: 'both' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'origin_web_ui_allowed': {
       const options = [
-        { label: translateOr(t, 'config.origin_web_ui_allowed_pc', 'PC'), value: 'pc' },
-        { label: translateOr(t, 'config.origin_web_ui_allowed_lan', 'LAN'), value: 'lan' },
-        { label: translateOr(t, 'config.origin_web_ui_allowed_wan', 'WAN'), value: 'wan' },
+        { label: t('config.origin_web_ui_allowed_pc'), value: 'pc' },
+        { label: t('config.origin_web_ui_allowed_lan'), value: 'lan' },
+        { label: t('config.origin_web_ui_allowed_wan'), value: 'wan' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'lan_encryption_mode': {
       const options = [
-        { label: translateOr(t, '_common.disabled_def', 'Disabled (default)'), value: 0 },
+        { label: t('_common.disabled_def'), value: 0 },
         {
-          label: translateOr(t, 'config.lan_encryption_mode_1', 'Opportunistic'),
+          label: t('config.lan_encryption_mode_1'),
           value: 1,
         },
-        { label: translateOr(t, 'config.lan_encryption_mode_2', 'Forced'), value: 2 },
+        { label: t('config.lan_encryption_mode_2'), value: 2 },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'wan_encryption_mode': {
       const options = [
-        { label: translateOr(t, '_common.disabled', 'Disabled'), value: 0 },
+        { label: t('_common.disabled'), value: 0 },
         {
-          label: translateOr(t, 'config.wan_encryption_mode_1', 'Opportunistic'),
+          label: t('config.wan_encryption_mode_1'),
           value: 1,
         },
-        { label: translateOr(t, 'config.wan_encryption_mode_2', 'Forced'), value: 2 },
+        { label: t('config.wan_encryption_mode_2'), value: 2 },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'video_max_batch_size_kb': {
       const options = [
-        { label: '64 KiB (default)', value: 64 },
+        { label: `64 KiB ${t('_common.default_parenthetical')}`, value: 64 },
         { label: '32 KiB', value: 32 },
         { label: '16 KiB', value: 16 },
       ];
@@ -141,14 +135,14 @@ export function getConfigSelectOptions(
     }
     case 'hevc_mode': {
       const options = [0, 1, 2, 3].map((value) => ({
-        label: translateOr(t, `config.hevc_mode_${value}`, String(value)),
+        label: t(`config.hevc_mode_${value}`),
         value,
       }));
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'av1_mode': {
       const options = [0, 1, 2, 3].map((value) => ({
-        label: translateOr(t, `config.av1_mode_${value}`, String(value)),
+        label: t(`config.av1_mode_${value}`),
         value,
       }));
       return ensureIncludesCurrentValue(options, ctx.currentValue);
@@ -169,15 +163,14 @@ export function getConfigSelectOptions(
       };
       const fallbackOrder = ['x360', 'ds5', 'ds4'];
 
-      const options: ConfigSelectOption[] = [
-        { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },
-      ];
+      const options: ConfigSelectOption[] = [{ label: t('_common.auto'), value: 'auto' }];
       const seen = new Set<string>(options.map((option) => String(option.value)));
 
       const addOption = (value: string | undefined) => {
         if (!value || seen.has(value)) return;
         const labelKey = labelMap[value] || `config.gamepad_${value}`;
-        options.push({ label: translateOr(t, labelKey, value), value });
+        const translated = t(labelKey);
+        options.push({ label: translated && translated !== labelKey ? translated : value, value });
         seen.add(value);
       };
 
@@ -189,14 +182,12 @@ export function getConfigSelectOptions(
       return options;
     }
     case 'capture': {
-      const options: ConfigSelectOption[] = [
-        { label: translateOr(t, '_common.autodetect', 'Autodetect'), value: '' },
-      ];
+      const options: ConfigSelectOption[] = [{ label: t('_common.autodetect'), value: '' }];
       if (platform === 'windows') {
         options.push(
-          { label: 'Windows Graphics Capture (variable)', value: 'wgc' },
-          { label: 'Windows Graphics Capture (constant)', value: 'wgcc' },
-          { label: 'Desktop Duplication API', value: 'ddx' },
+          { label: t('config.capture_wgc_auto'), value: 'wgc' },
+          { label: t('config.capture_wgc_constant'), value: 'wgcc' },
+          { label: t('config.capture_ddx_legacy'), value: 'ddx' },
         );
       } else if (platform === 'linux') {
         options.push(
@@ -210,14 +201,15 @@ export function getConfigSelectOptions(
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'encoder': {
-      const options: ConfigSelectOption[] = [
-        { label: translateOr(t, '_common.autodetect', 'Autodetect'), value: '' },
-      ];
+      const options: ConfigSelectOption[] = [{ label: t('_common.autodetect'), value: '' }];
       const { hasNvidia, hasIntel, hasAmd } = gpuFlags(ctx.metadata);
       if (platform === 'windows') {
         if (hasNvidia) options.push({ label: 'NVIDIA NVENC', value: 'nvenc' });
         if (hasIntel) options.push({ label: 'Intel QuickSync', value: 'quicksync' });
         if (hasAmd) options.push({ label: 'AMD AMF/VCE', value: 'amdvce' });
+        // Explicit rollback to the FFmpeg AMF path — never probed automatically,
+        // so it must stay selectable here.
+        if (hasAmd) options.push({ label: 'AMD AMF/VCE (legacy FFmpeg)', value: 'amdvce_legacy' });
       } else if (platform === 'linux') {
         options.push(
           { label: 'NVIDIA NVENC', value: 'nvenc' },
@@ -228,22 +220,13 @@ export function getConfigSelectOptions(
         options.push({ label: 'VideoToolbox', value: 'videotoolbox' });
       }
       options.push({
-        label: translateOr(t, 'config.encoder_software', 'Software'),
+        label: t('config.encoder_software'),
         value: 'software',
       });
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'nvenc_preset': {
-      const fallbackExtra: Record<1 | 4 | 7, string> = {
-        1: '(fastest, default)',
-        4: '(balanced quality)',
-        7: '(slowest)',
-      };
-      const presetExtra = (id: 1 | 4 | 7) => {
-        const labelKey = `config.nvenc_preset_${id}`;
-        const translated = t(labelKey);
-        return translated && translated !== labelKey ? translated : fallbackExtra[id];
-      };
+      const presetExtra = (id: 1 | 4 | 7) => t(`config.nvenc_preset_${id}`);
 
       const options: ConfigSelectOption[] = [
         { label: `P1 ${presetExtra(1)}`.trim(), value: 1 },
@@ -259,15 +242,15 @@ export function getConfigSelectOptions(
     case 'nvenc_twopass': {
       const options = [
         {
-          label: translateOr(t, 'config.nvenc_twopass_disabled', 'Disabled'),
+          label: t('config.nvenc_twopass_disabled'),
           value: 'disabled',
         },
         {
-          label: translateOr(t, 'config.nvenc_twopass_quarter_res', 'Quarter res'),
+          label: t('config.nvenc_twopass_quarter_res'),
           value: 'quarter_res',
         },
         {
-          label: translateOr(t, 'config.nvenc_twopass_full_res', 'Full res'),
+          label: t('config.nvenc_twopass_full_res'),
           value: 'full_res',
         },
       ];
@@ -276,40 +259,40 @@ export function getConfigSelectOptions(
     case 'nvenc_split_encode':
     case 'nvenc_force_split_encode': {
       const options = [
-        { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, '_common.enabled', 'Enabled'), value: 'enabled' },
-        { label: translateOr(t, '_common.disabled', 'Disabled'), value: 'disabled' },
+        { label: t('_common.auto'), value: 'auto' },
+        { label: t('_common.enabled'), value: 'enabled' },
+        { label: t('_common.disabled'), value: 'disabled' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'vk_tune': {
       const options = [
-        { label: translateOr(t, '_common.auto', 'Auto'), value: 0 },
-        { label: translateOr(t, 'config.vk_tune_hq', 'High Quality'), value: 1 },
-        { label: translateOr(t, 'config.vk_tune_ll', 'Low Latency'), value: 2 },
-        { label: translateOr(t, 'config.vk_tune_ull', 'Ultra Low Latency'), value: 3 },
-        { label: translateOr(t, 'config.vk_tune_lossless', 'Lossless'), value: 4 },
+        { label: t('_common.auto'), value: 0 },
+        { label: t('config.vk_tune_hq'), value: 1 },
+        { label: t('config.vk_tune_ll'), value: 2 },
+        { label: t('config.vk_tune_ull'), value: 3 },
+        { label: t('config.vk_tune_lossless'), value: 4 },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'vk_rc_mode': {
       const options = [
-        { label: translateOr(t, '_common.auto', 'Auto'), value: 0 },
-        { label: translateOr(t, 'config.vk_rc_cqp', 'CQP'), value: 1 },
-        { label: translateOr(t, 'config.vk_rc_cbr', 'CBR'), value: 2 },
-        { label: translateOr(t, 'config.vk_rc_vbr', 'VBR'), value: 4 },
+        { label: t('_common.auto'), value: 0 },
+        { label: t('config.vk_rc_cqp'), value: 1 },
+        { label: t('config.vk_rc_cbr'), value: 2 },
+        { label: t('config.vk_rc_vbr'), value: 4 },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'qsv_preset': {
       const options = [
-        { label: translateOr(t, 'config.qsv_preset_veryfast', 'veryfast'), value: 'veryfast' },
-        { label: translateOr(t, 'config.qsv_preset_faster', 'faster'), value: 'faster' },
-        { label: translateOr(t, 'config.qsv_preset_fast', 'fast'), value: 'fast' },
-        { label: translateOr(t, 'config.qsv_preset_medium', 'medium'), value: 'medium' },
-        { label: translateOr(t, 'config.qsv_preset_slow', 'slow'), value: 'slow' },
-        { label: translateOr(t, 'config.qsv_preset_slower', 'slower'), value: 'slower' },
-        { label: translateOr(t, 'config.qsv_preset_slowest', 'slowest'), value: 'slowest' },
+        { label: t('config.qsv_preset_veryfast'), value: 'veryfast' },
+        { label: t('config.qsv_preset_faster'), value: 'faster' },
+        { label: t('config.qsv_preset_fast'), value: 'fast' },
+        { label: t('config.qsv_preset_medium'), value: 'medium' },
+        { label: t('config.qsv_preset_slow'), value: 'slow' },
+        { label: t('config.qsv_preset_slower'), value: 'slower' },
+        { label: t('config.qsv_preset_slowest'), value: 'slowest' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
@@ -317,33 +300,29 @@ export function getConfigSelectOptions(
     case 'amd_coder':
     case 'vt_coder': {
       const options = [
-        { label: translateOr(t, 'config.ffmpeg_auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'config.coder_cabac', 'CABAC'), value: 'cabac' },
-        { label: translateOr(t, 'config.coder_cavlc', 'CAVLC'), value: 'cavlc' },
+        { label: t('config.ffmpeg_auto'), value: 'auto' },
+        { label: t('config.coder_cabac'), value: 'cabac' },
+        { label: t('config.coder_cavlc'), value: 'cavlc' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_usage': {
       const options = [
         {
-          label: translateOr(t, 'config.amd_usage_transcoding', 'Transcoding'),
+          label: t('config.amd_usage_transcoding'),
           value: 'transcoding',
         },
-        { label: translateOr(t, 'config.amd_usage_webcam', 'Webcam'), value: 'webcam' },
+        { label: t('config.amd_usage_webcam'), value: 'webcam' },
         {
-          label: translateOr(
-            t,
-            'config.amd_usage_lowlatency_high_quality',
-            'Low latency (high quality)',
-          ),
+          label: t('config.amd_usage_lowlatency_high_quality'),
           value: 'lowlatency_high_quality',
         },
         {
-          label: translateOr(t, 'config.amd_usage_lowlatency', 'Low latency'),
+          label: t('config.amd_usage_lowlatency'),
           value: 'lowlatency',
         },
         {
-          label: translateOr(t, 'config.amd_usage_ultralowlatency', 'Ultra low latency'),
+          label: t('config.amd_usage_ultralowlatency'),
           value: 'ultralowlatency',
         },
       ];
@@ -351,56 +330,95 @@ export function getConfigSelectOptions(
     }
     case 'amd_rc': {
       const options = [
-        { label: translateOr(t, 'config.amd_rc_cbr', 'CBR'), value: 'cbr' },
-        { label: translateOr(t, 'config.amd_rc_cqp', 'CQP'), value: 'cqp' },
+        { label: t('config.amd_rc_cbr'), value: 'cbr' },
+        { label: t('config.amd_rc_cqp'), value: 'cqp' },
         {
-          label: translateOr(t, 'config.amd_rc_vbr_latency', 'VBR (latency)'),
+          label: t('config.amd_rc_vbr_latency'),
           value: 'vbr_latency',
         },
-        { label: translateOr(t, 'config.amd_rc_vbr_peak', 'VBR (peak)'), value: 'vbr_peak' },
+        { label: t('config.amd_rc_vbr_peak'), value: 'vbr_peak' },
+        { label: t('config.amd_rc_qvbr'), value: 'qvbr' },
+        { label: t('config.amd_rc_hqvbr'), value: 'hqvbr' },
+        { label: t('config.amd_rc_hqcbr'), value: 'hqcbr' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'amd_quality': {
       const options = [
-        { label: translateOr(t, 'config.amd_quality_speed', 'Speed'), value: 'speed' },
-        { label: translateOr(t, 'config.amd_quality_balanced', 'Balanced'), value: 'balanced' },
-        { label: translateOr(t, 'config.amd_quality_quality', 'Quality'), value: 'quality' },
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_quality_speed'), value: 'speed' },
+        { label: t('config.amd_quality_balanced'), value: 'balanced' },
+        { label: t('config.amd_quality_quality'), value: 'quality' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_vbaq': {
+      const options = [
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_opt_enabled'), value: 'enabled' },
+        { label: t('config.amd_opt_disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_av1_screen_content': {
+      const options = [
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_opt_enabled'), value: 'enabled' },
+        { label: t('config.amd_opt_disabled'), value: 'disabled' },
+      ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'amd_av1_latency_mode': {
+      const options = [
+        { label: t('config.amd_opt_auto'), value: 'auto' },
+        { label: t('config.amd_av1_latency_none'), value: 'none' },
+        {
+          label: t('config.amd_av1_latency_power_saving'),
+          value: 'power_saving',
+        },
+        {
+          label: t('config.amd_av1_latency_realtime'),
+          value: 'realtime',
+        },
+        {
+          label: t('config.amd_av1_latency_lowest'),
+          value: 'lowest',
+        },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'vt_software': {
       const options = [
-        { label: translateOr(t, '_common.auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, '_common.disabled', 'Disabled'), value: 'disabled' },
-        { label: translateOr(t, 'config.vt_software_allowed', 'Allowed'), value: 'allowed' },
-        { label: translateOr(t, 'config.vt_software_forced', 'Forced'), value: 'forced' },
+        { label: t('_common.auto'), value: 'auto' },
+        { label: t('_common.disabled'), value: 'disabled' },
+        { label: t('config.vt_software_allowed'), value: 'allowed' },
+        { label: t('config.vt_software_forced'), value: 'forced' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'sw_preset': {
       const options = [
-        { label: translateOr(t, 'config.sw_preset_ultrafast', 'ultrafast'), value: 'ultrafast' },
-        { label: translateOr(t, 'config.sw_preset_superfast', 'superfast'), value: 'superfast' },
-        { label: translateOr(t, 'config.sw_preset_veryfast', 'veryfast'), value: 'veryfast' },
-        { label: translateOr(t, 'config.sw_preset_faster', 'faster'), value: 'faster' },
-        { label: translateOr(t, 'config.sw_preset_fast', 'fast'), value: 'fast' },
-        { label: translateOr(t, 'config.sw_preset_medium', 'medium'), value: 'medium' },
-        { label: translateOr(t, 'config.sw_preset_slow', 'slow'), value: 'slow' },
-        { label: translateOr(t, 'config.sw_preset_slower', 'slower'), value: 'slower' },
-        { label: translateOr(t, 'config.sw_preset_veryslow', 'veryslow'), value: 'veryslow' },
+        { label: t('config.sw_preset_ultrafast'), value: 'ultrafast' },
+        { label: t('config.sw_preset_superfast'), value: 'superfast' },
+        { label: t('config.sw_preset_veryfast'), value: 'veryfast' },
+        { label: t('config.sw_preset_faster'), value: 'faster' },
+        { label: t('config.sw_preset_fast'), value: 'fast' },
+        { label: t('config.sw_preset_medium'), value: 'medium' },
+        { label: t('config.sw_preset_slow'), value: 'slow' },
+        { label: t('config.sw_preset_slower'), value: 'slower' },
+        { label: t('config.sw_preset_veryslow'), value: 'veryslow' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'sw_tune': {
       const options = [
-        { label: translateOr(t, 'config.sw_tune_film', 'film'), value: 'film' },
-        { label: translateOr(t, 'config.sw_tune_animation', 'animation'), value: 'animation' },
-        { label: translateOr(t, 'config.sw_tune_grain', 'grain'), value: 'grain' },
-        { label: translateOr(t, 'config.sw_tune_stillimage', 'stillimage'), value: 'stillimage' },
-        { label: translateOr(t, 'config.sw_tune_fastdecode', 'fastdecode'), value: 'fastdecode' },
+        { label: t('config.sw_tune_film'), value: 'film' },
+        { label: t('config.sw_tune_animation'), value: 'animation' },
+        { label: t('config.sw_tune_grain'), value: 'grain' },
+        { label: t('config.sw_tune_stillimage'), value: 'stillimage' },
+        { label: t('config.sw_tune_fastdecode'), value: 'fastdecode' },
         {
-          label: translateOr(t, 'config.sw_tune_zerolatency', 'zerolatency'),
+          label: t('config.sw_tune_zerolatency'),
           value: 'zerolatency',
         },
       ];
@@ -408,10 +426,10 @@ export function getConfigSelectOptions(
     }
     case 'frame_limiter_provider': {
       const options = [
-        { label: translateOr(t, 'frameLimiter.provider.auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'frameLimiter.provider.rtss', 'RTSS'), value: 'rtss' },
+        { label: t('frameLimiter.provider.auto'), value: 'auto' },
+        { label: t('frameLimiter.provider.rtss'), value: 'rtss' },
         {
-          label: translateOr(t, 'frameLimiter.provider.nvcp', 'NVIDIA driver'),
+          label: t('frameLimiter.provider.nvcp'),
           value: 'nvidia-control-panel',
         },
       ];
@@ -420,15 +438,15 @@ export function getConfigSelectOptions(
     case 'frame_limiter_auto_virtual_framegen': {
       const options = [
         {
-          label: translateOr(t, 'frameLimiter.virtual.modeEnabled', 'Enabled (recommended)'),
+          label: t('frameLimiter.virtual.modeEnabled'),
           value: 'enabled',
         },
         {
-          label: translateOr(t, 'frameLimiter.virtual.modeDisabled', 'Disabled'),
+          label: t('frameLimiter.virtual.modeDisabled'),
           value: 'disabled',
         },
         {
-          label: translateOr(t, 'frameLimiter.virtual.modeLegacy', 'Legacy (fixed 2× refresh)'),
+          label: t('frameLimiter.virtual.modeLegacy'),
           value: 'legacy',
         },
       ];
@@ -436,18 +454,18 @@ export function getConfigSelectOptions(
     }
     case 'rtss_frame_limit_type': {
       const options = [
-        { label: translateOr(t, 'frameLimiter.syncLimiter.keep', 'Keep'), value: '' },
-        { label: translateOr(t, 'frameLimiter.syncLimiter.async', 'Async'), value: 'async' },
+        { label: t('frameLimiter.syncLimiter.keep'), value: '' },
+        { label: t('frameLimiter.syncLimiter.async'), value: 'async' },
         {
-          label: translateOr(t, 'frameLimiter.syncLimiter.front', 'Front edge sync'),
+          label: t('frameLimiter.syncLimiter.front'),
           value: 'front edge sync',
         },
         {
-          label: translateOr(t, 'frameLimiter.syncLimiter.back', 'Back edge sync'),
+          label: t('frameLimiter.syncLimiter.back'),
           value: 'back edge sync',
         },
         {
-          label: translateOr(t, 'frameLimiter.syncLimiter.reflex', 'NVIDIA Reflex'),
+          label: t('frameLimiter.syncLimiter.reflex'),
           value: 'nvidia reflex',
         },
       ];
@@ -455,21 +473,21 @@ export function getConfigSelectOptions(
     }
     case 'dd_configuration_option': {
       const options = [
-        { label: translateOr(t, '_common.disabled', 'Disabled'), value: 'disabled' },
+        { label: t('_common.disabled'), value: 'disabled' },
         {
-          label: translateOr(t, 'config.dd_config_verify_only', 'Verify only'),
+          label: t('config.dd_config_verify_only'),
           value: 'verify_only',
         },
         {
-          label: translateOr(t, 'config.dd_config_ensure_active', 'Ensure active'),
+          label: t('config.dd_config_ensure_active'),
           value: 'ensure_active',
         },
         {
-          label: translateOr(t, 'config.dd_config_ensure_primary', 'Ensure primary'),
+          label: t('config.dd_config_ensure_primary'),
           value: 'ensure_primary',
         },
         {
-          label: translateOr(t, 'config.dd_config_ensure_only_display', 'Ensure only display'),
+          label: t('config.dd_config_ensure_only_display'),
           value: 'ensure_only_display',
         },
       ];
@@ -478,23 +496,23 @@ export function getConfigSelectOptions(
     case 'dd_resolution_option': {
       const options = [
         {
-          label: translateOr(t, 'config.dd_resolution_option_disabled', 'Disabled'),
+          label: t('config.dd_resolution_option_disabled'),
           value: 'disabled',
         },
-        { label: translateOr(t, 'config.dd_resolution_option_auto', 'Auto'), value: 'auto' },
-        { label: translateOr(t, 'config.dd_resolution_option_manual', 'Manual'), value: 'manual' },
+        { label: t('config.dd_resolution_option_auto'), value: 'auto' },
+        { label: t('config.dd_resolution_option_manual'), value: 'manual' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'dd_refresh_rate_option': {
       const options = [
         {
-          label: translateOr(t, 'config.dd_refresh_rate_option_disabled', 'Disabled'),
+          label: t('config.dd_refresh_rate_option_disabled'),
           value: 'disabled',
         },
-        { label: translateOr(t, 'config.dd_refresh_rate_option_auto', 'Auto'), value: 'auto' },
+        { label: t('config.dd_refresh_rate_option_auto'), value: 'auto' },
         {
-          label: translateOr(t, 'config.dd_refresh_rate_option_manual', 'Manual'),
+          label: t('config.dd_refresh_rate_option_manual'),
           value: 'manual',
         },
       ];
@@ -502,57 +520,45 @@ export function getConfigSelectOptions(
     }
     case 'dd_hdr_option': {
       const options = [
-        { label: translateOr(t, 'config.dd_hdr_option_disabled', 'Disabled'), value: 'disabled' },
-        { label: translateOr(t, 'config.dd_hdr_option_auto', 'Auto'), value: 'auto' },
+        { label: t('config.dd_hdr_option_disabled'), value: 'disabled' },
+        { label: t('config.dd_hdr_option_auto'), value: 'auto' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'virtual_display_mode': {
       const options = [
         {
-          label: translateOr(t, 'config.virtual_display_mode_disabled', 'Disabled'),
+          label: t('config.virtual_display_mode_disabled'),
           value: 'disabled',
         },
         {
-          label: translateOr(t, 'config.virtual_display_mode_per_client', 'Per client'),
+          label: t('config.virtual_display_mode_per_client'),
           value: 'per_client',
         },
-        { label: translateOr(t, 'config.virtual_display_mode_shared', 'Shared'), value: 'shared' },
+        { label: t('config.virtual_display_mode_shared'), value: 'shared' },
       ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'virtual_display_layout': {
       const options = [
         {
-          label: translateOr(t, 'config.virtual_display_layout_exclusive', 'Exclusive'),
+          label: t('config.virtual_display_layout_exclusive'),
           value: 'exclusive',
         },
         {
-          label: translateOr(t, 'config.virtual_display_layout_extended', 'Extended'),
+          label: t('config.virtual_display_layout_extended'),
           value: 'extended',
         },
         {
-          label: translateOr(
-            t,
-            'config.virtual_display_layout_extended_primary',
-            'Extended (primary)',
-          ),
+          label: t('config.virtual_display_layout_extended_primary'),
           value: 'extended_primary',
         },
         {
-          label: translateOr(
-            t,
-            'config.virtual_display_layout_extended_isolated',
-            'Extended (isolated)',
-          ),
+          label: t('config.virtual_display_layout_extended_isolated'),
           value: 'extended_isolated',
         },
         {
-          label: translateOr(
-            t,
-            'config.virtual_display_layout_extended_primary_isolated',
-            'Extended (primary isolated)',
-          ),
+          label: t('config.virtual_display_layout_extended_primary_isolated'),
           value: 'extended_primary_isolated',
         },
       ];
@@ -560,6 +566,7 @@ export function getConfigSelectOptions(
     }
     case 'dd_virtual_display_scale': {
       const options: ConfigSelectOption[] = [
+        { label: t('config.virtual_display_scale_recommended'), value: -1 },
         { label: t('config.virtual_display_scale_auto'), value: 0 },
         ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
           label: `${value}%`,

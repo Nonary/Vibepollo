@@ -4,16 +4,17 @@
   >
     <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
       <div class="space-y-1">
-        <h3 class="text-base font-semibold text-dark dark:text-light">RTX HDR</h3>
+        <h3 class="text-base font-semibold text-dark dark:text-light">
+          {{ $t('config.rtx_hdr') }}
+        </h3>
         <p class="text-[12px] leading-relaxed opacity-70">
-          Enable RTX HDR conversion for this app. By default, Vibepollo uses the game's existing
-          NVIDIA RTX HDR profile values when one is configured, then falls back to the global
-          defaults. The host is intentionally kept in SDR so the game does not apply its own HDR on
-          top of RTX HDR.
+          {{ $t('config.rtx_hdr_intro') }}
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <n-tag v-if="rtxHdrEnabled" size="small" type="primary">Enabled</n-tag>
+        <n-tag v-if="rtxHdrEnabled" size="small" type="primary">{{
+          $t('_common.enabled')
+        }}</n-tag>
         <n-tag v-if="liveStatus !== 'idle'" size="small" :type="liveStatusTagType">
           {{ liveStatusLabel }}
         </n-tag>
@@ -21,17 +22,15 @@
     </div>
 
     <n-alert v-if="liveStatus === 'error'" type="error" size="small" :bordered="false">
-      {{ liveError || 'Unable to apply RTX HDR changes to the active stream.' }}
+      {{ liveError || $t('apps.rtx_hdr_live_update_failed') }}
     </n-alert>
 
     <label :class="cardClass(rtxHdrEnabled)">
       <n-switch v-model:value="rtxHdrEnabled" />
       <div class="min-w-0 space-y-1">
-        <div class="text-sm font-semibold leading-snug">Enable RTX HDR for this app</div>
+        <div class="text-sm font-semibold leading-snug">{{ $t('config.rtx_hdr') }}</div>
         <p class="text-[12px] leading-relaxed opacity-70">
-          Converts SDR frames to HDR while this application is streamed. When enabled, Vibepollo
-          forces the host/game into SDR first to prevent oversaturation from native game HDR and RTX
-          HDR running at the same time.
+          {{ $t('config.rtx_hdr_desc') }}
         </p>
       </div>
     </label>
@@ -40,11 +39,11 @@
       <label :class="cardClass(form.rtxHdrValuesOverride)">
         <n-switch v-model:value="form.rtxHdrValuesOverride" />
         <div class="min-w-0 space-y-1">
-          <div class="text-sm font-semibold leading-snug">Override HDR values directly</div>
+          <div class="text-sm font-semibold leading-snug">
+            {{ $t('apps.overrides.title') }}
+          </div>
           <p class="text-[12px] leading-relaxed opacity-70">
-            Use these sliders instead of inheriting NVIDIA RTX HDR profile or global default values.
-            RTX HDR and its tuning values update live during an active stream, so you can open this page from
-            another device and fine-tune HDR while watching.
+            {{ $t('config.rtx_hdr_intro') }}
           </p>
         </div>
       </label>
@@ -112,13 +111,13 @@ const rtxHdrEnabled = computed({
 const liveStatusLabel = computed(() => {
   switch (props.liveStatus) {
     case 'queued':
-      return 'Queued';
+      return t('_common.loading');
     case 'applying':
-      return 'Applying live';
+      return t('_common.loading');
     case 'applied':
-      return 'Applied live';
+      return t('_common.success');
     case 'error':
-      return 'Live update failed';
+      return t('_common.error');
     default:
       return '';
   }

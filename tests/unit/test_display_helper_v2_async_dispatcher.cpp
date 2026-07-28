@@ -13,6 +13,7 @@
 
 #include <future>
 #include <mutex>
+#include <numeric>
 
 namespace {
   class FakeClock final : public display_helper::v2::IClock {
@@ -37,6 +38,14 @@ namespace {
 
   class FakeDisplaySettings final : public display_helper::v2::IDisplaySettings {
   public:
+    FakeDisplaySettings() {
+      display_device::EnumeratedDevice device;
+      device.m_device_id = "A";
+      device.m_display_name = "\\\\.\\DISPLAY1";
+      device.m_info = display_device::EnumeratedDevice::Info {};
+      devices.push_back(std::move(device));
+    }
+
     display_helper::v2::ApplyStatus apply(const display_device::SingleDisplayConfiguration &) override {
       apply_calls += 1;
       return apply_status;
@@ -47,11 +56,11 @@ namespace {
     }
 
     display_device::EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail) override {
-      return {};
+      return devices;
     }
 
     display_device::ActiveTopology capture_topology() override {
-      return {};
+      return topology;
     }
 
     bool validate_topology(const display_device::ActiveTopology &) override {
@@ -81,14 +90,16 @@ namespace {
     std::optional<display_device::ActiveTopology> compute_expected_topology(
       const display_device::SingleDisplayConfiguration &,
       const std::optional<display_device::ActiveTopology> &) override {
-      return std::nullopt;
+      return topology;
     }
 
-    bool is_topology_same(const display_device::ActiveTopology &, const display_device::ActiveTopology &) override {
-      return true;
+    bool is_topology_same(const display_device::ActiveTopology &lhs, const display_device::ActiveTopology &rhs) override {
+      return lhs == rhs;
     }
 
     display_helper::v2::ApplyStatus apply_status = display_helper::v2::ApplyStatus::Ok;
+    display_device::ActiveTopology topology {{"A"}};
+    display_device::EnumeratedDeviceList devices;
     int apply_calls = 0;
   };
 
@@ -126,7 +137,11 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   display_helper::v2::InMemorySnapshotStorage storage;
   display_helper::v2::GoldenHealth golden_health({});
   display_helper::v2::RestoreState restore_state;
-  display_helper::v2::ApplyOperation apply_op(display, clock);
+  int recovery_boundary_calls = 0;
+  display_helper::v2::ApplyOperation apply_op(display, clock, [&] {
+    ++recovery_boundary_calls;
+    return true;
+  });
   display_helper::v2::VerificationOperation verify_op(display, clock);
   display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
   display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
@@ -143,6 +158,7 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
 
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";
   display_helper::v2::CancellationSource cancel;
 
   std::promise<display_helper::v2::ApplyOutcome> promise;
@@ -164,10 +180,16 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   EXPECT_EQ(display.apply_calls, 1);
   EXPECT_EQ(virtual_display.disable_calls, 1);
   EXPECT_EQ(virtual_display.enable_calls, 1);
-  ASSERT_EQ(clock.sleeps.size(), 3u);
-  EXPECT_EQ(clock.sleeps[0], std::chrono::milliseconds(100));
-  EXPECT_EQ(clock.sleeps[1], std::chrono::milliseconds(500));
-  EXPECT_EQ(clock.sleeps[2], std::chrono::milliseconds(1000));
+  EXPECT_TRUE(outcome.virtual_display_requested);
+  EXPECT_TRUE(outcome.display_may_have_changed);
+  EXPECT_TRUE(outcome.durable_recovery_armed);
+  EXPECT_EQ(recovery_boundary_calls, 1);
+  ASSERT_FALSE(clock.sleeps.empty());
+  const auto total_sleep = std::accumulate(
+    clock.sleeps.begin(),
+    clock.sleeps.end(),
+    std::chrono::milliseconds::zero());
+  EXPECT_EQ(total_sleep, std::chrono::milliseconds(1600));
 }
 
 TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
@@ -177,7 +199,11 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   display_helper::v2::InMemorySnapshotStorage storage;
   display_helper::v2::GoldenHealth golden_health({});
   display_helper::v2::RestoreState restore_state;
-  display_helper::v2::ApplyOperation apply_op(display, clock);
+  int recovery_boundary_calls = 0;
+  display_helper::v2::ApplyOperation apply_op(display, clock, [&] {
+    ++recovery_boundary_calls;
+    return true;
+  });
   display_helper::v2::VerificationOperation verify_op(display, clock);
   display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
   display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
@@ -195,6 +221,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
 
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";
   display_helper::v2::CancellationSource cancel;
 
   std::promise<display_helper::v2::ApplyOutcome> promise;
@@ -216,6 +243,10 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   EXPECT_EQ(display.apply_calls, 0);
   EXPECT_EQ(virtual_display.disable_calls, 1);
   EXPECT_EQ(virtual_display.enable_calls, 0);
+  EXPECT_TRUE(outcome.virtual_display_requested);
+  EXPECT_TRUE(outcome.display_may_have_changed);
+  EXPECT_TRUE(outcome.durable_recovery_armed);
+  EXPECT_EQ(recovery_boundary_calls, 1);
   ASSERT_EQ(clock.sleeps.size(), 1u);
   EXPECT_EQ(clock.sleeps[0], std::chrono::milliseconds(50));
 }

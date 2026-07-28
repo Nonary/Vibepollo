@@ -92,6 +92,7 @@ namespace webrtc_stream {
   };
 
   bool has_active_sessions();
+  bool has_active_or_pending_sessions();
 
   std::optional<SessionState> create_session(const SessionOptions &options);
   std::optional<std::string> ensure_capture_started(const SessionOptions &options);

@@ -11,9 +11,11 @@
   #include <boost/algorithm/string/predicate.hpp>
   #include <chrono>
   #include <cmath>
+  #include <condition_variable>
   #include <cstdint>
   #include <exception>
   #include <filesystem>
+  #include <functional>
   #include <limits>
   #include <mutex>
   #include <optional>
@@ -36,7 +38,6 @@
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
-  #include "src/platform/windows/display_helper_watchdog.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -46,6 +47,8 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
   #include "src/state_storage.h"
+  #include "src/stream.h"
+  #include "src/webrtc_stream.h"
 
   #include <display_device/noop_audio_context.h>
   #include <display_device/noop_settings_persistence.h>
@@ -68,15 +71,21 @@ namespace {
   }
 
   struct PendingSessionSnapshot {
+    std::uint32_t id = 0;
+    std::string unique_id;
+    std::string client_uuid;
     int width = 0;
     int height = 0;
     int fps = 0;
+    bool client_display_mode_override = false;
+    std::uint32_t client_display_refresh_millihz = 0;
     bool enable_hdr = false;
     bool enable_sops = false;
     bool virtual_display = false;
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<int> framegen_refresh_rate;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
@@ -102,6 +111,21 @@ namespace {
     return state;
   }
 
+  // Serializes a claimed deferred APPLY with cancellation/revert. The pending
+  // state lock only protects the queue; this lock covers the actual IPC work.
+  std::mutex &pending_apply_execution_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  // Requires pending_apply_execution_mutex(). A display operation owns that
+  // mutex across its IPC work, so clearing the queue here cannot race an
+  // in-flight deferred request or a newer normal APPLY/REVERT.
+  void clear_pending_apply_queue_locked() {
+    std::lock_guard<std::mutex> lock(pending_apply_mutex());
+    pending_apply_state().reset();
+  }
+
   std::atomic<bool> &cold_start_resolution_deferral_armed() {
     static std::atomic<bool> armed {true};
     return armed;
@@ -124,15 +148,21 @@ namespace {
 
     if (request.session) {
       state.session_id = request.session->id;
+      state.session_snapshot.id = request.session->id;
+      state.session_snapshot.unique_id = request.session->unique_id;
+      state.session_snapshot.client_uuid = request.session->client_uuid;
       state.session_snapshot.width = request.session->width;
       state.session_snapshot.height = request.session->height;
       state.session_snapshot.fps = request.session->fps;
+      state.session_snapshot.client_display_mode_override = request.session->client_display_mode_override;
+      state.session_snapshot.client_display_refresh_millihz = request.session->client_display_refresh_millihz;
       state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
       state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.virtual_display = request.session->virtual_display;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
+      state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
       state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
       state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
       state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
@@ -157,9 +187,10 @@ namespace {
     if (!request_includes_resolution(request)) {
       return;
     }
+    const auto session_id = request.session->id;
     queue_deferred_resolution_apply(request);
     BOOST_LOG(info) << "Display helper: API unavailable; queued deferred resolution apply for session "
-                    << pending_apply_state()->session_id << ".";
+                    << session_id << ".";
   }
 
   bool should_defer_resolution_apply(const display_helper_integration::DisplayApplyRequest &request) {
@@ -219,14 +250,27 @@ namespace {
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
   constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
   constexpr std::chrono::milliseconds kHelperStartFailureCooldown {30000};
+  constexpr int kHelperStartFailuresBeforeCooldown {2};
   constexpr int kMaxDeferredApplyAttempts = 6;
 
   bool shutdown_requested();
-  bool ensure_helper_started(bool force_restart = false, bool force_enable = false);
+  bool ensure_helper_started(
+    bool force_restart = false,
+    bool force_enable = false,
+    const std::function<bool()> &cancellation_predicate = {});
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
 
-  bool helper_process_running() {
-    std::lock_guard<std::mutex> lg(helper_mutex());
+  bool helper_process_running(const std::function<bool()> &cancellation_predicate = {}) {
+    std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+    while (!lg.try_lock()) {
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    if (cancellation_predicate && cancellation_predicate()) {
+      return false;
+    }
     if (HANDLE h = helper_proc().get_process_handle()) {
       return WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
     }
@@ -348,18 +392,21 @@ namespace {
     return false;
   }
 
+  bool any_virtual_display_active() {
+    auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
+    return std::any_of(
+      virtual_displays.begin(),
+      virtual_displays.end(),
+      [](const VDISPLAY::VirtualDisplayInfo &info) {
+        return info.is_active;
+      }
+    );
+  }
+
   bool wait_for_virtual_display_activation(std::chrono::steady_clock::duration timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
-      bool any_active = std::any_of(
-        virtual_displays.begin(),
-        virtual_displays.end(),
-        [](const VDISPLAY::VirtualDisplayInfo &info) {
-          return info.is_active;
-        }
-      );
-      if (any_active) {
+      if (any_virtual_display_active()) {
         return true;
       }
 
@@ -392,8 +439,10 @@ namespace {
     }
 
     if (session.virtual_display) {
+      // The hint records a past observation, so confirm the display is still active
+      // before skipping the wait. Mirrors the device_id branch above.
       const bool hint_ready = session.virtual_display_ready_since.has_value();
-      if (hint_ready) {
+      if (hint_ready && any_virtual_display_active()) {
         BOOST_LOG(debug) << "Display helper: virtual display ready hint satisfied. Skipping activation wait.";
         return true;
       }
@@ -488,24 +537,91 @@ namespace {
 
   constexpr DWORD kHelperForceKillWaitMs = 2000;
 
-  bool wait_for_helper_ipc_ready_locked() {
+  bool cancellation_requested(const std::function<bool()> &cancellation_predicate) {
+    return cancellation_predicate && cancellation_predicate();
+  }
+
+  bool sleep_with_cancellation(
+    std::chrono::milliseconds duration,
+    const std::function<bool()> &cancellation_predicate) {
+    constexpr auto slice = std::chrono::milliseconds(50);
+    for (auto elapsed = std::chrono::milliseconds::zero(); elapsed < duration; elapsed += slice) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::min(slice, duration - elapsed));
+    }
+    return !cancellation_requested(cancellation_predicate);
+  }
+
+  // Recovery owns a stop token and main joins it before it joins stream
+  // threads. Do not let that join wait behind a regular display operation:
+  // ordinary callers retain blocking serialization, while cancellable callers
+  // poll the gate and leave promptly after their owner requests stop.
+  bool lock_pending_apply_execution(
+    std::unique_lock<std::mutex> &lock,
+    const std::function<bool()> &cancellation_predicate) {
+    if (!cancellation_predicate) {
+      lock.lock();
+      return true;
+    }
+    while (!lock.try_lock()) {
+      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+        return false;
+      }
+    }
+    return !cancellation_requested(cancellation_predicate);
+  }
+
+  bool wait_for_process_with_cancellation(
+    HANDLE process,
+    DWORD timeout_ms,
+    const std::function<bool()> &cancellation_predicate,
+    DWORD &wait_result) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        wait_result = WAIT_TIMEOUT;
+        return true;
+      }
+      wait_result = WaitForSingleObject(process, static_cast<DWORD>(std::min<std::int64_t>(remaining.count(), 50)));
+      if (wait_result != WAIT_TIMEOUT) {
+        return true;
+      }
+    }
+  }
+
+  bool wait_for_helper_ipc_ready_locked(const std::function<bool()> &cancellation_predicate = {}) {
     const auto deadline = std::chrono::steady_clock::now() + kHelperIpcReadyTimeout;
     int attempts = 0;
 
-    platf::display_helper_client::reset_connection();
+    if (cancellation_requested(cancellation_predicate) ||
+        !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+      return false;
+    }
     while (std::chrono::steady_clock::now() < deadline) {
-      if (shutdown_requested()) {
+      if (shutdown_requested() || cancellation_requested(cancellation_predicate)) {
         return false;
       }
-      if (platf::display_helper_client::send_ping()) {
+      const bool ping_ok = cancellation_predicate ?
+                             platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                             platf::display_helper_client::send_ping();
+      if (ping_ok) {
         if (attempts > 0) {
           BOOST_LOG(debug) << "Display helper IPC became reachable after " << attempts << " retries.";
         }
         return true;
       }
       ++attempts;
-      std::this_thread::sleep_for(kHelperIpcReadyPoll);
-      platf::display_helper_client::reset_connection();
+      if (!sleep_with_cancellation(kHelperIpcReadyPoll, cancellation_predicate) ||
+          !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+        return false;
+      }
     }
 
     BOOST_LOG(warning) << "Display helper IPC did not respond within " << kHelperIpcReadyTimeout.count()
@@ -530,14 +646,21 @@ namespace {
     }
   }
 
-  void kill_all_helper_processes() {
+  bool kill_all_helper_processes(const std::function<bool()> &cancellation_predicate = {}) {
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     helper_proc().terminate();
+
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
       DWORD err = GetLastError();
       BOOST_LOG(error) << "Display helper: failed to snapshot processes for cleanup (winerr=" << err << ").";
-      return;
+      return !cancellation_requested(cancellation_predicate);
     }
 
     PROCESSENTRY32W entry {};
@@ -561,6 +684,9 @@ namespace {
     CloseHandle(snapshot);
 
     for (DWORD pid : targets) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
       HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
       if (!h) {
         DWORD err = GetLastError();
@@ -576,7 +702,11 @@ namespace {
           DWORD err = GetLastError();
           BOOST_LOG(error) << "Display helper: TerminateProcess failed for pid=" << pid << " (winerr=" << err << ").";
         } else {
-          DWORD wait_res = WaitForSingleObject(h, kHelperForceKillWaitMs);
+          DWORD wait_res = WAIT_TIMEOUT;
+          if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_res)) {
+            CloseHandle(h);
+            return false;
+          }
           if (wait_res != WAIT_OBJECT_0) {
             BOOST_LOG(warning) << "Display helper: external instance pid=" << pid
                                << " did not exit within " << kHelperForceKillWaitMs << " ms.";
@@ -586,17 +716,24 @@ namespace {
 
       CloseHandle(h);
     }
+    return !cancellation_requested(cancellation_predicate);
   }
 
   struct session_dd_fields_t {
+    std::uint64_t generation = 0;
+    std::uint32_t launch_session_id = 0;
+    std::string session_unique_id;
+    std::string session_client_uuid;
     int width = -1;
     int height = -1;
     int fps = -1;
+    std::uint32_t refresh_millihz = 0;
     bool enable_hdr = false;
     bool enable_sops = false;
     bool virtual_display = false;
     std::string virtual_display_device_id;
     std::optional<int> framegen_refresh_rate;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     bool gen1_framegen_fix = false;
     bool gen2_framegen_fix = false;
@@ -604,13 +741,11 @@ namespace {
 
   static std::mutex g_session_mutex;
   static std::optional<session_dd_fields_t> g_active_session_dd;
+  static std::uint64_t g_next_active_session_generation = 0;
 
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
   static std::atomic<bool> g_restore_expected {false};
-  // True when the most recent APPLY was dispatched through the helper; gates the
-  // capture-start verification wait (v2 engine only).
-  static std::atomic<bool> g_last_apply_used_helper {false};
 
   // Resolve the effective display helper engine. In automatic mode the v2 engine
   // only rides pre-release builds; stable releases keep the legacy engine until
@@ -638,16 +773,38 @@ namespace {
   static std::atomic<std::int64_t> g_last_disarm_attempt_us {0};
   static std::atomic<std::int64_t> g_last_disarm_success_us {0};
   static std::atomic<std::int64_t> g_last_helper_start_failure_us {0};
+  // The cooldown exists to stop a hot restart loop when the helper genuinely cannot
+  // run. A single failure right after a helper that had been serving fine is a
+  // different thing - usually one lost race - and blocking restarts for 30s there
+  // leaves a live stream with no display control at all, so it costs one free retry.
+  static std::atomic<int> g_consecutive_helper_start_failures {0};
 
   // Tracks when the most recent successful APPLY completed, so the capture thread
   // can add a stabilization delay before attempting to reinit after topology changes.
   static std::atomic<std::int64_t> g_last_apply_completed_us {0};
+  static std::atomic<std::uint64_t> g_last_apply_generation {0};
+  static std::atomic<std::uint64_t> g_last_verified_apply_generation {0};
+  static std::atomic<std::uint64_t> g_capture_stable_eligible_apply_generation {0};
+  static std::atomic<std::uint64_t> g_hdr_requested_apply_generation {0};
 
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
   }
 
+  static void note_successful_apply() {
+    g_last_apply_completed_us.store(now_steady_us(), std::memory_order_release);
+  }
+
+  // A control command that can change the desktop must revoke any outstanding
+  // capture-gate proof. Tickets carry their own generation, so this does not
+  // make a later APPLY depend on mutable global request identity.
+  static void invalidate_apply_verification() {
+    g_last_apply_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_last_verified_apply_generation.store(0, std::memory_order_release);
+    g_capture_stable_eligible_apply_generation.store(0, std::memory_order_release);
+    g_hdr_requested_apply_generation.store(0, std::memory_order_release);
+  }
   bool helper_start_failure_cooldown_active() {
     const auto last_us = g_last_helper_start_failure_us.load(std::memory_order_relaxed);
     if (last_us <= 0) {
@@ -667,8 +824,20 @@ namespace {
   }
 
   void note_helper_start_failure(const char *reason) {
+    const int failures = g_consecutive_helper_start_failures.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (failures < kHelperStartFailuresBeforeCooldown) {
+      BOOST_LOG(warning) << "Display helper: start failed after " << reason
+                         << "; retrying without a cooldown.";
+      return;
+    }
     g_last_helper_start_failure_us.store(now_steady_us(), std::memory_order_relaxed);
-    BOOST_LOG(warning) << "Display helper: helper start failure cooldown armed after " << reason << ".";
+    BOOST_LOG(warning) << "Display helper: helper start failure cooldown armed after " << reason
+                       << " (" << failures << " consecutive failures).";
+  }
+
+  void note_helper_start_success() {
+    g_consecutive_helper_start_failures.store(0, std::memory_order_relaxed);
+    g_last_helper_start_failure_us.store(0, std::memory_order_relaxed);
   }
 
   bool restore_expected_with_live_helper() {
@@ -716,12 +885,15 @@ namespace {
     }
   }
 
-  bool disarm_helper_restore_if_running() {
-    if (shutdown_requested()) {
+  bool disarm_helper_restore_if_running(const std::function<bool()> &cancellation_predicate = {}) {
+    if (shutdown_requested() || cancellation_requested(cancellation_predicate)) {
       return false;
     }
 
-    const bool helper_running = helper_process_running();
+    const bool helper_running = helper_process_running(cancellation_predicate);
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     if (!helper_running) {
       g_restore_expected.store(false, std::memory_order_relaxed);
       return false;
@@ -759,31 +931,15 @@ namespace {
       }
     }
 
-    using namespace std::chrono;
-    const auto start = steady_clock::now();
-    const auto deadline = start + kDisarmRestoreBudget;
-    auto remaining_ms = [&]() -> int {
-      const auto now = steady_clock::now();
-      if (now >= deadline) {
-        return 0;
-      }
-      return static_cast<int>(duration_cast<milliseconds>(deadline - now).count());
-    };
-
-    // Bound total blocking to kDisarmRestoreBudget by splitting the budget across connect+send.
-    auto try_send_fast = [&](int max_total_ms) -> bool {
-      const int per_op_ms = std::max(10, max_total_ms / 2);
-      return platf::display_helper_client::send_disarm_restore_fast(per_op_ms);
-    };
-
     g_last_disarm_attempt_us.store(now_us, std::memory_order_relaxed);
-    bool ok = try_send_fast(static_cast<int>(kDisarmRestoreBudget.count()));
-    if (!ok) {
-      const int rem = remaining_ms();
-      if (rem > 20) {
-        platf::display_helper_client::reset_connection();
-        ok = try_send_fast(rem);
-      }
+    // The short recovery path intentionally makes one cache-only attempt. A
+    // reconnect or a synchronous reset can take seconds and would defeat the
+    // deadline that protects stream startup from a concurrent restore.
+    const bool ok = platf::display_helper_client::send_disarm_restore_fast(
+      static_cast<int>(kDisarmRestoreBudget.count()));
+
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
     }
 
     if (ok) {
@@ -801,22 +957,40 @@ namespace {
       BOOST_LOG(warning) << "Display helper: DISARM could not be delivered within "
                          << kDisarmRestoreBudget.count() << "ms; terminating helper to stop restore activity.";
       {
-        std::lock_guard<std::mutex> lg(helper_mutex());
+        std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+        while (!lg.try_lock()) {
+          if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+            return false;
+          }
+        }
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
         helper_proc().terminate();
       }
-      platf::display_helper_client::reset_connection();
       g_restore_expected.store(false, std::memory_order_relaxed);
     }
 
     return false;
   }
 
-  bool ensure_helper_started(bool force_restart, bool force_enable) {
+  bool ensure_helper_started(
+    bool force_restart,
+    bool force_enable,
+    const std::function<bool()> &cancellation_predicate) {
     if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
     const bool shutting_down = shutdown_requested();
-    std::lock_guard<std::mutex> lg(helper_mutex());
+    std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
+    while (!lg.try_lock()) {
+      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+        return false;
+      }
+    }
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     // Already started? Verify liveness to avoid stale or wedged state
     if (HANDLE h = helper_proc().get_process_handle(); h != nullptr) {
       BOOST_LOG(debug) << "Display helper: checking existing process handle...";
@@ -828,15 +1002,22 @@ namespace {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
-            ping_ok = platf::display_helper_client::send_ping();
-            if (!ping_ok) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (cancellation_requested(cancellation_predicate)) {
+              return false;
+            }
+            ping_ok = cancellation_predicate ?
+                        platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                        platf::display_helper_client::send_ping();
+            if (!ping_ok && !sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+              return false;
             }
           }
           if (ping_ok) {
             return true;
           }
-          platf::display_helper_client::reset_connection();
+          if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+            return false;
+          }
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
           note_helper_start_failure("failed ping");
           return false;
@@ -846,15 +1027,22 @@ namespace {
           BOOST_LOG(debug) << "Display helper hard restart skipped because existing helper accepted a fast ping.";
           return true;
         }
-        platf::display_helper_client::reset_connection();
+        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+          return false;
+        }
         BOOST_LOG(warning) << "Display helper hard restart requested because existing helper did not accept a fast ping.";
 
         BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
                            << ") with no grace period.";
-        platf::display_helper_client::reset_connection();
+        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+          return false;
+        }
         helper_proc().terminate();
 
-        DWORD wait_result = WaitForSingleObject(h, kHelperForceKillWaitMs);
+        DWORD wait_result = WAIT_TIMEOUT;
+        if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_result)) {
+          return false;
+        }
         if (wait_result == WAIT_OBJECT_0) {
           DWORD exit_code = 0;
           GetExitCodeProcess(h, &exit_code);
@@ -869,7 +1057,9 @@ namespace {
         }
 
         // Small delay to reduce the chance of named pipe / mutex conflicts during rapid restart.
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!sleep_with_cancellation(std::chrono::milliseconds(100), cancellation_predicate)) {
+          return false;
+        }
       } else {
         // Process exited; fall through to restart
         DWORD exit_code = 0;
@@ -877,7 +1067,7 @@ namespace {
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
     }
-    if (shutting_down) {
+    if (shutting_down || cancellation_requested(cancellation_predicate)) {
       return false;
     }
 
@@ -885,7 +1075,9 @@ namespace {
       return false;
     }
 
-    kill_all_helper_processes();
+    if (!kill_all_helper_processes(cancellation_predicate)) {
+      return false;
+    }
 
     // Compute path to sunshine_display_helper.exe inside the tools subdirectory next to Sunshine.exe
     wchar_t module_path[MAX_PATH] = {};
@@ -912,12 +1104,17 @@ namespace {
     statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
                      << " " << platf::to_utf8(helper_args);
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
     bool started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
     if (!started && force_restart) {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        if (!sleep_with_cancellation(std::chrono::milliseconds(150), cancellation_predicate)) {
+          return false;
+        }
         started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
       }
     }
@@ -940,6 +1137,9 @@ namespace {
     // Give the helper process time to initialize and create its named pipe server
     // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
     for (int check = 0; check < 6; ++check) {
+      if (cancellation_requested(cancellation_predicate)) {
+        return false;
+      }
       DWORD wait = WaitForSingleObject(h, 50);
       if (wait == WAIT_OBJECT_0) {
         DWORD exit_code = 0;
@@ -947,7 +1147,9 @@ namespace {
         if (exit_code == 3) {
           BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
                              << "Retrying after extended cleanup delay...";
-          std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+          if (!sleep_with_cancellation(std::chrono::milliseconds(1000), cancellation_predicate)) {
+            return false;
+          }
 
           const bool retry_started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
           if (!retry_started) {
@@ -959,7 +1161,9 @@ namespace {
           if (h) {
             pid = GetProcessId(h);
             BOOST_LOG(info) << "Display helper retry succeeded (pid=" << pid << ")";
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            if (!sleep_with_cancellation(std::chrono::milliseconds(300), cancellation_predicate)) {
+              return false;
+            }
           }
           break;
         } else {
@@ -971,11 +1175,16 @@ namespace {
     }
 
     // Final initialization delay for pipe server creation
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    const bool ipc_ready = wait_for_helper_ipc_ready_locked();
-    if (!ipc_ready) {
+    if (!sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+      return false;
+    }
+    const bool ipc_ready = wait_for_helper_ipc_ready_locked(cancellation_predicate);
+    if (ipc_ready) {
+      note_helper_start_success();
+    } else {
       note_helper_start_failure("IPC readiness timeout");
-    } else if (!legacy_engine) {
+    }
+    if (ipc_ready && !legacy_engine && !cancellation_predicate) {
       // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
       // log "Unknown message type" for this frame).
       (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));
@@ -983,18 +1192,45 @@ namespace {
     return ipc_ready;
   }
 
-  // Watchdog state for helper liveness during active streams.
-  // g_watchdog_mutex guards g_watchdog_running and g_watchdog_thread together:
-  // start/stop are called from many threads (rtsp/webrtc session end, app
-  // termination, paused-session cleanup, hotkeys, shutdown), and an
-  // unsynchronized jthread move-assign racing joinable()/join() can make
-  // join() throw std::system_error, which escapes to std::terminate.
+  // Watchdog state for helper liveness during active streams. start/stop are
+  // called from many threads (RTSP/WebRTC session end, app termination,
+  // paused-session cleanup, hotkeys, and process shutdown). A stopping worker
+  // remains owned here until a non-worker caller joins it: detaching it would
+  // let it access helper globals after CRT teardown.
+  enum class watchdog_state_e {
+    stopped,
+    running,
+    stopping,
+  };
+
   static std::mutex g_watchdog_mutex;
-  static bool g_watchdog_running = false;
+  static std::condition_variable g_watchdog_cv;
+  static watchdog_state_e g_watchdog_state = watchdog_state_e::stopped;
   static std::jthread g_watchdog_thread;
+  static std::thread::id g_watchdog_worker_id;
+  static bool g_watchdog_reaping = false;
+  static bool g_watchdog_teardown_completed = false;
+  // The watchdog is global, but its cleanup belongs to the launch whose
+  // display state it observed. This prevents an old stream's stop from
+  // erasing a newer launch that has already applied its display request.
+  static std::optional<std::uint64_t> g_watchdog_session_generation;
+  static std::uint64_t g_watchdog_stop_epoch = 0;
   static std::chrono::steady_clock::time_point g_last_vd_reenable {};
 
   constexpr auto kVirtualDisplayReenableCooldown = std::chrono::seconds(3);
+
+  static bool stream_is_active_or_pending() {
+    return stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+           webrtc_stream::has_active_or_pending_sessions();
+  }
+
+  static void adopt_watchdog_session_generation(std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(g_watchdog_mutex);
+    if (g_watchdog_state == watchdog_state_e::running && !g_watchdog_reaping) {
+      g_watchdog_session_generation = generation;
+      g_watchdog_teardown_completed = false;
+    }
+  }
 
   bool recently_reenabled_virtual_display() {
     if (g_last_vd_reenable.time_since_epoch().count() == 0) {
@@ -1048,25 +1284,46 @@ namespace {
     std::optional<bool> virtual_display_override = std::nullopt,
     std::optional<int> framegen_refresh_override = std::nullopt
   ) {
-    std::lock_guard<std::mutex> lg(g_session_mutex);
-    const int effective_fps = fps_override ? *fps_override : (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0 ? *session.framegen_refresh_rate : session.fps);
-    g_active_session_dd = session_dd_fields_t {
-      .width = width_override ? *width_override : session.width,
-      .height = height_override ? *height_override : session.height,
-      .fps = effective_fps,
-      .enable_hdr = rtsp_stream::effective_hdr_requested(session),
-      .enable_sops = session.enable_sops,
-      .virtual_display = virtual_display_override ? *virtual_display_override : session.virtual_display,
-      .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
-      .framegen_refresh_rate = framegen_refresh_override ? framegen_refresh_override : session.framegen_refresh_rate,
-      .framegen_refresh_multiplier = session.framegen_refresh_multiplier,
-      .gen1_framegen_fix = session.gen1_framegen_fix,
-      .gen2_framegen_fix = session.gen2_framegen_fix,
-    };
-    if (!g_active_session_dd->virtual_display_device_id.empty()) {
-      // Persist so the helper (including the boot-time restore task) can exclude this
-      // device from snapshots/baselines even when its EDID is not classifiable.
-      statefile::remember_virtual_display_device(g_active_session_dd->virtual_display_device_id);
+    std::uint64_t generation = 0;
+    {
+      std::lock_guard<std::mutex> lg(g_session_mutex);
+      const bool same_session =
+        g_active_session_dd &&
+        g_active_session_dd->launch_session_id == session.id &&
+        g_active_session_dd->session_unique_id == session.unique_id &&
+        g_active_session_dd->session_client_uuid == session.client_uuid;
+      generation = same_session ?
+                     g_active_session_dd->generation :
+                     ++g_next_active_session_generation;
+      const auto refresh_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+      const int effective_fps = fps_override ? *fps_override : static_cast<int>(std::min<std::uint32_t>(
+        refresh_millihz,
+        static_cast<std::uint32_t>(std::numeric_limits<int>::max())
+      ));
+      g_active_session_dd = session_dd_fields_t {
+        .generation = generation,
+        .launch_session_id = session.id,
+        .session_unique_id = session.unique_id,
+        .session_client_uuid = session.client_uuid,
+        .width = width_override ? *width_override : session.width,
+        .height = height_override ? *height_override : session.height,
+        .fps = effective_fps,
+        .refresh_millihz = refresh_millihz,
+        .enable_hdr = rtsp_stream::effective_hdr_requested(session),
+        .enable_sops = session.enable_sops,
+        .virtual_display = virtual_display_override ? *virtual_display_override : session.virtual_display,
+        .virtual_display_device_id = device_id_override ? *device_id_override : session.virtual_display_device_id,
+        .framegen_refresh_rate = framegen_refresh_override ? framegen_refresh_override : session.framegen_refresh_rate,
+        .framegen_refresh_millihz = session.framegen_refresh_millihz,
+        .framegen_refresh_multiplier = session.framegen_refresh_multiplier,
+        .gen1_framegen_fix = session.gen1_framegen_fix,
+        .gen2_framegen_fix = session.gen2_framegen_fix,
+      };
+      if (!g_active_session_dd->virtual_display_device_id.empty()) {
+        // Persist so the helper (including the boot-time restore task) can exclude this
+        // device from snapshots/baselines even when its EDID is not classifiable.
+        statefile::remember_virtual_display_device(g_active_session_dd->virtual_display_device_id);
+      }
     }
   }
 
@@ -1075,9 +1332,62 @@ namespace {
     return g_active_session_dd;
   }
 
+  static std::optional<std::uint64_t> active_session_generation() {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (!g_active_session_dd) {
+      return std::nullopt;
+    }
+    return g_active_session_dd->generation;
+  }
+
+  static std::optional<std::uint64_t> active_session_generation_for(
+    const rtsp_stream::launch_session_t &session
+  ) {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (!g_active_session_dd ||
+        g_active_session_dd->launch_session_id != session.id ||
+        g_active_session_dd->session_unique_id != session.unique_id ||
+        g_active_session_dd->session_client_uuid != session.client_uuid) {
+      return std::nullopt;
+    }
+    return g_active_session_dd->generation;
+  }
+
   static void clear_active_session() {
     std::lock_guard<std::mutex> lg(g_session_mutex);
     g_active_session_dd.reset();
+  }
+
+  // Called while g_watchdog_mutex is held. Keeping the session mutex through
+  // the connection reset prevents a newly applied launch from being cleared by
+  // a watchdog that belonged to the previous launch.
+  static bool reset_connection_and_clear_active_session_if_generation(
+    const std::optional<std::uint64_t> &expected_generation
+  ) {
+    std::lock_guard<std::mutex> lg(g_session_mutex);
+    if (g_active_session_dd &&
+        (!expected_generation || g_active_session_dd->generation != *expected_generation)) {
+      BOOST_LOG(debug) << "Display helper: skipping stale watchdog cleanup for session generation "
+                       << (expected_generation ? std::to_string(*expected_generation) : std::string {"none"})
+                       << "; active generation is " << g_active_session_dd->generation << '.';
+      return false;
+    }
+    if (config::video.dd.config_revert_on_disconnect) {
+      platf::display_helper_client::reset_connection();
+    }
+    g_active_session_dd.reset();
+    return true;
+  }
+
+  // Requires g_watchdog_mutex. A stopped watchdog must finish its IPC/session
+  // teardown before another generation can begin, otherwise an old disconnect
+  // can erase the newly started stream's active-session state.
+  static void finish_watchdog_stop_locked(const std::optional<std::uint64_t> &expected_generation) {
+    if (g_watchdog_teardown_completed) {
+      return;
+    }
+    (void) reset_connection_and_clear_active_session_if_generation(expected_generation);
+    g_watchdog_teardown_completed = true;
   }
 
   std::optional<std::string> build_helper_apply_payload(const display_helper_integration::DisplayApplyRequest &request) {
@@ -1196,7 +1506,10 @@ namespace {
           (void) platf::display_helper_client::send_ping();
         }
 
-        const bool suspended = (rtsp_stream::session_count() == 0) && (proc::proc.running() > 0);
+        // This worker only needs a snapshot to select its polling interval.
+        // session_count() reaps STOPPING sessions, whose join path can call
+        // stop_watchdog() and make this worker attempt to join itself.
+        const bool suspended = (rtsp_stream::session_count_no_cleanup() == 0) && (proc::proc.running() > 0);
         const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
         sleep_interruptible(interval);
         if (st.stop_requested()) {
@@ -1231,13 +1544,26 @@ namespace {
 
 namespace display_helper_integration {
   namespace {
-    bool apply_internal(const DisplayApplyRequest &request, bool allow_resolution_deferral) {
+    bool apply_internal(
+      const DisplayApplyRequest &request,
+      bool allow_resolution_deferral,
+      ApplyVerificationTicket *verification_ticket,
+      const std::function<bool()> &cancellation_predicate = {}) {
+      const auto startup_deadline = std::chrono::steady_clock::now() + kApplyVerificationTimeout;
+      if (verification_ticket) {
+        *verification_ticket = {};
+        verification_ticket->startup_deadline = startup_deadline;
+      }
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
+      }
       if (request.action == DisplayApplyAction::Skip) {
         BOOST_LOG(info) << "Display helper: configuration parse failed; not dispatching.";
         return false;
       }
 
       if (request.action == DisplayApplyAction::Revert) {
+        invalidate_apply_verification();
         const bool helper_ready = ensure_helper_started(false, true);
         if (!helper_ready) {
           BOOST_LOG(warning) << "Display helper: REVERT skipped (helper not reachable).";
@@ -1254,6 +1580,28 @@ namespace display_helper_integration {
       if (request.action != DisplayApplyAction::Apply) {
         return false;
       }
+
+      // Invalidate verification from any older APPLY before starting work. This
+      // prevents capture from treating the previous generation as proof while a
+      // newer topology change is in flight.
+      const auto apply_generation = g_last_apply_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+      if (verification_ticket) {
+        verification_ticket->generation = apply_generation;
+      }
+      const bool exclusive_virtual =
+        request.virtual_display_arrangement == VirtualDisplayArrangement::Exclusive;
+      const bool source_hdr_explicitly_disabled =
+        request.configuration && request.configuration->m_hdr_state == display_device::HdrState::Disabled;
+      g_capture_stable_eligible_apply_generation.store(
+        exclusive_virtual && source_hdr_explicitly_disabled ? apply_generation : 0,
+        std::memory_order_release
+      );
+      const bool source_hdr_requested =
+        request.configuration && request.configuration->m_hdr_state == display_device::HdrState::Enabled;
+      g_hdr_requested_apply_generation.store(
+        source_hdr_requested ? apply_generation : 0,
+        std::memory_order_release
+      );
 
       // Prefer the helper for APPLY, even when running as SYSTEM without an interactive user session.
       // In-process display APIs frequently return ERROR_ACCESS_DENIED in that context.
@@ -1276,13 +1624,23 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: reusing existing helper because an unconfirmed restore is pending; APPLY will supersede it.";
       }
 
-      bool helper_ready = ensure_helper_started(hard_restart, true);
+      bool helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
       if (!helper_ready && hard_restart) {
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
         BOOST_LOG(warning) << "Display helper: hard restart path unavailable; retrying helper start without restart.";
-        helper_ready = ensure_helper_started(false, true);
+        helper_ready = ensure_helper_started(false, true, cancellation_predicate);
       }
       if (!helper_ready) {
-        helper_ready = ensure_helper_started(hard_restart, true);
+        if (cancellation_requested(cancellation_predicate)) {
+          return false;
+        }
+        helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
+      }
+
+      if (cancellation_predicate && cancellation_predicate()) {
+        return false;
       }
 
       if (helper_ready) {
@@ -1293,12 +1651,44 @@ namespace display_helper_integration {
         }
 
         BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
-        const bool ok = platf::display_helper_client::send_apply_json(*payload);
+        std::uint64_t helper_apply_request_id = 0;
+        std::uint64_t client_wait_generation = 0;
+        std::uint64_t connection_generation = 0;
+        const auto remaining_apply_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
+          startup_deadline - std::chrono::steady_clock::now());
+        if (remaining_apply_budget <= std::chrono::milliseconds::zero()) {
+          BOOST_LOG(warning) << "Display helper: stream-start APPLY budget expired before dispatch.";
+          return false;
+        }
+        const bool ok = platf::display_helper_client::send_apply_json(
+          *payload,
+          &helper_apply_request_id,
+          &client_wait_generation,
+          &connection_generation,
+          cancellation_predicate,
+          static_cast<int>(remaining_apply_budget.count()));
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-        g_last_apply_used_helper.store(ok, std::memory_order_relaxed);
+        if (ok && cancellation_requested(cancellation_predicate)) {
+          BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
+          return false;
+        }
+        // The client identifies the live helper protocol from its ApplyResult.
+        // A non-zero id means this specific connection confirmed v2's
+        // token/verification protocol; an untagged legacy acknowledgement
+        // intentionally preserves v1's synchronous completion behavior.
+        if (verification_ticket && ok && helper_apply_request_id != 0) {
+          verification_ticket->uses_v2_helper = true;
+          verification_ticket->helper_request_id = helper_apply_request_id;
+          verification_ticket->client_wait_generation = client_wait_generation;
+          verification_ticket->connection_generation = connection_generation;
+        }
         if (ok && request.session) {
+          if (cancellation_requested(cancellation_predicate)) {
+            BOOST_LOG(debug) << "Display helper: APPLY session-state publication was cancelled.";
+            return false;
+          }
           g_restore_expected.store(false, std::memory_order_relaxed);
-          g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
+          note_successful_apply();
           set_active_session(
             *request.session,
             request.session_overrides.device_id_override,
@@ -1312,6 +1702,9 @@ namespace display_helper_integration {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
         }
+        if (!ok && cancellation_predicate && cancellation_predicate()) {
+          return false;
+        }
         if (!ok && allow_resolution_deferral && request.session && platf::is_lock_screen_active()) {
           BOOST_LOG(info) << "Display helper: APPLY failed during lock screen; queuing deferred apply for retry after unlock.";
           queue_deferred_resolution_apply(request);
@@ -1322,6 +1715,11 @@ namespace display_helper_integration {
       if (system_no_user_session) {
         BOOST_LOG(warning) << "Display helper: helper unavailable in SYSTEM context without user session; skipping in-process APPLY fallback.";
         maybe_queue_deferred_resolution_apply(request, allow_resolution_deferral);
+        return false;
+      }
+
+      if (cancellation_predicate) {
+        BOOST_LOG(debug) << "Display helper: recovery APPLY will not fall back to synchronous in-process display APIs.";
         return false;
       }
 
@@ -1347,7 +1745,7 @@ namespace display_helper_integration {
       }
       (void) apply_topology_definition(request.topology, "in-process");
 
-      g_last_apply_completed_us.store(now_steady_us(), std::memory_order_relaxed);
+      note_successful_apply();
       set_active_session(
         *request.session,
         request.session_overrides.device_id_override,
@@ -1365,27 +1763,80 @@ namespace display_helper_integration {
     }
   }  // namespace
 
-  ApplyVerificationStatus wait_for_apply_verification(std::chrono::milliseconds timeout) {
-    // The legacy engine never emits VerificationResult frames; don't burn the timeout.
-    if (use_legacy_helper_engine()) {
-      return ApplyVerificationStatus::Unknown;
-    }
-    if (!g_last_apply_used_helper.exchange(false, std::memory_order_acq_rel)) {
+  ApplyVerificationStatus wait_for_apply_verification(
+    const ApplyVerificationTicket &ticket,
+    std::chrono::milliseconds timeout) {
+    // Legacy success is acknowledged only after its synchronous verification,
+    // but it does not emit a separately attributable VerificationResult frame.
+    if (!ticket.uses_v2_helper || ticket.generation == 0 || ticket.helper_request_id == 0 ||
+        ticket.client_wait_generation == 0 || ticket.connection_generation == 0) {
       return ApplyVerificationStatus::Unknown;
     }
 
-    const int timeout_ms = static_cast<int>(std::max<long long>(timeout.count(), 0LL));
-    const auto result = platf::display_helper_client::wait_for_verification_result(timeout_ms);
+    auto effective_timeout = std::max(timeout, std::chrono::milliseconds::zero());
+    if (ticket.startup_deadline != std::chrono::steady_clock::time_point {}) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        ticket.startup_deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        BOOST_LOG(warning) << "Display helper: verification skipped because the shared stream-start budget expired.";
+        return ApplyVerificationStatus::Unknown;
+      }
+      effective_timeout = std::min(effective_timeout, remaining);
+    }
+    const int timeout_ms = static_cast<int>(effective_timeout.count());
+    const auto result = platf::display_helper_client::wait_for_verification_result(
+      timeout_ms,
+      [generation = ticket.generation] {
+        return g_last_apply_generation.load(std::memory_order_acquire) != generation;
+      },
+      ticket.helper_request_id,
+      ticket.client_wait_generation,
+      ticket.connection_generation
+    );
     if (!result.has_value()) {
-      BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      if (g_last_apply_generation.load(std::memory_order_acquire) != ticket.generation) {
+        BOOST_LOG(debug) << "Display helper: verification gate superseded by a newer APPLY.";
+      } else {
+        BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      }
       return ApplyVerificationStatus::Unknown;
     }
 
-    return *result ? ApplyVerificationStatus::Verified : ApplyVerificationStatus::Failed;
+    if (*result && g_last_apply_generation.load(std::memory_order_acquire) == ticket.generation) {
+      g_last_verified_apply_generation.store(ticket.generation, std::memory_order_release);
+      return ApplyVerificationStatus::Verified;
+    }
+    return *result ? ApplyVerificationStatus::Unknown : ApplyVerificationStatus::Failed;
   }
 
-  bool apply(const DisplayApplyRequest &request) {
-    g_last_apply_used_helper.store(false, std::memory_order_relaxed);
+  bool last_apply_is_capture_stable() {
+    const auto before = g_last_apply_generation.load(std::memory_order_acquire);
+    const auto verified = g_last_verified_apply_generation.load(std::memory_order_acquire);
+    const auto eligible = g_capture_stable_eligible_apply_generation.load(std::memory_order_acquire);
+    const auto after = g_last_apply_generation.load(std::memory_order_acquire);
+    return before != 0 && before == after && verified == after && eligible == after;
+  }
+
+  bool last_apply_requested_hdr() {
+    const auto before = g_last_apply_generation.load(std::memory_order_acquire);
+    const auto hdr = g_hdr_requested_apply_generation.load(std::memory_order_acquire);
+    const auto after = g_last_apply_generation.load(std::memory_order_acquire);
+    return before != 0 && before == after && hdr == after;
+  }
+
+  bool apply(
+    const DisplayApplyRequest &request,
+    ApplyVerificationTicket *verification_ticket,
+    std::function<bool()> cancellation_predicate) {
+    if (cancellation_requested(cancellation_predicate)) {
+      return false;
+    }
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+      return false;
+    }
+    clear_pending_apply_queue_locked();
+
     // Remember the session's virtual display before the APPLY payload is built so the
     // helper can exclude it from the pre-apply baseline it may capture.
     if (request.session) {
@@ -1396,11 +1847,13 @@ namespace display_helper_integration {
         statefile::remember_virtual_display_device(vd_id);
       }
     }
-    return apply_internal(request, true);
+    return apply_internal(request, true, verification_ticket, cancellation_predicate);
   }
 
   bool revert(bool prefer_golden_if_current_missing) {
-    clear_pending_apply();
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    invalidate_apply_verification();
+    clear_pending_apply_queue_locked();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
       return false;
@@ -1418,8 +1871,12 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool disarm_pending_restore() {
-    return disarm_helper_restore_if_running();
+  bool disarm_pending_restore(std::function<bool()> cancellation_predicate) {
+    if (cancellation_predicate && cancellation_predicate()) {
+      return false;
+    }
+    invalidate_apply_verification();
+    return disarm_helper_restore_if_running(cancellation_predicate);
   }
 
   bool export_golden_restore() {
@@ -1434,6 +1891,7 @@ namespace display_helper_integration {
   }
 
   bool reset_persistence() {
+    invalidate_apply_verification();
     if (!ensure_helper_started()) {
       BOOST_LOG(info) << "Display helper unavailable; cannot reset persistence.";
       return false;
@@ -1455,12 +1913,40 @@ namespace display_helper_integration {
       return false;
     }
     BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
-    const bool ok = platf::display_helper_client::send_snapshot_current(build_snapshot_exclude_payload());
-    BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT dispatch result=" << (ok ? "true" : "false");
+    const auto payload = build_snapshot_exclude_payload();
+    // Wire behavior is selected from the helper that actually answered APPLY,
+    // not from a configuration value that may have changed while a helper was
+    // being reused. An unknown connection dispatches in pipe order; APPLY has
+    // its own pre-apply baseline fallback if that snapshot is not yet saved.
+    const bool v2_helper = platf::display_helper_client::uses_v2_response_protocol();
+    const bool ok = v2_helper ?
+                      platf::display_helper_client::send_snapshot_current_and_wait(payload) :
+                      platf::display_helper_client::send_snapshot_current(payload);
+    BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
+                    << (v2_helper ? "completion" : "dispatch")
+                    << " result=" << (ok ? "true" : "false");
     return ok;
   }
 
-  bool apply_pending_if_ready() {
+  bool apply_pending_if_ready(std::function<bool()> cancellation_predicate) {
+    const auto cancelled = [&] {
+      return cancellation_predicate && cancellation_predicate();
+    };
+    if (cancelled()) {
+      return false;
+    }
+
+    // A deferred APPLY must not outlive a normal APPLY, REVERT, or session
+    // teardown. Keep ownership of the display operation until its IPC and
+    // active-session update are complete.
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+      return false;
+    }
+    bool check_idle_stop_after_apply = false;
+    if (cancelled()) {
+      return false;
+    }
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
       if (!pending_apply_state()) {
@@ -1468,14 +1954,18 @@ namespace display_helper_integration {
       }
     }
 
-    if (platf::is_running_as_system() && !user_session_ready()) {
+    if (cancelled() || (platf::is_running_as_system() && !user_session_ready())) {
       return false;
     }
 
     const auto now = std::chrono::steady_clock::now();
     PendingApplyState pending;
+    bool stream_was_live_when_claimed = false;
     {
       std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (cancelled()) {
+        return false;
+      }
       if (!pending_apply_state()) {
         return false;
       }
@@ -1496,22 +1986,44 @@ namespace display_helper_integration {
         pending_apply_state().reset();
         return false;
       }
+      // The RTSP join path decrements its live-session count before it clears
+      // deferred work. Do not claim an orphaned request in that window: leave
+      // it for teardown to remove rather than publishing stale display state.
+      stream_was_live_when_claimed = stream_is_active_or_pending();
+      if (!stream_was_live_when_claimed) {
+        return false;
+      }
       pending = state;
       pending_apply_state().reset();
+    }
+
+    if (cancelled()) {
+      std::lock_guard<std::mutex> lock(pending_apply_mutex());
+      if (!pending_apply_state()) {
+        pending.request.session = nullptr;
+        pending_apply_state() = std::move(pending);
+      }
+      return false;
     }
 
     std::optional<rtsp_stream::launch_session_t> session;
     if (pending.has_session) {
       rtsp_stream::launch_session_t snapshot {};
+      snapshot.id = pending.session_snapshot.id;
+      snapshot.unique_id = pending.session_snapshot.unique_id;
+      snapshot.client_uuid = pending.session_snapshot.client_uuid;
       snapshot.width = pending.session_snapshot.width;
       snapshot.height = pending.session_snapshot.height;
       snapshot.fps = pending.session_snapshot.fps;
+      snapshot.client_display_mode_override = pending.session_snapshot.client_display_mode_override;
+      snapshot.client_display_refresh_millihz = pending.session_snapshot.client_display_refresh_millihz;
       snapshot.enable_hdr = pending.session_snapshot.enable_hdr;
       snapshot.enable_sops = pending.session_snapshot.enable_sops;
       snapshot.virtual_display = pending.session_snapshot.virtual_display;
       snapshot.virtual_display_device_id = pending.session_snapshot.virtual_display_device_id;
       snapshot.virtual_display_ready_since = pending.session_snapshot.virtual_display_ready_since;
       snapshot.framegen_refresh_rate = pending.session_snapshot.framegen_refresh_rate;
+      snapshot.framegen_refresh_millihz = pending.session_snapshot.framegen_refresh_millihz;
       snapshot.framegen_refresh_multiplier = pending.session_snapshot.framegen_refresh_multiplier;
       snapshot.gen1_framegen_fix = pending.session_snapshot.gen1_framegen_fix;
       snapshot.gen2_framegen_fix = pending.session_snapshot.gen2_framegen_fix;
@@ -1522,8 +2034,26 @@ namespace display_helper_integration {
     }
 
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
-    const bool ok = apply_internal(pending.request, false);
+    const bool ok = apply_internal(pending.request, false, nullptr, cancellation_predicate);
+    if (ok && stream_was_live_when_claimed && session) {
+      if (const auto generation = active_session_generation_for(*session)) {
+        // This retry may complete after start_watchdog() observed no active
+        // descriptor (for example while the lock screen deferred APPLY). Bind
+        // the already-live stream to its exact generation before teardown can
+        // make the liveness count drop to zero.
+        adopt_watchdog_session_generation(*generation);
+        check_idle_stop_after_apply = !stream_is_active_or_pending();
+      }
+    }
     if (!ok) {
+      if (cancelled()) {
+        pending.request.session = nullptr;
+        std::lock_guard<std::mutex> lock(pending_apply_mutex());
+        if (!pending_apply_state()) {
+          pending_apply_state() = std::move(pending);
+        }
+        return false;
+      }
       pending.attempts += 1;
       pending.request.session = nullptr;
       const auto delay = deferred_apply_retry_delay(pending.attempts);
@@ -1538,6 +2068,15 @@ namespace display_helper_integration {
         BOOST_LOG(info) << "Display helper: deferred APPLY failed but a newer pending configuration is queued; dropping retry.";
       }
     }
+    if (check_idle_stop_after_apply) {
+      // Do not join the watchdog while owning the display-operation gate: its
+      // worker may observe session teardown. A newer APPLY that starts first
+      // will publish a different generation, which ordinary stop preserves.
+      execution_lock.unlock();
+      if (!stream_is_active_or_pending() && proc::proc.running() <= 0) {
+        stop_watchdog();
+      }
+    }
     return ok;
   }
 
@@ -1547,8 +2086,8 @@ namespace display_helper_integration {
   }
 
   void clear_pending_apply() {
-    std::lock_guard<std::mutex> lock(pending_apply_mutex());
-    pending_apply_state().reset();
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+    clear_pending_apply_queue_locked();
   }
 
   int64_t ms_since_last_apply() {
@@ -1833,32 +2372,224 @@ namespace display_helper_integration {
   }
 
   void start_watchdog() {
-    std::scoped_lock lk(g_watchdog_mutex);
-    if (g_watchdog_running) {
-      return;  // already running
+    std::uint64_t stop_epoch_at_start = 0;
+    {
+      std::lock_guard lock(g_watchdog_mutex);
+      stop_epoch_at_start = g_watchdog_stop_epoch;
     }
-    g_watchdog_running = true;
-    g_watchdog_thread = std::jthread(watchdog_proc);
+
+    for (;;) {
+      std::jthread worker_to_join;
+      std::optional<std::uint64_t> reaped_session_generation;
+      {
+        std::unique_lock lock(g_watchdog_mutex);
+        if (g_watchdog_state == watchdog_state_e::running) {
+          const auto active_generation = active_session_generation();
+          if (active_generation && g_watchdog_session_generation != active_generation) {
+            // The existing worker remains useful for the newly active launch.
+            // Its eventual cleanup must belong to that launch, not the stream
+            // that originally created the worker.
+            g_watchdog_session_generation = active_generation;
+            g_watchdog_teardown_completed = false;
+          }
+          return;
+        }
+
+        // The worker can re-enter stop_watchdog() through proc::running(). It
+        // must never wait for an external thread that is currently joining it.
+        if (g_watchdog_reaping) {
+          if (g_watchdog_worker_id == std::this_thread::get_id()) {
+            BOOST_LOG(warning) << "Display helper: watchdog restart deferred while its worker is stopping.";
+            return;
+          }
+          g_watchdog_cv.wait(lock, [] {
+            return !g_watchdog_reaping;
+          });
+          continue;
+        }
+
+        if (g_watchdog_thread.joinable()) {
+          if (g_watchdog_thread.get_id() == std::this_thread::get_id()) {
+            BOOST_LOG(warning) << "Display helper: watchdog restart deferred while its worker is stopping.";
+            return;
+          }
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_thread.request_stop();
+          reaped_session_generation = g_watchdog_session_generation;
+          worker_to_join = std::move(g_watchdog_thread);
+          g_watchdog_reaping = true;
+        } else {
+          if (g_watchdog_stop_epoch != stop_epoch_at_start) {
+            // A stop that raced this start wins. A later stream start will
+            // take a fresh epoch and may launch a new watchdog.
+            return;
+          }
+          g_watchdog_state = watchdog_state_e::stopped;
+          try {
+            g_watchdog_session_generation = active_session_generation();
+            g_watchdog_thread = std::jthread(watchdog_proc);
+            g_watchdog_worker_id = g_watchdog_thread.get_id();
+            g_watchdog_teardown_completed = false;
+            g_watchdog_state = watchdog_state_e::running;
+          } catch (const std::system_error &e) {
+            BOOST_LOG(error) << "Display helper: failed to start watchdog: " << e.what();
+            g_watchdog_session_generation.reset();
+          }
+          return;
+        }
+      }
+
+      bool joined = false;
+      try {
+        // Do not hold g_watchdog_mutex across join(): the worker may enter
+        // proc::running(), which can synchronously call stop_watchdog().
+        worker_to_join.join();
+        joined = true;
+      } catch (const std::system_error &e) {
+        BOOST_LOG(error) << "Display helper: unable to reap stopping watchdog: " << e.what();
+      }
+
+      {
+        std::lock_guard lock(g_watchdog_mutex);
+        const bool stop_requested_while_reaping = g_watchdog_stop_epoch != stop_epoch_at_start;
+        if (!joined) {
+          // Preserve ownership on the only static jthread object. A later
+          // external caller can retry; detaching would outlive CRT teardown.
+          g_watchdog_thread = std::move(worker_to_join);
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_reaping = false;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+        g_watchdog_worker_id = {};
+        finish_watchdog_stop_locked(reaped_session_generation);
+        g_watchdog_session_generation.reset();
+        if (stop_requested_while_reaping) {
+          // A later stop belongs to this stale generation too. Do not launch
+          // a replacement after that caller has observed stop completion.
+          g_watchdog_state = watchdog_state_e::stopped;
+          g_watchdog_reaping = false;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+
+        // Keep reaping asserted through replacement construction. A stop that
+        // arrives after the old worker is joined then waits here and will see
+        // (and stop) the new generation instead of being lost in a stopped
+        // no-thread gap.
+        try {
+          g_watchdog_session_generation = active_session_generation();
+          g_watchdog_thread = std::jthread(watchdog_proc);
+          g_watchdog_worker_id = g_watchdog_thread.get_id();
+          g_watchdog_teardown_completed = false;
+          g_watchdog_state = watchdog_state_e::running;
+        } catch (const std::system_error &e) {
+          g_watchdog_state = watchdog_state_e::stopped;
+          g_watchdog_session_generation.reset();
+          BOOST_LOG(error) << "Display helper: failed to start watchdog: " << e.what();
+        }
+        g_watchdog_reaping = false;
+        g_watchdog_cv.notify_all();
+        return;
+      }
+    }
   }
 
-  void stop_watchdog() {
-    std::jthread thread;
-    {
-      std::scoped_lock lk(g_watchdog_mutex);
-      if (!g_watchdog_running) {
-        return;  // not running
+  void stop_watchdog(bool force) {
+    for (;;) {
+      std::jthread worker_to_join;
+      std::optional<std::uint64_t> stopped_session_generation;
+      {
+        std::unique_lock lock(g_watchdog_mutex);
+        if (g_watchdog_state == watchdog_state_e::stopped && !g_watchdog_thread.joinable() && !g_watchdog_reaping) {
+          return;
+        }
+
+        // Callers report a stream transition after releasing their own session
+        // locks. A newer stream can therefore start between an old caller's
+        // last-session check and this stop request. Do not let that stale stop
+        // take down the watchdog the newer stream has already adopted.
+        if (!force && stream_is_active_or_pending()) {
+          BOOST_LOG(debug) << "Display helper: deferring watchdog stop while a stream is active or pending.";
+          return;
+        }
+
+        const auto active_generation = active_session_generation();
+        if (!force && active_generation &&
+            (!g_watchdog_session_generation || *active_generation != *g_watchdog_session_generation)) {
+          BOOST_LOG(debug) << "Display helper: ignoring stale watchdog stop for session generation "
+                           << (g_watchdog_session_generation ? std::to_string(*g_watchdog_session_generation) : std::string {"none"})
+                           << "; active generation is " << *active_generation << '.';
+          return;
+        }
+
+        ++g_watchdog_stop_epoch;
+        g_watchdog_state = watchdog_state_e::stopping;
+        stopped_session_generation = force ? std::nullopt : g_watchdog_session_generation;
+        const bool caller_is_worker = g_watchdog_worker_id == std::this_thread::get_id();
+        if (g_watchdog_thread.joinable()) {
+          g_watchdog_thread.request_stop();
+        }
+
+        if (caller_is_worker) {
+          // Keep the jthread owned globally; an external start/stop or main's
+          // shutdown will join it. Waiting here would deadlock the reaper.
+          finish_watchdog_stop_locked(stopped_session_generation);
+          BOOST_LOG(warning) << "Display helper: watchdog requested its own stop; deferring join to an external caller.";
+          return;
+        }
+
+        if (g_watchdog_reaping) {
+          g_watchdog_cv.wait(lock, [] {
+            return !g_watchdog_reaping;
+          });
+          if (force) {
+            // A stale reaper may have installed a replacement while we were
+            // waiting. Re-evaluate the owned watchdog before reporting a
+            // forced shutdown as complete.
+            continue;
+          }
+          return;
+        }
+
+        if (!g_watchdog_thread.joinable()) {
+          g_watchdog_worker_id = {};
+          g_watchdog_state = watchdog_state_e::stopped;
+          finish_watchdog_stop_locked(stopped_session_generation);
+          g_watchdog_session_generation.reset();
+          return;
+        }
+
+        worker_to_join = std::move(g_watchdog_thread);
+        g_watchdog_reaping = true;
       }
-      g_watchdog_running = false;
-      thread = std::move(g_watchdog_thread);
+      bool joined = false;
+      try {
+        // See start_watchdog(): proc::running() can re-enter this function from
+        // the worker, so the watchdog mutex must remain available while joining.
+        worker_to_join.join();
+        joined = true;
+      } catch (const std::system_error &e) {
+        BOOST_LOG(error) << "Display helper: failed to join watchdog thread: " << e.what();
+      }
+
+      {
+        std::lock_guard lock(g_watchdog_mutex);
+        g_watchdog_reaping = false;
+        if (!joined) {
+          g_watchdog_thread = std::move(worker_to_join);
+          g_watchdog_state = watchdog_state_e::stopping;
+          g_watchdog_cv.notify_all();
+          return;
+        }
+        g_watchdog_worker_id = {};
+        g_watchdog_state = watchdog_state_e::stopped;
+        finish_watchdog_stop_locked(stopped_session_generation);
+        g_watchdog_session_generation.reset();
+        g_watchdog_cv.notify_all();
+      }
+      return;
     }
-    const auto stop_result = DisplayHelperWatchdog::stop_thread(thread);
-    if (stop_result == DisplayHelperWatchdog::ThreadStopResult::DetachedSelf) {
-      BOOST_LOG(debug) << "Display helper: watchdog requested its own stop; detached for safe exit.";
-    }
-    if (config::video.dd.config_revert_on_disconnect) {
-      platf::display_helper_client::reset_connection();
-    }
-    clear_active_session();
   }
 }  // namespace display_helper_integration
 

@@ -157,7 +157,7 @@ const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
 const virtualDisplayScale = computed<number>({
   get() {
     const value = Number(config.value?.['dd_virtual_display_scale']);
-    return Number.isFinite(value) ? value : 250;
+    return Number.isFinite(value) ? value : -1;
   },
   set(value) {
     if (!config.value) return;
@@ -166,6 +166,7 @@ const virtualDisplayScale = computed<number>({
 });
 
 const virtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_recommended'), value: -1 },
   { label: t('config.virtual_display_scale_auto'), value: 0 },
   ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
     label: `${value}%`,
@@ -197,7 +198,7 @@ const virtualDisplayLayout = computed<
 const virtualDisplayLayoutOptions = computed(() => [
   {
     value: 'exclusive',
-    label: t('config.virtual_display_layout_exclusive') + ' (default)',
+    label: `${t('config.virtual_display_layout_exclusive')} ${t('_common.default_parenthetical')}`,
     description: t('config.virtual_display_layout_exclusive_desc'),
   },
   {

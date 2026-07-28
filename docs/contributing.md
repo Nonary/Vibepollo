@@ -119,6 +119,27 @@ The following is a simple example of how to use it.
   > More formatting examples can be found in the
   > [Vue I18n guide](https://kazupon.github.io/vue-i18n/guide/formatting.html).
 
+##### Web UI Localization Review
+When reviewing localized Web UI pages, treat all visible user-facing copy as localizable. Hard-coded English in Vue
+templates, page headers, button labels, placeholders, empty states, saving/loading states, and status labels should be
+moved behind Vue I18n keys with `$t(...)`.
+
+Prefer adding keys under the existing page or component namespace, for example `settings`, `apps`, `index`,
+`resource_card`, `webrtc`, or the relevant configuration tab. Use named placeholders for dynamic values, such as
+`$t('index.version', { version })`, so translators can reorder text naturally.
+
+For normal source changes, add new strings only to `en.json` and let CrowdIn handle translated locale files. For
+explicit localization review branches where translated locale files are in scope, update the target locale files at the
+same time and keep terminology consistent across related UI surfaces.
+
+For Chinese locale review:
+
+* Preserve product, protocol, executable, and service names such as `Playnite`, `WebRTC`, `GitHub Issues`, `H.264`,
+  and `LosslessScaling.exe`.
+* In Simplified Chinese, use `故障排查` for troubleshooting UI and `崩溃诊断包` for crash diagnostics bundles.
+* In Traditional Chinese, use `指令` for command UI, `當機診斷套件` for crash diagnostics bundles, and `記錄檔` for
+  log-file UI.
+
 ##### C++
 
 There should be minimal cases where strings need to be extracted from C++ source code; however it may be necessary in
@@ -192,35 +213,8 @@ python ./scripts/update_clang_format.py
 ```
 
 #### Unit Testing
-Sunshine uses [Google Test](https://github.com/google/googletest) for unit testing. Google Test is included in the
-repo as a submodule. The test sources are located in the `./tests` directory.
-
-The tests need to be compiled into an executable, and then run. The tests are built using the normal build process, but
-can be disabled by setting the `BUILD_TESTS` CMake option to `OFF`.
-
-To run the tests, execute the following command.
-
-```bash
-./build/tests/test_sunshine
-```
-
-To see all available options, run the tests with the `--help` flag.
-
-```bash
-./build/tests/test_sunshine --help
-```
-
-> [!TIP]
-> See the googletest [FAQ](https://google.github.io/googletest/faq.html) for more information on how to use Google Test.
-
-We use [gcovr](https://www.gcovr.com) to generate code coverage reports,
-and [Codecov](https://about.codecov.io) to analyze the reports for all PRs and commits.
-
-Codecov will fail a PR if the total coverage is reduced too much, or if not enough of the diff is covered by tests.
-In some cases, the code cannot be covered when running the tests inside of GitHub runners. For example, any test that
-needs access to the GPU will not be able to run. In these cases, the coverage can be omitted by adding comments to the
-code. See the [gcovr documentation](https://gcovr.com/en/stable/guide/exclusion-markers.html#exclusion-markers) for
-more information.
+Unit tests are disabled by repository policy. Do not add, compile, or run them. `BUILD_TESTS` is forced to `OFF`;
+validate production changes by compiling the affected production target and performing relevant runtime checks.
 
 Even if your changes cannot be covered in the CI, we still encourage you to write the tests for them. This will allow
 maintainers to run the tests locally.

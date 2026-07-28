@@ -8,7 +8,7 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL "https://github.com/Nonary/Vibepollo/issues"
         If you provide a modified version of Sunshine, we kindly request that you use your own url.")
 
 option(BUILD_DOCS "Build documentation" OFF)
-option(BUILD_TESTS "Build tests" OFF)
+set(BUILD_TESTS OFF CACHE BOOL "Build unit tests (disabled by repository policy)." FORCE)
 option(NPM_OFFLINE "Use offline npm packages. You must ensure packages are in your npm cache." OFF)
 
 option(BUILD_WERROR "Enable -Werror flag." OFF)

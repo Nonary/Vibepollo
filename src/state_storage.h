@@ -57,9 +57,10 @@ namespace statefile {
    *
    * This is the runtime backstop for the credentials directory: it ensures the host
    * TLS private key is never left world-readable even if the installer's ACL-hardening
-   * step is skipped or fails. Best-effort; no-op on non-Windows.
+   * step is skipped or fails. Returns whether the restrictive ACL was applied and
+   * verified; always succeeds without changing permissions on non-Windows.
    */
-  void secure_private_directory(const std::string &path);
+  [[nodiscard]] bool secure_private_directory(const std::string &path);
 
   /**
    * @brief Persist the snapshot exclusion device list to vibeshine_state.json.

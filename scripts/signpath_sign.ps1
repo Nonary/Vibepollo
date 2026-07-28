@@ -8,12 +8,12 @@ param(
     [string]$ApiToken = $env:SIGNPATH_API_TOKEN,
     [string]$OrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
     [string]$ProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
-    [string]$SigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
+    [string]$SigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "release-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
     [string]$ArtifactConfigurationSlug = "",
     [string]$PeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
     [string]$MsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file-apollo" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }),
     [string]$Description = "",
-    [int]$WaitForCompletionTimeoutInSeconds = 1800,
+    [int]$WaitForCompletionTimeoutInSeconds = 20700,
     [switch]$InstallModuleIfMissing,
     [switch]$SkipIfMissingToken
 )

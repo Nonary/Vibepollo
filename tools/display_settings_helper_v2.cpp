@@ -12,6 +12,7 @@
   #include <cctype>
   #include <cstdint>
   #include <cstring>
+  #include <deque>
   #include <filesystem>
   #include <fstream>
   #include <memory>
@@ -21,8 +22,10 @@
   #include <span>
   #include <string>
   #include <thread>
+  #include <type_traits>
   #include <utility>
   #include <vector>
+  #include <variant>
 
   #ifndef WIN32_LEAN_AND_MEAN
     #define WIN32_LEAN_AND_MEAN
@@ -63,6 +66,7 @@ namespace {
     VerificationResult = 9,
     RefreshRate = 10,
     RefreshRateResult = 11,
+    SnapshotResult = 12,
     Ping = 0xFE,
     Stop = 0xFF,
   };
@@ -115,12 +119,107 @@ namespace {
            (static_cast<std::uint32_t>(payload[offset + 3]) << 24u);
   }
 
+  std::optional<std::uint64_t> read_u64_le(std::span<const std::uint8_t> payload, std::size_t offset) {
+    if (offset + 8 > payload.size()) {
+      return std::nullopt;
+    }
+    std::uint64_t value = 0;
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+      value |= static_cast<std::uint64_t>(payload[offset + (shift / 8)]) << shift;
+    }
+    return value;
+  }
+
+  void append_u64_le(std::vector<std::uint8_t> &payload, std::uint64_t value) {
+    for (unsigned int shift = 0; shift < 64; shift += 8) {
+      payload.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+    }
+  }
+
+  constexpr std::uint32_t kV2RefreshRateMagic = 0x32524653u;  // "SFR2" in little-endian bytes.
+
   void send_framed_content(platf::dxgi::AsyncNamedPipe &pipe, MsgType type, std::span<const uint8_t> payload = {}) {
     std::vector<uint8_t> out;
     out.reserve(1 + payload.size());
     out.push_back(static_cast<uint8_t>(type));
     out.insert(out.end(), payload.begin(), payload.end());
     pipe.send(out);
+  }
+
+  /// Owns the currently connected control pipe without allowing a completion
+  /// from an earlier connection to reply through a later one. The mutex stays
+  /// held through send() so teardown cannot destroy the pipe while a response
+  /// is being framed and written.
+  class ActivePipeResponder {
+  public:
+    void bind(platf::dxgi::AsyncNamedPipe &pipe, std::uint64_t epoch) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      pipe_ = &pipe;
+      epoch_ = epoch;
+    }
+
+    void clear(std::uint64_t epoch) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (epoch_ == epoch) {
+        pipe_ = nullptr;
+        epoch_ = 0;
+      }
+    }
+
+    void send_for_epoch(std::uint64_t epoch, MsgType type, std::span<const uint8_t> payload = {}) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!pipe_ || epoch_ != epoch) {
+        return;
+      }
+      send_framed_content(*pipe_, type, payload);
+    }
+
+  private:
+    std::mutex mutex_;
+    platf::dxgi::AsyncNamedPipe *pipe_ = nullptr;
+    std::uint64_t epoch_ = 0;
+  };
+
+  bool is_replacement_control_intent(const display_helper::v2::Message &message) {
+    return std::holds_alternative<display_helper::v2::ApplyCommand>(message) ||
+           std::holds_alternative<display_helper::v2::RevertCommand>(message) ||
+           std::holds_alternative<display_helper::v2::DisarmCommand>(message) ||
+           std::holds_alternative<display_helper::v2::ResetCommand>(message);
+  }
+
+  bool is_stabilization_completion(const display_helper::v2::Message &message) {
+    const auto *completion = std::get_if<display_helper::v2::VerificationCompleted>(&message);
+    return completion && completion->purpose == display_helper::v2::VerificationPurpose::Stabilization;
+  }
+
+  bool is_async_completion(const display_helper::v2::Message &message) {
+    return std::holds_alternative<display_helper::v2::ApplyCompleted>(message) ||
+           std::holds_alternative<display_helper::v2::VerificationCompleted>(message) ||
+           std::holds_alternative<display_helper::v2::ResetCompleted>(message) ||
+           std::holds_alternative<display_helper::v2::RefreshRateCompleted>(message) ||
+           std::holds_alternative<display_helper::v2::RecoveryCompleted>(message) ||
+           std::holds_alternative<display_helper::v2::RecoveryValidationCompleted>(message);
+  }
+
+  bool is_ipc_ingress_from_epoch(const display_helper::v2::Message &message, std::uint64_t epoch) {
+    return std::visit([epoch](const auto &payload) {
+      using T = std::decay_t<decltype(payload)>;
+      if constexpr (
+        std::is_same_v<T, display_helper::v2::ApplyCommand> ||
+        std::is_same_v<T, display_helper::v2::RevertCommand> ||
+        std::is_same_v<T, display_helper::v2::DisarmCommand> ||
+        std::is_same_v<T, display_helper::v2::ExportGoldenCommand> ||
+        std::is_same_v<T, display_helper::v2::SnapshotCurrentCommand> ||
+        std::is_same_v<T, display_helper::v2::RefreshRateCommand> ||
+        std::is_same_v<T, display_helper::v2::ResetCommand> ||
+        std::is_same_v<T, display_helper::v2::PingCommand> ||
+        std::is_same_v<T, display_helper::v2::StopCommand> ||
+        std::is_same_v<T, display_helper::v2::HelperEventMessage>) {
+        return payload.connection_epoch == epoch;
+      } else {
+        return false;
+      }
+    }, message);
   }
 
   std::vector<std::string> parse_snapshot_exclude_json_node(const nlohmann::json &node) {
@@ -170,10 +269,31 @@ namespace {
       if (j.is_discarded()) {
         return std::nullopt;
       }
+      // A correlated v2 snapshot can carry only sunshine_snapshot_id. That is
+      // completion metadata, not an instruction to replace the persistent
+      // exclusion list with an empty one.
+      if (j.is_object() && !j.contains("exclude_devices") && !j.contains("devices")) {
+        return std::nullopt;
+      }
       return parse_snapshot_exclude_json_node(j);
     } catch (...) {
       return std::nullopt;
     }
+  }
+
+  std::uint64_t parse_snapshot_request_id(std::span<const uint8_t> payload) {
+    if (payload.empty()) {
+      return 0;
+    }
+    try {
+      std::string raw(reinterpret_cast<const char *>(payload.data()), payload.size());
+      const auto json = nlohmann::json::parse(raw, nullptr, false);
+      if (json.is_object() && json.contains("sunshine_snapshot_id") && json["sunshine_snapshot_id"].is_number_unsigned()) {
+        return json["sunshine_snapshot_id"].get<std::uint64_t>();
+      }
+    } catch (...) {
+    }
+    return 0;
   }
 
   /**
@@ -225,7 +345,6 @@ namespace {
   bool parse_apply_payload(
     std::span<const uint8_t> payload,
     display_helper::v2::ApplyRequest &out_request,
-    std::optional<std::vector<std::string>> &snapshot_exclusions,
     std::string &error) {
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
     std::string sanitized_json = json;
@@ -233,6 +352,10 @@ namespace {
     try {
       auto j = nlohmann::json::parse(json, nullptr, false);
       if (j.is_object()) {
+        if (j.contains("sunshine_apply_id") && j["sunshine_apply_id"].is_number_unsigned()) {
+          out_request.request_id = j["sunshine_apply_id"].get<std::uint64_t>();
+          j.erase("sunshine_apply_id");
+        }
         if (j.contains("wa_hdr_toggle")) {
           out_request.hdr_blank = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -260,7 +383,7 @@ namespace {
           j.erase("sunshine_monitor_positions");
         }
         if (j.contains("sunshine_snapshot_exclude_devices")) {
-          snapshot_exclusions = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
+          out_request.snapshot_exclusions = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
           j.erase("sunshine_snapshot_exclude_devices");
         }
         if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
@@ -512,6 +635,9 @@ int run_v2_helper(int argc, char *argv[]) {
   const auto search_roots = display_helper_paths::snapshot_search_roots();
 
   display_helper::v2::SystemClock clock;
+  // Keep this alive longer than AsyncDispatcher: a refresh completion can
+  // otherwise outlive the currently connected pipe during helper shutdown.
+  ActivePipeResponder response_pipe;
   display_helper::v2::WinDisplaySettings display_settings;
   display_helper::v2::SnapshotService snapshot_service(display_settings);
 
@@ -531,10 +657,21 @@ int run_v2_helper(int argc, char *argv[]) {
   display_helper::v2::HeartbeatMonitor heartbeat(clock);
   display_helper::v2::CancellationSource cancellation;
   display_helper::v2::SystemPorts system_ports(workarounds, task_manager, heartbeat, clock, cancellation);
-  display_helper::v2::ApplyOperation apply_operation(display_settings, clock);
+  display_helper::v2::ApplyOperation apply_operation(
+    display_settings,
+    clock,
+    [&task_manager]() {
+      return task_manager.create_restore_task(L"");
+    });
   display_helper::v2::VerificationOperation verification_operation(display_settings, clock);
   display_helper::v2::RecoveryOperation recovery_operation(display_settings, storage, golden_health, restore_state, clock);
   display_helper::v2::RecoveryValidationOperation recovery_validation(snapshot_service, clock);
+
+  // Completion callbacks owned by AsyncDispatcher enqueue onto this queue.
+  // Keep the queue alive until after the dispatcher has joined its workers at
+  // shutdown; declaring it first gives the local objects that destruction
+  // order without a second shutdown protocol.
+  display_helper::v2::MessageQueue<display_helper::v2::Message> queue;
   display_helper::v2::AsyncDispatcher dispatcher(
     apply_operation,
     verification_operation,
@@ -544,7 +681,6 @@ int run_v2_helper(int argc, char *argv[]) {
     clock
   );
 
-  display_helper::v2::MessageQueue<display_helper::v2::Message> queue;
   std::atomic<bool> running {true};
 
   // Adopt snapshots written by other contexts (SYSTEM vs user) or the legacy engine.
@@ -588,8 +724,16 @@ int run_v2_helper(int argc, char *argv[]) {
   // Connection epochs: ignore stale pipe callbacks and decide whether a confirmed
   // restore should exit the helper or keep it alive for a newer connection.
   std::atomic<uint64_t> connection_epoch {0};
+  // Pipe ownership consumes this one-shot request and performs the same epoch
+  // retirement path used for a physical disconnect. Keeping it separate from
+  // the FSM event queue prevents a hung-but-connected client from holding the
+  // listener through restore/retry work.
+  std::atomic<uint64_t> heartbeat_disconnect_epoch {0};
   std::atomic<uint64_t> restore_origin_epoch {0};
   std::atomic<bool> client_connected {false};
+  state_machine.set_connection_epoch_provider([&connection_epoch] {
+    return connection_epoch.load(std::memory_order_acquire);
+  });
 
   int exit_code = 0;
   state_machine.set_exit_callback([&](int code) {
@@ -601,27 +745,44 @@ int run_v2_helper(int argc, char *argv[]) {
       return;
     }
     exit_code = code;
+    // Dispatcher workers use this generation token at every mutation
+    // boundary. Retire it before local teardown so no recovery/apply stage
+    // continues after the helper has decided to exit.
+    cancellation.cancel();
     running.store(false, std::memory_order_release);
   });
 
-  std::atomic<platf::dxgi::AsyncNamedPipe *> active_pipe {nullptr};
-  state_machine.set_apply_result_callback([&](display_helper::v2::ApplyStatus status) {
-    auto *pipe = active_pipe.load(std::memory_order_acquire);
-    if (!pipe) {
-      return;
-    }
+  state_machine.set_apply_result_callback([&response_pipe](display_helper::v2::ApplyStatus status, std::uint64_t origin_epoch, std::uint64_t request_id) {
     std::vector<uint8_t> payload;
     payload.push_back(status == display_helper::v2::ApplyStatus::Ok ? 1u : 0u);
-    send_framed_content(*pipe, MsgType::ApplyResult, payload);
+    append_u64_le(payload, request_id);
+    response_pipe.send_for_epoch(origin_epoch, MsgType::ApplyResult, payload);
   });
-  state_machine.set_verification_result_callback([&](bool success) {
-    auto *pipe = active_pipe.load(std::memory_order_acquire);
-    if (!pipe) {
-      return;
-    }
+  state_machine.set_verification_result_callback([&response_pipe](bool success, std::uint64_t origin_epoch, std::uint64_t request_id) {
     std::vector<uint8_t> payload;
     payload.push_back(success ? 1u : 0u);
-    send_framed_content(*pipe, MsgType::VerificationResult, payload);
+    append_u64_le(payload, request_id);
+    response_pipe.send_for_epoch(origin_epoch, MsgType::VerificationResult, payload);
+  });
+  state_machine.set_snapshot_result_callback([&response_pipe](bool success, std::uint64_t origin_epoch, std::uint64_t request_id) {
+    if (request_id == 0) {
+      // SNAPSHOT_CURRENT has historically been dispatch-only. Only the
+      // explicitly correlated v2 command produces a reply, avoiding a stale
+      // fire-and-forget result in a later session's response lane.
+      return;
+    }
+    std::vector<std::uint8_t> payload;
+    payload.push_back(success ? 1u : 0u);
+    append_u64_le(payload, request_id);
+    response_pipe.send_for_epoch(origin_epoch, MsgType::SnapshotResult, payload);
+  });
+  state_machine.set_refresh_rate_result_callback([&response_pipe](bool success, std::uint64_t origin_epoch, std::uint64_t request_id) {
+    std::vector<std::uint8_t> payload;
+    payload.push_back(success ? 1u : 0u);
+    if (request_id != 0) {
+      append_u64_le(payload, request_id);
+    }
+    response_pipe.send_for_epoch(origin_epoch, MsgType::RefreshRateResult, payload);
   });
 
   display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
@@ -629,36 +790,72 @@ int run_v2_helper(int argc, char *argv[]) {
   display_helper::v2::WinEventPump event_pump;
   event_pump.start([&](display_helper::v2::DisplayEvent) {
     std::lock_guard<std::mutex> lock(debounce_mutex);
-    debouncer.notify(clock.now());
+    // Tag at notification time. A WM_DISPLAYCHANGE emitted by a cancelled
+    // transaction must not be relabelled as an event for a newer APPLY when
+    // the debounce delay expires.
+    debouncer.notify(clock.now(), cancellation.current_generation());
   });
 
-  auto process_queue = [&]() {
-    auto message = queue.wait_for(std::chrono::milliseconds(100));
-    if (message) {
-      state_machine.handle_message(*message);
-      return;
-    }
-
+  auto service_timers = [&]() {
     if (heartbeat.check_timeout()) {
-      queue.push(display_helper::v2::HelperEventMessage {
-        display_helper::v2::HelperEvent::HeartbeatTimeout,
-        cancellation.current_generation()
-      });
+      const auto origin_epoch = connection_epoch.load(std::memory_order_acquire);
+      if (origin_epoch != 0) {
+        BOOST_LOG(warning) << "Heartbeat timed out; retiring the live IPC connection before recovery.";
+        heartbeat_disconnect_epoch.store(origin_epoch, std::memory_order_release);
+      }
     }
 
-    bool fire = false;
+    std::optional<std::uint64_t> event_generation;
     {
       std::lock_guard<std::mutex> lock(debounce_mutex);
-      fire = debouncer.should_fire(clock.now());
+      event_generation = debouncer.take_if_due(clock.now());
     }
-    if (fire) {
+    if (event_generation) {
       queue.push(display_helper::v2::DisplayEventMessage {
         display_helper::v2::DisplayEvent::DisplayChange,
-        cancellation.current_generation()
+        *event_generation
       });
     }
 
     state_machine.handle_tick();
+  };
+
+  auto process_queue = [&]() {
+    if (auto message = queue.wait_for(std::chrono::milliseconds(100))) {
+      // A stabilization-verification completion may race a replacement
+      // APPLY/REVERT/DISARM or refresh command arriving from the pipe. Give a
+      // contiguous replacement-intent prefix priority so the state machine can
+      // coalesce it behind the active mutation fence before that completion
+      // decides what to run next. This is v2 mailbox ownership, not v1's
+      // background-worker mutex choreography.
+      std::deque<display_helper::v2::Message> controls;
+      // Do not cross a normal IPC ingress frame such as SNAPSHOT_CURRENT: its
+      // pipe order is a baseline-capture contract. Only a contiguous control
+      // prefix immediately following an asynchronous completion may supersede
+      // that completion.
+      const bool prioritize_refresh_rate = is_stabilization_completion(*message);
+      auto queued_controls = is_async_completion(*message) ?
+                               queue.extract_prefix_while([prioritize_refresh_rate](const display_helper::v2::Message &queued) {
+                                 return is_replacement_control_intent(queued) ||
+                                        (prioritize_refresh_rate &&
+                                         (std::holds_alternative<display_helper::v2::RefreshRateCommand>(queued) ||
+                                          std::holds_alternative<display_helper::v2::PingCommand>(queued)));
+                               }) :
+                               std::deque<display_helper::v2::Message> {};
+      while (!queued_controls.empty()) {
+        controls.emplace_back(std::move(queued_controls.front()));
+        queued_controls.pop_front();
+      }
+      while (!controls.empty()) {
+        state_machine.handle_message(controls.front());
+        controls.pop_front();
+      }
+      state_machine.handle_message(*message);
+    }
+    // Timers must advance even while IPC/completion traffic is continuous.
+    // Otherwise a busy helper can indefinitely postpone both heartbeat
+    // recovery and restore-scheduler backoff.
+    service_timers();
   };
 
   if (restore_mode) {
@@ -677,8 +874,6 @@ int run_v2_helper(int argc, char *argv[]) {
 
   auto last_connect_wait_log = std::chrono::steady_clock::time_point::min();
   constexpr auto kReconnectLogInterval = std::chrono::hours(1);
-  std::atomic<bool> apply_seen {false};
-
   while (running.load(std::memory_order_acquire)) {
     platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
     auto server_pipe = pipe_factory.create_server("sunshine_display_helper");
@@ -686,8 +881,13 @@ int run_v2_helper(int argc, char *argv[]) {
       platf::dxgi::FramedPipeFactory fallback_factory(std::make_unique<platf::dxgi::NamedPipeFactory>());
       server_pipe = fallback_factory.create_server("sunshine_display_helper");
       if (!server_pipe) {
-        BOOST_LOG(error) << "Failed to create control pipe; retrying in 500ms";
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        BOOST_LOG(error) << "Failed to create control pipe; retrying while keeping recovery timers alive.";
+        // Listener creation is incidental to recovery. Continue driving the
+        // FSM and restore scheduler while it is unavailable, matching v1's
+        // listener-independent restore poll.
+        for (int retry_slice = 0; retry_slice < 5 && running.load(std::memory_order_acquire); ++retry_slice) {
+          process_queue();
+        }
         continue;
       }
     }
@@ -721,8 +921,12 @@ int run_v2_helper(int argc, char *argv[]) {
     }
 
     const auto epoch = connection_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    heartbeat_disconnect_epoch.store(0, std::memory_order_release);
     client_connected.store(true, std::memory_order_release);
-    active_pipe.store(&async_pipe, std::memory_order_release);
+    // Match v1's per-connection watchdog lifecycle. This only resets
+    // liveness timing; recovery remains owned by the state machine's lease.
+    heartbeat.arm();
+    response_pipe.bind(async_pipe, epoch);
 
     auto on_message = [&, epoch](std::span<const uint8_t> bytes) {
       if (connection_epoch.load(std::memory_order_acquire) != epoch) {
@@ -737,41 +941,35 @@ int run_v2_helper(int argc, char *argv[]) {
       switch (type) {
         case MsgType::Apply: {
           display_helper::v2::ApplyRequest request;
-          std::optional<std::vector<std::string>> snapshot_exclusions;
           std::string parse_failure;
-          if (!parse_apply_payload(payload, request, snapshot_exclusions, parse_failure)) {
+          if (!parse_apply_payload(payload, request, parse_failure)) {
             BOOST_LOG(error) << "Failed to parse SingleDisplayConfiguration JSON: " << parse_failure;
             std::vector<uint8_t> result_payload;
             result_payload.push_back(0u);
+            append_u64_le(result_payload, request.request_id);
             if (!parse_failure.empty()) {
               result_payload.insert(result_payload.end(), parse_failure.begin(), parse_failure.end());
             }
-            send_framed_content(async_pipe, MsgType::ApplyResult, result_payload);
+            response_pipe.send_for_epoch(epoch, MsgType::ApplyResult, result_payload);
             return;
           }
-          if (snapshot_exclusions.has_value()) {
-            std::set<std::string> blacklist;
-            for (auto &id : *snapshot_exclusions) {
-              if (!id.empty()) {
-                blacklist.insert(std::move(id));
-              }
-            }
-            state_machine.set_snapshot_blacklist(std::move(blacklist));
-          }
 
-          apply_seen.store(true, std::memory_order_release);
-          queue.push(display_helper::v2::ApplyCommand {request, cancellation.current_generation()});
+          queue.push(display_helper::v2::ApplyCommand {std::move(request), cancellation.current_generation(), epoch});
           break;
         }
         case MsgType::Revert: {
           display_helper::v2::RevertCommand revert {cancellation.current_generation()};
           parse_revert_payload(payload, revert);
+          revert.connection_epoch = epoch;
           restore_origin_epoch.store(epoch, std::memory_order_release);
           queue.push(revert);
           break;
         }
         case MsgType::Disarm:
-          queue.push(display_helper::v2::DisarmCommand {cancellation.current_generation()});
+          queue.push(display_helper::v2::DisarmCommand {
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+          });
           break;
         case MsgType::ExportGolden: {
           display_helper::v2::SnapshotCommandPayload payload_struct;
@@ -779,7 +977,11 @@ int run_v2_helper(int argc, char *argv[]) {
             payload_struct.exclude_devices = std::move(*parsed);
             payload_struct.update_exclusions = true;
           }
-          queue.push(display_helper::v2::ExportGoldenCommand {payload_struct, cancellation.current_generation()});
+          queue.push(display_helper::v2::ExportGoldenCommand {
+            .payload = std::move(payload_struct),
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+          });
           break;
         }
         case MsgType::SnapshotCurrent: {
@@ -788,46 +990,61 @@ int run_v2_helper(int argc, char *argv[]) {
             payload_struct.exclude_devices = std::move(*parsed);
             payload_struct.update_exclusions = true;
           }
-          queue.push(display_helper::v2::SnapshotCurrentCommand {payload_struct, cancellation.current_generation()});
+          queue.push(display_helper::v2::SnapshotCurrentCommand {
+            .payload = std::move(payload_struct),
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+            .request_id = parse_snapshot_request_id(payload),
+          });
           break;
         }
         case MsgType::RefreshRate: {
-          const auto numerator = read_u32_le(payload, 0);
-          const auto denominator = read_u32_le(payload, 4);
+          const auto first_word = read_u32_le(payload, 0);
+          const bool correlated_v2 = first_word && *first_word == kV2RefreshRateMagic;
+          const std::size_t rate_offset = correlated_v2 ? 4 : 0;
+          const auto numerator = read_u32_le(payload, rate_offset);
+          const auto denominator = read_u32_le(payload, rate_offset + 4);
+          const std::uint64_t request_id = correlated_v2 ? read_u64_le(payload, rate_offset + 8).value_or(0) : 0;
+          const std::size_t device_offset = correlated_v2 ? rate_offset + 16 : 8;
           std::string device_id;
-          if (payload.size() > 8) {
+          if (payload.size() > device_offset) {
             device_id.assign(
-              reinterpret_cast<const char *>(payload.data() + 8),
-              payload.size() - 8
+              reinterpret_cast<const char *>(payload.data() + device_offset),
+              payload.size() - device_offset
             );
           }
           if (!numerator || !denominator || *numerator == 0 || *denominator == 0 || device_id.empty()) {
-            std::array<std::uint8_t, 1> result {0u};
-            send_framed_content(async_pipe, MsgType::RefreshRateResult, result);
+            std::vector<std::uint8_t> result {0u};
+            if (request_id != 0) {
+              append_u64_le(result, request_id);
+            }
+            response_pipe.send_for_epoch(epoch, MsgType::RefreshRateResult, result);
             break;
           }
 
-          dispatcher.dispatch_refresh_rate(
-            std::move(device_id),
-            *numerator,
-            *denominator,
-            [&active_pipe](bool success) {
-              auto *pipe = active_pipe.load(std::memory_order_acquire);
-              if (!pipe) {
-                return;
-              }
-              std::array<std::uint8_t, 1> result {static_cast<std::uint8_t>(success ? 1u : 0u)};
-              send_framed_content(*pipe, MsgType::RefreshRateResult, result);
-            }
-          );
+          queue.push(display_helper::v2::RefreshRateCommand {
+            .device_id = std::move(device_id),
+            .numerator = *numerator,
+            .denominator = *denominator,
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+            .request_id = request_id,
+          });
           break;
         }
         case MsgType::Reset:
-          queue.push(display_helper::v2::ResetCommand {cancellation.current_generation()});
+          queue.push(display_helper::v2::ResetCommand {
+            .generation = cancellation.current_generation(),
+            .connection_epoch = epoch,
+          });
           break;
         case MsgType::Ping:
-          send_framed_content(async_pipe, MsgType::Ping);
-          queue.push(display_helper::v2::PingCommand {cancellation.current_generation()});
+          // Heartbeat liveness is time-sensitive rather than an ordered display
+          // mutation. Record it at the pipe boundary (as v1 did) so a busy
+          // FSM queue cannot turn an already received ping into a false
+          // recovery. HeartbeatMonitor serializes this with the timer loop.
+          heartbeat.record_ping();
+          response_pipe.send_for_epoch(epoch, MsgType::Ping);
           break;
         case MsgType::LogLevel:
           if (!payload.empty()) {
@@ -838,6 +1055,7 @@ int run_v2_helper(int argc, char *argv[]) {
           break;
         case MsgType::Stop:
           BOOST_LOG(info) << "Display helper: received STOP command, exiting gracefully.";
+          cancellation.cancel();
           running.store(false, std::memory_order_release);
           break;
         default:
@@ -848,22 +1066,37 @@ int run_v2_helper(int argc, char *argv[]) {
 
     std::atomic<bool> broken {false};
 
+    // Retire the epoch as soon as the pipe reports failure, rather than when
+    // the main loop eventually reaches its cleanup. This makes every queued
+    // command from the dead client stale before it can DISARM recovery or
+    // overwrite the restore baseline, while async mutation completions retain
+    // their generation-based ownership fences.
+    auto retire_connection_epoch = [&, epoch](const char *reason) {
+      std::uint64_t expected = epoch;
+      if (!connection_epoch.compare_exchange_strong(
+            expected,
+            epoch + 1,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        BOOST_LOG(info) << "Ignoring " << reason << " from stale connection (epoch=" << epoch << ")";
+        return false;
+      }
+      broken.store(true, std::memory_order_release);
+      return true;
+    };
+
     auto on_error = [&, epoch](const std::string &err) {
-      if (connection_epoch.load(std::memory_order_acquire) != epoch) {
-        BOOST_LOG(info) << "Ignoring async pipe error from stale connection (epoch=" << epoch << ")";
+      if (!retire_connection_epoch("async pipe error")) {
         return;
       }
       BOOST_LOG(error) << "Async pipe error: " << err << "; handling disconnect and revert policy.";
-      broken.store(true, std::memory_order_release);
     };
 
     auto on_broken = [&, epoch]() {
-      if (connection_epoch.load(std::memory_order_acquire) != epoch) {
-        BOOST_LOG(info) << "Ignoring disconnect notification from stale connection (epoch=" << epoch << ")";
+      if (!retire_connection_epoch("disconnect notification")) {
         return;
       }
       BOOST_LOG(warning) << "Client disconnected; applying revert policy.";
-      broken.store(true, std::memory_order_release);
     };
 
     async_pipe.start(on_message, on_error, on_broken);
@@ -871,30 +1104,54 @@ int run_v2_helper(int argc, char *argv[]) {
     while (running.load(std::memory_order_acquire)) {
       process_queue();
 
+      if (heartbeat_disconnect_epoch.load(std::memory_order_acquire) == epoch) {
+        (void) retire_connection_epoch("heartbeat timeout");
+      }
+
       const bool connected = async_pipe.is_connected() && !broken.load(std::memory_order_acquire);
       client_connected.store(connected, std::memory_order_release);
       if (!connected) {
+        // Some pipe implementations report a disconnected state before their
+        // callback runs. Retire it here too; compare_exchange makes the
+        // callback/main-loop paths one idempotent ownership transition.
+        (void) retire_connection_epoch("disconnected pipe");
+        response_pipe.clear(epoch);
+        heartbeat.disarm();
+        const auto discarded = queue.extract_if([epoch](const display_helper::v2::Message &queued) {
+          return is_ipc_ingress_from_epoch(queued, epoch);
+        });
+        if (!discarded.empty()) {
+          BOOST_LOG(debug) << "Discarded " << discarded.size()
+                           << " queued command(s) from retired IPC epoch=" << epoch << ".";
+        }
         // Sunshine disconnected or crashed. Arm the autonomous restore now (the
         // FSM applies a 5s grace and the restore-on-disconnect policy; a fast
         // reconnect supersedes it via DISARM/APPLY like the legacy engine), but
         // only when this helper actually changed something or a restore is
         // already being worked on.
-        if (apply_seen.load(std::memory_order_acquire) || state_machine.restore_pending()) {
+        if (state_machine.begin_transient_disconnect_settlement()) {
+          BOOST_LOG(info) << "Client disconnected shortly after APPLY; retaining the session for bounded settling verification instead of restoring.";
+        } else if (state_machine.requires_disconnect_recovery()) {
           BOOST_LOG(info) << "Client disconnected; applying revert policy and staying alive until successful.";
           display_helper::v2::RevertCommand revert {cancellation.current_generation()};
+          // This is a helper-owned recovery signal, not a command belonging to
+          // the retired pipe. Zero is deliberately exempt from epoch filtering.
+          revert.connection_epoch = 0;
           revert.from_disconnect = true;
           restore_origin_epoch.store(epoch, std::memory_order_release);
-          queue.push(revert);
+          state_machine.handle_message(revert);
         }
         break;
       }
     }
 
-    active_pipe.store(nullptr, std::memory_order_release);
+    response_pipe.clear(epoch);
     client_connected.store(false, std::memory_order_release);
+    heartbeat.disarm();
     async_pipe.stop();
   }
 
+  cancellation.cancel();
   event_pump.stop();
   BOOST_LOG(info) << "Display helper v2 shutting down with exit code " << exit_code << ".";
   logging::log_flush();

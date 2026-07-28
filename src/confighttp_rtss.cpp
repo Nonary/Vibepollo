@@ -83,7 +83,7 @@ namespace confighttp {
         {"default_is_directory", false},
         {"suggested_path", k_lossless_default_hint},
         {"candidates", nlohmann::json::array()},
-        {"message", "Lossless Scaling status unavailable. Check the Sunshine logs for details."}
+        {"status", "unavailable"}
       };
     }
   }  // namespace
@@ -322,26 +322,15 @@ namespace confighttp {
       out["candidates"] = arr;
     }
 
-    std::string message;
-    if (!resolved_checked) {
-      if (!check_utf8.empty()) {
-        if (checked_is_directory) {
-          message = "Lossless Scaling executable not found in the selected folder. Select LosslessScaling.exe directly.";
-        } else {
-          message = "Lossless Scaling executable not found at the specified path.";
-        }
-      } else {
-        message = "Lossless Scaling executable not configured.";
-      }
-      if (!has_explicit_path && resolved_default) {
-        message += " Detected installation at \"" + path_to_utf8(*resolved_default) + "\".";
-      } else {
-        message += " Please locate LosslessScaling.exe manually.";
-      }
+    if (resolved_checked || (!has_explicit_path && (resolved_default || !candidates.empty()))) {
+      out["status"] = "detected";
+    } else if (check_utf8.empty()) {
+      out["status"] = "not-configured";
+    } else if (checked_is_directory) {
+      out["status"] = "path-is-directory";
     } else {
-      message = "Lossless Scaling executable detected.";
+      out["status"] = "path-not-found";
     }
-    out["message"] = message;
 
     send_response(response, out);
   } catch (const std::exception &e) {

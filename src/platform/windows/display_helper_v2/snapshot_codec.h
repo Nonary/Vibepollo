@@ -65,9 +65,9 @@ namespace display_helper::v2::codec {
   // --- filtering rules ---
 
   /**
-   * @brief Save-side filtering: reject snapshots that contain active virtual displays,
-   *        drop devices without a display_name (not safe restore targets), apply the
-   *        exclusion list, and reject when nothing restorable remains.
+   * @brief Save-side filtering: omit virtual displays, drop devices without a
+   *        display_name (not safe restore targets), apply the exclusion list, and
+   *        reject when nothing restorable remains.
    * @param exclusions Normalized (normalize_device_id) exclusion list.
    * @returns Filtered snapshot, or nullopt with reject_reason set.
    */
@@ -78,11 +78,11 @@ namespace display_helper::v2::codec {
     std::string &reject_reason);
 
   /**
-   * @brief Load-side filtering: reject snapshots referencing active virtual displays,
-   *        filter exclusions and devices not currently present, and reject when the
-   *        remaining topology is empty. Mirrors the legacy loader exactly: only a
-   *        matching device id is required (display_name is not, since it is only
-   *        populated for active displays).
+   * @brief Load-side filtering: reject snapshots referencing active virtual displays
+   *        or a non-excluded baseline device that is no longer present. Explicit
+   *        exclusions are filtered from the snapshot. Only a matching device id is
+   *        required (display_name is not, since it is only populated for active
+   *        displays).
    * @param exclusions Exclusion list (normalized internally).
    * @param source_label Used for log messages (e.g. the file path).
    */

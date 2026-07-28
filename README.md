@@ -106,3 +106,30 @@ With **GPT‑5.3‑Codex**, there’s no real need to juggle a “fast but less 
 Claude was used more heavily earlier on. Older Claude models had a tendency to go off on their own path, even when the architectural plan was clear. That behavior has mostly been fixed in newer Claude releases, but GPT still ended up being the more useful engineering tool for me because it will challenge you and not simply agree with whatever you ask for.
 
 In general, GPT has felt more intelligent for the way I build and maintain this codebase. I may occasionally ask **Claude Opus 4.5** for a second opinion if GPT can’t resolve something cleanly end‑to‑end, but this is increasingly rare.
+
+---
+
+## Sponsors
+
+<p align="center">
+  <a href="https://signpath.io?utm_source=foundation&amp;utm_medium=github&amp;utm_campaign=vibepollo">
+    <img src="docs/images/signpath.svg" alt="SignPath" width="420">
+  </a>
+</p>
+
+Thank you to [SignPath.io](https://signpath.io?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo)
+and the [SignPath Foundation](https://signpath.org?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo)
+for sponsoring Vibepollo's Windows code signing.
+
+### Code signing policy
+
+Official Vibepollo Windows releases use free code signing provided by
+[SignPath.io](https://signpath.io?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo), and a
+certificate by the [SignPath Foundation](https://signpath.org?utm_source=foundation&utm_medium=github&utm_campaign=vibepollo).
+
+* **Committer and reviewer:** [Nonary](https://github.com/Nonary)
+* **Approver:** [Nonary](https://github.com/Nonary)
+* **Privacy:** Vibepollo transfers information to networked systems only for functionality requested by the user or
+  operator; it does not transmit user or runtime data to SignPath. Separately, SignPath's GitHub integration receives
+  the build artifacts, signing-request details, and GitHub-provided build-origin metadata needed to sign official
+  releases.

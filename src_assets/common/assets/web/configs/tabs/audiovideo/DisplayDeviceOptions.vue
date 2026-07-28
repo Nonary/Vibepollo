@@ -207,8 +207,8 @@ async function loadSnapshotDevices(): Promise<void> {
       params: { detail: 'full' },
     });
     snapshotDevices.value = Array.isArray(res.data) ? res.data : [];
-  } catch (e: any) {
-    snapshotDevicesError.value = e?.message || 'Failed to load display devices';
+  } catch {
+    snapshotDevicesError.value = t('config.display_devices_load_failed');
     snapshotDevices.value = [];
   } finally {
     snapshotDevicesLoading.value = false;
@@ -221,12 +221,12 @@ const snapshotExcludeOptions = computed(() => {
   for (const d of snapshotDevices.value) {
     const value = d.device_id || d.display_name || '';
     if (!value) continue;
-    const displayName = d.friendly_name || d.display_name || 'Display';
+    const displayName = d.friendly_name || d.display_name || t('_common.display');
     const guid = d.device_id || '';
     const dispName = d.display_name || '';
     const parts: string[] = [displayName];
     if (guid) parts.push(guid);
-    if (dispName) parts.push(dispName + (d.info ? ' (active)' : ''));
+    if (dispName) parts.push(dispName + (d.info ? ` (${t('_common.active')})` : ''));
     const label = parts.join(' - ');
     const idLine = guid && dispName ? `${guid} - ${dispName}` : guid || dispName;
     opts.push({ label, value, displayName, id: idLine });
@@ -294,10 +294,7 @@ async function deleteGolden(): Promise<void> {
 }
 
 onMounted(() => {
-  loadGoldenStatus();
-  if (!snapshotDevicesLoading.value && snapshotDevices.value.length === 0) {
-    void loadSnapshotDevices();
-  }
+  void loadGoldenStatus();
 });
 
 // Build translated option lists as computeds so they react to locale changes
@@ -452,10 +449,7 @@ function clearSnapshotHotkey(): void {
     <template #windows>
       <div class="space-y-4">
         <!-- Step 2 content combined: configuration + snapshot (single card) -->
-        <section
-          v-if="section === 'pre'"
-          class="min-w-0"
-        >
+        <section v-if="section === 'pre'" class="min-w-0">
           <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
             {{ $t('config.dd_step_2') }}: {{ $t('config.dd_pre_stream_setup') }}
           </h4>
@@ -494,11 +488,11 @@ function clearSnapshotHotkey(): void {
 
           <!-- Snapshot for recovery -->
           <template v-if="config.dd_configuration_option !== 'disabled'">
-            <div class="px-0 text-sm font-medium">Save a display snapshot (improves stability)</div>
+            <div class="px-0 text-sm font-medium">
+              {{ $t('troubleshooting.dd_golden_title') }}
+            </div>
             <p class="text-[11px] opacity-60 mt-1">
               {{ $t('troubleshooting.dd_golden_help') }}
-              Saving a snapshot of your ideal monitor setup helps Vibepollo recover when Windows
-              fails to restore displays after streaming.
             </p>
 
             <div
@@ -528,7 +522,7 @@ function clearSnapshotHotkey(): void {
                       ? $t('troubleshooting.dd_golden_status_present')
                       : goldenExists === false
                         ? $t('troubleshooting.dd_golden_status_missing')
-                        : 'Checking…'
+                        : $t('apps.framegen.health_checking')
                   }}
                 </span>
               </div>
@@ -718,7 +712,7 @@ function clearSnapshotHotkey(): void {
               <n-input
                 id="dd_snapshot_restore_hotkey"
                 :value="hotkeyComboPreview"
-                placeholder="Click and press a combo"
+                :placeholder="$t('config.dd_snapshot_restore_hotkey_placeholder')"
                 class="font-mono w-full"
                 readonly
                 @focus="hotkeyCaptureActive = true"
@@ -772,11 +766,7 @@ function clearSnapshotHotkey(): void {
                         <i
                           class="fas fa-info-circle text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5"
                         />
-                        <span class="block"
-                          >Overrides below are disabled while manual resolution or refresh rate is
-                          enforced. Manual refresh rates are applied forcefully and override
-                          game-aware refresh switching on virtual displays.</span
-                        >
+                        <span class="block">{{ $t('config.dd_manual_enforcement_notice') }}</span>
                       </span>
                     </p>
                   </div>
@@ -924,7 +914,11 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use WIDTHxHEIGHT (e.g., 1920x1080, x or ×) or leave blank.
+                        {{
+                          $t('config.dd_validation_resolution_or_blank', {
+                            example: '1920x1080',
+                          })
+                        }}
                       </div>
                       <div
                         v-if="
@@ -933,7 +927,7 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-2 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use a positive number or leave blank.
+                        {{ $t('config.dd_validation_positive_or_blank') }}
                       </div>
                       <div
                         v-if="
@@ -942,7 +936,11 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-3 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use WIDTHxHEIGHT (e.g., 2560x1440, x or ×) or leave blank.
+                        {{
+                          $t('config.dd_validation_resolution_or_blank', {
+                            example: '2560x1440',
+                          })
+                        }}
                       </div>
                       <div
                         v-if="
@@ -951,7 +949,7 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-2 text-[11px] text-red-500 mt-1"
                       >
-                        Invalid. Use a positive number or leave blank.
+                        {{ $t('config.dd_validation_positive_or_blank') }}
                       </div>
                       <div
                         v-if="
@@ -961,7 +959,7 @@ function clearSnapshotHotkey(): void {
                         "
                         class="remap-message w-full lg:col-span-12 text-[11px] text-red-500"
                       >
-                        For mixed mappings, specify at least one Final field.
+                        {{ $t('config.dd_validation_mixed_final_required') }}
                       </div>
                     </div>
                   </div>
@@ -1021,7 +1019,11 @@ function clearSnapshotHotkey(): void {
                       v-bind="manualResolutionValid ? {} : { status: 'error' }"
                     />
                     <p v-if="!manualResolutionValid" class="text-[11px] text-red-500">
-                      Invalid format. Use WIDTHxHEIGHT, e.g., 2560x1440 (x or ×).
+                      {{
+                        $t('config.dd_validation_resolution', {
+                          example: '2560x1440',
+                        })
+                      }}
                     </p>
                   </div>
                 </div>
@@ -1079,7 +1081,7 @@ function clearSnapshotHotkey(): void {
                       v-if="!isRefreshFieldValid(config.dd_manual_refresh_rate)"
                       class="text-[11px] text-red-500"
                     >
-                      Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.
+                      {{ $t('config.dd_validation_refresh_rate') }}
                     </p>
                   </div>
                 </div>

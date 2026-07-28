@@ -7,13 +7,18 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <stop_token>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -171,6 +176,15 @@ namespace config {
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR 1
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR 2
   #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR 3
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR 4
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR 5
+  #define AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR 6
   #define AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING 0
   #define AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY 2
@@ -213,21 +227,30 @@ namespace config {
       cbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_hevc_e : int {
       cbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class rc_h264_e : int {
       cbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR,  ///< CBR
       cqp = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP,  ///< CQP
       vbr_latency = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_LATENCY_CONSTRAINED_VBR,  ///< VBR with latency constraints
-      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR  ///< VBR with peak constraints
+      vbr_peak = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR,  ///< VBR with peak constraints
+      qvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_QUALITY_VBR,  ///< Quality-defined VBR
+      hqvbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_VBR,  ///< High quality VBR
+      hqcbr = AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_HIGH_QUALITY_CBR  ///< High quality CBR
     };
 
     enum class usage_av1_e : int {
@@ -262,6 +285,9 @@ namespace config {
 
     template<class T>
     ::std::optional<int> quality_from_view(const ::std::string_view &quality_type, const ::std::optional<int>(&original)) {
+      if (quality_type == "auto"sv) {
+        return ::std::nullopt;
+      }
 #define _CONVERT_(x) \
   if (quality_type == #x##sv) \
   return (int) T::x
@@ -281,6 +307,9 @@ namespace config {
       _CONVERT_(cqp);
       _CONVERT_(vbr_latency);
       _CONVERT_(vbr_peak);
+      _CONVERT_(qvbr);
+      _CONVERT_(hqvbr);
+      _CONVERT_(hqcbr);
 #undef _CONVERT_
       return original;
     }
@@ -297,6 +326,46 @@ namespace config {
       _CONVERT_(webcam);
 #undef _CONVERT_
       return original;
+    }
+
+    // Tri-state knobs: explicit boolean spellings force the AMF property on/off;
+    // anything else (including "auto") returns nullopt so the usage preset's
+    // driver default is left untouched. Accept the legacy bool spellings because
+    // older configs may contain amd_vbaq=true/false rather than enabled/disabled.
+    ::std::optional<int> tristate_from_view(const ::std::string_view &value) {
+      if (value == "true"sv || value == "yes"sv || value == "enable"sv ||
+          value == "enabled"sv || value == "on"sv || value == "1"sv) {
+        return 1;
+      }
+      if (value == "false"sv || value == "no"sv || value == "disable"sv ||
+          value == "disabled"sv || value == "off"sv || value == "0"sv) {
+        return 0;
+      }
+      if (!value.empty() && value != "auto"sv) {
+        BOOST_LOG(warning) << "Unknown tri-state value ["sv << value << "], falling back to auto"sv;
+      }
+      return ::std::nullopt;
+    }
+
+    // AV1 encoding-latency mode. "auto" leaves the driver default; the rest map to
+    // AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_ENUM values.
+    ::std::optional<int> av1_latency_from_view(const ::std::string_view &value) {
+      if (value == "none"sv) {
+        return 0;
+      }
+      if (value == "power_saving"sv) {
+        return 1;
+      }
+      if (value == "realtime"sv) {
+        return 2;
+      }
+      if (value == "lowest"sv) {
+        return 3;
+      }
+      if (!value.empty() && value != "auto"sv) {
+        BOOST_LOG(warning) << "Unknown amd_av1_latency_mode value ["sv << value << "], falling back to auto"sv;
+      }
+      return ::std::nullopt;
     }
 
     int coder_from_view(const ::std::string_view &coder) {
@@ -762,7 +831,6 @@ namespace config {
 
     0,  // hevc_mode
     0,  // av1_mode
-    false,  // prefer_10bit_sdr
 
     2,  // min_threads
     {
@@ -790,6 +858,7 @@ namespace config {
       (int) amd::rc_h264_e::vbr_latency,  // rate control (h264)
       (int) amd::rc_hevc_e::vbr_latency,  // rate control (hevc)
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
+      std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
       (int) amd::quality_h264_e::balanced,  // quality (h264)
       (int) amd::quality_hevc_e::balanced,  // quality (hevc)
@@ -797,6 +866,13 @@ namespace config {
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
+      0,  // ltr_frames (native AMF; 0 = off)
+      0,  // input_queue_size (native AMF; 0 = leave driver queue unset/auto)
+      std::nullopt,  // smart_access_video (auto)
+      std::nullopt,  // lowlatency_mode (auto)
+      std::nullopt,  // high_motion_quality_boost (auto)
+      std::nullopt,  // av1_screen_content (auto)
+      std::nullopt,  // av1_latency_mode (auto)
     },  // amd
 
     {
@@ -854,7 +930,7 @@ namespace config {
 #endif
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
-      250,  // virtual_display_scale_percent
+      -1,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
       {},  // snapshot_exclude_devices
@@ -1352,6 +1428,69 @@ namespace config {
     }
   }
 
+  void frame_limit_millihz_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::uint32_t &input) {
+    std::string value;
+    string_f(vars, name, value);
+    boost::algorithm::trim(value);
+    if (value.empty()) {
+      return;
+    }
+
+    constexpr std::uint32_t kMaxMillihz = 1'000'000;
+    const auto parse_unsigned = [](std::string_view text, std::uint32_t maximum, std::uint32_t &result) {
+      if (text.empty()) {
+        return false;
+      }
+      std::uint64_t parsed = 0;
+      for (const char ch : text) {
+        if (ch < '0' || ch > '9') {
+          return false;
+        }
+        const auto digit = static_cast<unsigned int>(ch - '0');
+        if (digit > maximum || parsed > (maximum - digit) / 10) {
+          return false;
+        }
+        parsed = parsed * 10 + digit;
+      }
+      result = static_cast<std::uint32_t>(parsed);
+      return true;
+    };
+
+    const std::string_view text {value};
+    const auto decimal_point = text.find('.');
+    std::uint32_t millihz = 0;
+    if (decimal_point == std::string_view::npos) {
+      std::uint32_t whole_hertz = 0;
+      if (!parse_unsigned(text, 1000, whole_hertz)) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      millihz = whole_hertz * 1000;
+    } else {
+      if (text.find('.', decimal_point + 1) != std::string_view::npos) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      std::uint32_t whole_hertz = 0;
+      std::uint32_t fractional_millihz = 0;
+      const auto fractional = text.substr(decimal_point + 1);
+      if (fractional.empty() || fractional.size() > 3 ||
+          !parse_unsigned(text.substr(0, decimal_point), 1000, whole_hertz) ||
+          !parse_unsigned(fractional, 999, fractional_millihz)) {
+        BOOST_LOG(warning) << "Ignoring invalid frame_limiter_fps_limit '" << value << "'; use 0 to 1000 with up to three decimal places.";
+        return;
+      }
+      const auto scale = fractional.size() == 1 ? 100u : fractional.size() == 2 ? 10u : 1u;
+      millihz = whole_hertz * 1000 + fractional_millihz * scale;
+    }
+
+    if (millihz > kMaxMillihz) {
+      BOOST_LOG(warning) << "Ignoring out-of-range frame_limiter_fps_limit '" << value << "'.";
+      return;
+    }
+    input = millihz;
+  }
+
   void list_string_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, std::vector<std::string> &input) {
     std::string string;
     string_f(vars, name, string);
@@ -1591,7 +1730,6 @@ namespace config {
     int_f(vars, "qp", video.qp);
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
-    bool_f(vars, "prefer_10bit_sdr", video.prefer_10bit_sdr);
     int_f(vars, "min_threads", video.min_threads);
     string_f(vars, "sw_preset", video.sw.sw_preset);
     if (!video.sw.sw_preset.empty()) {
@@ -1642,6 +1780,20 @@ namespace config {
       video.amd.amd_rc_av1 = amd::rc_from_view<amd::rc_av1_e>(rc, video.amd.amd_rc_av1);
     }
 
+    // Only forwarded to the encoder when the 'qvbr' rate control method is selected.
+    // 0 (or an unset value) leaves the level at the encoder default.
+    int qvbr_quality_level = 0;
+    int_f(vars, "amd_qvbr_quality_level", qvbr_quality_level);
+    if (qvbr_quality_level > 0) {
+      if (qvbr_quality_level > 51) {
+        BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
+      } else {
+        video.amd.amd_qvbr_quality_level = qvbr_quality_level;
+      }
+    } else if (qvbr_quality_level < 0) {
+      BOOST_LOG(warning) << "config: amd_qvbr_quality_level must be between 1 and 51, ignoring value: "sv << qvbr_quality_level;
+    }
+
     std::string usage;
     string_f(vars, "amd_usage", usage);
     if (!usage.empty()) {
@@ -1651,8 +1803,28 @@ namespace config {
     }
 
     bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
-    bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
+    int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
+
+    // Native AMF encoder (amdvce) tuning knobs.
+    int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
+    if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
+      BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
+      video.amd.amd_ltr_frames = std::clamp(video.amd.amd_ltr_frames, 0, 2);
+    }
+    int_f(vars, "amd_input_queue_size", video.amd.amd_input_queue_size);
+    if (video.amd.amd_input_queue_size < 0 || video.amd.amd_input_queue_size > 32) {
+      BOOST_LOG(warning) << "config: amd_input_queue_size must be between 0 and 32, clamping: "sv << video.amd.amd_input_queue_size;
+      video.amd.amd_input_queue_size = std::clamp(video.amd.amd_input_queue_size, 0, 32);
+    }
+
+    // Curated opt-in native-AMF feature knobs. Default "auto" leaves the AMF
+    // driver default untouched, so none of these change behavior unless enabled.
+    int_f(vars, "amd_smart_access_video", video.amd.amd_smart_access_video, amd::tristate_from_view);
+    int_f(vars, "amd_lowlatency_mode", video.amd.amd_lowlatency_mode, amd::tristate_from_view);
+    int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
+    int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
+    int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -1719,12 +1891,12 @@ namespace config {
     {
       int value = video.dd.virtual_display_scale_percent;
       int_f(vars, "dd_virtual_display_scale", value);
-      constexpr std::array allowed_scales {0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
+      constexpr std::array allowed_scales {-1, 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
       if (std::ranges::find(allowed_scales, value) != allowed_scales.end()) {
         video.dd.virtual_display_scale_percent = value;
       } else {
         BOOST_LOG(warning) << "Ignoring unsupported virtual display scale " << value
-                           << "%; use 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
+                           << "%; use -1 (recommended), 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, or 500.";
       }
     }
     bool_f(vars, "vulkan_hdr_layer", video.dd.vulkan_hdr_layer);
@@ -1780,7 +1952,7 @@ namespace config {
     if (frame_limiter.provider.empty()) {
       frame_limiter.provider = "auto";
     }
-    int_between_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit, {0, 1000});
+    frame_limit_millihz_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit_millihz);
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     {
@@ -2278,7 +2450,9 @@ namespace config {
     std::optional<std::string> g_runtime_output_name_override;
 #ifdef _WIN32
     std::optional<std::string> g_deferred_virtual_output_name_override;
-    std::atomic<bool> g_virtual_output_retry_worker_running {false};
+    std::uint64_t g_next_runtime_output_override_lease {0};
+    std::uint64_t g_runtime_output_override_lease {0};
+    std::uint64_t g_deferred_virtual_output_override_lease {0};
 #endif
 
     // Runtime config override map applied on top of config file values (not persisted).
@@ -2389,7 +2563,6 @@ namespace config {
         "min_threads",
         "hevc_mode",
         "av1_mode",
-        "prefer_10bit_sdr",
         "capture",
         "encoder",
 
@@ -2422,11 +2595,19 @@ namespace config {
         "qsv_slow_hevc",
         "amd_usage",
         "amd_rc",
+        "amd_qvbr_quality_level",
         "amd_enforce_hrd",
         "amd_quality",
         "amd_preanalysis",
         "amd_vbaq",
         "amd_coder",
+        "amd_ltr_frames",
+        "amd_input_queue_size",
+        "amd_smart_access_video",
+        "amd_lowlatency_mode",
+        "amd_high_motion_quality_boost",
+        "amd_av1_screen_content",
+        "amd_av1_latency_mode",
         "vt_coder",
         "vt_software",
         "vt_realtime",
@@ -2467,36 +2648,94 @@ namespace config {
       return VDISPLAY::is_virtual_display_output(*output_name);
     }
 
-    void schedule_deferred_virtual_output_reapply() {
-      bool expected = false;
-      if (!g_virtual_output_retry_worker_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        return;
+    struct deferred_virtual_output_reapply_worker_t {
+      // `worker` is declared last so its destructor requests stop and joins
+      // while the mutex/condition variable it uses are still alive.
+      std::mutex mutex;
+      std::condition_variable wake;
+      bool shutdown_requested {false};
+      std::jthread worker;
+
+      ~deferred_virtual_output_reapply_worker_t() {
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          shutdown_requested = true;
+          if (worker.joinable()) {
+            worker.request_stop();
+          }
+        }
+        wake.notify_all();
+        if (worker.joinable() && worker.get_id() != std::this_thread::get_id()) {
+          worker.join();
+        }
       }
+    };
 
-      std::thread([]() {
-        auto reset_running = util::fail_guard([]() {
-          g_virtual_output_retry_worker_running.store(false, std::memory_order_release);
-        });
+    deferred_virtual_output_reapply_worker_t &deferred_virtual_output_reapply_worker() {
+      // Function-local lifetime ensures that the fallback destructor runs
+      // before configuration globals initialized during startup.
+      static deferred_virtual_output_reapply_worker_t worker;
+      return worker;
+    }
 
-        constexpr auto kPollInterval = std::chrono::milliseconds(250);
-        // If we have any deferred display-helper APPLY work (e.g. resolution/HDR/exclusivity),
-        // ensure it runs before we force capture to reinit/retarget. Applying can itself cause
-        // a capture reinit, so order matters.
-        constexpr auto kPendingApplyMaxWait = std::chrono::seconds(8);
+    bool deferred_virtual_output_reapply_should_stop(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token
+    ) {
+      if (stop_token.stop_requested()) {
+        return true;
+      }
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      return worker.shutdown_requested;
+    }
 
-        for (;;) {
-          std::optional<std::string> deferred_output;
+    bool wait_for_deferred_virtual_output_reapply(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token,
+      std::chrono::steady_clock::duration delay
+    ) {
+      std::unique_lock<std::mutex> lock(worker.mutex);
+      worker.wake.wait_for(lock, delay, [&] {
+        return worker.shutdown_requested || stop_token.stop_requested();
+      });
+      return worker.shutdown_requested || stop_token.stop_requested();
+    }
+
+    void run_deferred_virtual_output_reapply_worker(
+      deferred_virtual_output_reapply_worker_t &worker,
+      std::stop_token stop_token
+    ) {
+      constexpr auto kPollInterval = std::chrono::milliseconds(250);
+      constexpr auto kIdleWakeInterval = std::chrono::hours(24);
+      // If we have any deferred display-helper APPLY work (e.g. resolution/HDR/exclusivity),
+      // ensure it runs before we force capture to reinit/retarget. Applying can itself cause
+      // a capture reinit, so order matters.
+      constexpr auto kPendingApplyMaxWait = std::chrono::seconds(8);
+
+      const auto cancelled = [&] {
+        return deferred_virtual_output_reapply_should_stop(worker, stop_token);
+      };
+
+      while (!cancelled()) {
+        try {
+          bool has_deferred_output = false;
           {
             std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
-            deferred_output = g_deferred_virtual_output_name_override;
+            has_deferred_output = g_deferred_virtual_output_name_override &&
+                                  !g_deferred_virtual_output_name_override->empty();
           }
 
-          if (!deferred_output || deferred_output->empty()) {
-            return;
+          if (!has_deferred_output) {
+            if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kIdleWakeInterval)) {
+              return;
+            }
+            continue;
           }
 
           if (platf::is_lock_screen_active()) {
-            std::this_thread::sleep_for(kPollInterval);
+            if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+              return;
+            }
             continue;
           }
 
@@ -2504,43 +2743,139 @@ namespace config {
           {
             std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
             if (!g_deferred_virtual_output_name_override || g_deferred_virtual_output_name_override->empty()) {
-              return;
+              continue;
             }
             if (!platf::is_lock_screen_active()) {
               g_runtime_output_name_override = g_deferred_virtual_output_name_override;
+              g_runtime_output_override_lease = g_deferred_virtual_output_override_lease;
               g_deferred_virtual_output_name_override.reset();
+              g_deferred_virtual_output_override_lease = 0;
               applied = true;
             }
           }
 
-          if (applied) {
-            BOOST_LOG(info) << "Lock screen cleared; applied deferred virtual output override.";
+          if (!applied) {
+            continue;
+          }
 
-            // Ensure any queued helper APPLY runs before we request capture reinit, otherwise
-            // we can retarget capture first and then deadlock when APPLY triggers a reinit.
-            if (display_helper_integration::has_pending_apply()) {
-              const auto deadline = std::chrono::steady_clock::now() + kPendingApplyMaxWait;
-              while (display_helper_integration::has_pending_apply() &&
-                     std::chrono::steady_clock::now() < deadline) {
-                (void) display_helper_integration::apply_pending_if_ready();
-                std::this_thread::sleep_for(kPollInterval);
-              }
-              if (display_helper_integration::has_pending_apply()) {
-                BOOST_LOG(warning) << "Deferred virtual output override applied, but deferred display-helper APPLY is still pending; proceeding with capture retarget.";
+          if (cancelled()) {
+            return;
+          }
+          BOOST_LOG(info) << "Lock screen cleared; applied deferred virtual output override.";
+
+          // Ensure any queued helper APPLY runs before we request capture reinit, otherwise
+          // we can retarget capture first and then deadlock when APPLY triggers a reinit.
+          if (display_helper_integration::has_pending_apply()) {
+            const auto deadline = std::chrono::steady_clock::now() + kPendingApplyMaxWait;
+            while (!cancelled() && display_helper_integration::has_pending_apply() &&
+                   std::chrono::steady_clock::now() < deadline) {
+              (void) display_helper_integration::apply_pending_if_ready(cancelled);
+              if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+                return;
               }
             }
-
-            if (mail::man) {
-              // -1 means "reinit only; keep display selection logic intact".
-              mail::man->event<int>(mail::switch_display)->raise(-1);
-              BOOST_LOG(info) << "Requested capture reinit after deferred virtual output override reapply.";
+            if (!cancelled() && display_helper_integration::has_pending_apply()) {
+              BOOST_LOG(warning) << "Deferred virtual output override applied, but deferred display-helper APPLY is still pending; proceeding with capture retarget.";
             }
+          }
+
+          if (cancelled()) {
+            return;
+          }
+          if (mail::man) {
+            // -1 means "reinit only; keep display selection logic intact".
+            mail::man->event<int>(mail::switch_display)->raise(-1);
+            BOOST_LOG(info) << "Requested capture reinit after deferred virtual output override reapply.";
+          }
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Deferred virtual output reapply worker failed: " << e.what();
+          if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
+            return;
+          }
+        } catch (...) {
+          BOOST_LOG(error) << "Deferred virtual output reapply worker failed with an unknown exception.";
+          if (wait_for_deferred_virtual_output_reapply(worker, stop_token, kPollInterval)) {
             return;
           }
         }
-      }).detach();
+      }
+    }
+
+    void schedule_deferred_virtual_output_reapply() {
+      auto &worker = deferred_virtual_output_reapply_worker();
+      {
+        std::lock_guard<std::mutex> lock(worker.mutex);
+        if (worker.shutdown_requested) {
+          return;
+        }
+        if (!worker.worker.joinable()) {
+          try {
+            worker.worker = std::jthread([&worker](std::stop_token stop_token) {
+              run_deferred_virtual_output_reapply_worker(worker, stop_token);
+            });
+          } catch (const std::system_error &e) {
+            BOOST_LOG(error) << "Unable to create deferred virtual output reapply worker: " << e.what();
+            return;
+          }
+        }
+      }
+      worker.wake.notify_all();
     }
 #endif
+
+    std::uint64_t set_runtime_output_name_override_impl(std::optional<std::string> output_name) {
+      bool should_schedule_deferred_reapply = false;
+      std::uint64_t lease = 0;
+
+      std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
+#ifdef _WIN32
+      // Increment for every publication or clear. A recovery rollback can
+      // therefore clear only the exact override it published, even if a
+      // newer session selects the same device id.
+      lease = ++g_next_runtime_output_override_lease;
+#endif
+      if (!output_name) {
+        g_runtime_output_name_override.reset();
+#ifdef _WIN32
+        g_runtime_output_override_lease = 0;
+        g_deferred_virtual_output_name_override.reset();
+        g_deferred_virtual_output_override_lease = 0;
+#endif
+        return lease;
+      }
+
+#ifdef _WIN32
+      // Lock screen can black out external outputs. Defer virtual override only when we
+      // have a usable physical fallback; otherwise keep virtual to avoid capture loss.
+      if (is_virtual_output_override(output_name) &&
+          platf::is_lock_screen_active() &&
+          VDISPLAY::has_active_physical_display()) {
+        if (!g_deferred_virtual_output_name_override || *g_deferred_virtual_output_name_override != *output_name) {
+          BOOST_LOG(info) << "Lock screen active; deferring virtual output override until unlock.";
+        }
+        g_deferred_virtual_output_name_override = std::move(output_name);
+        g_deferred_virtual_output_override_lease = lease;
+        g_runtime_output_name_override.reset();
+        g_runtime_output_override_lease = 0;
+        should_schedule_deferred_reapply = true;
+      } else {
+        g_runtime_output_name_override = std::move(output_name);
+        g_runtime_output_override_lease = lease;
+        g_deferred_virtual_output_name_override.reset();
+        g_deferred_virtual_output_override_lease = 0;
+      }
+#else
+      g_runtime_output_name_override = std::move(output_name);
+#endif
+
+#ifdef _WIN32
+      lock.unlock();
+      if (should_schedule_deferred_reapply) {
+        schedule_deferred_virtual_output_reapply();
+      }
+#endif
+      return lease;
+    }
   }  // namespace
 
   // Acquire a shared lock while preparing/starting sessions.
@@ -2549,44 +2884,60 @@ namespace config {
   }
 
   void set_runtime_output_name_override(std::optional<std::string> output_name) {
-    bool should_schedule_deferred_reapply = false;
+    (void) set_runtime_output_name_override_impl(std::move(output_name));
+  }
+
+#ifdef _WIN32
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name) {
+    return set_runtime_output_name_override_impl(std::move(output_name));
+  }
+
+  bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease) {
+    if (lease == 0) {
+      return false;
+    }
 
     std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
-    if (!output_name) {
+    bool cleared = false;
+    if (g_runtime_output_override_lease == lease) {
       g_runtime_output_name_override.reset();
-#ifdef _WIN32
+      g_runtime_output_override_lease = 0;
+      cleared = true;
+    }
+    if (g_deferred_virtual_output_override_lease == lease) {
       g_deferred_virtual_output_name_override.reset();
-#endif
-      return;
+      g_deferred_virtual_output_override_lease = 0;
+      cleared = true;
     }
-
-#ifdef _WIN32
-    // Lock screen can black out external outputs. Defer virtual override only when we
-    // have a usable physical fallback; otherwise keep virtual to avoid capture loss.
-    if (is_virtual_output_override(output_name) &&
-        platf::is_lock_screen_active() &&
-        VDISPLAY::has_active_physical_display()) {
-      if (!g_deferred_virtual_output_name_override || *g_deferred_virtual_output_name_override != *output_name) {
-        BOOST_LOG(info) << "Lock screen active; deferring virtual output override until unlock.";
-      }
-      g_deferred_virtual_output_name_override = std::move(output_name);
-      g_runtime_output_name_override.reset();
-      should_schedule_deferred_reapply = true;
-    } else {
-      g_runtime_output_name_override = std::move(output_name);
-      g_deferred_virtual_output_name_override.reset();
-    }
-#else
-    g_runtime_output_name_override = std::move(output_name);
-#endif
-
-#ifdef _WIN32
-    lock.unlock();
-    if (should_schedule_deferred_reapply) {
-      schedule_deferred_virtual_output_reapply();
-    }
-#endif
+    return cleared;
   }
+
+  void request_deferred_virtual_output_reapply_shutdown() {
+    auto &worker = deferred_virtual_output_reapply_worker();
+    {
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      worker.shutdown_requested = true;
+      if (worker.worker.joinable()) {
+        worker.worker.request_stop();
+      }
+    }
+    worker.wake.notify_all();
+  }
+
+  void join_deferred_virtual_output_reapply_worker() {
+    request_deferred_virtual_output_reapply_shutdown();
+
+    auto &worker = deferred_virtual_output_reapply_worker();
+    std::jthread worker_to_join;
+    {
+      std::lock_guard<std::mutex> lock(worker.mutex);
+      worker_to_join = std::move(worker.worker);
+    }
+    if (worker_to_join.joinable()) {
+      worker_to_join.join();
+    }
+  }
+#endif
 
   std::optional<std::string> runtime_output_name_override() {
     std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);

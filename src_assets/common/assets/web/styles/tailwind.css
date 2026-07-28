@@ -507,3 +507,39 @@
       inset 0 0 0 2px rgb(var(--color-secondary) / 0.6) !important;
   }
 }
+
+/*
+ * Firefox profiles show backdrop filters on the main admin surfaces taking the
+ * software blur path during scrolling. Keep the translucent backgrounds, but
+ * avoid the expensive backdrop sampling in Firefox only.
+ */
+@supports (-moz-appearance: none) {
+  [class*='backdrop-blur'],
+  .token-panel,
+  .apps-header,
+  .apps-list-card,
+  .dashboard-page .n-card,
+  .clients-hero,
+  .clients-page .n-card,
+  .n-modal-mask,
+  .n-modal .n-card .n-card__header,
+  .n-modal .n-card .n-card-header,
+  .n-modal .n-card .n-card__footer,
+  .n-modal .n-card .n-card-footer,
+  .app-header,
+  .connecting-state,
+  .stats-overlay,
+  .notification-toast {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+
+  /* Restore the pre-blur opacity for the two sticky page headers. */
+  header[class*='supports-[backdrop-filter]'] {
+    background-color: rgb(var(--color-light) / 0.7) !important;
+  }
+
+  .dark header[class*='supports-[backdrop-filter]'] {
+    background-color: rgb(var(--color-dark) / 0.6) !important;
+  }
+}

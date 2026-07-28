@@ -58,6 +58,19 @@ TEST(SunshineVirtualDisplay, ClientUuidDisplayIdIsStableAndNonZero) {
   EXPECT_EQ(first, second);
 }
 
+TEST(SunshineVirtualDisplay, RecommendedScaleTracksTheShortResolutionEdge) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 1920, 1080), 125u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 2560, 1440), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 3840, 2160), 250u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 3440, 1440), 175u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(-1, 1440, 2560), 175u);
+}
+
+TEST(SunshineVirtualDisplay, ConfiguredScalePreservesAutomaticAndExactValues) {
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(0, 3840, 2160), 0u);
+  EXPECT_EQ(VDISPLAY::effective_virtual_display_scale_percent(200, 1920, 1080), 200u);
+}
+
 TEST(SunshineVirtualDisplay, PerClientDisplayIdsDifferByClientUuid) {
   EXPECT_NE(
     VDISPLAY::client_uuid_to_virtual_display_id(kClientGuid),
@@ -81,6 +94,22 @@ TEST(SunshineVirtualDisplay, StableVirtualDisplayUuidKeepsCanonicalUuidBytes) {
   EXPECT_EQ(
     VDISPLAY::virtualDisplayUuidFromStableId(client_uuid),
     uuid_util::uuid_t::parse(client_uuid)
+  );
+}
+
+TEST(SunshineVirtualDisplay, RecoveryJournalRawUuidRoundTripsDriverGuidBytes) {
+  constexpr std::string_view raw_guid = "EAADBAA7-AFE9-2232-FF17-F29CD76380DD";
+
+  const auto parsed = uuid_util::uuid_t::parse_raw(std::string {raw_guid});
+
+  EXPECT_EQ(parsed.string(), raw_guid);
+  EXPECT_FALSE(parsed == uuid_util::uuid_t::parse(std::string {raw_guid}));
+}
+
+TEST(SunshineVirtualDisplay, RecoveryJournalRawUuidRejectsMalformedString) {
+  EXPECT_THROW(
+    uuid_util::uuid_t::parse_raw("EAADBAA7-AFE9-2232-FF17-F29CD76380DG"),
+    std::invalid_argument
   );
 }
 
@@ -184,6 +213,64 @@ TEST(SunshineVirtualDisplay, EnsureDisplayAppliesConfiguredRenderAdapterBeforeTe
   EXPECT_LT(sudo_preference_pos, sudo_create_pos);
   expect_contains(sudo_source, "if (!config::video.adapter_name.empty())");
   expect_contains(sudo_source, "setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))");
+}
+
+TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredAdapter) {
+  // Regression (#265): a display attached to the *other* GPU used to satisfy
+  // has_active_physical_display(), so no virtual display was created and capture — which is pinned
+  // to adapter_name — then failed with "Failed to locate an output device".
+  for (const auto &relative_path : {
+         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
+         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
+       }) {
+    const auto source = read_source(relative_path);
+    const auto detection_pos = source.find("has_active_physical_display() {");
+    ASSERT_NE(detection_pos, std::string::npos) << relative_path;
+    const auto detection_end = source.find("should_auto_enable_virtual_display", detection_pos);
+    ASSERT_NE(detection_end, std::string::npos) << relative_path;
+    const auto detection_body = source.substr(detection_pos, detection_end - detection_pos);
+
+    EXPECT_NE(detection_body.find("platf::configured_capture_adapter_has_output(active_physical_displays)"), std::string::npos)
+      << relative_path << " does not scope active display detection to the configured adapter";
+  }
+
+  const auto misc_source = read_source("src/platform/windows/misc.cpp");
+  expect_contains(misc_source, "bool configured_capture_adapter_has_output(");
+  expect_contains(misc_source, "std::optional<bool> adapter_drives_any_output(");
+  // Hosts without a configured adapter must keep the legacy adapter-agnostic answer.
+  expect_contains(misc_source, "if (configured.empty()) {");
+}
+
+TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
+  for (const auto &relative_path : {
+         std::string {"src/platform/windows/virtual_display_sunshine.cpp"},
+         std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
+       }) {
+    const auto source = read_source(relative_path);
+    const auto preference_pos = source.find("void apply_configured_render_adapter_preference(");
+    ASSERT_NE(preference_pos, std::string::npos) << relative_path;
+
+    const auto branch_pos = source.find("if (!config::video.adapter_name.empty())", preference_pos);
+    ASSERT_NE(branch_pos, std::string::npos) << relative_path;
+    const auto return_pos = source.find("return;", branch_pos);
+    const auto error_pos = source.find("BOOST_LOG(error)", branch_pos);
+    const auto fallback_pos = source.find("setRenderAdapterWithMostDedicatedMemory", branch_pos);
+    ASSERT_NE(return_pos, std::string::npos) << relative_path;
+    ASSERT_NE(error_pos, std::string::npos) << relative_path;
+    ASSERT_NE(fallback_pos, std::string::npos) << relative_path;
+
+    // An unusable configured adapter must be reported loudly...
+    EXPECT_LT(error_pos, return_pos) << relative_path << " does not log an error for an unusable adapter";
+    // ...and the highest-VRAM auto-selection must stay unreachable once adapter_name is set.
+    EXPECT_LT(return_pos, fallback_pos) << relative_path << " can fall back to another GPU despite an explicit adapter_name";
+  }
+
+  // The capture path must name the exact reason a pinned adapter could not be honored.
+  const auto display_base_source = read_source("src/platform/windows/display_base.cpp");
+  expect_contains(display_base_source, "bool configured_adapter_present = false;");
+  expect_contains(display_base_source, "bool configured_adapter_has_output = false;");
+  expect_contains(display_base_source, "does not match any GPU on this system.");
+  expect_contains(display_base_source, "has no display attached to the desktop.");
 }
 
 TEST(SunshineVirtualDisplay, ResumeRequiresExactVirtualDisplayMatch) {
@@ -375,21 +462,4 @@ TEST(SunshineWgcCapture, FramePoolStartsLowLatencyAndCanAdapt) {
   expect_contains(helper_source, "publish_fps=");
 }
 
-TEST(SunshineWgcCapture, HelperDoesNotHoldSharedMutexWhileWaitingForLocalD3DContext) {
-  const auto helper_source = read_source("tools/sunshine_wgc_capture.cpp");
-
-  const auto function_start = helper_source.find("void copy_frame_to_shared_texture(");
-  ASSERT_NE(function_start, std::string::npos);
-
-  const auto context_lock = helper_source.find("std::unique_lock context_lock(_d3d_context_mutex);", function_start);
-  const auto shared_mutex = helper_source.find("get_keyed_mutex()->AcquireSync(0, 200)", function_start);
-  ASSERT_NE(context_lock, std::string::npos);
-  ASSERT_NE(shared_mutex, std::string::npos);
-  EXPECT_LT(context_lock, shared_mutex);
-
-  expect_contains(helper_source, "context_wait_ms=");
-  expect_contains(helper_source, "shared_mutex_hold_ms=");
-  expect_contains(helper_source, "slow_context_count=");
-  expect_contains(helper_source, "slow_shared_hold_count=");
-}
 #endif

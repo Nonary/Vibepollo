@@ -51,7 +51,7 @@ namespace proc {
   using file_t = util::safe_ptr_v2<FILE, int, fclose>;
 
 #ifdef _WIN32
-  extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+  extern std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus;
   void initVDisplayDriver();
 #endif
 
@@ -239,7 +239,7 @@ namespace proc {
   private:
     int launch_app_commands();
 
-    int _app_id = 0;
+    std::atomic<int> _app_id {0};
     std::string _app_name;
 
     bp::environment _env;
@@ -267,6 +267,7 @@ namespace proc {
 #ifdef _WIN32
     GUID _virtual_display_guid {};
     bool _virtual_display_active {false};
+    std::optional<config::runtime_output_override_lease_t> _runtime_output_override_lease;
 #endif
 
     file_t _pipe;

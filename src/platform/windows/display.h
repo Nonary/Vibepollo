@@ -178,11 +178,17 @@ namespace platf::dxgi {
 
   class display_base_t: public display_t {
   public:
+    enum class output_refresh_e {
+      refreshed,
+      retry_later,
+      structural_change,
+    };
+
     int init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test = false);
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
-    bool refresh_output_after_expected_mode_change();
+    output_refresh_e refresh_output_after_nonstructural_change();
 
     factory1_t factory;
     adapter_t adapter;
@@ -306,7 +312,11 @@ namespace platf::dxgi {
 
     std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override;
 
+    std::unique_ptr<avcodec_encode_device_t> make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) override;
+
     std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) override;
+
+    std::unique_ptr<amf_encode_device_t> make_amf_encode_device(pix_fmt_e pix_fmt) override;
 
     std::atomic<uint32_t> next_image_id;
   };
@@ -628,5 +638,14 @@ namespace platf::dxgi {
   // Type aliases for WGC data structures
   using shared_handle_data_t = platf::dxgi::shared_handle_data_t;
   using config_data_t = platf::dxgi::config_data_t;
+
+  /**
+   * @brief Check whether HDR is currently active on an output, without creating a capture device.
+   * @details Uses the same DXGI colorspace predicate as display_base_t::is_hdr(), so a caller that
+   *          waits on this will reach the same conclusion the capture path does. Cheap enough to poll.
+   * @param output_name GDI display name (e.g. `\\.\DISPLAY1`). Empty matches any attached output.
+   * @return true if the matched output reports the HDR10 colorspace.
+   */
+  bool is_hdr_active_for_output(const std::string &output_name);
 
 }  // namespace platf::dxgi

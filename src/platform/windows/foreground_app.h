@@ -4,7 +4,9 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 
 #include <winsock2.h>
@@ -19,14 +21,37 @@ namespace platf::foreground_app {
     bool has_active_app {false};
     bool matches_active_app {false};
     bool uses_playnite {false};
+    bool tracks_active_app_window {false};
     DWORD foreground_pid {0};
+    DWORD blocker_pid {0};
+    RECT blocker_rect {};
+    double blocker_coverage_percent {0.0};
+    bool matching_window_seen {false};
+    bool matching_game_fullscreen {false};
+    std::uint32_t ignored_passive_window_count {0};
     std::string foreground_exe;
+    std::string blocker_exe;
+    std::string blocker_class;
+    std::string blocker_title;
+    std::string blocker_reason;
+    std::string blocker_classification;
+    bool blocker_opaque {false};
+    bool blocker_framed {false};
+    bool blocker_passive_overlay {false};
+    bool blocker_desktop_ui {false};
+    bool blocker_present {false};
+    bool definite_desktop_blocker_present {false};
+    DWORD definite_desktop_blocker_pid {0};
     std::string active_app_name;
     std::string active_app_exe;
     std::string source;
   };
 
-  state_t snapshot(const std::optional<RECT> &capture_rect = std::nullopt);
+  state_t snapshot(
+    const std::optional<RECT> &capture_rect = std::nullopt,
+    DWORD game_hint_pid = 0,
+    std::string_view game_hint_exe = {}
+  );
 
   bool path_equal_or_basename_match(std::string_view lhs, std::string_view rhs);
   bool path_is_under_directory(std::string_view path, std::string_view directory);
@@ -36,6 +61,37 @@ namespace platf::foreground_app {
     std::string_view status_exe,
     std::string_view status_install_dir,
     std::string_view foreground_exe
+  );
+  bool passive_compositor_style_for_tests(
+    std::uintptr_t style,
+    std::uintptr_t ex_style
+  );
+
+  struct visible_window_evidence_t {
+    bool belongs_to_active_app {false};
+    bool desktop_ui {false};
+    bool passive_host {false};
+    bool fullscreen_on_capture_display {false};
+    bool opaque {true};
+    // Shell surfaces that routinely appear above a running fullscreen game for a
+    // moment (the alt-tab switcher, Task View, a taskbar strip). They are desktop
+    // UI, but treating them as a blocker turned every alt-tab keypress into a
+    // desktop verdict, so the scan looks past them at whatever they cover.
+    bool transient_shell_overlay {false};
+  };
+
+  bool transient_shell_overlay_for_tests(
+    std::string_view class_name,
+    bool desktop_ui,
+    bool covers_capture_display
+  );
+
+  // Evidence is ordered from topmost to bottommost in the composed window stack.
+  // Returns true only when fullscreen game content is reached before any visible
+  // desktop or unrelated application surface.
+  bool visible_fullscreen_game_selected_for_tests(
+    std::span<const visible_window_evidence_t> evidence,
+    bool require_active_app_match
   );
 
 }  // namespace platf::foreground_app

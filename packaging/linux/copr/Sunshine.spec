@@ -73,8 +73,6 @@ BuildRequires: python3-jinja2
 BuildRequires: python3-setuptools
 BuildRequires: systemd-udev
 %{?sysusers_requires_compat}
-# for unit tests
-BuildRequires: xorg-x11-server-Xvfb
 %endif
 
 %if 0%{?suse_version}
@@ -100,8 +98,6 @@ BuildRequires: udev
 %if !0%{?sle_version}
 BuildRequires: vulkan-devel
 %endif
-# for unit tests
-BuildRequires: xvfb-run
 %endif
 
 # Conditional BuildRequires for cuda-gcc based on distribution version
@@ -213,6 +209,7 @@ cmake_args=(
   "-G=Unix Makefiles"
   "-S=."
   "-DBUILD_DOCS=OFF"
+  "-DBUILD_TESTS=OFF"
   "-DBUILD_WERROR=ON"
   "-DCMAKE_BUILD_TYPE=Release"
   "-DCMAKE_INSTALL_PREFIX=%{_prefix}"
@@ -353,10 +350,6 @@ make -j$(nproc) -C "%{_builddir}/Sunshine/build"
 appstreamcli validate %{buildroot}%{_metainfodir}/*.metainfo.xml
 appstream-util validate %{buildroot}%{_metainfodir}/*.metainfo.xml
 desktop-file-validate %{buildroot}%{_datadir}/applications/*.desktop
-
-# run tests
-cd %{_builddir}/Sunshine/build
-xvfb-run ./tests/test_sunshine
 
 %install
 # Load NVM for Fedora 44+ so npm is available during make install

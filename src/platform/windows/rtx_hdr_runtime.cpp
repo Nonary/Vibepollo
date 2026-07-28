@@ -249,15 +249,18 @@ namespace platf::rtx_hdr {
       }
 
       if (!foreground.has_active_app || !foreground.matches_active_app) {
-        if (!state->current_identity_key.empty()) {
-          ++state->current_generation;
-          state->current_identity_key.clear();
-        }
         state->next_profile_refresh = {};
-        state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
-        state->consecutive_slow_or_failed_lookups = 0;
         state->pending_profile_job.reset();
-        state->last_successful_profile.reset();
+
+        if (!foreground.has_active_app) {
+          if (!state->current_identity_key.empty()) {
+            ++state->current_generation;
+            state->current_identity_key.clear();
+          }
+          state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
+          state->consecutive_slow_or_failed_lookups = 0;
+          state->last_successful_profile.reset();
+        }
 
         frame_state_t frame;
         copy_foreground(frame, foreground);
@@ -282,6 +285,9 @@ namespace platf::rtx_hdr {
         auto frame = state->cached_frame_state;
         copy_foreground(frame, foreground);
         state->cached_frame_state = std::move(frame);
+        recompute_live_settings_locked(*state);
+        state->cached_frame_state.lookup_available =
+          state->last_successful_profile && state->last_successful_profile->lookup_available;
       }
 
       if (identity_changed || now >= state->next_profile_refresh) {

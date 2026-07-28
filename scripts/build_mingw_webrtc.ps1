@@ -345,9 +345,9 @@ Set-Location $BuildDir
 
 Write-Step "Initializing depot_tools"
 Push-Location $depotToolsDir
-cmd /c bootstrap\\win_tools.bat
-cmd /c gclient
-cmd /c gclient
+cmd.exe /c bootstrap\\win_tools.bat
+cmd.exe /c gclient
+cmd.exe /c gclient
 Pop-Location
 
 if ($Stage -eq "All" -or $Stage -eq "Sync") {

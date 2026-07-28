@@ -8,9 +8,11 @@
 #include "src/platform/windows/display_helper_v2/types.h"
 
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <set>
+#include <variant>
 
 namespace display_helper::v2 {
   class SystemPorts {
@@ -63,8 +65,8 @@ namespace display_helper::v2 {
       workarounds_.blank_hdr_states(delay);
     }
 
-    void create_restore_task() {
-      (void) task_manager_.create_restore_task(L"");
+    bool create_restore_task() {
+      return task_manager_.create_restore_task(L"");
     }
 
     void delete_restore_task() {
@@ -103,7 +105,7 @@ namespace display_helper::v2 {
       return policy_.retry_delay(attempt);
     }
 
-    void dispatch_apply(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display) {
+    std::uint64_t dispatch_apply(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display) {
       const auto token = system_.token();
       const auto generation = token.generation();
 
@@ -116,28 +118,71 @@ namespace display_helper::v2 {
           ApplyCompleted completed;
           completed.status = outcome.status;
           completed.expected_topology = outcome.expected_topology;
+          completed.resolved_target = outcome.resolved_target;
           completed.virtual_display_requested = outcome.virtual_display_requested;
+          completed.display_may_have_changed = outcome.display_may_have_changed;
+          completed.durable_recovery_armed = outcome.durable_recovery_armed;
+          completed.staged_state_prepared = outcome.staged_state_prepared;
+          completed.generation = generation;
+          enqueue(completed);
+        });
+      return generation;
+    }
+
+    void dispatch_verification(
+      const ApplyRequest &request,
+      const std::optional<ActiveTopology> &expected_topology,
+      const std::optional<ResolvedConfigurationTarget> &resolved_target,
+      std::chrono::milliseconds delay = std::chrono::milliseconds(0),
+      VerificationPurpose purpose = VerificationPurpose::Initial) {
+      const auto token = system_.token();
+      const auto generation = token.generation();
+
+      const auto completion = [enqueue = enqueue_, generation, purpose](bool success) {
+          VerificationCompleted completed;
+          completed.success = success;
+          completed.purpose = purpose;
+          completed.generation = generation;
+          enqueue(completed);
+      };
+      if (delay > std::chrono::milliseconds::zero()) {
+        dispatcher_.dispatch_verification_after(request, expected_topology, resolved_target, token, delay, completion);
+      } else {
+        dispatcher_.dispatch_verification(request, expected_topology, resolved_target, token, completion);
+      }
+    }
+
+    void dispatch_reset_staged_apply_state() {
+      const auto generation = system_.current_generation();
+      dispatcher_.dispatch_reset_staged_apply_state(
+        [enqueue = enqueue_, generation](bool success) {
+          ResetCompleted completed;
+          completed.success = success;
           completed.generation = generation;
           enqueue(completed);
         });
     }
 
-    void dispatch_verification(
-      const ApplyRequest &request,
-      const std::optional<ActiveTopology> &expected_topology) {
+    std::uint64_t dispatch_refresh_rate(const RefreshRateCommand &command) {
       const auto token = system_.token();
       const auto generation = token.generation();
-
-      dispatcher_.dispatch_verification(
-        request,
-        expected_topology,
+      dispatcher_.dispatch_refresh_rate(
+        command.device_id,
+        command.numerator,
+        command.denominator,
         token,
-        [enqueue = enqueue_, generation](bool success) {
-          VerificationCompleted completed;
+        [enqueue = enqueue_, generation, command](bool success) {
+          RefreshRateCompleted completed;
           completed.success = success;
+          completed.device_id = command.device_id;
+          completed.numerator = command.numerator;
+          completed.denominator = command.denominator;
           completed.generation = generation;
+          completed.connection_epoch = command.connection_epoch;
+          completed.request_id = command.request_id;
           enqueue(completed);
         });
+      return generation;
     }
 
   private:
@@ -157,7 +202,7 @@ namespace display_helper::v2 {
         system_(system),
         enqueue_(std::move(enqueue)) {}
 
-    void dispatch_recovery(std::chrono::milliseconds delay = std::chrono::milliseconds(0)) {
+    std::uint64_t dispatch_recovery(std::chrono::milliseconds delay = std::chrono::milliseconds(0)) {
       const auto token = system_.token();
       const auto generation = token.generation();
 
@@ -168,12 +213,16 @@ namespace display_helper::v2 {
           RecoveryCompleted completed;
           completed.success = outcome.success;
           completed.snapshot = outcome.snapshot;
+          completed.display_may_have_changed = outcome.display_may_have_changed;
+          completed.staged_state_reset_attempted = outcome.staged_state_reset_attempted;
+          completed.staged_state_reset_succeeded = outcome.staged_state_reset_succeeded;
           completed.generation = generation;
           enqueue(completed);
         });
+      return generation;
     }
 
-    void dispatch_recovery_validation(const Snapshot &snapshot) {
+    std::uint64_t dispatch_recovery_validation(const Snapshot &snapshot) {
       const auto token = system_.token();
       const auto generation = token.generation();
 
@@ -186,6 +235,7 @@ namespace display_helper::v2 {
           completed.generation = generation;
           enqueue(completed);
         });
+      return generation;
     }
 
   private:
@@ -265,9 +315,15 @@ namespace display_helper::v2 {
       RestoreState &restore_state);
 
     void set_state_observer(StateObserver observer);
-    void set_apply_result_callback(std::function<void(ApplyStatus)> callback);
-    void set_verification_result_callback(std::function<void(bool)> callback);
+    void set_apply_result_callback(std::function<void(ApplyStatus, std::uint64_t, std::uint64_t)> callback);
+    void set_verification_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
+    void set_snapshot_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
+    void set_refresh_rate_result_callback(std::function<void(bool, std::uint64_t, std::uint64_t)> callback);
     void set_exit_callback(std::function<void(int)> callback);
+    /// The pipe owner updates this monotonically as connections are replaced.
+    /// Commands tagged by an older connection are discarded before they can
+    /// mutate the long-lived helper state.
+    void set_connection_epoch_provider(std::function<std::uint64_t()> provider);
     void set_snapshot_blacklist(std::set<std::string> blacklist);
 
     void handle_message(const Message &message);
@@ -278,23 +334,52 @@ namespace display_helper::v2 {
 
     State state() const;
     bool recovery_armed() const;
+    /// True when a disconnect must retain/enter recovery because this helper
+    /// may have changed the desktop or is actively applying/restoring it.
+    bool requires_disconnect_recovery() const;
+    /// v1 treats a pipe break immediately after APPLY as startup churn: retain
+    /// the session and let bounded settling re-applies run instead of restoring
+    /// the desktop just as Windows is activating it.
+    bool should_defer_disconnect_recovery() const;
+    /// Starts/arms the bounded v1-compatible verify-before-repair work for a
+    /// recent APPLY disconnect. Returns true only when restore recovery should
+    /// be deferred.
+    bool begin_transient_disconnect_settlement();
 
     /// True while a restore request is being worked on (Recovery/RecoveryValidation/EventLoop).
     bool restore_pending() const;
+    bool recovery_worker_in_progress() const;
 
   private:
+    using DeferredMutationCommand = std::variant<ApplyCommand, RevertCommand, DisarmCommand, ResetCommand>;
+
+    enum class MutationWorkerKind {
+      Apply,
+      RefreshRate,
+      Recovery,
+    };
+
+    struct ActiveMutationWorker {
+      MutationWorkerKind kind;
+      std::uint64_t generation;
+    };
+
     void retarget_virtual_display_device_id_if_needed();
+    ApplyRequest verification_request() const;
 
     void handle_apply_command(const ApplyCommand &command);
     void handle_revert_command(const RevertCommand &command);
     void handle_disarm_command(const DisarmCommand &command);
     void handle_export_golden(const ExportGoldenCommand &command);
     void handle_snapshot_current(const SnapshotCurrentCommand &command);
+    void handle_refresh_rate_command(const RefreshRateCommand &command);
     void handle_reset_command(const ResetCommand &command);
     void handle_ping_command(const PingCommand &command);
     void handle_stop_command(const StopCommand &command);
     void handle_apply_completed(const ApplyCompleted &completed);
     void handle_verification_completed(const VerificationCompleted &completed);
+    void handle_reset_completed(const ResetCompleted &completed);
+    void handle_refresh_rate_completed(const RefreshRateCompleted &completed);
     void handle_recovery_completed(const RecoveryCompleted &completed);
     void handle_recovery_validation_completed(const RecoveryValidationCompleted &completed);
     void handle_display_event(const DisplayEventMessage &event);
@@ -302,10 +387,50 @@ namespace display_helper::v2 {
 
     void transition(State next, ApplyAction trigger, std::optional<ApplyStatus> status = std::nullopt);
     bool is_stale(std::uint64_t generation) const;
+    bool is_stale_connection(std::uint64_t connection_epoch) const;
+    bool apply_in_flight() const;
 
     std::vector<std::string> exclusions_vector() const;
     void update_blacklist(const std::vector<std::string> &exclude_devices);
     void start_recovery(std::chrono::milliseconds delay, ApplyAction trigger);
+    void clear_recovery_state(bool delete_restore_task);
+    void activate_recovery_lease();
+    void send_apply_result(ApplyStatus status);
+    void send_verification_result(bool success);
+    void send_snapshot_result(bool success, std::uint64_t connection_epoch, std::uint64_t request_id);
+    void send_refresh_rate_result(bool success, std::uint64_t connection_epoch, std::uint64_t request_id);
+    void enter_steady_state();
+    void reset_post_apply_stabilization();
+    void reset_transient_disconnect_settlement();
+    void replace_post_apply_stabilization_with_transient_disconnect_settlement();
+    void rewind_post_apply_stabilization();
+    void schedule_next_post_apply_stabilization();
+    bool dispatch_next_verification_reapply();
+    bool dispatch_next_transient_disconnect_verification();
+    void dispatch_transient_disconnect_repair();
+    void dispatch_immediate_repair_after_stabilization_failure();
+    void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
+    void queue_after_active_mutation(
+      DeferredMutationCommand command,
+      const char *label,
+      bool cancel_active_mutation = true);
+    /// Queue a control intent behind a worker/reset barrier.  APPLY, REVERT,
+    /// and DISARM describe the desired next session state, so only the newest
+    /// such intent may survive. RESET is deliberately retained as an ordered
+    /// persistence barrier rather than being folded into that session intent.
+    void enqueue_deferred_mutation_command(DeferredMutationCommand command, const char *label);
+    /// Returns whether the mutation fence already holds a newer session start.
+    /// Autonomous recovery must not coalesce that APPLY away.
+    bool has_deferred_apply_intent() const;
+    void drain_deferred_mutation_commands();
+    void begin_staged_state_reset();
+    void retain_recovery_after_display_mutation(const ApplyCompleted &completed);
+    void retain_recovery_after_cancelled_recovery();
+    void apply_recovery_policy_from_current_request();
+    void reset_uncommitted_staged_state_if_needed();
+    bool mutation_worker_active() const;
+    bool owns_active_worker(MutationWorkerKind kind, std::uint64_t generation) const;
+    bool refresh_targets_active_request(const std::string &device_id) const;
 
     ApplyPipeline &apply_;
     RecoveryPipeline &recovery_;
@@ -318,18 +443,75 @@ namespace display_helper::v2 {
 
     State state_ = State::Waiting;
     bool recovery_armed_ = false;
+    bool display_changes_pending_recovery_ = false;
+    // An explicit client REVERT must survive later autonomous disconnect
+    // policy decisions. This is separate from restore_on_disconnect, which
+    // controls only whether a disconnected live session begins a recovery.
+    bool explicit_recovery_required_ = false;
     int apply_attempt_ = 0;
     bool apply_result_sent_ = false;
+    bool verification_result_sent_ = false;
+    // A result may have been sent for an initial failure. Keep successful
+    // verification distinct so only an already-verified session treats later
+    // settling repairs as best effort.
+    bool session_was_verified_ = false;
+    bool restore_task_created_ = false;
+    bool post_apply_check_pending_ = false;
+    std::vector<std::chrono::milliseconds> post_apply_stabilization_delays_;
+    std::size_t next_post_apply_stabilization_ = 0;
+    // v1 retries an immediately failed configuration once, then stair-steps
+    // delayed enforcement while Windows settles (750ms, plus 2.5/5.5s for
+    // HDR). Keep that behavior as explicit FSM state instead of background
+    // worker threads. Index zero is the immediate v1 retry and the remaining
+    // entries align with post-apply settling stages.
+    std::vector<std::chrono::milliseconds> verification_reapply_delays_;
+    std::size_t next_verification_reapply_ = 0;
+    // v1 also performs a short 250/750ms verify-before-reapply settlement
+    // sequence if the control pipe disappears right after APPLY. This is
+    // distinct from the normal verification staircase because it can begin
+    // after an interrupted transaction with no client response lane.
+    bool transient_disconnect_settlement_requested_ = false;
+    bool transient_disconnect_check_pending_ = false;
+    bool transient_disconnect_repair_in_flight_ = false;
+    std::size_t next_transient_disconnect_check_ = 0;
+    std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
     std::optional<ActiveTopology> expected_topology_;
+    std::optional<ResolvedConfigurationTarget> resolved_target_;
     std::optional<Snapshot> recovery_snapshot_;
     std::set<std::string> snapshot_blacklist_;
+    std::uint64_t current_connection_epoch_ = 0;
+
+    // A durable task is armed by the worker immediately before a mutation,
+    // but only the state machine may remove it. The fence covers both staged
+    // APPLY and snapshot recovery work, keeping destructive control messages
+    // and replacement APPLYs behind the worker until it reports completion.
+    std::optional<ActiveMutationWorker> active_mutation_worker_;
+    std::deque<DeferredMutationCommand> deferred_mutation_commands_;
+    bool unconfirmed_cancelled_mutation_ = false;
+    bool staged_state_reset_pending_ = false;
+    // Recovery normally exits the helper after a confirmed restore. If RESET
+    // was queued behind that recovery, retain the helper until the ordered
+    // backend reset completes.
+    bool exit_after_staged_state_reset_ = false;
+    // prepare_staged_apply() mutates backend session state before a display
+    // API call. Track it across retries/cancellation so a terminal no-mutation
+    // transaction cannot leak that provisional baseline into a later session.
+    bool staged_state_prepared_ = false;
+    // The recovery worker clears the backend's retained staged state before
+    // validation. Preserve a failed result through validation so a live
+    // helper cannot accept another APPLY with an obsolete baseline.
+    std::optional<bool> recovery_staged_state_reset_succeeded_;
+    bool recovery_lease_before_apply_ = false;
 
     std::chrono::steady_clock::time_point last_virtual_apply_display_event_restart_ {};
 
     StateObserver observer_;
-    std::function<void(ApplyStatus)> apply_result_callback_;
-    std::function<void(bool)> verification_result_callback_;
+    std::function<void(ApplyStatus, std::uint64_t, std::uint64_t)> apply_result_callback_;
+    std::function<void(bool, std::uint64_t, std::uint64_t)> verification_result_callback_;
+    std::function<void(bool, std::uint64_t, std::uint64_t)> snapshot_result_callback_;
+    std::function<void(bool, std::uint64_t, std::uint64_t)> refresh_rate_result_callback_;
     std::function<void(int)> exit_callback_;
+    std::function<std::uint64_t()> connection_epoch_provider_;
   };
 }  // namespace display_helper::v2

@@ -318,7 +318,13 @@ namespace platf::dxgi {
 
     // Send config data to helper process
     config_data_t config_data = {};
-    config_data.dynamic_range = _config.dynamicRange;
+    // `dynamicRange` also carries the Main10 bit-depth request for preferred
+    // 10-bit SDR streams. The WGC helper uses this field only to choose an
+    // HDR-capable FP16 capture pool, so do not let SDR Main10 select that
+    // different capture path. `force_sdr` is an explicit HDR-off override, so
+    // it must suppress the HDR pool too; every other effective-HDR predicate
+    // in the tree excludes both flags.
+    config_data.dynamic_range = _config.dynamicRange && !_config.prefer_sdr_10bit && !_config.force_sdr;
     config_data.advanced_color_capture = _advanced_color_capture ? 1u : 0u;
     config_data.log_level = config::sunshine.min_log_level;
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);

@@ -643,10 +643,11 @@ namespace display_helper::v2::codec {
       }
     }
     if (!virtual_devices.empty()) {
-      BOOST_LOG(warning) << "Skipping display snapshot save; active virtual display device(s) are present: ["
-                         << join_ids(virtual_devices) << "]";
-      reject_reason = "active virtual display present";
-      return std::nullopt;
+      // A VDD can become visible between SNAPSHOT_CURRENT being dispatched and
+      // this capture. The physical devices in the same capture are still a
+      // valid restore baseline, so omit the VDD instead of discarding it all.
+      BOOST_LOG(info) << "Display snapshot: excluding active virtual display device(s): ["
+                      << join_ids(virtual_devices) << "]";
     }
 
     if (!exclusions.empty()) {
@@ -786,12 +787,31 @@ namespace display_helper::v2::codec {
       return std::nullopt;
     }
 
+    // A recovery snapshot describes a complete baseline, not a best-effort
+    // collection of still-visible paths.  Restoring a partial topology after a
+    // monitor has disappeared can strand the remaining monitors in the wrong
+    // layout.  The only deliberate exception is a caller-provided exclusion:
+    // that explicitly opts the device out of this restore.
+    for (const auto &grp : snap.m_topology) {
+      for (const auto &device_id : grp) {
+        const auto norm = normalize_device_id(device_id);
+        if (exclusions_norm.count(norm)) {
+          filtered_out_excluded.push_back(device_id);
+          continue;
+        }
+        if (!valid_devices_norm.count(norm)) {
+          BOOST_LOG(warning) << "Snapshot load rejected: baseline device is no longer available: "
+                             << device_id << " for path=" << source_label;
+          BOOST_LOG(debug) << "Snapshot load rejected details: present_devices=[" << join_ids(valid_devices_norm)
+                           << "], exclusions=[" << join_ids(exclusions_norm) << "]";
+          return std::nullopt;
+        }
+      }
+    }
+
     auto is_allowed = [&](const std::string &device_id) {
       const auto norm = normalize_device_id(device_id);
-      if (!valid_devices_norm.count(norm)) {
-        return false;
-      }
-      return exclusions_norm.empty() || !exclusions_norm.count(norm);
+      return valid_devices_norm.count(norm) && !exclusions_norm.count(norm);
     };
 
     ActiveTopology filtered_topology;
@@ -800,8 +820,6 @@ namespace display_helper::v2::codec {
       for (const auto &device_id : grp) {
         if (is_allowed(device_id)) {
           filtered_grp.push_back(device_id);
-        } else if (!exclusions_norm.empty() && exclusions_norm.count(normalize_device_id(device_id))) {
-          filtered_out_excluded.push_back(device_id);
         }
       }
       if (!filtered_grp.empty()) {

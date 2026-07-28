@@ -12,7 +12,7 @@ const platform = computed(() => config.platform || '');
   <div id="nvidia-nvenc-encoder" class="config-page">
     <header class="section-header">
       <h3 class="text-sm font-medium">
-        {{ $t('config.nvenc_section_title') || 'NVIDIA NVENC Encoder' }}
+        {{ $t('config.nvenc_section_title') }}
       </h3>
       <p
         v-if="$t('config.nvenc_section_desc') !== 'config.nvenc_section_desc'"
@@ -44,7 +44,7 @@ const platform = computed(() => config.platform || '');
       class="mb-4"
     >
       <span class="mt-2 inline-flex flex-wrap items-center gap-1 text-[11px] opacity-80">
-        <span>Learn more:</span>
+        <span>{{ $t('_common.see_more') }}</span>
         <a
           class="text-primary underline decoration-primary/40 underline-offset-2"
           href="https://en.wikipedia.org/wiki/Video_buffering_verifier"
@@ -70,7 +70,7 @@ const platform = computed(() => config.platform || '');
           class="mb-3"
         >
           <span class="mt-2 inline-flex flex-wrap items-center gap-1 text-[11px] opacity-80">
-            <span>Learn more:</span>
+            <span>{{ $t('_common.see_more') }}</span>
             <a
               class="text-primary underline decoration-primary/40 underline-offset-2"
               href="https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/"

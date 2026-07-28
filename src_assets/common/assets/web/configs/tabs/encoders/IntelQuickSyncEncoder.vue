@@ -9,9 +9,7 @@ const config = store.config;
 <template>
   <div id="intel-quicksync-encoder" class="config-page">
     <header class="section-header">
-      <h3 class="text-sm font-medium">
-        Intel Encoder
-      </h3>
+      <h3 class="text-sm font-medium">{{ $t('config.qsv_section_title') }}</h3>
     </header>
 
     <ConfigFieldRenderer setting-key="qsv_preset" v-model="config.qsv_preset" class="mb-4" />

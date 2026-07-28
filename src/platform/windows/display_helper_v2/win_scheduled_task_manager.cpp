@@ -8,13 +8,144 @@
 
 #include <comdef.h>
 #include <lmcons.h>
+#include <sddl.h>
 #include <secext.h>
 #include <taskschd.h>
 #include <wtsapi32.h>
 
+#include <cstddef>
+#include <memory>
+#include <vector>
+
 namespace display_helper::v2 {
   namespace {
     constexpr DWORD kInvalidSessionId = static_cast<DWORD>(-1);
+    constexpr wchar_t kLocalSystemSid[] = L"S-1-5-18";
+    constexpr wchar_t kLocalServiceSid[] = L"S-1-5-19";
+    constexpr wchar_t kNetworkServiceSid[] = L"S-1-5-20";
+    constexpr wchar_t kBuiltinUsersSid[] = L"S-1-5-32-545";
+
+    struct HandleCloser {
+      void operator()(void *handle) const noexcept {
+        if (handle) {
+          CloseHandle(handle);
+        }
+      }
+    };
+
+    struct LocalMemoryCloser {
+      void operator()(void *memory) const noexcept {
+        if (memory) {
+          LocalFree(memory);
+        }
+      }
+    };
+
+    using unique_handle = std::unique_ptr<void, HandleCloser>;
+    using unique_local_memory = std::unique_ptr<void, LocalMemoryCloser>;
+
+    std::wstring sid_to_string(PSID sid) {
+      if (!sid || !IsValidSid(sid)) {
+        return {};
+      }
+
+      LPWSTR raw_sid = nullptr;
+      if (!ConvertSidToStringSidW(sid, &raw_sid)) {
+        return {};
+      }
+      unique_local_memory sid_guard(raw_sid);
+      return raw_sid;
+    }
+
+    std::wstring canonicalize_sid_string(const std::wstring &candidate) {
+      if (candidate.empty()) {
+        return {};
+      }
+
+      PSID raw_sid = nullptr;
+      if (!ConvertStringSidToSidW(candidate.c_str(), &raw_sid)) {
+        return {};
+      }
+      unique_local_memory sid_guard(raw_sid);
+      return sid_to_string(raw_sid);
+    }
+
+    std::wstring query_token_user_sid(HANDLE token) {
+      if (!token) {
+        return {};
+      }
+
+      DWORD required = 0;
+      (void) GetTokenInformation(token, TokenUser, nullptr, 0, &required);
+      if (required == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return {};
+      }
+
+      std::vector<std::byte> buffer(required);
+      if (!GetTokenInformation(token, TokenUser, buffer.data(), required, &required)) {
+        return {};
+      }
+
+      const auto *token_user = reinterpret_cast<const TOKEN_USER *>(buffer.data());
+      return sid_to_string(token_user->User.Sid);
+    }
+
+    std::wstring query_session_user_sid(DWORD session_id) {
+      if (session_id == kInvalidSessionId) {
+        return {};
+      }
+
+      HANDLE raw_token = nullptr;
+      if (!WTSQueryUserToken(session_id, &raw_token)) {
+        return {};
+      }
+      const unique_handle token(raw_token);
+      return query_token_user_sid(raw_token);
+    }
+
+    std::wstring query_process_user_sid() {
+      HANDLE raw_token = nullptr;
+      if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) {
+        return {};
+      }
+      const unique_handle token(raw_token);
+      return query_token_user_sid(raw_token);
+    }
+
+    std::wstring lookup_account_sid(const std::wstring &account_name) {
+      if (account_name.empty()) {
+        return {};
+      }
+
+      DWORD sid_size = 0;
+      DWORD domain_size = 0;
+      SID_NAME_USE sid_type = SidTypeUnknown;
+      (void) LookupAccountNameW(
+        nullptr,
+        account_name.c_str(),
+        nullptr,
+        &sid_size,
+        nullptr,
+        &domain_size,
+        &sid_type);
+      if (sid_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return {};
+      }
+
+      std::vector<std::byte> sid_buffer(sid_size);
+      std::vector<wchar_t> domain_buffer(domain_size == 0 ? 1 : domain_size);
+      if (!LookupAccountNameW(
+            nullptr,
+            account_name.c_str(),
+            sid_buffer.data(),
+            &sid_size,
+            domain_buffer.data(),
+            &domain_size,
+            &sid_type)) {
+        return {};
+      }
+      return sid_to_string(sid_buffer.data());
+    }
 
     std::wstring query_session_account(DWORD session_id) {
       if (session_id == kInvalidSessionId) {
@@ -53,9 +184,10 @@ namespace display_helper::v2 {
       return user;
     }
 
-    bool is_system_account(const std::wstring &username) {
-      return _wcsicmp(username.c_str(), L"SYSTEM") == 0 ||
-             _wcsicmp(username.c_str(), L"NT AUTHORITY\\SYSTEM") == 0;
+    bool is_service_sid(const std::wstring &sid) {
+      return _wcsicmp(sid.c_str(), kLocalSystemSid) == 0 ||
+             _wcsicmp(sid.c_str(), kLocalServiceSid) == 0 ||
+             _wcsicmp(sid.c_str(), kNetworkServiceSid) == 0;
     }
   }  // namespace
 
@@ -91,14 +223,50 @@ namespace display_helper::v2 {
     return username;
   }
 
+  std::wstring WinScheduledTaskManager::resolve_user_sid(const std::wstring &username_hint) {
+    // Resolve any explicit identity to a SID before crossing the Task Scheduler
+    // COM boundary. Account strings can fail mapping there even when WTS was
+    // able to return the same DOMAIN\\user text.
+    if (!username_hint.empty()) {
+      auto sid = canonicalize_sid_string(username_hint);
+      if (sid.empty()) {
+        sid = lookup_account_sid(username_hint);
+      }
+      if (!sid.empty() && !is_service_sid(sid)) {
+        return sid;
+      }
+    }
+
+    // The helper normally runs as SYSTEM. The active-session token is therefore
+    // the authoritative identity of the user whose logon must trigger restore.
+    auto sid = query_session_user_sid(WTSGetActiveConsoleSessionId());
+    if (!sid.empty() && !is_service_sid(sid)) {
+      return sid;
+    }
+
+    // This supports direct/manual helper launches under an interactive user.
+    sid = query_process_user_sid();
+    if (!sid.empty() && !is_service_sid(sid)) {
+      return sid;
+    }
+
+    // Last chance for environments where token access is restricted but the
+    // session account remains resolvable through LSA.
+    sid = lookup_account_sid(resolve_username({}));
+    if (!sid.empty() && !is_service_sid(sid)) {
+      return sid;
+    }
+    return {};
+  }
+
   std::wstring WinScheduledTaskManager::build_restore_task_name(const std::wstring &) {
     return L"VibeshineDisplayRestore";
   }
 
   bool WinScheduledTaskManager::create_restore_task(const std::wstring &username) {
-    const std::wstring resolved = resolve_username(username);
-    const bool has_username = !resolved.empty() && !is_system_account(resolved);
-    const std::wstring task_name = build_restore_task_name(has_username ? resolved : std::wstring {});
+    const std::wstring user_sid = resolve_user_sid(username);
+    const bool has_user_sid = !user_sid.empty();
+    const std::wstring task_name = build_restore_task_name({});
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
@@ -180,8 +348,8 @@ namespace display_helper::v2 {
     if (ILogonTrigger *logon_trigger = nullptr; SUCCEEDED(trigger->QueryInterface(IID_ILogonTrigger, (void **) &logon_trigger))) {
       logon_trigger->put_Id(_bstr_t(L"SunshineDisplayHelperLogonTrigger"));
       logon_trigger->put_Enabled(VARIANT_TRUE);
-      if (has_username) {
-        logon_trigger->put_UserId(_bstr_t(resolved.c_str()));
+      if (has_user_sid) {
+        logon_trigger->put_UserId(_bstr_t(user_sid.c_str()));
       }
       logon_trigger->Release();
     }
@@ -233,16 +401,16 @@ namespace display_helper::v2 {
     exec_action->put_Arguments(_bstr_t(L"--restore"));
     exec_action->Release();
 
-    // Without an interactive user (helper launched as SYSTEM after sign-out or
-    // from the lock screen), TASK_LOGON_INTERACTIVE_TOKEN cannot be resolved and
-    // registration fails with 0x80070534 (ERROR_NONE_MAPPED). Bind the task to
-    // BUILTIN\Users by SID (locale independent) so it still runs at next logon.
-    static constexpr wchar_t builtin_users_sid[] = L"S-1-5-32-545";
-    const TASK_LOGON_TYPE logon_type = has_username ? TASK_LOGON_INTERACTIVE_TOKEN : TASK_LOGON_GROUP;
+    // When no interactive token exists (for example, after sign-out), bind the
+    // task to BUILTIN\Users by SID so registration never depends on localized
+    // account-name mapping and still runs at the next user logon.
+    const TASK_LOGON_TYPE logon_type = has_user_sid ? TASK_LOGON_INTERACTIVE_TOKEN : TASK_LOGON_GROUP;
 
     if (IPrincipal *principal = nullptr; SUCCEEDED(task->get_Principal(&principal))) {
-      if (!has_username) {
-        principal->put_GroupId(_bstr_t(builtin_users_sid));
+      if (has_user_sid) {
+        principal->put_UserId(_bstr_t(user_sid.c_str()));
+      } else {
+        principal->put_GroupId(_bstr_t(kBuiltinUsersSid));
       }
       principal->put_LogonType(logon_type);
       principal->put_RunLevel(TASK_RUNLEVEL_LUA);
@@ -254,7 +422,7 @@ namespace display_helper::v2 {
       _bstr_t(task_name.c_str()),
       task,
       TASK_CREATE_OR_UPDATE,
-      has_username ? _variant_t() : _variant_t(builtin_users_sid),
+      _variant_t(has_user_sid ? user_sid.c_str() : kBuiltinUsersSid),
       _variant_t(),
       logon_type,
       _variant_t(L""),
@@ -307,18 +475,10 @@ namespace display_helper::v2 {
     }
 
     bool success = true;
-    std::wstring username = resolve_username({});
-    std::vector<std::wstring> task_names;
-    task_names.push_back(build_restore_task_name({}));
-    if (!username.empty() && !is_system_account(username)) {
-      task_names.push_back(build_restore_task_name(username));
-    }
-
-    for (const auto &name : task_names) {
-      const HRESULT delete_hr = root_folder->DeleteTask(_bstr_t(name.c_str()), 0);
-      if (FAILED(delete_hr) && delete_hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
-        success = false;
-      }
+    const auto task_name = build_restore_task_name({});
+    const HRESULT delete_hr = root_folder->DeleteTask(_bstr_t(task_name.c_str()), 0);
+    if (FAILED(delete_hr) && delete_hr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)) {
+      success = false;
     }
 
     root_folder->Release();

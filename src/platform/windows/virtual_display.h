@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,6 +63,14 @@ namespace VDISPLAY {
     std::uint32_t scale_percent
   );
 
+  // Resolve the configured virtual-display scale. -1 selects a resolution-based
+  // recommendation, 0 preserves Windows' existing choice, and positive values are exact.
+  std::uint32_t effective_virtual_display_scale_percent(
+    int configured_scale_percent,
+    std::uint32_t width,
+    std::uint32_t height
+  );
+
   // Read the MHC2 peak-luminance value from a Windows HDR calibration profile selection.
   std::optional<std::uint32_t> hdr_profile_peak_luminance_nits(std::string_view selection);
 
@@ -90,7 +99,11 @@ namespace VDISPLAY {
     std::optional<std::string> client_name;
     std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
-    std::chrono::steady_clock::time_point ready_since;
+    bool confirmed_active = false;
+    // Set only when this exact target was observed active. Consumers treat it as
+    // an activation hint and skip their own activation wait, so publishing it for
+    // a merely-enumerated target lets them skip a wait that was never satisfied.
+    std::optional<std::chrono::steady_clock::time_point> ready_since;
   };
 
   struct VirtualDisplayRecoveryParams {
@@ -108,8 +121,13 @@ namespace VDISPLAY {
     std::optional<std::wstring> display_name;
     std::optional<std::string> device_id;
     std::optional<std::wstring> monitor_device_path;
+    bool confirmed_active_at_schedule = false;
     unsigned int max_attempts = 3;
-    std::function<void(const VirtualDisplayCreationResult &)> on_recovery_success;
+    // A successful callback may publish state (such as a runtime output
+    // override) before the monitor makes its final cancellation decision.
+    // Return rollback work for the monitor to invoke if that final decision
+    // rejects the recreation; discard it on a committed recovery.
+    std::function<std::function<void()>(const VirtualDisplayCreationResult &, std::stop_token)> on_recovery_success;
     std::function<bool()> should_abort;
   };
 
@@ -143,6 +161,8 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void request_virtual_display_recovery_shutdown();
+  void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);

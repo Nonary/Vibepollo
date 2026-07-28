@@ -43,7 +43,6 @@ const ENCODING_MIME: Record<string, string[]> = {
 };
 const DEFAULT_AUDIO_JITTER_TARGET_MS = 20;
 const DEFAULT_AUDIO_PLAYOUT_DELAY_MS = 20;
-const RECEIVER_HINT_REFRESH_MS = 250;
 const STATS_POLL_FAST_MS = 250;
 const STATS_POLL_SLOW_MS = 1000;
 const STATS_POLL_FAST_BOOT_MS = 10000;
@@ -331,21 +330,6 @@ function applyAudioReceiverHints(
   } catch {
     /* ignore */
   }
-  if (target == null) return;
-  try {
-    if (
-      typeof receiverAny.getParameters === 'function' &&
-      typeof receiverAny.setParameters === 'function'
-    ) {
-      const parameters = receiverAny.getParameters();
-      if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
-        parameters.jitterBufferTarget = target;
-        receiverAny.setParameters(parameters);
-      }
-    }
-  } catch {
-    /* ignore */
-  }
 }
 
 function resolveJitterTargetMs(value?: number): number | undefined {
@@ -396,20 +380,6 @@ function applyVideoReceiverHints(receiver?: RTCRtpReceiver, targetMs?: number): 
   } catch {
     /* ignore */
   }
-  try {
-    if (
-      typeof receiverAny.getParameters === 'function' &&
-      typeof receiverAny.setParameters === 'function'
-    ) {
-      const parameters = receiverAny.getParameters();
-      if (parameters && typeof parameters === 'object' && 'jitterBufferTarget' in parameters) {
-        parameters.jitterBufferTarget = target;
-        receiverAny.setParameters(parameters);
-      }
-    }
-  } catch {
-    /* ignore */
-  }
 }
 
 export class WebRtcClient {
@@ -430,7 +400,6 @@ export class WebRtcClient {
   private disconnecting = false;
   private pendingInput: (string | ArrayBuffer)[] = [];
   private maxPendingInput = 256;
-  private receiverHintTimer?: number;
   private videoJitterTargetMs?: number;
   private audioJitterTargetMs = DEFAULT_AUDIO_JITTER_TARGET_MS;
   private audioPlayoutDelayHintMs = DEFAULT_AUDIO_PLAYOUT_DELAY_MS;
@@ -653,12 +622,9 @@ export class WebRtcClient {
         this.statsConnectedAtMs = now;
         this.statsFastUntilMs = now + STATS_POLL_FAST_BOOT_MS;
         this.clearAutoDisconnectTimer();
-        this.startReceiverHintRefresh();
       } else if (state === 'failed' || state === 'closed') {
-        this.stopReceiverHintRefresh();
         this.scheduleAutoDisconnect(0);
       } else if (state === 'disconnected') {
-        this.stopReceiverHintRefresh();
         this.scheduleAutoDisconnect(5000);
       }
     };
@@ -761,7 +727,6 @@ export class WebRtcClient {
     if (this.disconnecting) return;
     this.disconnecting = true;
     this.clearAutoDisconnectTimer();
-    this.stopReceiverHintRefresh();
     if (this.statsTimer) {
       window.clearTimeout(this.statsTimer);
       this.statsTimer = undefined;
@@ -807,26 +772,6 @@ export class WebRtcClient {
     this.statsFastUntilMs = undefined;
     this.statsConnectedAtMs = undefined;
     this.disconnecting = false;
-  }
-
-  private startReceiverHintRefresh(): void {
-    if (this.receiverHintTimer) return;
-    this.receiverHintTimer = window.setInterval(() => {
-      if (!this.pc) return;
-      for (const receiver of this.pc.getReceivers()) {
-        if (receiver.track?.kind === 'audio') {
-          applyAudioReceiverHints(receiver, this.audioJitterTargetMs, this.audioPlayoutDelayHintMs);
-        } else if (receiver.track?.kind === 'video') {
-          applyVideoReceiverHints(receiver, this.videoJitterTargetMs);
-        }
-      }
-    }, RECEIVER_HINT_REFRESH_MS);
-  }
-
-  private stopReceiverHintRefresh(): void {
-    if (!this.receiverHintTimer) return;
-    window.clearInterval(this.receiverHintTimer);
-    this.receiverHintTimer = undefined;
   }
 
   setAudioLatencyTargets(targetMs: number, playoutDelayHintMs?: number): void {

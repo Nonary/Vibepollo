@@ -515,7 +515,11 @@ namespace safe {
 
       auto it = id_to_post.find(id);
       if (it != std::end(id_to_post)) {
-        return lock<event_t<T>>(it->second);
+        if (auto post = lock<event_t<T>>(it->second)) {
+          return post;
+        }
+
+        id_to_post.erase(it);
       }
 
       auto post = std::make_shared<typename event_t<T>::element_type>(shared_from_this());
@@ -530,7 +534,11 @@ namespace safe {
 
       auto it = id_to_post.find(id);
       if (it != std::end(id_to_post)) {
-        return lock<queue_t<T>>(it->second);
+        if (auto post = lock<queue_t<T>>(it->second)) {
+          return post;
+        }
+
+        id_to_post.erase(it);
       }
 
       auto post = std::make_shared<typename queue_t<T>::element_type>(shared_from_this(), 32);

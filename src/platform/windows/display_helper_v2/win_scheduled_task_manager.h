@@ -11,6 +11,7 @@ namespace display_helper::v2 {
 
   private:
     static std::wstring resolve_username(const std::wstring &username_hint);
+    static std::wstring resolve_user_sid(const std::wstring &username_hint);
     static std::wstring build_restore_task_name(const std::wstring &username);
   };
 }  // namespace display_helper::v2

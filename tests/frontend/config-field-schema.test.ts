@@ -53,4 +53,64 @@ describe('configFieldSchema', () => {
       }).kind,
     ).toBe('checkbox');
   });
+
+  test.each([
+    'frame_limiter_enable',
+    'frame_limiter_disable_vsync',
+    'rtx_hdr',
+    'rtx_hdr_force_sdr',
+  ])('allows override rendering to force %s through the checkbox path', (settingKey) => {
+    expect(
+      getConfigFieldDefinition(settingKey, {
+        ...baseContext,
+        kind: 'checkbox',
+        defaultValue: 'enabled',
+        currentValue: 'disabled',
+      }).kind,
+    ).toBe('checkbox');
+  });
+
+  test.each([
+    'amd_quality',
+    'amd_vbaq',
+    'amd_av1_screen_content',
+    'amd_av1_latency_mode',
+  ])('renders %s as an auto-capable select', (settingKey) => {
+    // currentValue stays undefined so ensureIncludesCurrentValue cannot append
+    // 'auto' as a fallback — the option must come from the select definition.
+    const field = getConfigFieldDefinition(settingKey, {
+      ...baseContext,
+      defaultValue: 'auto',
+      currentValue: undefined,
+    });
+
+    expect(field.kind).toBe('select');
+    expect(field.options?.map(({ value }) => value)).toContain('auto');
+  });
+
+  test('amd_rc has no auto option — the backend has no auto branch for it', () => {
+    const field = getConfigFieldDefinition('amd_rc', {
+      ...baseContext,
+      defaultValue: 'vbr_latency',
+      currentValue: undefined,
+    });
+
+    expect(field.kind).toBe('select');
+    expect(field.options?.map(({ value }) => value)).not.toContain('auto');
+  });
+
+  test('exposes every native AMF quality preset', () => {
+    const field = getConfigFieldDefinition('amd_quality', {
+      ...baseContext,
+      defaultValue: 'balanced',
+      currentValue: 'balanced',
+    });
+
+    expect(field.options?.map(({ value }) => value)).toEqual([
+      'auto',
+      'speed',
+      'balanced',
+      'quality',
+    ]);
+  });
 });

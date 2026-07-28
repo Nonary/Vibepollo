@@ -27,7 +27,7 @@
             :class="{ active: showSettings }"
           >
             <i class="fas fa-sliders-h"></i>
-            <span>Settings</span>
+            <span>{{ $t('webrtc.session_settings') }}</span>
           </button>
         </div>
       </header>
@@ -50,7 +50,7 @@
             <input
               v-model="searchQuery"
               type="text"
-              :placeholder="$t('webrtc.search_placeholder') || 'Search applications...'"
+              :placeholder="$t('webrtc.search_placeholder')"
               class="search-input"
             />
             <button v-if="searchQuery" @click="searchQuery = ''" class="search-clear">
@@ -62,15 +62,15 @@
         <!-- No apps at all -->
         <div v-if="!appsList.length" class="empty-state">
           <i class="fas fa-gamepad"></i>
-          <h3>No Applications</h3>
-          <p>Add games in the Applications tab to start streaming</p>
+          <h3>{{ $t('webrtc.no_applications') }}</h3>
+          <p>{{ $t('webrtc.no_applications_hint') }}</p>
         </div>
 
         <!-- No search results -->
         <div v-else-if="!filteredApps.length" class="empty-state">
           <i class="fas fa-search"></i>
-          <h3>No Results</h3>
-          <p>No applications match "{{ searchQuery }}"</p>
+          <h3>{{ $t('webrtc.no_results') }}</h3>
+          <p>{{ $t('webrtc.no_applications_match', { query: searchQuery }) }}</p>
         </div>
 
         <template v-else>
@@ -87,7 +87,7 @@
               <div class="game-cover">
                 <img
                   :src="coverUrl(app) || undefined"
-                  :alt="app.name || 'Application'"
+                  :alt="app.name || $t('apps.app_name')"
                   loading="lazy"
                   @load="onCoverLoad(app)"
                   @error="onCoverError(app)"
@@ -101,7 +101,7 @@
                 </div>
               </div>
               <div class="game-meta">
-                <span class="game-name">{{ app.name || '(untitled)' }}</span>
+                <span class="game-name">{{ app.name || $t('webrtc.untitled_application') }}</span>
                 <span class="game-source">{{ appSubtitle(app) }}</span>
               </div>
             </button>
@@ -111,7 +111,7 @@
           <div v-if="appsWithoutCovers.length" class="other-apps-section">
             <h3 class="section-label">
               <i class="fas fa-window-maximize"></i>
-              Other Applications
+              {{ $t('webrtc.other_applications') }}
             </h3>
             <div class="apps-list">
               <button
@@ -126,7 +126,7 @@
                   <i class="fas fa-window-maximize"></i>
                 </div>
                 <div class="app-info">
-                  <span class="app-name">{{ app.name || '(untitled)' }}</span>
+                  <span class="app-name">{{ app.name || $t('webrtc.untitled_application') }}</span>
                   <span class="app-source">{{ appSubtitle(app) }}</span>
                 </div>
                 <div v-if="appNumericId(app) === selectedAppId" class="app-selected-icon">
@@ -149,10 +149,10 @@
         <div class="preview-header" v-if="!isFullscreen">
           <div class="preview-title">
             <i class="fas fa-tv"></i>
-            <span>Stream</span>
+            <span>{{ $t('webrtc.nav') }}</span>
             <span v-if="isConnected" class="live-indicator">
               <span class="live-dot"></span>
-              LIVE
+              {{ $t('sessions.live') }}
             </span>
           </div>
           <div class="preview-controls">
@@ -201,7 +201,7 @@
           <!-- Connecting State -->
           <div v-if="showStartingOverlay" class="connecting-state">
             <div class="spinner"></div>
-            <span>Connecting...</span>
+            <span>{{ $t('webrtc.connecting') }}</span>
           </div>
 
           <!-- Stats Overlay -->
@@ -258,13 +258,13 @@
           </button>
 
           <div class="quick-toggles">
-            <label class="toggle" title="Enable input forwarding">
+            <label class="toggle" :title="$t('webrtc.enable_input_forwarding')">
               <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />
-              <span>Input</span>
+              <span>{{ $t('webrtc.input') }}</span>
             </label>
-            <label class="toggle" title="Show performance overlay">
+            <label class="toggle" :title="$t('webrtc.show_performance_overlay')">
               <n-switch v-model:value="showOverlay" size="small" />
-              <span>Stats</span>
+              <span>{{ $t('navbar.stats') }}</span>
             </label>
           </div>
         </div>
@@ -272,19 +272,19 @@
         <!-- Compact Metrics -->
         <div class="compact-metrics" v-if="isConnected && !isFullscreen && !streamMinimized">
           <div class="metric">
-            <span class="label">Bitrate</span
+            <span class="label">{{ $t('sessions.bitrate') }}</span
             ><span class="value">{{ formatKbps(stats.videoBitrateKbps) }}</span>
           </div>
           <div class="metric">
-            <span class="label">Latency</span
+            <span class="label">{{ $t('webrtc.metric_latency') }}</span
             ><span class="value">{{ formatMs(smoothedLatencyMs) }}</span>
           </div>
           <div class="metric">
-            <span class="label">FPS</span
+            <span class="label">{{ $t('sessions.fps') }}</span
             ><span class="value">{{ displayVideoFps ? displayVideoFps.toFixed(0) : '--' }}</span>
           </div>
           <div class="metric">
-            <span class="label">Dropped</span
+            <span class="label">{{ $t('webrtc.metric_dropped') }}</span
             ><span class="value">{{ stats.videoFramesDropped ?? '--' }}</span>
           </div>
         </div>
@@ -477,12 +477,12 @@
 
           <!-- Advanced Options -->
           <details class="advanced-section">
-            <summary><i class="fas fa-cogs"></i> Advanced Options</summary>
+            <summary><i class="fas fa-cogs"></i> {{ $t('webrtc.advanced_options') }}</summary>
             <div class="advanced-content">
               <div class="setting-group toggle-setting">
                 <div class="toggle-info">
-                  <label class="group-label">Auto Fullscreen</label>
-                  <p class="hint">Enter fullscreen when stream starts</p>
+                  <label class="group-label">{{ $t('webrtc.auto_fullscreen') }}</label>
+                  <p class="hint">{{ $t('webrtc.auto_fullscreen_desc') }}</p>
                 </div>
                 <n-switch v-model:value="autoFullscreen" size="small" />
               </div>
@@ -513,7 +513,14 @@ import { useI18n } from 'vue-i18n';
 import { NTag, NSwitch, NInputNumber, NAlert, useDialog, useMessage } from 'naive-ui';
 import { WebRtcHttpApi } from '@/services/webrtcApi';
 import { WebRtcClient } from '@/utils/webrtc/client';
-import { computeVideoFrameRenderDelayMs, decideLatencyFenceReset } from '@/utils/webrtc/latency';
+import {
+  computeVideoFrameCaptureToDisplayAgeMs,
+  computeVideoFrameRenderDelayMs,
+  decideLatencyFenceReset,
+  selectPreferredVideoLatencySignal,
+  type VideoLatencyControlSource,
+} from '@/utils/webrtc/latency';
+import { toIntlLocale } from '@/utils/intlLocale';
 import {
   applyGamepadFeedback,
   attachInputCapture,
@@ -533,9 +540,17 @@ import { useAppsStore } from '@/stores/apps';
 import { storeToRefs } from 'pinia';
 import type { App } from '@/stores/apps';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const dialog = useDialog();
 const message = useMessage();
+const videoEventTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(toIntlLocale(locale.value), {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }),
+);
 
 // UI State
 const showSettings = ref(false);
@@ -618,9 +633,9 @@ const connectionPillClass = computed(() => {
 });
 
 const connectionStatusLabel = computed(() => {
-  if (isConnected.value) return 'Connected';
-  if (isConnecting.value) return 'Connecting...';
-  return 'Ready';
+  if (isConnected.value) return t('clients.connected');
+  if (isConnecting.value) return t('webrtc.connecting');
+  return t('webrtc.status_ready');
 });
 
 type EncodingOption = { label: string; value: EncodingType };
@@ -655,18 +670,18 @@ const encodingSupport = ref<Record<EncodingType, boolean>>(detectEncodingSupport
 const encodingOptions = computed(() =>
   baseEncodingOptions.map((opt) => {
     const supported = opt.value === 'av1' ? encodingSupport.value[opt.value] : true;
-    const hint = supported ? '' : `${opt.label} may be unsupported by this browser.`;
+    const hint = supported ? '' : t('webrtc.encoding_unsupported_browser', { codec: opt.label });
     return { ...opt, supported, hint };
   }),
 );
 
-const pacingOptions = [
-  { label: 'Latency', value: 'latency' },
-  { label: 'Balanced', value: 'balanced' },
-  { label: 'Smooth', value: 'smoothness' },
-] as const;
+type PacingMode = 'latency' | 'balanced' | 'smoothness';
 
-type PacingMode = (typeof pacingOptions)[number]['value'];
+const pacingOptions = computed(() => [
+  { label: t('webrtc.pacing_latency'), value: 'latency' },
+  { label: t('webrtc.pacing_balanced'), value: 'balanced' },
+  { label: t('webrtc.pacing_smooth'), value: 'smoothness' },
+] as const);
 
 const pacingPresets: Record<PacingMode, { slackMs: number; maxAgeFrames: number }> = {
   latency: { slackMs: 0, maxAgeFrames: 1 },
@@ -718,7 +733,7 @@ const hdrInlineWarning = computed(() => {
   if (!config.hdr) return null;
   if (hdrRuntimeWarning.value) return hdrRuntimeWarning.value;
   if (!hdrCodecAdvertised.value) {
-    return `This browser reports no ${config.encoding.toUpperCase()} decode support. If you get a black screen, switch codecs or disable HDR.`;
+    return t('webrtc.hdr_decode_unsupported', { codec: config.encoding.toUpperCase() });
   }
   return null;
 });
@@ -921,7 +936,7 @@ function coverUrl(app: App): string {
 function appSubtitle(app: App): string {
   if (app['playnite-id']) return 'Playnite';
   if (app['working-dir']) return String(app['working-dir']);
-  return 'Custom';
+  return t('webrtc.app_source_custom');
 }
 
 function appNumericId(app: App): number | null {
@@ -949,9 +964,11 @@ function clearSelection() {
 }
 
 const selectedAppLabel = computed(() => {
-  if (!selectedAppId.value) return 'No app selected';
+  if (!selectedAppId.value) return t('webrtc.no_app_selected');
   const selected = appsList.value.find((app) => appNumericId(app) === selectedAppId.value);
-  return selected?.name ? selected.name : `App ${selectedAppId.value}`;
+  return selected?.name
+    ? selected.name
+    : t('webrtc.app_fallback_name', { id: selectedAppId.value });
 });
 
 const selectedAppName = computed(() => {
@@ -1071,6 +1088,12 @@ const videoFrameMetrics = ref<{
   lastDelayMs?: number;
   avgDelayMs?: number;
   maxDelayMs?: number;
+  lastCaptureToDisplayAgeMs?: number;
+  avgCaptureToDisplayAgeMs?: number;
+  maxCaptureToDisplayAgeMs?: number;
+  lastCaptureToDisplayDriftMs?: number;
+  avgCaptureToDisplayDriftMs?: number;
+  lastCaptureToDisplaySampleAtMs?: number;
 }>({});
 
 const videoPacingMetrics = ref<{
@@ -1100,6 +1123,9 @@ type DiagnosticsSample = {
   presentedDelta?: number | null;
   renderIntervalMs?: number;
   renderDelayMs?: number;
+  captureToDisplayAgeMs?: number;
+  captureToDisplayDriftMs?: number;
+  latencyControlSource?: VideoLatencyControlSource;
   fpsReceived?: number;
   fpsDecoded?: number;
   framesDropped?: number;
@@ -1148,6 +1174,29 @@ const renderIntervalMs = computed(
   () => videoFrameMetrics.value.lastIntervalMs ?? videoFrameMetrics.value.avgIntervalMs,
 );
 
+const CAPTURE_TO_DISPLAY_SIGNAL_MAX_AGE_MS = 2000;
+const VIDEO_FRAME_METRICS_PUBLISH_INTERVAL_MS = 100;
+
+function currentCaptureToDisplayFreshness(): { ageMs: number; driftMs: number } | undefined {
+  const { lastCaptureToDisplayAgeMs, lastCaptureToDisplayDriftMs, lastCaptureToDisplaySampleAtMs } =
+    videoFrameMetrics.value;
+  if (
+    typeof lastCaptureToDisplayAgeMs !== 'number' ||
+    !Number.isFinite(lastCaptureToDisplayAgeMs) ||
+    typeof lastCaptureToDisplayDriftMs !== 'number' ||
+    !Number.isFinite(lastCaptureToDisplayDriftMs) ||
+    typeof lastCaptureToDisplaySampleAtMs !== 'number' ||
+    !Number.isFinite(lastCaptureToDisplaySampleAtMs)
+  ) {
+    return undefined;
+  }
+
+  if (performance.now() - lastCaptureToDisplaySampleAtMs > CAPTURE_TO_DISPLAY_SIGNAL_MAX_AGE_MS) {
+    return undefined;
+  }
+  return { ageMs: lastCaptureToDisplayAgeMs, driftMs: lastCaptureToDisplayDriftMs };
+}
+
 const LATENCY_SAMPLE_WINDOW_MS = 30000;
 const LATENCY_SMOOTH_TAU_MS = 2000;
 const LATENCY_FAST_TAU_MS = 300;
@@ -1164,6 +1213,10 @@ const oneWayRttMs = computed(() =>
 const videoPlayoutDelayMs = computed(
   () => stats.value.videoPlayoutDelayMs ?? stats.value.videoJitterBufferMs,
 );
+const videoLatencySignal = computed(() => {
+  const freshness = currentCaptureToDisplayFreshness();
+  return selectPreferredVideoLatencySignal(freshness?.driftMs, videoPlayoutDelayMs.value);
+});
 const smoothedVideoFps = ref<number | undefined>(undefined);
 let lastVideoFpsSampleAt: number | null = null;
 
@@ -1177,6 +1230,8 @@ const displayVideoFps = computed(
 );
 
 const estimatedLatencyMs = computed(() => {
+  const freshness = currentCaptureToDisplayFreshness();
+  if (freshness) return freshness.ageMs;
   const parts = [oneWayRttMs.value, videoPlayoutDelayMs.value, stats.value.videoDecodeMs].filter(
     (value) => typeof value === 'number',
   ) as number[];
@@ -1242,9 +1297,9 @@ const overlayLines = computed(() => {
   const dropped = stats.value.videoFramesDropped ?? '--';
   const codec = stats.value.videoCodec ?? '--';
   return [
-    `FPS: ${fps} | Bitrate: ${bitrate}`,
-    `Latency: ${latency} | Dropped: ${dropped}`,
-    `Codec: ${codec} | Size: ${videoSizeLabel.value}`,
+    t('webrtc.stats_fps_bitrate', { fps, bitrate }),
+    t('webrtc.stats_latency_dropped', { latency, dropped }),
+    t('webrtc.stats_codec_size', { codec, size: videoSizeLabel.value }),
   ];
 });
 
@@ -1278,12 +1333,16 @@ const AUDIO_BUFFER_RESET_SUSTAIN_MS = 3000;
 const AUDIO_BUFFER_RESET_COOLDOWN_MS = 15000;
 const VIDEO_BUFFER_RESET_THRESHOLD_MS = 140;
 const VIDEO_RENDER_RESET_THRESHOLD_MS = 100;
-const VIDEO_INTERVAL_RESET_THRESHOLD_MS = 100;
 const VIDEO_BUFFER_RESET_FRAME_MARGIN = 6;
 const VIDEO_RENDER_RESET_FRAME_MARGIN = 5;
 const VIDEO_BUFFER_RESET_SUSTAIN_MS = 900;
 const VIDEO_RENDER_RESET_SUSTAIN_MS = 900;
 const VIDEO_BUFFER_RESET_COOLDOWN_MS = 4000;
+const VIDEO_LATENCY_RESYNC_COOLDOWN_MS = VIDEO_BUFFER_RESET_COOLDOWN_MS;
+// Capture-to-display age includes normal encode and network delay. Track its
+// low-water mark, allowing it to rise only gradually, so controls react to
+// browser queue growth instead of a stable network baseline.
+const CAPTURE_TO_DISPLAY_BASELINE_RISE_MS_PER_SEC = 10;
 type VideoLatencyProfile = {
   drainSustainMs: number;
   drainReleaseSustainMs: number;
@@ -1294,9 +1353,6 @@ type VideoLatencyProfile = {
   riseLimitMultiplier: number;
   riseLimitMinMs: number;
   drainFrameReduction: number;
-  playbackRateMax: number;
-  playbackRateBoostMax: number;
-  playbackRateDecayPerSec: number;
   targetFallRateMsPerSec: number;
   targetRiseRateMsPerSec: number;
   startupTargetMs: number;
@@ -1308,20 +1364,10 @@ type VideoLatencyProfile = {
   runawayResetFrameMargin?: number;
 };
 
-function isSafariBrowser(): boolean {
-  try {
-    const ua = navigator.userAgent ?? '';
-    const vendor = navigator.vendor ?? '';
-    if (!/\bsafari\//i.test(ua)) return false;
-    if (!/apple/i.test(vendor)) return false;
-    if (/\b(chrome|chromium|crios|fxios|edgios|edg|opr|opera)\b/i.test(ua)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const DEFAULT_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
+// Keep the control policy capability- and measurement-driven. Browser-specific
+// timing profiles make a latency recovery depend on UA detection instead of
+// the actual displayed-frame freshness.
+const videoLatencyProfile: VideoLatencyProfile = {
   drainSustainMs: 350,
   drainReleaseSustainMs: 800,
   startupDrainMs: 20000,
@@ -1331,9 +1377,6 @@ const DEFAULT_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
   riseLimitMultiplier: 1.5,
   riseLimitMinMs: 8,
   drainFrameReduction: 0.5,
-  playbackRateMax: 1.12,
-  playbackRateBoostMax: 1.2,
-  playbackRateDecayPerSec: 0.12,
   targetFallRateMsPerSec: Number.POSITIVE_INFINITY,
   targetRiseRateMsPerSec: Number.POSITIVE_INFINITY,
   startupTargetMs: 0,
@@ -1344,35 +1387,6 @@ const DEFAULT_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
   runawayResetSustainMs: 900,
   runawayResetFrameMargin: 10,
 };
-
-const SAFARI_VIDEO_LATENCY_PROFILE: VideoLatencyProfile = {
-  drainSustainMs: 180,
-  drainReleaseSustainMs: 550,
-  startupDrainMs: 25000,
-  startupReleaseSustainMs: 1400,
-  modeSwitchDrainMs: 9000,
-  riseGuardMs: 10000,
-  riseLimitMultiplier: 1.1,
-  riseLimitMinMs: 6,
-  drainFrameReduction: 1.0,
-  playbackRateMax: 1.16,
-  playbackRateBoostMax: 1.24,
-  playbackRateDecayPerSec: 0.15,
-  targetFallRateMsPerSec: 240,
-  targetRiseRateMsPerSec: 80,
-  startupTargetMs: 0,
-  runawayDrainTriggerMs: 80,
-  runawayDrainSustainMs: 250,
-  runawayDrainWindowMs: 12000,
-  runawayResetThresholdMs: 160,
-  runawayResetSustainMs: 1500,
-  runawayResetFrameMargin: 8,
-};
-
-const safariLatencyTuningEnabled = isSafariBrowser();
-const videoLatencyProfile: VideoLatencyProfile = safariLatencyTuningEnabled
-  ? SAFARI_VIDEO_LATENCY_PROFILE
-  : DEFAULT_VIDEO_LATENCY_PROFILE;
 let audioDrainOverloadedSince: number | null = null;
 let audioDrainReleaseSince: number | null = null;
 let audioDrainActive = false;
@@ -1391,11 +1405,40 @@ let effectiveVideoTargetMs: number | undefined = undefined;
 let lastVideoTargetAdjustAt: number | null = null;
 let videoStartupDrainUntil: number | null = null;
 let videoStartupDrainReleaseSince: number | null = null;
-let lastVideoPlayoutSample: { ts: number; value: number } | null = null;
-let lastPlaybackRateUpdateAt: number | null = null;
-let modeSwitchDrainUntil: number | null = null;
+let lastVideoLatencySample: {
+  ts: number;
+  value: number;
+  source: VideoLatencyControlSource;
+} | null = null;
 let videoRunawayDrainSince: number | null = null;
 let videoRunawayDrainLatched = false;
+let videoCaptureToDisplayBaselineMs: number | null = null;
+let lastVideoCaptureToDisplaySampleAtMs: number | null = null;
+let lastVideoLatencyResyncAt: number | null = null;
+let lastVideoPacingMetricsPublishedAtMs: number | null = null;
+
+function resetVideoCaptureToDisplayFreshness(): void {
+  videoCaptureToDisplayBaselineMs = null;
+  lastVideoCaptureToDisplaySampleAtMs = null;
+}
+
+function updateVideoCaptureToDisplayDrift(ageMs: number, nowMs: number): number {
+  if (videoCaptureToDisplayBaselineMs == null) {
+    videoCaptureToDisplayBaselineMs = ageMs;
+  } else if (ageMs <= videoCaptureToDisplayBaselineMs) {
+    videoCaptureToDisplayBaselineMs = ageMs;
+  } else {
+    const previousAt = lastVideoCaptureToDisplaySampleAtMs ?? nowMs;
+    const elapsedMs = Math.max(0, nowMs - previousAt);
+    const maxBaselineIncrease = (CAPTURE_TO_DISPLAY_BASELINE_RISE_MS_PER_SEC * elapsedMs) / 1000;
+    videoCaptureToDisplayBaselineMs = Math.min(
+      ageMs,
+      videoCaptureToDisplayBaselineMs + maxBaselineIncrease,
+    );
+  }
+  lastVideoCaptureToDisplaySampleAtMs = nowMs;
+  return Math.max(0, ageMs - videoCaptureToDisplayBaselineMs);
+}
 
 function setAudioDrainActive(active: boolean): void {
   if (audioDrainActive === active) return;
@@ -1520,9 +1563,10 @@ function resetVideoDrainState(): void {
   videoRunawayOverloadedSince = null;
   videoStartupDrainUntil = null;
   videoStartupDrainReleaseSince = null;
-  lastVideoPlayoutSample = null;
+  lastVideoLatencySample = null;
   videoRunawayDrainSince = null;
   videoRunawayDrainLatched = false;
+  resetVideoCaptureToDisplayFreshness();
   const baseTargetMs = resolveVideoBaseTargetMs();
   setVideoDrainMode('off', baseTargetMs);
 }
@@ -1553,9 +1597,26 @@ function resetVideoLatencyFenceState(): void {
   videoBufferOverloadedSince = null;
   videoRenderOverloadedSince = null;
   videoRunawayOverloadedSince = null;
+  lastVideoLatencySample = null;
+  resetVideoCaptureToDisplayFreshness();
+}
+
+function requestVideoLatencyResync(): void {
+  if (!isConnected.value || client.inputChannelState !== 'open') return;
+  const now = Date.now();
+  if (
+    lastVideoLatencyResyncAt != null &&
+    now - lastVideoLatencyResyncAt < VIDEO_LATENCY_RESYNC_COOLDOWN_MS
+  ) {
+    return;
+  }
+  if (!client.sendInput(JSON.stringify({ type: 'latency_resync' }))) return;
+  lastVideoLatencyResyncAt = now;
+  pushVideoEvent('video-latency-resync');
 }
 
 function handleVideoLatencyReset(label: string, drainReason: string): void {
+  requestVideoLatencyResync();
   resetVideoLatencyFenceState();
   pushVideoEvent(label);
   resetVideoElement();
@@ -1563,18 +1624,6 @@ function handleVideoLatencyReset(label: string, drainReason: string): void {
     videoLatencyProfile.runawayDrainWindowMs ?? videoLatencyProfile.modeSwitchDrainMs,
     drainReason,
   );
-}
-
-function setVideoPlaybackRate(rate: number): void {
-  const el = videoEl.value;
-  if (!el) return;
-  const clamped = Math.max(1, Math.min(videoLatencyProfile.playbackRateBoostMax, rate));
-  if (Math.abs((el.playbackRate ?? 1) - clamped) < 0.001) return;
-  try {
-    el.playbackRate = clamped;
-  } catch {
-    /* ignore */
-  }
 }
 
 watch(
@@ -1631,13 +1680,15 @@ watch(
 );
 
 watch(
-  () => videoPlayoutDelayMs.value,
-  (videoValue) => {
+  () => [videoLatencySignal.value?.valueMs, videoLatencySignal.value?.source] as const,
+  ([videoValue, videoSource]) => {
     if (!isConnected.value || !isTabActive()) {
       resetVideoDrainState();
       return;
     }
-    if (typeof videoValue !== 'number' || !Number.isFinite(videoValue)) return;
+    if (typeof videoValue !== 'number' || !Number.isFinite(videoValue) || videoSource == null) {
+      return;
+    }
     const now = Date.now();
     const baseTargetMs = resolveVideoBaseTargetMs();
     const fps = typeof config.fps === 'number' && Number.isFinite(config.fps) ? config.fps : 60;
@@ -1691,9 +1742,9 @@ watch(
         return;
       }
     }
-    if (lastVideoPlayoutSample) {
-      const deltaMs = now - lastVideoPlayoutSample.ts;
-      const deltaValue = videoValue - lastVideoPlayoutSample.value;
+    if (lastVideoLatencySample?.source === videoSource) {
+      const deltaMs = now - lastVideoLatencySample.ts;
+      const deltaValue = videoValue - lastVideoLatencySample.value;
       if (deltaMs > 0 && deltaValue > 0) {
         const riseRate = (deltaValue * 1000) / deltaMs;
         const riseLimit = Math.max(
@@ -1708,40 +1759,8 @@ watch(
         }
       }
     }
-    lastVideoPlayoutSample = { ts: now, value: videoValue };
+    lastVideoLatencySample = { ts: now, value: videoValue, source: videoSource };
 
-    if (videoEl.value) {
-      const lastAt = lastPlaybackRateUpdateAt ?? now;
-      const deltaMs = Math.max(0, now - lastAt);
-      lastPlaybackRateUpdateAt = now;
-
-      const errorMs = Math.max(0, videoValue - (baseTargetMs + frameMs));
-      const boostActive = modeSwitchDrainUntil != null && now <= modeSwitchDrainUntil;
-      if (boostActive) {
-        const boosted =
-          1 +
-          Math.min(
-            videoLatencyProfile.playbackRateBoostMax - 1,
-            errorMs / Math.max(1, frameMs * 6),
-          );
-        setVideoPlaybackRate(
-          Math.min(videoLatencyProfile.playbackRateBoostMax, Math.max(1, boosted)),
-        );
-      } else if (errorMs > 0) {
-        const desired =
-          1 +
-          Math.min(videoLatencyProfile.playbackRateMax - 1, errorMs / Math.max(1, frameMs * 10));
-        setVideoPlaybackRate(Math.min(videoLatencyProfile.playbackRateMax, Math.max(1, desired)));
-      } else {
-        const current = videoEl.value.playbackRate ?? 1;
-        if (current > 1 && deltaMs > 0) {
-          const decay = (videoLatencyProfile.playbackRateDecayPerSec * deltaMs) / 1000;
-          setVideoPlaybackRate(Math.max(1, current - decay));
-        } else {
-          setVideoPlaybackRate(1);
-        }
-      }
-    }
     if (videoStartupDrainUntil != null) {
       if (now > videoStartupDrainUntil) {
         videoStartupDrainUntil = null;
@@ -1799,8 +1818,13 @@ watch(
 );
 
 watch(
-  () => [videoPlayoutDelayMs.value, renderDelayMs.value, renderIntervalMs.value] as const,
-  ([videoValue, delayValue, intervalValue]) => {
+  () =>
+    [
+      videoLatencySignal.value?.valueMs,
+      videoLatencySignal.value?.source,
+      renderDelayMs.value,
+    ] as const,
+  ([videoValue, , delayValue]) => {
     if (!isConnected.value || !isTabActive()) {
       videoBufferOverloadedSince = null;
       videoRenderOverloadedSince = null;
@@ -1838,28 +1862,20 @@ watch(
       frameMs,
       VIDEO_RENDER_RESET_FRAME_MARGIN,
     );
-    const intervalThresholdMs = resolveFrameBoundedThresholdMs(
-      VIDEO_INTERVAL_RESET_THRESHOLD_MS,
-      baseTargetMs,
-      frameMs,
-      VIDEO_RENDER_RESET_FRAME_MARGIN,
-    );
+    // rVFC callback spacing describes the cadence of newly presented frames,
+    // not how late a frame reached the compositor. Dynamic encoders can
+    // intentionally produce fewer frames than the requested FPS, so use only
+    // actual render lateness for this fence. Interval metrics remain available
+    // for diagnostics.
     const renderLagValue =
       typeof delayValue === 'number' &&
       Number.isFinite(delayValue) &&
       delayValue >= renderThresholdMs
         ? delayValue
-        : typeof intervalValue === 'number' &&
-            Number.isFinite(intervalValue) &&
-            intervalValue >= intervalThresholdMs
-          ? intervalValue
-          : undefined;
+        : undefined;
     const renderDecision = decideLatencyFenceReset({
       valueMs: renderLagValue,
-      thresholdMs:
-        renderLagValue === intervalValue && renderLagValue !== delayValue
-          ? intervalThresholdMs
-          : renderThresholdMs,
+      thresholdMs: renderThresholdMs,
       sustainMs: VIDEO_RENDER_RESET_SUSTAIN_MS,
       cooldownMs: VIDEO_BUFFER_RESET_COOLDOWN_MS,
       overloadedSinceMs: videoRenderOverloadedSince,
@@ -1943,12 +1959,20 @@ function startDiagnosticsSampling(): void {
   diagnosticsSampleTimer = window.setInterval(() => {
     if (!isConnected.value) return;
     const now = Date.now();
+    const freshness = currentCaptureToDisplayFreshness();
+    const latencySignal = selectPreferredVideoLatencySignal(
+      freshness?.driftMs,
+      videoPlayoutDelayMs.value,
+    );
     const sample: DiagnosticsSample = {
       ts: now,
       pacingDtMs: videoPacingMetrics.value.dtMs ?? null,
       presentedDelta: videoPacingMetrics.value.presentedDelta ?? null,
       renderIntervalMs: renderIntervalMs.value,
       renderDelayMs: renderDelayMs.value,
+      captureToDisplayAgeMs: freshness?.ageMs,
+      captureToDisplayDriftMs: freshness?.driftMs,
+      latencyControlSource: latencySignal?.source,
       fpsReceived: inboundVideoStats.value.fpsReceived,
       fpsDecoded: inboundVideoStats.value.fpsDecoded,
       framesDropped: inboundVideoStats.value.framesDropped,
@@ -2190,7 +2214,6 @@ const onFullscreenChange = () => {
     cancelEscHold();
     releaseFullscreenKeyboardLock();
   }
-  modeSwitchDrainUntil = Date.now() + videoLatencyProfile.modeSwitchDrainMs;
   triggerVideoDrainWindow(videoLatencyProfile.modeSwitchDrainMs, 'fullscreen');
   ensureAudioPlayback('fullscreen');
 };
@@ -2209,7 +2232,6 @@ const onPageHide = () => {
 
 const onVisibilityChange = () => {
   if (document.visibilityState === 'visible') {
-    modeSwitchDrainUntil = Date.now() + videoLatencyProfile.modeSwitchDrainMs;
     triggerVideoDrainWindow(videoLatencyProfile.modeSwitchDrainMs, 'resume');
   }
   ensureAudioPlayback('visibility');
@@ -2286,7 +2308,7 @@ function displayValue(value: unknown): string {
 }
 
 function pushVideoEvent(label: string): void {
-  const stamp = new Date().toLocaleTimeString();
+  const stamp = videoEventTimeFormatter.value.format(new Date());
   videoEvents.value = [`${stamp} ${label}`, ...videoEvents.value].slice(0, 8);
   videoStateTick.value += 1;
 }
@@ -2329,8 +2351,7 @@ function resetVideoElement(): void {
 
   videoFrameMetrics.value = {};
   videoPacingMetrics.value = {};
-  lastPlaybackRateUpdateAt = null;
-
+  lastVideoPacingMetricsPublishedAtMs = null;
   try {
     el.pause();
   } catch {
@@ -2423,15 +2444,34 @@ function attachVideoDebug(el: HTMLVideoElement): () => void {
 function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
   const intervalSamples: number[] = [];
   const delaySamples: number[] = [];
+  const captureToDisplayAgeSamples: number[] = [];
+  const captureToDisplayDriftSamples: number[] = [];
   const maxSamples = 120;
   let lastTs: number | null = null;
+  let lastMetricsPublishedAtMs: number | null = null;
 
-  if ('requestVideoFrameCallback' in el) {
+  const publishMetrics = (metrics: typeof videoFrameMetrics.value, now: number, force = false) => {
+    if (
+      !force &&
+      lastMetricsPublishedAtMs != null &&
+      now - lastMetricsPublishedAtMs < VIDEO_FRAME_METRICS_PUBLISH_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastMetricsPublishedAtMs = now;
+    videoFrameMetrics.value = metrics;
+  };
+
+  if (typeof el.requestVideoFrameCallback === 'function') {
     let handle = 0;
     const cb = (now: number, meta: VideoFrameCallbackMetadata) => {
       const interval = lastTs != null ? now - lastTs : null;
       lastTs = now;
       const delay = computeVideoFrameRenderDelayMs(now, meta.expectedDisplayTime);
+      const captureToDisplayAge = computeVideoFrameCaptureToDisplayAgeMs(
+        (meta as { captureTime?: unknown }).captureTime,
+        meta.expectedDisplayTime,
+      );
       const nextMetrics = { ...videoFrameMetrics.value };
       if (interval != null) {
         intervalSamples.push(interval);
@@ -2459,8 +2499,47 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
           maxDelayMs: sortedDelay[sortedDelay.length - 1],
         });
       }
-      if (interval != null || delay != null) {
-        videoFrameMetrics.value = nextMetrics;
+      if (captureToDisplayAge != null) {
+        const captureToDisplayDrift = updateVideoCaptureToDisplayDrift(captureToDisplayAge, now);
+        captureToDisplayAgeSamples.push(captureToDisplayAge);
+        captureToDisplayDriftSamples.push(captureToDisplayDrift);
+        if (captureToDisplayAgeSamples.length > maxSamples) captureToDisplayAgeSamples.shift();
+        if (captureToDisplayDriftSamples.length > maxSamples) captureToDisplayDriftSamples.shift();
+        Object.assign(nextMetrics, {
+          lastCaptureToDisplayAgeMs: captureToDisplayAge,
+          avgCaptureToDisplayAgeMs:
+            captureToDisplayAgeSamples.reduce((a, b) => a + b, 0) /
+            captureToDisplayAgeSamples.length,
+          maxCaptureToDisplayAgeMs: Math.max(...captureToDisplayAgeSamples),
+          lastCaptureToDisplayDriftMs: captureToDisplayDrift,
+          avgCaptureToDisplayDriftMs:
+            captureToDisplayDriftSamples.reduce((a, b) => a + b, 0) /
+            captureToDisplayDriftSamples.length,
+          lastCaptureToDisplaySampleAtMs: now,
+        });
+      } else {
+        const hadCaptureToDisplayAge =
+          typeof nextMetrics.lastCaptureToDisplayAgeMs === 'number' ||
+          typeof nextMetrics.lastCaptureToDisplayDriftMs === 'number';
+        captureToDisplayAgeSamples.length = 0;
+        captureToDisplayDriftSamples.length = 0;
+        resetVideoCaptureToDisplayFreshness();
+        Object.assign(nextMetrics, {
+          lastCaptureToDisplayAgeMs: undefined,
+          avgCaptureToDisplayAgeMs: undefined,
+          maxCaptureToDisplayAgeMs: undefined,
+          lastCaptureToDisplayDriftMs: undefined,
+          avgCaptureToDisplayDriftMs: undefined,
+          lastCaptureToDisplaySampleAtMs: undefined,
+        });
+        if (interval != null || delay != null) {
+          publishMetrics(nextMetrics, now, hadCaptureToDisplayAge);
+        }
+        handle = el.requestVideoFrameCallback(cb);
+        return;
+      }
+      if (interval != null || delay != null || captureToDisplayAge != null) {
+        publishMetrics(nextMetrics, now);
       }
       handle = el.requestVideoFrameCallback(cb);
     };
@@ -2480,10 +2559,13 @@ function attachVideoFrameMetrics(el: HTMLVideoElement): () => void {
       if (interval != null) {
         intervalSamples.push(interval);
         if (intervalSamples.length > maxSamples) intervalSamples.shift();
-        videoFrameMetrics.value = {
-          lastIntervalMs: interval,
-          avgIntervalMs: intervalSamples.reduce((a, b) => a + b, 0) / intervalSamples.length,
-        };
+        publishMetrics(
+          {
+            lastIntervalMs: interval,
+            avgIntervalMs: intervalSamples.reduce((a, b) => a + b, 0) / intervalSamples.length,
+          },
+          now,
+        );
       }
     }
     rafId = requestAnimationFrame(raf);
@@ -2505,7 +2587,7 @@ function attachVideoPacingProbe(
     rtpTimestamp?: number;
   }) => void,
 ): () => void {
-  if ('requestVideoFrameCallback' in el) {
+  if (typeof el.requestVideoFrameCallback === 'function') {
     let handle = 0;
     let lastNow: number | null = null;
     let lastPresented: number | null = null;
@@ -2771,7 +2853,7 @@ async function startConnect() {
             negotiatedEncoding.value = encoding;
         },
         onWarning: (warning) => {
-          notifyWarning('Configuration Warning', warning);
+          notifyWarning(t('_common.warning'), warning);
           if (config.hdr && /^hdr\b/i.test(warning)) hdrRuntimeWarning.value = warning;
         },
       },
@@ -2780,8 +2862,8 @@ async function startConnect() {
     sessionId.value = id;
     startServerSessionPolling();
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Failed to establish WebRTC session.';
-    notifyError('Connection Failed', msg);
+    const msg = error instanceof Error ? error.message : t('webrtc.connection_start_failed');
+    notifyError(t('webrtc.connection_failed'), msg);
     console.error(error);
     audioAutoplayRequested = false;
     stopAudioPlayRetry();
@@ -2814,6 +2896,7 @@ async function disconnect() {
   inputBufferedAmount.value = null;
   videoFrameMetrics.value = {};
   videoPacingMetrics.value = {};
+  lastVideoPacingMetricsPublishedAtMs = null;
   inboundVideoStats.value = {};
   diagnosticsSamples.value = [];
   stopDiagnosticsSampling();
@@ -2823,8 +2906,6 @@ async function disconnect() {
   }
   smoothedVideoFps.value = undefined;
   lastVideoFpsSampleAt = null;
-  lastPlaybackRateUpdateAt = null;
-  modeSwitchDrainUntil = null;
   detachInputCapture();
   if (videoEl.value) {
     try {
@@ -2851,6 +2932,7 @@ async function disconnect() {
   videoRunawayDrainLatched = false;
   resetVideoLatencyFenceState();
   lastVideoBufferResetAt = null;
+  lastVideoLatencyResyncAt = null;
   sessionId.value = null;
   serverSession.value = null;
   resetServerRates();
@@ -2867,8 +2949,8 @@ async function terminateSession() {
   try {
     await http.post('/api/apps/close', {}, { validateStatus: () => true });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'Failed to terminate session.';
-    notifyError('Termination Failed', msg);
+    const msg = error instanceof Error ? error.message : t('webrtc.termination_failed_desc');
+    notifyError(t('webrtc.termination_failed'), msg);
   } finally {
     await disconnect();
     terminatePending.value = false;
@@ -2981,6 +3063,17 @@ watch(videoEl, (el) => {
   detachVideoEvents = attachVideoDebug(el);
   detachVideoFrames = attachVideoFrameMetrics(el);
   detachVideoPacing = attachVideoPacingProbe(el, (sample) => {
+    const now =
+      typeof sample.now === 'number' && Number.isFinite(sample.now)
+        ? sample.now
+        : performance.now();
+    if (
+      lastVideoPacingMetricsPublishedAtMs != null &&
+      now - lastVideoPacingMetricsPublishedAtMs < VIDEO_FRAME_METRICS_PUBLISH_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastVideoPacingMetricsPublishedAtMs = now;
     videoPacingMetrics.value = sample;
   });
   detachVideoFullscreenEvents = attachVideoFullscreenEvents(el);
@@ -4027,6 +4120,27 @@ watch(
   font-size: 0.6875rem;
   color: var(--text-2);
   cursor: pointer;
+}
+
+@media (max-width: 840px) {
+  .quick-actions {
+    flex-wrap: wrap;
+  }
+
+  .action-btn.primary {
+    min-width: 0;
+  }
+
+  .action-btn.primary span {
+    overflow-wrap: anywhere;
+  }
+
+  .quick-toggles {
+    min-width: 0;
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
 }
 
 /* Compact Metrics */

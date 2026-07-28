@@ -287,12 +287,13 @@ namespace display_device {
 
       // Client display_mode override takes highest priority
       if (session.client_display_mode_override) {
-        const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-        if (target_fps >= 0) {
-          config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
-          BOOST_LOG(debug) << "Using client display mode override for refresh rate: " << target_fps / 1000.0 << " Hz";
+        const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+        if (target_millihz > 0) {
+          config.m_refresh_rate = Rational {target_millihz, 1000u};
+          BOOST_LOG(debug) << "Using client display mode override for refresh rate: "
+                           << (static_cast<double>(target_millihz) / 1000.0) << " Hz";
         } else {
-          BOOST_LOG(error) << "FPS value provided by client display mode override is invalid: " << target_fps;
+          BOOST_LOG(error) << "Refresh value provided by client display mode override is invalid.";
           return false;
         }
         return true;
@@ -301,11 +302,11 @@ namespace display_device {
       switch (video_config.dd.refresh_rate_option) {
         case refresh_rate_option_e::automatic:
           {
-            const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-            if (target_fps >= 0) {
-              config.m_refresh_rate = Rational {static_cast<unsigned int>(target_fps), 1000};
+            const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+            if (target_millihz > 0) {
+              config.m_refresh_rate = Rational {target_millihz, 1000u};
             } else {
-              BOOST_LOG(error) << "FPS value provided by client session config is invalid: " << target_fps;
+              BOOST_LOG(error) << "Refresh value provided by client session config is invalid.";
               return false;
             }
             break;
@@ -354,7 +355,11 @@ namespace display_device {
      */
     std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
-      using hdr_request_override_e = config::video_t::dd_t::hdr_request_override_e;
+
+      if (rtsp_stream::rtx_hdr_enabled(video_config)) {
+        BOOST_LOG(info) << "RTX HDR: enabled for this app; forcing the source display to SDR so Vibepollo does not enable host HDR.";
+        return HdrState::Disabled;
+      }
 
       if (video_config.dd.wa.dummy_plug_hdr10) {
         return HdrState::Enabled;
@@ -362,11 +367,6 @@ namespace display_device {
 
       switch (video_config.dd.hdr_option) {
         case hdr_option_e::automatic:
-          if (rtsp_stream::effective_hdr_requested(session) && config::runtime_config_override_enabled("rtx_hdr") && video_config.rtx_hdr.enabled &&
-              video_config.dd.hdr_request_override == hdr_request_override_e::automatic) {
-            BOOST_LOG(info) << "RTX HDR: app-enabled conversion is active; keeping source display in SDR while the stream remains HDR.";
-            return HdrState::Disabled;
-          }
           return rtsp_stream::effective_hdr_requested(session) ? HdrState::Enabled : HdrState::Disabled;
         case hdr_option_e::disabled:
           break;
@@ -795,11 +795,11 @@ namespace display_device {
       return false;
     }
 
-    const int target_fps = (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) ? *session.framegen_refresh_rate : session.fps;
-    if (target_fps < 0) {
+    const auto target_millihz = rtsp_stream::effective_display_refresh_millihz(session);
+    if (target_millihz == 0) {
       return false;
     }
-    const FloatingPoint requested_fps = Rational {static_cast<unsigned int>(target_fps), 1u};
+    const FloatingPoint requested_fps = Rational {target_millihz, 1000u};
 
     for (const auto &entry : remapping_list) {
       const auto parsed_entry {parse_remapping_entry(entry, *remapping_type)};

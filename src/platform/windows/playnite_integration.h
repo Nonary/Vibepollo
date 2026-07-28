@@ -124,9 +124,10 @@ namespace platf::playnite {
 
   /**
    * @brief Force an immediate Playnite sync (applies auto-sync logic immediately).
+   * @param[in] wait_for_snapshot Wait for a delivered snapshot request before reconciling.
    * @return `true` if the sync was triggered, `false` otherwise.
    */
-  bool force_sync();
+  bool force_sync(bool wait_for_snapshot = true);
 
   /**
    * @brief Retrieve or generate a cover PNG for a Playnite game and return its path.

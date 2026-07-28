@@ -25,20 +25,30 @@ namespace display_helper::v2 {
     EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) override;
     ActiveTopology capture_topology() override;
     bool validate_topology(const ActiveTopology &topology) override;
+    bool validate_topology_for_apply(const ActiveTopology &topology) override;
     Snapshot capture_snapshot() override;
     bool apply_snapshot(const Snapshot &snapshot) override;
+    bool apply_snapshot_settings(const Snapshot &snapshot) override;
     bool snapshot_matches_current(const Snapshot &snapshot) override;
     bool configuration_matches(const SingleDisplayConfiguration &config) override;
+    bool configuration_matches(
+      const SingleDisplayConfiguration &config,
+      const ResolvedConfigurationTarget &target) override;
     bool set_display_origin(const std::string &device_id, const display_device::Point &origin) override;
     std::optional<ActiveTopology> compute_expected_topology(
       const SingleDisplayConfiguration &config,
       const std::optional<ActiveTopology> &base_topology = std::nullopt) override;
+    std::optional<ApplyTopologyPlan> compute_apply_topology_plan(
+      const SingleDisplayConfiguration &config,
+      const std::optional<ActiveTopology> &base_topology = std::nullopt) override;
     bool is_topology_same(const ActiveTopology &lhs, const ActiveTopology &rhs) override;
 
-    // legacy engine capabilities
+    // Staged transition and restore capabilities.
     bool topology_is_valid(const ActiveTopology &topology) override;
-    bool soft_test(const SingleDisplayConfiguration &config, const std::optional<ActiveTopology> &base_topology) override;
     bool recover_display_stack() override;
+    bool prepare_staged_apply(const ActiveTopology &current_topology) override;
+    bool reset_staged_apply_state() override;
+    bool is_primary_device(const std::string &device_id) override;
     codec::layout_rotation_map_t capture_layout_rotations(const std::set<std::string> &device_ids) override;
     bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override;
     bool current_layout_matches(const codec::layout_rotation_map_t &expected) override;
@@ -64,7 +74,9 @@ namespace display_helper::v2 {
     void collect_all_device_ids(std::set<std::string> &out) const;
 
     static std::optional<double> floating_to_double(const display_device::FloatingPoint &value);
-    static bool nearly_equal(double lhs, double rhs);
+    static bool refresh_rates_match(
+      const display_device::FloatingPoint &desired,
+      const display_device::FloatingPoint &actual);
     ApplyStatus map_apply_result(display_device::SettingsManagerInterface::ApplyResult result) const;
 
     mutable std::once_flag init_once_;
@@ -72,5 +84,9 @@ namespace display_helper::v2 {
     mutable std::shared_ptr<display_device::WinApiLayer> win_api_;
     mutable std::shared_ptr<display_device::WinDisplayDevice> display_device_;
     mutable std::unique_ptr<display_device::SettingsManager> settings_manager_;
+    // Non-owning observer; settings_manager_ owns this PersistentState.
+    mutable display_device::PersistentState *settings_state_ = nullptr;
+    mutable std::mutex settings_mutex_;
+    mutable std::optional<display_device::SingleDisplayConfigState::Initial> session_initial_state_;
   };
 }  // namespace display_helper::v2

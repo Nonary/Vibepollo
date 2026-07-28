@@ -3,6 +3,7 @@ import { createI18n, I18n } from 'vue-i18n';
 // Import only the fallback language files
 import en from '@/public/assets/locale/en.json';
 import { http } from '@/http';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 interface LocaleResponse {
   locale?: string;
@@ -16,7 +17,7 @@ export default async function (): Promise<any> {
     .then((r) => (r.status === 200 ? r.data : {}))
     .catch(() => ({}));
   const locale = r.locale ?? 'en';
-  document.querySelector('html')?.setAttribute('lang', locale);
+  document.querySelector('html')?.setAttribute('lang', toIntlLocale(locale) ?? locale);
   const messages: Record<string, MessageSchema> = {
     en,
   };

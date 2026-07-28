@@ -2,6 +2,7 @@
 
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+#include "src/platform/windows/display_helper_v2/staged_settings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,11 +61,67 @@ namespace display_helper::v2 {
       return ApplyStatus::HelperUnavailable;
     }
 
-    // For user-requested APPLY operations, avoid triggering display stack recovery.
-    // Recovery is reserved for REVERT/restore paths where "best effort" repair is desired.
+    std::lock_guard lock(settings_mutex_);
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
-    const auto result = settings_manager_->applySettings(config);
-    return map_apply_result(result);
+    std::optional<display_device::SingleDisplayConfigState> previous_state;
+    bool persistent_state_rebased = false;
+    const auto restore_rebased_persistent_state = [&] {
+      // A staged topology retry may reuse this SettingsManager instance. Its
+      // original primary/mode/HDR baseline must survive every failure path,
+      // including non-std exceptions raised by the display stack.
+      if (persistent_state_rebased && settings_state_ && !settings_state_->persistState(previous_state)) {
+        BOOST_LOG(error) << "Display helper v2: failed to preserve persistent state after settings apply failure.";
+      }
+    };
+    try {
+      const auto current_topology = display_device_->getCurrentTopology();
+      if (!display_device_->isTopologyValid(current_topology)) {
+        return ApplyStatus::VerificationFailed;
+      }
+
+      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+      const auto current_initial = StagedSettingsState::rebased_initial(
+        session_initial_state_,
+        current_topology,
+        devices);
+      if (!current_initial || !settings_state_) {
+        return ApplyStatus::VerificationFailed;
+      }
+
+      // Retain v1's original primary/mode/HDR values across consecutive APPLYs,
+      // but rebase the topology fields onto the result already accepted by the
+      // staged transition. This prevents VerifyOnly from restoring an old layout.
+      previous_state = settings_state_->getState();
+      const auto rebased = StagedSettingsState::rebase(
+        previous_state,
+        *current_initial,
+        current_topology);
+      if (!settings_state_->persistState(rebased)) {
+        return ApplyStatus::Retryable;
+      }
+      persistent_state_rebased = true;
+
+      // EnsurePrimary must remain visible to SettingsManager so it can capture
+      // and later restore the original primary. Other preparation modes become
+      // VerifyOnly because topology activation is already complete.
+      const auto settings_config = StagedSettingsState::settings_configuration(config);
+      const auto result = map_apply_result(settings_manager_->applySettings(settings_config));
+      if (result != ApplyStatus::Ok) {
+        restore_rebased_persistent_state();
+      }
+      return result;
+    } catch (const std::exception &e) {
+      // The staged topology can be retried by the state machine, but retaining
+      // a rebased SettingsManager state after a failed settings mutation would
+      // lose the user's original primary/mode/HDR baseline on the next APPLY.
+      restore_rebased_persistent_state();
+      BOOST_LOG(error) << "Display helper v2: staged settings apply failed: " << e.what();
+      return ApplyStatus::Fatal;
+    } catch (...) {
+      restore_rebased_persistent_state();
+      BOOST_LOG(error) << "Display helper v2: staged settings apply failed.";
+      return ApplyStatus::Fatal;
+    }
   }
 
   ApplyStatus WinDisplaySettings::apply_topology(const ActiveTopology &topology) {
@@ -88,6 +145,9 @@ namespace display_helper::v2 {
       return {};
     }
 
+    // TopologyTransition owns the retry cadence; keep each poll short and
+    // side-effect free instead of letting a query trigger nested recovery.
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
       return display_device_->enumAvailableDevices(detail);
     } catch (...) {
@@ -100,6 +160,7 @@ namespace display_helper::v2 {
       return {};
     }
 
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
       return display_device_->getCurrentTopology();
     } catch (...) {
@@ -112,7 +173,33 @@ namespace display_helper::v2 {
       return false;
     }
 
-    return validate_topology_with_os(topology);
+    try {
+      if (!display_device_->isTopologyValid(topology)) {
+        return false;
+      }
+
+      // SDC_VALIDATE is useful diagnostics, but it can return access denied
+      // while Windows is transitioning the desktop after a virtual display is
+      // removed. The snapshot is still structurally valid and must reach the
+      // real apply path, which can recover and retry the display stack.
+      if (!validate_topology_with_os(topology)) {
+        BOOST_LOG(warning) << "Display helper v2: OS topology probe failed; preserving structurally valid restore snapshot for retry.";
+      }
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  bool WinDisplaySettings::validate_topology_for_apply(const ActiveTopology &topology) {
+    if (!ensure_initialized()) {
+      return false;
+    }
+    try {
+      return display_device_->isTopologyValid(topology) && validate_topology_with_os(topology);
+    } catch (...) {
+      return false;
+    }
   }
 
   Snapshot WinDisplaySettings::capture_snapshot() {
@@ -156,6 +243,46 @@ namespace display_helper::v2 {
     return apply_snapshot_with_layouts(snapshot, nullptr);
   }
 
+  bool WinDisplaySettings::apply_snapshot_settings(const Snapshot &snapshot) {
+    if (!ensure_initialized()) {
+      BOOST_LOG(error) << "apply_snapshot_settings: display device not initialized";
+      return false;
+    }
+
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      // Preserve v1's restore order: topology is staged by TopologyTransition,
+      // then modes and HDR are restored before primary/origin changes. Moving
+      // primary first can make Windows reject a saved mode on a waking or
+      // duplicate display, leaving recovery half-applied.
+      if (!snapshot.m_modes.empty() && !display_device_->setDisplayModes(snapshot.m_modes)) {
+        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore display modes";
+        return false;
+      }
+      if (!snapshot.m_hdr_states.empty() && !display_device_->setHdrStates(snapshot.m_hdr_states)) {
+        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore HDR states";
+        return false;
+      }
+      if (!snapshot.m_primary_device.empty() && !display_device_->setAsPrimary(snapshot.m_primary_device)) {
+        BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore primary display";
+        return false;
+      }
+      for (const auto &[device_id, point] : snapshot.m_origins) {
+        if (!display_device_->setDisplayOrigin(device_id, point)) {
+          BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore origin for " << device_id;
+          return false;
+        }
+      }
+      return true;
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "apply_snapshot_settings: exception - " << e.what();
+      return false;
+    } catch (...) {
+      BOOST_LOG(error) << "apply_snapshot_settings: unknown exception";
+      return false;
+    }
+  }
+
   bool WinDisplaySettings::apply_snapshot_with_layouts(const Snapshot &snapshot, const codec::layout_rotation_map_t *layout_rotations) {
     if (!ensure_initialized()) {
       BOOST_LOG(error) << "apply_snapshot: display device not initialized";
@@ -169,17 +296,21 @@ namespace display_helper::v2 {
                     << "\n  primary device: " << (snapshot.m_primary_device.empty() ? "(none)" : snapshot.m_primary_device);
 
     try {
-      (void) display_device_->setTopology(snapshot.m_topology);
-      (void) display_device_->setDisplayModes(snapshot.m_modes);
-      (void) display_device_->setHdrStates(snapshot.m_hdr_states);
-      if (!snapshot.m_primary_device.empty()) {
-        (void) display_device_->setAsPrimary(snapshot.m_primary_device);
+      // Do not suppress failures here. RecoveryOperation treats a failed apply
+      // as retryable; reporting success after Windows rejected every operation
+      // prevented that recovery path from observing the real failure.
+      if (apply_topology(snapshot.m_topology) != ApplyStatus::Ok) {
+        BOOST_LOG(warning) << "apply_snapshot: failed to restore topology";
+        return false;
       }
-      for (const auto &[device_id, point] : snapshot.m_origins) {
-        (void) display_device_->setDisplayOrigin(device_id, point);
+      if (!apply_snapshot_settings(snapshot)) {
+        return false;
       }
       if (layout_rotations && !layout_rotations->empty()) {
-        return apply_layout_rotations(*layout_rotations);
+        if (!apply_layout_rotations(*layout_rotations)) {
+          BOOST_LOG(warning) << "apply_snapshot: failed to restore display rotations";
+          return false;
+        }
       }
       BOOST_LOG(info) << "apply_snapshot: completed";
       return true;
@@ -208,46 +339,76 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::configuration_matches(const SingleDisplayConfiguration &config) {
-    if (!ensure_initialized()) {
-      return false;
-    }
-
     if (config.m_device_id.empty()) {
       return false;
     }
 
+    return configuration_matches(
+      config,
+      ResolvedConfigurationTarget {
+        .kind = DeviceTargetKind::ExplicitDevice,
+        .representative_device_id = config.m_device_id,
+        .duplicate_device_ids = {config.m_device_id},
+      });
+  }
+
+  bool WinDisplaySettings::configuration_matches(
+    const SingleDisplayConfiguration &config,
+    const ResolvedConfigurationTarget &target) {
+    if (!ensure_initialized()) {
+      return false;
+    }
+
+    std::set<std::string> mode_device_ids = target.duplicate_device_ids;
+    if (mode_device_ids.empty() && !target.representative_device_id.empty()) {
+      mode_device_ids.insert(target.representative_device_id);
+    }
+    if (mode_device_ids.empty() && !config.m_device_id.empty()) {
+      mode_device_ids.insert(config.m_device_id);
+    }
+    if (mode_device_ids.empty()) {
+      return false;
+    }
+
+    std::set<std::string> refresh_hdr_device_ids;
+    if (target.kind == DeviceTargetKind::DefaultPrimaryGroup) {
+      refresh_hdr_device_ids = mode_device_ids;
+    } else if (!target.representative_device_id.empty()) {
+      refresh_hdr_device_ids.insert(target.representative_device_id);
+    } else if (!config.m_device_id.empty()) {
+      refresh_hdr_device_ids.insert(config.m_device_id);
+    }
+
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      const std::set<std::string> device_ids {config.m_device_id};
-
       if (config.m_resolution || config.m_refresh_rate) {
-        auto modes = display_device_->getCurrentDisplayModes(device_ids);
-        auto it = modes.find(config.m_device_id);
-        if (it == modes.end()) {
-          return false;
-        }
-
-        const auto &mode = it->second;
-        if (config.m_resolution) {
-          if (mode.m_resolution.m_width != config.m_resolution->m_width ||
-              mode.m_resolution.m_height != config.m_resolution->m_height) {
+        auto modes = display_device_->getCurrentDisplayModes(mode_device_ids);
+        for (const auto &device_id : mode_device_ids) {
+          const auto it = modes.find(device_id);
+          if (it == modes.end()) {
             return false;
           }
-        }
-
-        if (config.m_refresh_rate) {
-          auto desired = floating_to_double(*config.m_refresh_rate);
-          auto actual = floating_to_double(mode.m_refresh_rate);
-          if (!desired || !actual || !nearly_equal(*desired, *actual)) {
+          const auto &mode = it->second;
+          if (config.m_resolution &&
+              (mode.m_resolution.m_width != config.m_resolution->m_width ||
+               mode.m_resolution.m_height != config.m_resolution->m_height)) {
             return false;
+          }
+          if (config.m_refresh_rate && refresh_hdr_device_ids.count(device_id)) {
+            if (!refresh_rates_match(*config.m_refresh_rate, mode.m_refresh_rate)) {
+              return false;
+            }
           }
         }
       }
 
       if (config.m_hdr_state) {
-        auto hdr_states = display_device_->getCurrentHdrStates(device_ids);
-        auto it = hdr_states.find(config.m_device_id);
-        if (it == hdr_states.end() || !it->second || *it->second != *config.m_hdr_state) {
-          return false;
+        auto hdr_states = display_device_->getCurrentHdrStates(refresh_hdr_device_ids);
+        for (const auto &device_id : refresh_hdr_device_ids) {
+          const auto it = hdr_states.find(device_id);
+          if (it == hdr_states.end() || !it->second || *it->second != *config.m_hdr_state) {
+            return false;
+          }
         }
       }
 
@@ -282,35 +443,6 @@ namespace display_helper::v2 {
     }
   }
 
-  bool WinDisplaySettings::soft_test(const SingleDisplayConfiguration &config, const std::optional<ActiveTopology> &base_topology) {
-    if (!ensure_initialized()) {
-      return false;
-    }
-    try {
-      auto topo_before = base_topology.value_or(display_device_->getCurrentTopology());
-      if (!display_device_->isTopologyValid(topo_before)) {
-        return false;
-      }
-      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      auto initial = display_device::win_utils::computeInitialState(std::nullopt, topo_before, devices);
-      if (!initial) {
-        return false;
-      }
-      const auto [new_topology, device_to_configure, additional_devices] = display_device::win_utils::computeNewTopologyAndMetadata(
-        config.m_device_prep,
-        config.m_device_id,
-        *initial
-      );
-
-      if (display_device_->isTopologyTheSame(topo_before, new_topology)) {
-        return true;
-      }
-      return validate_topology_with_os(new_topology);
-    } catch (...) {
-      return false;
-    }
-  }
-
   bool WinDisplaySettings::recover_display_stack() {
     if (!ensure_initialized()) {
       return false;
@@ -318,6 +450,61 @@ namespace display_helper::v2 {
     try {
       win_api_->recoverDisplayStack();
       return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  bool WinDisplaySettings::prepare_staged_apply(const ActiveTopology &current_topology) {
+    if (!ensure_initialized()) {
+      return false;
+    }
+
+    std::lock_guard lock(settings_mutex_);
+    if (session_initial_state_) {
+      return true;
+    }
+
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      if (!display_device_->isTopologyValid(current_topology)) {
+        return false;
+      }
+      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+      auto initial = StagedSettingsState::topology_base(
+        std::nullopt,
+        current_topology,
+        devices);
+      if (!initial) {
+        return false;
+      }
+      session_initial_state_ = std::move(*initial);
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  bool WinDisplaySettings::reset_staged_apply_state() {
+    if (!ensure_initialized()) {
+      return false;
+    }
+
+    std::lock_guard lock(settings_mutex_);
+    if (!settings_manager_->resetPersistence()) {
+      return false;
+    }
+    session_initial_state_.reset();
+    return true;
+  }
+
+  bool WinDisplaySettings::is_primary_device(const std::string &device_id) {
+    if (device_id.empty() || !ensure_initialized()) {
+      return false;
+    }
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      return display_device_->isPrimary(device_id);
     } catch (...) {
       return false;
     }
@@ -392,10 +579,22 @@ namespace display_helper::v2 {
   std::optional<ActiveTopology> WinDisplaySettings::compute_expected_topology(
     const SingleDisplayConfiguration &config,
     const std::optional<ActiveTopology> &base_topology) {
+    auto plan = compute_apply_topology_plan(config, base_topology);
+    if (!plan) {
+      return std::nullopt;
+    }
+    return std::move(plan->topology);
+  }
+
+  std::optional<ApplyTopologyPlan> WinDisplaySettings::compute_apply_topology_plan(
+    const SingleDisplayConfiguration &config,
+    const std::optional<ActiveTopology> &base_topology) {
     if (!ensure_initialized()) {
       return std::nullopt;
     }
 
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    std::lock_guard lock(settings_mutex_);
     try {
       auto topology_before = base_topology.value_or(display_device_->getCurrentTopology());
       if (!display_device_->isTopologyValid(topology_before)) {
@@ -403,7 +602,10 @@ namespace display_helper::v2 {
       }
 
       const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      auto initial = display_device::win_utils::computeInitialState(std::nullopt, topology_before, devices);
+      auto initial = StagedSettingsState::topology_base(
+        session_initial_state_,
+        topology_before,
+        devices);
       if (!initial) {
         return std::nullopt;
       }
@@ -413,7 +615,20 @@ namespace display_helper::v2 {
         config.m_device_id,
         *initial
       );
-      return new_topology;
+      TopologyActivationTarget activation_target;
+      activation_target.kind = config.m_device_id.empty() ?
+                                 DeviceTargetKind::DefaultPrimaryGroup :
+                                 DeviceTargetKind::ExplicitDevice;
+      if (!device_to_configure.empty()) {
+        activation_target.acceptable_device_ids.insert(device_to_configure);
+      }
+      if (activation_target.kind == DeviceTargetKind::DefaultPrimaryGroup) {
+        activation_target.acceptable_device_ids.insert(additional_devices.begin(), additional_devices.end());
+      }
+      return ApplyTopologyPlan {
+        .topology = new_topology,
+        .activation_target = std::move(activation_target),
+      };
     } catch (...) {
       return std::nullopt;
     }
@@ -444,16 +659,20 @@ namespace display_helper::v2 {
       try {
         auto win_api = std::make_shared<display_device::WinApiLayer>();
         auto display = std::make_shared<display_device::WinDisplayDevice>(win_api);
+        auto persistent_state = std::make_unique<display_device::PersistentState>(
+          std::make_shared<display_device::NoopSettingsPersistence>());
+        auto *persistent_state_ptr = persistent_state.get();
         auto settings = std::make_unique<display_device::SettingsManager>(
           display,
           std::make_shared<display_device::NoopAudioContext>(),
-          std::make_unique<display_device::PersistentState>(std::make_shared<display_device::NoopSettingsPersistence>()),
+          std::move(persistent_state),
           display_device::WinWorkarounds {}
         );
 
         win_api_ = std::move(win_api);
         display_device_ = std::move(display);
         settings_manager_ = std::move(settings);
+        settings_state_ = persistent_state_ptr;
         init_state_.store(InitState::Ready, std::memory_order_release);
       } catch (...) {
         BOOST_LOG(error) << "Display helper v2: failed to initialize display settings.";
@@ -469,6 +688,7 @@ namespace display_helper::v2 {
       return false;
     }
 
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     const auto original_data = win_api_->queryDisplayConfig(display_device::QueryType::All);
     if (!original_data) {
       return false;
@@ -530,10 +750,24 @@ namespace display_helper::v2 {
     return static_cast<double>(rat.m_numerator) / static_cast<double>(rat.m_denominator);
   }
 
-  bool WinDisplaySettings::nearly_equal(double lhs, double rhs) {
-    const double diff = std::abs(lhs - rhs);
-    const double scale = std::max({1.0, std::abs(lhs), std::abs(rhs)});
-    return diff <= scale * 1e-4;
+  bool WinDisplaySettings::refresh_rates_match(
+    const display_device::FloatingPoint &desired,
+    const display_device::FloatingPoint &actual
+  ) {
+    const auto *desired_rational = std::get_if<display_device::Rational>(&desired);
+    const auto *actual_rational = std::get_if<display_device::Rational>(&actual);
+    if (desired_rational && actual_rational) {
+      return display_device::win_utils::fuzzyCompareRefreshRates(*desired_rational, *actual_rational);
+    }
+
+    // Production display configurations and active Windows modes are rational,
+    // but retain equivalent semantics for any legacy double-valued caller.
+    constexpr double kRefreshRateToleranceHz = 0.9;
+    const auto desired_value = floating_to_double(desired);
+    const auto actual_value = floating_to_double(actual);
+    return desired_value &&
+           actual_value &&
+           std::abs(*desired_value - *actual_value) <= kRefreshRateToleranceHz;
   }
 
   namespace {

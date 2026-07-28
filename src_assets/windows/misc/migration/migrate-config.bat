@@ -51,7 +51,10 @@ if exist "%OLD_DIR%\covers\" (
         move "%OLD_DIR%\covers" "%NEW_DIR%\"
 
         rem Fix apps.json image path values that point at the old covers directory
-        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -c "(Get-Content '%NEW_DIR%\apps.json').replace('.\/covers\/', '.\/config\/covers\/') | Set-Content '%NEW_DIR%\apps.json'"
+        rem Preserve UTF-8 application names; Windows PowerShell otherwise reads UTF-8 without a BOM as ANSI.
+        rem Only rewrite a file that exists and was read; writing an unread value would leave a
+        rem zero-byte apps.json that hides the legacy file from every later migration.
+        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -c "$appsPath = '%NEW_DIR%\apps.json'; if (Test-Path -LiteralPath $appsPath) { $utf8 = New-Object System.Text.UTF8Encoding($false); $appsJson = [System.IO.File]::ReadAllText($appsPath, $utf8); if ($null -ne $appsJson) { $updatedAppsJson = $appsJson.Replace('.\/covers\/', '.\/config\/covers\/'); [System.IO.File]::WriteAllText($appsPath, $updatedAppsJson, $utf8) } }"
     )
 )
 

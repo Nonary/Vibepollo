@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <fstream>
 #include <future>
 #include <limits>
@@ -300,6 +301,11 @@ namespace nvhttp {
       std::optional<std::string> &pending_output_override
     ) {
 
+      // This routine is the authoritative resolver for normal NVHTTP launch
+      // and resume requests. proc::execute must not later re-enable a virtual
+      // display after a per-app physical output override selected one.
+      launch_session->virtual_display_request_resolved = true;
+
       auto disable_virtual_display_request = [&]() {
         launch_session->virtual_display = false;
         launch_session->virtual_display_failed = false;
@@ -325,10 +331,13 @@ namespace nvhttp {
         config_requests_virtual =
           *launch_session->virtual_display_mode_override != config::video_t::virtual_display_mode_e::disabled;
       }
+      const bool forced_sudavda_virtual_display =
+        config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
       const bool client_requests_virtual = launch_session->client_requests_virtual_display;
       const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
       bool request_virtual_display =
-        launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual;
+        launch_session->virtual_display || config_requests_virtual || client_requests_virtual || session_requests_virtual ||
+        forced_sudavda_virtual_display;
       const auto requested_virtual_display_mode =
         launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       const bool shared_virtual_display_mode =
@@ -341,6 +350,8 @@ namespace nvhttp {
       auto make_framegen_policy = [&](bool uses_virtual_display) {
         return framegen::make_stream_start_policy({
           .fps = launch_session->fps,
+          .fps_scaled = launch_session->fps,
+          .display_refresh_millihz = launch_session->client_display_refresh_millihz,
           .frame_generation_enabled = launch_session->frame_generation_enabled,
           .gen1_framegen_fix = launch_session->gen1_framegen_fix,
           .gen2_framegen_fix = launch_session->gen2_framegen_fix,
@@ -354,7 +365,8 @@ namespace nvhttp {
           .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
         });
       };
-      const auto requested_display_framegen_policy = make_framegen_policy(request_virtual_display);
+      const auto requested_display_framegen_policy =
+        make_framegen_policy(has_app_output_override ? false : request_virtual_display);
       const bool framegen_requires_virtual_display = requested_display_framegen_policy.requires_virtual_display;
       if (framegen_requires_virtual_display) {
         request_virtual_display = true;
@@ -364,6 +376,7 @@ namespace nvhttp {
       auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
         const auto framegen_policy = make_framegen_policy(uses_virtual_display);
         launch_session->framegen_refresh_rate = framegen_policy.framegen_refresh_rate;
+        launch_session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         launch_session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
       BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
@@ -388,11 +401,13 @@ namespace nvhttp {
         return;
       }
 
-      if (has_app_output_override && !client_requests_virtual && !framegen_requires_virtual_display) {
+      bool pinned_virtual_display_mode_disabled = false;
+      if (has_app_output_override && !framegen_requires_virtual_display) {
         request_virtual_display = false;
         disable_virtual_display_request();
         if (!launch_session->virtual_display_mode_override) {
           launch_session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+          pinned_virtual_display_mode_disabled = true;
         }
       }
 
@@ -454,7 +469,7 @@ namespace nvhttp {
       BOOST_LOG(debug) << "request_virtual_display: " << request_virtual_display;
 
       const auto requested_output_name = app_output_override ? *app_output_override : config::get_active_output_name();
-      if (has_app_output_override && !client_requests_virtual) {
+      if (has_app_output_override) {
         request_virtual_display = false;
         disable_virtual_display_request();
       }
@@ -496,10 +511,11 @@ namespace nvhttp {
             return;
           }
 
-          if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+          if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
             proc::initVDisplayDriver();
-            if (proc::vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
-              BOOST_LOG(warning) << "SudaVDA driver unavailable (status=" << static_cast<int>(proc::vDisplayDriverStatus) << "). Continuing with best-effort virtual display creation.";
+            const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
+            if (driver_status != VDISPLAY::DRIVER_STATUS::OK) {
+              BOOST_LOG(warning) << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort virtual display creation.";
             }
           }
           if (!config::video.adapter_name.empty()) {
@@ -587,23 +603,16 @@ namespace nvhttp {
                 *initial_configuration->m_hdr_state == display_device::HdrState::Enabled;
             }
           }
-          uint32_t base_vd_fps = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
-          uint32_t base_vd_fps_millihz = base_vd_fps;
-          if (base_vd_fps_millihz > 0 && base_vd_fps_millihz < 1000u) {
-            base_vd_fps_millihz *= 1000u;
-          }
-          uint32_t vd_fps = 0;
-          if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-            vd_fps = static_cast<uint32_t>(*launch_session->framegen_refresh_rate);
-          } else if (base_vd_fps > 0) {
-            vd_fps = base_vd_fps;
-          } else {
+          const uint32_t base_vd_fps_millihz = launch_session->client_display_refresh_millihz > 0 ?
+                                                     launch_session->client_display_refresh_millihz :
+                                                     framegen::normalize_refresh_millihz(launch_session->fps);
+          uint32_t vd_fps = rtsp_stream::effective_display_refresh_millihz(*launch_session);
+          if (vd_fps == 0) {
             vd_fps = 60000u;
           }
-          if (vd_fps < 1000u) {
-            vd_fps *= 1000u;
-          }
-          const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+          const bool framegen_refresh_active =
+            (launch_session->framegen_refresh_millihz && *launch_session->framegen_refresh_millihz > 0) ||
+            (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0);
           const int refresh_multiplier =
             framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1;
           if (base_vd_fps_millihz > 0 && refresh_multiplier > 1) {
@@ -722,10 +731,44 @@ namespace nvhttp {
             auto recovery_session = std::make_shared<rtsp_stream::launch_session_t>(
               display_helper_integration::helpers::make_display_request_session_snapshot(*launch_session)
             );
-            recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result) {
+            recovery_params.confirmed_active_at_schedule = display_info->confirmed_active;
+            recovery_params.on_recovery_success = [recovery_session](const VDISPLAY::VirtualDisplayCreationResult &result, std::stop_token stop_token) -> std::function<void()> {
+              const auto cancelled = [&] {
+                return stop_token.stop_requested();
+              };
+              std::optional<config::runtime_output_override_lease_t> recovery_output_override_lease;
+              auto clear_recovery_output_override = util::fail_guard([&] {
+                if (recovery_output_override_lease) {
+                  (void) config::clear_runtime_output_name_override_if_lease(*recovery_output_override_lease);
+                }
+              });
+              const auto wait_or_cancel = [&](std::chrono::milliseconds delay) {
+                const auto deadline = std::chrono::steady_clock::now() + delay;
+                while (!cancelled()) {
+                  const auto now = std::chrono::steady_clock::now();
+                  if (now >= deadline) {
+                    return false;
+                  }
+                  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+                  std::this_thread::sleep_for(std::min(std::max(remaining, std::chrono::milliseconds(1)), std::chrono::milliseconds(50)));
+                }
+                return true;
+              };
+
+              if (cancelled()) {
+                return {};
+              }
               if (result.device_id && !result.device_id->empty()) {
                 recovery_session->virtual_display_device_id = *result.device_id;
-                config::set_runtime_output_name_override(recovery_session->virtual_display_device_id);
+                if (cancelled()) {
+                  return {};
+                }
+                recovery_output_override_lease = config::set_runtime_output_name_override_with_lease(
+                  recovery_session->virtual_display_device_id
+                );
+              }
+              if (cancelled()) {
+                return {};
               }
               recovery_session->virtual_display_ready_since = result.ready_since;
               if (recovery_session->virtual_display) {
@@ -738,36 +781,62 @@ namespace nvhttp {
                 bool applied = false;
 
                 for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
-                  (void) display_helper_integration::disarm_pending_restore();
+                  if (cancelled()) {
+                    return {};
+                  }
+                  (void) display_helper_integration::disarm_pending_restore(cancelled);
+                  if (cancelled()) {
+                    return {};
+                  }
 
                   auto request = display_helper_integration::helpers::build_request_from_session(config::video, *recovery_session);
                   if (!request) {
                     BOOST_LOG(warning) << "Virtual display recovery: failed to rebuild display helper request after recreation (attempt "
                                        << attempt << "/" << kMaxApplyAttempts << ").";
-                    std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                    if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                      return {};
+                    }
                     continue;
                   }
 
-                  if (display_helper_integration::apply(*request)) {
+                  if (cancelled()) {
+                    return {};
+                  }
+                  if (display_helper_integration::apply(*request, nullptr, cancelled)) {
                     BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
                     applied = true;
                     break;
                   }
+                  if (cancelled()) {
+                    return {};
+                  }
 
                   BOOST_LOG(warning) << "Virtual display recovery: display helper apply failed after recreation (attempt "
                                      << attempt << "/" << kMaxApplyAttempts << ").";
-                  std::this_thread::sleep_for(std::chrono::milliseconds(250 + (attempt - 1) * 250));
+                  if (wait_or_cancel(std::chrono::milliseconds(250 + (attempt - 1) * 250))) {
+                    return {};
+                  }
                 }
 
-                if (mail::man) {
+                if (!cancelled() && mail::man) {
                   mail::man->event<int>(mail::switch_display)->raise(-1);
+                }
+                if (cancelled()) {
+                  return {};
                 }
                 BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
                                 << (applied ? "." : " (apply did not succeed).");
               }
-
+              std::function<void()> rollback_output_override;
+              if (recovery_output_override_lease) {
+                const auto lease = *recovery_output_override_lease;
+                rollback_output_override = [lease] {
+                  (void) config::clear_runtime_output_name_override_if_lease(lease);
+                };
+              }
+              clear_recovery_output_override.disable();
+              return rollback_output_override;
             };
-
 
             VDISPLAY::schedule_virtual_display_recovery_monitor(recovery_params);
           } else {
@@ -778,14 +847,37 @@ namespace nvhttp {
             launch_session->virtual_display_device_id.clear();
             launch_session->virtual_display_ready_since.reset();
             launch_session->framegen_refresh_rate.reset();
+            launch_session->framegen_refresh_millihz.reset();
             launch_session->framegen_refresh_multiplier = 1;
             BOOST_LOG(warning) << "Virtual display creation failed.";
           }
         };
 
+        // A per-app physical output override must never suppress this fallback:
+        // should_auto_enable_virtual_display() only returns true when no capturable
+        // physical display is active at all, so the pinned output cannot exist and the
+        // session would otherwise land on the generic temporary probe display.
         if (!request_virtual_display && VDISPLAY::should_auto_enable_virtual_display()) {
           BOOST_LOG(info) << "No physical monitors detected. Automatically enabling virtual display.";
           request_virtual_display = true;
+          if (has_app_output_override) {
+            BOOST_LOG(info) << "Dropping unsatisfiable per-app display override '"
+                            << (app_output_override && !app_output_override->empty() ? *app_output_override : std::string {"primary display"})
+                            << "' because no physical display is available.";
+            // Release the pin so capture targets the virtual display created below
+            // instead of an output that does not exist.
+            config::set_runtime_output_name_override(std::nullopt);
+            pending_output_override.reset();
+            app_output_override.reset();
+            has_app_output_override = false;
+            launch_session->output_name_override.reset();
+            if (pinned_virtual_display_mode_disabled) {
+              // Restore the mode this session would have had without the override so
+              // shared/per-client identity stays consistent with virtual_display_stable_id.
+              launch_session->virtual_display_mode_override.reset();
+              pinned_virtual_display_mode_disabled = false;
+            }
+          }
         }
         if (allow_display_changes) {
           apply_framegen_refresh_policy(request_virtual_display);
@@ -979,8 +1071,8 @@ namespace nvhttp {
           named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
           named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
           named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
-          if (named_cert_p->prefer_10bit_sdr.has_value()) {
-            named_cert_node["prefer_10bit_sdr"] = *named_cert_p->prefer_10bit_sdr;
+          if (named_cert_p->prefer_10bit_sdr) {
+            named_cert_node["prefer_10bit_sdr"] = true;
           }
           if (named_cert_p->last_seen.has_value()) {
             named_cert_node["last_seen"] = *named_cert_p->last_seen;
@@ -1139,7 +1231,7 @@ namespace nvhttp {
               named_cert_p->enable_legacy_ordering = true;
               named_cert_p->allow_client_commands = true;
               named_cert_p->always_use_virtual_display = false;
-              named_cert_p->prefer_10bit_sdr.reset();
+              named_cert_p->prefer_10bit_sdr = false;
               client.named_devices.emplace_back(named_cert_p);
             }
           }
@@ -1162,12 +1254,9 @@ namespace nvhttp {
           named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
           named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
           named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
-          if (el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null()) {
-            named_cert_p->prefer_10bit_sdr = util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
-
-          } else {
-            named_cert_p->prefer_10bit_sdr.reset();
-          }
+          named_cert_p->prefer_10bit_sdr =
+            el.contains("prefer_10bit_sdr") && !el["prefer_10bit_sdr"].is_null() &&
+            util::get_non_string_json_value<bool>(el, "prefer_10bit_sdr", false);
           if (el.contains("last_seen") && !el["last_seen"].is_null()) {
             named_cert_p->last_seen = util::get_non_string_json_value<std::int64_t>(el, "last_seen", 0);
           } else {
@@ -1397,6 +1486,7 @@ namespace nvhttp {
       launch_session->frame_generation_enabled = false;
       launch_session->lossless_scaling_framegen = false;
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
@@ -1414,6 +1504,8 @@ namespace nvhttp {
       launch_session->client_uuid = identity_uuid;
       launch_session->client_name = identity_name;
       launch_session->hdr_profile.reset();
+      launch_session->client_display_mode_override = false;
+      launch_session->client_display_refresh_millihz = 0;
       launch_session->client_requests_virtual_display = false;
       launch_session->virtual_display_failed = false;
 
@@ -1473,16 +1565,109 @@ namespace nvhttp {
         std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session->iv));
       }
 
-      std::stringstream mode;
-      if (named_cert_p->display_mode.empty()) {
-        auto mode_str = get_arg(args, "mode", config::video.fallback_mode.c_str());
-        mode = std::stringstream(mode_str);
-        BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] requested to ["sv << mode_str << ']';
-        launch_session->client_display_mode_override = false;
+      struct parsed_display_mode_t {
+        int width = 0;
+        int height = 0;
+        std::uint32_t refresh_millihz = 0;
+      };
+      const auto parse_display_mode = [](const std::string &mode_text) -> std::optional<parsed_display_mode_t> {
+        constexpr std::uint32_t kMinRefreshMillihz = 10'000;
+        constexpr std::uint32_t kMaxRefreshMillihz = 1'000'000;
+        const auto parse_unsigned = [](std::string_view value, std::uint32_t maximum, std::uint32_t &result) {
+          if (value.empty()) {
+            return false;
+          }
+          std::uint64_t parsed = 0;
+          for (const char ch : value) {
+            if (ch < '0' || ch > '9') {
+              return false;
+            }
+            const auto digit = static_cast<std::uint32_t>(ch - '0');
+            if (parsed > (maximum - digit) / 10) {
+              return false;
+            }
+            parsed = parsed * 10 + digit;
+          }
+          result = static_cast<std::uint32_t>(parsed);
+          return true;
+        };
+
+        const auto first_separator = mode_text.find('x');
+        const auto second_separator = first_separator == std::string::npos ? std::string::npos : mode_text.find('x', first_separator + 1);
+        if (first_separator == std::string::npos || second_separator == std::string::npos ||
+            mode_text.find('x', second_separator + 1) != std::string::npos) {
+          return std::nullopt;
+        }
+
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        if (!parse_unsigned(std::string_view(mode_text).substr(0, first_separator), static_cast<std::uint32_t>(std::numeric_limits<int>::max()), width) ||
+            !parse_unsigned(std::string_view(mode_text).substr(first_separator + 1, second_separator - first_separator - 1), static_cast<std::uint32_t>(std::numeric_limits<int>::max()), height)) {
+          return std::nullopt;
+        }
+
+        const std::string_view refresh_text {mode_text.data() + second_separator + 1, mode_text.size() - second_separator - 1};
+        const auto decimal_point = refresh_text.find('.');
+        std::uint32_t refresh_millihz = 0;
+        if (decimal_point == std::string_view::npos) {
+          std::uint32_t raw_refresh = 0;
+          if (!parse_unsigned(refresh_text, kMaxRefreshMillihz, raw_refresh)) {
+            return std::nullopt;
+          }
+          // Vibepollo's legacy mode values at or above 1000 are already millihertz.
+          refresh_millihz = raw_refresh >= 1000 ? raw_refresh : raw_refresh * 1000;
+        } else {
+          if (refresh_text.find('.', decimal_point + 1) != std::string_view::npos) {
+            return std::nullopt;
+          }
+          std::uint32_t whole_hertz = 0;
+          std::uint32_t fractional_millihz = 0;
+          const auto fractional = refresh_text.substr(decimal_point + 1);
+          if (fractional.empty() || fractional.size() > 3 ||
+              !parse_unsigned(refresh_text.substr(0, decimal_point), 1000, whole_hertz) ||
+              !parse_unsigned(fractional, 999, fractional_millihz)) {
+            return std::nullopt;
+          }
+          const auto scale = fractional.size() == 1 ? 100u : fractional.size() == 2 ? 10u : 1u;
+          refresh_millihz = whole_hertz * 1000 + fractional_millihz * scale;
+        }
+
+        if (width == 0 || height == 0 || refresh_millihz < kMinRefreshMillihz || refresh_millihz > kMaxRefreshMillihz) {
+          return std::nullopt;
+        }
+        return parsed_display_mode_t {
+          .width = static_cast<int>(width),
+          .height = static_cast<int>(height),
+          .refresh_millihz = refresh_millihz,
+        };
+      };
+
+      const auto requested_mode_text = get_arg(args, "mode", config::video.fallback_mode.c_str());
+      if (const auto requested_mode = parse_display_mode(requested_mode_text)) {
+        launch_session->width = requested_mode->width;
+        launch_session->height = requested_mode->height;
+        launch_session->fps = static_cast<int>(requested_mode->refresh_millihz);
       } else {
-        mode = std::stringstream(named_cert_p->display_mode);
-        BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] overriden to ["sv << named_cert_p->display_mode << ']';
+        BOOST_LOG(warning) << "Failed to parse requested display mode '" << requested_mode_text << "'; using 1920x1080x60.";
+        launch_session->width = 1920;
+        launch_session->height = 1080;
+        launch_session->fps = 60000;
+      }
+      BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] requested to ["sv << requested_mode_text << ']';
+
+      if (named_cert_p->display_mode.empty()) {
+        launch_session->client_display_mode_override = false;
+      } else if (const auto display_mode = parse_display_mode(named_cert_p->display_mode)) {
+        // The per-client display mode controls the presentation/RTSS rate, but
+        // does not overwrite the client-selected stream cadence.
+        launch_session->width = display_mode->width;
+        launch_session->height = display_mode->height;
         launch_session->client_display_mode_override = true;
+        launch_session->client_display_refresh_millihz = display_mode->refresh_millihz;
+        BOOST_LOG(info) << "Display mode for client ["sv << named_cert_p->name << "] overridden to ["sv << named_cert_p->display_mode << ']';
+      } else {
+        BOOST_LOG(warning) << "Failed to parse client display mode override: " << named_cert_p->display_mode;
+        launch_session->client_display_mode_override = false;
       }
 
       if (!named_cert_p->virtual_display_mode_override.empty()) {
@@ -1499,37 +1684,6 @@ namespace nvhttp {
       if (!named_cert_p->hdr_profile.empty()) {
         launch_session->hdr_profile = named_cert_p->hdr_profile;
       }
-
-
-      // Split mode by the char "x", to populate width/height/fps
-      int x = 0;
-      std::string segment;
-      while (std::getline(mode, segment, 'x')) {
-        if (x == 0) {
-          launch_session->width = atoi(segment.c_str());
-
-        }
-        if (x == 1) {
-          launch_session->height = atoi(segment.c_str());
-        }
-        if (x == 2) {
-          auto fps = atof(segment.c_str());
-          if (fps < 1000) {
-            fps *= 1000;
-          };
-          launch_session->fps = (int) fps;
-          break;
-        }
-        x++;
-      }
-
-      // Parsing have failed or missing components
-      if (x != 2) {
-        launch_session->width = 1920;
-        launch_session->height = 1080;
-        launch_session->fps = 60000;  // 60fps * 1000 denominator
-      }
-
       launch_session->unique_id = get_arg(args, "uniqueid", "unknown");
       launch_session->perm = named_cert_p->perm;
       const auto launch_appid_arg = get_arg(args, "appid", "0");
@@ -1579,7 +1733,7 @@ namespace nvhttp {
             if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
               launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
             }
-            if (!launch_session->output_name_override && app_ctx->output_name_override) {
+            if (app_ctx->output_name_override) {
               launch_session->output_name_override = *app_ctx->output_name_override;
             }
             launch_session->app_metadata = std::move(metadata);
@@ -1589,13 +1743,14 @@ namespace nvhttp {
       }
 
       launch_session->framegen_refresh_rate.reset();
+      launch_session->framegen_refresh_millihz.reset();
       launch_session->framegen_refresh_multiplier = 1;
       launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
       launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
       launch_session->surround_params = (get_arg(args, "surroundParams", ""));
       launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
-      launch_session->prefer_sdr_10bit = named_cert_p->prefer_10bit_sdr.value_or(config::video.prefer_10bit_sdr);
+      launch_session->prefer_sdr_10bit = named_cert_p->prefer_10bit_sdr;
 #ifdef _WIN32
       {
         using override_e = config::video_t::dd_t::hdr_request_override_e;
@@ -2261,7 +2416,7 @@ namespace nvhttp {
 #ifdef _WIN32
         tree.put("root.VirtualDisplayCapable", true);
         if (!!(perm & PERM::_all_actions)) {
-          tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
+          tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
         } else {
           tree.put("root.VirtualDisplayDriverReady", true);
         }
@@ -2348,14 +2503,14 @@ namespace nvhttp {
       response->close_connection_after_response = true;
     }
 
-    std::optional<bool> get_client_prefer_10bit_sdr_override(const std::string &uuid) {
+    bool get_client_prefer_10bit_sdr(const std::string &uuid) {
       std::lock_guard<std::mutex> lock(client_mutex);
       for (auto &named_cert : client_root.named_devices) {
         if (named_cert->uuid == uuid) {
           return named_cert->prefer_10bit_sdr;
         }
       }
-      return std::nullopt;
+      return false;
     }
 
     crypto::named_cert_t *get_named_cert_by_uuid(const std::string &uuid) {
@@ -2392,9 +2547,7 @@ namespace nvhttp {
         named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
         named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
-        if (named_cert->prefer_10bit_sdr.has_value()) {
-          named_cert_node["prefer_10bit_sdr"] = *named_cert->prefer_10bit_sdr;
-        }
+        named_cert_node["prefer_10bit_sdr"] = named_cert->prefer_10bit_sdr;
         if (named_cert->last_seen.has_value()) {
           named_cert_node["last_seen"] = *named_cert->last_seen;
         }
@@ -2809,7 +2962,8 @@ namespace nvhttp {
 
 
       if (request) {
-        const bool applied = display_helper_integration::apply(*request);
+        display_helper_integration::ApplyVerificationTicket verification_ticket;
+        const bool applied = display_helper_integration::apply(*request, &verification_ticket);
         launch_session->display_config_preapplied = applied;
         if (!applied) {
           if (helper_session_available) {
@@ -2819,9 +2973,10 @@ namespace nvhttp {
           auto gate_promise = std::make_shared<std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e>>();
           launch_session->display_helper_gate = gate_promise->get_future().share();
           BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session start).";
-          std::thread([gate_promise]() {
-            constexpr auto kVerificationTimeout = std::chrono::seconds(6);
-            const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
+          std::thread([gate_promise, verification_ticket]() {
+            const auto status = display_helper_integration::wait_for_apply_verification(
+              verification_ticket,
+              display_helper_integration::kApplyVerificationTimeout);
             rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
               rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
             if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
@@ -2959,12 +3114,10 @@ namespace nvhttp {
           }
 
         } else {
-          const auto &apps = proc::proc.get_apps();
-          auto app_iter = std::find_if(apps.begin(), apps.end(), [&appid_str, &appuuid_str](const auto _app) {
-            return _app.id == appid_str || _app.uuid == appuuid_str;
-          });
-
-          if (app_iter == apps.end()) {
+          // Resolve once at the request boundary, then carry that canonical app
+          // through launch. An old artwork-versioned ID is an alias, so looking
+          // it up again by the raw request value would reject valid legacy clients.
+          if (!requested_app) {
             BOOST_LOG(error) << "Couldn't find app with ID ["sv << appid_str << "] or UUID ["sv << appuuid_str << ']';
             tree.put("root.<xmlattr>.status_code", 404);
             tree.put("root.<xmlattr>.status_message", "Cannot find requested application");
@@ -2972,7 +3125,7 @@ namespace nvhttp {
             return;
           }
 
-          if (!app_iter->allow_client_commands) {
+          if (!requested_app->allow_client_commands || !named_cert_p->allow_client_commands) {
             launch_session->client_do_cmds.clear();
             launch_session->client_undo_cmds.clear();
           }
@@ -2980,7 +3133,7 @@ namespace nvhttp {
 #ifdef _WIN32
           rtsp_stream::set_vulkan_hdr_layer_pending_stream(rtsp_stream::effective_hdr_requested(*launch_session));
 #endif
-          auto err = proc::proc.execute(*app_iter, launch_session);
+          auto err = proc::proc.execute(*requested_app, launch_session);
           if (err) {
             tree.put("root.<xmlattr>.status_code", err);
             tree.put(
@@ -3011,7 +3164,7 @@ namespace nvhttp {
       keep_runtime_overrides = true;
       tree.put("root.gamesession", 1);
 #ifdef _WIN32
-      tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
+      tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
 #else
       tree.put("root.VirtualDisplayDriverReady", false);
 #endif
@@ -3087,9 +3240,64 @@ namespace nvhttp {
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
     const bool no_active_sessions = !has_active_or_stopping_stream_session();
+    bool runtime_overrides_reapplied = false;
+    auto previous_runtime_overrides = config::runtime_config_overrides_snapshot();
+    auto runtime_overrides_guard = util::fail_guard([&]() {
+      if (!runtime_overrides_reapplied) {
+        return;
+      }
+      config::set_runtime_config_overrides(std::move(previous_runtime_overrides));
+      if (!has_active_or_stopping_stream_session()) {
+        config::apply_config_now();
+      } else {
+        config::mark_deferred_reload();
+      }
+    });
+
+    if (no_active_sessions) {
+      std::unordered_map<std::string, std::string> overrides;
+      if (auto running_app = proc::proc.resolve_app(current_appid)) {
+        overrides = running_app->config_overrides;
+      }
+
+      auto client_settings = named_cert_p;
+      std::string client_uuid = request_client_identity.uuid;
+      const auto resume_client_uuid = resolve_known_client_uuid_from_launch_id(get_arg(args, "uniqueid", ""));
+      if (client_uuid.empty()) {
+        client_uuid = resume_client_uuid;
+      } else if (!resume_client_uuid.empty() && is_placeholder_client_name(request_client_identity.name)) {
+        BOOST_LOG(warning) << "Ignoring placeholder TLS client identity '" << request_client_identity.name
+                           << "' for runtime overrides; using resume uniqueid " << resume_client_uuid << ".";
+        client_uuid = resume_client_uuid;
+        client_settings = nullptr;
+      }
+      if (!client_settings && !client_uuid.empty()) {
+        client_settings = get_named_cert_by_uuid(client_uuid);
+      }
+      if (client_settings) {
+        for (const auto &[key, value] : client_settings->config_overrides) {
+          overrides.insert_or_assign(key, value);
+        }
+      }
+
+#ifdef _WIN32
+      if (client_settings &&
+          !client_settings->hdr_profile.empty() &&
+          !overrides.contains("rtx_hdr_peak_brightness")) {
+        if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(client_settings->hdr_profile)) {
+          const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
+          overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
+        }
+      }
+#endif
+
+      config::set_runtime_config_overrides(std::move(overrides));
+      config::apply_config_now();
+      runtime_overrides_reapplied = true;
+    }
+
     const bool is_input_only = config::input.enable_input_only_mode && current_appid == proc::input_only_app_id;
     const bool allow_display_changes = config::video.dd.config_revert_on_disconnect && !is_input_only;
-
     if (no_active_sessions && allow_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
     }
@@ -3109,6 +3317,51 @@ namespace nvhttp {
     if (!proc::proc.allow_client_commands || !named_cert_p->allow_client_commands) {
       launch_session->client_do_cmds.clear();
       launch_session->client_undo_cmds.clear();
+    }
+
+    // A resume request carries no appid or appuuid, so make_launch_session() cannot resolve the
+    // app and leaves every per-app setting at its default. Seed them from the app that is still
+    // running, before the display is prepared below. Without this the session silently falls
+    // back to the global output setting on reconnect and ignores the app's display policy.
+    if (launch_session->appid <= 0 && current_appid > 0) {
+      try {
+        if (auto app_ctx = proc::proc.resolve_app(current_appid)) {
+          launch_session->appid = (int) util::from_view(app_ctx->id);
+          launch_session->gen1_framegen_fix = app_ctx->gen1_framegen_fix;
+          launch_session->gen2_framegen_fix = app_ctx->gen2_framegen_fix;
+          launch_session->frame_generation_enabled = app_ctx->frame_generation_enabled;
+          launch_session->lossless_scaling_framegen = app_ctx->lossless_scaling_framegen;
+          launch_session->lossless_scaling_target_fps = app_ctx->lossless_scaling_target_fps;
+          launch_session->lossless_scaling_rtss_limit = app_ctx->lossless_scaling_rtss_limit;
+          launch_session->frame_generation_provider = app_ctx->frame_generation_provider;
+          rtsp_stream::launch_session_t::app_metadata_t metadata;
+          metadata.id = app_ctx->id;
+          metadata.name = app_ctx->name;
+          metadata.virtual_screen = app_ctx->virtual_screen || app_ctx->virtual_display;
+          metadata.has_command = !app_ctx->cmd.empty();
+          metadata.has_playnite = !app_ctx->playnite_id.empty();
+          metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
+          // launch_session->virtual_display is deliberately left alone: the launch path assigns
+          // it from the app and then immediately overwrites it with the request's virtualDisplay
+          // argument and the per-client setting, both of which are already resolved here.
+          if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
+            launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
+          }
+          if (!launch_session->virtual_display_layout_override && app_ctx->virtual_display_layout_override) {
+            launch_session->virtual_display_layout_override = app_ctx->virtual_display_layout_override;
+          }
+          if (!launch_session->dd_config_option_override && app_ctx->dd_config_option_override) {
+            launch_session->dd_config_option_override = app_ctx->dd_config_option_override;
+          }
+          if (app_ctx->output_name_override) {
+            launch_session->output_name_override = *app_ctx->output_name_override;
+          }
+          launch_session->app_metadata = std::move(metadata);
+          BOOST_LOG(debug) << "Resume request carried no app id; applying settings from running app ["sv
+                           << app_ctx->name << "] (id " << app_ctx->id << ")."sv;
+        }
+      } catch (...) {
+      }
     }
 
 #ifdef _WIN32
@@ -3170,7 +3423,8 @@ namespace nvhttp {
         }
 
         if (request) {
-          const bool applied = display_helper_integration::apply(*request);
+          display_helper_integration::ApplyVerificationTicket verification_ticket;
+          const bool applied = display_helper_integration::apply(*request, &verification_ticket);
           if (!applied) {
             if (helper_session_available) {
               BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
@@ -3179,9 +3433,10 @@ namespace nvhttp {
             auto gate_promise = std::make_shared<std::promise<rtsp_stream::launch_session_t::display_helper_gate_status_e>>();
             launch_session->display_helper_gate = gate_promise->get_future().share();
             BOOST_LOG(debug) << "Display helper: gating capture start on helper verification (non-blocking session resume).";
-            std::thread([gate_promise]() {
-              constexpr auto kVerificationTimeout = std::chrono::seconds(6);
-              const auto status = display_helper_integration::wait_for_apply_verification(kVerificationTimeout);
+            std::thread([gate_promise, verification_ticket]() {
+              const auto status = display_helper_integration::wait_for_apply_verification(
+                verification_ticket,
+                display_helper_integration::kApplyVerificationTimeout);
               rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
                 rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
               if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
@@ -3292,7 +3547,7 @@ namespace nvhttp {
 
 #ifdef _WIN32
 
-    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK);
+    tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
 #else
     tree.put("root.VirtualDisplayDriverReady", false);
 #endif
@@ -3302,6 +3557,7 @@ namespace nvhttp {
     virtual_display_teardown_guard.disable();
 #endif
     output_override_guard.disable();
+    runtime_overrides_guard.disable();
     revert_display_configuration = false;
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -3838,6 +4094,45 @@ namespace nvhttp {
     return rtsp_stream::disconnect_client_sessions(uuid);
   }
 
+  bool has_client_uuid(std::string_view uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert->uuid == uuid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool get_client_always_use_virtual_display(const std::string &uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert->uuid == uuid) {
+        return named_cert->always_use_virtual_display;
+      }
+    }
+    return false;
+  }
+
+  std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert->uuid == uuid) {
+        auto overrides = named_cert->config_overrides;
+#ifdef _WIN32
+        if (!named_cert->hdr_profile.empty() && !overrides.contains("rtx_hdr_peak_brightness")) {
+          if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(named_cert->hdr_profile)) {
+            const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
+            overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
+          }
+        }
+#endif
+        return overrides;
+      }
+    }
+    return {};
+  }
+
   void update_session_info(stream::session_t &session, const std::string &name, const crypto::PERM newPerm) {
     stream::session::update_device_info(session, name, newPerm);
   }
@@ -3860,7 +4155,7 @@ namespace nvhttp {
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
-    const std::optional<bool> prefer_10bit_sdr,
+    const bool prefer_10bit_sdr,
     const std::optional<std::string> hdr_profile
   ) {
     if (uuid.empty()) {
@@ -3953,7 +4248,7 @@ namespace nvhttp {
     const bool always_use_virtual_display,
     const std::string &virtual_display_mode,
     const std::string &virtual_display_layout,
-    const std::optional<bool> prefer_10bit_sdr
+    const bool prefer_10bit_sdr
   ) {
     find_and_udpate_session_info(uuid, name, newPerm);
 

@@ -24,12 +24,25 @@ $vulkanLayerJsonPath = Join-Path $vulkanLayerDir 'VkLayer_sunshine_hdr.json'
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
 $script:rebootRequired = $false
+$script:apolloServiceWasRunning = $false
 $script:virtualDisplayBrokerWasRunning = $false
 
 trap {
+    $failure = $_
+    try {
+        Start-VirtualDisplayBrokerIfNeeded
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Unable to restore the virtual display broker after failure: $($_.Exception.Message)"
+    }
+    try {
+        Start-ApolloServiceIfNeeded
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Unable to restore the Apollo service after failure: $($_.Exception.Message)"
+    }
+
     if ($InstallerBestEffort) {
         Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Optional virtual display driver setup did not complete.'
-        Write-Warning "[SunshineVirtualDisplay] Installer best-effort driver action failed: $($_.Exception.Message)"
+        Write-Warning "[SunshineVirtualDisplay] Installer best-effort driver action failed: $($failure.Exception.Message)"
         exit 0
     }
 
@@ -416,30 +429,59 @@ function Remove-CertificateIfPresent {
     }
 }
 
-function Stop-SunshineForDriverInstall {
-    $service = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue
+function Stop-ApolloForDriverInstall {
+    $service = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        $script:apolloServiceWasRunning = $true
+    }
     if ($service -and $service.Status -ne 'Stopped') {
-        Write-Host '[SunshineVirtualDisplay] Stopping Sunshine service before driver replacement.'
-        Stop-Service -Name 'SunshineService' -Force -ErrorAction Stop
+        Write-Host '[SunshineVirtualDisplay] Stopping Apollo service before driver repair.'
+        Stop-Service -Name 'ApolloService' -Force -ErrorAction Stop
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
 
     foreach ($process in @(Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue)) {
-        Write-Host "[SunshineVirtualDisplay] Stopping Sunshine process $($process.Id) before driver replacement."
+        Write-Host "[SunshineVirtualDisplay] Stopping Sunshine process $($process.Id) before driver repair."
         Stop-Process -Id $process.Id -Force -ErrorAction Stop
     }
 }
 
-function Stop-VirtualDisplayBrokerForDriverInstall {
-    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
-    if (-not $service -or $service.Status -eq 'Stopped') {
+function Start-ApolloServiceIfNeeded {
+    if (-not $script:apolloServiceWasRunning) {
         return
     }
 
-    $script:virtualDisplayBrokerWasRunning = $true
-    Write-Host '[SunshineVirtualDisplay] Stopping virtual display broker before driver replacement.'
-    Stop-Service -Name 'SunshineVirtualDisplayBroker' -Force -ErrorAction Stop
-    $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    $service = Get-Service -Name 'ApolloService' -ErrorAction SilentlyContinue
+    if (-not $service) {
+        $script:apolloServiceWasRunning = $false
+        return
+    }
+    if ($service.Status -eq 'Running') {
+        $script:apolloServiceWasRunning = $false
+        return
+    }
+
+    Write-Host '[SunshineVirtualDisplay] Restarting Apollo service after driver repair.'
+    Start-Service -Name 'ApolloService' -ErrorAction Stop
+    $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    $script:apolloServiceWasRunning = $false
+}
+
+function Stop-VirtualDisplayBrokerForDriverInstall {
+    $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq 'Running') {
+        $script:virtualDisplayBrokerWasRunning = $true
+    }
+    if ($service -and $service.Status -ne 'Stopped') {
+        Write-Host '[SunshineVirtualDisplay] Stopping virtual display broker before driver repair.'
+        Stop-Service -Name 'SunshineVirtualDisplayBroker' -Force -ErrorAction Stop
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+
+    foreach ($process in @(Get-Process -Name 'virtualdisplay_broker' -ErrorAction SilentlyContinue)) {
+        Write-Host "[SunshineVirtualDisplay] Stopping stale virtual display broker process $($process.Id)."
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    }
 }
 
 function Start-VirtualDisplayBrokerIfNeeded {
@@ -448,13 +490,19 @@ function Start-VirtualDisplayBrokerIfNeeded {
     }
 
     $service = Get-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction SilentlyContinue
-    if (-not $service -or $service.Status -eq 'Running') {
+    if (-not $service) {
+        $script:virtualDisplayBrokerWasRunning = $false
+        return
+    }
+    if ($service.Status -eq 'Running') {
+        $script:virtualDisplayBrokerWasRunning = $false
         return
     }
 
     Write-Host '[SunshineVirtualDisplay] Starting virtual display broker after driver replacement.'
     Start-Service -Name 'SunshineVirtualDisplayBroker' -ErrorAction Stop
     $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    $script:virtualDisplayBrokerWasRunning = $false
 }
 
 function Stop-SunshineVirtualDisplayDriverHost {
@@ -586,31 +634,137 @@ function Test-DeviceNodePresent {
     return $false
 }
 
+function Add-MatchingDriverPublishedName {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$PublishedNames,
+        [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]]$ExpectedOriginalNames,
+        [string]$PublishedName,
+        [string]$OriginalName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PublishedName) -or [string]::IsNullOrWhiteSpace($OriginalName)) {
+        return
+    }
+
+    $publishedLeaf = [System.IO.Path]::GetFileName($PublishedName.Trim()).ToLowerInvariant()
+    $originalLeaf = [System.IO.Path]::GetFileName($OriginalName.Trim())
+    if (-not $ExpectedOriginalNames.Contains($originalLeaf)) {
+        return
+    }
+
+    # Only names issued by Windows for third-party INF packages are safe to
+    # pass to pnputil /delete-driver. Never accept a path or arbitrary token
+    # from parsed command output.
+    if ($publishedLeaf -notmatch '^oem[0-9]+\.inf$') {
+        Write-Warning "[SunshineVirtualDisplay] Ignoring unsafe published driver name '$PublishedName'."
+        return
+    }
+
+    if (-not $PublishedNames.Contains($publishedLeaf)) {
+        [void]$PublishedNames.Add($publishedLeaf)
+    }
+}
+
+function Get-SunshineDriverPublishedNamesFromInfCache {
+    $publishedNames = [System.Collections.Generic.List[string]]::new()
+    $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
+    $windowsInfRoot = Join-Path $systemRoot 'INF'
+    if (-not (Test-Path -LiteralPath $windowsInfRoot -PathType Container)) {
+        return @()
+    }
+
+    foreach ($publishedInf in @(Get-ChildItem -LiteralPath $windowsInfRoot -File -Filter 'oem*.inf' -ErrorAction SilentlyContinue)) {
+        try {
+            $content = [System.IO.File]::ReadAllText($publishedInf.FullName)
+        } catch {
+            continue
+        }
+
+        # This fallback is intentionally strict: all three package-owned
+        # identifiers must match before an OEM INF can be selected for removal.
+        $matchesClass = $content -match '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$'
+        $matchesCatalog = $content -match '(?im)^\s*CatalogFile(?:\.[^=]+)?\s*=\s*SunshineVirtualDisplayDriver\.cat\s*$'
+        $matchesHardware = $content -match '(?im)^\s*[^;\r\n]+\s*=\s*[^,\r\n]+,\s*Root\\SunshineVirtualDisplay\s*$'
+        if ($matchesClass -and $matchesCatalog -and $matchesHardware) {
+            $publishedName = $publishedInf.Name.ToLowerInvariant()
+            if ($publishedName -match '^oem[0-9]+\.inf$' -and -not $publishedNames.Contains($publishedName)) {
+                [void]$publishedNames.Add($publishedName)
+            }
+        }
+    }
+
+    return @($publishedNames)
+}
+
 function Get-DisplayDriverPublishedNamesByOriginalName {
     param([Parameter(Mandatory = $true)][string[]]$OriginalNames)
 
     $publishedNames = [System.Collections.Generic.List[string]]::new()
-    $output = Invoke-DriverProcessCapture -FilePath $pnputil -ArgumentList @('/enum-drivers', '/class', 'Display')
-    $expectedOriginalNames = @($OriginalNames | ForEach-Object { $_.ToLowerInvariant() })
+    $expectedOriginalNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $OriginalNames) {
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$expectedOriginalNames.Add([System.IO.Path]::GetFileName($name.Trim()))
+        }
+    }
 
-    $publishedName = ''
-    $originalName = ''
-
-    foreach ($line in ($output + '')) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            if ($publishedName -and $expectedOriginalNames.Contains($originalName.ToLowerInvariant())) {
-                $publishedNames.Add($publishedName)
-            }
-
-            $publishedName = ''
-            $originalName = ''
-            continue
+    $machineReadableEnumerationSucceeded = $false
+    try {
+        $xmlOutput = Invoke-DriverProcessCapture -FilePath $pnputil -ArgumentList @('/enum-drivers', '/class', $classGuid, '/format', 'xml')
+        $xmlText = ($xmlOutput | ForEach-Object { [string]$_ }) -join "`n"
+        if ([string]::IsNullOrWhiteSpace($xmlText)) {
+            throw 'pnputil returned empty XML output.'
         }
 
-        if ($line -match '^\s*Published Name\s*:\s*(.+?)\s*$') {
-            $publishedName = $Matches[1]
-        } elseif ($line -match '^\s*Original Name\s*:\s*(.+?)\s*$') {
-            $originalName = $Matches[1]
+        [xml]$document = $xmlText
+        if ($null -eq $document.PnpUtil) {
+            throw 'pnputil XML output did not contain the expected root element.'
+        }
+
+        foreach ($driver in @($document.PnpUtil.Driver)) {
+            Add-MatchingDriverPublishedName `
+                -PublishedNames $publishedNames `
+                -ExpectedOriginalNames $expectedOriginalNames `
+                -PublishedName ([string]$driver.DriverName) `
+                -OriginalName ([string]$driver.OriginalName)
+        }
+        $machineReadableEnumerationSucceeded = $true
+    } catch {
+        Write-Warning "[SunshineVirtualDisplay] Machine-readable driver enumeration failed; using compatibility fallback: $($_.Exception.Message)"
+    }
+
+    if (-not $machineReadableEnumerationSucceeded) {
+        # Older pnputil versions do not support XML. The capture helper removes
+        # blank lines, so a new Published Name must also close the prior record.
+        $output = Invoke-DriverProcessCapture -FilePath $pnputil -ArgumentList @('/enum-drivers', '/class', $classGuid)
+        $publishedName = ''
+        $originalName = ''
+
+        foreach ($line in $output) {
+            if ($line -match '^\s*Published Name\s*:\s*(.+?)\s*$') {
+                Add-MatchingDriverPublishedName `
+                    -PublishedNames $publishedNames `
+                    -ExpectedOriginalNames $expectedOriginalNames `
+                    -PublishedName $publishedName `
+                    -OriginalName $originalName
+                $publishedName = $Matches[1]
+                $originalName = ''
+            } elseif ($line -match '^\s*Original Name\s*:\s*(.+?)\s*$') {
+                $originalName = $Matches[1]
+            }
+        }
+
+        Add-MatchingDriverPublishedName `
+            -PublishedNames $publishedNames `
+            -ExpectedOriginalNames $expectedOriginalNames `
+            -PublishedName $publishedName `
+            -OriginalName $originalName
+
+        # The protected Windows INF cache is a language-independent fallback
+        # for legacy pnputil builds whose text labels may be localized.
+        foreach ($publishedName in @(Get-SunshineDriverPublishedNamesFromInfCache)) {
+            if (-not $publishedNames.Contains($publishedName)) {
+                [void]$publishedNames.Add($publishedName)
+            }
         }
     }
 
@@ -653,6 +807,40 @@ function Test-DriverStoreMatchesPackagedPayload {
         [string]::Equals($currentHashes[0], $packagedHash, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Wait-DriverStoreMatchesPackagedPayload {
+    param([int]$TimeoutSeconds = 5)
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        if (Test-DriverStoreMatchesPackagedPayload) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    } while ($stopwatch.Elapsed -lt [TimeSpan]::FromSeconds($TimeoutSeconds))
+
+    return Test-DriverStoreMatchesPackagedPayload
+}
+
+function Write-DriverStorePayloadDiagnostics {
+    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    Write-Host "[SunshineVirtualDisplay] Packaged driver DLL SHA256: $packagedHash"
+
+    $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
+    if ($currentDllPaths.Count -eq 0) {
+        Write-Host '[SunshineVirtualDisplay] DriverStore contains no Sunshine virtual display DLL payloads.'
+        return
+    }
+
+    foreach ($currentDllPath in $currentDllPaths) {
+        try {
+            $currentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $currentDllPath).Hash
+            Write-Host "[SunshineVirtualDisplay] DriverStore DLL SHA256: $currentHash ($currentDllPath)"
+        } catch {
+            Write-Warning "[SunshineVirtualDisplay] Unable to hash DriverStore payload '$currentDllPath': $($_.Exception.Message)"
+        }
+    }
+}
+
 function Test-DriverPackageRefreshNeeded {
     $publishedNames = @(Get-SunshineDriverPublishedNames)
     if ($publishedNames.Count -eq 0) {
@@ -689,8 +877,18 @@ function Remove-DriverPackage {
         return
     }
 
+    Write-Host "[SunshineVirtualDisplay] Found Sunshine driver package(s): $($publishedNames -join ', ')."
     foreach ($publishedName in $publishedNames) {
         Write-Host "[SunshineVirtualDisplay] Removing driver package $publishedName."
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+    }
+
+    # PnP package bookkeeping can settle just after pnputil exits. Retry any
+    # still-registered package once before declaring the clean restage failed.
+    Start-Sleep -Milliseconds 500
+    $remainingNames = @(Get-SunshineDriverPublishedNames)
+    foreach ($publishedName in $remainingNames) {
+        Write-Host "[SunshineVirtualDisplay] Retrying removal of driver package $publishedName."
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
     }
 }
@@ -750,16 +948,16 @@ function Get-SunshineDeviceInstanceId {
 }
 
 function Reset-SunshineVirtualDisplayDeviceNode {
-    Write-Host '[SunshineVirtualDisplay] Recreating stale device node after failed runtime revive.'
+    Write-Host '[SunshineVirtualDisplay] Clean-restaging the driver and device node after failed runtime revive.'
 
     try {
         Stop-VirtualDisplayBrokerForDriverInstall
         Remove-DeviceNode
-
-        try {
-            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
-        } catch {
-            Write-Warning $_.Exception.Message
+        Remove-DriverPackage
+        Install-DriverPackage
+        if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
+            Write-DriverStorePayloadDiagnostics
+            throw '[SunshineVirtualDisplay] DriverStore payload did not match the packaged driver after recovery restaging.'
         }
 
         Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
@@ -770,11 +968,11 @@ function Reset-SunshineVirtualDisplayDeviceNode {
 
         if (Test-TemporaryVirtualDisplay) {
             $script:rebootRequired = $false
-            Write-Host '[SunshineVirtualDisplay] Device-node recreation restored the virtual display driver without a restart.'
+            Write-Host '[SunshineVirtualDisplay] Clean driver and device-node restaging restored the virtual display driver without a restart.'
             return $true
         }
     } catch {
-        Write-Warning "[SunshineVirtualDisplay] Device-node recreation failed: $($_.Exception.Message)"
+        Write-Warning "[SunshineVirtualDisplay] Clean driver and device-node restaging failed: $($_.Exception.Message)"
     } finally {
         try {
             Start-VirtualDisplayBrokerIfNeeded
@@ -932,10 +1130,14 @@ Register-VulkanLayer
 
 $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
 $deviceNodePresent = Test-DeviceNodePresent
+Stop-ApolloForDriverInstall
+Stop-VirtualDisplayBrokerForDriverInstall
 
 if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     Initialize-DriverStateRegistryAccess
     Invoke-InstallerHealthCheck
+    Start-VirtualDisplayBrokerIfNeeded
+    Start-ApolloServiceIfNeeded
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
     if ($script:rebootRequired) {
         Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
@@ -943,16 +1145,16 @@ if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     exit 0
 }
 
-Stop-SunshineForDriverInstall
-Stop-VirtualDisplayBrokerForDriverInstall
 Install-DriverPackage
 
-if (-not (Test-DriverStoreMatchesPackagedPayload)) {
+if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
     Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
+    Write-DriverStorePayloadDiagnostics
     Remove-DeviceNode
     Remove-DriverPackage
     Install-DriverPackage
-    if (-not (Test-DriverStoreMatchesPackagedPayload)) {
+    if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
+        Write-DriverStorePayloadDiagnostics
         throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
     }
     Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
@@ -968,6 +1170,8 @@ Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
 Restart-SunshineVirtualDisplayRuntime
 Initialize-DriverStateRegistryAccess
 Invoke-InstallerHealthCheck
+Start-VirtualDisplayBrokerIfNeeded
+Start-ApolloServiceIfNeeded
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
 if ($script:rebootRequired) {

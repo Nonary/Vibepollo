@@ -75,18 +75,29 @@ namespace rtsp_stream {
     int surround_info;
     std::string surround_params;
     bool continuous_audio;
+    // The client's `hdrMode=1` launch flag. Every Moonlight client derives this bit from
+    // `supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT`, so it is also the only wire signal
+    // telling us the client negotiated a 10-bit decoder profile.
     bool enable_hdr;
-    // Resolved global/per-client policy, independent of the client's HDR marker.
+    // Per-client opt-in: stream an HDR-requesting client as 10-bit SDR instead. The display
+    // stays out of HDR and the encode stays Main10, which the client can decode because it
+    // asked for HDR in the first place.
     bool prefer_sdr_10bit = false;
     // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
     bool force_sdr = false;
     bool enable_sops;
     bool client_display_mode_override;
+    // Exact refresh requested by a per-client display-mode override, expressed
+    // in millihertz. The existing fps field remains the legacy stream cadence.
+    std::uint32_t client_display_refresh_millihz = 0;
     bool client_requests_virtual_display;
     bool virtual_display;
     uint32_t scale_factor;
     bool virtual_display_failed;
     bool virtual_display_detach_with_app;
+    // True only after the NVHTTP display-preparation path has resolved the
+    // effective virtual/physical output request for this launch.
+    bool virtual_display_request_resolved = false;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
@@ -107,6 +118,7 @@ namespace rtsp_stream {
     bool frame_generation_enabled = false;
     bool lossless_scaling_framegen;
     std::optional<int> framegen_refresh_rate;
+    std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
     std::string frame_generation_provider;
     std::optional<double> lossless_scaling_target_fps;
@@ -150,8 +162,61 @@ namespace rtsp_stream {
     [[nodiscard]] std::shared_ptr<launch_session_t> clone_for_startup() const;
   };
 
+  /**
+   * @brief Whether the session should put the display (and the stream) into HDR.
+   *
+   * `prefer_sdr_10bit` deliberately suppresses this: the whole point of that opt-in is to
+   * take an HDR request and serve it as 10-bit SDR, so the display must never be switched
+   * to HDR for such a session.
+   */
+  inline bool effective_hdr_requested(
+    const bool client_hdr_requested,
+    const bool prefer_sdr_10bit,
+    const bool force_sdr
+  ) {
+    return client_hdr_requested && !prefer_sdr_10bit && !force_sdr;
+  }
+
   inline bool effective_hdr_requested(const launch_session_t &session) {
-    return session.enable_hdr && !session.prefer_sdr_10bit && !session.force_sdr;
+    return effective_hdr_requested(session.enable_hdr, session.prefer_sdr_10bit, session.force_sdr);
+  }
+
+  /**
+   * @brief Whether the current app/client runtime policy enables RTX HDR.
+   */
+  inline bool rtx_hdr_enabled(const config::video_t &video_config) {
+    return config::runtime_config_override_enabled("rtx_hdr") &&
+           video_config.rtx_hdr.enabled;
+  }
+
+  /**
+   * @brief Whether RTX HDR conversion is active for this launch session.
+   *
+   * RTX HDR is app/client opt-in and requires an HDR stream, but its source content must
+   * remain SDR so TrueHDR performs the only SDR-to-HDR conversion.
+   */
+  inline bool rtx_hdr_conversion_requested(const launch_session_t &session, const config::video_t &video_config) {
+    return effective_hdr_requested(session) &&
+           rtx_hdr_enabled(video_config);
+  }
+
+  /**
+   * @brief Whether the session should be encoded as Main10 with an SDR colorspace.
+   *
+   * Requires the client to have requested HDR, because that flag is also the client's only
+   * statement that it negotiated a 10-bit decoder. Promoting a client that asked for SDR
+   * would hand a Main10 bitstream to a decoder configured for an 8-bit profile.
+   */
+  inline bool effective_10bit_sdr_requested(
+    const bool prefer_sdr_10bit,
+    const bool client_hdr_requested,
+    const bool force_sdr
+  ) {
+    return prefer_sdr_10bit && client_hdr_requested && !force_sdr;
+  }
+
+  inline bool effective_10bit_sdr_requested(const launch_session_t &session) {
+    return effective_10bit_sdr_requested(session.prefer_sdr_10bit, session.enable_hdr, session.force_sdr);
   }
 
   inline bool framegen_capture_fix_enabled(const launch_session_t &session) {
@@ -159,10 +224,25 @@ namespace rtsp_stream {
   }
 
   inline int framegen_refresh_multiplier(const launch_session_t &session) {
-    if (!session.framegen_refresh_rate || *session.framegen_refresh_rate <= 0) {
+    const bool has_integer_rate = session.framegen_refresh_rate && *session.framegen_refresh_rate > 0;
+    const bool has_exact_rate = session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0;
+    if (!has_integer_rate && !has_exact_rate) {
       return 1;
     }
     return session.framegen_refresh_multiplier > 1 ? session.framegen_refresh_multiplier : 1;
+  }
+
+  inline std::uint32_t effective_display_refresh_millihz(const launch_session_t &session) {
+    if (session.framegen_refresh_millihz && *session.framegen_refresh_millihz > 0) {
+      return *session.framegen_refresh_millihz;
+    }
+    if (session.client_display_refresh_millihz > 0) {
+      return session.client_display_refresh_millihz;
+    }
+    if (session.framegen_refresh_rate && *session.framegen_refresh_rate > 0) {
+      return framegen::normalize_refresh_millihz(*session.framegen_refresh_rate);
+    }
+    return framegen::normalize_refresh_millihz(session.fps);
   }
 
   inline int saturating_refresh_fps(int fps, int multiplier) {
@@ -179,6 +259,8 @@ namespace rtsp_stream {
   ) {
     return framegen::make_stream_start_policy({
       .fps = session.fps,
+      .fps_scaled = session.fps,
+      .display_refresh_millihz = session.client_display_refresh_millihz,
       .frame_generation_enabled = session.frame_generation_enabled,
       .gen1_framegen_fix = session.gen1_framegen_fix,
       .gen2_framegen_fix = session.gen2_framegen_fix,
@@ -214,6 +296,14 @@ namespace rtsp_stream {
    * @return Count of active sessions.
    */
   int session_count();
+
+  /**
+   * @brief Get the number of active sessions without reaping stopped sessions.
+   *
+   * This is intended for observers that must not enter session teardown while
+   * they are making a scheduling decision of their own.
+   */
+  int session_count_no_cleanup();
 
   std::shared_ptr<stream::session_t>
     find_session(const std::string_view &uuid);

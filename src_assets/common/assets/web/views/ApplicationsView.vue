@@ -3,12 +3,12 @@
     <!-- Header card -->
     <section class="apps-header">
       <div class="apps-header__intro">
-        <h2 class="apps-header__title">Applications</h2>
+        <h2 class="apps-header__title">{{ $t('apps.applications_title') }}</h2>
         <p class="apps-header__description">
-          Add manual apps or connect Playnite to keep your library ready for streaming.
+          {{ $t('apps.applications_intro') }}
           <span v-if="apps && apps.length" class="apps-header__count">
             <span aria-hidden="true">•</span>
-            {{ apps.length }} {{ apps.length === 1 ? 'app' : 'apps' }}
+            {{ $t('apps.app_count', { count: apps.length }) }}
           </span>
         </p>
       </div>
@@ -23,11 +23,11 @@
             :loading="syncBusy"
             :disabled="syncBusy"
             class="apps-header__action"
-            aria-label="Force sync now"
+            :aria-label="$t('playnite.force_sync')"
             @click="forceSync"
           >
             <i class="fas fa-rotate-right" />
-            <span>{{ $t('playnite.force_sync') || 'Force Sync' }}</span>
+            <span>{{ $t('playnite.force_sync') }}</span>
           </n-button>
 
           <n-button
@@ -39,7 +39,7 @@
             @click="gotoPlaynite"
           >
             <i class="fas fa-puzzle-piece" />
-            <span>{{ $t('playnite.setup_integration') || 'Connect Playnite' }}</span>
+            <span>{{ $t('playnite.setup_integration') }}</span>
           </n-button>
         </template>
 
@@ -51,7 +51,7 @@
           @click="openAdd"
         >
           <i class="fas fa-plus" />
-          <span>Add Application</span>
+          <span>{{ $t('apps.add_application') }}</span>
         </n-button>
       </div>
     </section>
@@ -73,7 +73,7 @@
               v-if="appHasPlayniteIcon(app)"
               class="apps-row__icon"
               :src="playniteIconUrl(app)"
-              :alt="app.name || 'Application'"
+              :alt="app.name || $t('apps.app_name')"
               loading="lazy"
               @error="onPlayniteIconError(app)"
             />
@@ -86,14 +86,16 @@
 
           <div class="apps-row__main">
             <div class="apps-row__title-line">
-              <span class="apps-row__title">{{ app.name || '(untitled)' }}</span>
+              <span class="apps-row__title">{{ app.name || $t('apps.untitled') }}</span>
               <span v-if="app['playnite-id']" class="apps-row__badge apps-row__badge--playnite">
-                Playnite
+                {{ $t('apps.playnite_badge') }}
                 <span v-if="playniteSourceLabel(app)" class="apps-row__badge-detail">
                   · {{ playniteSourceLabel(app) }}
                 </span>
               </span>
-              <span v-else class="apps-row__badge apps-row__badge--custom">Custom</span>
+              <span v-else class="apps-row__badge apps-row__badge--custom">{{
+                $t('apps.custom_badge')
+              }}</span>
             </div>
             <div v-if="appSubtitle(app)" class="apps-row__subtitle" :title="appSubtitle(app)">
               {{ appSubtitle(app) }}
@@ -108,15 +110,14 @@
         <div class="apps-empty__icon">
           <i class="fas fa-th-large" aria-hidden="true" />
         </div>
-        <h3 class="apps-empty__title">No applications yet</h3>
+        <h3 class="apps-empty__title">{{ $t('apps.no_applications_yet') }}</h3>
         <p class="apps-empty__description">
-          Add your first application to start streaming, or connect Playnite to import your library
-          automatically.
+          {{ $t('apps.no_applications_hint') }}
         </p>
         <div class="apps-empty__actions">
           <n-button type="primary" size="medium" strong @click="openAdd">
             <i class="fas fa-plus" />
-            <span>Add Application</span>
+            <span>{{ $t('apps.add_application') }}</span>
           </n-button>
           <n-button
             v-if="isWindows && !playniteEnabled"
@@ -125,7 +126,7 @@
             @click="gotoPlaynite"
           >
             <i class="fas fa-puzzle-piece" />
-            <span>{{ $t('playnite.setup_integration') || 'Connect Playnite' }}</span>
+            <span>{{ $t('playnite.setup_integration') }}</span>
           </n-button>
         </div>
       </div>
@@ -151,6 +152,7 @@ import { useConfigStore } from '@/stores/config';
 import { http } from '@/http';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { useI18n } from 'vue-i18n';
 import type { App } from '@/stores/apps';
 
 const appsStore = useAppsStore();
@@ -158,6 +160,7 @@ const { apps } = storeToRefs(appsStore);
 const configStore = useConfigStore();
 const auth = useAuthStore();
 const router = useRouter();
+const { t } = useI18n();
 
 const syncBusy = ref(false);
 const isWindows = computed(
@@ -236,10 +239,17 @@ function appSubtitle(app: App): string {
 }
 
 function playniteSourceLabel(app: App): string {
-  if (app['playnite-managed'] === 'manual') return 'manual';
+  if (app['playnite-managed'] === 'manual') return t('apps.playnite_source_manual');
   const src = app['playnite-source'];
-  if (typeof src === 'string' && src.length > 0) return src.split('+').join(' + ');
-  return 'managed';
+  if (typeof src === 'string' && src.length > 0) {
+    const normalized = src.replace(/\s/g, '');
+    if (normalized === 'recent') return t('apps.playnite_source_recent');
+    if (normalized === 'category') return t('apps.playnite_source_category');
+    if (normalized === 'recent+category' || normalized === 'category+recent')
+      return t('apps.playnite_source_both');
+    return t('apps.playnite_source_unknown');
+  }
+  return t('apps.playnite_source_managed');
 }
 
 async function forceSync(): Promise<void> {

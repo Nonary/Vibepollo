@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -26,9 +27,11 @@ extern "C" {
 #include "display_vram.h"
 #include "misc.h"
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  #include "game_activity.h"
   #include "nv_truehdr.h"
   #include "rtx_hdr_runtime.h"
 #endif
+#include "src/amf/amf_d3d11.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/nvenc/nvenc_config.h"
@@ -55,6 +58,10 @@ static void free_frame(AVFrame *frame) {
 using frame_t = util::safe_ptr<AVFrame, free_frame>;
 
 namespace platf::dxgi {
+
+  namespace {
+    std::atomic<int> g_active_native_amf_encoders {0};
+  }
 
   template<class T>
   buf_t make_buffer(device_t::pointer device, const T &t) {
@@ -466,6 +473,35 @@ namespace platf::dxgi {
 
   class d3d_base_encode_device final {
   public:
+    void enable_dynamic_output_textures() {
+      dynamic_output_textures = true;
+    }
+
+    bool prepare_display_lease(std::shared_ptr<platf::display_t> prepared_display) {
+      auto display_base = std::dynamic_pointer_cast<display_base_t>(std::move(prepared_display));
+      if (!display_base) {
+        return false;
+      }
+      detached_display_width = display_base->width;
+      detached_display_height = display_base->height;
+      detached_display_rotation = display_base->display_rotation;
+      display = std::move(display_base);
+      return true;
+    }
+
+    std::shared_ptr<display_base_t> release_display_lease_for_initialization() {
+      if (display) {
+        detached_display_width = display->width;
+        detached_display_height = display->height;
+        detached_display_rotation = display->display_rotation;
+      }
+      return std::move(display);
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<display_base_t> restored_display) {
+      display = std::move(restored_display);
+    }
+
     int convert(platf::img_t &img_base) {
       // Garbage collect mapped capture images whose weak references have expired
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
@@ -536,6 +572,10 @@ namespace platf::dxgi {
         device_ctx->PSSetShaderResources(0, 1, &emptyShaderResourceView);
       };
 
+      auto unbind_render_targets = [&]() {
+        device_ctx->OMSetRenderTargets(0, nullptr, nullptr);
+      };
+
       auto clear_output_to_black = [&]() -> bool {
         if (!ensure_black_texture_for_rtv_clear()) {
           return false;
@@ -543,12 +583,22 @@ namespace platf::dxgi {
 
         draw(black_texture_for_clear_srv, out_Y_or_YUV_viewports_for_clear, out_UV_viewport_for_clear, DXGI_FORMAT_B8G8R8A8_UNORM, false, false);
         rtvs_cleared = true;
+        if (dynamic_output_textures && output_texture) {
+          auto target = output_targets.find(output_texture);
+          if (target != output_targets.end()) {
+            target->second.cleared = true;
+          }
+        }
         unbind_shader_resource();
         return true;
       };
 
       if (img.blank) {
-        return clear_output_to_black() ? 0 : -1;
+        const bool cleared = clear_output_to_black();
+        if (dynamic_output_textures) {
+          unbind_render_targets();
+        }
+        return cleared ? 0 : -1;
       }
 
       auto &img_ctx = img_ctx_map[img.id];
@@ -649,8 +699,18 @@ namespace platf::dxgi {
                             << ", peak=" << truehdr_frame_state.peak_brightness
                             << " nits, foreground=" << truehdr_frame_state.foreground_source << ").";
           } else {
+            const char *bypass_reason = nullptr;
+            if (truehdr_frame_state.foreground_matches) {
+              bypass_reason = " because RTX HDR is disabled for the visible app/runtime override.";
+            } else if (truehdr_frame_state.foreground_source == "desktop-visible") {
+              bypass_reason = " because desktop or unrelated UI is visible above the fullscreen game.";
+            } else if (truehdr_frame_state.foreground_source == "visibility-unknown") {
+              bypass_reason = " because no unobscured fullscreen game surface could be confirmed.";
+            } else {
+              bypass_reason = " because the visible content does not match the streamed app.";
+            }
             BOOST_LOG(info) << "RTX HDR: bypassing TrueHDR conversion"
-                            << (truehdr_frame_state.foreground_matches ? " because RTX HDR is disabled for the focused app/runtime override." : " because the foreground window does not match the streamed app.")
+                            << bypass_reason
                             << " Encoding through neutral SDR-to-PQ path"
                             << " (SDR white=" << encode_input_sdr_white_nits << " nits).";
           }
@@ -671,11 +731,19 @@ namespace platf::dxgi {
 
           bool truehdr_converted = false;
           bool truehdr_peak_compensated = false;
-          if (truehdr_private_input_ready && !truehdr_engine) {
+          // Creating the NGX feature is the one part of this path that can block on the
+          // display stack, so keep it out of a mode change we started ourselves. The
+          // frame just takes the SDR-to-PQ path and the next one retries.
+          if (truehdr_private_input_ready && !truehdr_engine &&
+              !platf::game_activity::display_mode_change_in_flight()) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
-            truehdr_engine->init(device.get());
           }
-          if (truehdr_private_input_ready && truehdr_engine->available()) {
+          if (truehdr_private_input_ready && truehdr_engine &&
+              !truehdr_engine->available() &&
+              !platf::game_activity::display_mode_change_in_flight()) {
+            (void) truehdr_engine->init(device.get());
+          }
+          if (truehdr_private_input_ready && truehdr_engine && truehdr_engine->available()) {
             truehdr_params_t p;
             p.contrast = truehdr_frame_state.contrast;
             p.saturation = truehdr_frame_state.saturation;
@@ -717,7 +785,8 @@ namespace platf::dxgi {
               truehdr_last_compensated_peak_nits = 0;
               truehdr_last_compensated_middle_gray = 0;
             }
-            if (auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p)) {
+            auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p);
+            if (hdr_tex) {
               if (hdr_tex != truehdr_srv_texture) {
                 truehdr_srv.reset();
                 truehdr_srv_texture = nullptr;
@@ -786,6 +855,9 @@ namespace platf::dxgi {
         maybe_log_truehdr_live_readback();
       }
 #endif
+      if (dynamic_output_textures) {
+        unbind_render_targets();
+      }
 
       // Release encoder mutex to allow capture code to reuse this image
       if (release_encoder_mutex_now()) {
@@ -866,7 +938,8 @@ namespace platf::dxgi {
       using namespace std::chrono_literals;
 
       auto &request = truehdr_live_readback_request;
-      if (!request || request->logged || std::chrono::steady_clock::now() - request->stable_since < 500ms) {
+      if (!request || request->logged || !output_texture ||
+          std::chrono::steady_clock::now() - request->stable_since < 500ms) {
         return;
       }
       request->logged = true;
@@ -907,7 +980,7 @@ namespace platf::dxgi {
 
       // The luma/UV render targets must be unbound before copying the encoder input.
       device_ctx->OMSetRenderTargets(0, nullptr, nullptr);
-      device_ctx->CopyResource(truehdr_live_readback_texture.get(), output_texture.get());
+      device_ctx->CopyResource(truehdr_live_readback_texture.get(), output_texture);
 
       D3D11_MAPPED_SUBRESOURCE mapped {};
       const HRESULT map_status = device_ctx->Map(truehdr_live_readback_texture.get(), 0, D3D11_MAP_READ, 0, &mapped);
@@ -1018,10 +1091,71 @@ namespace platf::dxgi {
       this->color_matrix = std::move(color_matrix);
     }
 
+    int set_output_texture(ID3D11Texture2D *frame_texture) {
+      if (!frame_texture) {
+        return -1;
+      }
+      if (!dynamic_output_textures) {
+        BOOST_LOG(error) << "Attempted to rotate a fixed D3D11 encoder output texture";
+        return -1;
+      }
+      if (output_texture == frame_texture) {
+        return 0;
+      }
+
+      if (output_texture) {
+        auto current = output_targets.find(output_texture);
+        if (current != output_targets.end()) {
+          current->second.cleared = rtvs_cleared;
+        }
+      }
+
+      auto [target_it, inserted] = output_targets.try_emplace(frame_texture);
+      auto &target = target_it->second;
+      if (inserted) {
+        frame_texture->AddRef();
+        target.texture.reset(frame_texture);
+
+        auto create_rtv = [&](render_target_t &view, DXGI_FORMAT view_format) -> bool {
+          if (view_format == DXGI_FORMAT_UNKNOWN) {
+            return true;
+          }
+          D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+          rtv_desc.Format = view_format;
+          rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+          const auto status = device->CreateRenderTargetView(frame_texture, &rtv_desc, &view);
+          if (FAILED(status)) {
+            BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(status);
+            return false;
+          }
+          return true;
+        };
+
+        if (!create_rtv(target.y_or_yuv, output_y_or_yuv_rtv_format) ||
+            !create_rtv(target.uv, output_uv_rtv_format)) {
+          output_targets.erase(target_it);
+          return -1;
+        }
+
+        if (output_rtv_simple_clear) {
+          const float y_black[] = {0.0f, 0.0f, 0.0f, 0.0f};
+          device_ctx->ClearRenderTargetView(target.y_or_yuv.get(), y_black);
+          if (target.uv) {
+            const float uv_black[] = {0.5f, 0.5f, 0.5f, 0.5f};
+            device_ctx->ClearRenderTargetView(target.uv.get(), uv_black);
+          }
+          target.cleared = true;
+        }
+      }
+
+      output_texture = frame_texture;
+      out_Y_or_YUV_rtv = target.y_or_yuv.get();
+      out_UV_rtv = target.uv.get();
+      rtvs_cleared = target.cleared;
+      return 0;
+    }
+
     int init_output(ID3D11Texture2D *frame_texture, int width, int height, const ::video::sunshine_colorspace_t &colorspace) {
-      // The underlying frame pool owns the texture, so we must reference it for ourselves
-      frame_texture->AddRef();
-      output_texture.reset(frame_texture);
 
       HRESULT status = S_OK;
 
@@ -1044,7 +1178,14 @@ namespace platf::dxgi {
     return -1; \
   }
 
-      const bool downscaling = display->width > width || display->height > height;
+      const auto display_width = display ? display->width : detached_display_width;
+      const auto display_height = display ? display->height : detached_display_height;
+      const auto display_rotation = display ? display->display_rotation : detached_display_rotation;
+      if (display_width <= 0 || display_height <= 0) {
+        BOOST_LOG(error) << "Missing source display geometry for D3D11 encoder initialization";
+        return -1;
+      }
+      const bool downscaling = display_width > width || display_height > height;
       const bool target_hdr = ::video::colorspace_is_hdr(colorspace);
 
       switch (format) {
@@ -1161,8 +1302,8 @@ namespace platf::dxgi {
       auto out_width = width;
       auto out_height = height;
 
-      float in_width = display->width;
-      float in_height = display->height;
+      float in_width = display_width;
+      float in_height = display_height;
 
       // Ensure aspect ratio is maintained
       auto scalar = std::fminf(out_width / in_width, out_height / in_height);
@@ -1198,7 +1339,7 @@ namespace platf::dxgi {
       device_ctx->VSSetConstantBuffers(0, 1, &subsample_offset);
 
       {
-        int32_t rotation_modifier = display->display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED ? 0 : display->display_rotation - 1;
+        int32_t rotation_modifier = display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED ? 0 : display_rotation - 1;
         int32_t rotation_data[16 / sizeof(int32_t)] {-rotation_modifier};  // aligned to 16-byte
         auto rotation = make_buffer(device.get(), rotation_data);
         if (!rotation) {
@@ -1208,33 +1349,33 @@ namespace platf::dxgi {
         device_ctx->VSSetConstantBuffers(1, 1, &rotation);
       }
 
-      DXGI_FORMAT rtv_Y_or_YUV_format = DXGI_FORMAT_UNKNOWN;
-      DXGI_FORMAT rtv_UV_format = DXGI_FORMAT_UNKNOWN;
-      bool rtv_simple_clear = false;
+      output_y_or_yuv_rtv_format = DXGI_FORMAT_UNKNOWN;
+      output_uv_rtv_format = DXGI_FORMAT_UNKNOWN;
+      output_rtv_simple_clear = false;
 
       switch (format) {
         case DXGI_FORMAT_NV12:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R8_UNORM;
-          rtv_UV_format = DXGI_FORMAT_R8G8_UNORM;
-          rtv_simple_clear = true;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R8_UNORM;
+          output_uv_rtv_format = DXGI_FORMAT_R8G8_UNORM;
+          output_rtv_simple_clear = true;
           break;
 
         case DXGI_FORMAT_P010:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R16_UNORM;
-          rtv_UV_format = DXGI_FORMAT_R16G16_UNORM;
-          rtv_simple_clear = true;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R16_UNORM;
+          output_uv_rtv_format = DXGI_FORMAT_R16G16_UNORM;
+          output_rtv_simple_clear = true;
           break;
 
         case DXGI_FORMAT_AYUV:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R8G8B8A8_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R8G8B8A8_UINT;
           break;
 
         case DXGI_FORMAT_R16_UINT:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R16_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R16_UINT;
           break;
 
         case DXGI_FORMAT_Y410:
-          rtv_Y_or_YUV_format = DXGI_FORMAT_R10G10B10A2_UINT;
+          output_y_or_yuv_rtv_format = DXGI_FORMAT_R10G10B10A2_UINT;
           break;
 
         default:
@@ -1242,44 +1383,51 @@ namespace platf::dxgi {
           return -1;
       }
 
-      auto create_rtv = [&](auto &rt, DXGI_FORMAT rt_format) -> bool {
-        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
-        rtv_desc.Format = rt_format;
-        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+      if (dynamic_output_textures) {
+        return set_output_texture(frame_texture);
+      }
 
-        auto status = device->CreateRenderTargetView(output_texture.get(), &rtv_desc, &rt);
-        if (FAILED(status)) {
-          BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(status);
+      // Preserve the original fixed-output path for NVENC and legacy/shared D3D
+      // users. Native AMF alone opts into the rotating texture map above.
+      frame_texture->AddRef();
+      fixed_output_texture.reset(frame_texture);
+      // Keep the raw output pointer in sync for consumers shared with the
+      // dynamic path (TrueHDR live readback dereferences it unconditionally).
+      output_texture = frame_texture;
+
+      auto create_fixed_rtv = [&](auto &target, DXGI_FORMAT view_format) -> bool {
+        if (view_format == DXGI_FORMAT_UNKNOWN) {
+          return true;
+        }
+        D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+        rtv_desc.Format = view_format;
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        const auto create_status = device->CreateRenderTargetView(fixed_output_texture.get(), &rtv_desc, &target);
+        if (FAILED(create_status)) {
+          BOOST_LOG(error) << "Failed to create render target view: " << util::log_hex(create_status);
           return false;
         }
-
         return true;
       };
 
-      // Create Y/YUV render target view
-      if (!create_rtv(out_Y_or_YUV_rtv, rtv_Y_or_YUV_format)) {
+      if (!create_fixed_rtv(fixed_out_Y_or_YUV_rtv, output_y_or_yuv_rtv_format) ||
+          !create_fixed_rtv(fixed_out_UV_rtv, output_uv_rtv_format)) {
         return -1;
       }
+      out_Y_or_YUV_rtv = fixed_out_Y_or_YUV_rtv.get();
+      out_UV_rtv = fixed_out_UV_rtv.get();
 
-      // Create UV render target view if needed
-      if (rtv_UV_format != DXGI_FORMAT_UNKNOWN && !create_rtv(out_UV_rtv, rtv_UV_format)) {
-        return -1;
-      }
-
-      if (rtv_simple_clear) {
-        // Clear the RTVs to ensure the aspect ratio padding is black
+      if (output_rtv_simple_clear) {
         const float y_black[] = {0.0f, 0.0f, 0.0f, 0.0f};
-        device_ctx->ClearRenderTargetView(out_Y_or_YUV_rtv.get(), y_black);
+        device_ctx->ClearRenderTargetView(out_Y_or_YUV_rtv, y_black);
         if (out_UV_rtv) {
           const float uv_black[] = {0.5f, 0.5f, 0.5f, 0.5f};
-          device_ctx->ClearRenderTargetView(out_UV_rtv.get(), uv_black);
+          device_ctx->ClearRenderTargetView(out_UV_rtv, uv_black);
         }
         rtvs_cleared = true;
       } else {
-        // Can't use ClearRenderTargetView(), will clear on first convert()
         rtvs_cleared = false;
       }
-
       return 0;
     }
 
@@ -1308,6 +1456,15 @@ namespace platf::dxgi {
         default:
           BOOST_LOG(error) << "D3D11 backend doesn't support pixel format: " << from_pix_fmt(pix_fmt);
           return -1;
+      }
+
+      if (display) {
+        if (!prepare_display_lease(std::move(display))) {
+          return -1;
+        }
+      } else if (!this->display && (detached_display_width <= 0 || detached_display_height <= 0)) {
+        BOOST_LOG(error) << "Missing prepared display state for deferred D3D11 encoder initialization";
+        return -1;
       }
 
       D3D_FEATURE_LEVEL featureLevels[] {
@@ -1374,12 +1531,6 @@ namespace platf::dxgi {
       }
       device_ctx->VSSetConstantBuffers(3, 1, &color_matrix);
       device_ctx->PSSetConstantBuffers(0, 1, &color_matrix);
-
-      this->display = std::dynamic_pointer_cast<display_base_t>(display);
-      if (!this->display) {
-        return -1;
-      }
-      display = nullptr;
 
       blend_disable = make_blend(device.get(), false, false);
       if (!blend_disable) {
@@ -1706,6 +1857,9 @@ namespace platf::dxgi {
     // device concurrently with this device's DestroyDriverInstance, faulting the NVIDIA UMD on a freed
     // cross-device shared-resource dependency.
     std::shared_ptr<display_base_t> display;
+    int detached_display_width = 0;
+    int detached_display_height = 0;
+    DXGI_MODE_ROTATION detached_display_rotation = DXGI_MODE_ROTATION_UNSPECIFIED;
 
     // Keep the underlying D3D device/context alive until after all dependent resources have been released.
     device_t device;
@@ -1740,7 +1894,21 @@ namespace platf::dxgi {
     bool truehdr_live_readback_failure_logged = false;
 #endif
 
-    texture2d_t output_texture;
+    struct output_target_t {
+      texture2d_t texture;
+      render_target_t y_or_yuv;
+      render_target_t uv;
+      bool cleared = false;
+    };
+
+    ID3D11Texture2D *output_texture = nullptr;
+    std::map<ID3D11Texture2D *, output_target_t> output_targets;
+    texture2d_t fixed_output_texture;
+    render_target_t fixed_out_Y_or_YUV_rtv;
+    render_target_t fixed_out_UV_rtv;
+    DXGI_FORMAT output_y_or_yuv_rtv_format = DXGI_FORMAT_UNKNOWN;
+    DXGI_FORMAT output_uv_rtv_format = DXGI_FORMAT_UNKNOWN;
+    bool output_rtv_simple_clear = false;
     texture2d_t black_texture_for_clear;
     shader_res_t black_texture_for_clear_srv;
 
@@ -1752,9 +1920,10 @@ namespace platf::dxgi {
     blend_t blend_disable;
     sampler_state_t sampler_linear;
 
-    render_target_t out_Y_or_YUV_rtv;
-    render_target_t out_UV_rtv;
+    ID3D11RenderTargetView *out_Y_or_YUV_rtv = nullptr;
+    ID3D11RenderTargetView *out_UV_rtv = nullptr;
     bool rtvs_cleared = false;
+    bool dynamic_output_textures = false;
 
     // d3d_img_t::id -> encoder_img_ctx_t
     // These store the encoder textures for each img_t that passes through
@@ -1789,12 +1958,48 @@ namespace platf::dxgi {
     DXGI_FORMAT format;
   };
 
+  bool is_codec_supported_for_adapter(
+    const DXGI_ADAPTER_DESC &adapter_desc,
+    std::string_view name,
+    const ::video::config_t &config);
+
   class d3d_avcodec_encode_device_t: public avcodec_encode_device_t {
   public:
     int init(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
-      int result = base.init(display, adapter_p, pix_fmt);
+      if (!prepare_device(std::move(display), adapter_p, pix_fmt)) return -1;
+      return initialize_hardware_device() ? 0 : -1;
+    }
+
+    bool prepare_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
+      if (!adapter_p || !base.prepare_display_lease(std::move(display))) return false;
+      adapter_p->GetDesc(&adapter_desc);
+      adapter_p->AddRef();
+      initialization_adapter.reset(adapter_p);
+      buffer_format = pix_fmt;
+      return true;
+    }
+
+    bool initialize_hardware_device() override {
+      if (data) return true;
+      if (!initialization_adapter || base.init(nullptr, initialization_adapter.get(), buffer_format) != 0) {
+        return false;
+      }
       data = base.device.get();
-      return result;
+      initialization_adapter.reset();
+      return true;
+    }
+
+    std::shared_ptr<platf::display_t> release_display_lease_for_initialization() override {
+      return base.release_display_lease_for_initialization();
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) override {
+      base.restore_display_lease_after_initialization(
+        std::dynamic_pointer_cast<display_base_t>(std::move(display)));
+    }
+
+    bool is_codec_supported(std::string_view name, const ::video::config_t &config) override {
+      return is_codec_supported_for_adapter(adapter_desc, name, config);
     }
 
     int convert(platf::img_t &img_base) override {
@@ -1877,6 +2082,9 @@ namespace platf::dxgi {
   private:
     d3d_base_encode_device base;
     frame_t hwframe;
+    adapter_t initialization_adapter;
+    DXGI_ADAPTER_DESC adapter_desc {};
+    pix_fmt_e buffer_format = pix_fmt_e::unknown;
   };
 
   class d3d_nvenc_encode_device_t: public nvenc_encode_device_t {
@@ -1940,6 +2148,238 @@ namespace platf::dxgi {
     d3d_base_encode_device base;
     std::unique_ptr<nvenc::nvenc_d3d11> nvenc_d3d;
     NV_ENC_BUFFER_FORMAT buffer_format = NV_ENC_BUFFER_FORMAT_UNDEFINED;
+  };
+
+  // Native AMD AMF encode device. Like the NVENC device, it shares the
+  // d3d_base_encode_device colour-conversion pipeline and writes the converted
+  // NV12/P010 frame straight into the D3D11 texture the AMF encoder reads from
+  // (zero-copy). The AMF runtime is loaded dynamically inside amf_d3d11.
+  class d3d_amf_encode_device_t: public amf_encode_device_t {
+  public:
+    ~d3d_amf_encode_device_t() override {
+      if (registered_active_encoder) {
+        amf = nullptr;
+        amf_d3d.reset();
+        const auto remaining = g_active_native_amf_encoders.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        BOOST_LOG(info) << "AMF: native encoder session closed (active=" << remaining << ')';
+      }
+    }
+
+    bool prepare_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p, pix_fmt_e pix_fmt) {
+      if (!adapter_p || !base.prepare_display_lease(std::move(display))) {
+        return false;
+      }
+      adapter_p->AddRef();
+      initialization_adapter.reset(adapter_p);
+      buffer_format = pix_fmt;
+      return true;
+    }
+
+    bool initialize_hardware_device() override {
+      if (amf_d3d) {
+        return true;
+      }
+      if (!initialization_adapter || base.init(nullptr, initialization_adapter.get(), buffer_format)) {
+        return false;
+      }
+
+      // Async encoder teardown may destroy D3D resources on a different thread.
+      multithread_t mt;
+      auto status = base.device->QueryInterface(IID_ID3D11Multithread, (void **) &mt);
+      if (SUCCEEDED(status)) {
+        mt->SetMultithreadProtected(TRUE);
+      } else {
+        BOOST_LOG(warning) << "Failed to query ID3D11Multithread interface from device [0x"sv << util::hex(status).to_string_view() << ']';
+      }
+
+      amf_d3d = ::amf::create_amf_d3d11(base.device.get());
+      if (!amf_d3d) {
+        return false;
+      }
+
+      base.enable_dynamic_output_textures();
+      amf = amf_d3d.get();
+      initialization_adapter.reset();
+      return true;
+    }
+
+    std::shared_ptr<platf::display_t> release_display_lease_for_initialization() override {
+      return base.release_display_lease_for_initialization();
+    }
+
+    void restore_display_lease_after_initialization(std::shared_ptr<platf::display_t> display) override {
+      base.restore_display_lease_after_initialization(
+        std::dynamic_pointer_cast<display_base_t>(std::move(display)));
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      if (!amf_d3d) {
+        return false;
+      }
+
+      ::amf::amf_config amf_cfg;
+      // Initialization is single-flight at the video layer. Count this session
+      // as active only after AMF Init succeeds so a timed-out vendor call cannot
+      // permanently poison concurrency policy for every later session.
+      const auto active_encoder_count = g_active_native_amf_encoders.load(std::memory_order_acquire) + 1;
+      BOOST_LOG(info) << "AMF: creating native encoder session " << client_config.width << 'x' << client_config.height
+                      << '@' << client_config.framerate << " codec=" << client_config.videoFormat
+                      << " bitrate=" << client_config.bitrate << "kbps (active=" << active_encoder_count << ')';
+
+      // AMF SDK integer values are passed straight through from the existing
+      // amd_* config (shared with the FFmpeg amdvce_legacy path).
+      if (client_config.videoFormat == 0) {
+        amf_cfg.usage = config::video.amd.amd_usage_h264;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_h264;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_h264;
+      } else if (client_config.videoFormat == 1) {
+        amf_cfg.usage = config::video.amd.amd_usage_hevc;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_hevc;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_hevc;
+      } else {
+        amf_cfg.usage = config::video.amd.amd_usage_av1;
+        amf_cfg.quality_preset = config::video.amd.amd_quality_av1;
+        amf_cfg.rc_mode = config::video.amd.amd_rc_av1;
+      }
+
+      amf_cfg.vbaq = config::video.amd.amd_vbaq;
+      amf_cfg.enforce_hrd = config::video.amd.amd_enforce_hrd;
+      amf_cfg.qvbr_quality_level = config::video.amd.amd_qvbr_quality_level;
+      amf_cfg.h264_cabac = ::amf::lifecycle::resolve_h264_cabac(config::video.amd.amd_coder);
+
+      // QVBR/HQVBR/HQCBR require PreAnalysis. Native AMF uses AMD's one-frame
+      // ultra-low-latency PA depth so those modes stay native without inheriting
+      // the much deeper transcoding/high-quality lookahead defaults.
+      const auto preanalysis_plan = ::amf::lifecycle::resolve_preanalysis(
+        amf_cfg.rc_mode,
+        config::video.amd.amd_preanalysis);
+      amf_cfg.preanalysis = preanalysis_plan.enabled ? 1 : 0;
+      if (preanalysis_plan.enabled) {
+        amf_cfg.pa_lookahead_depth = preanalysis_plan.lookahead_depth;
+        if (preanalysis_plan.enabled_for_rate_control &&
+            (!config::video.amd.amd_preanalysis || !*config::video.amd.amd_preanalysis)) {
+          BOOST_LOG(info) << "AMF: enabling native PreAnalysis required by the selected rate-control mode";
+        }
+      }
+
+      // AMF statistics feedback changes the driver submission path and is not a
+      // harmless consequence of debug logging. Keep it disabled unless a dedicated
+      // diagnostic option is added; normal debug logs must exercise the production
+      // encoder path.
+      amf_cfg.enable_statistics_feedback = false;
+
+      // Native-AMF tuning knobs.
+      amf_cfg.max_ltr_frames = config::video.amd.amd_ltr_frames;  // 0 = RFI off
+      if (config::video.amd.amd_input_queue_size > 0) {
+        amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
+      }
+
+      // Xbox clients request rolling intra refresh because they cannot always
+      // recover by asking for a keyframe. Match NVENC's 300-frame period using
+      // the codec-specific AMF controls. AMF forbids user-controlled LTR while
+      // intra refresh is active on all three codecs; H.264 additionally needs at
+      // least two reference frames.
+      const auto intra_refresh_plan = ::amf::lifecycle::resolve_intra_refresh(
+        client_config.enableIntraRefresh == 1,
+        client_config.videoFormat,
+        client_config.width,
+        client_config.height);
+      amf_cfg.intra_refresh_mbs = intra_refresh_plan.blocks_per_slot;
+      amf_cfg.intra_refresh_minimum_reference_frames = intra_refresh_plan.minimum_reference_frames;
+      amf_cfg.av1_intra_refresh_mode = intra_refresh_plan.av1_mode;
+      amf_cfg.av1_intra_refresh_stripes = intra_refresh_plan.av1_cycle_frames;
+      if (intra_refresh_plan.disable_ltr && amf_cfg.max_ltr_frames > 0) {
+        BOOST_LOG(warning) << "AMF: disabling LTR because the client requested intra refresh, "
+                              "which AMF does not support alongside user-controlled LTR";
+        amf_cfg.max_ltr_frames = 0;
+      }
+      if (intra_refresh_plan.enabled) {
+        BOOST_LOG(info) << "AMF: enabling client-requested intra refresh (period="
+                        << ::amf::lifecycle::intra_refresh_period_frames
+                        << ", blocks_per_slot=" << intra_refresh_plan.blocks_per_slot.value_or(0)
+                        << ", AV1_mode=" << intra_refresh_plan.av1_mode.value_or(0)
+                        << ", AV1_cycle=" << intra_refresh_plan.av1_cycle_frames.value_or(0) << ')';
+      }
+
+      // Curated opt-in AMF feature knobs. Each defaults to "auto" (nullopt), which
+      // leaves the AMF driver default untouched, so behavior is unchanged unless the
+      // user opts in. Tri-state knobs map nullopt -> unset, 1 -> true, 0 -> false.
+      auto amf_tristate = [](const std::optional<int> &v) -> std::optional<bool> {
+        if (!v) {
+          return std::nullopt;
+        }
+        return *v != 0;
+      };
+      amf_cfg.lowlatency_mode = amf_tristate(config::video.amd.amd_lowlatency_mode);
+      amf_cfg.high_motion_quality_boost_enable = amf_tristate(config::video.amd.amd_high_motion_quality_boost);
+      amf_cfg.av1_screen_content_tools = amf_tristate(config::video.amd.amd_av1_screen_content);
+      amf_cfg.av1_encoding_latency_mode = config::video.amd.amd_av1_latency_mode;
+
+      const auto concurrent_feature_plan = ::amf::lifecycle::resolve_concurrent_session_features(
+        active_encoder_count,
+        amf_cfg.lowlatency_mode,
+        amf_cfg.high_motion_quality_boost_enable);
+      amf_cfg.lowlatency_mode = concurrent_feature_plan.low_latency_mode;
+      amf_cfg.high_motion_quality_boost_enable = concurrent_feature_plan.high_motion_quality_boost;
+      if (concurrent_feature_plan.overrides_suppressed) {
+        BOOST_LOG(warning) << "AMF: preserving concurrent native session by leaving the optional"
+                              " Low Latency Mode/high-motion overrides unset; the AMF ultra-low-latency"
+                              " usage preset remains active";
+      }
+
+      // Resolve Smart Access Video against the post-suppression Low Latency
+      // Mode: a second concurrent session that suppressed LLM must not also
+      // lose an explicit SAV opt-in based on the stale pre-suppression value.
+      const auto smart_access_video_plan = ::amf::lifecycle::resolve_smart_access_video(
+        amf_tristate(config::video.amd.amd_smart_access_video),
+        amf_cfg.lowlatency_mode);
+      amf_cfg.smart_access_video = smart_access_video_plan.enabled;
+      if (smart_access_video_plan.disabled_for_low_latency) {
+        BOOST_LOG(warning) << "AMF: disabling Smart Access Video because AMF Low Latency Mode is enabled;"
+                              " this combination has caused AMD GPU watchdog resets";
+      }
+
+      if (!amf_d3d->create_encoder(amf_cfg, client_config, colorspace, buffer_format)) {
+        return false;
+      }
+      const auto registered_count = g_active_native_amf_encoders.fetch_add(1, std::memory_order_acq_rel) + 1;
+      registered_active_encoder = true;
+      if (registered_count != active_encoder_count) {
+        BOOST_LOG(debug) << "AMF: active session count changed during initialization (planned="
+                         << active_encoder_count << ", registered=" << registered_count << ')';
+      }
+      return true;
+    }
+
+    bool finish_encoder_initialization(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      base.apply_colorspace(colorspace, client_config.rtx_hdr_active);
+      return base.init_output(
+               static_cast<ID3D11Texture2D *>(amf_d3d->get_input_texture()),
+               client_config.width,
+               client_config.height,
+               colorspace) == 0;
+    }
+
+    int convert(platf::img_t &img_base) override {
+      auto *render_target = amf_d3d->acquire_input_texture_for_render();
+      if (!render_target || base.set_output_texture(render_target) != 0) {
+        amf_d3d->cancel_input_texture_for_render();
+        return -1;
+      }
+
+      const auto result = base.convert(img_base);
+      if (result != 0) {
+        amf_d3d->cancel_input_texture_for_render();
+      }
+      return result;
+    }
+
+  private:
+    d3d_base_encode_device base;
+    std::unique_ptr<::amf::amf_d3d11> amf_d3d;
+    adapter_t initialization_adapter;
+    platf::pix_fmt_e buffer_format = platf::pix_fmt_e::unknown;
+    bool registered_active_encoder = false;
   };
 
   bool set_cursor_texture(device_t::pointer device, gpu_cursor_t &cursor, util::buffer_t<std::uint8_t> &&cursor_img, DXGI_OUTDUPL_POINTER_SHAPE_INFO &shape_info) {
@@ -2421,6 +2861,10 @@ namespace platf::dxgi {
       return -1;
     }
 
+    if (!cursor_vs_hlsl) {
+      BOOST_LOG(error) << "Cannot create cursor vertex shader: shader bytecode is missing";
+      return -1;
+    }
     status = device->CreateVertexShader(cursor_vs_hlsl->GetBufferPointer(), cursor_vs_hlsl->GetBufferSize(), nullptr, &cursor_vs);
     if (status) {
       BOOST_LOG(error) << "Failed to create scene vertex shader [0x"sv << util::hex(status).to_string_view() << ']';
@@ -2440,6 +2884,10 @@ namespace platf::dxgi {
 
     if (config.dynamicRange && is_hdr()) {
       // This shader will normalize scRGB white levels to a user-defined white level
+      if (!cursor_ps_normalize_white_hlsl) {
+        BOOST_LOG(error) << "Cannot create cursor blending (normalized white) pixel shader: shader bytecode is missing";
+        return -1;
+      }
       status = device->CreatePixelShader(cursor_ps_normalize_white_hlsl->GetBufferPointer(), cursor_ps_normalize_white_hlsl->GetBufferSize(), nullptr, &cursor_ps);
       if (status) {
         BOOST_LOG(error) << "Failed to create cursor blending (normalized white) pixel shader [0x"sv << util::hex(status).to_string_view() << ']';
@@ -2458,6 +2906,10 @@ namespace platf::dxgi {
 
       device_ctx->PSSetConstantBuffers(1, 1, &white_multiplier);
     } else {
+      if (!cursor_ps_hlsl) {
+        BOOST_LOG(error) << "Cannot create cursor blending pixel shader: shader bytecode is missing";
+        return -1;
+      }
       status = device->CreatePixelShader(cursor_ps_hlsl->GetBufferPointer(), cursor_ps_hlsl->GetBufferSize(), nullptr, &cursor_ps);
       if (status) {
         BOOST_LOG(error) << "Failed to create cursor blending pixel shader [0x"sv << util::hex(status).to_string_view() << ']';
@@ -2614,10 +3066,10 @@ namespace platf::dxgi {
    * @param config The codec configuration.
    * @return `true` if supported, `false` otherwise.
    */
-  bool display_vram_t::is_codec_supported(std::string_view name, const ::video::config_t &config) {
-    DXGI_ADAPTER_DESC adapter_desc;
-    adapter->GetDesc(&adapter_desc);
-
+  bool is_codec_supported_for_adapter(
+    const DXGI_ADAPTER_DESC &adapter_desc,
+    std::string_view name,
+    const ::video::config_t &config) {
     if (adapter_desc.VendorId == 0x1002) {  // AMD
       // If it's not an AMF encoder, it's not compatible with an AMD GPU
       if (!boost::algorithm::ends_with(name, "_amf")) {
@@ -2698,6 +3150,12 @@ namespace platf::dxgi {
     return true;
   }
 
+  bool display_vram_t::is_codec_supported(std::string_view name, const ::video::config_t &config) {
+    DXGI_ADAPTER_DESC adapter_desc {};
+    adapter->GetDesc(&adapter_desc);
+    return is_codec_supported_for_adapter(adapter_desc, name, config);
+  }
+
   std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_avcodec_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_avcodec_encode_device_t>();
     if (device->init(shared_from_this(), adapter.get(), pix_fmt) != 0) {
@@ -2706,9 +3164,27 @@ namespace platf::dxgi {
     return device;
   }
 
+  std::unique_ptr<avcodec_encode_device_t> display_vram_t::make_deferred_avcodec_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_avcodec_encode_device_t>();
+    if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+
   std::unique_ptr<nvenc_encode_device_t> display_vram_t::make_nvenc_encode_device(pix_fmt_e pix_fmt) {
     auto device = std::make_unique<d3d_nvenc_encode_device_t>();
     if (!device->init_device(shared_from_this(), adapter.get(), pix_fmt)) {
+      return nullptr;
+    }
+    return device;
+  }
+
+  std::unique_ptr<amf_encode_device_t> display_vram_t::make_amf_encode_device(pix_fmt_e pix_fmt) {
+    auto device = std::make_unique<d3d_amf_encode_device_t>();
+    // This path must remain free of driver calls. The video-layer watchdog owns
+    // D3D11CreateDevice and every subsequent AMF initialization/destruction call.
+    if (!device->prepare_device(shared_from_this(), adapter.get(), pix_fmt)) {
       return nullptr;
     }
     return device;

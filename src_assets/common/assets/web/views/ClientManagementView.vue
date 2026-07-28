@@ -209,6 +209,10 @@
           $t('troubleshooting.unpair_all_error')
         }}</n-alert>
 
+        <n-alert v-if="clientsLoadError" type="error">
+          {{ clientsLoadError }}
+        </n-alert>
+
         <div v-if="clientsLoading && !clientsReady" class="client-empty client-empty--loading">
           <i class="fas fa-spinner fa-spin" />
           {{ $t('clients.loading') }}
@@ -257,7 +261,8 @@
                       round
                     >
                       [ {{ permToStr(client.perm) }} ]
-                    </n-tag>                  </div>
+                    </n-tag>
+                  </div>
                   <div class="client-record__meta">
                     <span class="client-record__meta-item">
                       <i class="fas fa-clock" />
@@ -398,9 +403,9 @@
                   <n-form-item>
                     <n-checkbox v-model:checked="client.editAllowClientCommands" size="small">
                       <div class="flex flex-col">
-                        <span>Allow Client Commands</span>
+                        <span>{{ $t('pin.allow_client_commands') }}</span>
                         <span class="text-[11px] opacity-60">
-                          Allow this client to run connect and disconnect commands.
+                          {{ $t('pin.allow_client_commands_desc') }}
                         </span>
                       </div>
                     </n-checkbox>
@@ -412,7 +417,7 @@
                     >
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          Connect Commands
+                          {{ $t('pin.client_do_cmd') }}
                         </div>
                         <n-button
                           size="tiny"
@@ -423,7 +428,7 @@
                         </n-button>
                       </div>
                       <div v-if="client.editDoCommands.length === 0" class="text-xs opacity-70">
-                        No commands configured.
+                        {{ $t('apps.framegen.mode_none') }}
                       </div>
                       <div v-else class="space-y-2">
                         <div
@@ -462,7 +467,7 @@
                     >
                       <div class="flex items-center justify-between gap-3">
                         <div class="text-xs font-semibold uppercase tracking-wide opacity-70">
-                          Disconnect Commands
+                          {{ $t('pin.client_undo_cmd') }}
                         </div>
                         <n-button
                           size="tiny"
@@ -473,7 +478,7 @@
                         </n-button>
                       </div>
                       <div v-if="client.editUndoCommands.length === 0" class="text-xs opacity-70">
-                        No commands configured.
+                        {{ $t('apps.framegen.mode_none') }}
                       </div>
                       <div v-else class="space-y-2">
                         <div
@@ -763,23 +768,17 @@
                     :label="t('clients.virtual_display_scale_label')"
                   >
                     <n-select
-                      :value="clientNumericOverride(client, 'dd_virtual_display_scale', 0, 500)"
+                      :value="clientNumericOverride(client, 'dd_virtual_display_scale', -1, 500)"
                       :options="clientVirtualDisplayScaleOptions"
                       clearable
-                      :placeholder="
-                        globalVirtualDisplayScale > 0
-                          ? t('clients.virtual_display_scale_placeholder', {
-                              scale: globalVirtualDisplayScale,
-                            })
-                          : t('config.virtual_display_scale_auto')
-                      "
+                      :placeholder="globalVirtualDisplayScaleLabel"
                       @update:value="
                         (value) =>
                           setClientNumericOverride(
                             client,
                             'dd_virtual_display_scale',
                             value,
-                            0,
+                            -1,
                             500,
                           )
                       "
@@ -792,23 +791,13 @@
                   </n-form-item>
 
                   <n-form-item :label="t('config.prefer_10bit_sdr')">
-                    <n-select
-                      v-model:value="client.editPrefer10BitSdr"
-                      :options="prefer10BitSdrOptions"
-                      clearable
-                      :placeholder="t('config.prefer_10bit_sdr_follow_global')"
-                    />
+                    <n-checkbox v-model:checked="client.editPrefer10BitSdr" size="small">
+                      <span class="text-sm">{{ t('config.prefer_10bit_sdr_label') }}</span>
+                    </n-checkbox>
                     <template #feedback>
                       <span class="text-xs opacity-70">{{
                         t('config.prefer_10bit_sdr_desc')
                       }}</span>
-                      <span
-                        v-if="client.editPrefer10BitSdr === null"
-                        class="text-xs opacity-70 block"
-                      >
-                        {{ t('config.prefer_10bit_sdr_follow_global') }}
-                        ({{ globalPrefer10BitSdr ? t('_common.enabled') : t('_common.disabled') }})
-                      </span>
                     </template>
                   </n-form-item>
 
@@ -822,7 +811,7 @@
             </article>
           </div>
         </template>
-        <div v-else class="client-empty">
+        <div v-else-if="!clientsLoadError" class="client-empty">
           <i class="fas fa-users-slash" />
           <span>
             {{
@@ -947,6 +936,7 @@ import ApiTokenManager from '@/ApiTokenManager.vue';
 import TrustedDevicesCard from '@/components/TrustedDevicesCard.vue';
 import AppEditConfigOverridesSection from '@/components/app-edit/AppEditConfigOverridesSection.vue';
 import { useAuthStore } from '@/stores/auth';
+import { toIntlLocale } from '@/utils/intlLocale';
 import { useConfigStore } from '@/stores/config';
 
 type ClientDisplaySelection = 'physical' | 'virtual';
@@ -958,7 +948,6 @@ type ClientVirtualDisplayLayout =
   | 'extended_isolated'
   | 'extended_primary_isolated'
   | null;
-type ClientPrefer10BitSdrOverride = 'enabled' | 'disabled' | null;
 type ClientSortMode = 'recent' | 'name' | 'status';
 type ClientStatusFilter = 'all' | 'connected' | 'offline';
 
@@ -1083,7 +1072,7 @@ interface ClientViewModel {
   displayMode: string;
   outputOverride: string;
   alwaysUseVirtualDisplay: boolean;
-  prefer10BitSdr: ClientPrefer10BitSdrOverride;
+  prefer10BitSdr: boolean;
   virtualDisplayMode: ClientVirtualDisplayMode;
   virtualDisplayLayout: ClientVirtualDisplayLayout;
   configOverrides: Record<string, unknown>;
@@ -1101,7 +1090,7 @@ interface ClientViewModel {
   editPhysicalOutputOverride: string | null;
   editVirtualDisplayMode: ClientVirtualDisplayMode;
   editVirtualDisplayLayout: ClientVirtualDisplayLayout;
-  editPrefer10BitSdr: ClientPrefer10BitSdrOverride;
+  editPrefer10BitSdr: boolean;
   editConfigOverrides: Record<string, unknown>;
   editAllowClientCommands: boolean;
   editDoCommands: ClientCommandEntry[];
@@ -1132,35 +1121,32 @@ interface ClientUpdatePayload {
   perm: number;
   allow_client_commands: boolean;
   do: ClientCommandEntry[];
-  undo: ClientCommandEntry[];  output_name_override: string;
+  undo: ClientCommandEntry[];
+  output_name_override: string;
   always_use_virtual_display: boolean;
   virtual_display_mode: string | null;
   virtual_display_layout: string | null;
   config_overrides?: Record<string, unknown>;
-  prefer_10bit_sdr?: boolean;
+  prefer_10bit_sdr: boolean;
 }
 
 type UnknownRecord = Record<string, unknown>;
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
 const configStore = useConfigStore();
 const apiTokensSectionRef = ref<HTMLElement | null>(null);
-const globalPrefer10BitSdr = computed<boolean>(() =>
-  toBool(configValue('prefer_10bit_sdr'), false),
-);
-const prefer10BitSdrOptions = computed(() => [
-  { label: t('_common.enabled'), value: 'enabled' },
-  { label: t('_common.disabled'), value: 'disabled' },
-]);
 
 const clients = ref<ClientViewModel[]>([]);
 const clientsLoading = ref<boolean>(true);
 const clientsReady = ref<boolean>(false);
 const clientsRefreshing = ref<boolean>(false);
+const clientsLoadError = ref<string>('');
 const lastRefreshedAt = ref<number | null>(null);
+let clientsRefreshGeneration = 0;
+let clientsRefreshRequestsInFlight = 0;
 const platform = ref<string>('');
 const clientSearchQuery = ref<string>('');
 const clientStatusFilter = ref<ClientStatusFilter>('all');
@@ -1325,12 +1311,7 @@ function createClientViewModel(entry: ClientApiEntry): ClientViewModel {
     !Array.isArray(entry.config_overrides)
       ? JSON.parse(JSON.stringify(entry.config_overrides))
       : {};
-  const prefer10: ClientPrefer10BitSdrOverride =
-    entry.prefer_10bit_sdr === undefined || entry.prefer_10bit_sdr === null
-      ? null
-      : toBool(entry.prefer_10bit_sdr, false)
-        ? 'enabled'
-        : 'disabled';
+  const prefer10 = toBool(entry.prefer_10bit_sdr, false);
   const virtualMode = parseClientVirtualDisplayMode(entry.virtual_display_mode ?? '');
   const virtualLayout = parseClientVirtualDisplayLayout(entry.virtual_display_layout ?? '');
   const allowClientCommands = toBool(entry.allow_client_commands, true);
@@ -1440,10 +1421,23 @@ const globalVirtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>(
 
 const globalVirtualDisplayScale = computed<number>(() => {
   const value = Number(configValue('dd_virtual_display_scale'));
-  return Number.isFinite(value) ? value : 250;
+  return Number.isFinite(value) ? value : -1;
+});
+
+const globalVirtualDisplayScaleLabel = computed(() => {
+  if (globalVirtualDisplayScale.value < 0) {
+    return t('config.virtual_display_scale_recommended');
+  }
+  if (globalVirtualDisplayScale.value === 0) {
+    return t('config.virtual_display_scale_auto');
+  }
+  return t('clients.virtual_display_scale_placeholder', {
+    scale: globalVirtualDisplayScale.value,
+  });
 });
 
 const clientVirtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_recommended'), value: -1 },
   { label: t('config.virtual_display_scale_auto'), value: 0 },
   ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
     label: `${value}%`,
@@ -1610,15 +1604,38 @@ const isClientDisplayOverrideValid = computed(() => {
   return true;
 });
 
-async function refreshClients(options: { manual?: boolean } = {}): Promise<void> {
+function showClientsLoadError(error: unknown, notify: boolean): void {
+  const serverError = (
+    error as { response?: { data?: { error?: unknown } } } | null | undefined
+  )?.response?.data?.error;
+  clientsLoadError.value =
+    typeof serverError === 'string' && serverError.trim()
+      ? serverError
+      : t('auth.request_failed');
+  if (notify) {
+    message.error(clientsLoadError.value);
+  }
+}
+
+async function refreshClients(
+  options: { manual?: boolean; background?: boolean } = {},
+): Promise<void> {
   const auth = useAuthStore();
   if (!auth.isAuthenticated) {
+    clientsRefreshGeneration += 1;
+    auth.requireLogin();
     clientsReady.value = true;
     clientsLoading.value = false;
     clientsRefreshing.value = false;
     return;
   }
   if (options.manual && clientsRefreshing.value) return;
+  // Timer-driven polling must not continually supersede a slow request. User
+  // actions and mutation follow-ups remain free to start a newer generation.
+  if (options.background && clientsRefreshRequestsInFlight > 0) return;
+
+  const requestGeneration = ++clientsRefreshGeneration;
+  clientsRefreshRequestsInFlight += 1;
   if (options.manual) {
     clientsRefreshing.value = true;
   }
@@ -1626,9 +1643,17 @@ async function refreshClients(options: { manual?: boolean } = {}): Promise<void>
     clientsLoading.value = true;
   }
   try {
-    const r = await http.get<ClientsListResponse>('./api/clients/list', {
-      validateStatus: () => true,
+    // Force revalidation of older releases' cacheable responses. The endpoint
+    // returns mutable pairing state, so a cached empty list is never useful.
+    const r = await http.get<ClientsListResponse>('/api/clients/list', {
+      // Bound the request so the in-flight guard above can always drain. A
+      // request that never settles would otherwise suppress every later
+      // background poll for the lifetime of the page.
+      timeout: 15000,
+      headers: { 'Cache-Control': 'no-cache' },
     });
+    if (requestGeneration !== clientsRefreshGeneration) return;
+
     const response = r.data || ({} as ClientsListResponse);
     if (typeof response.platform === 'string') {
       platform.value = response.platform;
@@ -1646,18 +1671,25 @@ async function refreshClients(options: { manual?: boolean } = {}): Promise<void>
         return createClientViewModel(entry);
       });
       clients.value = mapped;
+      clientsLoadError.value = '';
       lastRefreshedAt.value = Date.now();
       ensureDisplayDevicesLoaded();
     } else {
-      clients.value = [];
-      lastRefreshedAt.value = Date.now();
+      showClientsLoadError(null, !!options.manual);
     }
-  } catch {
-    clients.value = [];
+  } catch (error: unknown) {
+    if (requestGeneration === clientsRefreshGeneration) {
+      showClientsLoadError(error, !!options.manual);
+    }
   } finally {
-    clientsReady.value = true;
-    clientsLoading.value = false;
-    clientsRefreshing.value = false;
+    clientsRefreshRequestsInFlight = Math.max(0, clientsRefreshRequestsInFlight - 1);
+    if (options.manual) {
+      clientsRefreshing.value = false;
+    }
+    if (requestGeneration === clientsRefreshGeneration) {
+      clientsReady.value = true;
+      clientsLoading.value = false;
+    }
   }
 }
 
@@ -1686,23 +1718,29 @@ function compareByName(a: ClientViewModel, b: ClientViewModel): number {
   return nameA.localeCompare(nameB);
 }
 
-const clientTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
-
-const clientRefreshTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  timeStyle: 'short',
-});
+const clientIntlLocale = computed(() => toIntlLocale(locale.value));
+const clientTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(clientIntlLocale.value, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }),
+);
+const clientRefreshTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(clientIntlLocale.value, {
+      timeStyle: 'short',
+    }),
+);
 
 function formatClientTimestamp(seconds: number): string {
-  return clientTimeFormatter.format(new Date(seconds * 1000));
+  return clientTimeFormatter.value.format(new Date(seconds * 1000));
 }
 
 const lastRefreshedLabel = computed(() => {
   if (!lastRefreshedAt.value) return t('clients.last_updated_never');
   return t('clients.last_updated', {
-    time: clientRefreshTimeFormatter.format(new Date(lastRefreshedAt.value)),
+    time: clientRefreshTimeFormatter.value.format(new Date(lastRefreshedAt.value)),
   });
 });
 
@@ -1963,10 +2001,12 @@ async function saveClient(client: ClientViewModel): Promise<void> {
           elevated: !!entry?.elevated,
         });
         return result;
-      }, []),      output_name_override: '',
+      }, []),
+      output_name_override: '',
       always_use_virtual_display: false,
       virtual_display_mode: '',
       virtual_display_layout: '',
+      prefer_10bit_sdr: client.editPrefer10BitSdr,
     };
 
     if (!client.editDisplayOverrideEnabled) {
@@ -2006,9 +2046,6 @@ async function saveClient(client: ClientViewModel): Promise<void> {
             ),
           )
         : {};
-    if (client.editPrefer10BitSdr !== null) {
-      payload.prefer_10bit_sdr = client.editPrefer10BitSdr === 'enabled';
-    }
     payload.hdr_profile = String(client.editHdrProfile ?? '').trim();
 
     const r = await http.post('./api/clients/update', payload, { validateStatus: () => true });
@@ -2030,12 +2067,7 @@ async function saveClient(client: ClientViewModel): Promise<void> {
     client.allowClientCommands = payload.allow_client_commands;
     client.doCommands = JSON.parse(JSON.stringify(payload.do || []));
     client.undoCommands = JSON.parse(JSON.stringify(payload.undo || []));
-    client.prefer10BitSdr =
-      payload.prefer_10bit_sdr === undefined
-        ? null
-        : payload.prefer_10bit_sdr
-          ? 'enabled'
-          : 'disabled';
+    client.prefer10BitSdr = payload.prefer_10bit_sdr;
     client.configOverrides =
       payload.config_overrides &&
       typeof payload.config_overrides === 'object' &&
@@ -2165,7 +2197,7 @@ onMounted(async () => {
   }
   if (refreshIntervalId === null) {
     refreshIntervalId = setInterval(() => {
-      void refreshClients();
+      void refreshClients({ background: true });
     }, 5000);
   }
 });
@@ -2383,6 +2415,21 @@ onBeforeUnmount(() => {
   .clients-toolbar__search,
   .clients-toolbar :deep(.n-button) {
     width: 100%;
+  }
+
+  .clients-toolbar :deep(.n-button) {
+    min-width: 0;
+    height: auto;
+    min-height: var(--n-height);
+    padding-block: 0.375rem;
+  }
+
+  .clients-toolbar :deep(.n-button__content) {
+    min-width: 0;
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
   }
 }
 

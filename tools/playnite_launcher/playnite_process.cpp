@@ -3,18 +3,308 @@
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <Psapi.h>
 #include <shellapi.h>
+#include <ShlObj.h>
 #include <Shlwapi.h>
 #include <string>
+#include <system_error>
+#include <utility>
+#include <wincrypt.h>
 #include <winsock2.h>
 #include <windows.h>
 
 namespace playnite_launcher::playnite {
   namespace {
+    constexpr wchar_t cleanup_watchdog_filename[] = L"playnite-cleanup-watchdog.exe";
+    constexpr wchar_t cleanup_watchdog_cache_directory[] = L"playnite-watchdogs";
+    constexpr wchar_t cleanup_watchdog_cache_mutex[] = L"Local\\VibepolloPlayniteWatchdogCache-v1";
+    constexpr wchar_t cleanup_lease_mutex_prefix[] = L"Local\\VibepolloPlayniteCleanupLease-v1-";
+
+    std::optional<std::wstring> cleanup_lease_mutex_name(const std::string &install_dir_utf8) {
+      if (install_dir_utf8.empty()) {
+        return std::nullopt;
+      }
+
+      try {
+        auto normalized = platf::dxgi::utf8_to_wide(install_dir_utf8);
+        if (normalized.empty()) {
+          return std::nullopt;
+        }
+
+        for (auto &ch : normalized) {
+          if (ch == L'/') {
+            ch = L'\\';
+          } else if (ch >= L'A' && ch <= L'Z') {
+            ch = static_cast<wchar_t>(ch - L'A' + L'a');
+          }
+        }
+        while (
+          normalized.size() > 1 &&
+          normalized.back() == L'\\' &&
+          !(normalized.size() == 3 && normalized[1] == L':')
+        ) {
+          normalized.pop_back();
+        }
+
+        std::uint64_t hash = 1469598103934665603ull;
+        for (const auto ch : normalized) {
+          hash ^= static_cast<std::uint16_t>(ch);
+          hash *= 1099511628211ull;
+        }
+        return std::wstring(cleanup_lease_mutex_prefix) + std::to_wstring(hash);
+      } catch (...) {
+        return std::nullopt;
+      }
+    }
+
+    struct staged_watchdog_t {
+      std::filesystem::path path;
+      std::wstring sha256;
+    };
+
+    class watchdog_cache_lock_t {
+    public:
+      watchdog_cache_lock_t() {
+        handle_ = CreateMutexW(nullptr, FALSE, cleanup_watchdog_cache_mutex);
+        if (!handle_) {
+          return;
+        }
+
+        const DWORD wait_result = WaitForSingleObject(handle_, 10000);
+        acquired_ = wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED;
+        if (!acquired_) {
+          CloseHandle(handle_);
+          handle_ = nullptr;
+        }
+      }
+
+      ~watchdog_cache_lock_t() {
+        if (acquired_) {
+          ReleaseMutex(handle_);
+        }
+        if (handle_) {
+          CloseHandle(handle_);
+        }
+      }
+
+      watchdog_cache_lock_t(const watchdog_cache_lock_t &) = delete;
+      watchdog_cache_lock_t &operator=(const watchdog_cache_lock_t &) = delete;
+
+      explicit operator bool() const {
+        return acquired_;
+      }
+
+    private:
+      HANDLE handle_ = nullptr;
+      bool acquired_ = false;
+    };
+
+    std::optional<std::wstring> sha256_file(const std::filesystem::path &path) {
+      HANDLE file = CreateFileW(
+        path.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr
+      );
+      if (file == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+
+      HCRYPTPROV provider = 0;
+      HCRYPTHASH hash = 0;
+      if (!CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) ||
+          !CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        if (hash) {
+          CryptDestroyHash(hash);
+        }
+        if (provider) {
+          CryptReleaseContext(provider, 0);
+        }
+        CloseHandle(file);
+        return std::nullopt;
+      }
+
+      bool succeeded = true;
+      std::array<BYTE, 64 * 1024> buffer {};
+      while (true) {
+        DWORD bytes_read = 0;
+        if (!ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &bytes_read, nullptr)) {
+          succeeded = false;
+          break;
+        }
+        if (bytes_read == 0) {
+          break;
+        }
+        if (!CryptHashData(hash, buffer.data(), bytes_read, 0)) {
+          succeeded = false;
+          break;
+        }
+      }
+
+      std::array<BYTE, 32> digest {};
+      DWORD digest_size = static_cast<DWORD>(digest.size());
+      if (succeeded && !CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0)) {
+        succeeded = false;
+      }
+
+      CryptDestroyHash(hash);
+      CryptReleaseContext(provider, 0);
+      CloseHandle(file);
+      if (!succeeded || digest_size != digest.size()) {
+        return std::nullopt;
+      }
+
+      static constexpr wchar_t hex_digits[] = L"0123456789abcdef";
+      std::wstring hex;
+      hex.reserve(digest.size() * 2);
+      for (BYTE byte : digest) {
+        hex.push_back(hex_digits[byte >> 4]);
+        hex.push_back(hex_digits[byte & 0x0F]);
+      }
+      return hex;
+    }
+
+    std::optional<std::filesystem::path> cleanup_watchdog_cache_root() {
+      PWSTR local_app_data = nullptr;
+      if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &local_app_data)) ||
+          !local_app_data) {
+        return std::nullopt;
+      }
+
+      std::filesystem::path root = std::filesystem::path(local_app_data) / L"Vibepollo" / cleanup_watchdog_cache_directory;
+      CoTaskMemFree(local_app_data);
+      return root;
+    }
+
+    bool is_sha256_directory_name(const std::wstring &name) {
+      if (name.size() != 64) {
+        return false;
+      }
+      return std::all_of(name.begin(), name.end(), [](wchar_t ch) {
+        return (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f');
+      });
+    }
+
+    void cleanup_stale_watchdog_versions(const std::filesystem::path &cache_root, const std::wstring &active_sha256) {
+      std::error_code ec;
+      std::filesystem::directory_iterator entries(cache_root, ec);
+      if (ec) {
+        return;
+      }
+
+      for (const auto &entry : entries) {
+        const std::wstring name = entry.path().filename().wstring();
+        if (name == active_sha256 || !is_sha256_directory_name(name)) {
+          continue;
+        }
+
+        std::error_code remove_ec;
+        const auto removed = std::filesystem::remove_all(entry.path(), remove_ec);
+        if (!remove_ec && removed > 0) {
+          BOOST_LOG(debug) << "Removed stale Playnite cleanup watchdog cache version '" << platf::dxgi::wide_to_utf8(name) << "'";
+        }
+      }
+    }
+
+    std::optional<staged_watchdog_t> stage_cleanup_watchdog(const std::filesystem::path &source_path) {
+      auto cache_root = cleanup_watchdog_cache_root();
+      if (!cache_root) {
+        BOOST_LOG(warning) << "Cleanup watcher staging failed: unable to resolve LocalAppData";
+        return std::nullopt;
+      }
+
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        auto source_sha256 = sha256_file(source_path);
+        if (!source_sha256) {
+          BOOST_LOG(warning) << "Cleanup watcher staging failed: unable to hash source executable";
+          return std::nullopt;
+        }
+
+        const std::filesystem::path version_directory = *cache_root / *source_sha256;
+        const std::filesystem::path staged_path = version_directory / cleanup_watchdog_filename;
+        std::error_code ec;
+        std::filesystem::create_directories(version_directory, ec);
+        if (ec) {
+          BOOST_LOG(warning) << "Cleanup watcher staging failed: unable to create cache directory: " << ec.message();
+          return std::nullopt;
+        }
+
+        if (std::filesystem::exists(staged_path, ec) && !ec) {
+          auto staged_sha256 = sha256_file(staged_path);
+          if (staged_sha256 && *staged_sha256 == *source_sha256) {
+            cleanup_stale_watchdog_versions(*cache_root, *source_sha256);
+            return staged_watchdog_t {staged_path, *source_sha256};
+          }
+
+          std::filesystem::remove(staged_path, ec);
+          if (ec) {
+            BOOST_LOG(warning) << "Cleanup watcher staging failed: cached executable is invalid and cannot be replaced: " << ec.message();
+            return std::nullopt;
+          }
+        }
+
+        std::filesystem::path temporary_path = staged_path;
+        temporary_path += L".staging-" + std::to_wstring(GetCurrentProcessId()) +
+                          L"-" + std::to_wstring(GetCurrentThreadId()) +
+                          L"-" + std::to_wstring(GetTickCount64());
+
+        std::filesystem::copy_file(
+          source_path,
+          temporary_path,
+          std::filesystem::copy_options::overwrite_existing,
+          ec
+        );
+        if (ec) {
+          BOOST_LOG(warning) << "Cleanup watcher staging failed: unable to copy executable: " << ec.message();
+          return std::nullopt;
+        }
+
+        auto temporary_sha256 = sha256_file(temporary_path);
+        if (!temporary_sha256 || *temporary_sha256 != *source_sha256) {
+          std::filesystem::remove(temporary_path, ec);
+          if (attempt == 0) {
+            continue;
+          }
+          BOOST_LOG(warning) << "Cleanup watcher staging failed: copied executable hash did not match source";
+          return std::nullopt;
+        }
+
+        if (!MoveFileExW(
+              temporary_path.c_str(),
+              staged_path.c_str(),
+              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+            )) {
+          const DWORD move_error = GetLastError();
+          auto raced_sha256 = sha256_file(staged_path);
+          std::filesystem::remove(temporary_path, ec);
+          if (!raced_sha256 || *raced_sha256 != *source_sha256) {
+            BOOST_LOG(warning) << "Cleanup watcher staging failed: atomic publish failed, error=" << move_error;
+            return std::nullopt;
+          }
+        }
+
+        auto staged_sha256 = sha256_file(staged_path);
+        if (!staged_sha256 || *staged_sha256 != *source_sha256) {
+          BOOST_LOG(warning) << "Cleanup watcher staging failed: published executable hash did not match source";
+          return std::nullopt;
+        }
+
+        cleanup_stale_watchdog_versions(*cache_root, *source_sha256);
+        return staged_watchdog_t {staged_path, *source_sha256};
+      }
+
+      return std::nullopt;
+    }
+
     // Quote an argument for CommandLineToArgvW/CreateProcessW. Backslashes before
     // a closing quote must be doubled, including the trailing slash common in
     // Playnite install directories.
@@ -44,6 +334,76 @@ namespace playnite_launcher::playnite {
       return quoted;
     }
   }  // namespace
+
+  cleanup_lease_t::cleanup_lease_t(cleanup_lease_t &&other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+
+  cleanup_lease_t &cleanup_lease_t::operator=(cleanup_lease_t &&other) noexcept {
+    if (this != &other) {
+      if (handle_) {
+        ReleaseMutex(handle_);
+        CloseHandle(handle_);
+      }
+      handle_ = std::exchange(other.handle_, nullptr);
+    }
+    return *this;
+  }
+
+  cleanup_lease_t::~cleanup_lease_t() {
+    if (handle_) {
+      ReleaseMutex(handle_);
+      CloseHandle(handle_);
+    }
+  }
+
+  std::optional<cleanup_lease_t> cleanup_lease_t::acquire(const std::string &install_dir_utf8) {
+    const auto mutex_name = cleanup_lease_mutex_name(install_dir_utf8);
+    if (!mutex_name) {
+      return std::nullopt;
+    }
+
+    HANDLE handle = CreateMutexW(nullptr, FALSE, mutex_name->c_str());
+    if (!handle) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to create mutex for install directory";
+      return std::nullopt;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle, 0);
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      return cleanup_lease_t {handle};
+    }
+
+    if (wait_result != WAIT_TIMEOUT) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to acquire mutex, error=" << wait_result;
+    }
+    CloseHandle(handle);
+    return std::nullopt;
+  }
+
+  bool cleanup_lease_t::held_by_another_launcher(const std::string &install_dir_utf8) {
+    const auto mutex_name = cleanup_lease_mutex_name(install_dir_utf8);
+    if (!mutex_name) {
+      return false;
+    }
+
+    HANDLE handle = CreateMutexW(nullptr, FALSE, mutex_name->c_str());
+    if (!handle) {
+      BOOST_LOG(warning) << "Cleanup lease: failed to inspect mutex for install directory";
+      return false;
+    }
+
+    const DWORD wait_result = WaitForSingleObject(handle, 0);
+    if (wait_result == WAIT_TIMEOUT) {
+      CloseHandle(handle);
+      return true;
+    }
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+      ReleaseMutex(handle);
+    } else {
+      BOOST_LOG(warning) << "Cleanup lease: failed to inspect mutex, error=" << wait_result;
+    }
+    CloseHandle(handle);
+    return false;
+  }
 
   bool is_playnite_running() {
     try {
@@ -368,7 +728,19 @@ namespace playnite_launcher::playnite {
 
   bool spawn_cleanup_watchdog_process(const std::wstring &self_path, const std::string &install_dir_utf8, int exit_timeout_secs, bool fullscreen_flag, std::optional<DWORD> wait_for_pid) {
     try {
-      std::wstring wcmd = quote_command_line_argument(self_path) + L" --do-cleanup";
+      const watchdog_cache_lock_t cache_lock;
+      const auto staged_watchdog = cache_lock ? stage_cleanup_watchdog(self_path) : std::nullopt;
+      const std::wstring watchdog_path = staged_watchdog ? staged_watchdog->path.wstring() : self_path;
+      if (staged_watchdog) {
+        BOOST_LOG(info) << "Cleanup watcher staged at '" << platf::dxgi::wide_to_utf8(watchdog_path)
+                        << "' sha256=" << platf::dxgi::wide_to_utf8(staged_watchdog->sha256);
+      } else if (!cache_lock) {
+        BOOST_LOG(warning) << "Cleanup watcher staging skipped: unable to acquire the cache lock; upgrade survival is unavailable";
+      } else {
+        BOOST_LOG(warning) << "Cleanup watcher will run from the installed executable; upgrade survival is unavailable";
+      }
+
+      std::wstring wcmd = quote_command_line_argument(watchdog_path) + L" --do-cleanup";
       if (!install_dir_utf8.empty()) {
         wcmd += L" --install-dir " + quote_command_line_argument(platf::dxgi::utf8_to_wide(install_dir_utf8));
       }
@@ -393,15 +765,24 @@ namespace playnite_launcher::playnite {
       std::wstring cmdline = wcmd;
       DWORD flags_base = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS;
       DWORD flags_try = flags_base | CREATE_BREAKAWAY_FROM_JOB;
-      BOOL ok = CreateProcessW(self_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_try, nullptr, nullptr, &si, &pi);
+      BOOL ok = CreateProcessW(watchdog_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_try, nullptr, nullptr, &si, &pi);
+      bool created_with_breakaway = ok != FALSE;
       if (!ok) {
-        ok = CreateProcessW(self_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_base, nullptr, nullptr, &si, &pi);
+        const DWORD breakaway_error = GetLastError();
+        BOOST_LOG(warning) << "Cleanup watcher spawn with job breakaway failed, error=" << breakaway_error
+                           << "; retrying without breakaway";
+        ok = CreateProcessW(watchdog_path.c_str(), cmdline.data(), nullptr, nullptr, FALSE, flags_base, nullptr, nullptr, &si, &pi);
       }
       if (!ok) {
         BOOST_LOG(warning) << "Cleanup watcher spawn failed (fullscreen=" << fullscreen_flag << ") error=" << GetLastError();
         return false;
       }
-      BOOST_LOG(info) << "Cleanup watcher spawned (fullscreen=" << fullscreen_flag << ", pid=" << pi.dwProcessId << ")";
+
+      BOOL in_job = FALSE;
+      const BOOL job_query_succeeded = IsProcessInJob(pi.hProcess, nullptr, &in_job);
+      BOOST_LOG(info) << "Cleanup watcher spawned (fullscreen=" << fullscreen_flag << ", pid=" << pi.dwProcessId
+                      << ", breakaway_create=" << (created_with_breakaway ? "true" : "false")
+                      << ", in_job=" << (job_query_succeeded ? (in_job ? "true" : "false") : "unknown") << ")";
       if (pi.hThread) {
         CloseHandle(pi.hThread);
       }

@@ -2362,10 +2362,17 @@ namespace {
     std::atomic<RestoreWindow> restore_active_window {RestoreWindow::Event};
     std::atomic<bool> retry_apply_on_topology {false};
     std::atomic<bool> retry_revert_on_topology {false};
+    // A refresh-only request transfers refresh-rate ownership to Sunshine's
+    // adaptive virtual-display controller. Keep that rate in the configuration
+    // used by delayed verification so the verifier cannot start a base/high-rate
+    // feedback loop. The high and low DWORDs hold numerator and denominator;
+    // zero means no override is active.
+    std::atomic<std::uint64_t> refresh_rate_override {0};
     std::optional<display_device::SingleDisplayConfiguration> last_cfg;
     std::atomic<bool> exit_after_revert {false};
     std::atomic<bool> *running_flag {nullptr};
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
+    std::mutex delayed_reapply_mutex;
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
     std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
     std::filesystem::path golden_path;  // file to store golden snapshot
@@ -2408,10 +2415,17 @@ namespace {
     std::atomic<long long> last_heartbeat_ms {0};
     std::atomic<bool> heartbeat_revert_armed {false};
     std::atomic<long long> heartbeat_revert_deadline_ms {0};
+    // A dropped control pipe is not proof that the host exited. The host retires and
+    // re-opens the connection routinely (cached-connection resets around capture
+    // reinit, and any reply that outruns its client-side timeout). Exiting on the
+    // first disconnect left a live stream with no helper for the rest of the session,
+    // so a disconnect with nothing to restore now waits for a reconnect instead.
+    std::atomic<long long> reconnect_exit_deadline_ms {0};
 
     static constexpr auto kRestoreWindowPrimary = std::chrono::minutes(2);
     static constexpr auto kRestoreWindowEvent = std::chrono::seconds(30);
     static constexpr auto kRestoreEventDebounce = std::chrono::milliseconds(500);
+    static constexpr auto kReconnectExitGrace = std::chrono::seconds(60);
     static constexpr auto kHeartbeatOptionalWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
@@ -2449,6 +2463,24 @@ namespace {
                std::chrono::steady_clock::now().time_since_epoch()
       )
         .count();
+    }
+
+    void arm_reconnect_exit_grace(const char *reason) {
+      const auto deadline = steady_now_ms() +
+                            std::chrono::duration_cast<std::chrono::milliseconds>(kReconnectExitGrace).count();
+      reconnect_exit_deadline_ms.store(deadline, std::memory_order_release);
+      BOOST_LOG(info) << "Client disconnected (" << reason << "); staying alive for "
+                      << std::chrono::duration_cast<std::chrono::seconds>(kReconnectExitGrace).count()
+                      << "s in case the host reconnects.";
+    }
+
+    void disarm_reconnect_exit_grace() {
+      reconnect_exit_deadline_ms.store(0, std::memory_order_release);
+    }
+
+    bool reconnect_exit_grace_expired() const {
+      const auto deadline = reconnect_exit_deadline_ms.load(std::memory_order_acquire);
+      return deadline != 0 && steady_now_ms() >= deadline;
     }
 
     void begin_heartbeat_monitoring() {
@@ -4018,9 +4050,10 @@ namespace {
 
     void on_topology_changed() {
       // Re-apply path
-      if (retry_apply_on_topology.load(std::memory_order_acquire) && last_cfg) {
+      if (retry_apply_on_topology.load(std::memory_order_acquire)) {
         BOOST_LOG(info) << "Topology changed: reattempting apply";
-        if (controller.apply(*last_cfg)) {
+        const auto cfg = effective_last_cfg();
+        if (cfg && controller.apply(*cfg)) {
           retry_apply_on_topology.store(false, std::memory_order_release);
           refresh_shell_after_display_change();
         }
@@ -4035,6 +4068,7 @@ namespace {
     // resolution immediately after activating a display. The provided delays represent
     // the windows (relative to now) when verification/re-apply should be attempted.
     void schedule_delayed_reapply(std::vector<std::chrono::milliseconds> delays = {250ms, 750ms}) {
+      std::lock_guard lock(delayed_reapply_mutex);
       if (delayed_reapply_thread.joinable()) {
         delayed_reapply_thread.request_stop();
         delayed_reapply_thread.join();
@@ -4046,6 +4080,7 @@ namespace {
     }
 
     void cancel_delayed_reapply() {
+      std::lock_guard lock(delayed_reapply_mutex);
       if (delayed_reapply_thread.joinable()) {
         delayed_reapply_thread.request_stop();
         delayed_reapply_thread.join();
@@ -4138,21 +4173,34 @@ namespace {
       }
     }
 
+    std::optional<display_device::SingleDisplayConfiguration> effective_last_cfg() const {
+      if (!last_cfg) {
+        return std::nullopt;
+      }
+
+      auto cfg = *last_cfg;
+      const auto packed_rate = refresh_rate_override.load(std::memory_order_acquire);
+      if (packed_rate != 0) {
+        const auto numerator = static_cast<unsigned int>(packed_rate >> 32u);
+        const auto denominator = static_cast<unsigned int>(packed_rate & 0xffffffffu);
+        cfg.m_refresh_rate = display_device::Rational {numerator, denominator};
+      }
+      return cfg;
+    }
+
     void best_effort_apply_last_cfg() {
       try {
-        if (last_cfg) {
-          (void) controller.apply(*last_cfg);
+        if (const auto cfg = effective_last_cfg()) {
+          (void) controller.apply(*cfg);
           refresh_shell_after_display_change();
         }
       } catch (...) {}
     }
 
     bool verify_last_configuration_sticky(std::chrono::milliseconds settle_delay = kVerificationSettleDelay, std::stop_token st = {}) {
-      if (!last_cfg) {
-        return true;
-      }
       auto matches = [&]() {
-        return controller.configuration_matches_current_state(*last_cfg);
+        const auto cfg = effective_last_cfg();
+        return !cfg || controller.configuration_matches_current_state(*cfg);
       };
       if (!matches()) {
         return false;
@@ -4167,10 +4215,8 @@ namespace {
     }
 
     bool configuration_matches_last() const {
-      if (!last_cfg) {
-        return true;
-      }
-      return controller.configuration_matches_current_state(*last_cfg);
+      const auto cfg = effective_last_cfg();
+      return !cfg || controller.configuration_matches_current_state(*cfg);
     }
 
     void cancel_post_apply_tasks() {
@@ -5029,6 +5075,7 @@ namespace {
     state.stop_restore_polling();
     state.cancel_delayed_reapply();
     state.cancel_post_apply_tasks();
+    state.refresh_rate_override.store(0, std::memory_order_release);
     state.exit_after_revert.store(false, std::memory_order_release);
 
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
@@ -5042,6 +5089,11 @@ namespace {
     try {
       auto j = nlohmann::json::parse(json);
       if (j.is_object()) {
+        // v2 capability detection adds a backward-compatible correlation
+        // token to every APPLY.  The legacy engine has no asynchronous
+        // verification phase, so discard it before deserializing the public
+        // display configuration and retain the original untagged response.
+        j.erase("sunshine_apply_id");
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");
@@ -5287,7 +5339,26 @@ namespace {
       }
 
       const bool valid = numerator && denominator && *numerator > 0 && *denominator > 0 && !device_id.empty();
+      const bool overrides_configured_rate = valid && state.last_cfg &&
+                                             _stricmp(state.last_cfg->m_device_id.c_str(), device_id.c_str()) == 0;
+      if (overrides_configured_rate) {
+        // Stop any in-flight verifier before changing ownership, then make its
+        // future comparisons and re-applies use the adaptive refresh rate.
+        const auto packed_rate = (static_cast<std::uint64_t>(*numerator) << 32u) | *denominator;
+        state.refresh_rate_override.store(packed_rate, std::memory_order_release);
+        state.cancel_delayed_reapply();
+      }
       const bool success = valid && state.controller.set_device_refresh_rate(device_id, *numerator, *denominator);
+      if (overrides_configured_rate && !success) {
+        state.refresh_rate_override.store(0, std::memory_order_release);
+      }
+      if (overrides_configured_rate) {
+        std::vector<std::chrono::milliseconds> reapply_delays {750ms};
+        if (state.last_cfg && state.last_cfg->m_hdr_state) {
+          reapply_delays = {750ms, 2500ms, 5500ms};
+        }
+        state.schedule_delayed_reapply(std::move(reapply_delays));
+      }
       BOOST_LOG(success ? info : warning)
         << "Display helper: refresh-only request device=" << (device_id.empty() ? "(missing)" : device_id)
         << " rate=" << (numerator ? std::to_string(*numerator) : "invalid")
@@ -5339,7 +5410,7 @@ namespace {
                                       state.exit_after_revert.load(std::memory_order_acquire);
     if (!potentially_modified) {
       state.restore_requested.store(false, std::memory_order_release);
-      running.store(false, std::memory_order_release);
+      state.arm_reconnect_exit_grace("nothing to restore");
       return;
     }
 
@@ -5350,7 +5421,7 @@ namespace {
     if (!state.restore_on_disconnect.load(std::memory_order_acquire) && !explicit_restore_pending) {
       BOOST_LOG(info) << "Client disconnected with restore-on-disconnect disabled; disarming restore state.";
       state.disarm_restore_requests("Restore-on-disconnect disabled after client disconnect");
-      running.store(false, std::memory_order_release);
+      state.arm_reconnect_exit_grace("restore-on-disconnect disabled");
       return;
     }
 
@@ -5608,6 +5679,10 @@ int run_legacy_helper(int argc, char *argv[]) {
     // and tear down the server pipe before Sunshine has any chance to connect.
     async_pipe.wait_for_client_connection(15000);
     if (!async_pipe.is_connected()) {
+      if (state.reconnect_exit_grace_expired()) {
+        BOOST_LOG(info) << "No client reconnected within the post-disconnect grace window; shutting down.";
+        break;
+      }
       const auto now = std::chrono::steady_clock::now();
       if (now - last_connect_wait_log > kReconnectLogInterval) {
         BOOST_LOG(info) << "Waiting for Sunshine to connect to display helper IPC...";
@@ -5615,6 +5690,7 @@ int run_legacy_helper(int argc, char *argv[]) {
       }
       continue;
     }
+    state.disarm_reconnect_exit_grace();
 
     const auto connection_epoch = state.begin_connection_epoch();
     // Do not cancel restore polling merely because Sunshine connected. Stream start

@@ -138,12 +138,33 @@ namespace platf::playnite {
   struct playnite_session_tracker_t {
     std::mutex mtx;
     std::string last_started_id;
+    std::string requested_stop_id;
     bool seen_started {false};
 
     void on_started(const std::string &id) {
       std::scoped_lock lk(mtx);
       last_started_id = id;
+      requested_stop_id.clear();
       seen_started = true;
+    }
+
+    void on_stop_requested(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      requested_stop_id = lower_copy(id);
+    }
+
+    bool consume_requested_stop(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      if (requested_stop_id.empty()) {
+        return false;
+      }
+      if (!id.empty() && lower_copy(id) != requested_stop_id) {
+        return false;
+      }
+      requested_stop_id.clear();
+      seen_started = false;
+      last_started_id.clear();
+      return true;
     }
 
     bool allow_stop(const std::string &id) {
@@ -163,6 +184,7 @@ namespace platf::playnite {
       std::scoped_lock lk(mtx);
       seen_started = false;
       last_started_id.clear();
+      requested_stop_id.clear();
     }
   };
 
@@ -332,7 +354,7 @@ namespace platf::playnite {
       return client_ && client_->send_json_line(s);
     }
 
-    bool trigger_sync() {
+    bool trigger_sync(const bool wait_for_snapshot) {
       // Reconciling against the cached snapshot right away is wrong when the IPC client just
       // started (cache empty) or Playnite has unsent changes: ask the plugin for a fresh snapshot
       // and wait for it to complete before syncing. Older plugins ignore the command and never
@@ -343,13 +365,14 @@ namespace platf::playnite {
         std::scoped_lock lk(mutex_);
         start_generation = snapshot_generation_;
       }
+      bool snapshot_requested = false;
       try {
         nlohmann::json req;
         req["type"] = "command";
         req["command"] = "snapshot";
-        send_cmd_json_line(req.dump());
+        snapshot_requested = send_cmd_json_line(req.dump());
       } catch (...) {}
-      {
+      if (snapshot_requested && wait_for_snapshot) {
         std::unique_lock lk(mutex_);
         const bool fresh = snapshot_cv_.wait_for(lk, kManualSyncSnapshotWait, [&]() {
           return snapshot_generation_ != start_generation;
@@ -359,9 +382,14 @@ namespace platf::playnite {
                              << std::chrono::duration_cast<std::chrono::seconds>(kManualSyncSnapshotWait).count()
                              << "s; syncing against cached data";
         }
+      } else if (!snapshot_requested) {
+        BOOST_LOG(debug) << "Playnite: snapshot command was not delivered; skipping snapshot wait";
+      } else {
+        BOOST_LOG(debug) << "Playnite: snapshot requested asynchronously; syncing against cached data without blocking startup";
       }
       auto stats = sync_apps_metadata();
-      BOOST_LOG(info) << "Playnite: manual library sync " << sync_summary(stats);
+      BOOST_LOG(info) << "Playnite: " << (wait_for_snapshot ? "manual" : "non-blocking")
+                      << " library sync " << sync_summary(stats);
       return stats.success;
     }
 
@@ -828,6 +856,10 @@ namespace platf::playnite {
                              << "' (active Playnite id='" << guard.playnite_id << "')";
             return;
           }
+          if (playnite_session_tracker().consume_requested_stop(msg.status_game_id)) {
+            BOOST_LOG(debug) << "Playnite: received gameStopped acknowledgment for requested stop";
+            return;
+          }
           if (!playnite_session_tracker().allow_stop(msg.status_game_id)) {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped because no prior gameStarted for this session";
             return;
@@ -887,7 +919,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched, config::playnite.auto_sync);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
@@ -1079,6 +1111,75 @@ namespace platf::playnite {
     return true;
   }
 
+  // The official per-user installer registers Playnite in the interactive user's HKCU,
+  // but keeps extensions in RoamingAppData rather than alongside LocalAppData's executable.
+  static bool has_per_user_playnite_install(HANDLE user_token) {
+    bool installed = false;
+    auto read_install = [&]() {
+      HKEY user_root = nullptr;
+      if (RegOpenCurrentUser(KEY_READ, &user_root) != ERROR_SUCCESS) {
+        return;
+      }
+      auto close_user_root = util::fail_guard([user_root]() {
+        RegCloseKey(user_root);
+      });
+
+      HKEY install_key = nullptr;
+      constexpr auto uninstall_key_path = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Playnite_is1";
+      if (RegOpenKeyExW(user_root, uninstall_key_path, 0, KEY_QUERY_VALUE, &install_key) != ERROR_SUCCESS) {
+        return;
+      }
+      auto close_install_key = util::fail_guard([install_key]() {
+        RegCloseKey(install_key);
+      });
+
+      DWORD value_type = 0;
+      DWORD byte_count = 0;
+      installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, nullptr, &byte_count) == ERROR_SUCCESS &&
+                  (value_type == REG_SZ || value_type == REG_EXPAND_SZ) && byte_count > sizeof(wchar_t);
+    };
+    if (user_token) {
+      if (const auto ec = platf::impersonate_current_user(user_token, read_install)) {
+        BOOST_LOG(debug) << "Playnite: could not open the interactive user's HKCU: " << ec.message();
+      }
+    } else {
+      read_install();
+    }
+    return installed;
+  }
+
+  static bool resolve_extensions_dir_via_per_user_install(std::filesystem::path &destOut) {
+    HANDLE user_token = nullptr;
+    if (platf::dxgi::is_running_as_system()) {
+      user_token = acquire_preferred_user_token_for_playnite();
+      if (!user_token) {
+        BOOST_LOG(debug) << "Playnite: no interactive user token for HKCU install lookup";
+        return false;
+      }
+    }
+    auto close_user_token = util::fail_guard([user_token]() {
+      if (user_token) {
+        CloseHandle(user_token);
+      }
+    });
+
+    if (!has_per_user_playnite_install(user_token)) {
+      return false;
+    }
+
+    PWSTR roaming = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, user_token, &roaming)) || !roaming) {
+      BOOST_LOG(debug) << "Playnite: could not resolve the interactive user's RoamingAppData";
+      return false;
+    }
+    auto free_roaming = util::fail_guard([roaming]() {
+      CoTaskMemFree(roaming);
+    });
+    destOut = std::filesystem::path(roaming) / L"Playnite" / L"Extensions" / L"SunshinePlaynite";
+    BOOST_LOG(debug) << "Playnite: interactive-user HKCU install uses RoamingAppData extensions target " << destOut.string();
+    return true;
+  }
+
   // Resolve the Playnite Extensions/SunshinePlaynite directory via the "playnite" URL association.
   // Uses per-user registry views and impersonates the active user before calling AssocQueryString.
   static bool resolve_extensions_dir_via_assoc(std::filesystem::path &destOut) {
@@ -1099,7 +1200,7 @@ namespace platf::playnite {
 
   bool get_extension_target_dir(std::string &out) {
     std::filesystem::path dest;
-    if (!resolve_extensions_dir_via_assoc(dest)) {
+    if (!resolve_extensions_dir_via_per_user_install(dest) && !resolve_extensions_dir_via_assoc(dest)) {
       return false;
     }
     out = dest.string();
@@ -1432,16 +1533,24 @@ namespace platf::playnite {
     if (!playnite_id.empty()) {
       j["id"] = playnite_id;
     }
-    return inst->send_cmd_json_line(j.dump());
+    const bool sent = inst->send_cmd_json_line(j.dump());
+    if (sent) {
+      playnite_session_tracker().on_stop_requested(playnite_id);
+    }
+    return sent;
   }
 
-  bool force_sync() {
+  bool force_sync(const bool wait_for_snapshot) {
+    if (!is_plugin_installed()) {
+      BOOST_LOG(debug) << "Playnite: sync skipped because the plugin is not installed";
+      return false;
+    }
     auto inst = g_instance.load(std::memory_order_acquire);
     if (!inst) {
       return false;
     }
     inst->ensure_started_for_api();
-    return inst->trigger_sync();
+    return inst->trigger_sync(wait_for_snapshot);
   }
 
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {

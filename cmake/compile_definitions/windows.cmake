@@ -201,6 +201,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
@@ -246,6 +248,14 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Util.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/km/BusShared.h"
+        # Native AMD AMF encoder (D3D11). AMF SDK headers are provided by the
+        # bundled FFmpeg build-deps (include/AMF), so no extra dependency is
+        # required - the runtime (amfrt64.dll) is loaded dynamically.
+        "${CMAKE_SOURCE_DIR}/src/amf/amf_config.h"
+        "${CMAKE_SOURCE_DIR}/src/amf/amf_encoded_frame.h"
+        "${CMAKE_SOURCE_DIR}/src/amf/amf_encoder.h"
+        "${CMAKE_SOURCE_DIR}/src/amf/amf_d3d11.h"
+        "${CMAKE_SOURCE_DIR}/src/amf/amf_d3d11.cpp"
         ${NVPREFS_FILES})
 
 set(OPENSSL_LIBRARIES

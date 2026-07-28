@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "repository": "Nonary/libwebrtc",
-  "tag": "v1.0.0",
-  "version": "1.0.0",
-  "asset": "libwebrtc-1.0.0-windows-x64.zip",
+  "tag": "v1.0.1",
+  "version": "1.0.1",
+  "asset": "libwebrtc-1.0.1-windows-x64.zip",
   "platform": "windows-x64",
   "configuration": "Release",
   "runner_os": "Windows",
@@ -11,10 +11,10 @@
   "webrtc_repo_url": "https://github.com/webrtc-sdk/webrtc.git",
   "webrtc_ref": "m125_release",
   "webrtc_revision": "db3ba7af86dd6d48174ed35387d11c0794f1a21b",
-  "libwebrtc_wrapper_commit": "ed565a83634f3c89d892b69ec4e5fa9ba1adc00a",
-  "libwebrtc_output_input_hash": "0311d822a6ccfe4151eff4950fef0864",
-  "binary_recipe_hash": "3219a4b9cd53c715e4bd",
-  "output_key": "webrtc-output-v2-windows-ucrt-x86_64-release-db3ba7af86dd6d48174ed35387d11c0794f1a21b-libwebrtc-inputs-0311d822a6ccfe4151eff4950fef0864-win-x64-mingw-libwebrtc-dll-3219a4b9cd53c715e4bd",
-  "sha256": "ffa8fb0265912f4a32b4c2cde808fc8e370aed4bc4699406c3007e5e12f11503",
-  "created_utc": "2026-06-12T02:10:34Z"
+  "libwebrtc_wrapper_commit": "3dc0345bf702db259d641d09e56ab6a5d62401b2",
+  "libwebrtc_output_input_hash": "c4306293828a47b8da44aa72b488b631",
+  "binary_recipe_hash": "096a0123ade598bc48a5",
+  "output_key": "webrtc-output-v2-windows-ucrt-x86_64-release-db3ba7af86dd6d48174ed35387d11c0794f1a21b-libwebrtc-inputs-c4306293828a47b8da44aa72b488b631-win-x64-mingw-libwebrtc-dll-096a0123ade598bc48a5",
+  "sha256": "1bd3adfee974d6119b2a23cacd1c0eab1f9b73da8fa69448f5f8fd2a8089fe67",
+  "created_utc": "2026-07-18T21:25:42Z"
 }

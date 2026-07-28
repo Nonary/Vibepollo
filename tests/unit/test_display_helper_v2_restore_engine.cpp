@@ -15,6 +15,7 @@
 
   #include <chrono>
   #include <filesystem>
+  #include <functional>
   #include <fstream>
 
   #include <nlohmann/json.hpp>
@@ -210,7 +211,7 @@ TEST(DisplayHelperV2Codec, FilterLoadRejectsWhenNoValidDevices) {
   EXPECT_FALSE(result.has_value());
 }
 
-TEST(DisplayHelperV2Codec, FilterLoadDropsAbsentDevicesButKeepsRest) {
+TEST(DisplayHelperV2Codec, FilterLoadRejectsMissingNonExcludedBaselineDevice) {
   codec::ParsedSnapshot loaded;
   loaded.snapshot = make_snapshot({{"A"}, {"B"}});
   loaded.has_layout_data = true;
@@ -222,6 +223,21 @@ TEST(DisplayHelperV2Codec, FilterLoadDropsAbsentDevicesButKeepsRest) {
   };
 
   auto result = codec::filter_loaded_snapshot(std::move(loaded), devices, {}, "test");
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST(DisplayHelperV2Codec, FilterLoadDropsExplicitlyExcludedMissingBaselineDevice) {
+  codec::ParsedSnapshot loaded;
+  loaded.snapshot = make_snapshot({{"A"}, {"B"}});
+  loaded.has_layout_data = true;
+  loaded.layout_rotations = {{"A", 0}, {"B", 90}};
+
+  display_device::EnumeratedDeviceList devices {
+    make_device("A", "\\\\.\\DISPLAY1", true),
+    // B is intentionally excluded and need not be present.
+  };
+
+  auto result = codec::filter_loaded_snapshot(std::move(loaded), devices, {"b"}, "test");
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(result->snapshot.m_topology.size(), 1u);
   EXPECT_EQ(result->snapshot.m_topology.front().front(), "A");
@@ -246,19 +262,42 @@ TEST(DisplayHelperV2Codec, FilterLoadAllowsInactiveButConnectedDevices) {
   EXPECT_EQ(result->snapshot.m_topology.front().front(), "A");
 }
 
-// --- save-side filtering (f3841ad8) ---
+// --- save-side filtering ---
 
-TEST(DisplayHelperV2Codec, FilterSaveRejectsWhenActiveVirtualPresent) {
-  auto snap = make_snapshot({{"PHYS"}});
+TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
+  snap.m_origins["PHYS1"] = display_device::Point {0, 0};
+  snap.m_origins["PHYS2"] = display_device::Point {1920, 0};
+  snap.m_origins["VDD"] = display_device::Point {3840, 0};
   display_device::EnumeratedDeviceList devices {
-    make_device("PHYS", "\\\\.\\DISPLAY1", true),
-    make_device("VDD", "\\\\.\\DISPLAY2", true, "SDD"),
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("PHYS2", "\\\\.\\DISPLAY2", true),
+    make_device("VDD", "\\\\.\\DISPLAY3", true, "SDD"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->m_topology.size(), 2u);
+  EXPECT_EQ(result->m_topology[0].front(), "PHYS1");
+  EXPECT_EQ(result->m_topology[1].front(), "PHYS2");
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
+  EXPECT_EQ(result->m_hdr_states.count("VDD"), 0u);
+  EXPECT_EQ(result->m_origins.count("VDD"), 0u);
+  EXPECT_EQ(result->m_primary_device, "PHYS1");
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveRejectsVirtualOnlySnapshot) {
+  auto snap = make_snapshot({{"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("VDD", "\\\\.\\DISPLAY1", true, "SDD"),
   };
 
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
   EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(reason, "active virtual display present");
+  EXPECT_EQ(reason, "no devices with valid display_name");
 }
 
 TEST(DisplayHelperV2Codec, FilterSaveDropsDevicesWithoutDisplayName) {
@@ -356,9 +395,8 @@ namespace {
     std::chrono::steady_clock::time_point now_ {std::chrono::steady_clock::now() + std::chrono::hours(1)};
   };
 
-  /// Stateful display fake: apply_snapshot takes effect on `current` unless the
-  /// snapshot's first device id is in `ineffective_ids` (simulates Windows
-  /// accepting the calls without the state actually sticking).
+  /// Stateful display fake: topology and settings are distinct operations so
+  /// recovery tests can assert the Windows activation stair-step.
   class EngineDisplayFake final : public display_helper::v2::IDisplaySettings {
   public:
     using ApplyStatus = display_helper::v2::ApplyStatus;
@@ -367,11 +405,21 @@ namespace {
       return ApplyStatus::Ok;
     }
 
-    ApplyStatus apply_topology(const display_device::ActiveTopology &) override {
+    ApplyStatus apply_topology(const display_device::ActiveTopology &topology) override {
+      ++topology_calls;
+      transition_order.push_back("topology:" + first_id(topology));
+      current.m_topology = topology;
+      if (on_topology_applied) {
+        on_topology_applied();
+      }
       return ApplyStatus::Ok;
     }
 
     display_device::EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail) override {
+      ++enumerate_calls;
+      if (on_enumerate) {
+        on_enumerate();
+      }
       return devices;
     }
 
@@ -388,9 +436,14 @@ namespace {
     }
 
     bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snapshot) override {
+      return apply_snapshot_settings(snapshot);
+    }
+
+    bool apply_snapshot_settings(const display_device::DisplaySettingsSnapshot &snapshot) override {
       ++apply_calls;
       const auto id = first_id(snapshot);
       apply_order.push_back(id);
+      transition_order.push_back("settings:" + id);
       if (!ineffective_ids.contains(id)) {
         current = snapshot;
       }
@@ -419,9 +472,18 @@ namespace {
       return codec::canonical_topology(lhs) == codec::canonical_topology(rhs);
     }
 
+    bool reset_staged_apply_state() override {
+      ++reset_staged_apply_state_calls;
+      return reset_staged_apply_state_result;
+    }
+
     static std::string first_id(const display_device::DisplaySettingsSnapshot &snapshot) {
-      if (!snapshot.m_topology.empty() && !snapshot.m_topology.front().empty()) {
-        return snapshot.m_topology.front().front();
+      return first_id(snapshot.m_topology);
+    }
+
+    static std::string first_id(const display_device::ActiveTopology &topology) {
+      if (!topology.empty() && !topology.front().empty()) {
+        return topology.front().front();
       }
       return {};
     }
@@ -430,7 +492,14 @@ namespace {
     display_device::EnumeratedDeviceList devices;
     std::set<std::string> ineffective_ids;
     std::vector<std::string> apply_order;
+    std::vector<std::string> transition_order;
     int apply_calls = 0;
+    int topology_calls = 0;
+    int enumerate_calls = 0;
+    int reset_staged_apply_state_calls = 0;
+    bool reset_staged_apply_state_result = true;
+    std::function<void()> on_topology_applied;
+    std::function<void()> on_enumerate;
   };
 
   struct RecoveryHarness {
@@ -467,6 +536,42 @@ TEST(DisplayHelperV2RecoveryEngine, TerminatesWithoutApplyOnFirstConfirmedMatch)
 
   EXPECT_TRUE(outcome.success);
   EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+}
+
+TEST(DisplayHelperV2RecoveryEngine, StopsBeforeSettingsWhenTopologyStageIsCancelled) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, baseline));
+  harness.display.current = make_snapshot({{"B"}});
+  harness.display.on_enumerate = [&] {
+    if (harness.display.enumerate_calls >= 2) {
+      harness.cancellation.cancel();
+    }
+  };
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_FALSE(outcome.success);
+  EXPECT_TRUE(outcome.display_may_have_changed);
+  EXPECT_EQ(harness.display.topology_calls, 1);
+  EXPECT_EQ(harness.display.apply_calls, 0);
+}
+
+TEST(DisplayHelperV2RecoveryEngine, ReportsFailedStagedStateReset) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+  const auto baseline = make_snapshot({{"A"}});
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, baseline));
+  harness.display.current = baseline;
+  harness.display.reset_staged_apply_state_result = false;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_TRUE(outcome.staged_state_reset_attempted);
+  EXPECT_FALSE(outcome.staged_state_reset_succeeded);
 }
 
 // 79681014 / 8f2d0632: when the current session snapshot is missing, golden is
@@ -487,6 +592,9 @@ TEST(DisplayHelperV2RecoveryEngine, PrefersGoldenWhenCurrentMissing) {
   EXPECT_EQ(EngineDisplayFake::first_id(*outcome.snapshot), "G");
   ASSERT_FALSE(harness.display.apply_order.empty());
   EXPECT_EQ(harness.display.apply_order.front(), "G");
+  ASSERT_GE(harness.display.transition_order.size(), 2u);
+  EXPECT_EQ(harness.display.transition_order[0], "topology:G");
+  EXPECT_EQ(harness.display.transition_order[1], "settings:G");
   // Confirmed golden restore clears the session snapshot chain.
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 }

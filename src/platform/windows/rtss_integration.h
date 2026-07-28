@@ -10,6 +10,17 @@
   #include <string>
 
 namespace platf {
+  enum class rtss_apply_result {
+    safe_to_fallback,
+    applied,
+    retained_exclusive,
+  };
+
+  enum class rtss_recovery_audit_result {
+    clear,
+    retained_exclusive,
+  };
+
   struct rtss_status_t {
     bool enabled;  // frame limiter toggle
     bool path_configured;  // install_path not empty
@@ -22,14 +33,21 @@ namespace platf {
     bool process_running;  // RTSS process currently running
   };
 
-  // Apply RTSS frame limit and related settings at stream start.
-  bool rtss_streaming_start(int scaled_limit, int denominator);
+  // Apply an RTSS frame limit represented as numerator / denominator. A
+  // retained_exclusive result means RTSS may still be limiting, but the
+  // requested rate was not confirmed, so another limiter must not be enabled.
+  rtss_apply_result rtss_streaming_start(int numerator, int denominator);
 
   // Re-apply RTSS frame limit and related settings without resetting originals.
-  bool rtss_streaming_refresh(int fps);
+  rtss_apply_result rtss_streaming_refresh(int numerator, int denominator);
+
+  // Resolve any durable RTSS recovery snapshot before another limiter is
+  // enabled. retained_exclusive means the caller must not select that limiter.
+  rtss_recovery_audit_result rtss_audit_pending_recovery();
 
   // True when the most recent stream start/refresh abandoned RTSS hooks after
-  // the response deadline. Callers may use this to select another provider.
+  // the response deadline. Callers may select another provider only when the
+  // associated apply result is safe_to_fallback.
   bool rtss_hooks_stalled();
 
   // Restore any RTSS settings modified at stream start.

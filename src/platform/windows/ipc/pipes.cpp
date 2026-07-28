@@ -1295,9 +1295,7 @@ namespace platf::dxgi {
     _running.store(false, std::memory_order_release);
 
     // Cancel any pending I/O operations to unblock the worker thread
-    if (_pipe) {
-      _pipe->disconnect();
-    }
+    disconnect_pipe();
 
     if (_worker.joinable()) {
       _worker.join();
@@ -1305,11 +1303,24 @@ namespace platf::dxgi {
   }
 
   void AsyncNamedPipe::send(std::span<const uint8_t> message) {
+    // Multiple producers (the pipe worker, helper state callbacks, and
+    // dispatcher completions) can reply concurrently. Serialize complete
+    // writes so their byte-mode frames cannot be interleaved on the wire.
+    std::lock_guard<std::mutex> lock(_send_mutex);
     safe_execute_operation("send", [this, message]() {
       if (_pipe && _pipe->is_connected() && !_pipe->send(message, 5000)) {  // 5 second timeout for async sends
         BOOST_LOG(warning) << "Failed to send message through AsyncNamedPipe (timeout or error)";
       }
     });
+  }
+
+  void AsyncNamedPipe::disconnect_pipe() {
+    // Do not disconnect a byte-mode pipe halfway through a serialized
+    // response write.
+    std::lock_guard<std::mutex> lock(_send_mutex);
+    if (_pipe) {
+      _pipe->disconnect();
+    }
   }
 
   void AsyncNamedPipe::wait_for_client_connection(int milliseconds) {
@@ -1363,9 +1374,7 @@ namespace platf::dxgi {
           {
             if (bytesRead == 0) {  // remote closed
               // Ensure connection state reflects closure so outer loops can exit
-              if (_pipe) {
-                _pipe->disconnect();
-              }
+              disconnect_pipe();
               return;
             }
             // Create span from only the valid portion of the buffer
@@ -1379,18 +1388,14 @@ namespace platf::dxgi {
 
         case BrokenPipe:
           // Mark pipe as disconnected so the helper's outer loop can accept a new client
-          if (_pipe) {
-            _pipe->disconnect();
-          }
+          disconnect_pipe();
           safe_execute_operation("brokenPipe callback", _onBrokenPipe);
           return;  // terminate
 
         case Error:
         case Disconnected:
         default:
-          if (_pipe) {
-            _pipe->disconnect();
-          }
+          disconnect_pipe();
           return;  // terminate
       }
     }
@@ -1551,59 +1556,74 @@ namespace platf::dxgi {
   SelfHealingPipe::SelfHealingPipe(Creator creator):
       _creator(std::move(creator)) {}
 
-  bool SelfHealingPipe::ensure_connected() {
-    if (_inner && _inner->is_connected()) {
-      return true;
-    }
-    reconnect();
-    return _inner && _inner->is_connected();
+  std::shared_ptr<INamedPipe> SelfHealingPipe::acquire_inner() {
+    std::lock_guard<std::mutex> lock(_inner_mutex);
+    return _inner;
   }
 
-  void SelfHealingPipe::reconnect() {
+  void SelfHealingPipe::create_inner_locked() {
+    if (_inner) {
+      return;
+    }
     try {
-      _inner = _creator ? _creator() : nullptr;
+      auto created = _creator ? _creator() : nullptr;
+      _inner = created ? std::shared_ptr<INamedPipe>(std::move(created)) : nullptr;
     } catch (...) {
       _inner.reset();
     }
   }
 
   bool SelfHealingPipe::send(std::span<const uint8_t> bytes, int timeout_ms) {
-    if (!ensure_connected()) {
-      return false;
-    }
-    return _inner->send(bytes, timeout_ms);
+    // Keep only the ownership handoff synchronized. Read/write I/O is allowed
+    // to overlap on the same stable pipe; holding this mutex across a long
+    // verification receive would again starve heartbeat writes. A broken transport is
+    // intentionally surfaced to the client rather than replaced underneath a
+    // pending APPLY/verification transaction.
+    auto inner = acquire_inner();
+    return inner && inner->is_connected() && inner->send(bytes, timeout_ms);
   }
 
   PipeResult SelfHealingPipe::receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
     bytesRead = 0;
-    if (!ensure_connected()) {
-      return PipeResult::Disconnected;
-    }
-    return _inner->receive(dst, bytesRead, timeout_ms);
+    auto inner = acquire_inner();
+    return inner && inner->is_connected() ? inner->receive(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
   }
 
   PipeResult SelfHealingPipe::receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) {
     bytesRead = 0;
-    if (!ensure_connected()) {
-      return PipeResult::Disconnected;
-    }
-    return _inner->receive_latest(dst, bytesRead, timeout_ms);
+    auto inner = acquire_inner();
+    return inner && inner->is_connected() ? inner->receive_latest(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
   }
 
   void SelfHealingPipe::wait_for_client_connection(int milliseconds) {
-    if (!ensure_connected()) {
-      return;
+    std::shared_ptr<INamedPipe> inner;
+    {
+      std::lock_guard<std::mutex> lock(_inner_mutex);
+      create_inner_locked();
+      inner = _inner;
     }
-    _inner->wait_for_client_connection(milliseconds);
+    if (inner) {
+      inner->wait_for_client_connection(milliseconds);
+    }
   }
 
   void SelfHealingPipe::disconnect() {
-    if (_inner) {
-      _inner->disconnect();
+    std::shared_ptr<INamedPipe> inner;
+    {
+      std::lock_guard<std::mutex> lock(_inner_mutex);
+      inner = _inner;
+    }
+    if (inner) {
+      inner->disconnect();
     }
   }
 
   bool SelfHealingPipe::is_connected() {
-    return _inner && _inner->is_connected();
+    std::shared_ptr<INamedPipe> inner;
+    {
+      std::lock_guard<std::mutex> lock(_inner_mutex);
+      inner = _inner;
+    }
+    return inner && inner->is_connected();
   }
 }  // namespace platf::dxgi

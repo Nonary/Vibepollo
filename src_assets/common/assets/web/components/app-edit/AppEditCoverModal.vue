@@ -8,15 +8,15 @@
     <n-card :bordered="false" style="max-width: 48rem; width: 100%">
       <template #header>
         <div class="flex items-center justify-between w-full">
-          <span class="font-semibold">Covers Found</span>
+          <span class="font-semibold">{{ $t('apps.covers_found') }}</span>
           <n-button type="default" strong size="small" @click="emit('update:visible', false)">
-            Close
+            {{ $t('_common.close') }}
           </n-button>
         </div>
       </template>
       <div class="min-h-[160px]">
         <div v-if="coverSearching" class="flex items-center justify-center py-10">
-          <n-spin size="large">Loading…</n-spin>
+          <n-spin size="large">{{ $t('_common.loading') }}</n-spin>
         </div>
         <div v-else>
           <div
@@ -42,7 +42,7 @@
               </div>
             </div>
             <div v-if="!coverCandidates.length" class="col-span-full text-center opacity-70 py-8">
-              No results. Try adjusting the app name.
+              {{ $t('apps.no_covers_found') }}
             </div>
           </div>
         </div>

@@ -25,8 +25,39 @@ namespace display_helper::v2 {
     virtual void dispatch_verification(
       const ApplyRequest &request,
       const std::optional<ActiveTopology> &expected_topology,
+      const std::optional<ResolvedConfigurationTarget> &resolved_target,
       const CancellationToken &token,
       std::function<void(bool)> completion) = 0;
+
+    /// Queue a delayed health verification without blocking the state-machine
+    /// thread. Simple test dispatchers can use the default immediate behavior.
+    virtual void dispatch_verification_after(
+      const ApplyRequest &request,
+      const std::optional<ActiveTopology> &expected_topology,
+      const std::optional<ResolvedConfigurationTarget> &resolved_target,
+      const CancellationToken &token,
+      std::chrono::milliseconds delay,
+      std::function<void(bool)> completion) {
+      (void) delay;
+      dispatch_verification(request, expected_topology, resolved_target, token, std::move(completion));
+    }
+
+    /// Reset state retained by the settings backend only after preceding work
+    /// in the dispatcher has reached a cancellation point. RESET is a barrier:
+    /// a following APPLY must not be allowed to cancel it.
+    virtual void dispatch_reset_staged_apply_state(
+      std::function<void(bool)> completion) {
+      completion(false);
+    }
+
+    virtual void dispatch_refresh_rate(
+      std::string,
+      unsigned int,
+      unsigned int,
+      const CancellationToken &,
+      std::function<void(bool)> completion) {
+      completion(false);
+    }
 
     virtual void dispatch_recovery(
       const CancellationToken &token,
@@ -61,6 +92,25 @@ namespace display_helper::v2 {
     void dispatch_verification(
       const ApplyRequest &request,
       const std::optional<ActiveTopology> &expected_topology,
+      const std::optional<ResolvedConfigurationTarget> &resolved_target,
+      const CancellationToken &token,
+      std::function<void(bool)> completion) override;
+
+    void dispatch_verification_after(
+      const ApplyRequest &request,
+      const std::optional<ActiveTopology> &expected_topology,
+      const std::optional<ResolvedConfigurationTarget> &resolved_target,
+      const CancellationToken &token,
+      std::chrono::milliseconds delay,
+      std::function<void(bool)> completion) override;
+
+    void dispatch_reset_staged_apply_state(
+      std::function<void(bool)> completion) override;
+
+    void dispatch_refresh_rate(
+      std::string device_id,
+      unsigned int numerator,
+      unsigned int denominator,
       const CancellationToken &token,
       std::function<void(bool)> completion) override;
 
@@ -74,15 +124,11 @@ namespace display_helper::v2 {
       const CancellationToken &token,
       std::function<void(bool)> completion) override;
 
-    void dispatch_refresh_rate(
-      std::string device_id,
-      unsigned int numerator,
-      unsigned int denominator,
-      std::function<void(bool)> completion);
-
   private:
     void enqueue_task(std::function<void()> task);
+    void enqueue_delayed_task(std::function<void(std::stop_token)> task);
     void worker_loop(std::stop_token st);
+    void timer_loop(std::stop_token st);
 
     ApplyOperation &apply_operation_;
     VerificationOperation &verification_operation_;
@@ -95,5 +141,12 @@ namespace display_helper::v2 {
     std::condition_variable cv_;
     std::deque<std::function<void()>> tasks_;
     std::jthread worker_;
+
+    // Delays are scheduled off the serialized mutation worker. A 5.5-second
+    // HDR settling check must not block an immediate refresh or RESET command.
+    std::mutex timer_mutex_;
+    std::condition_variable timer_cv_;
+    std::deque<std::function<void(std::stop_token)>> timer_tasks_;
+    std::jthread timer_worker_;
   };
 }  // namespace display_helper::v2

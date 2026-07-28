@@ -121,6 +121,40 @@ namespace display_helper::v2 {
       queue_.clear();
     }
 
+    /// Remove and return queued entries selected by predicate while preserving
+    /// their relative order. The helper uses this to give replacement control
+    /// intents priority over an asynchronous completion from the mutation they
+    /// supersede, without giving unrelated timer/completion traffic a second
+    /// queue or another worker thread.
+    template <typename Predicate>
+    std::deque<T> extract_if(Predicate predicate) {
+      std::deque<T> extracted;
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto it = queue_.begin(); it != queue_.end();) {
+        if (predicate(*it)) {
+          extracted.emplace_back(std::move(*it));
+          it = queue_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      return extracted;
+    }
+
+    /// Remove the matching prefix only. Unlike extract_if(), this preserves a
+    /// non-control ingress frame (for example SNAPSHOT_CURRENT) as an ordering
+    /// barrier before later replacement commands on the same pipe.
+    template <typename Predicate>
+    std::deque<T> extract_prefix_while(Predicate predicate) {
+      std::deque<T> extracted;
+      std::lock_guard<std::mutex> lock(mutex_);
+      while (!queue_.empty() && predicate(queue_.front())) {
+        extracted.emplace_back(std::move(queue_.front()));
+        queue_.pop_front();
+      }
+      return extracted;
+    }
+
   private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
@@ -132,20 +166,25 @@ namespace display_helper::v2 {
     explicit DebouncedTrigger(std::chrono::milliseconds delay)
       : delay_(delay) {}
 
-    void notify(std::chrono::steady_clock::time_point now) {
+    void notify(std::chrono::steady_clock::time_point now, std::uint64_t generation = 0) {
       pending_ = true;
       deadline_ = now + delay_;
+      generation_ = generation;
+    }
+
+    std::optional<std::uint64_t> take_if_due(std::chrono::steady_clock::time_point now) {
+      if (!pending_) {
+        return std::nullopt;
+      }
+      if (now < deadline_) {
+        return std::nullopt;
+      }
+      pending_ = false;
+      return generation_;
     }
 
     bool should_fire(std::chrono::steady_clock::time_point now) {
-      if (!pending_) {
-        return false;
-      }
-      if (now < deadline_) {
-        return false;
-      }
-      pending_ = false;
-      return true;
+      return take_if_due(now).has_value();
     }
 
     bool pending() const {
@@ -154,12 +193,14 @@ namespace display_helper::v2 {
 
     void reset() {
       pending_ = false;
+      generation_ = 0;
     }
 
   private:
     std::chrono::milliseconds delay_;
     bool pending_ = false;
     std::chrono::steady_clock::time_point deadline_ {};
+    std::uint64_t generation_ = 0;
   };
 
   class DisconnectGrace {
@@ -334,27 +375,52 @@ namespace display_helper::v2 {
       : clock_(clock) {}
 
     void arm() {
+      std::lock_guard<std::mutex> lock(mutex_);
       armed_ = true;
-      timed_out_ = false;
-      last_ping_ = clock_.now();
+      const auto now = clock_.now();
+      last_ping_ = now;
+      optional_until_ = now + optional_window_;
+      recovery_deadline_.reset();
     }
 
     void disarm() {
+      std::lock_guard<std::mutex> lock(mutex_);
       armed_ = false;
-      timed_out_ = false;
+      optional_until_ = {};
+      recovery_deadline_.reset();
     }
 
     void record_ping() {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!armed_) {
+        return;
+      }
       last_ping_ = clock_.now();
-      timed_out_ = false;
+      // A reconnect during the v1 recovery grace window is healthy again; do
+      // not allow an old missed-ping deadline to restore a live session.
+      recovery_deadline_.reset();
     }
 
     bool check_timeout() {
-      if (!armed_ || timed_out_) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!armed_) {
         return false;
       }
-      if (clock_.now() - last_ping_ >= timeout_) {
-        timed_out_ = true;
+      const auto now = clock_.now();
+      if (now < optional_until_) {
+        return false;
+      }
+      if (!recovery_deadline_) {
+        if (now - last_ping_ < miss_window_) {
+          return false;
+        }
+        recovery_deadline_ = now + recovery_window_;
+        return false;
+      }
+      if (now >= *recovery_deadline_) {
+        armed_ = false;
+        optional_until_ = {};
+        recovery_deadline_.reset();
         return true;
       }
       return false;
@@ -363,9 +429,13 @@ namespace display_helper::v2 {
   private:
     IClock &clock_;
     bool armed_ = false;
-    bool timed_out_ = false;
     std::chrono::steady_clock::time_point last_ping_ {};
-    std::chrono::milliseconds timeout_ {std::chrono::seconds(30)};
+    std::chrono::steady_clock::time_point optional_until_ {};
+    std::optional<std::chrono::steady_clock::time_point> recovery_deadline_;
+    std::chrono::milliseconds optional_window_ {std::chrono::seconds(30)};
+    std::chrono::milliseconds miss_window_ {std::chrono::seconds(30)};
+    std::chrono::milliseconds recovery_window_ {std::chrono::minutes(2)};
+    std::mutex mutex_;
   };
 
   class SystemClock final : public IClock {

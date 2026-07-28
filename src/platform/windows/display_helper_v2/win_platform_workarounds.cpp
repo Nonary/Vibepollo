@@ -41,15 +41,29 @@ namespace display_helper::v2 {
     }
   }  // namespace
 
+  WinPlatformWorkarounds::~WinPlatformWorkarounds() {
+    std::lock_guard lock(hdr_blank_mutex_);
+    if (hdr_blank_worker_.joinable()) {
+      hdr_blank_worker_.join();
+    }
+  }
+
   void WinPlatformWorkarounds::blank_hdr_states(std::chrono::milliseconds delay) {
-    std::thread([delay]() {
+    std::lock_guard lock(hdr_blank_mutex_);
+    // Keep the worker owned by the helper. This preserves v1's serialized
+    // workaround semantics and prevents a detached task from outliving normal
+    // helper shutdown while HDR is temporarily blanked.
+    if (hdr_blank_worker_.joinable()) {
+      hdr_blank_worker_.join();
+    }
+    hdr_blank_worker_ = std::jthread([delay]() {
       try {
         auto api = std::make_shared<display_device::WinApiLayer>();
         display_device::WinDisplayDevice display(api);
         display_device::win_utils::blankHdrStates(display, delay);
       } catch (...) {
       }
-    }).detach();
+    });
   }
 
   void WinPlatformWorkarounds::refresh_shell() {

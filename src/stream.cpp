@@ -8,13 +8,17 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
+#include <system_error>
 #include <thread>
 #include <type_traits>
 
@@ -149,6 +153,77 @@ namespace stream {
         }
       }
     }
+
+    class join_deadline_t {
+    public:
+      explicit join_deadline_t(std::shared_ptr<std::atomic<const char *>> hung_stage):
+          hung_stage_ {std::move(hung_stage)} {
+        try {
+          worker_ = std::jthread([this](std::stop_token) {
+            run();
+          });
+        } catch (const std::system_error &e) {
+          // Teardown must continue even when the system cannot allocate a
+          // diagnostic worker; otherwise the original session threads would
+          // remain joinable while this exception unwinds.
+          BOOST_LOG(error) << "Unable to create the session join deadline watchdog: " << e.what();
+        }
+      }
+
+      join_deadline_t(const join_deadline_t &) = delete;
+      join_deadline_t &operator=(const join_deadline_t &) = delete;
+
+      ~join_deadline_t() {
+        complete();
+      }
+
+      void complete() {
+        {
+          std::lock_guard lock {mutex_};
+          if (state_ != state_e::firing) {
+            state_ = state_e::completed;
+          }
+          cv_.notify_one();
+        }
+
+        // join() is always called by session cleanup, never by this worker.
+        // This keeps the watchdog from outliving the stage storage or runtime.
+        if (worker_.joinable()) {
+          worker_.join();
+        }
+      }
+
+    private:
+      enum class state_e {
+        armed,
+        completed,
+        firing,
+      };
+
+      void run() {
+        std::unique_lock lock {mutex_};
+        constexpr auto kJoinDeadline = std::chrono::seconds(10);
+        if (cv_.wait_until(lock, std::chrono::steady_clock::now() + kJoinDeadline, [this] {
+              return state_ != state_e::armed;
+            })) {
+          return;
+        }
+
+        // Completion and timeout are mutually exclusive under mutex_, so a
+        // successful join cannot leave a stale watchdog that traps later.
+        state_ = state_e::firing;
+        lock.unlock();
+        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds. Stuck waiting for: "sv
+                         << hung_stage_->load();
+        lifetime::debug_trap();
+      }
+
+      std::shared_ptr<std::atomic<const char *>> hung_stage_;
+      std::mutex mutex_;
+      std::condition_variable cv_;
+      state_e state_ {state_e::armed};
+      std::jthread worker_;
+    };
   }  // namespace
 
   // Set to true on first 0x3003 mic packet receipt for timeout diagnostics.
@@ -190,7 +265,7 @@ namespace stream {
           return;
         }
 
-        if (session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_sessions()) {
+        if (session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_or_pending_sessions()) {
           return;
         }
 
@@ -496,6 +571,7 @@ namespace stream {
     config_t config;
     int stream_fps = 0;
     int stream_fps_scaled = 0;
+    std::uint32_t client_display_refresh_millihz = 0;
 
     safe::mail_t mail;
 
@@ -950,7 +1026,7 @@ namespace stream {
   }
 
   bool stream_start_actions_still_needed() {
-    return session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_sessions();
+    return session::running_sessions.load(std::memory_order_acquire) != 0 || webrtc_stream::has_active_or_pending_sessions();
   }
 
   void defer_stream_start_actions(deferred_stream_start_t deferred) {
@@ -2869,7 +2945,7 @@ namespace stream {
       BOOST_LOG(debug) << "Display helper: waiting for apply/validation gate before starting capture.";
       rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status {};
       try {
-        constexpr auto kGateTimeout = std::chrono::seconds(7);
+        constexpr auto kGateTimeout = display_helper_integration::kApplyVerificationGateWaitTimeout;
         if (session->display_helper_gate.wait_for(kGateTimeout) == std::future_status::ready) {
           gate_status = session->display_helper_gate.get();
         } else {
@@ -3012,16 +3088,7 @@ namespace stream {
       // Name the join stage for the watchdog so a crash bundle says outright what hung
       // (e.g. vibeshine#187 took dump archaeology to learn it was the video thread).
       auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");
-      auto task = [hung_stage]() {
-        BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds. Stuck waiting for: "sv << hung_stage->load();
-        logging::log_flush();
-        lifetime::debug_trap();
-      };
-      auto force_kill = task_pool.pushDelayed(task, 10s).task_id;
-      auto fg = util::fail_guard([&force_kill]() {
-        // Cancel the kill task if we manage to return from this function
-        task_pool.cancel(force_kill);
-      });
+      join_deadline_t join_deadline {hung_stage};
 
       // Teardown progress logged at info so that if join() hangs (the 10s watchdog
       // above fires), the last "Teardown:" line before the Fatal pinpoints the
@@ -3099,7 +3166,7 @@ namespace stream {
         display_helper_integration::clear_pending_apply();
         clear_deferred_stream_start_actions();
 #endif
-        const bool webrtc_active = webrtc_stream::has_active_sessions();
+        const bool webrtc_active = webrtc_stream::has_active_or_pending_sessions();
         if (!webrtc_active) {
           BOOST_LOG(info) << "Teardown: pausing app process..."sv;
           proc::proc.pause();
@@ -3284,7 +3351,7 @@ namespace stream {
 
       // If this is the first session, invoke the platform callbacks
       if (++running_sessions == 1) {
-        if (!webrtc_stream::has_active_sessions()) {
+        if (!webrtc_stream::has_active_or_pending_sessions()) {
           webrtc_stream::set_rtsp_capture_config(session.config.monitor, session.config.audio);
         }
         webrtc_stream::set_rtsp_sessions_active(true);
@@ -3304,11 +3371,12 @@ namespace stream {
               }
             }
           }
-          // Frame limiter should follow the stream FPS the user/client selected (NVHTTP "mode" fps),
-          // not the capture display refresh rate.
+          // Keep the client stream cadence separate from its exact display-mode
+          // override so RTSS can preserve each without conflating the two.
           const auto policy = framegen::make_stream_start_policy({
             .fps = session.stream_fps,
             .fps_scaled = session.stream_fps_scaled,
+            .display_refresh_millihz = session.client_display_refresh_millihz,
             .frame_generation_enabled = session.config.frame_generation_enabled,
             .gen1_framegen_fix = session.config.gen1_framegen_fix,
             .gen2_framegen_fix = session.config.gen2_framegen_fix,
@@ -3404,6 +3472,7 @@ namespace stream {
         session->stream_fps = (int) std::lround((double) fps_millihz / 1000.0);
         session->stream_fps_scaled = fps_millihz;
       }
+      session->client_display_refresh_millihz = launch_session.client_display_refresh_millihz;
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;

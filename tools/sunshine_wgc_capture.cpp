@@ -372,11 +372,12 @@ public:
    * - MMCSS characteristics setup
    * - WinRT apartment initialization
    *
-   * @return true if all initialization steps succeeded, false if any failed.
+   * DPI awareness is best-effort because Windows may have already selected it for the process.
+   * @return true if all required initialization steps succeeded, false if any required step failed.
    */
   bool initialize_all() {
     bool success = true;
-    success &= initialize_dpi_awareness();
+    initialize_dpi_awareness();
     success &= initialize_thread_priority();
     success &= initialize_gpu_scheduling_priority();
     success &= initialize_mmcss_characteristics();

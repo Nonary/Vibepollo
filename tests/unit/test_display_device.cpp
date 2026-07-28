@@ -133,6 +133,65 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state, expected_value);
 }
 
+TEST(HdrRequestPolicy, ExplicitClientHdrWinsOver10BitSdrPreference) {
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+  session.prefer_sdr_10bit = true;
+
+  EXPECT_TRUE(rtsp_stream::effective_hdr_requested(session));
+  EXPECT_FALSE(rtsp_stream::effective_10bit_sdr_requested(session));
+}
+
+TEST(HdrRequestPolicy, SdrClientUses10BitSdrPreference) {
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = false;
+  session.prefer_sdr_10bit = true;
+
+  EXPECT_FALSE(rtsp_stream::effective_hdr_requested(session));
+  EXPECT_TRUE(rtsp_stream::effective_10bit_sdr_requested(session));
+}
+
+TEST(HdrRequestPolicy, ExplicitForceSdrOverridesClientHdrAndKeeps10BitPreference) {
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+  session.prefer_sdr_10bit = true;
+  session.force_sdr = true;
+
+  EXPECT_FALSE(rtsp_stream::effective_hdr_requested(session));
+  EXPECT_TRUE(rtsp_stream::effective_10bit_sdr_requested(session));
+}
+
+TEST(DisplayDeviceConfig, ExplicitClientHdrEnablesDisplayDespite10BitSdrPreference) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::automatic;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+  session.prefer_sdr_10bit = true;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  const auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
+}
+
+TEST(DisplayDeviceConfig, ExplicitForceSdrDisablesDisplayDespiteClientHdr) {
+  config::video_t video_config {};
+  video_config.dd.configuration_option = config_option_e::verify_only;
+  video_config.dd.hdr_option = hdr_option_e::automatic;
+
+  rtsp_stream::launch_session_t session {};
+  session.enable_hdr = true;
+  session.prefer_sdr_10bit = true;
+  session.force_sdr = true;
+
+  const auto result {display_device::parse_configuration(video_config, session)};
+  const auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  ASSERT_TRUE(hdr_state.has_value());
+  EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
+}
+
 TEST(DisplayDeviceConfig, DummyPlugHdrWorkaroundForcesHdrEnabled) {
   config::video_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;

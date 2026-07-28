@@ -210,6 +210,10 @@ jobs:
       symbol_release_draft: true
       symbol_release_prefix: polo
       require_signpath_signing: ${{ needs.release-candidate.outputs.should_release == 'true' }}
+      signpath_signing_policy_slug: release-signing
+      # A release-signing request requires manual approval. Leave 15 minutes of
+      # the hosted runner's six-hour limit for job setup and artifact handling.
+      signpath_wait_for_completion_timeout_in_seconds: 20700
       require_truehdr_runtime: ${{ needs.release-candidate.outputs.should_release == 'true' }}
     secrets:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}

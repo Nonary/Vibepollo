@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { SessionEvent, SessionSample } from '@/types/sessions';
+import { toIntlLocale } from '@/utils/intlLocale';
 
 export interface SessionSnapshot {
   fps?: number;
@@ -43,6 +44,7 @@ interface SessionChartHistoryProps {
   historyData?: SessionSample[];
   events?: SessionEvent[];
   windowMinutes?: number | null;
+  locale?: string;
 }
 
 export type HostSeriesField = keyof Pick<
@@ -70,17 +72,21 @@ function nz(v?: number): number {
   return v < 0 ? 0 : v;
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function formatTime(date: Date, locale?: string): string {
+  return new Intl.DateTimeFormat(toIntlLocale(locale), {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date);
 }
 
-function convertHistoryData(samples: SessionSample[]): SessionChartPoint[] {
+function convertHistoryData(samples: SessionSample[], locale?: string): SessionChartPoint[] {
   if (!samples.length) return [];
   return samples.map((sample, i) => {
     const prev = i > 0 ? samples[i - 1] : undefined;
     return {
       timestamp_unix: sample.timestamp_unix,
-      time: formatTime(new Date(sample.timestamp_unix * 1000)),
+      time: formatTime(new Date(sample.timestamp_unix * 1000), locale),
       encode_latency_ms: sample.encode_latency_ms,
       throughput_mbps: Math.round((sample.actual_bitrate_kbps / 1000) * 100) / 100,
       delta_losses: prev
@@ -200,7 +206,9 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
   );
 
   const sourceData = computed<SessionChartPoint[]>(() => {
-    const persisted = props.historyData?.length ? convertHistoryData(props.historyData) : [];
+    const persisted = props.historyData?.length
+      ? convertHistoryData(props.historyData, props.locale)
+      : [];
     if (props.mode === 'history') {
       return persisted;
     }
@@ -281,7 +289,7 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
 
       const point: SessionChartPoint = {
         timestamp_unix: now / 1000,
-        time: formatTime(new Date()),
+        time: formatTime(new Date(), props.locale),
         encode_latency_ms: session.encode_latency_ms ?? 0,
         throughput_mbps: Math.round(throughput_mbps * 100) / 100,
         delta_losses,
@@ -310,7 +318,11 @@ export function useSessionChartHistory(props: SessionChartHistoryProps) {
     trackedSessionId = undefined;
   });
 
-  const labels = computed(() => displayData.value.map((point) => point.time));
+  const labels = computed(() =>
+    displayData.value.map((point) =>
+      formatTime(new Date(point.timestamp_unix * 1000), props.locale),
+    ),
+  );
 
   const eventAnnotations = computed(() => {
     const points = displayData.value;

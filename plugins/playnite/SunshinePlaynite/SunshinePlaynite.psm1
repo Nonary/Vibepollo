@@ -355,17 +355,26 @@ function Write-DebugLog {
 
 # UI bridge: static C# helper to run Playnite API calls on the UI thread without requiring a PS runspace there
 try {
-  if (-not ([System.Management.Automation.PSTypeName]'UIBridge').Type) {
+  # Add-Type definitions are process-wide. Keep this type versioned so a plugin
+  # update can replace the bridge while Playnite is still running.
+  if (-not ([System.Management.Automation.PSTypeName]'SunshinePlayniteUIBridgeV2').Type) {
     Add-Type -TypeDefinition @"
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Windows.Threading;
 
-public static class UIBridge
+public static class SunshinePlayniteUIBridgeV2
 {
     public static Dispatcher Dispatcher;
     public static object Api;
+    private static readonly object PersistentEnvironmentLock = new object();
+    private static readonly Dictionary<string, Dictionary<string, string>> PersistentEnvironmentScopes =
+        new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+    private static readonly Dictionary<string, string> PersistentEnvironmentOriginal =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private static readonly List<string> PersistentEnvironmentScopeOrder = new List<string>();
 
     public static void Init(Dispatcher d, object api)
     {
@@ -391,62 +400,230 @@ public static class UIBridge
         else { action(api); }
     }
 
-    public static void StartGameByGuidString(string guidStr)
+    private static bool IsValidEnvironmentVariableName(string name)
+    {
+        return !string.IsNullOrWhiteSpace(name) && name.IndexOf('=') < 0 && name.IndexOf('\0') < 0;
+    }
+
+    private static Dictionary<string, string> ParseEnvironmentEntries(string[] environmentEntries)
+    {
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (environmentEntries == null) return environment;
+        foreach (var entry in environmentEntries)
+        {
+            if (entry == null) continue;
+            var separator = entry.IndexOf('\0');
+            if (separator <= 0) continue;
+            var name = entry.Substring(0, separator);
+            if (!IsValidEnvironmentVariableName(name)) continue;
+            environment[name] = entry.Substring(separator + 1);
+        }
+        return environment;
+    }
+
+    private static void ReconcilePersistentEnvironment(IEnumerable<string> names)
+    {
+        foreach (var name in new HashSet<string>(names, StringComparer.OrdinalIgnoreCase))
+        {
+            string value = null;
+            var found = false;
+            for (var i = PersistentEnvironmentScopeOrder.Count - 1; i >= 0; i--)
+            {
+                Dictionary<string, string> scope;
+                if (PersistentEnvironmentScopes.TryGetValue(PersistentEnvironmentScopeOrder[i], out scope) &&
+                    scope.TryGetValue(name, out value))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found)
+            {
+                Environment.SetEnvironmentVariable(name, value);
+            }
+            else if (PersistentEnvironmentOriginal.ContainsKey(name))
+            {
+                Environment.SetEnvironmentVariable(name, PersistentEnvironmentOriginal[name]);
+                PersistentEnvironmentOriginal.Remove(name);
+            }
+        }
+    }
+
+    public static void SetPersistentEnvironment(string scopeId, string[] environmentEntries)
+    {
+        if (string.IsNullOrWhiteSpace(scopeId)) return;
+        var environment = ParseEnvironmentEntries(environmentEntries);
+        lock (PersistentEnvironmentLock)
+        {
+            Dictionary<string, string> previous;
+            PersistentEnvironmentScopes.TryGetValue(scopeId, out previous);
+            var affected = new HashSet<string>(environment.Keys, StringComparer.OrdinalIgnoreCase);
+            if (previous != null)
+            {
+                affected.UnionWith(previous.Keys);
+            }
+            foreach (var name in environment.Keys)
+            {
+                if (!PersistentEnvironmentOriginal.ContainsKey(name))
+                {
+                    PersistentEnvironmentOriginal[name] = Environment.GetEnvironmentVariable(name);
+                }
+            }
+            PersistentEnvironmentScopes[scopeId] = environment;
+            if (!PersistentEnvironmentScopeOrder.Contains(scopeId))
+            {
+                PersistentEnvironmentScopeOrder.Add(scopeId);
+            }
+            ReconcilePersistentEnvironment(affected);
+        }
+    }
+
+    public static void ClearPersistentEnvironment(string scopeId)
+    {
+        if (string.IsNullOrWhiteSpace(scopeId)) return;
+        lock (PersistentEnvironmentLock)
+        {
+            Dictionary<string, string> previous;
+            if (!PersistentEnvironmentScopes.TryGetValue(scopeId, out previous)) return;
+            PersistentEnvironmentScopes.Remove(scopeId);
+            PersistentEnvironmentScopeOrder.Remove(scopeId);
+            ReconcilePersistentEnvironment(previous.Keys);
+        }
+    }
+
+    public static void StartGameByGuidString(string guidStr, string[] environmentEntries)
     {
         if (string.IsNullOrWhiteSpace(guidStr)) return;
         Guid gid; if (!Guid.TryParse(guidStr, out gid)) return;
         var api = Api; if (api == null) return;
+        var launchEnvironment = ParseEnvironmentEntries(environmentEntries);
+        var originalEnvironment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            var m = api.GetType().GetMethod("StartGame", new Type[] { typeof(Guid) });
-            if (m != null) { m.Invoke(api, new object[] { gid }); return; }
-        }
-        catch { }
-        try
-        {
-            var dbProp = api.GetType().GetProperty("Database");
-            var db = dbProp != null ? dbProp.GetValue(api) : null; if (db == null) return;
-            var gamesProp = db.GetType().GetProperty("Games");
-            var games = gamesProp != null ? gamesProp.GetValue(db) as IEnumerable : null; if (games == null) return;
-            object found = null;
-            foreach (var g in games)
+            foreach (var variable in launchEnvironment)
             {
-                try
+                if (!originalEnvironment.ContainsKey(variable.Key))
                 {
-                    var idProp = g.GetType().GetProperty("Id");
-                    if (idProp != null)
+                    originalEnvironment[variable.Key] = Environment.GetEnvironmentVariable(variable.Key);
+                }
+                Environment.SetEnvironmentVariable(variable.Key, variable.Value);
+            }
+
+            try
+            {
+                var m = api.GetType().GetMethod("StartGame", new Type[] { typeof(Guid) });
+                if (m != null) { m.Invoke(api, new object[] { gid }); return; }
+            }
+            catch { }
+            try
+            {
+                var dbProp = api.GetType().GetProperty("Database");
+                var db = dbProp != null ? dbProp.GetValue(api) : null; if (db == null) return;
+                var gamesProp = db.GetType().GetProperty("Games");
+                var games = gamesProp != null ? gamesProp.GetValue(db) as IEnumerable : null; if (games == null) return;
+                object found = null;
+                foreach (var g in games)
+                {
+                    try
                     {
-                        var idVal = idProp.GetValue(g, null);
-                        if (idVal is Guid)
+                        var idProp = g.GetType().GetProperty("Id");
+                        if (idProp != null)
                         {
-                            var gg = (Guid)idVal;
-                            if (gg.Equals(gid)) { found = g; break; }
+                            var idVal = idProp.GetValue(g, null);
+                            if (idVal is Guid)
+                            {
+                                var gg = (Guid)idVal;
+                                if (gg.Equals(gid)) { found = g; break; }
+                            }
                         }
                     }
+                    catch { }
                 }
-                catch { }
+                if (found != null)
+                {
+                    var m2 = api.GetType().GetMethod("StartGame", new Type[] { found.GetType() });
+                    if (m2 != null) m2.Invoke(api, new object[] { found });
+                }
             }
-            if (found != null)
+            catch { }
+        }
+        finally
+        {
+            foreach (var variable in originalEnvironment)
             {
-                var m2 = api.GetType().GetMethod("StartGame", new Type[] { found.GetType() });
-                if (m2 != null) m2.Invoke(api, new object[] { found });
+                Environment.SetEnvironmentVariable(variable.Key, variable.Value);
             }
         }
-        catch { }
     }
 
-    public static void StartGameByGuidStringOnUIThread(string guidStr)
+    public static void StartGameByGuidStringOnUIThread(string guidStr, string[] environmentEntries)
     {
         var d = Dispatcher;
-        if (d != null) { d.BeginInvoke(new Action(() => StartGameByGuidString(guidStr))); }
-        else { StartGameByGuidString(guidStr); }
+        if (d != null) { d.BeginInvoke(new Action(() => StartGameByGuidString(guidStr, environmentEntries))); }
+        else { StartGameByGuidString(guidStr, environmentEntries); }
+    }
+
+    public static void SetPersistentEnvironmentOnUIThread(string scopeId, string[] environmentEntries)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => SetPersistentEnvironment(scopeId, environmentEntries))); }
+        else { SetPersistentEnvironment(scopeId, environmentEntries); }
+    }
+
+    public static void ClearPersistentEnvironmentOnUIThread(string scopeId)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => ClearPersistentEnvironment(scopeId))); }
+        else { ClearPersistentEnvironment(scopeId); }
     }
 }
 "@ -ReferencedAssemblies @('WindowsBase')
-    Write-Log "Loaded UIBridge"
+    Write-Log "Loaded SunshinePlayniteUIBridgeV2"
   }
 }
-catch { Write-Log "Failed to load UIBridge: $($_.Exception.Message)" }
+catch { Write-Log "Failed to load SunshinePlayniteUIBridgeV2: $($_.Exception.Message)" }
+
+function Initialize-PlayniteUIBridgeV2FromLegacy {
+  # A script-extension update can import this module in a background runspace
+  # after the original UIBridge has already been initialized in Playnite's UI
+  # runspace. Reuse those process-wide references so the new bridge can launch
+  # games without requiring a Playnite restart.
+  try {
+    if ([SunshinePlayniteUIBridgeV2]::Api) { return }
+    $legacyType = ([System.Management.Automation.PSTypeName]'UIBridge').Type
+    if (-not $legacyType) { return }
+    $legacyDispatcher = $legacyType.GetField('Dispatcher').GetValue($null)
+    $legacyApi = $legacyType.GetField('Api').GetValue($null)
+    if (-not $legacyDispatcher -or -not $legacyApi) { return }
+    [SunshinePlayniteUIBridgeV2]::Init($legacyDispatcher, $legacyApi)
+    Write-Log 'Initialized SunshinePlayniteUIBridgeV2 from the legacy bridge'
+  } catch {
+    Write-DebugLog "Could not initialize SunshinePlayniteUIBridgeV2 from the legacy bridge: $($_.Exception.Message)"
+  }
+}
+
+Initialize-PlayniteUIBridgeV2FromLegacy
+
+function Get-LaunchEnvironmentEntries {
+  param($Message)
+  $entries = New-Object 'System.Collections.Generic.List[string]'
+  try {
+    if (-not $Message.env) { return $entries.ToArray() }
+    foreach ($property in $Message.env.PSObject.Properties) {
+      $name = [string]$property.Name
+      $value = if ($null -eq $property.Value) { '' } else { [string]$property.Value }
+      if ([string]::IsNullOrWhiteSpace($name) -or $name.IndexOf('=') -ge 0 -or $name.IndexOf([char]0) -ge 0 -or $value.IndexOf([char]0) -ge 0) {
+        Write-DebugLog "Ignoring invalid environment variable received for Playnite launch"
+        continue
+      }
+      [void]$entries.Add($name + [char]0 + $value)
+    }
+  } catch {
+    Write-Log "Failed to read launch environment: $($_.Exception.Message)"
+  }
+  return $entries.ToArray()
+}
 
 ## Single outbox queue + minimal writer pump
 try {
@@ -1079,8 +1256,24 @@ function Start-LauncherConnReader {
         $obj = $line | ConvertFrom-Json -ErrorAction Stop
         if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
           Register-SunshineLaunchedGame -Id $obj.id
-          [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
-          Write-Log "LauncherConn[$Guid]: launch dispatched for $($obj.id)"
+          Initialize-PlayniteUIBridgeV2FromLegacy
+          $launchEnvironment = Get-LaunchEnvironmentEntries -Message $obj
+          # Playnite can return from StartGame before its asynchronous process
+          # launch consumes the process environment. Keep this connection's
+          # session environment applied until the launcher disconnects instead
+          # of restoring it as soon as StartGame returns.
+          [SunshinePlayniteUIBridgeV2]::SetPersistentEnvironment($Guid, $launchEnvironment)
+          [SunshinePlayniteUIBridgeV2]::StartGameByGuidStringOnUIThread([string]$obj.id, [string[]]@())
+          Write-Log "LauncherConn[$Guid]: launch dispatched for $($obj.id); session environment applied ($($launchEnvironment.Count) variables)"
+        }
+        elseif ($obj.type -eq 'command' -and $obj.command -eq 'set-environment') {
+          Initialize-PlayniteUIBridgeV2FromLegacy
+          $launchEnvironment = Get-LaunchEnvironmentEntries -Message $obj
+          # Environment mutation is process-wide and protected by the bridge's
+          # scope lock; apply it synchronously so a fullscreen input cannot race
+          # the UI dispatch that used to perform this update later.
+          [SunshinePlayniteUIBridgeV2]::SetPersistentEnvironment($Guid, $launchEnvironment)
+          Write-Log "LauncherConn[$Guid]: fullscreen environment applied ($($launchEnvironment.Count) variables)"
         }
         elseif ($obj.type -and $obj.command) {
           Write-DebugLog ("LauncherConn[{0}]: unhandled command type={1} cmd={2}" -f $Guid, [string]$obj.type, [string]$obj.command)
@@ -1096,6 +1289,7 @@ function Start-LauncherConnReader {
     }
   }
   finally {
+    try { [SunshinePlayniteUIBridgeV2]::ClearPersistentEnvironment($Guid) } catch {}
     try { if ($Conn.Reader) { $Conn.Reader.Dispose() } } catch {}
     try { if ($Conn.Writer) { $Conn.Writer.Dispose() } } catch {}
     try { if ($Conn.Stream) { $Conn.Stream.Dispose() } } catch {}
@@ -1378,8 +1572,10 @@ function Start-ConnectorLoop {
         if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
           try {
             Register-SunshineLaunchedGame -Id $obj.id
-            [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
-            Write-Log "Dispatched launch to UI thread via UIBridge.StartGameByGuidStringOnUIThread"
+            Initialize-PlayniteUIBridgeV2FromLegacy
+            $launchEnvironment = Get-LaunchEnvironmentEntries -Message $obj
+            [SunshinePlayniteUIBridgeV2]::StartGameByGuidStringOnUIThread([string]$obj.id, $launchEnvironment)
+            Write-Log "Dispatched launch to UI thread via SunshinePlayniteUIBridgeV2.StartGameByGuidStringOnUIThread"
           } catch { Write-Log "Failed to dispatch launch: $($_.Exception.Message)" }
         } elseif ($obj.type -eq 'command' -and $obj.command -eq 'stop') {
           try {
@@ -1428,12 +1624,12 @@ function OnApplicationStarted() {
       if (-not $dispatcher) {
         try { $dispatcher = [System.Windows.Threading.Dispatcher]::CurrentDispatcher } catch {}
       }
-      [UIBridge]::Init($dispatcher, $PlayniteApi)
-      $hasDisp = ([bool][UIBridge]::Dispatcher)
-      $hasApi = ([bool][UIBridge]::Api)
-      Write-Log ("UIBridge initialized: Dispatcher={0} Api={1}" -f $hasDisp, $hasApi)
+      [SunshinePlayniteUIBridgeV2]::Init($dispatcher, $PlayniteApi)
+      $hasDisp = ([bool][SunshinePlayniteUIBridgeV2]::Dispatcher)
+      $hasApi = ([bool][SunshinePlayniteUIBridgeV2]::Api)
+      Write-Log ("SunshinePlayniteUIBridgeV2 initialized: Dispatcher={0} Api={1}" -f $hasDisp, $hasApi)
     }
-    catch { Write-Log "Failed to initialize UIBridge: $($_.Exception.Message)" }
+    catch { Write-Log "Failed to initialize SunshinePlayniteUIBridgeV2: $($_.Exception.Message)" }
     # Start background connector in a dedicated PowerShell runspace for proper function/variable scope
     try {
       Ensure-ScriptVar -Name 'Bg' -Default $null
@@ -1485,7 +1681,7 @@ function OnApplicationStarted() {
         $rs.SessionStateProxy.SetVariable('Cts', $script:Cts)
         # Ensure connector runspace can access the shared launcher connections table
         try { $rs.SessionStateProxy.SetVariable('LauncherConns', $global:LauncherConns) } catch {}
-        # No need to pass UI objects; UIBridge holds static references accessible across runspaces
+        # No need to pass UI objects; the bridge holds static references accessible across runspaces
         $ps = [System.Management.Automation.PowerShell]::Create()
         $ps.Runspace = $rs
         if ($modulePath) { $ps.AddScript("Import-Module -Force '$modulePath'") | Out-Null }
@@ -1804,12 +2000,15 @@ function Sync-LauncherConnectionActiveGame {
   } catch { Write-Log ("Connection sync {0}: error: {1}" -f $Guid, $_.Exception.Message) }
 }
 
-# Send a synthetic 'gameStopped' status to launcher connection(s) to trigger graceful staging.
+# Send an explicit stop request to launcher connection(s). This must remain
+# distinct from Playnite's lifecycle-driven gameStopped notification so the
+# launcher can begin graceful cleanup immediately without weakening handoff
+# verification for transient gameStopped events.
 function Send-StopSignalToLauncher {
   param([string]$GameId)
   try {
     $idStr = if ($GameId) { $GameId } else { '' }
-    $payload = @{ type = 'status'; status = @{ name = 'gameStopped'; id = $idStr } } | ConvertTo-Json -Depth 4 -Compress
+    $payload = @{ type = 'status'; status = @{ name = 'stopRequested'; id = $idStr } } | ConvertTo-Json -Depth 4 -Compress
   } catch {
     Write-Log "StopSignal: failed to build JSON payload"
     return

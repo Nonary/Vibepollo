@@ -8,6 +8,7 @@
 #include <array>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -61,7 +62,6 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
-    bool prefer_10bit_sdr;
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
@@ -97,13 +97,25 @@ namespace config {
       std::optional<int> amd_rc_h264;
       std::optional<int> amd_rc_hevc;
       std::optional<int> amd_rc_av1;
+      std::optional<int> amd_qvbr_quality_level;
       std::optional<int> amd_enforce_hrd;
-      std::optional<int> amd_quality_h264;
-      std::optional<int> amd_quality_hevc;
-      std::optional<int> amd_quality_av1;
+      std::optional<int> amd_quality_h264;  // nullopt = follow usage-preset default
+      std::optional<int> amd_quality_hevc;  // nullopt = follow usage-preset default
+      std::optional<int> amd_quality_av1;  // nullopt = follow usage-preset default
       std::optional<int> amd_preanalysis;
-      std::optional<int> amd_vbaq;
+      std::optional<int> amd_vbaq;  // nullopt = follow usage-preset default
       int amd_coder;
+      // Native AMF encoder (amdvce) tuning knobs.
+      int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
+      int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
+      // Curated tri-state native-AMF feature knobs. nullopt (auto) leaves the
+      // AMF driver default untouched; 1 forces the property on and 0 forces it
+      // off — both explicit values are applied and read back like any other.
+      std::optional<int> amd_smart_access_video;  // Multi-VCN encode (Smart Access Video): 1=on, 0=off
+      std::optional<int> amd_lowlatency_mode;  // AMF LOWLATENCY_MODE (H.264/HEVC): 1=on, 0=off
+      std::optional<int> amd_high_motion_quality_boost;  // High-motion quality boost: 1=on, 0=off
+      std::optional<int> amd_av1_screen_content;  // AV1 screen-content tools: 1=on, 0=off
+      std::optional<int> amd_av1_latency_mode;  // AV1 encoding-latency mode (0-3)
     } amd;
 
     struct {
@@ -216,7 +228,7 @@ namespace config {
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
-      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (0 preserves Windows' existing choice).
+      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (-1 is resolution-based; 0 preserves Windows' choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
@@ -326,8 +338,8 @@ namespace config {
     // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
     std::string provider;
 
-    // Optional FPS limit override. 0 uses the stream's requested FPS.
-    int fps_limit {0};
+    // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
+    std::uint32_t fps_limit_millihz {0};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
@@ -488,4 +500,18 @@ namespace config {
   void set_runtime_output_name_override(std::optional<std::string> output_name);
   std::optional<std::string> runtime_output_name_override();
   std::string get_active_output_name();
+
+#ifdef _WIN32
+  // A recovery worker can publish a temporary virtual-output override.  The
+  // lease makes rollback conditional so an older recovery cannot erase an
+  // override installed by a newer session.
+  using runtime_output_override_lease_t = std::uint64_t;
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
+  bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
+
+  // The lock-screen virtual-output retry worker is owned work.  Main stops
+  // and joins it before configuration, display-helper, and mail teardown.
+  void request_deferred_virtual_output_reapply_shutdown();
+  void join_deferred_virtual_output_reapply_worker();
+#endif
 }  // namespace config

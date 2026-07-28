@@ -27,6 +27,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // lib includes
@@ -891,7 +892,7 @@ namespace proc {
   std::string terminate_app_id_str;
 
 #ifdef _WIN32
-  VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
+  std::atomic<VDISPLAY::DRIVER_STATUS> vDisplayDriverStatus {VDISPLAY::DRIVER_STATUS::UNKNOWN};
   namespace {
     std::atomic_bool deferred_display_revert {false};
   }
@@ -909,7 +910,7 @@ namespace proc {
   }
 
   void onVDisplayWatchdogFailed() {
-    vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
+    vDisplayDriverStatus.store(VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED, std::memory_order_release);
     VDISPLAY::closeVDisplayDevice();
   }
 
@@ -918,8 +919,8 @@ namespace proc {
     if (!VDISPLAY::ensure_driver_is_ready()) {
       BOOST_LOG(warning) << "Sunshine virtual display driver reported unavailable during initialization; attempting to continue.";
     }
-    vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
-    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+    vDisplayDriverStatus.store(VDISPLAY::openVDisplayDevice(), std::memory_order_release);
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
       if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
         onVDisplayWatchdogFailed();
         return;
@@ -930,7 +931,7 @@ namespace proc {
 
   // Custom move operations to allow global proc replacement if ever needed
   proc_t::proc_t(proc_t &&other) noexcept:
-      _app_id(other._app_id),
+      _app_id(other._app_id.load(std::memory_order_acquire)),
       _env(std::move(other._env)),
       _apps(std::move(other._apps)),
       _app(std::move(other._app)),
@@ -942,6 +943,7 @@ namespace proc {
 #ifdef _WIN32
       _virtual_display_guid(other._virtual_display_guid),
       _virtual_display_active(other._virtual_display_active),
+      _runtime_output_override_lease(std::exchange(other._runtime_output_override_lease, std::nullopt)),
 #endif
       _pipe(std::move(other._pipe)),
       _app_prep_it(other._app_prep_it),
@@ -967,7 +969,7 @@ namespace proc {
 #ifdef _WIN32
       stop_lossless_scaling_support();
 #endif
-      _app_id = other._app_id;
+      _app_id.store(other._app_id.load(std::memory_order_acquire), std::memory_order_release);
       _env = std::move(other._env);
       _apps = std::move(other._apps);
       _app = std::move(other._app);
@@ -980,6 +982,10 @@ namespace proc {
       _app_prep_it = other._app_prep_it;
       _app_prep_begin = other._app_prep_begin;
 #ifdef _WIN32
+      if (_runtime_output_override_lease) {
+        (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
+      }
+      _runtime_output_override_lease = std::exchange(other._runtime_output_override_lease, std::nullopt);
       _lossless_thread = std::move(other._lossless_thread);
       _lossless_stop_requested.store(other._lossless_stop_requested.load(std::memory_order_acquire), std::memory_order_release);
       _lossless_profile_applied = other._lossless_profile_applied;
@@ -1274,6 +1280,18 @@ namespace proc {
     launch_session->lossless_scaling_target_fps = _app.lossless_scaling_target_fps;
     launch_session->lossless_scaling_rtss_limit = _app.lossless_scaling_rtss_limit;
     launch_session->frame_generation_provider = _app.frame_generation_provider;
+    // Web UI launches do not resolve the app through make_launch_session().
+    // Carry app display policy into the session here so every launch path makes
+    // the same physical-versus-virtual decision before creating a display.
+    if (_app.output_name_override) {
+      launch_session->output_name_override = _app.output_name_override;
+    }
+    if (!launch_session->virtual_display_mode_override && _app.virtual_display_mode_override) {
+      launch_session->virtual_display_mode_override = _app.virtual_display_mode_override;
+    }
+    if (!launch_session->dd_config_option_override && _app.dd_config_option_override) {
+      launch_session->dd_config_option_override = _app.dd_config_option_override;
+    }
     std::optional<double> effective_lossless_target = launch_session->lossless_scaling_target_fps;
     if (
       (!effective_lossless_target || *effective_lossless_target <= 0) &&
@@ -1341,53 +1359,107 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    using dd_config_option_e = config::video_t::dd_t::config_option_e;
-    const auto dd_config_option = config::video.dd.configuration_option;
-    const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
-    const bool headless_mode = config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
-    const bool dd_conflicts_with_virtual_display =
-      dd_config_option == dd_config_option_e::ensure_only_display &&
-      dd_config_option != dd_config_option_e::disabled &&
-      !headless_mode;
-    const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
-    const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
-    const bool session_requests_virtual = launch_session->virtual_display;
-
-    if (forced_sudavda_virtual_display) {
-      launch_session->virtual_display = true;
-    }
-
-    bool should_use_virtual_display =
-      headless_mode ||
-      app_requests_virtual ||
-      metadata_requests_virtual ||
-      session_requests_virtual ||
-      !video::allow_encoder_probing() ||
-      VDISPLAY::should_auto_enable_virtual_display();
-
-    const bool already_has_virtual_guid = std::any_of(
+    bool already_has_virtual_guid = std::any_of(
       launch_session->virtual_display_guid_bytes.begin(),
       launch_session->virtual_display_guid_bytes.end(),
       [](std::uint8_t b) { return b != 0; }
     );
 
-    if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
-      if (session_requests_virtual || app_requests_virtual) {
-        BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
+    // Preserve an upstream resolver's decision. For Web UI and WebRTC launches,
+    // resolve the same app/client display policy locally before any VDD exists.
+    bool should_use_virtual_display = launch_session->virtual_display;
+    if (!launch_session->virtual_display_request_resolved) {
+      using dd_config_option_e = config::video_t::dd_t::config_option_e;
+      const auto dd_config_option =
+        launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
+      const bool forced_sudavda_virtual_display = config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
+      const auto effective_virtual_display_mode =
+        launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool headless_mode =
+        effective_virtual_display_mode != config::video_t::virtual_display_mode_e::disabled;
+      const bool dd_conflicts_with_virtual_display =
+        dd_config_option == dd_config_option_e::ensure_only_display &&
+        dd_config_option != dd_config_option_e::disabled &&
+        !headless_mode;
+      const bool metadata_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
+      const bool app_requests_virtual = _app.virtual_display || _app.virtual_screen;
+      const bool client_requests_virtual = launch_session->client_requests_virtual_display;
+      const bool session_requests_virtual = launch_session->virtual_display;
+      std::optional<std::string> output_override;
+      if (launch_session->output_name_override) {
+        output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
       }
-      launch_session->virtual_display = false;
-      should_use_virtual_display = headless_mode || !video::allow_encoder_probing();
+      const bool output_selects_virtual =
+        output_override && !output_override->empty() && VDISPLAY::is_virtual_display_selection(*output_override);
+      const bool output_selects_physical =
+        output_override && (output_override->empty() || !output_selects_virtual);
+      const auto framegen_policy = framegen::make_stream_start_policy({
+        .fps = launch_session->fps,
+        .fps_scaled = launch_session->fps,
+        .display_refresh_millihz = launch_session->client_display_refresh_millihz,
+        .frame_generation_enabled = launch_session->frame_generation_enabled,
+        .gen1_framegen_fix = launch_session->gen1_framegen_fix,
+        .gen2_framegen_fix = launch_session->gen2_framegen_fix,
+        .lossless_scaling_framegen = launch_session->lossless_scaling_framegen,
+        .lossless_rtss_limit = launch_session->lossless_scaling_rtss_limit,
+        .frame_generation_provider = launch_session->frame_generation_provider,
+        .uses_virtual_display =
+          output_selects_physical ?
+            false :
+            (session_requests_virtual || headless_mode || app_requests_virtual || output_selects_virtual),
+        .capture_mode = config::video.capture,
+        .auto_capture_uses_wgc = platf::dxgi::should_use_wgc_default(),
+        .auto_virtual_framegen_limiter = config::frame_limiter.virtual_display_limiter_enabled(),
+        .virtual_display_refresh_multiplier = config::frame_limiter.fixed_virtual_display_refresh_multiplier(),
+      });
+      const bool framegen_requires_virtual = framegen_policy.requires_virtual_display;
+
+      if (forced_sudavda_virtual_display || output_selects_virtual) {
+        launch_session->virtual_display = true;
+      }
+
+      if (output_selects_physical && !framegen_requires_virtual) {
+        launch_session->virtual_display = false;
+        launch_session->virtual_display_failed = false;
+        launch_session->virtual_display_guid_bytes.fill(0);
+        launch_session->virtual_display_device_id.clear();
+        launch_session->virtual_display_ready_since.reset();
+        already_has_virtual_guid = false;
+        should_use_virtual_display = false;
+        _runtime_output_override_lease =
+          config::set_runtime_output_name_override_with_lease(*output_override);
+      } else {
+        should_use_virtual_display =
+          headless_mode ||
+          app_requests_virtual ||
+          metadata_requests_virtual ||
+          client_requests_virtual ||
+          session_requests_virtual ||
+          output_selects_virtual ||
+          framegen_requires_virtual ||
+          !video::allow_encoder_probing() ||
+          VDISPLAY::should_auto_enable_virtual_display();
+
+        if (should_use_virtual_display && dd_conflicts_with_virtual_display && !forced_sudavda_virtual_display) {
+          if (session_requests_virtual || app_requests_virtual || client_requests_virtual) {
+            BOOST_LOG(info) << "Skipping virtual display activation because display device configuration is set to ensure-only-display.";
+          }
+          launch_session->virtual_display = false;
+          should_use_virtual_display = headless_mode || !video::allow_encoder_probing();
+        }
+      }
+      launch_session->virtual_display_request_resolved = true;
     }
 
     bool dd_api_handled = false;
     // Display helper APPLY is handled in nvhttp to avoid duplicate helper restarts.
 
     if (should_use_virtual_display && !dd_api_handled && !already_has_virtual_guid) {
-      if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      if (vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
         initVDisplayDriver();
       }
 
-      if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+      if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
         if (!config::video.adapter_name.empty()) {
           (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
         } else {
@@ -1398,7 +1470,10 @@ namespace proc {
         std::string device_uuid_str;
         uuid_util::uuid_t device_uuid;
 
-        const bool use_shared_display = (config::video.virtual_display_mode == config::video_t::virtual_display_mode_e::shared);
+        const auto effective_virtual_display_mode =
+          launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+        const bool use_shared_display =
+          effective_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
 
         if (use_shared_display) {
           if (http::shared_virtual_display_guid.empty()) {
@@ -1440,24 +1515,17 @@ namespace proc {
         std::memcpy(&display_guid, device_uuid.b8, sizeof(display_guid));
         std::copy_n(device_uuid.b8, launch_session->virtual_display_guid_bytes.size(), launch_session->virtual_display_guid_bytes.begin());
 
-        int target_fps = 0;
-        if (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0) {
-          target_fps = *launch_session->framegen_refresh_rate;
-        } else if (launch_session->fps > 0) {
-          target_fps = launch_session->fps;
-        } else {
-          target_fps = 60000;
+        uint32_t target_fps = rtsp_stream::effective_display_refresh_millihz(*launch_session);
+        if (target_fps == 0) {
+          target_fps = 60000u;
         }
 
-        if (target_fps < 1000) {
-          target_fps *= 1000;
-        }
-
-        uint32_t base_fps_millihz = launch_session->fps > 0 ? static_cast<uint32_t>(launch_session->fps) : 0u;
-        if (base_fps_millihz > 0 && base_fps_millihz < 1000u) {
-          base_fps_millihz *= 1000u;
-        }
-        const bool framegen_refresh_active = launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0;
+        const uint32_t base_fps_millihz = launch_session->client_display_refresh_millihz > 0 ?
+                                                  launch_session->client_display_refresh_millihz :
+                                                  framegen::normalize_refresh_millihz(launch_session->fps);
+        const bool framegen_refresh_active =
+          (launch_session->framegen_refresh_millihz && *launch_session->framegen_refresh_millihz > 0) ||
+          (launch_session->framegen_refresh_rate && *launch_session->framegen_refresh_rate > 0);
         // Virtual displays always run at 4x the requested refresh (or the highest the driver
         // can provide) so frame pacing stays smooth; frame generation reuses the same target.
         const int refresh_multiplier = std::max(
@@ -1515,7 +1583,8 @@ namespace proc {
           BOOST_LOG(warning) << "Virtual display creation failed.";
         }
       } else {
-        BOOST_LOG(warning) << "SudoVDA driver unavailable (status=" << static_cast<int>(vDisplayDriverStatus) << ")";
+        BOOST_LOG(warning) << "SudoVDA driver unavailable (status="
+                           << static_cast<int>(vDisplayDriverStatus.load(std::memory_order_acquire)) << ")";
       }
     } else if (already_has_virtual_guid) {
       std::memcpy(&_virtual_display_guid, launch_session->virtual_display_guid_bytes.data(), sizeof(_virtual_display_guid));
@@ -1634,6 +1703,10 @@ namespace proc {
 
       const bool wants_lossless_framegen = using_lossless_provider;
       auto runtime = compute_lossless_runtime(_app, wants_lossless_framegen);
+      if (rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
+        runtime.hdr_enabled = false;
+        BOOST_LOG(info) << "Lossless Scaling: disabling HDR support because RTX HDR conversion is active.";
+      }
 #ifdef _WIN32
       bool has_launch_commands = !_app.cmd.empty() || !_app.detached.empty();
       _lossless_should_start_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
@@ -1796,6 +1869,11 @@ namespace proc {
     });
 
 #ifdef _WIN32
+    // Some launchers disable the user's global screen saver setting and may
+    // exit without restoring it. Preserve the pre-launch state independently
+    // of whether the launched process remains trackable.
+    platf::cache_screen_saver_state();
+
     std::unordered_set<DWORD> lossless_baseline_pids;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
@@ -2225,6 +2303,12 @@ namespace proc {
   void proc_t::resume() {
     BOOST_LOG(info) << "Session resuming for app [" << _app_name << "].";
 
+#ifdef _WIN32
+    // pause() consumes the prior snapshot after restoring it. Capture a new
+    // baseline before any resume command can change the setting again.
+    platf::cache_screen_saver_state();
+#endif
+
     if (!_app.state_cmds.empty()) {
       auto exec_thread = std::thread([cmd_list = _app.state_cmds, app_working_dir = _app.working_dir, _env = _env]() mutable {
         _env["APOLLO_APP_STATUS"] = "RESUMING";
@@ -2320,6 +2404,12 @@ namespace proc {
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+#endif
+
+#ifdef _WIN32
+    // A paused app can remain alive for session resume, so restore this global
+    // user setting even when normal application termination does not run.
+    platf::restore_screen_saver_state();
 #endif
   }
 
@@ -2503,6 +2593,12 @@ namespace proc {
       }
     }
 
+#ifdef _WIN32
+    // Restore after terminating the app and running its undo commands so a
+    // detached/placebo launcher cannot leave this global setting disabled.
+    platf::restore_screen_saver_state();
+#endif
+
     _pipe.reset();
 
     const bool other_streaming_session_active =
@@ -2526,6 +2622,10 @@ namespace proc {
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;
+    }
+    if (_runtime_output_override_lease) {
+      (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
+      _runtime_output_override_lease.reset();
     }
 #endif
 
@@ -3440,6 +3540,7 @@ namespace proc {
     bool app_id_alias_state_changed = false;
     int i = 0;
 
+    bool apps_parsed_ok = false;
     size_t fail_count = 0;
     do {
       // Read the JSON file into a tree.
@@ -3770,6 +3871,7 @@ namespace proc {
         }
 
         fail_count = 0;
+        apps_parsed_ok = true;
       } catch (std::exception &e) {
         BOOST_LOG(error) << "Error happened during app loading: "sv << e.what();
 
@@ -3839,7 +3941,7 @@ namespace proc {
 
     // Virtual Display entry
 #ifdef _WIN32
-    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK) {
       proc::ctx_t ctx {};
       ctx.idx = std::to_string(i);
       ctx.uuid = VIRTUAL_DISPLAY_UUID;
@@ -3943,9 +4045,14 @@ namespace proc {
       apps.emplace_back(std::move(ctx));
     }
 
-    prune_and_filter_app_id_alias_state(apps, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
-    if (app_id_alias_state_changed) {
-      save_app_id_alias_state(app_id_alias_state);
+    // Only reconcile the persisted alias map when apps.json actually parsed. A failed or partial
+    // parse leaves active_app_uuids empty or incomplete, so pruning here would erase the aliases of
+    // apps that still exist and permanently break their cover-versioned IDs on the next good parse.
+    if (apps_parsed_ok) {
+      prune_and_filter_app_id_alias_state(apps, app_id_alias_state, active_app_uuids, app_id_alias_state_changed);
+      if (app_id_alias_state_changed) {
+        save_app_id_alias_state(app_id_alias_state);
+      }
     }
 
     return proc::proc_t {
@@ -3960,15 +4067,11 @@ namespace proc {
     }
 
 #ifdef _WIN32
-    size_t fail_count = 0;
-    while (fail_count < 5 && vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+    // initVDisplayDriver() already performs one bounded readiness/recovery pass.
+    // Repeating it here can outlive the restart cooldown and launch a fresh PnP
+    // cycle on every parse, which stalls secondary instances for minutes.
+    if (vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
       initVDisplayDriver();
-      if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-        break;
-      }
-
-      fail_count += 1;
-      std::this_thread::sleep_for(1s);
     }
 #endif
 
@@ -4001,8 +4104,17 @@ namespace proc {
     // until terminate() runs the undo prep commands.
     {
       std::scoped_lock lk(_apps_mutex);
+      const bool app_was_running = _app_id > 0;
+      if (app_was_running && !_app.uuid.empty()) {
+        const auto refreshed_app = std::find_if(apps.begin(), apps.end(), [&](const ctx_t &candidate) {
+          return candidate.uuid == _app.uuid;
+        });
+        if (refreshed_app != apps.end()) {
+          _app_id = util::from_view(refreshed_app->id);
+        }
+      }
       _apps = std::move(apps);
-      if (_app_id <= 0) {
+      if (!app_was_running) {
         _env = std::move(env);
       }
     }

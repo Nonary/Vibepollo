@@ -12,7 +12,7 @@ param(
     [string]$SignPathApiToken = $env:SIGNPATH_API_TOKEN,
     [string]$SignPathOrganizationId = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_ORGANIZATION_ID)) { "1ba0e884-7ab4-43e6-aa84-9b2c7e3fba15" } else { $env:SIGNPATH_ORGANIZATION_ID }),
     [string]$SignPathProjectSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_PROJECT_SLUG)) { "Vibepollo" } else { $env:SIGNPATH_PROJECT_SLUG }),
-    [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "test-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
+    [string]$SignPathSigningPolicySlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_SIGNING_POLICY_SLUG)) { "release-signing" } else { $env:SIGNPATH_SIGNING_POLICY_SLUG }),
     [string]$SignPathPeArtifactConfigurationSlug = $env:SIGNPATH_PE_ARTIFACT_CONFIGURATION_SLUG,
     [string]$SignPathMsiArtifactConfigurationSlug = $(if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG)) { "msi-file-apollo" } else { $env:SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG })
 )
@@ -185,7 +185,7 @@ function Invoke-SignPathForArtifact(
         PeArtifactConfigurationSlug = $SignPathPeArtifactConfigurationSlug
         MsiArtifactConfigurationSlug = $SignPathMsiArtifactConfigurationSlug
         Description = $Description
-        WaitForCompletionTimeoutInSeconds = 1800
+        WaitForCompletionTimeoutInSeconds = 20700
     }
 
     if ($SkipSignPathIfNoToken) {

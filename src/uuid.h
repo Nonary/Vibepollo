@@ -5,9 +5,15 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
+#include <iterator>
+#include <limits>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 /**
  * @brief UUID utilities.
@@ -74,6 +80,59 @@ namespace uuid_util {
       uuid.b8[14] = (temp32_2 >> 8) & 0xFF;
       uuid.b8[15] = temp32_2 & 0xFF;
 
+      return uuid;
+    }
+
+    /// Parse the byte-order-preserving representation emitted by string().
+    ///
+    /// This differs from parse(), which accepts the canonical GUID text format
+    /// and therefore normalizes the first three GUID fields to Windows memory
+    /// order. Persistent data that was written with string() must use this
+    /// parser to recover the original bytes exactly.
+    static uuid_t parse_raw(const std::string &uuid_str) {
+      if (uuid_str.size() != 36 ||
+          uuid_str[8] != '-' || uuid_str[13] != '-' ||
+          uuid_str[18] != '-' || uuid_str[23] != '-') {
+        throw std::invalid_argument("Invalid raw UUID string format");
+      }
+
+      const auto hex_value = [](char value) -> std::uint8_t {
+        if (value >= '0' && value <= '9') {
+          return static_cast<std::uint8_t>(value - '0');
+        }
+        if (value >= 'a' && value <= 'f') {
+          return static_cast<std::uint8_t>(value - 'a' + 10);
+        }
+        if (value >= 'A' && value <= 'F') {
+          return static_cast<std::uint8_t>(value - 'A' + 10);
+        }
+        return 0xffu;
+      };
+
+      uuid_t uuid {};
+      std::size_t byte_index = 0;
+      for (std::size_t index = 0; index < uuid_str.size();) {
+        if (uuid_str[index] == '-') {
+          ++index;
+          continue;
+        }
+        if (index + 1 >= uuid_str.size() || byte_index >= sizeof(uuid.b8)) {
+          throw std::invalid_argument("Invalid raw UUID string format");
+        }
+
+        const auto high = hex_value(uuid_str[index]);
+        const auto low = hex_value(uuid_str[index + 1]);
+        if (high == 0xffu || low == 0xffu) {
+          throw std::invalid_argument("Invalid raw UUID string format");
+        }
+
+        uuid.b8[byte_index++] = static_cast<std::uint8_t>((high << 4u) | low);
+        index += 2;
+      }
+
+      if (byte_index != sizeof(uuid.b8)) {
+        throw std::invalid_argument("Invalid raw UUID string format");
+      }
       return uuid;
     }
 
