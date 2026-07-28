@@ -919,7 +919,7 @@ namespace platf::playnite {
       int delete_after_days = std::max(0, config::playnite.autosync_delete_after_days);
       bool changed = false;
       std::size_t matched = 0;
-      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched);
+      platf::playnite::sync::autosync_reconcile(root, all, recentN, recent_age_days, delete_after_days, config::playnite.autosync_require_replacement, config::playnite.sync_all_installed, config::playnite.sync_categories, config::playnite.sync_plugins, config::playnite.exclude_categories, config::playnite.exclude_games, config::playnite.exclude_plugins, config::playnite.autosync_remove_uninstalled, changed, matched, config::playnite.auto_sync);
       if (changed) {
         platf::playnite::sync::write_and_refresh_apps(root, config::stream.file_apps);
       }
