@@ -2624,7 +2624,16 @@ namespace config {
     }
 
     bool has_active_stream_sessions() {
-      return rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
+      // This runs while apply_config_now() owns the configuration write gate,
+      // so it must remain side-effect-free and must not take the lifecycle gate
+      // (stream startup takes lifecycle before the config read gate).
+      return rtsp_stream::has_pending_launch_or_startup() ||
+             rtsp_stream::session_count_no_cleanup() > 0 ||
+             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+             webrtc_stream::has_active_or_pending_sessions() ||
+             webrtc_stream::has_capture_active() ||
+             webrtc_stream::has_teardown_in_progress();
     }
 
 #ifdef _WIN32

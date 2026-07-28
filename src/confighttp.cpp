@@ -3436,15 +3436,13 @@ namespace confighttp {
 #ifdef _WIN32
     {
       // Publish the cleanup tail before capture startup mutates any display or
-      // runtime configuration, then serialize the failed-start idle check.
+      // runtime configuration. The lifecycle gate below then closes the gap
+      // between the failed start releasing its gate and direct VDD cleanup.
       stream::session::cleanup_reservation_t cleanup_reservation;
       capture_start_error = webrtc_stream::ensure_capture_started(options);
       if (capture_start_error) {
         std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
-        if (rtsp_stream::session_count_no_cleanup() == 0 &&
-            !webrtc_stream::has_active_or_pending_sessions() &&
-            !webrtc_stream::has_capture_active() &&
-            !webrtc_stream::has_teardown_in_progress()) {
+        if (!stream::session::has_shared_runtime_owner()) {
           (void) platf::virtual_display_cleanup::run(
             "webrtc_session_start_failed",
             config::video.dd.config_revert_on_disconnect
@@ -5144,6 +5142,8 @@ namespace confighttp {
             .perm = crypto::PERM::_all,
           };
           BOOST_LOG(info) << "Launching app ["sv << app.name << "] from web UI"sv;
+          (void) proc::proc.running();
+          std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
           auto launch_session = nvhttp::make_launch_session(true, false, request->parse_query_string(), &named_cert);
           auto err = proc::proc.execute(app, launch_session);
           if (err) {

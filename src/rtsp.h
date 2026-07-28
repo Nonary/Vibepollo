@@ -317,7 +317,7 @@ namespace rtsp_stream {
   /**
    * @brief Terminates all running streaming sessions.
    */
-  void terminate_sessions();
+  void terminate_sessions(bool preserve_pending_launch = false);
   void terminate_sessions_by_cert(std::string_view cert);
 
   /**

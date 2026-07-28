@@ -199,6 +199,11 @@ namespace proc {
      */
     int running();
 
+    /**
+     * @return A side-effect-free snapshot of the current application ID.
+     */
+    int current_app_id() const;
+
     ~proc_t();
 
     // Return a snapshot copy to avoid concurrent access races
@@ -211,8 +216,13 @@ namespace proc {
     std::string get_running_app_uuid();
     bp::environment get_env();
     void resume();
-    void pause();
-    void terminate(bool immediate = false, bool needs_refresh = true, bool skip_display_revert = false);
+    void pause(bool stream_lifecycle_lock_held = false);
+    void terminate(
+      bool immediate = false,
+      bool needs_refresh = true,
+      bool skip_display_revert = false,
+      bool stream_lifecycle_lock_held = false
+    );
     bool last_run_app_frame_gen_limiter_fix() const;
     bool is_launch_deferred() const;
     bool has_trackable_running_app() const;
@@ -237,7 +247,7 @@ namespace proc {
     bp::environment release_env();
 
   private:
-    int launch_app_commands();
+    int launch_app_commands(bool stream_lifecycle_lock_held);
 
     std::atomic<int> _app_id {0};
     std::string _app_name;

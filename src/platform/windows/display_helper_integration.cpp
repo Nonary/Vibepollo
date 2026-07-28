@@ -1700,10 +1700,12 @@ namespace {
 
         // This worker only needs a snapshot to select its polling interval.
         // session_count() reaps STOPPING sessions, whose join path can call
-        // stop_watchdog() and make this worker attempt to join itself.
+        // stop_watchdog() and make this worker attempt to join itself. For the
+        // same reason read the app id instead of running(): running() can drive a
+        // deferred launch and call terminate(), which this worker must not do.
         const bool suspended =
           (rtsp_stream::session_count_no_cleanup() == 0) &&
-          (proc::proc.running() > 0);
+          (proc::proc.current_app_id() > 0);
         const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
         sleep_interruptible(interval);
         if (st.stop_requested()) {
@@ -2404,7 +2406,9 @@ namespace display_helper_integration {
       // worker may observe session teardown. A newer APPLY that starts first
       // will publish a different generation, which ordinary stop preserves.
       execution_lock.unlock();
-      if (!stream_is_active_or_pending() && proc::proc.running() <= 0) {
+      // current_app_id() rather than running(): running() can drive a deferred
+      // launch and call terminate() from this APPLY path.
+      if (!stream_is_active_or_pending() && proc::proc.current_app_id() <= 0) {
         stop_watchdog();
       }
     }

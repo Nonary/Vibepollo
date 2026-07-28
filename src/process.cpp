@@ -1255,12 +1255,12 @@ namespace proc {
     _lossless_metadata = {};
 #endif
     if (_app_id == input_only_app_id) {
-      terminate(false, false);
+      terminate(false, false, false, true);
       std::this_thread::sleep_for(1s);
     } else {
       // Ensure starting from a clean slate
       const bool skip_display_revert = launch_session && launch_session->display_config_preapplied;
-      terminate(false, false, skip_display_revert);
+      terminate(false, false, skip_display_revert, true);
     }
 
     _app = app;
@@ -1856,17 +1856,17 @@ namespace proc {
     }
 #endif
 
-    return launch_app_commands();
+    return launch_app_commands(true);
   }
 
-  int proc_t::launch_app_commands() {
+  int proc_t::launch_app_commands(bool stream_lifecycle_lock_held) {
     std::error_code ec;
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
     // Executed when returning from function on failure
     auto fg = util::fail_guard([&]() {
-      terminate();
+      terminate(false, true, false, stream_lifecycle_lock_held);
     });
 
 #ifdef _WIN32
@@ -2262,7 +2262,7 @@ namespace proc {
       }
       BOOST_LOG(info) << "User session detected; resuming deferred launch for app '" << _app.name << "'.";
       _deferred_launch = false;
-      int err = launch_app_commands();
+      int err = launch_app_commands(false);
       if (err != 0) {
         BOOST_LOG(error) << "Deferred launch failed; terminating session.";
         return 0;
@@ -2299,6 +2299,10 @@ namespace proc {
     }
 
     return 0;
+  }
+
+  int proc_t::current_app_id() const {
+    return _app_id.load(std::memory_order_acquire);
   }
 
   void proc_t::resume() {
@@ -2350,15 +2354,17 @@ namespace proc {
     }
   }
 
-  void proc_t::pause() {
-    if (!running()) {
+  void proc_t::pause(bool stream_lifecycle_lock_held) {
+    const int app_id =
+      stream_lifecycle_lock_held ? current_app_id() : running();
+    if (app_id <= 0) {
       BOOST_LOG(info) << "Session already stopped, do not run pause commands.";
       return;
     }
 
     if (_app.terminate_on_pause) {
       BOOST_LOG(info) << "Terminating app [" << _app_name << "] when all clients are disconnected. Pause commands are skipped.";
-      terminate();
+      terminate(false, true, false, stream_lifecycle_lock_held);
       return;
     }
 
@@ -2497,7 +2503,18 @@ namespace proc {
 #endif
   }
 
-  void proc_t::terminate(bool immediate, bool needs_refresh, bool skip_display_revert) {
+  void proc_t::terminate(
+    bool immediate,
+    bool needs_refresh,
+    bool skip_display_revert,
+    bool stream_lifecycle_lock_held
+  ) {
+    std::unique_lock<std::mutex> stream_lifecycle_lock;
+    if (!stream_lifecycle_lock_held) {
+      stream_lifecycle_lock =
+        std::unique_lock<std::mutex> {nvhttp::stream_lifecycle_mutex()};
+    }
+
     // App termination can remove a display directly and can continue through
     // process, undo-command, helper, watchdog, and deferred-config cleanup.
     // Keep HTTP encoder probing out of that entire tail.
@@ -2608,7 +2625,7 @@ namespace proc {
     _pipe.reset();
 
     const bool other_streaming_session_active =
-      rtsp_stream::session_count() > 0 || webrtc_stream::has_active_sessions();
+      stream::session::has_shared_runtime_owner();
 
 #ifdef _WIN32
     if (_virtual_display_active) {
@@ -2620,11 +2637,7 @@ namespace proc {
           BOOST_LOG(info) << "Virtual display cleanup completed after app termination.";
         }
       } else {
-        if (!VDISPLAY::removeVirtualDisplay(_virtual_display_guid)) {
-          BOOST_LOG(warning) << "Failed to remove virtual display.";
-        } else {
-          BOOST_LOG(info) << "Virtual display removed.";
-        }
+        BOOST_LOG(info) << "Deferring virtual display removal after app termination because shared stream runtime is still owned.";
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
       _virtual_display_active = false;
@@ -2661,7 +2674,7 @@ namespace proc {
 #ifdef _WIN32
       clear_deferred_display_revert();
       const bool reverted = display_helper_integration::revert();
-      if (reverted && rtsp_stream::session_count() == 0) {
+      if (reverted && rtsp_stream::session_count_no_cleanup() == 0) {
         BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
         display_helper_integration::stop_watchdog();
       }
@@ -2697,7 +2710,7 @@ namespace proc {
     // If we can safely hot-apply immediately, restore global config now; otherwise defer.
     if (has_run) {
       config::clear_runtime_config_overrides();
-      if (rtsp_stream::session_count() == 0) {
+      if (!other_streaming_session_active) {
         config::apply_config_now();
       } else {
         config::mark_deferred_reload();

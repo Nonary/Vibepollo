@@ -97,6 +97,7 @@ namespace webrtc_stream {
   // True while a WebRTC close is completing peer, media, capture, display,
   // platform, or configuration cleanup after its active count drops.
   bool has_teardown_in_progress();
+  unsigned int teardown_session_count();
 
   std::optional<SessionState> create_session(const SessionOptions &options);
   std::optional<std::string> ensure_capture_started(const SessionOptions &options);
@@ -105,7 +106,6 @@ namespace webrtc_stream {
   std::vector<SessionState> list_sessions();
   void shutdown_all_sessions();
 
-  void cancel_paused_display_cleanup();
   void submit_video_packet(video::packet_raw_t &packet);
   void submit_audio_packet(const audio::buffer_t &packet);
   void submit_video_frame(const std::shared_ptr<platf::img_t> &frame);

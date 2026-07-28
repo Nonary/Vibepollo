@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -113,6 +114,27 @@ namespace stream {
       cleanup_reservation_t(const cleanup_reservation_t &) = delete;
       cleanup_reservation_t &operator=(const cleanup_reservation_t &) = delete;
     };
+
+    struct shared_runtime_finalize_context_t {
+      bool ignore_current_rtsp_teardown {false};
+      bool ignore_current_webrtc_teardown {false};
+      bool apply_deferred_config {true};
+      bool force_display_revert_when_idle {false};
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
+    };
+
+    /**
+     * These helpers require nvhttp::stream_lifecycle_mutex() to be held.
+     */
+    bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context = {});
+    void arm_shared_runtime_cleanup(
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
+    );
+    void start_shared_platform_if_needed();
+    bool finalize_shared_runtime_if_idle(
+      std::string_view reason,
+      const shared_runtime_finalize_context_t &context = {}
+    );
 
     enum class state_e : int {
       STOPPED,  ///< The session is stopped

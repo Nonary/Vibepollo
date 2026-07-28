@@ -1480,15 +1480,15 @@ namespace nvhttp {
     std::mutex launch_request_mutex;
     std::mutex stream_lifecycle_gate;
 
-     std::mutex &capture_start_mutex() {
-       return launch_request_mutex;
-     }
+    std::mutex &capture_start_mutex() {
+      return launch_request_mutex;
+    }
 
-     std::mutex &stream_lifecycle_mutex() {
-       return stream_lifecycle_gate;
-     }
+    std::mutex &stream_lifecycle_mutex() {
+      return stream_lifecycle_gate;
+    }
 
-     std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
+    std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
       if (launch_unique_id.empty()) {
         return {};
       }
@@ -2821,7 +2821,7 @@ namespace nvhttp {
       }
     }
 
-    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
+    void launch(bool &host_audio, resp_https_t response, req_https_t request, int current_appid) {
       print_req<SunshineHTTPS>(request);
 
 #ifdef _WIN32
@@ -2849,7 +2849,6 @@ namespace nvhttp {
       auto appuuid_str = get_arg(args, "appuuid", "");
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
-      auto current_appid = proc::proc.running();
       auto current_app_uuid = proc::proc.get_running_app_uuid();
       bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
 
@@ -2895,7 +2894,7 @@ namespace nvhttp {
         if (
           (appid == proc::terminate_app_id && proc::terminate_app_id > 0) || appuuid_str == TERMINATE_APP_UUID
         ) {
-          proc::proc.terminate();
+          proc::proc.terminate(false, true, false, true);
 
           tree.put("root.resume", 0);
           tree.put("root.<xmlattr>.status_code", 410);
@@ -2918,7 +2917,7 @@ namespace nvhttp {
 
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
 
-      bool no_active_sessions = !has_active_or_stopping_stream_session();
+      bool no_active_sessions = !has_stream_session_activity();
       // Runtime overrides are global process state. Do not reapply them while
       // another RTSP/WebRTC session is active, otherwise a second client can mutate
       // active stream limits (e.g. fps/encoding-related settings) mid-session.
@@ -2936,7 +2935,7 @@ namespace nvhttp {
         config::clear_runtime_config_overrides();
 
         // Restore global config immediately when safe; otherwise defer.
-        if (!has_active_or_stopping_stream_session()) {
+        if (!has_stream_session_activity()) {
           config::apply_config_now();
         } else {
           config::mark_deferred_reload();
@@ -3028,7 +3027,7 @@ namespace nvhttp {
           config::set_runtime_output_name_override(std::nullopt);
         }
       });
-      no_active_sessions = !has_active_or_stopping_stream_session();
+      no_active_sessions = !has_stream_session_activity();
       if (no_active_sessions) {
         config::set_runtime_output_name_override(std::nullopt);
       }
@@ -3191,7 +3190,7 @@ namespace nvhttp {
         return;
       }
 
-      no_active_sessions = !has_active_or_stopping_stream_session();
+      no_active_sessions = !has_stream_session_activity();
 
 #ifdef _WIN32
       auto pending_vulkan_hdr_layer_guard = util::fail_guard([]() {
@@ -3216,7 +3215,10 @@ namespace nvhttp {
 #else
         video::probe_encoders();
 #endif
-          if (current_appid == 0) {
+          // proc_t::terminate() leaves the app id at -1, so an idle host reports a
+          // non-positive id rather than 0 once anything has ever run. Testing for 0
+          // alone stopped input-only sessions from launching after the first app exit.
+          if (current_appid <= 0) {
             proc::proc.launch_input_only();
           }
         }
@@ -3294,6 +3296,9 @@ namespace nvhttp {
       pending_vulkan_hdr_layer_guard.disable();
 #endif
 
+      stream::session::arm_shared_runtime_cleanup(
+        launch_session->virtual_display_guid_bytes
+      );
       rtsp_stream::launch_session_raise(launch_session);
 #ifdef _WIN32
       virtual_display_teardown_guard.disable();
@@ -3304,7 +3309,7 @@ namespace nvhttp {
     }
 
 
-  void resume(bool &host_audio, resp_https_t response, req_https_t request) {
+  void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid) {
     print_req<SunshineHTTPS>(request);
 
 #ifdef _WIN32
@@ -3342,8 +3347,10 @@ namespace nvhttp {
       return;
     }
 
-    auto current_appid = proc::proc.running();
-    if (current_appid == 0) {
+    // proc_t::terminate() leaves the app id at -1 and nothing resets it to 0, so any
+    // non-positive id means nothing is running. Comparing against 0 alone would let a
+    // stale /resume run the whole resume path for an app that no longer exists.
+    if (current_appid <= 0) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 503);
       tree.put("root.<xmlattr>.status_message", "No running app to resume");
@@ -3366,7 +3373,49 @@ namespace nvhttp {
     // Newer Moonlight clients send localAudioPlayMode on /resume too,
     // so we should use it if it's present in the args and there are
     // no active sessions we could be interfering with.
-    const bool no_active_sessions = !has_active_or_stopping_stream_session();
+
+    // A pending launch must not reject this request: /resume is how a second viewer joins
+    // an app another client already started, and that client's launch stays pending for
+    // seconds (display apply, verification, encoder probe). has_stream_session_activity()
+    // already counts pending launches, so every mutating decision below degrades to a
+    // plain join on its own.
+    const bool no_active_sessions = !has_stream_session_activity();
+    std::unordered_map<std::string, std::string> requested_runtime_overrides;
+    if (auto running_app = proc::proc.resolve_app(current_appid)) {
+      requested_runtime_overrides = running_app->config_overrides;
+    }
+
+    auto client_settings = verified_client;
+    std::string client_uuid = request_client_identity.uuid;
+    const auto resume_client_uuid = resolve_known_client_uuid_from_launch_id(get_arg(args, "uniqueid", ""));
+    if (client_uuid.empty()) {
+      client_uuid = resume_client_uuid;
+    } else if (!resume_client_uuid.empty() && is_placeholder_client_name(request_client_identity.name)) {
+      BOOST_LOG(warning) << "Ignoring placeholder TLS client identity '" << request_client_identity.name
+                         << "' for runtime overrides; using resume uniqueid " << resume_client_uuid << ".";
+      client_uuid = resume_client_uuid;
+      client_settings.reset();
+    }
+    if (!client_settings && !client_uuid.empty()) {
+      client_settings = get_client_snapshot_by_uuid(client_uuid);
+    }
+    if (client_settings) {
+      for (const auto &[name, value] : client_settings->config_overrides) {
+        requested_runtime_overrides.insert_or_assign(name, value);
+      }
+    }
+
+#ifdef _WIN32
+    if (client_settings &&
+        !client_settings->hdr_profile.empty() &&
+        !requested_runtime_overrides.contains("rtx_hdr_peak_brightness")) {
+      if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(client_settings->hdr_profile)) {
+        const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
+        requested_runtime_overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
+      }
+    }
+#endif
+
     bool runtime_overrides_reapplied = false;
     auto previous_runtime_overrides = config::runtime_config_overrides_snapshot();
     auto runtime_overrides_guard = util::fail_guard([&]() {
@@ -3374,7 +3423,7 @@ namespace nvhttp {
         return;
       }
       config::set_runtime_config_overrides(std::move(previous_runtime_overrides));
-      if (!has_active_or_stopping_stream_session()) {
+      if (!has_stream_session_activity()) {
         config::apply_config_now();
       } else {
         config::mark_deferred_reload();
@@ -3434,7 +3483,6 @@ namespace nvhttp {
 #ifdef _WIN32
     if (no_active_sessions) {
       stream::cancel_paused_display_cleanup();
-      webrtc_stream::cancel_paused_display_cleanup();
     }
 #endif
     // Prevent interleaving with hot-apply while we prep/resume a session
@@ -3705,6 +3753,9 @@ namespace nvhttp {
     tree.put("root.VirtualDisplayDriverReady", false);
 #endif
 
+    stream::session::arm_shared_runtime_cleanup(
+      launch_session->virtual_display_guid_bytes
+    );
     rtsp_stream::launch_session_raise(launch_session);
 #ifdef _WIN32
     virtual_display_teardown_guard.disable();
@@ -3750,9 +3801,21 @@ namespace nvhttp {
     tree.put("root.cancel", 1);
     tree.put("root.<xmlattr>.status_code", 200);
 
-    rtsp_stream::terminate_sessions();
+    const bool has_running_app = proc::proc.running() > 0;
+#ifdef _WIN32
+    const bool preserve_deferred_launch =
+      has_running_app &&
+      proc::proc.is_launch_deferred() &&
+      rtsp_stream::session_count_no_cleanup() == 0;
+    if (preserve_deferred_launch) {
+      BOOST_LOG(info) << "Cancel requested while app launch is deferred; preserving deferred app and virtual display state.";
+    }
+#else
+    constexpr bool preserve_deferred_launch = false;
+#endif
+    rtsp_stream::terminate_sessions(preserve_deferred_launch);
 
-    if (proc::proc.running() > 0) {
+    if (has_running_app && !preserve_deferred_launch) {
       proc::proc.terminate();
     }
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
@@ -4149,15 +4212,19 @@ namespace nvhttp {
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
         std::lock_guard launch_lock {launch_request_mutex};
+        (void) proc::proc.running();
         std::lock_guard lifecycle_lock {stream_lifecycle_gate};
-        launch(host_audio, std::move(resp), std::move(req));
+        const int current_appid = proc::proc.current_app_id();
+        launch(host_audio, std::move(resp), std::move(req), current_appid);
       });
     };
     https_server.resource["^/resume$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
         std::lock_guard launch_lock {launch_request_mutex};
+        (void) proc::proc.running();
         std::lock_guard lifecycle_lock {stream_lifecycle_gate};
-        resume(host_audio, std::move(resp), std::move(req));
+        const int current_appid = proc::proc.current_app_id();
+        resume(host_audio, std::move(resp), std::move(req), current_appid);
       });
     };
     https_server.resource["^/cancel$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
