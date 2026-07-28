@@ -138,12 +138,33 @@ namespace platf::playnite {
   struct playnite_session_tracker_t {
     std::mutex mtx;
     std::string last_started_id;
+    std::string requested_stop_id;
     bool seen_started {false};
 
     void on_started(const std::string &id) {
       std::scoped_lock lk(mtx);
       last_started_id = id;
+      requested_stop_id.clear();
       seen_started = true;
+    }
+
+    void on_stop_requested(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      requested_stop_id = lower_copy(id);
+    }
+
+    bool consume_requested_stop(const std::string &id) {
+      std::scoped_lock lk(mtx);
+      if (requested_stop_id.empty()) {
+        return false;
+      }
+      if (!id.empty() && lower_copy(id) != requested_stop_id) {
+        return false;
+      }
+      requested_stop_id.clear();
+      seen_started = false;
+      last_started_id.clear();
+      return true;
     }
 
     bool allow_stop(const std::string &id) {
@@ -163,6 +184,7 @@ namespace platf::playnite {
       std::scoped_lock lk(mtx);
       seen_started = false;
       last_started_id.clear();
+      requested_stop_id.clear();
     }
   };
 
@@ -832,6 +854,10 @@ namespace platf::playnite {
           if (!msg.status_game_id.empty() && !guard.playnite_id.empty() && msg.status_game_id != guard.playnite_id) {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped for id='" << msg.status_game_id
                              << "' (active Playnite id='" << guard.playnite_id << "')";
+            return;
+          }
+          if (playnite_session_tracker().consume_requested_stop(msg.status_game_id)) {
+            BOOST_LOG(debug) << "Playnite: received gameStopped acknowledgment for requested stop";
             return;
           }
           if (!playnite_session_tracker().allow_stop(msg.status_game_id)) {
@@ -1507,7 +1533,11 @@ namespace platf::playnite {
     if (!playnite_id.empty()) {
       j["id"] = playnite_id;
     }
-    return inst->send_cmd_json_line(j.dump());
+    const bool sent = inst->send_cmd_json_line(j.dump());
+    if (sent) {
+      playnite_session_tracker().on_stop_requested(playnite_id);
+    }
+    return sent;
   }
 
   bool force_sync(const bool wait_for_snapshot) {

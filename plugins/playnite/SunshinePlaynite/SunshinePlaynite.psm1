@@ -2000,12 +2000,15 @@ function Sync-LauncherConnectionActiveGame {
   } catch { Write-Log ("Connection sync {0}: error: {1}" -f $Guid, $_.Exception.Message) }
 }
 
-# Send a synthetic 'gameStopped' status to launcher connection(s) to trigger graceful staging.
+# Send an explicit stop request to launcher connection(s). This must remain
+# distinct from Playnite's lifecycle-driven gameStopped notification so the
+# launcher can begin graceful cleanup immediately without weakening handoff
+# verification for transient gameStopped events.
 function Send-StopSignalToLauncher {
   param([string]$GameId)
   try {
     $idStr = if ($GameId) { $GameId } else { '' }
-    $payload = @{ type = 'status'; status = @{ name = 'gameStopped'; id = $idStr } } | ConvertTo-Json -Depth 4 -Compress
+    $payload = @{ type = 'status'; status = @{ name = 'stopRequested'; id = $idStr } } | ConvertTo-Json -Depth 4 -Compress
   } catch {
     Write-Log "StopSignal: failed to build JSON payload"
     return

@@ -897,6 +897,7 @@ namespace playnite_launcher {
       std::atomic<bool> should_exit {false};
       std::atomic<bool> got_started {false};
       std::atomic<bool> game_stop_pending {false};
+      std::atomic<bool> explicit_stop_requested {false};
       std::atomic<bool> launch_command_sent {false};
       std::atomic<int> launch_retry_budget {2};
       std::atomic<bool> request_game_focus {false};
@@ -1134,6 +1135,19 @@ namespace playnite_launcher {
                 lossless_options.legacy_auto_detect
               );
             }
+          }
+          if (msg.status_name == "stopRequested") {
+            BOOST_LOG(info) << "Explicit stop requested for id=" << config.game_id;
+            explicit_stop_requested.store(true, std::memory_order_release);
+            should_exit.store(true, std::memory_order_release);
+            request_game_focus.store(false, std::memory_order_release);
+            game_focus_confirmed.store(false, std::memory_order_release);
+            game_focus_successes_left.store(0, std::memory_order_release);
+            lossless_refocus_pending.store(false, std::memory_order_release);
+            focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
+            next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
+            teardown_lossless_scaling();
+            return;
           }
           if (msg.status_name == "gameStopped") {
             if (!got_started.load(std::memory_order_acquire)) {
@@ -1547,8 +1561,24 @@ namespace playnite_launcher {
       focus_retry_deadline_ms.store(0, std::memory_order_relaxed);
       next_focus_attempt_ms.store(std::numeric_limits<int64_t>::min(), std::memory_order_relaxed);
 
-      BOOST_LOG(info) << "Playnite reported gameStopped or timeout; scheduling cleanup and exiting";
       const auto install_dir = snapshot_game_info().first;
+      if (explicit_stop_requested.load(std::memory_order_acquire)) {
+        if (!install_dir.empty()) {
+          try {
+            BOOST_LOG(info) << "Explicit stop requested; beginning graceful cleanup immediately";
+            cleanup::cleanup_graceful_then_forceful_in_dir(
+              platf::dxgi::utf8_to_wide(install_dir),
+              exit_timeout_secs
+            );
+          } catch (...) {
+            BOOST_LOG(warning) << "Explicit stop requested; immediate graceful cleanup failed";
+          }
+        } else {
+          BOOST_LOG(warning) << "Explicit stop requested without an install directory; falling back to cleanup watcher";
+        }
+      }
+
+      BOOST_LOG(info) << "Playnite launcher is scheduling fallback cleanup and exiting";
       if (!install_dir.empty() && !watcher_spawned.load()) {
         WCHAR selfPath[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, selfPath, ARRAYSIZE(selfPath));
