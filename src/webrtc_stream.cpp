@@ -644,7 +644,15 @@ namespace webrtc_stream {
                 if (cancelled()) {
                   return {};
                 }
-                if (display_helper_integration::apply(*request, nullptr, cancelled)) {
+                // This recovery worker is torn down with the session, so it
+                // keeps the short shutdown-class helper IPC timeouts.
+                if (display_helper_integration::apply(
+                      *request,
+                      nullptr,
+                      cancelled,
+                      display_helper_integration::ApplyRetryPolicy::Full,
+                      {},
+                      true)) {
                   BOOST_LOG(info) << "Virtual display recovery: re-applied WebRTC display configuration after recreation.";
                   applied = true;
                   break;

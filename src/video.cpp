@@ -106,6 +106,16 @@ namespace video {
 
       auto elapsed = std::chrono::milliseconds(display_helper_integration::ms_since_last_apply());
 
+      // A bounded stream-start APPLY shares one budget with the client's
+      // first-video deadline, so this wait has to come out of what is left of it
+      // rather than starting a fresh window afterwards. Windows are measured
+      // from APPLY completion, so the remaining budget is rebased the same way.
+      // Unbounded applies (WebRTC, recovery, non-stream) keep the full windows.
+      const auto stream_start_budget = display_helper_integration::remaining_stream_start_budget();
+      const auto bounded_window = [&stream_start_budget](std::chrono::milliseconds window, std::chrono::milliseconds since_apply) {
+        return stream_start_budget ? std::min(window, since_apply + *stream_start_budget) : window;
+      };
+
       if (display_helper_integration::last_apply_requested_hdr()) {
         const auto output_name = display_device::map_output_name(config::get_active_output_name());
         if (platf::dxgi::is_hdr_active_for_output(output_name)) {
@@ -114,12 +124,17 @@ namespace video {
         if (elapsed >= kHdrReadyWindow) {
           return;
         }
+        const auto hdr_ready_window = bounded_window(kHdrReadyWindow, elapsed);
+        if (elapsed >= hdr_ready_window) {
+          BOOST_LOG(info) << "Stream-start display budget is exhausted; starting capture immediately to stay inside the client deadline.";
+          return;
+        }
 
         BOOST_LOG(info) << "Display apply requested HDR; waiting up to "
-                        << (kHdrReadyWindow - elapsed).count()
+                        << (hdr_ready_window - elapsed).count()
                         << "ms for the output to report HDR before starting capture";
-        while (elapsed < kHdrReadyWindow) {
-          std::this_thread::sleep_for(std::min(kVerificationPollInterval, kHdrReadyWindow - elapsed));
+        while (elapsed < hdr_ready_window) {
+          std::this_thread::sleep_for(std::min(kVerificationPollInterval, hdr_ready_window - elapsed));
           if (platf::dxgi::is_hdr_active_for_output(output_name)) {
             BOOST_LOG(debug) << "Display output reported HDR active after "
                              << display_helper_integration::ms_since_last_apply()
@@ -130,23 +145,28 @@ namespace video {
         }
 
         BOOST_LOG(warning) << "Display apply requested HDR but the output did not report HDR within "
-                           << kHdrReadyWindow.count() << "ms; starting capture in SDR.";
+                           << hdr_ready_window.count() << "ms; starting capture in SDR.";
         return;
       }
 
       if (elapsed >= kFallbackSettleWindow || display_helper_integration::last_apply_is_capture_stable()) {
         return;
       }
+      const auto settle_window = bounded_window(kFallbackSettleWindow, elapsed);
+      if (elapsed >= settle_window) {
+        BOOST_LOG(info) << "Stream-start display budget is exhausted; starting capture immediately to stay inside the client deadline.";
+        return;
+      }
 
       BOOST_LOG(info) << "Display topology recently changed; waiting up to "
-                      << (kFallbackSettleWindow - elapsed).count()
+                      << (settle_window - elapsed).count()
                       << "ms for helper verification or display-settle fallback";
-      while (elapsed < kFallbackSettleWindow) {
+      while (elapsed < settle_window) {
         if (display_helper_integration::last_apply_is_capture_stable()) {
           BOOST_LOG(debug) << "Display topology verification completed; ending settle wait early.";
           return;
         }
-        std::this_thread::sleep_for(std::min(kVerificationPollInterval, kFallbackSettleWindow - elapsed));
+        std::this_thread::sleep_for(std::min(kVerificationPollInterval, settle_window - elapsed));
         elapsed = std::chrono::milliseconds(display_helper_integration::ms_since_last_apply());
       }
     }
@@ -2079,10 +2099,20 @@ namespace video {
     int max_attempts = 2;
     std::chrono::milliseconds base_delay = 200ms;
 #ifdef _WIN32
+    // The extended ladder only exists for the window right after an APPLY, and a
+    // bounded stream start has to spend that window inside the same budget the
+    // client's first-video deadline uses. Outside the window nothing changes.
+    std::optional<std::chrono::steady_clock::time_point> settle_deadline;
     const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
     if (ms_since_apply < 5000) {
-      max_attempts = 5;
-      base_delay = 300ms;
+      const auto stream_start_budget = display_helper_integration::remaining_stream_start_budget();
+      if (!stream_start_budget || *stream_start_budget > 0ms) {
+        max_attempts = 5;
+        base_delay = 300ms;
+      }
+      if (stream_start_budget) {
+        settle_deadline = std::chrono::steady_clock::now() + *stream_start_budget;
+      }
     }
 #endif
 
@@ -2096,6 +2126,12 @@ namespace video {
       // The capture code depends on us to sleep between failures.
       // Use progressive delays for topology changes to give the display time to settle.
       auto delay = base_delay + std::chrono::milliseconds(x * 100);
+#ifdef _WIN32
+      if (settle_deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*settle_deadline - std::chrono::steady_clock::now());
+        delay = std::max(0ms, std::min(delay, remaining));
+      }
+#endif
       std::this_thread::sleep_for(delay);
     }
   }

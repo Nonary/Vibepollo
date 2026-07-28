@@ -48,6 +48,13 @@ namespace platf::display_helper_client {
     // connect budget (anonymous transport, then named fallback) when the helper is
     // down: that stalls the poll loop for seconds per attempt.
     constexpr int kRefreshRateConnectTimeoutMs = 600;
+    // Per-stage cap for SNAPSHOT_CURRENT. A bounded snapshot shares the caller's
+    // stream-start budget, so without its own cap a slow snapshot can consume the
+    // whole budget and leave nothing for APPLY.
+    constexpr int kSnapshotResultTimeoutMs = 3000;
+    // Retiring a stale connection is a lock acquisition, not helper work, so it
+    // gets its own short budget: the deadlines that lead here are already spent.
+    constexpr int kStaleConnectionRetireTimeoutMs = 250;
 
     bool shutdown_requested() {
       if (!mail::man) {
@@ -822,8 +829,12 @@ namespace platf::display_helper_client {
   }
 
   // Ensure connected while holding connection_mutex(). Returns true on success.
-  static bool ensure_connected_locked(std::optional<int> connect_timeout_override_ms = std::nullopt) {
-    if (shutdown_requested()) {
+  static bool ensure_connected_locked(
+    std::optional<int> connect_timeout_override_ms = std::nullopt,
+    const std::function<bool()> &cancelled = {},
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
+    if (shutdown_requested() || (cancelled && cancelled())) {
       return false;
     }
     auto &session = session_singleton();
@@ -837,22 +848,26 @@ namespace platf::display_helper_client {
 
     BOOST_LOG(debug) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
     const int connect_timeout_ms = connect_timeout_override_ms.value_or(effective_connect_timeout());
-    const auto connect_start = std::chrono::steady_clock::now();
+    const auto connect_deadline = std::min(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(connect_timeout_ms),
+      operation_deadline
+    );
     auto remaining_ms = [&]() -> int {
-      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - connect_start
-      );
-      const long long remaining = static_cast<long long>(connect_timeout_ms) - elapsed.count();
-      return static_cast<int>(std::max<long long>(0LL, remaining));
+      return remaining_timeout_ms(connect_deadline);
     };
 
     auto create_session = [&](auto creator) -> bool {
+      if ((cancelled && cancelled()) || remaining_ms() <= 0) {
+        return false;
+      }
       auto pipe = std::make_shared<platf::dxgi::SelfHealingPipe>(std::move(creator));
       if (!pipe) {
         return false;
       }
       pipe->wait_for_client_connection(remaining_ms());
-      if (!pipe->is_connected()) {
+      if ((cancelled && cancelled()) ||
+          remaining_ms() <= 0 ||
+          !pipe->is_connected()) {
         return false;
       }
       const auto generation = allocate_connection_generation();
@@ -895,7 +910,39 @@ namespace platf::display_helper_client {
     if (cancelled && cancelled()) {
       return {};
     }
-    if (!ensure_connected_locked(connect_timeout_override_ms)) {
+    if (!ensure_connected_locked(connect_timeout_override_ms, cancelled)) {
+      return {};
+    }
+    return session_singleton();
+  }
+
+  static SessionPtr connected_session_within(
+    const std::chrono::steady_clock::time_point &deadline,
+    const int connect_timeout_cap_ms,
+    const std::function<bool()> &cancelled = {}
+  ) {
+    std::unique_lock<std::timed_mutex> lock(connection_mutex(), std::defer_lock);
+    while (true) {
+      if (cancelled && cancelled()) {
+        return {};
+      }
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return {};
+      }
+      if (lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+        break;
+      }
+    }
+    if (cancelled && cancelled()) {
+      return {};
+    }
+    const int remaining = remaining_timeout_ms(deadline);
+    if (remaining <= 0 ||
+        !ensure_connected_locked(
+          std::min(connect_timeout_cap_ms, remaining),
+          cancelled,
+          deadline)) {
       return {};
     }
     return session_singleton();
@@ -958,26 +1005,40 @@ namespace platf::display_helper_client {
   }
 
   static std::optional<std::uint64_t> cancel_or_begin_apply_wait_within(
-    const std::chrono::steady_clock::time_point &deadline) {
-    int lock_timeout_ms = remaining_timeout_ms(deadline);
-    if (lock_timeout_ms <= 0) {
-      return std::nullopt;
-    }
+    const std::chrono::steady_clock::time_point &deadline,
+    const std::function<bool()> &cancelled = {}) {
     std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
-    if (!write_lock.try_lock_for(std::chrono::milliseconds(lock_timeout_ms))) {
-      return std::nullopt;
+    while (true) {
+      if (cancelled && cancelled()) {
+        return std::nullopt;
+      }
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return std::nullopt;
+      }
+      if (write_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+        break;
+      }
     }
 
     SessionPtr retired;
-    lock_timeout_ms = remaining_timeout_ms(deadline);
-    if (lock_timeout_ms <= 0) {
-      return std::nullopt;
-    }
     // session_singleton() is owned by connection_mutex(). Acquire the normal
     // write -> connection order even when no retirement is needed; otherwise
     // a fast DISARM can race reconnect/reset while inspecting the shared_ptr.
     std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
-    if (!connection_lock.try_lock_for(std::chrono::milliseconds(lock_timeout_ms))) {
+    while (true) {
+      if (cancelled && cancelled()) {
+        return std::nullopt;
+      }
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return std::nullopt;
+      }
+      if (connection_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+        break;
+      }
+    }
+    if ((cancelled && cancelled()) || remaining_timeout_ms(deadline) <= 0) {
       return std::nullopt;
     }
     retired = retire_untagged_response_session_if_needed_locked();
@@ -1051,27 +1112,44 @@ namespace platf::display_helper_client {
     MsgType type,
     const std::vector<uint8_t> &payload,
     const std::chrono::steady_clock::time_point &deadline,
-    std::optional<std::uint64_t> expected_apply_generation = std::nullopt
+    std::optional<std::uint64_t> expected_apply_generation = std::nullopt,
+    std::optional<int> send_timeout_cap_ms = std::nullopt,
+    std::uint64_t *connection_generation_out = nullptr,
+    bool begins_untagged_response = false,
+    const std::function<bool()> &cancelled = {}
   ) {
     if (!session || !session->pipe) {
       return false;
     }
 
-    int lock_timeout_ms = remaining_timeout_ms(deadline);
-    if (lock_timeout_ms <= 0) {
-      return false;
-    }
     std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
-    if (!write_lock.try_lock_for(std::chrono::milliseconds(lock_timeout_ms))) {
-      return false;
+    while (true) {
+      if (cancelled && cancelled()) {
+        return false;
+      }
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return false;
+      }
+      if (write_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+        break;
+      }
     }
 
-    lock_timeout_ms = remaining_timeout_ms(deadline);
-    if (lock_timeout_ms <= 0) {
-      return false;
-    }
     std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
-    if (!connection_lock.try_lock_for(std::chrono::milliseconds(lock_timeout_ms))) {
+    while (true) {
+      if (cancelled && cancelled()) {
+        return false;
+      }
+      const int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return false;
+      }
+      if (connection_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+        break;
+      }
+    }
+    if (cancelled && cancelled()) {
       return false;
     }
     if (session_singleton() != session ||
@@ -1081,8 +1159,25 @@ namespace platf::display_helper_client {
       return false;
     }
 
-    const int send_timeout_ms = remaining_timeout_ms(deadline);
-    return send_timeout_ms > 0 && send_message(*session->pipe, type, payload, send_timeout_ms);
+    const bool reserve_untagged = begins_untagged_response &&
+                                  session->protocol.load(std::memory_order_acquire) == ApplyResponseProtocol::Unknown;
+    if (reserve_untagged) {
+      session->untagged_response_pending.store(true, std::memory_order_release);
+    }
+    int send_timeout_ms = remaining_timeout_ms(deadline);
+    if (send_timeout_cap_ms) {
+      send_timeout_ms = std::min(send_timeout_ms, *send_timeout_cap_ms);
+    }
+    const bool sent =
+      send_timeout_ms > 0 &&
+      send_message(*session->pipe, type, payload, send_timeout_ms);
+    if (!sent && reserve_untagged) {
+      session->untagged_response_pending.store(false, std::memory_order_release);
+    }
+    if (sent && connection_generation_out) {
+      *connection_generation_out = session->generation;
+    }
+    return sent;
   }
 
   static void drop_connection_if_current(const SessionPtr &session, const char *reason) {
@@ -1103,28 +1198,79 @@ namespace platf::display_helper_client {
     }
   }
 
-  bool reset_connection_cancellable(std::function<bool()> cancellation_predicate) {
+  static void drop_connection_if_current_within(
+    const SessionPtr &session,
+    const char *reason,
+    const std::chrono::steady_clock::time_point &deadline
+  ) {
+    SessionPtr retired;
+    {
+      int remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return;
+      }
+      std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
+      if (!write_lock.try_lock_for(std::chrono::milliseconds(remaining))) {
+        return;
+      }
+      remaining = remaining_timeout_ms(deadline);
+      if (remaining <= 0) {
+        return;
+      }
+      std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
+      if (!connection_lock.try_lock_for(std::chrono::milliseconds(remaining))) {
+        return;
+      }
+      if (session_singleton() == session) {
+        BOOST_LOG(warning) << "Display helper IPC: dropping cached connection after " << reason;
+        retired = retire_session_locked();
+      }
+    }
+    if (retired) {
+      reset_log_level_cache();
+    }
+  }
+
+  bool reset_connection_cancellable(
+    std::function<bool()> cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
     SessionPtr retired;
     {
       // The wait-generation change and retirement are one ordered control
       // decision. A fresh APPLY therefore either wins before this reset starts
       // or sees a new/no session; it cannot write to a pipe about to retire.
       std::unique_lock<std::timed_mutex> write_lock(write_mutex(), std::defer_lock);
-      while (!write_lock.try_lock_for(std::chrono::milliseconds(100))) {
+      while (true) {
         if (cancellation_predicate && cancellation_predicate()) {
           return false;
         }
+        const int remaining = remaining_timeout_ms(operation_deadline);
+        if (remaining <= 0) {
+          return false;
+        }
+        if (write_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+          break;
+        }
       }
-      if (cancellation_predicate && cancellation_predicate()) {
+      if ((cancellation_predicate && cancellation_predicate()) ||
+          remaining_timeout_ms(operation_deadline) <= 0) {
         return false;
       }
       std::unique_lock<std::timed_mutex> connection_lock(connection_mutex(), std::defer_lock);
-      while (!connection_lock.try_lock_for(std::chrono::milliseconds(100))) {
+      while (true) {
         if (cancellation_predicate && cancellation_predicate()) {
           return false;
         }
+        const int remaining = remaining_timeout_ms(operation_deadline);
+        if (remaining <= 0) {
+          return false;
+        }
+        if (connection_lock.try_lock_for(std::chrono::milliseconds(std::min(remaining, 100)))) {
+          break;
+        }
       }
-      if (cancellation_predicate && cancellation_predicate()) {
+      if ((cancellation_predicate && cancellation_predicate()) ||
+          remaining_timeout_ms(operation_deadline) <= 0) {
         return false;
       }
       (void) apply_wait_generation().fetch_add(1, std::memory_order_acq_rel);
@@ -1230,8 +1376,18 @@ namespace platf::display_helper_client {
     std::uint64_t *wait_generation_out,
     std::uint64_t *connection_generation_out,
     std::function<bool()> cancellation_predicate,
-    int response_timeout_ms) {
+    int operation_timeout_ms,
+    bool shutdown_class_caller) {
     BOOST_LOG(debug) << "Display helper IPC: APPLY request queued (json_len=" << json.size() << ")";
+    const bool operation_is_bounded = operation_timeout_ms > 0;
+    const auto operation_deadline =
+      operation_is_bounded ?
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(operation_timeout_ms) :
+        std::chrono::steady_clock::time_point::max();
+    const auto operation_cancelled = [&cancellation_predicate, operation_is_bounded, operation_deadline] {
+      return (cancellation_predicate && cancellation_predicate()) ||
+             (operation_is_bounded && std::chrono::steady_clock::now() >= operation_deadline);
+    };
     if (request_id_out) {
       *request_id_out = 0;
     }
@@ -1241,10 +1397,16 @@ namespace platf::display_helper_client {
     if (connection_generation_out) {
       *connection_generation_out = 0;
     }
-    if (cancellation_predicate && cancellation_predicate()) {
+    if (operation_cancelled()) {
       return false;
     }
-    const auto wait_generation = cancel_or_begin_apply_wait_cancellable(cancellation_predicate);
+    const auto wait_generation =
+      operation_is_bounded ?
+        cancel_or_begin_apply_wait_within(
+          operation_deadline,
+          operation_cancelled
+        ) :
+        cancel_or_begin_apply_wait_cancellable(operation_cancelled);
     if (!wait_generation) {
       return false;
     }
@@ -1270,12 +1432,29 @@ namespace platf::display_helper_client {
       return false;
     }
 
+    if (operation_is_bounded && remaining_timeout_ms(operation_deadline) <= 0) {
+      return false;
+    }
+
     // Hold this session's response reader before sending APPLY. A superseded
     // v2 verification wait releases it in short slices; a known legacy helper
     // deliberately keeps its untagged lane serial until the old reply arrives.
-    const auto session = connected_session(
-      cancellation_predicate ? std::optional<int> {kShutdownIpcTimeoutMs} : std::nullopt,
-      cancellation_predicate);
+    // Every APPLY now arrives with a synthesized deadline predicate, so the
+    // predicate can no longer stand in for "this caller is shutting down": only
+    // an explicit shutdown-class caller may collapse to the short IPC caps.
+    const int connect_timeout_cap_ms =
+      shutdown_class_caller ? kShutdownIpcTimeoutMs : kConnectTimeoutMs;
+    const auto session =
+      operation_is_bounded ?
+        connected_session_within(
+          operation_deadline,
+          connect_timeout_cap_ms,
+          operation_cancelled
+        ) :
+        connected_session(
+          connect_timeout_cap_ms,
+          operation_cancelled
+        );
     if (!session) {
       BOOST_LOG(warning) << "Display helper IPC: APPLY aborted - no connection";
       return false;
@@ -1284,32 +1463,36 @@ namespace platf::display_helper_client {
     const int protocol_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
                                       kLegacyApplyResultTimeoutMs :
                                       kV2ApplyResultTimeoutMs;
-    const int effective_response_timeout_ms = response_timeout_ms > 0 ?
-                                                std::min(protocol_timeout_ms, response_timeout_ms) :
-                                                protocol_timeout_ms;
-    const auto reader_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(effective_response_timeout_ms);
+    const auto protocol_deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(protocol_timeout_ms);
+    const auto reader_deadline = std::min(operation_deadline, protocol_deadline);
+    const auto response_cancelled = [&operation_cancelled, reader_deadline] {
+      return operation_cancelled() || std::chrono::steady_clock::now() >= reader_deadline;
+    };
     std::unique_lock<std::timed_mutex> response_lock;
     if (!lock_response_reader_until(
           session,
           response_lock,
           reader_deadline,
-          [session, wait_generation = *wait_generation, cancellation_predicate] {
-            return (cancellation_predicate && cancellation_predicate()) ||
+          [session, wait_generation = *wait_generation, response_cancelled] {
+            return response_cancelled() ||
                    !session_is_current(session) ||
                    apply_wait_generation().load(std::memory_order_acquire) != wait_generation;
           })) {
       return false;
     }
+    const int send_cap = shutdown_class_caller ? kShutdownIpcTimeoutMs : kSendTimeoutMs;
     std::uint64_t sent_connection_generation = 0;
-    if (!send_serialized(
+    if (!send_serialized_within(
           session,
           MsgType::Apply,
           payload,
-          cancellation_predicate ? std::optional<int> {kShutdownIpcTimeoutMs} : std::nullopt,
+          reader_deadline,
           *wait_generation,
+          send_cap,
           &sent_connection_generation,
           true,
-          cancellation_predicate)) {
+          response_cancelled)) {
       return false;
     }
     remember_issued_apply_request_id(request_id);
@@ -1320,22 +1503,25 @@ namespace platf::display_helper_client {
       *connection_generation_out = sent_connection_generation;
     }
 
-    if (auto result = wait_for_apply_result_locked(
-          session,
-          request_id,
-          protocol,
-          effective_response_timeout_ms,
-          [session, wait_generation = *wait_generation, protocol, cancellation_predicate] {
-            return (cancellation_predicate && cancellation_predicate()) ||
-                   !session_is_current(session) ||
-                   (protocol != ApplyResponseProtocol::Legacy &&
-                    apply_wait_generation().load(std::memory_order_acquire) != wait_generation);
-          }
-        )) {
-      if (result->success && request_id_out && result->protocol == ApplyResponseProtocol::V2) {
-        *request_id_out = request_id;
+    const int remaining_response_timeout_ms = remaining_timeout_ms(reader_deadline);
+    if (remaining_response_timeout_ms > 0) {
+      if (auto result = wait_for_apply_result_locked(
+            session,
+            request_id,
+            protocol,
+            remaining_response_timeout_ms,
+            [session, wait_generation = *wait_generation, protocol, response_cancelled] {
+              return response_cancelled() ||
+                     !session_is_current(session) ||
+                     (protocol != ApplyResponseProtocol::Legacy &&
+                      apply_wait_generation().load(std::memory_order_acquire) != wait_generation);
+            }
+          )) {
+        if (result->success && request_id_out && result->protocol == ApplyResponseProtocol::V2) {
+          *request_id_out = request_id;
+        }
+        return result->success;
       }
-      return result->success;
     }
 
     if (protocol != ApplyResponseProtocol::Legacy &&
@@ -1343,7 +1529,18 @@ namespace platf::display_helper_client {
       BOOST_LOG(debug) << "Display helper IPC: APPLY result wait superseded by a newer control command.";
       return false;
     }
-    drop_connection_if_current(session, "missing APPLY result");
+    if (operation_is_bounded) {
+      // The operation deadline is what expired to get here, so retiring the
+      // pipe needs its own budget; otherwise the stale connection survives and
+      // a late queued ApplyResult is read as the next request's answer.
+      drop_connection_if_current_within(
+        session,
+        "missing APPLY result",
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStaleConnectionRetireTimeoutMs)
+      );
+    } else {
+      drop_connection_if_current(session, "missing APPLY result");
+    }
     return false;
   }
 
@@ -1425,6 +1622,50 @@ namespace platf::display_helper_client {
     return send_serialized(session, MsgType::Revert, payload, std::nullopt, wait_generation);
   }
 
+  bool send_revert_within(
+    const std::string &json_payload,
+    const std::chrono::steady_clock::time_point operation_deadline,
+    std::function<bool()> cancellation_predicate) {
+    BOOST_LOG(debug) << "Display helper IPC: bounded REVERT request queued";
+    const auto operation_cancelled = [&] {
+      return (cancellation_predicate && cancellation_predicate()) ||
+             std::chrono::steady_clock::now() >= operation_deadline;
+    };
+    if (operation_cancelled()) {
+      return false;
+    }
+
+    const auto wait_generation = cancel_or_begin_apply_wait_within(
+      operation_deadline,
+      operation_cancelled
+    );
+    if (!wait_generation) {
+      return false;
+    }
+    const auto session = connected_session_within(
+      operation_deadline,
+      kConnectTimeoutMs,
+      operation_cancelled
+    );
+    if (!session) {
+      BOOST_LOG(warning) << "Display helper IPC: bounded REVERT aborted - no connection";
+      return false;
+    }
+
+    std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
+    return send_serialized_within(
+      session,
+      MsgType::Revert,
+      payload,
+      operation_deadline,
+      *wait_generation,
+      kSendTimeoutMs,
+      nullptr,
+      false,
+      operation_cancelled
+    );
+  }
+
   bool send_export_golden(const std::string &json_payload) {
     BOOST_LOG(debug) << "Display helper IPC: EXPORT_GOLDEN request queued";
     const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
@@ -1461,12 +1702,17 @@ namespace platf::display_helper_client {
     return send_serialized(session, MsgType::Disarm, payload, std::nullopt, wait_generation);
   }
 
-  bool send_disarm_restore_fast(int timeout_ms) {
+  bool send_disarm_restore_fast(
+    int timeout_ms,
+    const std::chrono::steady_clock::time_point operation_deadline) {
     BOOST_LOG(debug) << "Display helper IPC: DISARM (fast) request queued (timeout_ms=" << timeout_ms << ")";
     if (timeout_ms <= 0) {
       return false;
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto deadline = std::min(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms),
+      operation_deadline
+    );
     const auto wait_generation = cancel_or_begin_apply_wait_within(deadline);
     if (!wait_generation) {
       return false;
@@ -1553,6 +1799,124 @@ namespace platf::display_helper_client {
     return false;
   }
 
+  bool send_snapshot_current_within(
+    const std::string &json_payload,
+    const std::chrono::steady_clock::time_point operation_deadline,
+    std::function<bool()> cancellation_predicate) {
+    BOOST_LOG(debug) << "Display helper IPC: bounded SNAPSHOT_CURRENT request queued";
+    // The snapshot shares the caller's stream-start budget while holding the
+    // single response reader, so it keeps the same per-stage cap the unbounded
+    // path uses. Without it a slow snapshot starves the APPLY that follows.
+    const auto stage_deadline = std::min(
+      operation_deadline,
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(kSnapshotResultTimeoutMs)
+    );
+    const auto operation_cancelled = [&] {
+      return (cancellation_predicate && cancellation_predicate()) ||
+             std::chrono::steady_clock::now() >= stage_deadline;
+    };
+    if (operation_cancelled()) {
+      return false;
+    }
+
+    const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
+    const auto session = connected_session_within(
+      stage_deadline,
+      kConnectTimeoutMs,
+      operation_cancelled
+    );
+    if (!session) {
+      BOOST_LOG(warning) << "Display helper IPC: bounded SNAPSHOT_CURRENT aborted - no connection";
+      return false;
+    }
+    const auto protocol = current_apply_response_protocol(session);
+    const auto cancelled = [session, wait_generation, operation_cancelled] {
+      return operation_cancelled() ||
+             !session_is_current(session) ||
+             apply_wait_generation().load(std::memory_order_acquire) != wait_generation;
+    };
+
+    std::vector<uint8_t> payload;
+    std::optional<std::uint64_t> request_id;
+    if (protocol == ApplyResponseProtocol::V2) {
+      request_id = next_auxiliary_request_id().fetch_add(1, std::memory_order_relaxed);
+      try {
+        auto snapshot_json = nlohmann::json::parse(
+          json_payload.empty() ? "{}" : json_payload,
+          nullptr,
+          false
+        );
+        if (snapshot_json.is_array()) {
+          snapshot_json = nlohmann::json {
+            {"exclude_devices", std::move(snapshot_json)},
+          };
+        }
+        if (!snapshot_json.is_object()) {
+          BOOST_LOG(error) << "Display helper IPC: SNAPSHOT_CURRENT payload must be a JSON object or exclusion array.";
+          return false;
+        }
+        snapshot_json["sunshine_snapshot_id"] = *request_id;
+        const auto serialized = snapshot_json.dump();
+        payload.assign(serialized.begin(), serialized.end());
+      } catch (...) {
+        BOOST_LOG(error) << "Display helper IPC: failed to add bounded SNAPSHOT_CURRENT request token.";
+        return false;
+      }
+    } else {
+      payload.assign(json_payload.begin(), json_payload.end());
+    }
+
+    std::unique_lock<std::timed_mutex> response_lock;
+    if (request_id &&
+        !lock_response_reader_until(
+          session,
+          response_lock,
+          stage_deadline,
+          cancelled)) {
+      return false;
+    }
+    if (!send_serialized_within(
+          session,
+          MsgType::SnapshotCurrent,
+          payload,
+          stage_deadline,
+          wait_generation,
+          kSendTimeoutMs,
+          nullptr,
+          false,
+          cancelled)) {
+      return false;
+    }
+    if (!request_id) {
+      return true;
+    }
+
+    const int remaining = remaining_timeout_ms(stage_deadline);
+    if (remaining > 0) {
+      if (auto result = wait_for_snapshot_result_locked(
+            session,
+            remaining,
+            *request_id,
+            cancelled
+          )) {
+        return *result;
+      }
+    }
+    // Budget exhaustion is the normal way to reach this point, so it must not
+    // suppress retiring the pipe; only a genuine supersession leaves it usable.
+    const bool superseded = (cancellation_predicate && cancellation_predicate()) ||
+                            !session_is_current(session) ||
+                            apply_wait_generation().load(std::memory_order_acquire) != wait_generation;
+    if (!superseded) {
+      drop_connection_if_current_within(
+        session,
+        "missing bounded SNAPSHOT_CURRENT result",
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStaleConnectionRetireTimeoutMs)
+      );
+    }
+    return false;
+  }
+
   bool send_stop() {
     BOOST_LOG(info) << "Display helper IPC: STOP request queued";
     (void) cancel_or_begin_apply_wait();
@@ -1572,28 +1936,45 @@ namespace platf::display_helper_client {
     return send_serialized(session, MsgType::Ping, payload);
   }
 
-  bool send_ping_cancellable(int timeout_ms, std::function<bool()> cancellation_predicate) {
+  bool send_ping_cancellable(
+    int timeout_ms,
+    std::function<bool()> cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
     if (timeout_ms <= 0 || (cancellation_predicate && cancellation_predicate())) {
       return false;
     }
-    const auto session = connected_session(timeout_ms, cancellation_predicate);
+    const auto deadline = std::min(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms),
+      operation_deadline
+    );
+    const auto session = connected_session_within(
+      deadline,
+      timeout_ms,
+      cancellation_predicate
+    );
     std::vector<uint8_t> payload;
-    return send_serialized(
+    return send_serialized_within(
       session,
       MsgType::Ping,
       payload,
-      timeout_ms,
+      deadline,
       std::nullopt,
+      timeout_ms,
       nullptr,
       false,
       cancellation_predicate);
   }
 
-  bool send_ping_fast(int timeout_ms) {
+  bool send_ping_fast(
+    int timeout_ms,
+    const std::chrono::steady_clock::time_point operation_deadline) {
     if (timeout_ms <= 0) {
       return false;
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto deadline = std::min(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms),
+      operation_deadline
+    );
     const auto session = cached_connected_session_within(deadline);
     std::vector<uint8_t> payload;
     return send_serialized_within(session, MsgType::Ping, payload, deadline);

@@ -356,6 +356,12 @@ namespace {
           out_request.request_id = j["sunshine_apply_id"].get<std::uint64_t>();
           j.erase("sunshine_apply_id");
         }
+        if (j.contains("sunshine_omit_final_initial_hdr_reapply")) {
+          out_request.omit_final_initial_hdr_reapply =
+            j["sunshine_omit_final_initial_hdr_reapply"].is_boolean() &&
+            j["sunshine_omit_final_initial_hdr_reapply"].get<bool>();
+          j.erase("sunshine_omit_final_initial_hdr_reapply");
+        }
         if (j.contains("wa_hdr_toggle")) {
           out_request.hdr_blank = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");

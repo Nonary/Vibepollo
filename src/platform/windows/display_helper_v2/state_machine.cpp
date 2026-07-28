@@ -324,11 +324,17 @@ namespace display_helper::v2 {
     }
 
     const std::size_t stage = next_verification_reapply_++;
+    const auto delay = verification_reapply_delays_[stage];
+    if (current_request_.omit_final_initial_hdr_reapply &&
+        !session_was_verified_ &&
+        delay == std::chrono::milliseconds(5500)) {
+      BOOST_LOG(warning) << "Display helper: omitting the final initial HDR reapply to release the stream-start capture gate.";
+      return false;
+    }
     // Stage zero is v1's immediate synchronous reapply. Every later stage is
     // also a completed/claimed post-apply settling window, so do not schedule
     // that same check again after the repair succeeds.
     next_post_apply_stabilization_ = std::max(next_post_apply_stabilization_, stage);
-    const auto delay = verification_reapply_delays_[stage];
     BOOST_LOG(warning) << "Display helper: post-apply verification did not stick; reapplying settled display settings"
                        << (delay > std::chrono::milliseconds::zero() ? " after " + std::to_string(delay.count()) + " ms." : ".");
     transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
@@ -785,7 +791,9 @@ namespace display_helper::v2 {
     // Preserve v1's delayed stickiness checks as bounded FSM stages. The
     // immediate reapply is the legacy helper's second synchronous verify
     // attempt; later entries are its Windows-settling stair-step. HDR
-    // transitions receive the longer 750ms/2.5s/5.5s envelope.
+    // transitions receive the longer 750ms/2.5s/5.5s envelope. The dispatcher
+    // omits only the final initial repair for a capture-gated stream start;
+    // retaining it here keeps the same 5.5s repair available after verification.
     verification_reapply_delays_.push_back(std::chrono::milliseconds(0));
     post_apply_stabilization_delays_.push_back(std::chrono::milliseconds(750));
     verification_reapply_delays_.push_back(std::chrono::milliseconds(750));

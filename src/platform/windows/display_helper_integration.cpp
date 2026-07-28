@@ -253,22 +253,65 @@ namespace {
   constexpr int kHelperStartFailuresBeforeCooldown {2};
   constexpr int kMaxDeferredApplyAttempts = 6;
 
+  // Helper liveness probe envelopes. Ordinary callers keep the client's normal
+  // send budget so a reconnect under load still succeeds; only shutdown-class
+  // callers (owned recovery/teardown workers) collapse to the short probe.
+  // The cancellable variant is still used for both because operation_deadline
+  // must be able to cut the probe short, which plain send_ping() cannot do.
+  constexpr int kHelperPingTimeoutMs {5000};
+  constexpr int kShutdownHelperPingTimeoutMs {250};
+
+  bool operation_deadline_expired(
+    const std::chrono::steady_clock::time_point operation_deadline) {
+    return operation_deadline != std::chrono::steady_clock::time_point::max() &&
+           std::chrono::steady_clock::now() >= operation_deadline;
+  }
+
+  std::chrono::milliseconds operation_wait_slice(
+    const std::chrono::milliseconds requested,
+    const std::chrono::steady_clock::time_point operation_deadline) {
+    if (operation_deadline == std::chrono::steady_clock::time_point::max()) {
+      return requested;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      operation_deadline - std::chrono::steady_clock::now());
+    return std::max(
+      std::chrono::milliseconds::zero(),
+      std::min(requested, remaining)
+    );
+  }
+
   bool shutdown_requested();
   bool ensure_helper_started(
     bool force_restart = false,
     bool force_enable = false,
-    const std::function<bool()> &cancellation_predicate = {});
+    const std::function<bool()> &cancellation_predicate = {},
+    std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max(),
+    bool shutdown_class_caller = false);
   const char *virtual_layout_to_string(const display_helper_integration::VirtualDisplayArrangement layout);
 
-  bool helper_process_running(const std::function<bool()> &cancellation_predicate = {}) {
+  bool helper_process_running(
+    const std::function<bool()> &cancellation_predicate = {},
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
     std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
     while (!lg.try_lock()) {
-      if (cancellation_predicate && cancellation_predicate()) {
+      if ((cancellation_predicate && cancellation_predicate()) ||
+          operation_deadline_expired(operation_deadline)) {
         return false;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      const auto wait = operation_wait_slice(
+        std::chrono::milliseconds(25),
+        operation_deadline
+      );
+      if (wait <= std::chrono::milliseconds::zero()) {
+        return false;
+      }
+      std::this_thread::sleep_for(wait);
     }
-    if (cancellation_predicate && cancellation_predicate()) {
+    if ((cancellation_predicate && cancellation_predicate()) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     if (HANDLE h = helper_proc().get_process_handle()) {
@@ -277,7 +320,10 @@ namespace {
     return false;
   }
 
-  bool restore_expected_with_live_helper();
+  bool restore_expected_with_live_helper(
+    const std::function<bool()> &cancellation_predicate = {},
+    std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max());
 
   std::chrono::milliseconds deferred_apply_retry_delay(int attempts) {
     if (attempts <= 0) {
@@ -543,15 +589,26 @@ namespace {
 
   bool sleep_with_cancellation(
     std::chrono::milliseconds duration,
-    const std::function<bool()> &cancellation_predicate) {
+    const std::function<bool()> &cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
     constexpr auto slice = std::chrono::milliseconds(50);
     for (auto elapsed = std::chrono::milliseconds::zero(); elapsed < duration; elapsed += slice) {
-      if (cancellation_requested(cancellation_predicate)) {
+      if (cancellation_requested(cancellation_predicate) ||
+          operation_deadline_expired(operation_deadline)) {
         return false;
       }
-      std::this_thread::sleep_for(std::min(slice, duration - elapsed));
+      const auto wait = operation_wait_slice(
+        std::min(slice, duration - elapsed),
+        operation_deadline
+      );
+      if (wait <= std::chrono::milliseconds::zero()) {
+        return false;
+      }
+      std::this_thread::sleep_for(wait);
     }
-    return !cancellation_requested(cancellation_predicate);
+    return !cancellation_requested(cancellation_predicate) &&
+           !operation_deadline_expired(operation_deadline);
   }
 
   // Recovery owns a stop token and main joins it before it joins stream
@@ -560,25 +617,37 @@ namespace {
   // poll the gate and leave promptly after their owner requests stop.
   bool lock_pending_apply_execution(
     std::unique_lock<std::mutex> &lock,
-    const std::function<bool()> &cancellation_predicate) {
-    if (!cancellation_predicate) {
+    const std::function<bool()> &cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
+    if (!cancellation_predicate &&
+        operation_deadline == std::chrono::steady_clock::time_point::max()) {
       lock.lock();
       return true;
     }
     while (!lock.try_lock()) {
-      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+      if (!sleep_with_cancellation(
+            std::chrono::milliseconds(25),
+            cancellation_predicate,
+            operation_deadline)) {
         return false;
       }
     }
-    return !cancellation_requested(cancellation_predicate);
+    return !cancellation_requested(cancellation_predicate) &&
+           !operation_deadline_expired(operation_deadline);
   }
 
   bool wait_for_process_with_cancellation(
     HANDLE process,
     DWORD timeout_ms,
     const std::function<bool()> &cancellation_predicate,
-    DWORD &wait_result) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    DWORD &wait_result,
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
+    const auto deadline = std::min(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms),
+      operation_deadline
+    );
     while (true) {
       if (cancellation_requested(cancellation_predicate)) {
         return false;
@@ -596,12 +665,22 @@ namespace {
     }
   }
 
-  bool wait_for_helper_ipc_ready_locked(const std::function<bool()> &cancellation_predicate = {}) {
-    const auto deadline = std::chrono::steady_clock::now() + kHelperIpcReadyTimeout;
+  bool wait_for_helper_ipc_ready_locked(
+    const std::function<bool()> &cancellation_predicate = {},
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max(),
+    const bool shutdown_class_caller = false) {
+    const auto deadline = std::min(
+      std::chrono::steady_clock::now() + kHelperIpcReadyTimeout,
+      operation_deadline
+    );
     int attempts = 0;
 
     if (cancellation_requested(cancellation_predicate) ||
-        !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+        operation_deadline_expired(deadline) ||
+        !platf::display_helper_client::reset_connection_cancellable(
+          cancellation_predicate,
+          deadline)) {
       return false;
     }
     while (std::chrono::steady_clock::now() < deadline) {
@@ -609,7 +688,10 @@ namespace {
         return false;
       }
       const bool ping_ok = cancellation_predicate ?
-                             platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                             platf::display_helper_client::send_ping_cancellable(
+                               shutdown_class_caller ? kShutdownHelperPingTimeoutMs : kHelperPingTimeoutMs,
+                               cancellation_predicate,
+                               deadline) :
                              platf::display_helper_client::send_ping();
       if (ping_ok) {
         if (attempts > 0) {
@@ -618,8 +700,13 @@ namespace {
         return true;
       }
       ++attempts;
-      if (!sleep_with_cancellation(kHelperIpcReadyPoll, cancellation_predicate) ||
-          !platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+      if (!sleep_with_cancellation(
+            kHelperIpcReadyPoll,
+            cancellation_predicate,
+            deadline) ||
+          !platf::display_helper_client::reset_connection_cancellable(
+            cancellation_predicate,
+            deadline)) {
         return false;
       }
     }
@@ -646,8 +733,12 @@ namespace {
     }
   }
 
-  bool kill_all_helper_processes(const std::function<bool()> &cancellation_predicate = {}) {
-    if (cancellation_requested(cancellation_predicate)) {
+  bool kill_all_helper_processes(
+    const std::function<bool()> &cancellation_predicate = {},
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     helper_proc().terminate();
@@ -684,7 +775,8 @@ namespace {
     CloseHandle(snapshot);
 
     for (DWORD pid : targets) {
-      if (cancellation_requested(cancellation_predicate)) {
+      if (cancellation_requested(cancellation_predicate) ||
+          operation_deadline_expired(operation_deadline)) {
         return false;
       }
       HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
@@ -703,7 +795,12 @@ namespace {
           BOOST_LOG(error) << "Display helper: TerminateProcess failed for pid=" << pid << " (winerr=" << err << ").";
         } else {
           DWORD wait_res = WAIT_TIMEOUT;
-          if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_res)) {
+          if (!wait_for_process_with_cancellation(
+                h,
+                kHelperForceKillWaitMs,
+                cancellation_predicate,
+                wait_res,
+                operation_deadline)) {
             CloseHandle(h);
             return false;
           }
@@ -716,7 +813,8 @@ namespace {
 
       CloseHandle(h);
     }
-    return !cancellation_requested(cancellation_predicate);
+    return !cancellation_requested(cancellation_predicate) &&
+           !operation_deadline_expired(operation_deadline);
   }
 
   struct session_dd_fields_t {
@@ -787,6 +885,12 @@ namespace {
   static std::atomic<std::uint64_t> g_capture_stable_eligible_apply_generation {0};
   static std::atomic<std::uint64_t> g_hdr_requested_apply_generation {0};
 
+  // Deadline of the most recent bounded stream-start APPLY in steady-clock
+  // microseconds, or zero when the most recent APPLY was unbounded. Capture
+  // start reads it so its own settling waits are deducted from the same budget
+  // instead of running after it has already expired.
+  static std::atomic<std::int64_t> g_stream_start_deadline_us {0};
+
   static std::int64_t now_steady_us() {
     using namespace std::chrono;
     return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
@@ -840,12 +944,18 @@ namespace {
     g_last_helper_start_failure_us.store(0, std::memory_order_relaxed);
   }
 
-  bool restore_expected_with_live_helper() {
+  bool restore_expected_with_live_helper(
+    const std::function<bool()> &cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
     if (!g_restore_expected.load(std::memory_order_relaxed)) {
       return false;
     }
-    if (helper_process_running()) {
+    if (helper_process_running(cancellation_predicate, operation_deadline)) {
       return true;
+    }
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
+      return false;
     }
     g_restore_expected.store(false, std::memory_order_relaxed);
     return false;
@@ -885,13 +995,22 @@ namespace {
     }
   }
 
-  bool disarm_helper_restore_if_running(const std::function<bool()> &cancellation_predicate = {}) {
-    if (shutdown_requested() || cancellation_requested(cancellation_predicate)) {
+  bool disarm_helper_restore_if_running(
+    const std::function<bool()> &cancellation_predicate = {},
+    const std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max()) {
+    if (shutdown_requested() ||
+        cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
 
-    const bool helper_running = helper_process_running(cancellation_predicate);
-    if (cancellation_requested(cancellation_predicate)) {
+    const bool helper_running = helper_process_running(
+      cancellation_predicate,
+      operation_deadline
+    );
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     if (!helper_running) {
@@ -936,9 +1055,11 @@ namespace {
     // reconnect or a synchronous reset can take seconds and would defeat the
     // deadline that protects stream startup from a concurrent restore.
     const bool ok = platf::display_helper_client::send_disarm_restore_fast(
-      static_cast<int>(kDisarmRestoreBudget.count()));
+      static_cast<int>(kDisarmRestoreBudget.count()),
+      operation_deadline);
 
-    if (cancellation_requested(cancellation_predicate)) {
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
 
@@ -959,11 +1080,15 @@ namespace {
       {
         std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
         while (!lg.try_lock()) {
-          if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+          if (!sleep_with_cancellation(
+                std::chrono::milliseconds(25),
+                cancellation_predicate,
+                operation_deadline)) {
             return false;
           }
         }
-        if (cancellation_requested(cancellation_predicate)) {
+        if (cancellation_requested(cancellation_predicate) ||
+            operation_deadline_expired(operation_deadline)) {
           return false;
         }
         helper_proc().terminate();
@@ -977,18 +1102,24 @@ namespace {
   bool ensure_helper_started(
     bool force_restart,
     bool force_enable,
-    const std::function<bool()> &cancellation_predicate) {
+    const std::function<bool()> &cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline,
+    const bool shutdown_class_caller) {
     if (!force_enable && !dd_feature_enabled()) {
       return false;
     }
     const bool shutting_down = shutdown_requested();
     std::unique_lock<std::mutex> lg(helper_mutex(), std::defer_lock);
     while (!lg.try_lock()) {
-      if (!sleep_with_cancellation(std::chrono::milliseconds(25), cancellation_predicate)) {
+      if (!sleep_with_cancellation(
+            std::chrono::milliseconds(25),
+            cancellation_predicate,
+            operation_deadline)) {
         return false;
       }
     }
-    if (cancellation_requested(cancellation_predicate)) {
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     // Already started? Verify liveness to avoid stale or wedged state
@@ -1002,20 +1133,30 @@ namespace {
           // Check IPC liveness with a lightweight ping; if responsive, reuse existing helper
           bool ping_ok = false;
           for (int i = 0; i < 2 && !ping_ok; ++i) {
-            if (cancellation_requested(cancellation_predicate)) {
+            if (cancellation_requested(cancellation_predicate) ||
+                operation_deadline_expired(operation_deadline)) {
               return false;
             }
             ping_ok = cancellation_predicate ?
-                        platf::display_helper_client::send_ping_cancellable(250, cancellation_predicate) :
+                        platf::display_helper_client::send_ping_cancellable(
+                          shutdown_class_caller ? kShutdownHelperPingTimeoutMs : kHelperPingTimeoutMs,
+                          cancellation_predicate,
+                          operation_deadline) :
                         platf::display_helper_client::send_ping();
-            if (!ping_ok && !sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+            if (!ping_ok &&
+                !sleep_with_cancellation(
+                  std::chrono::milliseconds(200),
+                  cancellation_predicate,
+                  operation_deadline)) {
               return false;
             }
           }
           if (ping_ok) {
             return true;
           }
-          if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+          if (!platf::display_helper_client::reset_connection_cancellable(
+                cancellation_predicate,
+                operation_deadline)) {
             return false;
           }
           BOOST_LOG(warning) << "Display helper process ping failed; keeping existing instance and deferring restart.";
@@ -1023,24 +1164,35 @@ namespace {
           return false;
         }
 
-        if (platf::display_helper_client::send_ping_fast(100)) {
+        if (platf::display_helper_client::send_ping_fast(
+              100,
+              operation_deadline)) {
           BOOST_LOG(debug) << "Display helper hard restart skipped because existing helper accepted a fast ping.";
           return true;
         }
-        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+        if (!platf::display_helper_client::reset_connection_cancellable(
+              cancellation_predicate,
+              operation_deadline)) {
           return false;
         }
         BOOST_LOG(warning) << "Display helper hard restart requested because existing helper did not accept a fast ping.";
 
         BOOST_LOG(warning) << "Display helper: hard restart requested; terminating existing instance (pid=" << pid
                            << ") with no grace period.";
-        if (!platf::display_helper_client::reset_connection_cancellable(cancellation_predicate)) {
+        if (!platf::display_helper_client::reset_connection_cancellable(
+              cancellation_predicate,
+              operation_deadline)) {
           return false;
         }
         helper_proc().terminate();
 
         DWORD wait_result = WAIT_TIMEOUT;
-        if (!wait_for_process_with_cancellation(h, kHelperForceKillWaitMs, cancellation_predicate, wait_result)) {
+        if (!wait_for_process_with_cancellation(
+              h,
+              kHelperForceKillWaitMs,
+              cancellation_predicate,
+              wait_result,
+              operation_deadline)) {
           return false;
         }
         if (wait_result == WAIT_OBJECT_0) {
@@ -1057,7 +1209,10 @@ namespace {
         }
 
         // Small delay to reduce the chance of named pipe / mutex conflicts during rapid restart.
-        if (!sleep_with_cancellation(std::chrono::milliseconds(100), cancellation_predicate)) {
+        if (!sleep_with_cancellation(
+              std::chrono::milliseconds(100),
+              cancellation_predicate,
+              operation_deadline)) {
           return false;
         }
       } else {
@@ -1067,7 +1222,9 @@ namespace {
         BOOST_LOG(debug) << "Display helper process detected as exited (code=" << exit_code << "); preparing restart.";
       }
     }
-    if (shutting_down || cancellation_requested(cancellation_predicate)) {
+    if (shutting_down ||
+        cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
 
@@ -1075,7 +1232,9 @@ namespace {
       return false;
     }
 
-    if (!kill_all_helper_processes(cancellation_predicate)) {
+    if (!kill_all_helper_processes(
+          cancellation_predicate,
+          operation_deadline)) {
       return false;
     }
 
@@ -1104,7 +1263,8 @@ namespace {
     statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
                      << " " << platf::to_utf8(helper_args);
-    if (cancellation_requested(cancellation_predicate)) {
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     bool started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
@@ -1112,7 +1272,10 @@ namespace {
       // If we were asked to hard-restart, tolerate a brief overlap window where the old
       // instance is still tearing down and retry quickly.
       for (int attempt = 0; attempt < 5 && !started; ++attempt) {
-        if (!sleep_with_cancellation(std::chrono::milliseconds(150), cancellation_predicate)) {
+        if (!sleep_with_cancellation(
+              std::chrono::milliseconds(150),
+              cancellation_predicate,
+              operation_deadline)) {
           return false;
         }
         started = helper_proc().start(helper.wstring(), helper_args, allow_system_fallback);
@@ -1137,17 +1300,31 @@ namespace {
     // Give the helper process time to initialize and create its named pipe server
     // Check if it exits early (e.g., singleton mutex conflict from incomplete cleanup)
     for (int check = 0; check < 6; ++check) {
-      if (cancellation_requested(cancellation_predicate)) {
+      if (cancellation_requested(cancellation_predicate) ||
+          operation_deadline_expired(operation_deadline)) {
         return false;
       }
-      DWORD wait = WaitForSingleObject(h, 50);
+      const auto process_wait = operation_wait_slice(
+        std::chrono::milliseconds(50),
+        operation_deadline
+      );
+      if (process_wait <= std::chrono::milliseconds::zero()) {
+        return false;
+      }
+      DWORD wait = WaitForSingleObject(
+        h,
+        static_cast<DWORD>(process_wait.count())
+      );
       if (wait == WAIT_OBJECT_0) {
         DWORD exit_code = 0;
         GetExitCodeProcess(h, &exit_code);
         if (exit_code == 3) {
           BOOST_LOG(warning) << "Display helper exited immediately with code 3 (singleton conflict). "
                              << "Retrying after extended cleanup delay...";
-          if (!sleep_with_cancellation(std::chrono::milliseconds(1000), cancellation_predicate)) {
+          if (!sleep_with_cancellation(
+                std::chrono::milliseconds(1000),
+                cancellation_predicate,
+                operation_deadline)) {
             return false;
           }
 
@@ -1161,7 +1338,10 @@ namespace {
           if (h) {
             pid = GetProcessId(h);
             BOOST_LOG(info) << "Display helper retry succeeded (pid=" << pid << ")";
-            if (!sleep_with_cancellation(std::chrono::milliseconds(300), cancellation_predicate)) {
+            if (!sleep_with_cancellation(
+                  std::chrono::milliseconds(300),
+                  cancellation_predicate,
+                  operation_deadline)) {
               return false;
             }
           }
@@ -1175,10 +1355,17 @@ namespace {
     }
 
     // Final initialization delay for pipe server creation
-    if (!sleep_with_cancellation(std::chrono::milliseconds(200), cancellation_predicate)) {
+    if (!sleep_with_cancellation(
+          std::chrono::milliseconds(200),
+          cancellation_predicate,
+          operation_deadline)) {
       return false;
     }
-    const bool ipc_ready = wait_for_helper_ipc_ready_locked(cancellation_predicate);
+    const bool ipc_ready = wait_for_helper_ipc_ready_locked(
+      cancellation_predicate,
+      operation_deadline,
+      shutdown_class_caller
+    );
     if (ipc_ready) {
       note_helper_start_success();
     } else {
@@ -1390,7 +1577,9 @@ namespace {
     g_watchdog_teardown_completed = true;
   }
 
-  std::optional<std::string> build_helper_apply_payload(const display_helper_integration::DisplayApplyRequest &request) {
+  std::optional<std::string> build_helper_apply_payload(
+    const display_helper_integration::DisplayApplyRequest &request,
+    display_helper_integration::ApplyRetryPolicy retry_policy) {
     if (!request.configuration) {
       BOOST_LOG(error) << "Display helper: no configuration provided for APPLY payload.";
       return std::nullopt;
@@ -1450,6 +1639,9 @@ namespace {
       j["sunshine_always_restore_from_golden"] = true;
     }
     j["sunshine_restore_on_disconnect"] = config::video.dd.config_revert_on_disconnect;
+    if (retry_policy == display_helper_integration::ApplyRetryPolicy::StreamStart) {
+      j["sunshine_omit_final_initial_hdr_reapply"] = true;
+    }
 
     // Always carry the exclusion list: a hard-restarted helper has no SNAPSHOT_CURRENT
     // context and would otherwise capture virtual displays into its pre-apply baseline.
@@ -1509,7 +1701,9 @@ namespace {
         // This worker only needs a snapshot to select its polling interval.
         // session_count() reaps STOPPING sessions, whose join path can call
         // stop_watchdog() and make this worker attempt to join itself.
-        const bool suspended = (rtsp_stream::session_count_no_cleanup() == 0) && (proc::proc.running() > 0);
+        const bool suspended =
+          (rtsp_stream::session_count_no_cleanup() == 0) &&
+          (proc::proc.running() > 0);
         const auto interval = suspended ? kSuspendedInterval : kActiveInterval;
         sleep_interruptible(interval);
         if (st.stop_requested()) {
@@ -1548,13 +1742,36 @@ namespace display_helper_integration {
       const DisplayApplyRequest &request,
       bool allow_resolution_deferral,
       ApplyVerificationTicket *verification_ticket,
-      const std::function<bool()> &cancellation_predicate = {}) {
-      const auto startup_deadline = std::chrono::steady_clock::now() + kApplyVerificationTimeout;
+      const std::function<bool()> &cancellation_predicate = {},
+      ApplyRetryPolicy retry_policy = ApplyRetryPolicy::Full,
+      std::chrono::steady_clock::time_point startup_deadline = {},
+      bool shutdown_class_caller = false) {
+      const auto verification_timeout =
+        retry_policy == ApplyRetryPolicy::StreamStart ?
+          kStreamStartApplyVerificationTimeout :
+          kApplyVerificationTimeout;
+      if (startup_deadline == std::chrono::steady_clock::time_point {}) {
+        startup_deadline = std::chrono::steady_clock::now() + verification_timeout;
+      }
+      // Publish the budget before any helper work so the capture thread's own
+      // post-APPLY settling waits share this deadline rather than starting a
+      // fresh window after it has expired. An unbounded APPLY clears it.
+      g_stream_start_deadline_us.store(
+        retry_policy == ApplyRetryPolicy::StreamStart ?
+          std::chrono::duration_cast<std::chrono::microseconds>(startup_deadline.time_since_epoch()).count() :
+          0,
+        std::memory_order_release
+      );
+      const std::function<bool()> startup_cancellation_predicate = [&]() {
+        return cancellation_requested(cancellation_predicate) ||
+               (retry_policy == ApplyRetryPolicy::StreamStart &&
+                std::chrono::steady_clock::now() >= startup_deadline);
+      };
       if (verification_ticket) {
         *verification_ticket = {};
         verification_ticket->startup_deadline = startup_deadline;
       }
-      if (cancellation_predicate && cancellation_predicate()) {
+      if (startup_cancellation_predicate()) {
         return false;
       }
       if (request.action == DisplayApplyAction::Skip) {
@@ -1564,14 +1781,27 @@ namespace display_helper_integration {
 
       if (request.action == DisplayApplyAction::Revert) {
         invalidate_apply_verification();
-        const bool helper_ready = ensure_helper_started(false, true);
+        const bool helper_ready = ensure_helper_started(
+          false,
+          true,
+          startup_cancellation_predicate,
+          startup_deadline,
+          shutdown_class_caller
+        );
         if (!helper_ready) {
           BOOST_LOG(warning) << "Display helper: REVERT skipped (helper not reachable).";
           clear_active_session();
           return false;
         }
         BOOST_LOG(info) << "Display helper: sending REVERT request (builder).";
-        const bool ok = platf::display_helper_client::send_revert();
+        const bool ok =
+          retry_policy == ApplyRetryPolicy::StreamStart ?
+            platf::display_helper_client::send_revert_within(
+              {},
+              startup_deadline,
+              startup_cancellation_predicate
+            ) :
+            platf::display_helper_client::send_revert();
         BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
         clear_active_session();
         return ok;
@@ -1618,33 +1848,55 @@ namespace display_helper_integration {
       // physical-display mode when a monitor input is still switched away.
       // In SYSTEM/no-user-session mode we still keep hard restart to recover stale pipe state,
       // but we avoid in-process display API fallback if helper IPC remains unavailable.
-      const bool restore_expected = restore_expected_with_live_helper();
+      const bool restore_expected =
+        restore_expected_with_live_helper(
+          startup_cancellation_predicate,
+          startup_deadline
+        );
       const bool hard_restart = (request.session != nullptr) && !restore_expected;
       if (request.session && restore_expected) {
         BOOST_LOG(info) << "Display helper: reusing existing helper because an unconfirmed restore is pending; APPLY will supersede it.";
       }
 
-      bool helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
+      bool helper_ready = ensure_helper_started(
+        hard_restart,
+        true,
+        startup_cancellation_predicate,
+        startup_deadline,
+        shutdown_class_caller
+      );
       if (!helper_ready && hard_restart) {
-        if (cancellation_requested(cancellation_predicate)) {
+        if (startup_cancellation_predicate()) {
           return false;
         }
         BOOST_LOG(warning) << "Display helper: hard restart path unavailable; retrying helper start without restart.";
-        helper_ready = ensure_helper_started(false, true, cancellation_predicate);
+        helper_ready = ensure_helper_started(
+          false,
+          true,
+          startup_cancellation_predicate,
+          startup_deadline,
+          shutdown_class_caller
+        );
       }
       if (!helper_ready) {
-        if (cancellation_requested(cancellation_predicate)) {
+        if (startup_cancellation_predicate()) {
           return false;
         }
-        helper_ready = ensure_helper_started(hard_restart, true, cancellation_predicate);
+        helper_ready = ensure_helper_started(
+          hard_restart,
+          true,
+          startup_cancellation_predicate,
+          startup_deadline,
+          shutdown_class_caller
+        );
       }
 
-      if (cancellation_predicate && cancellation_predicate()) {
+      if (startup_cancellation_predicate()) {
         return false;
       }
 
       if (helper_ready) {
-        auto payload = build_helper_apply_payload(request);
+        auto payload = build_helper_apply_payload(request, retry_policy);
         if (!payload) {
           BOOST_LOG(error) << "Display helper: failed to build APPLY payload for helper dispatch.";
           return false;
@@ -1657,7 +1909,7 @@ namespace display_helper_integration {
         const auto remaining_apply_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
           startup_deadline - std::chrono::steady_clock::now());
         if (remaining_apply_budget <= std::chrono::milliseconds::zero()) {
-          BOOST_LOG(warning) << "Display helper: stream-start APPLY budget expired before dispatch.";
+          BOOST_LOG(warning) << "Display helper: APPLY budget expired before dispatch.";
           return false;
         }
         const bool ok = platf::display_helper_client::send_apply_json(
@@ -1665,10 +1917,11 @@ namespace display_helper_integration {
           &helper_apply_request_id,
           &client_wait_generation,
           &connection_generation,
-          cancellation_predicate,
-          static_cast<int>(remaining_apply_budget.count()));
+          startup_cancellation_predicate,
+          static_cast<int>(remaining_apply_budget.count()),
+          shutdown_class_caller);
         BOOST_LOG(info) << "Display helper: APPLY dispatch result=" << (ok ? "true" : "false");
-        if (ok && cancellation_requested(cancellation_predicate)) {
+        if (ok && startup_cancellation_predicate()) {
           BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
           return false;
         }
@@ -1683,7 +1936,7 @@ namespace display_helper_integration {
           verification_ticket->connection_generation = connection_generation;
         }
         if (ok && request.session) {
-          if (cancellation_requested(cancellation_predicate)) {
+          if (startup_cancellation_predicate()) {
             BOOST_LOG(debug) << "Display helper: APPLY session-state publication was cancelled.";
             return false;
           }
@@ -1702,7 +1955,7 @@ namespace display_helper_integration {
             platf::display_helper::Coordinator::instance().set_virtual_display_watchdog_enabled(true);
           }
         }
-        if (!ok && cancellation_predicate && cancellation_predicate()) {
+        if (!ok && startup_cancellation_predicate()) {
           return false;
         }
         if (!ok && allow_resolution_deferral && request.session && platf::is_lock_screen_active()) {
@@ -1720,6 +1973,10 @@ namespace display_helper_integration {
 
       if (cancellation_predicate) {
         BOOST_LOG(debug) << "Display helper: recovery APPLY will not fall back to synchronous in-process display APIs.";
+        return false;
+      }
+      if (retry_policy == ApplyRetryPolicy::StreamStart) {
+        BOOST_LOG(warning) << "Display helper: bounded stream-start APPLY will not enter the unbounded in-process fallback.";
         return false;
       }
 
@@ -1824,15 +2081,42 @@ namespace display_helper_integration {
     return before != 0 && before == after && hdr == after;
   }
 
+  std::optional<std::chrono::milliseconds> remaining_stream_start_budget() {
+    const auto deadline_us = g_stream_start_deadline_us.load(std::memory_order_acquire);
+    if (deadline_us == 0) {
+      return std::nullopt;
+    }
+    const auto remaining_us = deadline_us - now_steady_us();
+    return std::chrono::milliseconds(remaining_us > 0 ? remaining_us / 1000 : 0);
+  }
+
   bool apply(
     const DisplayApplyRequest &request,
     ApplyVerificationTicket *verification_ticket,
-    std::function<bool()> cancellation_predicate) {
-    if (cancellation_requested(cancellation_predicate)) {
+    std::function<bool()> cancellation_predicate,
+    ApplyRetryPolicy retry_policy,
+    std::chrono::steady_clock::time_point startup_deadline,
+    const bool shutdown_class_caller) {
+    const auto verification_timeout =
+      retry_policy == ApplyRetryPolicy::StreamStart ?
+        kStreamStartApplyVerificationTimeout :
+        kApplyVerificationTimeout;
+    if (startup_deadline == std::chrono::steady_clock::time_point {}) {
+      startup_deadline = std::chrono::steady_clock::now() + verification_timeout;
+    }
+    const std::function<bool()> startup_cancellation_predicate = [&]() {
+      return cancellation_requested(cancellation_predicate) ||
+             (retry_policy == ApplyRetryPolicy::StreamStart &&
+              std::chrono::steady_clock::now() >= startup_deadline);
+    };
+    if (startup_cancellation_predicate()) {
       return false;
     }
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
-    if (!lock_pending_apply_execution(execution_lock, cancellation_predicate)) {
+    if (!lock_pending_apply_execution(
+          execution_lock,
+          startup_cancellation_predicate,
+          startup_deadline)) {
       return false;
     }
     clear_pending_apply_queue_locked();
@@ -1847,7 +2131,15 @@ namespace display_helper_integration {
         statefile::remember_virtual_display_device(vd_id);
       }
     }
-    return apply_internal(request, true, verification_ticket, cancellation_predicate);
+    return apply_internal(
+      request,
+      true,
+      verification_ticket,
+      cancellation_predicate,
+      retry_policy,
+      startup_deadline,
+      shutdown_class_caller
+    );
   }
 
   bool revert(bool prefer_golden_if_current_missing) {
@@ -1871,12 +2163,18 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool disarm_pending_restore(std::function<bool()> cancellation_predicate) {
-    if (cancellation_predicate && cancellation_predicate()) {
+  bool disarm_pending_restore(
+    std::function<bool()> cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
+    if ((cancellation_predicate && cancellation_predicate()) ||
+        operation_deadline_expired(operation_deadline)) {
       return false;
     }
     invalidate_apply_verification();
-    return disarm_helper_restore_if_running(cancellation_predicate);
+    return disarm_helper_restore_if_running(
+      cancellation_predicate,
+      operation_deadline
+    );
   }
 
   bool export_golden_restore() {
@@ -1902,13 +2200,25 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool snapshot_current_display_state() {
-    if (restore_expected_with_live_helper()) {
+  bool snapshot_current_display_state(
+    std::function<bool()> cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
+    if (cancellation_requested(cancellation_predicate) ||
+        operation_deadline_expired(operation_deadline)) {
+      return false;
+    }
+    if (restore_expected_with_live_helper(
+          cancellation_predicate,
+          operation_deadline)) {
       BOOST_LOG(info) << "Display helper: skipping SNAPSHOT_CURRENT while an unconfirmed restore is pending.";
       return false;
     }
 
-    if (!ensure_helper_started()) {
+    if (!ensure_helper_started(
+          false,
+          false,
+          cancellation_predicate,
+          operation_deadline)) {
       BOOST_LOG(info) << "Display helper unavailable; cannot snapshot current display state.";
       return false;
     }
@@ -1918,12 +2228,23 @@ namespace display_helper_integration {
     // not from a configuration value that may have changed while a helper was
     // being reused. An unknown connection dispatches in pipe order; APPLY has
     // its own pre-apply baseline fallback if that snapshot is not yet saved.
-    const bool v2_helper = platf::display_helper_client::uses_v2_response_protocol();
-    const bool ok = v2_helper ?
-                      platf::display_helper_client::send_snapshot_current_and_wait(payload) :
-                      platf::display_helper_client::send_snapshot_current(payload);
+    const bool bounded =
+      operation_deadline != std::chrono::steady_clock::time_point::max();
+    const bool v2_helper =
+      !bounded &&
+      platf::display_helper_client::uses_v2_response_protocol();
+    const bool ok =
+      bounded ?
+        platf::display_helper_client::send_snapshot_current_within(
+          payload,
+          operation_deadline,
+          cancellation_predicate
+        ) :
+        (v2_helper ?
+           platf::display_helper_client::send_snapshot_current_and_wait(payload) :
+           platf::display_helper_client::send_snapshot_current(payload));
     BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
-                    << (v2_helper ? "completion" : "dispatch")
+                    << (bounded ? "bounded operation" : (v2_helper ? "completion" : "dispatch"))
                     << " result=" << (ok ? "true" : "false");
     return ok;
   }
@@ -2034,7 +2355,17 @@ namespace display_helper_integration {
     }
 
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
-    const bool ok = apply_internal(pending.request, false, nullptr, cancellation_predicate);
+    // This entry point's predicate belongs to an owned shutdown worker by
+    // contract, so a caller that supplies one is shutdown-class.
+    const bool ok = apply_internal(
+      pending.request,
+      false,
+      nullptr,
+      cancellation_predicate,
+      ApplyRetryPolicy::Full,
+      {},
+      static_cast<bool>(cancellation_predicate)
+    );
     if (ok && stream_was_live_when_claimed && session) {
       if (const auto generation = active_session_generation_for(*session)) {
         // This retry may complete after start_watchdog() observed no active

@@ -365,7 +365,9 @@ namespace nvhttp {
       bool no_active_sessions,
       bool allow_display_changes,
       bool is_input_only,
-      std::optional<std::string> &pending_output_override
+      std::optional<std::string> &pending_output_override,
+      const std::function<bool()> &display_startup_cancelled,
+      const std::chrono::steady_clock::time_point display_startup_deadline
     ) {
 
       // This routine is the authoritative resolver for normal NVHTTP launch
@@ -517,7 +519,9 @@ namespace nvhttp {
       // queryDisplayConfig(QueryType::All) in output_exists() and other calls can activate
       // external dummy plugs, which would pollute the snapshot used for session restore.
       if (no_active_sessions) {
-        if (!display_helper_integration::snapshot_current_display_state()) {
+        if (!display_helper_integration::snapshot_current_display_state(
+              display_startup_cancelled,
+              display_startup_deadline)) {
           BOOST_LOG(warning) << "Display helper snapshot before session start was not accepted.";
         }
       }
@@ -869,7 +873,15 @@ namespace nvhttp {
                   if (cancelled()) {
                     return {};
                   }
-                  if (display_helper_integration::apply(*request, nullptr, cancelled)) {
+                  // This recovery worker is torn down with the session, so it
+                  // keeps the short shutdown-class helper IPC timeouts.
+                  if (display_helper_integration::apply(
+                        *request,
+                        nullptr,
+                        cancelled,
+                        display_helper_integration::ApplyRetryPolicy::Full,
+                        {},
+                        true)) {
                     BOOST_LOG(info) << "Virtual display recovery: re-applied session display configuration (including exclusivity) after recreation.";
                     applied = true;
                     break;
@@ -2986,9 +2998,18 @@ namespace nvhttp {
       // Prevent interleaving with hot-apply while we prep/start a session
       auto _hot_apply_gate = config::acquire_apply_read_gate();
 #ifdef _WIN32
+      const auto display_startup_deadline =
+        std::chrono::steady_clock::now() +
+        display_helper_integration::kStreamStartApplyVerificationTimeout;
+      const auto display_startup_cancelled = [display_startup_deadline] {
+        return std::chrono::steady_clock::now() >= display_startup_deadline;
+      };
       // First step on stream start: stop any in-flight helper restore loop immediately.
       // This must happen before any other display helper work to prevent restore/crash loops on virtual displays.
-      (void) display_helper_integration::disarm_pending_restore();
+      (void) display_helper_integration::disarm_pending_restore(
+        display_startup_cancelled,
+        display_startup_deadline
+      );
 #endif
       const bool allow_display_changes = true;
       auto launch_session = make_launch_session(host_audio, is_input_only, args, named_cert_p, &request_client_identity);
@@ -3004,7 +3025,15 @@ namespace nvhttp {
       }
 
 #ifdef _WIN32
-      prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
+      prepare_virtual_display_for_session(
+        launch_session,
+        no_active_sessions,
+        allow_display_changes,
+        is_input_only,
+        pending_output_override,
+        display_startup_cancelled,
+        display_startup_deadline
+      );
 
       auto virtual_display_teardown_guard = util::fail_guard([&]() {
         stream::session::cleanup_reservation_t cleanup_reservation;
@@ -3030,22 +3059,24 @@ namespace nvhttp {
 
 
 #ifdef _WIN32
-        HANDLE user_token = platf::retrieve_users_token(false);
-        const bool helper_session_available = (user_token != nullptr);
-        if (user_token) {
-          CloseHandle(user_token);
-        }
-
-
+        const bool helper_session_available = display_helper_session_available();
+        (void) display_helper_integration::disarm_pending_restore(
+          display_startup_cancelled,
+          display_startup_deadline
+        );
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
         }
 
-
       if (request) {
         display_helper_integration::ApplyVerificationTicket verification_ticket;
-        const bool applied = display_helper_integration::apply(*request, &verification_ticket);
+        const bool applied = display_helper_integration::apply(
+          *request,
+          &verification_ticket,
+          display_startup_cancelled,
+          display_helper_integration::ApplyRetryPolicy::StreamStart,
+          display_startup_deadline);
         launch_session->display_config_preapplied = applied;
         if (!applied) {
           if (helper_session_available) {
@@ -3058,7 +3089,7 @@ namespace nvhttp {
           std::thread([gate_promise, verification_ticket]() {
             const auto status = display_helper_integration::wait_for_apply_verification(
               verification_ticket,
-              display_helper_integration::kApplyVerificationTimeout);
+              display_helper_integration::kStreamStartApplyVerificationTimeout);
             rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
               rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
             if (status == display_helper_integration::ApplyVerificationStatus::Verified) {
@@ -3452,9 +3483,18 @@ namespace nvhttp {
     }
 
 #ifdef _WIN32
+    const auto display_startup_deadline =
+      std::chrono::steady_clock::now() +
+      display_helper_integration::kStreamStartApplyVerificationTimeout;
+    const auto display_startup_cancelled = [display_startup_deadline] {
+      return std::chrono::steady_clock::now() >= display_startup_deadline;
+    };
     if (allow_display_changes) {
       // Stop any in-flight helper restore loop before resuming display changes.
-      (void) display_helper_integration::disarm_pending_restore();
+      (void) display_helper_integration::disarm_pending_restore(
+        display_startup_cancelled,
+        display_startup_deadline
+      );
     }
 #endif
     std::optional<std::string> pending_output_override;
@@ -3465,7 +3505,15 @@ namespace nvhttp {
     });
 
 #ifdef _WIN32
-    prepare_virtual_display_for_session(launch_session, no_active_sessions, allow_display_changes, is_input_only, pending_output_override);
+    prepare_virtual_display_for_session(
+      launch_session,
+      no_active_sessions,
+      allow_display_changes,
+      is_input_only,
+      pending_output_override,
+      display_startup_cancelled,
+      display_startup_deadline
+    );
 
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
       stream::session::cleanup_reservation_t cleanup_reservation;
@@ -3504,7 +3552,10 @@ namespace nvhttp {
 
 #ifdef _WIN32
         const bool helper_session_available = display_helper_session_available();
-        (void) display_helper_integration::disarm_pending_restore();
+        (void) display_helper_integration::disarm_pending_restore(
+          display_startup_cancelled,
+          display_startup_deadline
+        );
         auto request = display_helper_integration::helpers::build_request_from_session(config::video, *launch_session);
         if (!request) {
           BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
@@ -3512,7 +3563,12 @@ namespace nvhttp {
 
         if (request) {
           display_helper_integration::ApplyVerificationTicket verification_ticket;
-          const bool applied = display_helper_integration::apply(*request, &verification_ticket);
+          const bool applied = display_helper_integration::apply(
+            *request,
+            &verification_ticket,
+            display_startup_cancelled,
+            display_helper_integration::ApplyRetryPolicy::StreamStart,
+            display_startup_deadline);
           if (!applied) {
             if (helper_session_available) {
               BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
@@ -3524,7 +3580,7 @@ namespace nvhttp {
             std::thread([gate_promise, verification_ticket]() {
               const auto status = display_helper_integration::wait_for_apply_verification(
                 verification_ticket,
-                display_helper_integration::kApplyVerificationTimeout);
+                display_helper_integration::kStreamStartApplyVerificationTimeout);
               rtsp_stream::launch_session_t::display_helper_gate_status_e gate_status =
                 rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup;
               if (status == display_helper_integration::ApplyVerificationStatus::Verified) {

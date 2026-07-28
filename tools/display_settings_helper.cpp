@@ -5094,6 +5094,9 @@ namespace {
         // verification phase, so discard it before deserializing the public
         // display configuration and retain the original untagged response.
         j.erase("sunshine_apply_id");
+        // The legacy helper completes APPLY synchronously and does not have the
+        // v2 initial-repair ladder controlled by this private metadata.
+        j.erase("sunshine_omit_final_initial_hdr_reapply");
         if (j.contains("wa_hdr_toggle")) {
           wa_hdr_toggle = j["wa_hdr_toggle"].get<bool>();
           j.erase("wa_hdr_toggle");

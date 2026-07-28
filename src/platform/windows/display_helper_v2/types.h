@@ -125,6 +125,10 @@ namespace display_helper::v2 {
     /// When false, a broken Sunshine connection must not autonomously restore
     /// (stream is intentionally pause-retained).
     bool restore_on_disconnect = true;
+    /// A capture-gated stream start needs a terminal verification result before
+    /// Moonlight UWP's first-video timeout. Keep the final 5.5s repair for
+    /// non-stream APPLYs and post-verified stabilization.
+    bool omit_final_initial_hdr_reapply = false;
     std::optional<std::string> virtual_layout;
     /// Optional snapshot exclusions supplied with this APPLY. Keeping this on
     /// the queued command ensures the state machine, rather than the pipe
