@@ -14,6 +14,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <fstream>
 #include <vector>
 
 // platform includes
@@ -30,6 +31,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "utf_utils.h"
+#include "vibepollo_vmic.h"
 
 // Must be the last included file
 // clang-format off
@@ -237,12 +239,20 @@ namespace platf::audio {
   class co_init_t: public deinit_t {
   public:
     co_init_t() {
-      CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY);
+      coinit_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY);
+      if (FAILED(coinit_hr)) {
+        BOOST_LOG(warning) << "CoInitializeEx failed: 0x"sv << util::hex(coinit_hr).to_string_view();
+      }
     }
 
     ~co_init_t() override {
-      CoUninitialize();
+      if (SUCCEEDED(coinit_hr)) {
+        CoUninitialize();
+      }
     }
+
+  private:
+    HRESULT coinit_hr = E_FAIL;
   };
 
   class prop_var_t {
@@ -928,6 +938,108 @@ namespace platf::audio {
       return mic;
     }
 
+    int init_mic_redirect_device() override {
+      if (mic_redirect_device) return 0;
+      auto device = std::make_unique<vibepollo_vmic_t>();
+      if (device->init() != 0) {
+        BOOST_LOG(warning) << "[mic] vibepollo_vmic_t::init() failed — Steam Streaming Microphone unavailable"sv;
+        return -1;
+      }
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend initialized"sv;
+      mic_redirect_device = std::move(device);
+      return 0;
+    }
+
+    void release_mic_redirect_device() override {
+      mic_redirect_device.reset();
+      BOOST_LOG(info) << "[mic] Steam Streaming Microphone backend released"sv;
+    }
+
+    int write_mic_pcm(const float *data, std::uint32_t count) override {
+      if (!mic_redirect_device) return -1;
+      return mic_redirect_device->write_pcm(data, count);
+    }
+
+    platf::capture_snapshot_t snapshot_capture_defaults() override {
+      platf::capture_snapshot_t snap;
+      auto get_id = [&](ERole role) -> std::wstring {
+        device_t dev;
+        if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, role, &dev))) return {};
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) return {};
+        return std::wstring(id.get());
+      };
+      snap.console_id    = get_id(eConsole);
+      snap.comms_id      = get_id(eCommunications);
+      snap.multimedia_id = get_id(eMultimedia);
+      return snap;
+    }
+
+    void switch_capture_to(const std::string &device_name) override {
+      auto target_id = find_capture_device_id(utf_utils::from_utf8(device_name));
+      if (target_id.empty()) {
+        BOOST_LOG(warning) << "[mic] switch_capture_to: device not found: " << device_name;
+        return;
+      }
+      bool any_failed = false;
+      for (int x = 0; x < (int) ERole_enum_count; ++x) {
+        if (FAILED(policy->SetDefaultEndpoint(target_id.c_str(), (ERole) x))) {
+          BOOST_LOG(warning) << "[mic] SetDefaultEndpoint failed for role " << x << " on: " << device_name;
+          any_failed = true;
+        }
+      }
+      if (!any_failed)
+        BOOST_LOG(info) << "[mic] default capture switched to: " << device_name;
+      else
+        BOOST_LOG(warning) << "[mic] default capture switch partially failed for: " << device_name;
+    }
+
+    void restore_capture_from(const platf::capture_snapshot_t &snap) override {
+      auto restore_role = [&](const std::wstring &id, ERole role) {
+        if (id.empty()) return;
+        policy->SetDefaultEndpoint(id.c_str(), role);
+      };
+      restore_role(snap.console_id,    eConsole);
+      restore_role(snap.comms_id,      eCommunications);
+      restore_role(snap.multimedia_id, eMultimedia);
+      BOOST_LOG(info) << "[mic] default capture roles restored"sv;
+    }
+
+    std::string get_current_default_capture_name() override {
+      device_t dev;
+      if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, eConsole, &dev))) return {};
+      prop_t prop;
+      if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
+      prop_var_t pv;
+      if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
+        return utf_utils::to_utf8(pv.prop.pwszVal);
+      return {};
+    }
+
+    void reset_default_capture_to_first_real() override {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return;
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (FAILED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) || pv.prop.vt != VT_LPWSTR) continue;
+        std::string name = utf_utils::to_utf8(pv.prop.pwszVal);
+        if (name.find("CABLE") != std::string::npos) continue;
+        wstring_t id;
+        if (FAILED(dev->GetId(&id))) continue;
+        for (int x = 0; x < (int) ERole_enum_count; ++x)
+          policy->SetDefaultEndpoint(id.get(), (ERole) x);
+        BOOST_LOG(info) << "[mic] reset_default_capture_to_first_real: " << name;
+        return;
+      }
+      BOOST_LOG(warning) << "[mic] reset_default_capture_to_first_real: no non-CABLE capture device found"sv;
+    }
+
     /**
      * If the requested sink is a virtual sink, meaning no speakers attached to
      * the host, then we can seamlessly set the format to stereo and surround sound.
@@ -1002,6 +1114,17 @@ namespace platf::audio {
         return -1;
       }
 
+      // Render-side restore guard (mirror of mic_capture_prev.txt): before
+      // switching the default render device to one of our virtual sinks, save
+      // the current default's name so a hard-kill mid-stream can be recovered
+      // by restore_default_render_if_virtual() at next startup.
+      if (extract_virtual_sink_info(sink)) {
+        const auto prev_name = get_current_default_render_name();
+        if (!prev_name.empty() && !is_steam_virtual_render_name(prev_name)) {
+          std::ofstream f(platf::appdata() / "render_prev.txt", std::ios::trunc);
+          f << prev_name;
+          BOOST_LOG(debug) << "Render restore guard: state file written: pre-session default = " << prev_name;
+        }
       // Cancel immediately before replacing the defaults so a failed format
       // setup leaves the existing recovery worker intact.
       const auto current_default_ids = current_default_device_ids();
@@ -1394,6 +1517,31 @@ namespace platf::audio {
     }
 
     /**
+     * @brief Search for a capture (input) device ID by friendly name.
+     */
+    std::wstring find_capture_device_id(const std::wstring &name) {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &collection))) return {};
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR) {
+          if (std::wcscmp(pv.prop.pwszVal, name.c_str()) == 0) {
+            wstring_t id;
+            if (SUCCEEDED(dev->GetId(&id)))
+              return std::wstring(id.get());
+          }
+        }
+      }
+      return {};
+    }
+
+    /**
      * @brief Resets the default audio device from Steam Streaming Speakers.
      * If a preferred device is supplied, tries to restore that exact device,
      * keeping a background retry active if it is temporarily missing (e.g.,
@@ -1419,14 +1567,102 @@ namespace platf::audio {
     }
 
     /**
-     * @brief Non-blocking variant of reset_default_device() for startup.
-     * Tries once to move the default away from Steam speakers without waiting.
+     * @brief Render-side restore guard (mirror of the capture-side startup guard).
+     * If the default render device is one of our virtual sinks, restore the saved
+     * prior default from render_prev.txt; otherwise nudge the default off the
+     * virtual sink, keeping the legacy Steam-Speakers reset as final fallback.
      */
     void reset_default_device_no_wait() {
       reset_default_device_impl(false, {});
     }
 
+    void restore_default_render_if_virtual(bool wait_for_device) override {
+      const auto current = get_current_default_render_name();
+      if (current.empty() || !is_steam_virtual_render_name(current)) {
+        return;
+      }
+
+      BOOST_LOG(info) << "Render restore guard: default render device left as '" << current << "'";
+
+      const auto state_file = platf::appdata() / "render_prev.txt";
+      std::string prev_device;
+      if (std::filesystem::exists(state_file)) {
+        std::ifstream f(state_file);
+        std::getline(f, prev_device);
+      }
+
+      if (!prev_device.empty() && !is_steam_virtual_render_name(prev_device)) {
+        auto target_id = find_render_device_id(utf_utils::from_utf8(prev_device));
+        if (!target_id.empty()) {
+          bool any_failed = false;
+          for (int x = 0; x < (int) ERole_enum_count; ++x) {
+            if (FAILED(policy->SetDefaultEndpoint(target_id.c_str(), (ERole) x))) {
+              any_failed = true;
+            }
+          }
+          if (!any_failed) {
+            BOOST_LOG(info) << "Render restore guard: default render restored to '" << prev_device << "'";
+            return;
+          }
+        }
+        BOOST_LOG(warning) << "Render restore guard: couldn't restore '" << prev_device
+                           << "' — falling back to reset";
+      }
+
+      // Fallback 1: temporarily hide the current virtual default so the OS picks
+      // another device (covers the Steam Streaming Microphone render endpoint,
+      // which the legacy reset below does not match).
+      auto current_default_dev = default_device(device_enum);
+      if (current_default_dev) {
+        audio::wstring_t current_default_id;
+        if (SUCCEEDED(current_default_dev->GetId(&current_default_id)) &&
+            try_reset_from_steam(current_default_id.get()) == reset_result_e::success) {
+          return;
+        }
+      }
+
+      // Fallback 2: legacy Steam-Speakers reset (waits for a device when allowed).
+      reset_default_device_impl(wait_for_device, {});
+    }
+
   private:
+    static bool is_steam_virtual_render_name(const std::string &name) {
+      return name.find("Steam Streaming") != std::string::npos;
+    }
+
+    std::string get_current_default_render_name() {
+      auto dev = default_device(device_enum);
+      if (!dev) return {};
+      prop_t prop;
+      if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) return {};
+      prop_var_t pv;
+      if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR)
+        return utf_utils::to_utf8(pv.prop.pwszVal);
+      return {};
+    }
+
+    std::wstring find_render_device_id(const std::wstring &name) {
+      collection_t collection;
+      if (FAILED(device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection))) return {};
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        device_t dev;
+        if (FAILED(collection->Item(i, &dev))) continue;
+        prop_t prop;
+        if (FAILED(dev->OpenPropertyStore(STGM_READ, &prop))) continue;
+        prop_var_t pv;
+        if (SUCCEEDED(prop->GetValue(PKEY_Device_FriendlyName, &pv.prop)) && pv.prop.vt == VT_LPWSTR) {
+          if (std::wcscmp(pv.prop.pwszVal, name.c_str()) == 0) {
+            wstring_t id;
+            if (SUCCEEDED(dev->GetId(&id)))
+              return std::wstring(id.get());
+          }
+        }
+      }
+      return {};
+    }
+
     bool is_default_device(const std::wstring &device_id, ERole role = eConsole) {
       auto current_default_dev = default_device(device_enum, role);
       if (!current_default_dev) {
@@ -3065,6 +3301,7 @@ namespace platf::audio {
     role_device_ids_t captured_default_device_ids;
     pending_role_restore_handoff_t pending_role_restore_handoff;
     std::string assigned_sink;
+    std::unique_ptr<mic_redirect_backend_t> mic_redirect_device;
     std::wstring assigned_device_id;
   };
 }  // namespace platf::audio
@@ -3083,11 +3320,42 @@ namespace platf {
       return nullptr;
     }
 
-    // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
-    // the sink information returned includes the new Steam Streaming Speakers device.
-    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
-      // This is best effort. Don't fail if it doesn't work.
-      control->install_steam_audio_drivers();
+    // Startup capture restore guard:
+    // If Vibepollo was hard-killed during a previous stream session, the RAII
+    // guard never ran and Windows default capture may still be set to the mic
+    // passthrough device. Detect and restore it now.
+    if (!config::audio.mic_capture_device.empty()) {
+      const auto state_file = platf::appdata() / "mic_capture_prev.txt";
+      const auto current_default = control->get_current_default_capture_name();
+
+      if (current_default == config::audio.mic_capture_device) {
+        // Current default matches the passthrough device — previous session
+        // did not clean up. Attempt restore.
+        if (std::filesystem::exists(state_file)) {
+          // State file contains the real pre-session default device name.
+          std::ifstream f(state_file);
+          std::string prev_device;
+          std::getline(f, prev_device);
+          f.close();
+          if (!prev_device.empty()) {
+            BOOST_LOG(info) << "[mic] Startup restore: previous session left default capture as '"
+                            << current_default << "' — restoring to '" << prev_device << "'";
+            control->switch_capture_to(prev_device);
+          } else {
+            BOOST_LOG(warning) << "[mic] Startup restore: state file empty — using reset_default_capture_to_first_real()";
+            control->reset_default_capture_to_first_real();
+          }
+          std::filesystem::remove(state_file);
+          BOOST_LOG(info) << "[mic] Startup restore: state file removed";
+        } else {
+          // State file missing but default is still on passthrough device.
+          // Fall back to resetting to first real non-CABLE capture device.
+          BOOST_LOG(warning) << "[mic] Startup restore: default capture is '"
+                             << current_default << "' but no state file found — "
+                             "using reset_default_capture_to_first_real()";
+          control->reset_default_capture_to_first_real();
+        }
+      }
     }
 
     return control;
@@ -3101,11 +3369,12 @@ namespace platf {
     // Initialize COM
     auto co_init = std::make_unique<platf::audio::co_init_t>();
 
-    // If Steam Streaming Speakers are currently the default audio device,
-    // change the default to something else (if another device is available).
+    // If one of our virtual sinks (Steam Streaming Speakers / Microphone) is
+    // currently the default render device — e.g. after a hard kill mid-stream —
+    // restore the saved prior default, falling back to picking another device.
     audio::audio_control_t audio_ctrl;
     if (audio_ctrl.init() == 0) {
-      audio_ctrl.reset_default_device_no_wait();
+      audio_ctrl.restore_default_render_if_virtual(false);
     }
 
     return co_init;
