@@ -355,7 +355,11 @@ namespace display_device {
      */
     std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
-      using hdr_request_override_e = config::video_t::dd_t::hdr_request_override_e;
+
+      if (rtsp_stream::rtx_hdr_enabled(video_config)) {
+        BOOST_LOG(info) << "RTX HDR: enabled for this app; forcing the source display to SDR so Vibepollo does not enable host HDR.";
+        return HdrState::Disabled;
+      }
 
       if (video_config.dd.wa.dummy_plug_hdr10) {
         return HdrState::Enabled;
@@ -363,11 +367,6 @@ namespace display_device {
 
       switch (video_config.dd.hdr_option) {
         case hdr_option_e::automatic:
-          if (rtsp_stream::effective_hdr_requested(session) && config::runtime_config_override_enabled("rtx_hdr") && video_config.rtx_hdr.enabled &&
-              video_config.dd.hdr_request_override == hdr_request_override_e::automatic) {
-            BOOST_LOG(info) << "RTX HDR: app-enabled conversion is active; keeping source display in SDR while the stream remains HDR.";
-            return HdrState::Disabled;
-          }
           return rtsp_stream::effective_hdr_requested(session) ? HdrState::Enabled : HdrState::Disabled;
         case hdr_option_e::disabled:
           break;

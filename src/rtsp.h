@@ -182,6 +182,25 @@ namespace rtsp_stream {
   }
 
   /**
+   * @brief Whether the current app/client runtime policy enables RTX HDR.
+   */
+  inline bool rtx_hdr_enabled(const config::video_t &video_config) {
+    return config::runtime_config_override_enabled("rtx_hdr") &&
+           video_config.rtx_hdr.enabled;
+  }
+
+  /**
+   * @brief Whether RTX HDR conversion is active for this launch session.
+   *
+   * RTX HDR is app/client opt-in and requires an HDR stream, but its source content must
+   * remain SDR so TrueHDR performs the only SDR-to-HDR conversion.
+   */
+  inline bool rtx_hdr_conversion_requested(const launch_session_t &session, const config::video_t &video_config) {
+    return effective_hdr_requested(session) &&
+           rtx_hdr_enabled(video_config);
+  }
+
+  /**
    * @brief Whether the session should be encoded as Main10 with an SDR colorspace.
    *
    * Requires the client to have requested HDR, because that flag is also the client's only

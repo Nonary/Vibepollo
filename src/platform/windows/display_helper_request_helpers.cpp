@@ -422,6 +422,7 @@ namespace display_helper_integration::helpers {
     const int display_fps
   ) const {
     const bool dummy_plug_mode = effective_video_config_.dd.wa.dummy_plug_hdr10;
+    const bool rtx_hdr_enabled = rtsp_stream::rtx_hdr_enabled(effective_video_config_);
     const bool desktop_session = session_targets_desktop(session_);
     const bool gen1_framegen_fix = session_.gen1_framegen_fix;
     const bool gen2_framegen_fix = session_.gen2_framegen_fix;
@@ -452,6 +453,9 @@ namespace display_helper_integration::helpers {
       }
       if (dummy_plug_mode && (gen1_framegen_fix || gen2_framegen_fix) && !desktop_session) {
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
+      }
+      if (rtx_hdr_enabled) {
+        cfg_effective.m_hdr_state = display_device::HdrState::Disabled;
       }
       const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
       const bool refresh_rate_disabled = effective_video_config_.dd.refresh_rate_option == config::video_t::dd_t::refresh_rate_option_e::disabled;
@@ -486,7 +490,7 @@ namespace display_helper_integration::helpers {
           };
         }
         cfg_override.m_refresh_rate = display_device::Rational {30u, 1u};
-        cfg_override.m_hdr_state = display_device::HdrState::Enabled;
+        cfg_override.m_hdr_state = rtx_hdr_enabled ? display_device::HdrState::Disabled : display_device::HdrState::Enabled;
         builder.set_configuration(cfg_override);
         builder.set_action(DisplayApplyAction::Apply);
         return true;

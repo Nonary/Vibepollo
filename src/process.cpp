@@ -1703,6 +1703,10 @@ namespace proc {
 
       const bool wants_lossless_framegen = using_lossless_provider;
       auto runtime = compute_lossless_runtime(_app, wants_lossless_framegen);
+      if (rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
+        runtime.hdr_enabled = false;
+        BOOST_LOG(info) << "Lossless Scaling: disabling HDR support because RTX HDR conversion is active.";
+      }
 #ifdef _WIN32
       bool has_launch_commands = !_app.cmd.empty() || !_app.detached.empty();
       _lossless_should_start_support = has_launch_commands && _app.playnite_id.empty() && !_app.playnite_fullscreen;
