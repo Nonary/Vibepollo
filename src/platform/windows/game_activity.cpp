@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -515,9 +514,9 @@ namespace platf::game_activity {
             now >= retry_after) {
           const auto numerator = candidate_high ? options.high_refresh_numerator : options.base_refresh_numerator;
           const auto denominator = candidate_high ? options.high_refresh_denominator : options.base_refresh_denominator;
-          begin_expected_transition();
+          begin_mode_change();
           const bool applied = display_helper_client::send_refresh_rate(options.device_id, numerator, denominator);
-          finish_expected_transition(applied);
+          finish_mode_change();
           if (applied) {
             applied_high = candidate_high;
             const auto applied_at = std::chrono::steady_clock::now();
@@ -543,53 +542,17 @@ namespace platf::game_activity {
       }
     }
 
-    void begin_expected_transition() {
+    void begin_mode_change() {
       g_mode_changes_in_flight.fetch_add(1, std::memory_order_acq_rel);
-      std::scoped_lock lock {transition_mutex};
-      transition_expected = true;
-      transition_in_progress = true;
-      transition_succeeded = false;
-      transition_deadline = std::chrono::steady_clock::now() + EXPECTED_TRANSITION_LIFETIME;
     }
 
-    void finish_expected_transition(const bool success) {
+    void finish_mode_change() {
       g_mode_change_settled_at_ms.store(
         steady_now_ms() +
           std::chrono::duration_cast<std::chrono::milliseconds>(DISPLAY_TRANSITION_SETTLE_TIME).count(),
         std::memory_order_release
       );
       g_mode_changes_in_flight.fetch_sub(1, std::memory_order_acq_rel);
-      {
-        std::scoped_lock lock {transition_mutex};
-        transition_in_progress = false;
-        transition_succeeded = success;
-        if (success) {
-          // A single Windows display mode-set can invalidate more than one DXGI
-          // factory as the display stack settles. Keep authorizing soft output
-          // refreshes for this request; each caller still verifies that adapter,
-          // output geometry, rotation, and HDR state are unchanged.
-          transition_deadline = std::chrono::steady_clock::now() + EXPECTED_TRANSITION_LIFETIME;
-        } else {
-          transition_expected = false;
-        }
-      }
-      transition_cv.notify_all();
-    }
-
-    bool wait_for_expected_refresh_change(const std::chrono::milliseconds timeout) {
-      std::unique_lock lock {transition_mutex};
-      if (!transition_expected || std::chrono::steady_clock::now() > transition_deadline) {
-        transition_expected = false;
-        return false;
-      }
-      if (transition_in_progress) {
-        transition_cv.wait_for(lock, timeout, [&] {
-          return !transition_in_progress;
-        });
-      }
-      const bool accepted = transition_expected && !transition_in_progress && transition_succeeded &&
-                            std::chrono::steady_clock::now() <= transition_deadline;
-      return accepted;
     }
 
     refresh_target_options_t options;
@@ -599,13 +562,6 @@ namespace platf::game_activity {
     std::chrono::steady_clock::time_point flap_window_start {std::chrono::steady_clock::now()};
     int flap_count {0};
 
-    std::mutex transition_mutex;
-    std::condition_variable transition_cv;
-    bool transition_expected {false};
-    bool transition_in_progress {false};
-    bool transition_succeeded {false};
-    std::chrono::steady_clock::time_point transition_deadline {};
-
     std::jthread worker;
   };
 
@@ -614,10 +570,6 @@ namespace platf::game_activity {
   }
 
   refresh_target_t::~refresh_target_t() = default;
-
-  bool refresh_target_t::wait_for_expected_refresh_change(const std::chrono::milliseconds timeout) {
-    return impl_ && impl_->wait_for_expected_refresh_change(timeout);
-  }
 
   bool display_mode_change_in_flight() {
     return g_mode_changes_in_flight.load(std::memory_order_acquire) > 0 ||

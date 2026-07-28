@@ -425,23 +425,45 @@ namespace platf::dxgi {
 
     sleep_overshoot_logger.reset();
 
+    auto next_output_refresh_attempt = std::chrono::steady_clock::time_point::min();
+    bool output_refresh_deferred = false;
+
     while (true) {
-      // This will return false if the HDR state changes or for any number of other
-      // display or GPU changes. We should reinit to examine the updated state of
-      // the display subsystem. It is recommended to call this once per frame.
+      // A stale factory can mean either a harmless refresh-only change or a
+      // structural display/GPU change. WGC can keep its capture item for the
+      // former. Never wait for a display mode-set on this thread: WGC remains
+      // valid during refresh-only changes, so keep consuming frames and retry
+      // output validation on a later frame if DXGI is still settling.
       if (!factory->IsCurrent()) {
-        const bool expected_refresh_change =
-          refresh_only_changes_supported && game_refresh_target &&
-          game_refresh_target->wait_for_expected_refresh_change(5s);
-        if (!expected_refresh_change || !refresh_output_after_expected_mode_change()) {
+        if (!refresh_only_changes_supported) {
           return platf::capture_e::reinit;
         }
 
-        frame_pacing_group_start.reset();
-        frame_pacing_group_frames = 0;
-        last_pacing_slot.reset();
-        BOOST_LOG(info) << "Capture continued after refresh-only virtual display mode change";
-        continue;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_output_refresh_attempt) {
+          const auto refresh_result = refresh_output_after_nonstructural_change();
+
+          switch (refresh_result) {
+            case output_refresh_e::refreshed:
+              frame_pacing_group_start.reset();
+              frame_pacing_group_frames = 0;
+              last_pacing_slot.reset();
+              output_refresh_deferred = false;
+              BOOST_LOG(info) << "WGC capture continued after non-structural display change";
+              continue;
+
+            case output_refresh_e::retry_later:
+              next_output_refresh_attempt = std::chrono::steady_clock::now() + 50ms;
+              if (!output_refresh_deferred) {
+                output_refresh_deferred = true;
+                BOOST_LOG(debug) << "WGC output refresh deferred while DXGI settles; capture remains active";
+              }
+              break;
+
+            case output_refresh_e::structural_change:
+              return platf::capture_e::reinit;
+          }
+        }
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
@@ -615,99 +637,93 @@ namespace platf::dxgi {
     }
   }
 
-  bool display_base_t::refresh_output_after_expected_mode_change() {
-    for (int attempt = 0; attempt < 5; ++attempt) {
-      factory1_t replacement_factory;
-      if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
-        return false;
+  display_base_t::output_refresh_e display_base_t::refresh_output_after_nonstructural_change() {
+    factory1_t replacement_factory;
+    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
+      return output_refresh_e::retry_later;
+    }
+
+    adapter_t replacement_adapter;
+    output_t replacement_output;
+    DXGI_OUTPUT_DESC replacement_desc {};
+    for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
+      adapter_t::pointer adapter_ptr = nullptr;
+      const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
+      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+        break;
       }
-
-      adapter_t replacement_adapter;
-      output_t replacement_output;
-      DXGI_OUTPUT_DESC replacement_desc {};
-      for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
-        adapter_t::pointer adapter_ptr = nullptr;
-        const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
-        if (adapter_status == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-        if (FAILED(adapter_status) || !adapter_ptr) {
-          continue;
-        }
-
-        adapter_t candidate_adapter {adapter_ptr};
-        DXGI_ADAPTER_DESC1 adapter_desc {};
-        if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
-            !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
-          continue;
-        }
-
-        for (UINT output_index = 0;; ++output_index) {
-          output_t::pointer output_ptr = nullptr;
-          const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
-          if (output_status == DXGI_ERROR_NOT_FOUND) {
-            break;
-          }
-          if (FAILED(output_status) || !output_ptr) {
-            continue;
-          }
-
-          output_t candidate_output {output_ptr};
-          DXGI_OUTPUT_DESC desc {};
-          if (FAILED(candidate_output->GetDesc(&desc)) ||
-              std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
-            continue;
-          }
-          replacement_adapter = std::move(candidate_adapter);
-          replacement_output = std::move(candidate_output);
-          replacement_desc = desc;
-          break;
-        }
-      }
-
-      if (!replacement_adapter || !replacement_output) {
-        std::this_thread::sleep_for(50ms);
+      if (FAILED(adapter_status) || !adapter_ptr) {
         continue;
       }
 
-      const auto &old_rect = captured_output_desc.DesktopCoordinates;
-      const auto &new_rect = replacement_desc.DesktopCoordinates;
-      const bool geometry_unchanged = replacement_desc.AttachedToDesktop &&
-                                      replacement_desc.Rotation == captured_output_desc.Rotation &&
-                                      old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
-                                      old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
-      if (!geometry_unchanged) {
-        BOOST_LOG(info) << "Refresh-only capture continuation rejected because output geometry changed";
-        return false;
+      adapter_t candidate_adapter {adapter_ptr};
+      DXGI_ADAPTER_DESC1 adapter_desc {};
+      if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
+          !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
+        continue;
       }
 
-      output6_t replacement_output6;
-      const bool replacement_hdr_valid = SUCCEEDED(
-        replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
-      );
-      bool replacement_hdr = false;
-      if (replacement_hdr_valid) {
-        DXGI_OUTPUT_DESC1 desc1 {};
-        if (FAILED(replacement_output6->GetDesc1(&desc1))) {
-          return false;
+      for (UINT output_index = 0;; ++output_index) {
+        output_t::pointer output_ptr = nullptr;
+        const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
+        if (output_status == DXGI_ERROR_NOT_FOUND) {
+          break;
         }
-        replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-      }
-      if (captured_hdr_state_valid != replacement_hdr_valid ||
-          (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
-        BOOST_LOG(info) << "Refresh-only capture continuation rejected because HDR state changed";
-        return false;
-      }
+        if (FAILED(output_status) || !output_ptr) {
+          continue;
+        }
 
-      factory = std::move(replacement_factory);
-      adapter = std::move(replacement_adapter);
-      output = std::move(replacement_output);
-      captured_output_desc = replacement_desc;
-      return true;
+        output_t candidate_output {output_ptr};
+        DXGI_OUTPUT_DESC desc {};
+        if (FAILED(candidate_output->GetDesc(&desc)) ||
+            std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
+          continue;
+        }
+        replacement_adapter = std::move(candidate_adapter);
+        replacement_output = std::move(candidate_output);
+        replacement_desc = desc;
+        break;
+      }
     }
 
-    BOOST_LOG(warning) << "Refresh-only capture continuation could not reacquire the DXGI output";
-    return false;
+    if (!replacement_adapter || !replacement_output) {
+      return output_refresh_e::retry_later;
+    }
+
+    const auto &old_rect = captured_output_desc.DesktopCoordinates;
+    const auto &new_rect = replacement_desc.DesktopCoordinates;
+    const bool geometry_unchanged = replacement_desc.AttachedToDesktop &&
+                                    replacement_desc.Rotation == captured_output_desc.Rotation &&
+                                    old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
+                                    old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
+    if (!geometry_unchanged) {
+      BOOST_LOG(info) << "WGC capture continuation rejected because output geometry changed";
+      return output_refresh_e::structural_change;
+    }
+
+    output6_t replacement_output6;
+    const bool replacement_hdr_valid = SUCCEEDED(
+      replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
+    );
+    bool replacement_hdr = false;
+    if (replacement_hdr_valid) {
+      DXGI_OUTPUT_DESC1 desc1 {};
+      if (FAILED(replacement_output6->GetDesc1(&desc1))) {
+        return output_refresh_e::retry_later;
+      }
+      replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+    }
+    if (captured_hdr_state_valid != replacement_hdr_valid ||
+        (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
+      BOOST_LOG(info) << "WGC capture continuation rejected because HDR state changed";
+      return output_refresh_e::structural_change;
+    }
+
+    factory = std::move(replacement_factory);
+    adapter = std::move(replacement_adapter);
+    output = std::move(replacement_output);
+    captured_output_desc = replacement_desc;
+    return output_refresh_e::refreshed;
   }
 
   /**

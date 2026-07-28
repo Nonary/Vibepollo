@@ -737,7 +737,11 @@ namespace platf::dxgi {
           if (truehdr_private_input_ready && !truehdr_engine &&
               !platf::game_activity::display_mode_change_in_flight()) {
             truehdr_engine = std::make_unique<nv_truehdr_t>();
-            truehdr_engine->init(device.get());
+          }
+          if (truehdr_private_input_ready && truehdr_engine &&
+              !truehdr_engine->available() &&
+              !platf::game_activity::display_mode_change_in_flight()) {
+            (void) truehdr_engine->init(device.get());
           }
           if (truehdr_private_input_ready && truehdr_engine && truehdr_engine->available()) {
             truehdr_params_t p;
@@ -781,7 +785,8 @@ namespace platf::dxgi {
               truehdr_last_compensated_peak_nits = 0;
               truehdr_last_compensated_middle_gray = 0;
             }
-            if (auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p)) {
+            auto *hdr_tex = truehdr_engine->convert(truehdr_input_texture, p);
+            if (hdr_tex) {
               if (hdr_tex != truehdr_srv_texture) {
                 truehdr_srv.reset();
                 truehdr_srv_texture = nullptr;

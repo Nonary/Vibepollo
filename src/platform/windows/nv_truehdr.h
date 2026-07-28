@@ -51,9 +51,10 @@ namespace platf::dxgi {
     nv_truehdr_t &operator=(const nv_truehdr_t &) = delete;
 
     /**
-     * @brief Initialize NGX on the given device and create the TrueHDR feature.
+     * @brief Start or poll asynchronous NGX TrueHDR feature creation.
      * @param device The same D3D11 device the capture textures live on.
-     * @return true if TrueHDR is available and the feature was created.
+     * @return true once TrueHDR is ready. While creation is pending, returns false
+     *         immediately so the caller can keep streaming through its fallback path.
      */
     bool init(ID3D11Device *device);
 
@@ -80,7 +81,11 @@ namespace platf::dxgi {
     void release();
 
   private:
+    struct init_state_t;
+
     bool initialized = false;
+    bool init_failed = false;
+    std::shared_ptr<init_state_t> init_state;
     void *shim_handle = nullptr;  ///< Opaque per-device handle owned by the shim DLL.
   };
 

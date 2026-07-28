@@ -178,11 +178,17 @@ namespace platf::dxgi {
 
   class display_base_t: public display_t {
   public:
+    enum class output_refresh_e {
+      refreshed,
+      retry_later,
+      structural_change,
+    };
+
     int init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test = false);
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
-    bool refresh_output_after_expected_mode_change();
+    output_refresh_e refresh_output_after_nonstructural_change();
 
     factory1_t factory;
     adapter_t adapter;
