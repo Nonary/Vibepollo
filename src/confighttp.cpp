@@ -451,15 +451,17 @@ namespace confighttp {
 
   static std::string get_web_ui_host_for_local_open() {
     const auto address_family = net::af_from_enum_string(config::sunshine.address_family);
-    const auto bind_address = boost::algorithm::trim_copy(config::sunshine.bind_address);
-    if (bind_address.empty()) {
-      return address_family == net::IPV4 ? "127.0.0.1"s : "localhost"s;
-    }
+    // Derive the advertised host from the same accessor the listeners bind through.
+    // Resolving the configured value independently let an unparseable bind_address
+    // be advertised verbatim while the acceptors had already degraded to the family
+    // wildcard, so the logged/tray URL pointed at an address nothing listens on.
+    const auto bind_address = net::get_bind_address(address_family);
 
     boost::system::error_code ec;
     const auto address = boost::asio::ip::make_address(bind_address, ec);
     if (ec) {
-      return bind_address;
+      // get_bind_address only returns a validated address or the family wildcard.
+      return address_family == net::IPV4 ? "127.0.0.1"s : "localhost"s;
     }
 
     if (address.is_unspecified()) {
