@@ -1658,11 +1658,12 @@ namespace config {
     return ret;
   }
 
-  std::vector<::std::string_view> &get_supported_gamepad_options() {
-    const auto options = platf::supported_gamepads(nullptr);
-    static std::vector<::std::string_view> opts {};
+  std::vector<::std::string_view> get_supported_gamepad_options() {
+    // The platform owns this static list; keep it by reference so the views remain valid.
+    const auto &options = platf::supported_gamepads(nullptr);
+    std::vector<::std::string_view> opts;
     opts.reserve(options.size());
-    for (auto &opt : options) {
+    for (const auto &opt : options) {
       opts.emplace_back(opt.name);
     }
     return opts;
