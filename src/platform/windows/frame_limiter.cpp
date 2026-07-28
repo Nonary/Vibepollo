@@ -332,7 +332,8 @@ namespace platf {
           if (rtss_audit_pending_recovery() == rtss_recovery_audit_result::retained_exclusive) {
             g_active_provider = frame_limiter_provider::rtss;
             applied = true;
-            BOOST_LOG(warning) << "An unresolved RTSS recovery snapshot blocked the configured frame-limiter provider";
+            BOOST_LOG(warning) << "RTSS retained exclusive frame-limiter ownership because its state could not be resolved; "
+                                  "the configured provider was skipped";
             break;
           }
         }

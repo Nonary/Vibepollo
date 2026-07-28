@@ -491,15 +491,30 @@ namespace platf {
       return true;
     }
 
-    bool restore_from_snapshot(const recovery_snapshot_t &snapshot) {
+    enum class recovery_result_t {
+      /// Nothing was left over, or the persisted mutation was undone.
+      resolved,
+      /// RTSS is provably not limiting anything: its install root is gone, or it
+      /// is not running and could not be started. A persisted snapshot cannot be
+      /// in force, so callers must release the provider slot instead of retaining
+      /// exclusivity they cannot honour.
+      rtss_absent,
+      /// The persisted state could not be resolved and live RTSS state is
+      /// uncertain, so exclusivity must be retained.
+      unresolved
+    };
+
+    recovery_result_t restore_from_snapshot(const recovery_snapshot_t &snapshot) {
       fs::path root = resolve_rtss_root();
       if (!fs::exists(root)) {
         BOOST_LOG(warning) << "RTSS overrides: install path not found for recovery: "sv << root.string();
-        return false;
+        return recovery_result_t::rtss_absent;
       }
       if (!ensure_rtss_running(root)) {
+        // Same predicate rtss_streaming_start already falls back on: RTSS was not
+        // running and could not be started, so it is enforcing nothing.
         BOOST_LOG(warning) << "RTSS overrides: unable to start RTSS for recovery";
-        return false;
+        return recovery_result_t::rtss_absent;
       }
 
       bool hooks_loaded = false;
@@ -552,44 +567,81 @@ namespace platf {
       }
 
       unload_hooks();
-      return success;
+      return success ? recovery_result_t::resolved : recovery_result_t::unresolved;
     }
 
-    bool maybe_restore_from_overrides_file() {
+    /**
+     * @brief Resolve any durable RTSS recovery state left by an earlier stream.
+     * @param resolved_mutation Optional out-flag, set only when persisted state describing a
+     *        real mutation was found and dealt with. It stays false when there was simply
+     *        nothing to restore, which lets callers tell "Sunshine owes exclusivity" apart
+     *        from "Sunshine never mutated anything".
+     * @return resolved when no unresolved recovery state remains, rtss_absent when the
+     *         snapshot cannot be in force because RTSS is gone, unresolved otherwise.
+     */
+    recovery_result_t maybe_restore_from_overrides_file(bool *resolved_mutation = nullptr) {
+      if (resolved_mutation) {
+        *resolved_mutation = false;
+      }
       if (g_recovery_file_owned) {
-        return false;
+        return recovery_result_t::unresolved;
       }
 
       auto file_path_opt = rtss_overrides_file_path();
       if (!file_path_opt) {
         BOOST_LOG(warning) << "RTSS overrides: unable to resolve the recovery path; persisted state cannot be ruled out.";
-        return false;
+        return recovery_result_t::unresolved;
       }
       std::error_code exists_ec;
       const bool recovery_file_exists = fs::exists(*file_path_opt, exists_ec);
       if (exists_ec) {
         BOOST_LOG(warning) << "RTSS overrides: unable to check recovery file: " << exists_ec.message();
-        return false;
+        return recovery_result_t::unresolved;
       }
       if (!recovery_file_exists) {
-        return true;
+        return recovery_result_t::resolved;
       }
       if (g_hook_call_state->active_calls.load(std::memory_order_acquire) != 0) {
         BOOST_LOG(warning) << "RTSS overrides: a late hooks operation is still active; deferring recovery.";
-        return false;
+        return recovery_result_t::unresolved;
       }
 
       auto snapshot = read_overrides_file();
       if (!snapshot) {
-        BOOST_LOG(warning) << "RTSS overrides: pending recovery file could not be read; retaining RTSS provider ownership.";
-        return false;
+        // The file cannot describe a restorable mutation (unreadable, unparseable, invalid,
+        // or empty). Retaining exclusivity forever would wedge the limiter, so delete it:
+        // a successful delete proves the persisted state is gone. A file that is locked
+        // hard enough to resist deletion is the same file that resisted the read, so the
+        // conservative retain still covers transient failures.
+        if (!delete_overrides_file()) {
+          BOOST_LOG(warning) << "RTSS overrides: pending recovery file could not be read or deleted; retaining RTSS provider ownership.";
+          return recovery_result_t::unresolved;
+        }
+        BOOST_LOG(warning) << "RTSS overrides: pending recovery file could not be read; discarded it and verified live RTSS instead.";
+        if (resolved_mutation) {
+          *resolved_mutation = true;
+        }
+        return recovery_result_t::resolved;
       }
 
       BOOST_LOG(info) << "RTSS overrides: pending recovery file detected; attempting restore";
-      if (restore_from_snapshot(*snapshot)) {
-        return delete_overrides_file();
+      const auto restored = restore_from_snapshot(*snapshot);
+      if (restored != recovery_result_t::resolved) {
+        // Deliberately keep the recovery file when RTSS is absent. It is the only
+        // record of the user's original Global profile values, it can no longer
+        // wedge the limiter now that callers release the provider slot on absence,
+        // and a later stream can still undo the mutation once RTSS comes back.
+        return restored;
       }
-      return false;
+      // The mutation is already undone, so a leftover file no longer describes live state.
+      // Failing to delete it must not wedge the limiter for every future stream.
+      if (!delete_overrides_file()) {
+        BOOST_LOG(warning) << "RTSS overrides: restored the recovery snapshot, but the stale recovery file could not be deleted.";
+      }
+      if (resolved_mutation) {
+        *resolved_mutation = true;
+      }
+      return recovery_result_t::resolved;
     }
 
     bool ensure_profile_exists(const fs::path &root) {
@@ -1240,8 +1292,25 @@ namespace platf {
       g_hooks_failed = false;
     }
     if (!g_recovery_file_owned) {
-      if (!maybe_restore_from_overrides_file()) {
+      bool resolved_mutation = false;
+      const auto recovery = maybe_restore_from_overrides_file(&resolved_mutation);
+      if (recovery == recovery_result_t::rtss_absent) {
+        // The live-state proof below is exactly this answer, but it is only
+        // reachable once recovery stops short-circuiting to retain. An absent
+        // RTSS cannot be enforcing the snapshot, so hand the slot over instead
+        // of claiming an exclusivity that leaves the stream with no limiter.
+        BOOST_LOG(warning) << "RTSS recovery audit found persisted overrides but RTSS is absent; releasing the provider slot.";
+        return clear_for_other_provider();
+      }
+      if (recovery != recovery_result_t::resolved) {
         return retain_exclusive();
+      }
+      if (!resolved_mutation) {
+        // Nothing was owned and nothing needed restoring, so Sunshine has no outstanding
+        // mutation of its own. It owes no exclusivity here: probing the user's live RTSS
+        // would hand their own unrelated Global limit the provider slot, and the probe's
+        // profile reload would revert their unflushed RTSS edits.
+        return clear_for_other_provider();
       }
     }
 
@@ -1266,22 +1335,63 @@ namespace platf {
       return retain_exclusive();
     }
     const bool hooks_loaded_for_probe = !hooks_already_loaded;
-    const auto flags = get_hook_flags();
-    if (hooks_loaded_for_probe &&
-        g_hooks.module &&
-        g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0) {
-      FreeLibrary(g_hooks.module);
-      g_hooks = {};
-    }
-    if (!flags) {
+    auto unload_probe_hooks = [&]() {
+      if (hooks_loaded_for_probe &&
+          g_hooks.module &&
+          g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0) {
+        FreeLibrary(g_hooks.module);
+        g_hooks = {};
+      }
+    };
+
+    const auto initial_flags = get_hook_flags();
+    if (!initial_flags) {
+      unload_probe_hooks();
       BOOST_LOG(warning) << "RTSS recovery audit could not verify limiter flags.";
+      return retain_exclusive();
+    }
+    if (*initial_flags & k_rtss_flag_limiter_disabled) {
+      unload_probe_hooks();
+      return clear_for_other_provider();
+    }
+
+    bool reload_scheduled = false;
+    if (!reload_profiles_from_disk(true, &reload_scheduled)) {
+      unload_probe_hooks();
+      BOOST_LOG(warning) << (reload_scheduled ?
+                               "RTSS recovery audit did not receive acknowledgement for the profile reload." :
+                               "RTSS recovery audit could not schedule the profile reload.");
+      return retain_exclusive();
+    }
+
+    const auto flags = get_hook_flags();
+    const auto limit = read_profile_value_int(root, k_rtss_limit_profile_key);
+    unload_probe_hooks();
+
+    if (!flags) {
+      BOOST_LOG(warning) << "RTSS recovery audit could not re-verify limiter flags after reload.";
       return retain_exclusive();
     }
     if (*flags & k_rtss_flag_limiter_disabled) {
       return clear_for_other_provider();
     }
+    if (!limit.known) {
+      BOOST_LOG(warning) << "RTSS recovery audit could not read the live Global profile limit.";
+      return retain_exclusive();
+    }
+    if (limit.value && *limit.value < 0) {
+      BOOST_LOG(warning) << "RTSS recovery audit found an invalid negative Global profile limit.";
+      return retain_exclusive();
+    }
 
-    BOOST_LOG(warning) << "RTSS recovery audit found a running process with its limiter enabled.";
+    // A determined absence -- no Global profile, no [Framerate] section, or no Limit key --
+    // means RTSS definitively has no cap, which is as safe to hand off as an explicit zero.
+    // rtss_streaming_start already reads the same absent value as safe to fall back from.
+    if (!limit.value || *limit.value == 0) {
+      return clear_for_other_provider();
+    }
+
+    BOOST_LOG(warning) << "RTSS recovery audit found a positive live Global profile limit with its limiter enabled.";
     return retain_exclusive();
   }
 
@@ -1320,7 +1430,10 @@ namespace platf {
     }
     g_limit_active = false;
     g_last_apply_result = rtss_apply_result::safe_to_fallback;
-    if (!maybe_restore_from_overrides_file()) {
+    const auto recovery = maybe_restore_from_overrides_file();
+    if (recovery == recovery_result_t::unresolved) {
+      // Keep the previous stream's modification flags: they still describe live
+      // state that a later stop has to undo.
       return retain_rtss_exclusive(
         "RTSS has unresolved persisted overrides from an earlier stream.");
     }
@@ -1330,6 +1443,14 @@ namespace platf {
     g_denominator_modified = false;
     g_limit_modified = false;
     g_sync_limiter_modified = false;
+
+    if (recovery == recovery_result_t::rtss_absent) {
+      // The provider loop deliberately skips the availability check for RTSS, so
+      // an absent RTSS reaches this point. Retaining exclusivity here would
+      // force-disable the driver limiter and leave the stream with no cap at all.
+      BOOST_LOG(warning) << "RTSS has persisted overrides from an earlier stream but is no longer present; falling back to another limiter."sv;
+      return mark_safe_to_fallback();
+    }
 
     if (!config::frame_limiter.enable || numerator <= 0 || denominator <= 0) {
       return mark_safe_to_fallback();
