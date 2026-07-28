@@ -3259,6 +3259,11 @@ namespace confighttp {
       return;
     }
 
+#ifndef SUNSHINE_ENABLE_WEBRTC
+    service_unavailable(response, "WebRTC support is disabled in this build");
+    return;
+#endif
+
     BOOST_LOG(debug) << "WebRTC: create session request received";
 
     webrtc_stream::SessionOptions options;
