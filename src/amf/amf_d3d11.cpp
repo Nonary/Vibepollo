@@ -205,6 +205,7 @@ namespace amf {
     // legacy Sunshine peak/VBV constraints paired with the selected RC mode.
     user_configured_rate_control = config.rc_mode.has_value();
     enforce_hrd_enabled = config.enforce_hrd && *config.enforce_hrd;
+    max_au_size_supported = false;
 
     ::amf::AMFCapsPtr encoder_caps;
     const auto caps_result = encoder->GetCaps(&encoder_caps);
@@ -279,6 +280,34 @@ namespace amf {
                            << ", get=" << get_result << ')';
         return false;
       }
+      return true;
+    };
+    auto set_optional_max_au_size = [&](const wchar_t *property, amf_int64 requested, const char *label) {
+      const auto set_result = encoder->SetProperty(property, requested);
+      // A runtime refuses a supplemental property three different ways: ACCESS_DENIED when the
+      // component registered it as private, NOT_SUPPORTED when this encoder cannot honor it, and
+      // NOT_FOUND when the property was never registered at all. All three mean the cap does not
+      // exist for us; only other results indicate a genuine failure to apply it.
+      if (set_result == AMF_ACCESS_DENIED || set_result == AMF_NOT_SUPPORTED || set_result == AMF_NOT_FOUND) {
+        BOOST_LOG(info) << "AMF: " << label << " is unavailable on this runtime"
+                        << " (set=" << set_result << "); continuing without the optional cap";
+        return true;
+      }
+      if (set_result != AMF_OK) {
+        BOOST_LOG(warning) << "AMF: failed to apply " << label << " (requested=" << requested
+                           << ", set=" << set_result << ')';
+        return false;
+      }
+
+      amf_int64 applied = 0;
+      const auto get_result = encoder->GetProperty(property, &applied);
+      if (get_result != AMF_OK || applied != requested) {
+        BOOST_LOG(warning) << "AMF: failed to verify " << label << " (requested=" << requested
+                           << ", applied=" << applied << ", get=" << get_result << ')';
+        return false;
+      }
+
+      max_au_size_supported = true;
       return true;
     };
     auto set_verified_bool = [&](const wchar_t *property, bool requested, const char *label) {
@@ -453,7 +482,9 @@ namespace amf {
         // per-frame VBV budget leaves normal IDRs intact while stopping the runaway frames
         // that froze RDNA4 at 200+ Mbps. Only applied when HRD enforcement is opted in.
         if (*config.enforce_hrd &&
-            !set_verified_int64(AMF_VIDEO_ENCODER_MAX_AU_SIZE, vbv_buffer_size * 4, "H.264 maximum access-unit size")) return false;
+            !set_optional_max_au_size(AMF_VIDEO_ENCODER_MAX_AU_SIZE, vbv_buffer_size * 4, "H.264 maximum access-unit size")) {
+          return false;
+        }
       }
       encoder->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, (amf_int64) 0);
       encoder->SetProperty(AMF_VIDEO_ENCODER_DE_BLOCKING_FILTER, true);
@@ -543,7 +574,9 @@ namespace amf {
         if (!set_verified_bool(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, !!(*config.enforce_hrd), "HEVC HRD enforcement")) return false;
         // See H.264 above: cap the peak AU size (~4x per-frame VBV) so no frame overruns FEC.
         if (*config.enforce_hrd &&
-            !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_MAX_AU_SIZE, vbv_buffer_size * 4, "HEVC maximum access-unit size")) return false;
+            !set_optional_max_au_size(AMF_VIDEO_ENCODER_HEVC_MAX_AU_SIZE, vbv_buffer_size * 4, "HEVC maximum access-unit size")) {
+          return false;
+        }
       }
       // HEADER_INSERTION_MODE is deliberately left at the driver default (NONE),
       // matching FFmpeg's hevc_amf (stable on the same cards). Forcing IDR_ALIGNED
@@ -636,10 +669,12 @@ namespace amf {
         if (!set_verified_bool(AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD, !!(*config.enforce_hrd), "AV1 HRD enforcement")) return false;
         // See H.264 above: cap the peak compressed frame size (~4x per-frame VBV) to fit FEC.
         if (*config.enforce_hrd &&
-            !set_verified_int64(
+            !set_optional_max_au_size(
               AMF_VIDEO_ENCODER_AV1_MAX_COMPRESSED_FRAME_SIZE,
               vbv_buffer_size * 4,
-              "AV1 maximum compressed-frame size")) return false;
+              "AV1 maximum compressed-frame size")) {
+          return false;
+        }
       }
       encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE, (amf_int64) AMF_VIDEO_ENCODER_AV1_ALIGNMENT_MODE_NO_RESTRICTIONS);
       encoder->SetProperty(AMF_VIDEO_ENCODER_AV1_GOP_SIZE, (amf_int64) 0);
@@ -2291,7 +2326,9 @@ namespace amf {
         set_runtime_property(AMF_VIDEO_ENCODER_PEAK_BITRATE, bitrate, "peak bitrate");
         set_runtime_property(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_buffer_size, "VBV buffer");
       }
-      if (enforce_hrd_enabled) set_runtime_property(AMF_VIDEO_ENCODER_MAX_AU_SIZE, vbv_buffer_size * 4, "maximum access-unit size");
+      if (enforce_hrd_enabled && max_au_size_supported) {
+        set_runtime_property(AMF_VIDEO_ENCODER_MAX_AU_SIZE, vbv_buffer_size * 4, "maximum access-unit size");
+      }
     }
     else if (video_format == 1) {
       set_runtime_property(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, bitrate, "target bitrate");
@@ -2299,7 +2336,9 @@ namespace amf {
         set_runtime_property(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, bitrate, "peak bitrate");
         set_runtime_property(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size, "VBV buffer");
       }
-      if (enforce_hrd_enabled) set_runtime_property(AMF_VIDEO_ENCODER_HEVC_MAX_AU_SIZE, vbv_buffer_size * 4, "maximum access-unit size");
+      if (enforce_hrd_enabled && max_au_size_supported) {
+        set_runtime_property(AMF_VIDEO_ENCODER_HEVC_MAX_AU_SIZE, vbv_buffer_size * 4, "maximum access-unit size");
+      }
     }
     else {
       set_runtime_property(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, bitrate, "target bitrate");
@@ -2307,7 +2346,9 @@ namespace amf {
         set_runtime_property(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, bitrate, "peak bitrate");
         set_runtime_property(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_buffer_size, "VBV buffer");
       }
-      if (enforce_hrd_enabled) set_runtime_property(AMF_VIDEO_ENCODER_AV1_MAX_COMPRESSED_FRAME_SIZE, vbv_buffer_size * 4, "maximum compressed-frame size");
+      if (enforce_hrd_enabled && max_au_size_supported) {
+        set_runtime_property(AMF_VIDEO_ENCODER_AV1_MAX_COMPRESSED_FRAME_SIZE, vbv_buffer_size * 4, "maximum compressed-frame size");
+      }
     }
 
     if (success) {

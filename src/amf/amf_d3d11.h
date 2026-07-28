@@ -200,6 +200,7 @@ namespace amf {
     bool query_timeout_supported = false;
     bool user_configured_rate_control = false;
     bool enforce_hrd_enabled = false;
+    bool max_au_size_supported = false;
 
     // Statistics feedback state
     bool statistics_enabled = false;
