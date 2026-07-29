@@ -99,6 +99,11 @@ namespace VDISPLAY {
 #define APPS_JSON_PATH platf::appdata().string() + "/apps.json"
 
 namespace config {
+  namespace {
+    void update_base_adapter_config_snapshot(
+      const std::unordered_map<std::string, std::string> &vars
+    );
+  }
 
   namespace nv {
     constexpr std::string_view split_encode_key = "nvenc_split_encode"sv;
@@ -905,6 +910,7 @@ namespace config {
     {},  // capture
     {},  // encoder
     {},  // adapter_name
+    {},  // adapter_pnp_id
     {},  // output_name
 
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
@@ -1846,6 +1852,11 @@ namespace config {
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
+    string_f(vars, "adapter_pnp_id", video.adapter_pnp_id);
+    if (!video.adapter_pnp_id.empty() && video.adapter_name.empty()) {
+      BOOST_LOG(warning) << "config: adapter_pnp_id requires adapter_name; ignoring the orphaned adapter identity.";
+      video.adapter_pnp_id.clear();
+    }
     string_f(vars, "output_name", video.output_name);
 
     const auto virtual_display_mode_it = vars.find("virtual_display_mode");
@@ -2352,9 +2363,8 @@ namespace config {
 
       command_line_overrides = cmd_vars;
 
-      for (auto &[name, value] : cmd_vars) {
-        vars.insert_or_assign(std::move(name), std::move(value));
-      }
+      merge_config_overrides(vars, cmd_vars);
+      update_base_adapter_config_snapshot(vars);
 
       // Apply the config. Note: This will try to create any paths
       // referenced in the config, so we may receive exceptions if
@@ -2455,6 +2465,45 @@ namespace config {
     std::mutex g_runtime_overrides_mutex;
     std::unordered_map<std::string, std::string> g_runtime_config_overrides;
 
+    struct adapter_config_pair_t {
+      std::string name;
+      std::string pnp_id;
+    };
+
+    // Keep the global/base pair and the exact pair captured by the first active
+    // stream independent from the mutable runtime override map. Application
+    // termination may clear that map while an RTSP session is still draining,
+    // but a shared-session compatibility decision must continue to compare
+    // against the adapter that owns the active capture.
+    std::mutex g_adapter_config_snapshot_mutex;
+    adapter_config_pair_t g_base_adapter_config;
+    adapter_config_pair_t g_active_adapter_config;
+    bool g_base_adapter_config_valid = false;
+    bool g_active_adapter_config_valid = false;
+
+    adapter_config_pair_t adapter_config_from_vars(
+      const std::unordered_map<std::string, std::string> &vars
+    ) {
+      adapter_config_pair_t result;
+      if (const auto name = vars.find("adapter_name"); name != vars.end()) {
+        result.name = name->second;
+      }
+      if (!result.name.empty()) {
+        if (const auto pnp_id = vars.find("adapter_pnp_id"); pnp_id != vars.end()) {
+          result.pnp_id = pnp_id->second;
+        }
+      }
+      return result;
+    }
+
+    void update_base_adapter_config_snapshot(
+      const std::unordered_map<std::string, std::string> &vars
+    ) {
+      std::lock_guard<std::mutex> lock(g_adapter_config_snapshot_mutex);
+      g_base_adapter_config = adapter_config_from_vars(vars);
+      g_base_adapter_config_valid = true;
+    }
+
     bool is_rtx_hdr_live_key(std::string_view key) {
       return key == "rtx_hdr" ||
              key == "rtx_hdr_sdr_brightness" ||
@@ -2522,6 +2571,7 @@ namespace config {
         "virtual_sink",
         "stream_audio",
         "adapter_name",
+        "adapter_pnp_id",
         "dd_configuration_option",
         "dd_resolution_option",
         "dd_manual_resolution",
@@ -2882,6 +2932,80 @@ namespace config {
     return std::shared_lock<std::shared_mutex>(g_apply_gate);
   }
 
+  void record_active_adapter_config() {
+    // Session start/resume calls this while holding acquire_apply_read_gate(),
+    // so video's two strings are copied from one effective config generation.
+    std::lock_guard<std::mutex> lock(g_adapter_config_snapshot_mutex);
+    g_active_adapter_config = adapter_config_pair_t {
+      .name = video.adapter_name,
+      .pnp_id = video.adapter_pnp_id,
+    };
+    g_active_adapter_config_valid = true;
+  }
+
+  void merge_config_overrides(
+    std::unordered_map<std::string, std::string> &base,
+    const std::unordered_map<std::string, std::string> &overrides
+  ) {
+    constexpr std::string_view adapter_name_key = "adapter_name";
+    constexpr std::string_view adapter_pnp_id_key = "adapter_pnp_id";
+
+    for (const auto &[name, value] : overrides) {
+      if (name == adapter_pnp_id_key) {
+        continue;
+      }
+      base.insert_or_assign(name, value);
+    }
+
+    const auto adapter_name = overrides.find(std::string(adapter_name_key));
+    if (adapter_name == overrides.end()) {
+      // A PnP identity has no independent meaning. In particular, it must not
+      // replace the identity paired with an inherited adapter name.
+      return;
+    }
+
+    if (adapter_name->second.empty()) {
+      base.erase(std::string(adapter_pnp_id_key));
+      return;
+    }
+
+    const auto adapter_pnp_id = overrides.find(std::string(adapter_pnp_id_key));
+    if (adapter_pnp_id == overrides.end() || adapter_pnp_id->second.empty()) {
+      // Supplying a name alone is an explicit request for the historical
+      // first-description-match behavior.
+      base.erase(std::string(adapter_pnp_id_key));
+      return;
+    }
+
+    base.insert_or_assign(std::string(adapter_pnp_id_key), adapter_pnp_id->second);
+  }
+
+  bool adapter_config_overrides_compatible_with_active(
+    const std::unordered_map<std::string, std::string> &requested_overrides
+  ) {
+    std::lock_guard<std::mutex> lock(g_adapter_config_snapshot_mutex);
+    if (!g_active_adapter_config_valid || !g_base_adapter_config_valid) {
+      return false;
+    }
+
+    const auto requested_name = requested_overrides.find("adapter_name");
+    adapter_config_pair_t requested_adapter;
+    if (requested_name != requested_overrides.end()) {
+      requested_adapter.name = requested_name->second;
+      if (!requested_adapter.name.empty()) {
+        if (const auto requested_pnp_id = requested_overrides.find("adapter_pnp_id");
+            requested_pnp_id != requested_overrides.end()) {
+          requested_adapter.pnp_id = requested_pnp_id->second;
+        }
+      }
+    } else {
+      requested_adapter = g_base_adapter_config;
+    }
+
+    return requested_adapter.name == g_active_adapter_config.name &&
+           boost::iequals(requested_adapter.pnp_id, g_active_adapter_config.pnp_id);
+  }
+
   void set_runtime_output_name_override(std::optional<std::string> output_name) {
     (void) set_runtime_output_name_override_impl(std::move(output_name));
   }
@@ -2983,16 +3107,13 @@ namespace config {
       const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
-      for (const auto &[name, value] : command_line_overrides) {
-        vars.insert_or_assign(name, value);
-      }
+      merge_config_overrides(vars, command_line_overrides);
+      update_base_adapter_config_snapshot(vars);
 
       // Apply runtime overrides (per-app) on top of file values so hot-apply and deferred reloads
       // keep the effective config consistent while an app is running.
       const auto runtime_overrides = runtime_overrides_snapshot();
-      for (const auto &[name, value] : runtime_overrides) {
-        vars.insert_or_assign(name, value);
-      }
+      merge_config_overrides(vars, runtime_overrides);
       // Track old logging params to adjust sinks if needed
       const int old_min_level = sunshine.min_log_level;
       const std::string old_log_file = sunshine.log_file;
@@ -3079,6 +3200,15 @@ namespace config {
         continue;
       }
       filtered.emplace(std::move(normalized_key), std::move(v));
+    }
+
+    const auto adapter_name = filtered.find("adapter_name");
+    const auto adapter_pnp_id = filtered.find("adapter_pnp_id");
+    if (adapter_pnp_id != filtered.end() && adapter_name == filtered.end()) {
+      BOOST_LOG(warning) << "Ignoring runtime adapter_pnp_id override without its adapter_name companion.";
+      filtered.erase(adapter_pnp_id);
+    } else if (adapter_name != filtered.end() && adapter_name->second.empty()) {
+      filtered.erase("adapter_pnp_id");
     }
 
     bool rtx_hdr_live_changed = false;

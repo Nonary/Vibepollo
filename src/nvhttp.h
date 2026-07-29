@@ -8,6 +8,7 @@
 // standard includes
 #include <chrono>
 #include <list>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>

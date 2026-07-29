@@ -3709,6 +3709,11 @@ namespace proc {
               }
             }
           }
+          {
+            std::unordered_map<std::string, std::string> normalized_overrides;
+            config::merge_config_overrides(normalized_overrides, ctx.config_overrides);
+            ctx.config_overrides = std::move(normalized_overrides);
+          }
 
         ctx.frame_gen_limiter_fix = util::get_non_string_json_value<bool>(app_node, "frame-gen-limiter-fix", util::get_non_string_json_value<bool>(app_node, "dlss-framegen-limiter-fix", false));
         ctx.elevated = util::get_non_string_json_value<bool>(app_node, "elevated", false);

@@ -414,6 +414,54 @@ namespace confighttp {
       return value.dump();
     }
 
+    void normalize_adapter_config_pair(nlohmann::json &config_object) {
+      if (!config_object.is_object()) {
+        return;
+      }
+
+      const auto adapter_name = config_object.find("adapter_name");
+      if (adapter_name == config_object.end() ||
+          !adapter_name->is_string() ||
+          adapter_name->get_ref<const std::string &>().empty()) {
+        config_object.erase("adapter_pnp_id");
+        return;
+      }
+
+      const auto adapter_pnp_id = config_object.find("adapter_pnp_id");
+      if (adapter_pnp_id == config_object.end() ||
+          !adapter_pnp_id->is_string() ||
+          adapter_pnp_id->get_ref<const std::string &>().empty()) {
+        config_object.erase("adapter_pnp_id");
+      }
+    }
+
+    void normalize_adapter_config_patch(nlohmann::json &patch_object) {
+      if (!patch_object.is_object()) {
+        return;
+      }
+
+      const auto adapter_name = patch_object.find("adapter_name");
+      if (adapter_name == patch_object.end()) {
+        // A PnP identity cannot independently replace half of the pair.
+        patch_object.erase("adapter_pnp_id");
+        return;
+      }
+
+      const bool name_is_nonempty =
+        adapter_name->is_string() &&
+        !adapter_name->get_ref<const std::string &>().empty();
+      const auto adapter_pnp_id = patch_object.find("adapter_pnp_id");
+      const bool pnp_is_nonempty =
+        adapter_pnp_id != patch_object.end() &&
+        adapter_pnp_id->is_string() &&
+        !adapter_pnp_id->get_ref<const std::string &>().empty();
+      if (!name_is_nonempty || !pnp_is_nonempty) {
+        // A name-only patch explicitly selects legacy matching and must clear
+        // any persistent identity inherited from the existing file.
+        patch_object["adapter_pnp_id"] = nullptr;
+      }
+    }
+
     bool can_hot_apply_during_session(const std::set<std::string> &keys) {
       if (keys.empty()) {
         return false;
@@ -1786,6 +1834,7 @@ namespace confighttp {
           overrides["nvenc_split_encode"] = overrides["nvenc_force_split_encode"];
         }
         overrides.erase("nvenc_force_split_encode");
+        normalize_adapter_config_pair(overrides);
       }
 
       // If image-path omitted but we have a Playnite id, let Playnite helper resolve a cover (Windows)
@@ -2790,6 +2839,7 @@ namespace confighttp {
         for (const auto &gpu : gpus) {
           nlohmann::json gpu_entry;
           gpu_entry["description"] = gpu.description;
+          gpu_entry["pnp_id"] = gpu.pnp_id;
           gpu_entry["vendor_id"] = gpu.vendor_id;
           gpu_entry["device_id"] = gpu.device_id;
           gpu_entry["dedicated_video_memory"] = gpu.dedicated_video_memory;
@@ -2923,6 +2973,7 @@ namespace confighttp {
       std::stringstream config_stream;
       nlohmann::json output_tree;
       nlohmann::json input_tree = nlohmann::json::parse(ss);
+      normalize_adapter_config_pair(input_tree);
       std::set<std::string> changed_keys;
       for (const auto &[k, v] : input_tree.items()) {
         changed_keys.insert(k);
@@ -3006,6 +3057,7 @@ namespace confighttp {
         bad_request(response, request, "PATCH body must be a JSON object");
         return;
       }
+      normalize_adapter_config_patch(patch_tree);
 
       // Load existing config into a map
       std::unordered_map<std::string, std::string> current = config::parse_config(

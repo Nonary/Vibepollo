@@ -190,9 +190,39 @@ namespace platf {
 
   struct gpu_info_t {
     std::string description;
+    // Persistent Windows device-instance identity. Empty means the identity
+    // could not be queried; the GPU remains usable through legacy name matching.
+    std::string pnp_id;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
     std::uint64_t dedicated_video_memory = 0;
+  };
+
+  enum class adapter_resolution_status_e {
+    automatic,
+    resolved,
+    not_found,
+    unknown,
+    ambiguous,
+  };
+
+  struct adapter_resolution_t {
+    adapter_resolution_status_e status = adapter_resolution_status_e::unknown;
+    std::optional<LUID> luid;
+    std::string description;
+    std::string pnp_id;
+    std::uint64_t dedicated_video_memory = 0;
+    std::uint64_t shared_system_memory = 0;
+
+    explicit operator bool() const {
+      return status == adapter_resolution_status_e::resolved && luid.has_value();
+    }
+  };
+
+  enum class adapter_output_match_e {
+    match,
+    no_match,
+    unknown,
   };
 
   struct windows_version_info_t {
@@ -209,32 +239,46 @@ namespace platf {
   bool has_nvidia_gpu();
 
   /**
-   * @brief Determine whether a specific GPU currently drives an active desktop output.
+   * Resolve a configured capture-adapter pair to the current DXGI LUID.
    *
-   * The adapter is located by DXGI description, but its outputs are resolved through the CCD API
-   * so the answer reflects the physical wiring rather than DXGI's hybrid-GPU output reparenting.
-   *
-   * @param adapter_description DXGI adapter description to look for, matched exactly (UTF-8).
-   * @param output_names GDI device names (e.g. `\\.\DISPLAY1`) to restrict the check to. An empty
-   *                     list matches any active output on that adapter.
-   * @return `std::nullopt` when the adapter could not be inspected (DXGI/CCD failure, or no adapter
-   *         carries that description), otherwise whether it drives one of `output_names`.
-   * @examples
-   * const auto drives = platf::adapter_drives_any_output("NVIDIA GeForce RTX 5080", {});
-   * @examples_end
+   * A non-empty PnP ID is authoritative and must match exactly one adapter.
+   * An empty PnP ID preserves legacy behavior by selecting the first adapter
+   * whose DXGI description exactly matches adapter_name.
    */
-  std::optional<bool> adapter_drives_any_output(const std::string &adapter_description, const std::vector<std::string> &output_names);
+  adapter_resolution_t resolve_adapter(
+    std::string_view adapter_name,
+    std::string_view adapter_pnp_id
+  );
 
   /**
-   * @brief Decide whether the user's configured capture GPU can see one of the given displays.
+   * Resolve the effective virtual-display render-adapter preference without
+   * mutating either driver.
    *
-   * `config::video.adapter_name` pins capture to a single GPU (see `display_base_t::init`), so an
-   * active display wired to a *different* GPU is not capturable and must not be treated as proof
-   * that a display is available. Returns `true` when no adapter is configured, when the configured
-   * adapter cannot be inspected at all, or when the configured adapter drives one of `display_names`.
-   *
-   * @param display_names GDI device names of the currently active physical displays.
-   * @return `true` when the configured adapter is satisfied by one of `display_names`.
+   * Exact PnP identity is authoritative when present, legacy name-only
+   * selection keeps first-match behavior, and an empty pair selects the
+   * hardware adapter with the greatest dedicated (then shared) memory.
+   */
+  adapter_resolution_t resolve_preferred_render_adapter(
+    std::string_view adapter_name,
+    std::string_view adapter_pnp_id
+  );
+  std::string_view adapter_resolution_status_name(adapter_resolution_status_e status);
+  bool adapter_luid_equal(const LUID &lhs, const LUID &rhs);
+
+  /**
+   * Determine whether an exact adapter LUID drives any selected active CCD
+   * output. CCD/API failures produce unknown rather than a false no-match.
+   */
+  adapter_output_match_e adapter_drives_any_output(
+    const LUID &adapter_luid,
+    const std::vector<std::string> &output_names
+  );
+
+  /**
+   * Scope active-physical-display detection to the configured capture adapter.
+   * Unknown or stale identity fails open (physical display considered present);
+   * actual capture and virtual-display binding use resolve_adapter() directly
+   * and fail closed.
    */
   bool configured_capture_adapter_has_output(const std::vector<std::string> &display_names);
 

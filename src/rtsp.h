@@ -283,6 +283,11 @@ namespace rtsp_stream {
    */
   void launch_session_clear(uint32_t launch_session_id);
   /**
+   * @brief Whether an RTSP launch or asynchronous session startup is pending.
+   */
+  bool has_pending_launch_or_startup();
+
+  /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
    *
    * Vulkan applications can query swapchain formats immediately at process startup. The Vulkan HDR

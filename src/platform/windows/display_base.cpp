@@ -868,37 +868,97 @@ namespace platf::dxgi {
     auto output_name = utf_utils::from_utf8(display_name);
 
     const auto adapter_luid_override = dxgi::get_dxgi_adapter_luid_override();
-    // Tracked purely for diagnostics: capture never substitutes a different GPU for a configured
-    // adapter_name, so a failure has to say whether the GPU is missing or merely output-less.
+    std::optional<LUID> selected_adapter_luid;
+    std::optional<platf::adapter_resolution_t> configured_adapter;
+    if (!config::video.adapter_pnp_id.empty()) {
+      configured_adapter = platf::resolve_adapter(
+        config::video.adapter_name,
+        config::video.adapter_pnp_id
+      );
+      if (!*configured_adapter) {
+        BOOST_LOG(error)
+          << "Configured adapter_pnp_id '" << config::video.adapter_pnp_id
+          << "' could not be resolved uniquely (status="
+          << platf::adapter_resolution_status_name(configured_adapter->status)
+          << "). Capture will not fall back to a same-name or higher-memory GPU.";
+        return -1;
+      }
+      selected_adapter_luid = configured_adapter->luid;
+      if (adapter_luid_override &&
+          !platf::adapter_luid_equal(
+            *adapter_luid_override,
+            *configured_adapter->luid)) {
+        BOOST_LOG(warning)
+          << "Ignoring stale WGC adapter handoff because configured persistent PnP identity '"
+          << configured_adapter->pnp_id
+          << "' resolved to a different current LUID.";
+      }
+      BOOST_LOG(info)
+        << "Resolved configured capture adapter '" << configured_adapter->description
+        << "' by persistent PnP identity '" << configured_adapter->pnp_id << "'.";
+    } else {
+      // WGC's runtime handoff is authoritative only when no exact persistent
+      // identity is configured. With a PnP identity, the handoff may be stale
+      // after driver restart or GPU re-enumeration.
+      selected_adapter_luid = adapter_luid_override;
+    }
+
+    // An exact LUID (persistent PnP resolution first, otherwise WGC handoff)
+    // is authoritative. Do not conjunct it with the display description:
+    // descriptions are mutable and may be duplicated.
+    const bool use_legacy_adapter_name =
+      !selected_adapter_luid && !adapter_name.empty();
     bool configured_adapter_present = false;
     bool configured_adapter_has_output = false;
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
-      for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
+      for (int x = 0;; ++x) {
+        adapter_p = nullptr;
+        const auto enumerate_adapter_status = factory->EnumAdapters1(x, &adapter_p);
+        if (enumerate_adapter_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(enumerate_adapter_status) || !adapter_p) {
+          BOOST_LOG(error) << "Failed to enumerate DXGI adapter " << x
+                           << " [0x" << util::hex(enumerate_adapter_status).to_string_view() << ']';
+          break;
+        }
         dxgi::adapter_t adapter_tmp {adapter_p};
 
-        DXGI_ADAPTER_DESC1 adapter_desc;
-        adapter_tmp->GetDesc1(&adapter_desc);
-
-        if (adapter_luid_override && !luid_equal(adapter_desc.AdapterLuid, *adapter_luid_override)) {
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        if (FAILED(adapter_tmp->GetDesc1(&adapter_desc))) {
           continue;
         }
 
-        if (!adapter_name.empty()) {
-          if (adapter_desc.Description != adapter_name) {
-            continue;
-          }
-          configured_adapter_present = true;
+        if (selected_adapter_luid && !luid_equal(adapter_desc.AdapterLuid, *selected_adapter_luid)) {
+          continue;
         }
 
+        if (use_legacy_adapter_name && adapter_desc.Description != adapter_name) {
+          continue;
+        }
+        configured_adapter_present = true;
+
         dxgi::output_t::pointer output_p;
-        for (int y = 0; adapter_tmp->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
+        for (int y = 0;; ++y) {
+          output_p = nullptr;
+          const auto enumerate_output_status = adapter_tmp->EnumOutputs(y, &output_p);
+          if (enumerate_output_status == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(enumerate_output_status) || !output_p) {
+            BOOST_LOG(error) << "Failed to enumerate DXGI output " << y
+                             << " [0x" << util::hex(enumerate_output_status).to_string_view() << ']';
+            break;
+          }
           dxgi::output_t output_tmp {output_p};
 
-          DXGI_OUTPUT_DESC desc;
-          output_tmp->GetDesc(&desc);
+          DXGI_OUTPUT_DESC desc {};
+          if (FAILED(output_tmp->GetDesc(&desc))) {
+            continue;
+          }
 
-          if (desc.AttachedToDesktop && !adapter_name.empty()) {
+          if (desc.AttachedToDesktop) {
             configured_adapter_has_output = true;
           }
 
@@ -952,23 +1012,30 @@ namespace platf::dxgi {
     }
 
     if (!output) {
-      if (adapter_luid_override) {
-        BOOST_LOG(warning) << "DXGI adapter override did not match any adapter for output '" << display_name << '\'';
-      }
-      // A LUID override narrows enumeration on its own, so these counters only describe the
-      // configured adapter when no override was in play.
-      if (!adapter_name.empty() && !adapter_luid_override) {
-        // Say exactly which half of the contract failed instead of leaving a bare
-        // "no output device" for a user who deliberately pinned a GPU.
+      if (!config::video.adapter_pnp_id.empty()) {
+        BOOST_LOG(error)
+          << "Configured adapter_pnp_id '" << config::video.adapter_pnp_id
+          << "' resolved to '" << configured_adapter->description
+          << "' but that exact adapter "
+          << (configured_adapter_present ?
+                (configured_adapter_has_output ?
+                   "does not expose the requested capture output" :
+                   "has no display attached to the desktop") :
+                "disappeared before capture initialization")
+          << ". Capture will not switch adapters.";
+      } else if (adapter_luid_override) {
+        BOOST_LOG(error)
+          << "WGC-selected DXGI adapter did not provide capture output '"
+          << display_name << "'; capture will not switch adapters.";
+      } else if (use_legacy_adapter_name) {
         if (!configured_adapter_present) {
           BOOST_LOG(error)
-            << "Configured adapter_name '"sv << config::video.adapter_name
-            << "' does not match any GPU on this system. Correct or clear the Adapter Name setting."sv;
+            << "Configured adapter_name '" << config::video.adapter_name
+            << "' does not match any GPU. Correct or clear Adapter Name.";
         } else if (!configured_adapter_has_output) {
           BOOST_LOG(error)
-            << "Configured adapter_name '"sv << config::video.adapter_name
-            << "' has no display attached to the desktop. Capture will not silently switch to another GPU; "sv
-            << "power on a display wired to that GPU, or let the virtual display be created on it."sv;
+            << "Configured adapter_name '" << config::video.adapter_name
+            << "' has no display attached to the desktop. Capture will not switch GPUs.";
         }
       }
       BOOST_LOG(error) << "Failed to locate an output device"sv;

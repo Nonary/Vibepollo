@@ -1239,6 +1239,10 @@ namespace rtsp_stream {
     server.session_clear(launch_session_id);
   }
 
+  bool has_pending_launch_or_startup() {
+    return server.has_pending_launch_or_startup();
+  }
+
   void set_vulkan_hdr_layer_pending_stream(bool active) {
     server.set_pending_vulkan_hdr_layer_stream(active);
   }

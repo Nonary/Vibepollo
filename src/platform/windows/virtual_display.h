@@ -89,8 +89,21 @@ namespace VDISPLAY {
   bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
+  bool setRenderAdapterByLuid(
+    const LUID &adapter_luid,
+    const std::wstring &adapter_name,
+    std::uint64_t dedicated_video_memory,
+    std::uint64_t shared_system_memory
+  );
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
+  bool applyConfiguredRenderAdapterPreference(std::string_view context);
+  /**
+   * Compare an owned display's stored render-adapter request provenance with
+   * the currently configured preference. This does not issue a driver request
+   * and does not claim to observe the adapter used by AssignSwapChain.
+   */
+  bool configuredRenderAdapterMatchesVirtualDisplay(const GUID &guid, std::string_view context);
   void ensureVirtualDisplayRegistryDefaults();
 
   struct VirtualDisplayCreationResult {

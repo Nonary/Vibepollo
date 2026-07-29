@@ -92,8 +92,14 @@ namespace VDISPLAY_SUNSHINE {
   bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
+  bool setRenderAdapterByLuid(const LUID &adapter_luid, const std::wstring &adapter_name, std::uint64_t dedicated_video_memory, std::uint64_t shared_system_memory);
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
+  bool renderAdapterRequestProvenanceMatches(
+    const GUID &guid,
+    const LUID &requested_luid,
+    std::string_view context
+  );
   void ensureVirtualDisplayRegistryDefaults();
   std::optional<VirtualDisplayCreationResult> createVirtualDisplay(
     const char *s_client_uid,
@@ -496,14 +502,20 @@ namespace VDISPLAY_SUNSHINE {
       return true;
     }
 
-    bool set_permanent_display_count(sunshine_driver::ControlClient &client, std::uint32_t display_count) {
+    bool set_permanent_display_count(
+      sunshine_driver::ControlClient &client,
+      std::uint32_t display_count,
+      const bool accept_matching_count_after_failure = true
+    ) {
       sunshine_driver::PermanentDisplayCountRequest request {};
       request.display_count = display_count;
 
       const auto result = client.set_permanent_display_count(request);
       if (!result.ok()) {
         const auto after_failure = client.query_permanent_display_count();
-        if (after_failure.ok() && after_failure.value.current_display_count == display_count) {
+        if (accept_matching_count_after_failure &&
+            after_failure.ok() &&
+            after_failure.value.current_display_count == display_count) {
           BOOST_LOG(warning) << "Sunshine virtual display permanent count changed to " << display_count
                              << " at runtime, but the driver reported failure while persisting it"
                              << " (status=" << sunshine_driver::to_string(result.status)
@@ -1011,6 +1023,12 @@ namespace VDISPLAY_SUNSHINE {
       return false;
     }
 
+    void erase_render_adapter_request_provenance(const uuid_util::uuid_t &guid);
+    bool render_adapter_request_provenance_matches(
+      const uuid_util::uuid_t &guid,
+      std::string_view context
+    );
+
     struct ActiveVirtualDisplayTracker {
       void add(const uuid_util::uuid_t &guid) {
         std::lock_guard<std::mutex> lg(mutex);
@@ -1153,13 +1171,20 @@ namespace VDISPLAY_SUNSHINE {
 
     bool clear_virtual_display_recovery_entry(const uuid_util::uuid_t &guid);
 
-    void track_virtual_display_created(const uuid_util::uuid_t &guid) {
+    bool track_virtual_display_created(const uuid_util::uuid_t &guid) {
+      if (!render_adapter_request_provenance_matches(
+            guid,
+            "Sunshine virtual display publication")) {
+        return false;
+      }
       active_virtual_display_tracker().add(guid);
+      return true;
     }
 
     void track_virtual_display_removed(const uuid_util::uuid_t &guid) {
       driver_lease_tracker().remove(guid);
       active_virtual_display_tracker().remove(guid);
+      erase_render_adapter_request_provenance(guid);
       if (!clear_virtual_display_recovery_entry(guid)) {
         BOOST_LOG(warning) << "Unable to clear protected virtual display recovery state for guid="
                            << guid.string() << '.';
@@ -5075,69 +5100,209 @@ namespace VDISPLAY_SUNSHINE {
     (void) ensure_watchdog_thread_active_for_lease();
   }
 
-  // Records which render adapter has already been pushed to the driver, keyed on the
-  // control transport instance that accepted it. The driver keeps its preferred render
-  // adapter in memory only, so every transport replacement (driver restart, PnP recovery,
-  // stale-handle reopen) drops it and the preference must be applied again. Keying on the
-  // transport instance makes re-application automatic across those events while keeping a
-  // repeat request against a live transport a no-op.
-  std::mutex g_applied_render_adapter_mutex;
-  std::weak_ptr<sunshine_driver::WindowsControlTransport> g_applied_render_adapter_transport;
-  LUID g_applied_render_adapter_luid {};
+  namespace {
+    struct render_adapter_request_t {
+      std::shared_ptr<sunshine_driver::WindowsControlTransport> transport;
+      LUID luid {};
+    };
 
-  bool render_adapter_already_applied(
-    const std::shared_ptr<sunshine_driver::WindowsControlTransport> &transport,
-    const LUID &adapter_luid
-  ) {
-    if (!transport) {
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(g_applied_render_adapter_mutex);
-    return g_applied_render_adapter_transport.lock() == transport &&
-           g_applied_render_adapter_luid.LowPart == adapter_luid.LowPart &&
-           g_applied_render_adapter_luid.HighPart == adapter_luid.HighPart;
-  }
+    struct render_adapter_request_provenance_t {
+      std::weak_ptr<sunshine_driver::WindowsControlTransport> transport;
+      LUID luid {};
+    };
 
-  bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
-    auto transport = control_transport_snapshot();
-    if (!transport || !transport->valid()) {
-      return false;
+    // Records the SetRenderAdapter request accepted by each control transport.
+    // The driver keeps this request in memory only, so every transport replacement
+    // must receive it again. This is request provenance, not observation of the
+    // adapter later selected by IddCx for AssignSwapChain.
+    std::mutex g_render_adapter_request_mutex;
+    std::weak_ptr<sunshine_driver::WindowsControlTransport> g_current_render_adapter_request_transport;
+    LUID g_current_render_adapter_request_luid {};
+    std::unordered_map<std::string, render_adapter_request_provenance_t> g_render_adapter_request_provenance;
+
+    bool luid_equal(const LUID &lhs, const LUID &rhs) {
+      return lhs.LowPart == rhs.LowPart && lhs.HighPart == rhs.HighPart;
     }
 
-    // The driver re-runs IddCxAdapterSetRenderAdapter adapter-wide for every request, so a
-    // redundant apply can disturb a live adapter that another session is already using.
-    if (render_adapter_already_applied(transport, adapter_luid)) {
-      BOOST_LOG(debug) << "Sunshine virtual display render adapter '"
-                       << platf::to_utf8(adapter_name)
-                       << "' is already applied to the current driver transport.";
+    bool render_adapter_request_is_current(
+      const std::shared_ptr<sunshine_driver::WindowsControlTransport> &transport,
+      const LUID &adapter_luid
+    ) {
+      if (!transport) {
+        return false;
+      }
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      return g_current_render_adapter_request_transport.lock() == transport &&
+             luid_equal(g_current_render_adapter_request_luid, adapter_luid);
+    }
+
+    std::optional<render_adapter_request_t> current_render_adapter_request() {
+      const auto transport = control_transport_snapshot();
+      if (!transport || !transport->valid()) {
+        return std::nullopt;
+      }
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      if (g_current_render_adapter_request_transport.lock() != transport) {
+        return std::nullopt;
+      }
+      return render_adapter_request_t {
+        .transport = transport,
+        .luid = g_current_render_adapter_request_luid,
+      };
+    }
+
+    bool render_adapter_request_matches(const render_adapter_request_t &expected) {
+      const auto current = current_render_adapter_request();
+      return current &&
+             current->transport == expected.transport &&
+             luid_equal(current->luid, expected.luid);
+    }
+
+    bool record_render_adapter_request_provenance(
+      const uuid_util::uuid_t &guid,
+      const render_adapter_request_t &creation_request
+    ) {
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      if (g_current_render_adapter_request_transport.lock() != creation_request.transport ||
+          !luid_equal(g_current_render_adapter_request_luid, creation_request.luid)) {
+        BOOST_LOG(error) << "Cannot record Sunshine virtual display render-adapter request provenance for guid="
+                         << guid.string() << " because the creation-time request is no longer current.";
+        return false;
+      }
+      g_render_adapter_request_provenance[guid.string()] = render_adapter_request_provenance_t {
+        .transport = creation_request.transport,
+        .luid = creation_request.luid,
+      };
       return true;
     }
 
-    sunshine_driver::ControlClient client {*transport};
-    sunshine_driver::SetRenderAdapterRequest request {};
-    request.adapter_luid = sunshine_driver::from_windows_luid(adapter_luid);
-    const auto result = client.set_render_adapter(request);
-    if (!result.ok()) {
-      BOOST_LOG(warning) << "Failed to set Sunshine virtual display render adapter to '"
+    void erase_render_adapter_request_provenance(const uuid_util::uuid_t &guid) {
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      g_render_adapter_request_provenance.erase(guid.string());
+    }
+
+    bool render_adapter_request_provenance_matches(
+      const uuid_util::uuid_t &guid,
+      const std::string_view context
+    ) {
+      const auto transport = control_transport_snapshot();
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      const auto current_transport = g_current_render_adapter_request_transport.lock();
+      const auto provenance = g_render_adapter_request_provenance.find(guid.string());
+      const bool matches =
+        transport &&
+        current_transport == transport &&
+        provenance != g_render_adapter_request_provenance.end() &&
+        provenance->second.transport.lock() == transport &&
+        luid_equal(provenance->second.luid, g_current_render_adapter_request_luid);
+      if (!matches) {
+        BOOST_LOG(error) << "Sunshine virtual display render-adapter request provenance is absent or stale for "
+                         << context << " (guid=" << guid.string() << ").";
+      }
+      return matches;
+    }
+
+    bool render_adapter_request_provenance_matches(
+      const uuid_util::uuid_t &guid,
+      const LUID &requested_luid,
+      const std::string_view context
+    ) {
+      const auto transport = control_transport_snapshot();
+      std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+      const auto provenance = g_render_adapter_request_provenance.find(guid.string());
+      const bool matches =
+        transport &&
+        g_current_render_adapter_request_transport.lock() == transport &&
+        luid_equal(g_current_render_adapter_request_luid, requested_luid) &&
+        provenance != g_render_adapter_request_provenance.end() &&
+        provenance->second.transport.lock() == transport &&
+        luid_equal(provenance->second.luid, requested_luid);
+      if (!matches) {
+        BOOST_LOG(error)
+          << "Sunshine virtual display render-adapter request provenance does not match the requested LUID for "
+          << context << " (guid=" << guid.string()
+          << "). SetRenderAdapter acceptance does not observe AssignSwapChain.";
+      }
+      return matches;
+    }
+
+    bool set_render_adapter_luid(const LUID &adapter_luid, const std::wstring &adapter_name, SIZE_T dedicated_memory, SIZE_T shared_memory) {
+      std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+      auto transport = control_transport_snapshot();
+      if (!transport || !transport->valid()) {
+        return false;
+      }
+
+      if (render_adapter_request_is_current(transport, adapter_luid)) {
+        BOOST_LOG(debug) << "Sunshine virtual display render-adapter request for '"
                          << platf::to_utf8(adapter_name)
-                         << "' (status=" << sunshine_driver::to_string(result.status)
-                         << ", native_error=" << result.native_error << ").";
-      return false;
-    }
+                         << "' is already current on this driver transport.";
+        return true;
+      }
 
-    {
-      std::lock_guard<std::mutex> lock(g_applied_render_adapter_mutex);
-      g_applied_render_adapter_transport = transport;
-      g_applied_render_adapter_luid = adapter_luid;
-    }
+      {
+        // A failed or timed-out SetRenderAdapter is not transactional: the
+        // driver may have changed its preferred LUID before reporting failure.
+        // Invalidate the prior accepted-request record before issuing a
+        // different request and restore it only after confirmed acceptance.
+        std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+        g_current_render_adapter_request_transport.reset();
+        g_current_render_adapter_request_luid = {};
+      }
 
-    const unsigned long long dedicated_mib = static_cast<unsigned long long>(dedicated_memory / (1024ull * 1024ull));
-    const unsigned long long shared_mib = static_cast<unsigned long long>(shared_memory / (1024ull * 1024ull));
-    BOOST_LOG(info) << "Sunshine virtual display render adapter set to '"
-                    << platf::to_utf8(adapter_name)
-                    << "' (dedicated=" << dedicated_mib
-                    << " MiB, shared=" << shared_mib << " MiB).";
-    return true;
+      sunshine_driver::ControlClient client {*transport};
+      sunshine_driver::SetRenderAdapterRequest request {};
+      request.adapter_luid = sunshine_driver::from_windows_luid(adapter_luid);
+      const auto result = client.set_render_adapter(request);
+      if (!result.ok()) {
+        BOOST_LOG(warning) << "Sunshine virtual display SetRenderAdapter request failed for '"
+                           << platf::to_utf8(adapter_name)
+                           << "' (status=" << sunshine_driver::to_string(result.status)
+                           << ", native_error=" << result.native_error << ").";
+        return false;
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(g_render_adapter_request_mutex);
+        g_current_render_adapter_request_transport = transport;
+        g_current_render_adapter_request_luid = adapter_luid;
+      }
+
+      const unsigned long long dedicated_mib = static_cast<unsigned long long>(dedicated_memory / (1024ull * 1024ull));
+      const unsigned long long shared_mib = static_cast<unsigned long long>(shared_memory / (1024ull * 1024ull));
+      BOOST_LOG(info) << "Sunshine virtual display SetRenderAdapter request accepted for '"
+                      << platf::to_utf8(adapter_name)
+                      << "' (dedicated=" << dedicated_mib
+                      << " MiB, shared=" << shared_mib
+                      << " MiB); this does not identify the adapter later used by AssignSwapChain.";
+      return true;
+    }
+  }  // namespace
+
+  bool renderAdapterRequestProvenanceMatches(
+    const GUID &guid,
+    const LUID &requested_luid,
+    const std::string_view context
+  ) {
+    return render_adapter_request_provenance_matches(
+      guid_to_uuid(guid),
+      requested_luid,
+      context
+    );
+  }
+
+  bool setRenderAdapterByLuid(
+    const LUID &adapter_luid,
+    const std::wstring &adapter_name,
+    const std::uint64_t dedicated_video_memory,
+    const std::uint64_t shared_system_memory
+  ) {
+    return set_render_adapter_luid(
+      adapter_luid,
+      adapter_name,
+      static_cast<SIZE_T>(dedicated_video_memory),
+      static_cast<SIZE_T>(shared_system_memory)
+    );
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {
@@ -5153,13 +5318,19 @@ namespace VDISPLAY_SUNSHINE {
 
     for (UINT index = 0;; ++index) {
       Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+      const HRESULT enum_result = factory->EnumAdapters1(index, adapter.GetAddressOf());
+      if (enum_result == DXGI_ERROR_NOT_FOUND) {
         break;
+      }
+      if (FAILED(enum_result) || !adapter) {
+        BOOST_LOG(warning) << "DXGI adapter enumeration failed while resolving the configured virtual-display adapter.";
+        return false;
       }
 
       DXGI_ADAPTER_DESC1 desc {};
       if (FAILED(adapter->GetDesc1(&desc))) {
-        continue;
+        BOOST_LOG(warning) << "DXGI adapter description query failed while resolving the configured virtual-display adapter.";
+        return false;
       }
       if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
         continue;
@@ -5196,13 +5367,19 @@ namespace VDISPLAY_SUNSHINE {
 
     for (UINT index = 0;; ++index) {
       Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-      if (factory->EnumAdapters1(index, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND) {
+      const HRESULT enum_result = factory->EnumAdapters1(index, adapter.GetAddressOf());
+      if (enum_result == DXGI_ERROR_NOT_FOUND) {
         break;
+      }
+      if (FAILED(enum_result) || !adapter) {
+        BOOST_LOG(warning) << "DXGI adapter enumeration failed during virtual-display auto-selection.";
+        return false;
       }
 
       DXGI_ADAPTER_DESC1 desc {};
       if (FAILED(adapter->GetDesc1(&desc))) {
-        continue;
+        BOOST_LOG(warning) << "DXGI adapter description query failed during virtual-display auto-selection.";
+        return false;
       }
       if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
         continue;
@@ -5226,21 +5403,8 @@ namespace VDISPLAY_SUNSHINE {
     return set_render_adapter_luid(best_luid, best_name, best_dedicated, best_shared);
   }
 
-  void apply_configured_render_adapter_preference(std::string_view context = "display ensure") {
-    if (!config::video.adapter_name.empty()) {
-      if (!setRenderAdapterByName(platf::from_utf8(config::video.adapter_name))) {
-        // Never silently retarget another GPU here: capture is pinned to adapter_name, so a
-        // virtual display rendered elsewhere would be invisible to the encoder.
-        BOOST_LOG(error) << "Sunshine virtual display could not use configured render adapter '"
-                         << config::video.adapter_name
-                         << "' for " << context
-                         << ". The virtual display will be created on the driver's current adapter, "
-                         << "which capture will refuse to use. Verify the Adapter Name setting.";
-      }
-      return;
-    }
-
-    (void) setRenderAdapterWithMostDedicatedMemory();
+  bool apply_configured_render_adapter_preference(std::string_view context = "display ensure") {
+    return VDISPLAY::applyConfiguredRenderAdapterPreference(context);
   }
 
   bool wait_for_virtual_display_ready(
@@ -5617,11 +5781,18 @@ namespace VDISPLAY_SUNSHINE {
       if (!transport || !transport->valid()) {
         return std::nullopt;
       }
-      // A reopened handle means the caller applied the configured render adapter to the
-      // previous transport, and a restarted driver comes back on its default adapter.
-      // Re-apply against the refreshed transport so the display below is created on the
-      // configured GPU. This is a no-op when teardown left the transport alone.
-      apply_configured_render_adapter_preference("virtual display creation (post-teardown)");
+      // A reopened handle means the caller submitted the configured render-adapter request
+      // on the previous transport, while a restarted driver returns to its default request.
+      // Submit it again on the refreshed transport before creating the display below. This
+      // is a no-op when teardown left the transport alone.
+      if (!apply_configured_render_adapter_preference("virtual display creation (post-teardown)")) {
+        return std::nullopt;
+      }
+      const auto creation_render_request = current_render_adapter_request();
+      if (!creation_render_request || creation_render_request->transport != transport) {
+        BOOST_LOG(error) << "Sunshine virtual display render-adapter request changed before creation.";
+        return std::nullopt;
+      }
       sunshine_driver::ControlClient client {*transport};
       if (config::video.dd.virtual_display_permanent_count_configured &&
           !set_permanent_display_count(
@@ -5680,17 +5851,24 @@ namespace VDISPLAY_SUNSHINE {
             return std::nullopt;
           }
           if (reclaimed == VirtualDisplayReclaimResult::reclaimed) {
-            if (replace_existing) {
-              BOOST_LOG(info) << "Securely releasing the prior owned virtual display before replacing guid="
-                              << requested_uuid.string() << '.';
+            const bool reusable_with_current_provenance =
+              render_adapter_request_provenance_matches(
+                requested_uuid,
+                "securely reclaimed Sunshine virtual display"
+              );
+            if (replace_existing || !reusable_with_current_provenance) {
+              BOOST_LOG(info)
+                << "Securely releasing the prior owned virtual display before "
+                << (replace_existing ? "replacement" : "render-adapter-safe recreation")
+                << " (guid=" << requested_uuid.string() << ").";
               if (!remove_virtual_display_impl(guid, false, stop_token)) {
-                return std::nullopt;
-              }
-              recovery_entries.clear();
-              if (!load_virtual_display_recovery_journal_for_driver(client, recovery_entries)) {
                 allow_driver_recovery = false;
                 return std::nullopt;
               }
+              // Removal may reopen the transport. Return to the outer bounded
+              // retry so adapter selection is applied again immediately before
+              // the replacement create on the final transport.
+              return std::nullopt;
             } else {
               owner_capability = existing_capability;
               reclaimed_for_reuse = true;
@@ -5891,6 +6069,24 @@ namespace VDISPLAY_SUNSHINE {
               }
             }
 
+            if (!reclaimed_for_reuse ||
+                !render_adapter_request_provenance_matches(
+                  requested_uuid,
+                  "existing Sunshine virtual display reuse"
+                )) {
+              if (reclaimed_for_reuse) {
+                BOOST_LOG(warning) << "Replacing the securely reclaimed Sunshine virtual display because its in-process render-adapter request provenance became stale.";
+                if (!remove_virtual_display_impl(guid, false, stop_token)) {
+                  BOOST_LOG(error) << "Failed to remove the securely owned stale-provenance Sunshine virtual display.";
+                  allow_driver_recovery = false;
+                }
+              } else {
+                BOOST_LOG(error) << "Refusing to reuse a Sunshine virtual display without proven ownership and matching in-process render-adapter request provenance.";
+                allow_driver_recovery = false;
+              }
+              return std::nullopt;
+            }
+
             result.monitor_device_path = resolve_monitor_device_path(
               display_name,
               result.device_id,
@@ -5946,12 +6142,37 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
+      // Publish the exact lease returned by the successful create before any
+      // fallible validation. Rollback must be able to prove ownership even if
+      // render provenance or Windows enumeration fails immediately afterward.
+      driver_lease_tracker().put(
+        requested_uuid,
+        DriverLeaseInfo {
+          create_result.value.display_id != 0 ? create_result.value.display_id : display_id,
+          create_result.value.lease_id != 0 ? create_result.value.lease_id : *lease_id,
+          std::nullopt,
+          std::nullopt,
+          std::nullopt
+        }
+      );
+
       const auto rollback_created_display = [&] {
         if (!remove_virtual_display_impl(guid, false, stop_token)) {
           BOOST_LOG(warning) << "Virtual display creation cleanup failed for guid=" << requested_uuid.string() << '.';
         }
       };
       if (stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+      if (!render_adapter_request_matches(*creation_render_request)) {
+        BOOST_LOG(error) << "Sunshine virtual display driver transport or render-adapter request changed during creation.";
+        rollback_created_display();
+        return std::nullopt;
+      }
+      if (!record_render_adapter_request_provenance(
+            requested_uuid,
+            *creation_render_request)) {
         rollback_created_display();
         return std::nullopt;
       }
@@ -5972,16 +6193,6 @@ namespace VDISPLAY_SUNSHINE {
         }
       }
 
-      driver_lease_tracker().put(
-        requested_uuid,
-        DriverLeaseInfo {
-          create_result.value.display_id != 0 ? create_result.value.display_id : display_id,
-          create_result.value.lease_id != 0 ? create_result.value.lease_id : *lease_id,
-          std::nullopt,
-          std::nullopt,
-          std::nullopt
-        }
-      );
       if (!ensure_watchdog_thread_active_for_lease(stop_token) || stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;
@@ -6213,10 +6424,12 @@ namespace VDISPLAY_SUNSHINE {
       // The launch path applies the configured render adapter before creation, but that
       // only lands when the transport was already open; a transport that is opened or
       // recovered here (including the per-attempt driver restarts below) starts on the
-      // driver's default adapter. Re-apply the preference now that the transport is known
-      // good so the display is never created on the wrong GPU. Applying it again against
-      // an unchanged transport is a no-op.
-      apply_configured_render_adapter_preference("virtual display creation");
+      // driver's default request state. Re-apply the preference now that the transport is
+      // known good so creation follows a driver-accepted SetRenderAdapter request. Applying
+      // it again against an unchanged transport is a no-op.
+      if (!apply_configured_render_adapter_preference("virtual display creation")) {
+        return std::nullopt;
+      }
 
       bool allow_driver_recovery = true;
       auto result = create_virtual_display_once(
@@ -6378,7 +6591,11 @@ namespace VDISPLAY_SUNSHINE {
           }
           return std::nullopt;
         }
-        track_virtual_display_created(requested_uuid);
+        if (!track_virtual_display_created(requested_uuid)) {
+          BOOST_LOG(error) << "Sunshine virtual display survived creation but its render-adapter request provenance could not be validated.";
+          (void) remove_virtual_display_impl(guid, false, stop_token);
+          return std::nullopt;
+        }
         return result;
       }
 
@@ -7041,8 +7258,8 @@ bool VDISPLAY_SUNSHINE::has_active_physical_display() {
   auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
   BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
   if (!devices) {
-    BOOST_LOG(debug) << "No display devices detected, therefore returning false.";
-    return false;
+    BOOST_LOG(warning) << "Physical display enumeration is unavailable; preserving fail-open physical-display detection.";
+    return true;
   }
 
   std::vector<std::string> active_physical_displays;
@@ -7062,9 +7279,6 @@ bool VDISPLAY_SUNSHINE::has_active_physical_display() {
     return false;
   }
 
-  // A configured adapter_name pins capture to one GPU. A display on some other GPU is not
-  // capturable there, so it must not suppress the virtual display that would give the configured
-  // adapter an output of its own.
   return platf::configured_capture_adapter_has_output(active_physical_displays);
 }
 
@@ -7117,22 +7331,42 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
   auto uuid = persistentVirtualDisplayUuid();
   std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
+  bool retained_ensure_display = false;
+  int retained_failure_count = 0;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
     if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
-      if (is_virtual_display_guid_tracked(result.temporary_guid)) {
-        result.success = true;
-        result.tracks_temporary_for_probe = true;
-        BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
-                        << g_ensure_display_failure_count << ").";
-        return result;
-      }
+      retained_ensure_display = true;
+      retained_failure_count = g_ensure_display_failure_count;
+    }
+  }
 
+  if (retained_ensure_display &&
+      is_virtual_display_guid_tracked(result.temporary_guid) &&
+      VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(
+        result.temporary_guid,
+        "retained Sunshine encoder-probe display"
+      )) {
+    result.success = true;
+    result.tracks_temporary_for_probe = true;
+    BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
+                    << retained_failure_count << ").";
+    return result;
+  }
+
+  if (retained_ensure_display) {
+    if (is_virtual_display_guid_tracked(result.temporary_guid) &&
+        !remove_virtual_display_impl(result.temporary_guid, false)) {
+      BOOST_LOG(error) << "Failed to remove stale owned Sunshine encoder-probe display.";
+      return result;
+    }
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
       g_ensure_display_retained = false;
       g_ensure_display_failure_count = 0;
       std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
-      BOOST_LOG(debug) << "Ensure display retention state was stale; creating a fresh temporary display.";
     }
+    BOOST_LOG(debug) << "Ensure display retention state was stale; creating a fresh temporary display.";
   }
 
   auto virtual_displays = enumerateVirtualDisplays();
@@ -7145,12 +7379,28 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
   );
 
   if (has_active_virtual) {
-    BOOST_LOG(debug) << "Active virtual display already exists.";
-    result.success = true;
-    return result;
+    const auto permanent_count = static_cast<std::uint32_t>(std::clamp(
+      config::video.dd.virtual_display_permanent_count,
+      0,
+      config::SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT
+    ));
+    std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
+    if (config::video.dd.virtual_display_permanent_count_configured &&
+        permanent_count > 0 &&
+        apply_configured_render_adapter_preference("active permanent Sunshine virtual display refresh")) {
+      const auto transport = control_transport_snapshot();
+      if (transport && transport->valid()) {
+        sunshine_driver::ControlClient client {*transport};
+        if (set_permanent_display_count(client, permanent_count, false)) {
+          BOOST_LOG(info) << "Refreshed active permanent Sunshine virtual display(s) after the render-adapter request was accepted.";
+          result.success = true;
+          return result;
+        }
+      }
+      BOOST_LOG(warning) << "Could not refresh permanent Sunshine virtual displays after the render-adapter request was accepted.";
+    }
+    BOOST_LOG(warning) << "Active Sunshine virtual display has no exact owned render-adapter request provenance for encoder probing; attempting to create an owned temporary display.";
   }
-
-  apply_configured_render_adapter_preference();
 
   BOOST_LOG(info) << "Creating temporary virtual display to ensure display availability.";
   auto display_info = createVirtualDisplay(

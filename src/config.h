@@ -12,6 +12,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -151,6 +152,7 @@ namespace config {
     std::string capture;
     std::string encoder;
     std::string adapter_name;
+    std::string adapter_pnp_id;
     std::string output_name;
 
     virtual_display_mode_e virtual_display_mode;
@@ -475,6 +477,22 @@ namespace config {
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
 
+  /**
+   * Merge one raw configuration layer into another while treating the Windows
+   * capture-adapter name and persistent PnP identity as a single value.
+   *
+   * A layer that supplies adapter_name without adapter_pnp_id intentionally
+   * selects legacy name-only behavior and clears an inherited PnP identity.
+   * adapter_pnp_id without adapter_name is ignored.
+   */
+  void merge_config_overrides(
+    std::unordered_map<std::string, std::string> &base,
+    const std::unordered_map<std::string, std::string> &overrides
+  );
+  bool adapter_config_overrides_compatible_with_active(
+    const std::unordered_map<std::string, std::string> &requested_overrides
+  );
+
   // Hot-reload helpers
   void apply_config_now();
   void mark_deferred_reload();
@@ -482,6 +500,7 @@ namespace config {
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+  void record_active_adapter_config();
 
   // Runtime, non-persisted config overrides (e.g. per-application overrides).
   // Values use the same raw representation as the config file (strings for string keys,

@@ -1,6 +1,9 @@
 #include "virtual_display.h"
 
 #include "src/config.h"
+#include "src/logging.h"
+#include "src/platform/windows/display_helper_coordinator.h"
+#include "src/platform/windows/misc.h"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +14,8 @@
 #include <icm.h>
 #include <limits>
 #include <vector>
+
+#include <boost/algorithm/string/predicate.hpp>
 
 #ifndef CPST_EXTENDED_DISPLAY_COLOR_MODE
   // MinGW headers may not expose the extended display color mode constant.
@@ -475,6 +480,12 @@ namespace VDISPLAY_SUNSHINE {
   bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
+  bool renderAdapterRequestProvenanceMatches(
+    const GUID &guid,
+    const LUID &requested_luid,
+    std::string_view context
+  );
+  bool setRenderAdapterByLuid(const LUID &adapter_luid, const std::wstring &adapter_name, std::uint64_t dedicated_video_memory, std::uint64_t shared_system_memory);
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
   void ensureVirtualDisplayRegistryDefaults();
@@ -504,7 +515,12 @@ namespace VDISPLAY_SUNSHINE {
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
-  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(const std::string &stable_id, const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback
+  );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
@@ -534,6 +550,12 @@ namespace VDISPLAY_SUDOVDA {
   bool ensure_driver_is_ready();
   bool startPingThread(std::function<void()> failCb);
   void setWatchdogFeedingEnabled(bool enable);
+  bool renderAdapterRequestProvenanceMatches(
+    const GUID &guid,
+    const LUID &requested_luid,
+    std::string_view context
+  );
+  bool setRenderAdapterByLuid(const LUID &adapter_luid, const std::wstring &adapter_name, std::uint64_t dedicated_video_memory, std::uint64_t shared_system_memory);
   bool setRenderAdapterByName(const std::wstring &adapterName);
   bool setRenderAdapterWithMostDedicatedMemory();
   void ensureVirtualDisplayRegistryDefaults();
@@ -562,6 +584,12 @@ namespace VDISPLAY_SUDOVDA {
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name);
   std::optional<std::string> resolveVirtualDisplayDeviceIdForClient(const std::string &client_name);
   std::optional<std::string> resolveActiveVirtualDisplayDeviceId(const std::string &preferred_output_identifier, const std::string &client_name, bool allow_any_fallback);
+  std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(
+    const std::string &stable_id,
+    const std::string &preferred_output_identifier,
+    const std::string &client_name,
+    bool allow_any_fallback
+  );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
@@ -609,12 +637,92 @@ namespace VDISPLAY {
     }
   }
 
+  bool setRenderAdapterByLuid(
+    const LUID &adapter_luid,
+    const std::wstring &adapter_name,
+    const std::uint64_t dedicated_video_memory,
+    const std::uint64_t shared_system_memory
+  ) {
+    return use_sunshine_driver() ?
+             VDISPLAY_SUNSHINE::setRenderAdapterByLuid(
+               adapter_luid,
+               adapter_name,
+               dedicated_video_memory,
+               shared_system_memory
+             ) :
+             VDISPLAY_SUDOVDA::setRenderAdapterByLuid(
+               adapter_luid,
+               adapter_name,
+               dedicated_video_memory,
+               shared_system_memory
+             );
+  }
+
   bool setRenderAdapterByName(const std::wstring &adapterName) {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterByName(adapterName) : VDISPLAY_SUDOVDA::setRenderAdapterByName(adapterName);
   }
 
   bool setRenderAdapterWithMostDedicatedMemory() {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterWithMostDedicatedMemory() : VDISPLAY_SUDOVDA::setRenderAdapterWithMostDedicatedMemory();
+  }
+
+  bool applyConfiguredRenderAdapterPreference(const std::string_view context) {
+    const auto adapter = platf::resolve_preferred_render_adapter(
+      config::video.adapter_name,
+      config::video.adapter_pnp_id
+    );
+    if (!adapter) {
+      BOOST_LOG(error)
+        << "Virtual-display render-adapter preference could not be resolved for "
+        << context << " (configured_name='" << config::video.adapter_name
+        << "', configured_pnp_id='" << config::video.adapter_pnp_id
+        << "', status=" << platf::adapter_resolution_status_name(adapter.status)
+        << "). No fallback adapter will be used.";
+      return false;
+    }
+
+    if (!setRenderAdapterByLuid(
+          *adapter.luid,
+          platf::from_utf8(adapter.description),
+          adapter.dedicated_video_memory,
+          adapter.shared_system_memory
+        )) {
+      BOOST_LOG(error)
+        << "Virtual display rejected render-adapter request for '"
+        << adapter.description << "'"
+        << (adapter.pnp_id.empty() ? std::string {} : " (" + adapter.pnp_id + ")")
+        << " during " << context << ". No fallback adapter will be used.";
+      return false;
+    }
+    return true;
+  }
+
+  bool configuredRenderAdapterMatchesVirtualDisplay(
+    const GUID &guid,
+    const std::string_view context
+  ) {
+    const auto desired = platf::resolve_preferred_render_adapter(
+      config::video.adapter_name,
+      config::video.adapter_pnp_id
+    );
+    if (!desired) {
+      BOOST_LOG(error)
+        << "Cannot validate virtual-display render-adapter request provenance for "
+        << context << " because the configured preference is unresolved (status="
+        << platf::adapter_resolution_status_name(desired.status) << ").";
+      return false;
+    }
+    return use_sunshine_driver() ?
+             VDISPLAY_SUNSHINE::renderAdapterRequestProvenanceMatches(
+               guid,
+               *desired.luid,
+               context
+             ) :
+             VDISPLAY_SUDOVDA::renderAdapterRequestProvenanceMatches(
+               guid,
+               *desired.luid,
+               context
+             );
   }
 
   void ensureVirtualDisplayRegistryDefaults() {
@@ -710,7 +818,12 @@ namespace VDISPLAY {
     if (use_sunshine_driver()) {
       return VDISPLAY_SUNSHINE::resolveActiveVirtualDisplayDeviceIdForStableId(stable_id, preferred_output_identifier, client_name, allow_any_fallback);
     }
-    return VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceId(preferred_output_identifier, client_name, allow_any_fallback);
+    return VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceIdForStableId(
+      stable_id,
+      preferred_output_identifier,
+      client_name,
+      allow_any_fallback
+    );
   }
 
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId() {

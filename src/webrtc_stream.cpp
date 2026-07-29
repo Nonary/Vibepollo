@@ -231,8 +231,31 @@ namespace webrtc_stream {
       bool request_virtual_display =
         session->virtual_display || config_requests_virtual || client_requests_virtual || metadata_requests_virtual ||
         forced_sudavda_virtual_display;
+      const auto requested_virtual_display_mode =
+        session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      const bool shared_virtual_display_mode =
+        requested_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
+      auto shared_virtual_display_uuid = VDISPLAY::persistentVirtualDisplayUuid();
+      if (shared_virtual_display_mode && !http::shared_virtual_display_guid.empty()) {
+        try {
+          shared_virtual_display_uuid =
+            uuid_util::uuid_t::parse(http::shared_virtual_display_guid);
+        } catch (...) {
+          // Creation uses the same persistent fallback and repairs the stored value.
+        }
+      }
       const std::string virtual_display_stable_id =
-        !session->unique_id.empty() ? session->unique_id : session->client_uuid;
+        shared_virtual_display_mode ?
+          shared_virtual_display_uuid.string() :
+          (!session->unique_id.empty() ? session->unique_id : session->client_uuid);
+      const auto virtual_display_stable_uuid =
+        VDISPLAY::virtualDisplayUuidFromStableId(virtual_display_stable_id);
+      GUID virtual_display_stable_guid {};
+      std::memcpy(
+        &virtual_display_stable_guid,
+        virtual_display_stable_uuid.b8,
+        sizeof(virtual_display_stable_guid)
+      );
       bool has_app_output_override = app_output_override.has_value();
       auto make_framegen_policy = [&](bool uses_virtual_display) {
         return framegen::make_stream_start_policy({
@@ -285,16 +308,27 @@ namespace webrtc_stream {
         if (request_virtual_display) {
           if (auto existing_device =
                 VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, session->virtual_display_device_id, session->client_name, false)) {
-            session->virtual_display = true;
-            session->virtual_display_failed = false;
-            session->virtual_display_device_id = *existing_device;
-            session->virtual_display_ready_since = std::chrono::steady_clock::now();
-            session->virtual_display_needs_resume_apply = true;
-            publish_output_override(session->virtual_display_device_id);
-            apply_framegen_refresh_policy(true);
-            BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
-                            << *existing_device << ").";
-            BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for WebRTC resume.";
+            if (VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(
+                  virtual_display_stable_guid,
+                  "active WebRTC/shared virtual display reuse"
+                )) {
+              session->virtual_display = true;
+              session->virtual_display_failed = false;
+              session->virtual_display_device_id = *existing_device;
+              session->virtual_display_ready_since = std::chrono::steady_clock::now();
+              session->virtual_display_needs_resume_apply = true;
+              publish_output_override(session->virtual_display_device_id);
+              apply_framegen_refresh_policy(true);
+              BOOST_LOG(info) << "Display helper: preserving virtual display capture target for WebRTC resume (device_id="
+                              << *existing_device << ").";
+              BOOST_LOG(debug) << "Display helper: preserving capture target and refreshing display state for WebRTC resume.";
+            } else {
+              session->virtual_display = false;
+              session->virtual_display_failed = true;
+              session->virtual_display_device_id.clear();
+              session->virtual_display_ready_since.reset();
+              BOOST_LOG(error) << "Existing WebRTC virtual display does not match the configured capture adapter; refusing shared-session reuse.";
+            }
             return;
           }
 
@@ -336,12 +370,6 @@ namespace webrtc_stream {
             << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status)
             << "). Continuing with best-effort virtual display creation.";
         }
-      }
-
-      if (!config::video.adapter_name.empty()) {
-        (void) VDISPLAY::setRenderAdapterByName(platf::from_utf8(config::video.adapter_name));
-      } else {
-        (void) VDISPLAY::setRenderAdapterWithMostDedicatedMemory();
       }
 
       auto parse_uuid = [](const std::string &value) -> std::optional<uuid_util::uuid_t> {
@@ -2894,6 +2922,26 @@ namespace webrtc_stream {
       const int effective_app_id = requested_app_id > 0 ? requested_app_id : std::max(current_app_id, 0);
       const bool capture_already_active = webrtc_capture.active.load(std::memory_order_acquire);
 
+      std::unordered_map<std::string, std::string> requested_runtime_overrides;
+      if (effective_app_id > 0) {
+        if (auto app_ctx = proc::proc.resolve_app(effective_app_id)) {
+          config::merge_config_overrides(requested_runtime_overrides, app_ctx->config_overrides);
+        }
+      }
+      if (options.client_uuid && !options.client_uuid->empty()) {
+        const auto client_overrides = nvhttp::get_client_config_overrides(*options.client_uuid);
+        config::merge_config_overrides(requested_runtime_overrides, client_overrides);
+      }
+
+      if ((rtsp_active || capture_already_active) &&
+          !config::adapter_config_overrides_compatible_with_active(requested_runtime_overrides)) {
+        BOOST_LOG(warning) << "WebRTC: rejected shared capture with a different adapter selection";
+        return std::string {
+          "Another stream is active with a different capture adapter selection. "
+          "Disconnect it before switching capture adapters."
+        };
+      }
+
       // Match the normal launch path's configuration precedence before deriving any
       // capture or limiter policy: global config, then application, then client.
       // An existing capture owns the process-wide runtime config, so additional
@@ -2914,19 +2962,7 @@ namespace webrtc_stream {
       });
 
       if (!rtsp_active && !capture_already_active) {
-        std::unordered_map<std::string, std::string> overrides;
-        if (effective_app_id > 0) {
-          if (auto app_ctx = proc::proc.resolve_app(effective_app_id)) {
-            overrides = app_ctx->config_overrides;
-          }
-        }
-        if (options.client_uuid && !options.client_uuid->empty()) {
-          for (auto &[key, value] : nvhttp::get_client_config_overrides(*options.client_uuid)) {
-            overrides.insert_or_assign(std::move(key), std::move(value));
-          }
-        }
-
-        config::set_runtime_config_overrides(std::move(overrides));
+        config::set_runtime_config_overrides(std::move(requested_runtime_overrides));
         runtime_overrides_applied = true;
         config::apply_config_now();
       }
@@ -3001,6 +3037,9 @@ namespace webrtc_stream {
         // Ensure the latest config is applied before starting capture.
         config::maybe_apply_deferred();
         auto _hot_apply_gate = config::acquire_apply_read_gate();
+        if (!capture_already_active) {
+          config::record_active_adapter_config();
+        }
 
 #ifdef _WIN32
         prepare_virtual_display_for_webrtc_session(
