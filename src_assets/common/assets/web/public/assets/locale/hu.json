@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "Kézileg megadható, melyik GPU-t használja a rögzítéshez.",
     "adapter_name_desc_linux_2": "az összes VAAPI-képes eszköz megtalálásához",
     "adapter_name_desc_linux_3": "Cseréld le a ``renderD129``-et a fenti eszközre, hogy listázd az eszköz nevét és képességeit. Ahhoz, hogy a Vibepollo támogassa, legalább a következőkkel kell rendelkeznie:",
-    "adapter_name_desc_windows": "Kézileg megadható, melyik GPU-t használja a rögzítéshez. Ha nincs beállítva, a GPU automatikusan kerül kiválasztásra. Erősen ajánljuk, hogy hagyd ezt a mezőt üresen az automatikus GPU választáshoz! Megjegyzés: Ehhez a GPU-hoz csatlakoztatva kell lennie egy kijelzőnek és bekapcsolva kell lennie. A megfelelő értékeket a következő paranccsal találhatod meg:",
     "adapter_name_placeholder_windows": "Radeon RX 580 sorozat",
     "add": "Hozzáadás",
     "address_family": "Címcsalád",

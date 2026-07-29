@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "手動指定用於擷取的 GPU。",
     "adapter_name_desc_linux_2": "找出所有支援 VAAPI 的裝置",
     "adapter_name_desc_linux_3": "將 ``renderD129`` 替換為上面提到的裝置，以列出裝置的名稱和功能。要被 Vibepollo 支援，裝置至少需要具備以下條件：",
-    "adapter_name_desc_windows": "手動指定用於擷取的 GPU。如果未設定，系統會自動選擇 GPU。我們強烈建議保持此欄位為空，以使用自動 GPU 選擇！注意：此 GPU 必須已連接顯示器並開啟電源。可以使用以下指令來查找適當的值：",
     "adapter_name_placeholder_windows": "Radeon RX 580 系列",
     "add": "新增",
     "address_family": "位址族群",

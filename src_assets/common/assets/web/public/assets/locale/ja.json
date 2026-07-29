@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "キャプチャに使用する GPU を手動で指定します。",
     "adapter_name_desc_linux_2": "VAAPIが可能なすべてのデバイスを検索する",
     "adapter_name_desc_linux_3": "``renderD129`` を上記のデバイスに置き換えて、デバイスの名前と機能を一覧表示します。 Vibepolloでサポートされるには、最小限にする必要があります。",
-    "adapter_name_desc_windows": "キャプチャに使用する GPU を手動で指定します。未設定の場合は、GPU が自動的に選択されます。 自動GPU選択を使用するには、このフィールドを空白のままにすることを強くお勧めします! 注:このGPUはディスプレイを接続して電源を入れている必要があります。 次のコマンドを使用して、適切な値を見つけることができます。",
     "adapter_name_placeholder_windows": "Radeon RX 580シリーズ",
     "add": "追加",
     "address_family": "アドレスファミリー",

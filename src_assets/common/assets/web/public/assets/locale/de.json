@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "Geben Sie eine GPU für die Aufnahme manuell an.",
     "adapter_name_desc_linux_2": "um alle Geräte zu finden, die VAAPI nutzen können",
     "adapter_name_desc_linux_3": "Ersetze ``renderD129`` durch das Gerät von oben, um den Namen und die Fähigkeiten des Geräts aufzulisten. Um von Vibepollo unterstützt zu werden, muss es zumindest über folgende Punkte verfügen:",
-    "adapter_name_desc_windows": "Legen Sie eine GPU für die Aufnahme manuell fest. Falls nicht festgelegt, wird die GPU automatisch ausgewählt. Wir empfehlen dringend, dieses Feld leer zu lassen, um die automatische GPU-Auswahl zu verwenden! Hinweis: Diese GPU muss ein Display angeschlossen und eingeschaltet haben. Die passenden Werte finden Sie mit dem folgenden Befehl:",
     "adapter_name_placeholder_windows": "Radeon RX 580-Serie",
     "add": "Neu",
     "address_family": "Adressfamilie",

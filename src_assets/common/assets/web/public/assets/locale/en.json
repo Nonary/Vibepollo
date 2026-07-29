@@ -405,7 +405,7 @@
     "adapter_name_desc_linux_1": "Manually specify a GPU to use for capture.",
     "adapter_name_desc_linux_2": "to find all devices capable of VAAPI",
     "adapter_name_desc_linux_3": "Replace ``renderD129`` with the device from above to lists the name and capabilities of the device. To be supported by Vibepollo, it needs to have at the very minimum:",
-    "adapter_name_desc_windows": "Pick the GPU to use for capture and encoding. Leave this on Automatic unless you have more than one GPU. Once a GPU is selected, Vibepollo will not silently switch to a different one: if that GPU has no display attached, the virtual display is created on it instead.",
+    "adapter_name_desc_windows": "Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.",
     "adapter_name_not_detected": "Not currently detected",
     "adapter_name_placeholder_windows": "Radeon RX 580 Series",
     "add": "Add",

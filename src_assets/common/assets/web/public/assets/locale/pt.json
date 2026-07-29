@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "Especifique manualmente uma GPU para usar na captura.",
     "adapter_name_desc_linux_2": "para encontrar todos os dispositivos capazes do VAAPI",
     "adapter_name_desc_linux_3": "Substitua ``renderD129`` pelo dispositivo de cima para listar o nome e os recursos do dispositivo. Para ser apoiado pelo Sol, ele precisa ter no mínimo:",
-    "adapter_name_desc_windows": "Especifique manualmente uma GPU para usar na captura. Se não definido, a GPU é escolhida automaticamente. É altamente recomendável deixar este campo em branco para usar a seleção GPU automática! Nota: Esta GPU deve ter um display conectado e ligado. Os valores apropriados podem ser encontrados usando o seguinte comando:",
     "adapter_name_placeholder_windows": "Radeon série RX 580",
     "add": "Adicionar",
     "address_family": "Família de endereços",

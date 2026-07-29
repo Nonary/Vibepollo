@@ -2,31 +2,60 @@
 import { $tp } from '@/platform-i18n';
 import PlatformLayout from '@/PlatformLayout.vue';
 import { NInput, NSelect } from 'naive-ui';
-import { useI18n } from 'vue-i18n';
 
 import { useConfigStore } from '@/stores/config';
-import { computed } from 'vue';
-const store = useConfigStore();
-const config = store.config;
-const platform = computed(() => config.platform || '');
-const { t } = useI18n();
+import { storeToRefs } from 'pinia';
+import { computed, watchEffect } from 'vue';
+import { useI18n } from 'vue-i18n';
 
-type GpuOption = {
+type AdapterOption = {
   label: string;
   value: string;
-  displayName: string;
-  detail: string;
+  name: string;
+  pnpId: string;
 };
 
-function formatVideoMemory(bytes: unknown): string {
-  const value = Number(bytes ?? 0);
-  if (!Number.isFinite(value) || value <= 0) return '';
-  const gib = value / (1024 * 1024 * 1024);
-  return `${gib >= 10 ? Math.round(gib) : gib.toFixed(1)} GiB`;
+type DetectedAdapter = {
+  name: string;
+  pnpId: string;
+  vendorId: number | null;
+  dedicatedVideoMemory: number | null;
+};
+
+const store = useConfigStore();
+const { config, metadata } = storeToRefs(store);
+const { t } = useI18n();
+const platform = computed(() =>
+  String(metadata.value?.platform || config.value.platform || '').toLowerCase(),
+);
+
+const detectedAdapters = computed<DetectedAdapter[]>(() => {
+  const gpus = Array.isArray(metadata.value?.gpus) ? metadata.value.gpus : [];
+  return gpus.map((gpu) => {
+    const vendorId = Number(gpu.vendor_id);
+    const dedicatedVideoMemory = Number(gpu.dedicated_video_memory);
+    return {
+      name: String(gpu.description || '').trim(),
+      pnpId: String(gpu.pnp_id || '').trim(),
+      vendorId: Number.isFinite(vendorId) ? vendorId : null,
+      dedicatedVideoMemory:
+        Number.isFinite(dedicatedVideoMemory) && dedicatedVideoMemory > 0
+          ? dedicatedVideoMemory
+          : null,
+    };
+  });
+});
+
+function equalsCi(lhs: string, rhs: string): boolean {
+  return lhs.localeCompare(rhs, undefined, { sensitivity: 'accent' }) === 0;
 }
 
-function vendorName(vendorId: unknown): string {
-  switch (Number(vendorId ?? 0)) {
+function setAdapterPair(name: string, pnpId: string): void {
+  store.setAdapterPreference(name, pnpId);
+}
+
+function vendorLabel(vendorId: number | null): string {
+  switch (vendorId) {
     case 0x10de:
       return 'NVIDIA';
     case 0x1002:
@@ -39,39 +68,141 @@ function vendorName(vendorId: unknown): string {
   }
 }
 
-// The host already reports its DXGI adapters through /api/metadata, so the picker needs no
-// extra round trip: it just turns that list into selectable options.
-const gpuOptions = computed<GpuOption[]>(() => {
-  const automatic = t('config.adapter_name_default');
-  const options: GpuOption[] = [
-    { label: automatic, value: '', displayName: automatic, detail: '' },
+function vramLabel(bytes: number | null): string {
+  if (!bytes) return '';
+  const gibibytes = bytes / 1024 ** 3;
+  if (gibibytes >= 1) {
+    const precision = gibibytes >= 10 || Number.isInteger(gibibytes) ? 0 : 1;
+    return `${gibibytes.toFixed(precision)} GiB VRAM`;
+  }
+  return `${Math.round(bytes / 1024 ** 2)} MiB VRAM`;
+}
+
+function pnpAdapterLabel(adapter: DetectedAdapter): string {
+  const name = adapter.name || adapter.pnpId;
+  const details = [vendorLabel(adapter.vendorId), vramLabel(adapter.dedicatedVideoMemory)].filter(
+    (detail) => detail.length > 0,
+  );
+  const summary = details.length > 0 ? `${name} (${details.join(', ')})` : name;
+  return `${summary} - ${adapter.pnpId}`;
+}
+
+const windowsAdapterOptions = computed<AdapterOption[]>(() => {
+  const options: AdapterOption[] = [
+    {
+      label: t('config.adapter_name_default'),
+      value: '',
+      name: '',
+      pnpId: '',
+    },
   ];
 
-  const detected = store.metadata?.gpus;
-  const gpus = Array.isArray(detected) ? detected : [];
-  for (const gpu of gpus) {
-    const description = String(gpu?.description ?? '').trim();
-    if (!description) continue;
-    if (options.some((option) => option.value === description)) continue;
-    const detail = [vendorName(gpu?.vendor_id), formatVideoMemory(gpu?.dedicated_video_memory)]
-      .filter(Boolean)
-      .join(' • ');
-    options.push({ label: description, value: description, displayName: description, detail });
+  const seenPnpIds = new Set<string>();
+  for (const gpu of detectedAdapters.value.filter((adapter) => adapter.pnpId.length > 0)) {
+    const pnpKey = gpu.pnpId.toLocaleUpperCase();
+    if (seenPnpIds.has(pnpKey)) continue;
+    seenPnpIds.add(pnpKey);
+    const name = gpu.name || gpu.pnpId;
+    options.push({
+      label: pnpAdapterLabel(gpu),
+      value: `pnp:${gpu.pnpId}`,
+      name,
+      pnpId: gpu.pnpId,
+    });
   }
 
-  // Keep a name that is configured but not currently enumerated (GPU removed, driver reinstall,
-  // typo) selectable so opening this page never silently drops the user's choice.
-  const selected = String(config.adapter_name || '').trim();
-  if (selected && !options.some((option) => option.value === selected)) {
+  const configuredPnpId = String(config.value.adapter_pnp_id || '').trim();
+  const configuredName = String(config.value.adapter_name || '').trim();
+  if (configuredPnpId && !seenPnpIds.has(configuredPnpId.toLocaleUpperCase())) {
+    const name = configuredName || configuredPnpId;
+    const unavailableLabel = t('config.adapter_name_not_detected');
     options.push({
-      label: selected,
-      value: selected,
-      displayName: selected,
-      detail: t('config.adapter_name_not_detected'),
+      label: `${name} - ${configuredPnpId} - ${unavailableLabel}`,
+      value: `pnp:${configuredPnpId}`,
+      name,
+      pnpId: configuredPnpId,
+    });
+  }
+
+  const legacyAdapters = detectedAdapters.value.filter((adapter) => !adapter.pnpId && adapter.name);
+  if (configuredName && !configuredPnpId) {
+    legacyAdapters.push({
+      name: configuredName,
+      pnpId: '',
+      vendorId: null,
+      dedicatedVideoMemory: null,
+    });
+  }
+  const seenLegacyNames = new Set<string>();
+  for (const adapter of legacyAdapters) {
+    const legacyKey = adapter.name.toLocaleUpperCase();
+    if (seenLegacyNames.has(legacyKey)) continue;
+    seenLegacyNames.add(legacyKey);
+    options.push({
+      label: adapter.name,
+      value: `legacy:${adapter.name}`,
+      name: adapter.name,
+      pnpId: '',
     });
   }
 
   return options;
+});
+
+const windowsAdapterOptionMap = computed(
+  () => new Map(windowsAdapterOptions.value.map((option) => [option.value, option])),
+);
+
+const windowsAdapterValue = computed({
+  get(): string {
+    const configuredPnpId = String(config.value.adapter_pnp_id || '').trim();
+    if (configuredPnpId) {
+      return (
+        windowsAdapterOptions.value.find(
+          (option) => option.pnpId && equalsCi(option.pnpId, configuredPnpId),
+        )?.value || `pnp:${configuredPnpId}`
+      );
+    }
+    const configuredName = String(config.value.adapter_name || '').trim();
+    if (!configuredName) return '';
+    return (
+      windowsAdapterOptions.value.find(
+        (option) => !option.pnpId && option.name && equalsCi(option.name, configuredName),
+      )?.value || `legacy:${configuredName}`
+    );
+  },
+  set(value: string | null) {
+    const selected = String(value || '').trim();
+    if (!selected) {
+      setAdapterPair('', '');
+      return;
+    }
+
+    const option = windowsAdapterOptionMap.value.get(selected);
+    if (option) {
+      setAdapterPair(option.name, option.pnpId);
+      return;
+    }
+
+    // NSelect's tag mode returns raw text for a value not present in the
+    // option map. Treat it as a legacy name, even if it begins with a prefix.
+    setAdapterPair(selected, '');
+  },
+});
+
+const legacyAdapterName = computed({
+  get(): string {
+    return String(config.value.adapter_name || '');
+  },
+  set(value: string | null) {
+    setAdapterPair(String(value || ''), '');
+  },
+});
+
+watchEffect(() => {
+  if (platform.value && platform.value !== 'windows' && config.value.adapter_pnp_id) {
+    setAdapterPair(String(config.value.adapter_name || ''), '');
+  }
 });
 </script>
 
@@ -82,27 +213,18 @@ const gpuOptions = computed<GpuOption[]>(() => {
       <template #windows>
         <n-select
           id="adapter_name"
-          v-model:value="config.adapter_name"
-          :options="gpuOptions"
-          :placeholder="$t('config.adapter_name_default')"
+          v-model:value="windowsAdapterValue"
+          :options="windowsAdapterOptions"
           clearable
           filterable
           tag
-        >
-          <template #option="{ option }">
-            <div class="leading-tight">
-              <div>{{ option?.displayName || option?.label }}</div>
-              <div v-if="option?.detail" class="text-[12px] opacity-60 font-mono">
-                {{ option.detail }}
-              </div>
-            </div>
-          </template>
-        </n-select>
+          :placeholder="$t('config.adapter_name_default')"
+        />
       </template>
       <template #freebsd>
         <n-input
           id="adapter_name"
-          v-model:value="config.adapter_name"
+          v-model:value="legacyAdapterName"
           type="text"
           :placeholder="$tp('config.adapter_name_placeholder', '/dev/dri/renderD128')"
         />
@@ -110,7 +232,7 @@ const gpuOptions = computed<GpuOption[]>(() => {
       <template #linux>
         <n-input
           id="adapter_name"
-          v-model:value="config.adapter_name"
+          v-model:value="legacyAdapterName"
           type="text"
           :placeholder="$tp('config.adapter_name_placeholder', '/dev/dri/renderD128')"
         />

@@ -12,6 +12,7 @@ export interface MetaInfo {
   release_date?: string; // ISO 8601 when available
   gpus?: Array<{
     description?: string;
+    pnp_id?: string;
     vendor_id?: number | string;
     device_id?: number | string;
     dedicated_video_memory?: number | string;
@@ -130,6 +131,7 @@ const defaultGroups = [
       keep_sink_default: 'enabled',
       auto_capture_sink: 'enabled',
       adapter_name: '',
+      adapter_pnp_id: '',
       output_name: '',
       virtual_display_mode: 'per_client',
       virtual_display_layout: 'exclusive',
@@ -419,6 +421,57 @@ export const useConfigStore = defineStore('config', () => {
     restartRequired?: boolean;
   } | null>(null);
 
+  function currentConfigValue(key: string): unknown {
+    if (_data.value && Object.prototype.hasOwnProperty.call(_data.value, key)) {
+      return _data.value[key];
+    }
+    return hasDefaultKey(key) ? defaultMap[key] : undefined;
+  }
+
+  function patchValue(key: string, value: unknown): unknown {
+    return hasDefaultKey(key) && deepEqual(value, defaultMap[key]) ? null : value;
+  }
+
+  function queueAutosaveValue(key: string, value: unknown): void {
+    if (key === 'adapter_name' || key === 'adapter_pnp_id') {
+      // The backend accepts this Windows identity only as an atomic pair.
+      // Always enqueue both effective values so a no-op description write
+      // cannot split same-name GPU switches or legacy-name conversion.
+      patchQueue.value = {
+        ...patchQueue.value,
+        adapter_name: patchValue('adapter_name', currentConfigValue('adapter_name')),
+        adapter_pnp_id: patchValue('adapter_pnp_id', currentConfigValue('adapter_pnp_id')),
+      };
+      return;
+    }
+    patchQueue.value = {
+      ...patchQueue.value,
+      [key]: patchValue(key, value),
+    };
+  }
+
+  function setAdapterPreference(name: string, pnpId: string): void {
+    const nextName = String(name || '').trim();
+    const nextPnpId = nextName ? String(pnpId || '').trim() : '';
+    const previousName = String(currentConfigValue('adapter_name') || '');
+    const previousPnpId = String(currentConfigValue('adapter_pnp_id') || '');
+    if (previousName === nextName && previousPnpId === nextPnpId) {
+      return;
+    }
+
+    if (!_data.value) _data.value = {} as ConfigData;
+    _data.value['adapter_name'] = nextName;
+    _data.value['adapter_pnp_id'] = nextPnpId;
+    version.value++;
+    savingState.value = 'dirty';
+    patchQueue.value = {
+      ...patchQueue.value,
+      adapter_name: patchValue('adapter_name', nextName),
+      adapter_pnp_id: patchValue('adapter_pnp_id', nextPnpId),
+    };
+    scheduleAutosave();
+  }
+
   function buildWrapper(): ConfigState {
     const target = {} as ConfigState;
     // union of keys (defaults + current data)
@@ -470,12 +523,8 @@ export const useConfigStore = defineStore('config', () => {
           } else {
             version.value++;
             savingState.value = 'dirty';
-            // queue for patch: send null when value matches default
-            let toSend: unknown = v;
-            if (hasDefaultKey(k) && deepEqual(v, defaultMap[k])) {
-              toSend = null;
-            }
-            patchQueue.value = { ...patchQueue.value, [k]: toSend };
+            // Queue defaults as null so the server removes explicit values.
+            queueAutosaveValue(k, v);
             // reset autosave timer to full interval on any pending change
             scheduleAutosave();
           }
@@ -1074,6 +1123,7 @@ export const useConfigStore = defineStore('config', () => {
     fetchConfig,
     setConfig,
     updateOption,
+    setAdapterPreference,
     markManualDirty,
     resetManualDirty,
     save,

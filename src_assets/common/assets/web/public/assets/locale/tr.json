@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "Yakalama için kullanılacak GPU'yu manuel olarak belirleyin.",
     "adapter_name_desc_linux_2": "VAAPI kullanabilen tüm cihazları bulmak için",
     "adapter_name_desc_linux_3": "Cihazın adını ve özelliklerini listelemek için ``renderD129`` yerine yukarıdaki cihazı yazın. Vibepollo tarafından desteklenebilmesi için en azından şu özelliklere sahip olması gerekir:",
-    "adapter_name_desc_windows": "Yakalama için kullanılacak GPU'yu manuel olarak belirleyin. Ayarlanmamışsa, GPU otomatik olarak seçilir. Otomatik GPU seçimini kullanmak için bu alanı boş bırakmanızı şiddetle tavsiye ederiz! Not: Bu GPU'nun bağlı ve açık bir ekranı olmalıdır. Uygun değerler aşağıdaki komut kullanılarak bulunabilir:",
     "adapter_name_placeholder_windows": "Radeon RX 580 Serisi",
     "add": "Ekle",
     "address_family": "Adres Ailesi",

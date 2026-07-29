@@ -856,6 +856,12 @@ function normalizeOverrideRecord(value: unknown): Record<string, unknown> {
     }
     normalized[key] = cloneValue(rawValue);
   }
+  if (
+    !Object.prototype.hasOwnProperty.call(normalized, 'adapter_name') ||
+    !String(normalized['adapter_name'] || '').trim()
+  ) {
+    delete normalized['adapter_pnp_id'];
+  }
   return normalized;
 }
 
@@ -868,6 +874,7 @@ function overrideRecordsEqual(a: unknown, b: unknown): boolean {
 }
 
 const HIDDEN_OVERRIDE_KEYS = new Set<string>([
+  'adapter_pnp_id',
   DD_KEYS.configurationOption,
   DD_KEYS.resolutionOption,
   DD_KEYS.manualResolution,
@@ -1124,6 +1131,13 @@ function replaceOverridesFor(target: EditTarget, nextValue: unknown): void {
 function setOverrideKeyFor(target: EditTarget, key: string, value: unknown): void {
   ensureOverridesObjectFor(target);
   const normalizedKey = normalizeOverrideKey(key);
+  if (normalizedKey === 'adapter_name') {
+    if (target === 'draft') {
+      delete (draftOverrides.value as any).adapter_pnp_id;
+    } else {
+      delete (overrides.value as any).adapter_pnp_id;
+    }
+  }
   if (target === 'draft') {
     (draftOverrides.value as any)[normalizedKey] = value;
     return;
@@ -1137,8 +1151,14 @@ function clearOverrideKeyFor(target: EditTarget, key: string): void {
   try {
     if (target === 'draft') {
       delete (draftOverrides.value as any)[normalizedKey];
+      if (normalizedKey === 'adapter_name') {
+        delete (draftOverrides.value as any).adapter_pnp_id;
+      }
     } else {
       delete (overrides.value as any)[normalizedKey];
+      if (normalizedKey === 'adapter_name') {
+        delete (overrides.value as any).adapter_pnp_id;
+      }
     }
   } catch {}
   clearJsonStateFor(target, normalizedKey);
@@ -1699,7 +1719,7 @@ function addOverrideToDraft(key: string) {
   ensureOverridesObjectFor('draft');
   if ((draftOverrides.value as any)[key] !== undefined) return;
   const current = getGlobalValue(key);
-  (draftOverrides.value as any)[key] = cloneValue(current);
+  setOverrideKeyFor('draft', key, cloneValue(current));
 }
 
 function queueOverrideAddition(key: string) {

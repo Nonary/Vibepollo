@@ -404,7 +404,6 @@
     "adapter_name_desc_linux_1": "Ręczne określenie procesora graficznego używanego do przechwytywania.",
     "adapter_name_desc_linux_2": "aby znaleźć wszystkie urządzenia obsługujące VAAPI",
     "adapter_name_desc_linux_3": "Zastąp ``renderD129`` urządzeniem z powyższej listy, aby wyświetlić nazwę i możliwości urządzenia. Aby być obsługiwanym przez Vibepollo, musi mieć co najmniej:",
-    "adapter_name_desc_windows": "Ręczne określenie procesora graficznego używanego do przechwytywania. Jeśli nie zostanie ustawione, procesor graficzny zostanie wybrany automatycznie. Zdecydowanie zalecamy pozostawienie tego pola pustego, aby korzystać z automatycznego wyboru GPU! Uwaga: Ten procesor graficzny musi mieć podłączony i włączony wyświetlacz. Odpowiednie wartości można znaleźć za pomocą następującego polecenia:",
     "adapter_name_placeholder_windows": "Seria Radeon RX 580",
     "add": "Dodaj",
     "address_family": "Rodzina adresów",

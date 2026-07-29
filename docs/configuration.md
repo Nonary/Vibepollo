@@ -925,8 +925,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             **Windows:**
             <br>
-            The Audio/Video tab lists every detected GPU in a dropdown, so this value normally does not
-            need to be typed by hand. The same names can also be listed with:
+            Select the adapter in the web interface so Vibepollo can save both
+            its display name and persistent Windows device identity. For
+            manually authored configurations, use the following command in
+            command prompt or PowerShell to list adapter descriptions.
             @code{}
             %ProgramFiles%\Sunshine\tools\dxgi-info.exe
             @endcode
@@ -955,6 +957,35 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example (Windows)</td>
         <td colspan="2">@code{}
             adapter_name = Radeon RX 580 Series
+            @endcode</td>
+    </tr>
+</table>
+
+### adapter_pnp_id
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Windows-only persistent PnP identity paired with `adapter_name`.
+            The web interface records this value automatically when an adapter
+            is selected, allowing adapters with identical descriptions to
+            remain distinct across restarts and enumeration-order changes.
+            The same identity selects the render adapter when Vibepollo creates
+            a virtual display fallback.
+            Do not configure this key by itself. If it is omitted,
+            `adapter_name` retains its legacy description-only behavior.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">Unset.</td>
+    </tr>
+    <tr>
+        <td>Example (Windows)</td>
+        <td colspan="2">@code{}
+            adapter_name = Radeon RX 580 Series
+            adapter_pnp_id = PCI\VEN_1002&DEV_67DF&SUBSYS_00000000&REV_E7
             @endcode</td>
     </tr>
 </table>
