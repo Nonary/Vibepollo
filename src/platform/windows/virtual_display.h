@@ -222,19 +222,45 @@ namespace VDISPLAY {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
 
+  enum class ensure_display_readiness_e : std::uint8_t {
+    unavailable,
+    existing_display,
+    request_retained,
+    target_enumerated,
+    target_ready,
+  };
+
   struct ensure_display_result {
-    bool success;
-    bool created_temporary;
-    bool tracks_temporary_for_probe;
-    GUID temporary_guid;
+    ensure_display_readiness_e readiness = ensure_display_readiness_e::unavailable;
+    bool created_temporary = false;
+    bool tracks_temporary_for_probe = false;
+    GUID temporary_guid {};
+    std::string device_id;
+    std::string display_name;
+
+    [[nodiscard]] bool ready_for_probe() const {
+      return readiness == ensure_display_readiness_e::existing_display ||
+             (readiness == ensure_display_readiness_e::target_ready && !display_name.empty());
+    }
+
+    [[nodiscard]] const std::string &probe_display_name() const {
+      return display_name;
+    }
   };
 
   /**
    * @brief Ensures a display is available for capture/encoding.
    * If no active physical displays exist, automatically creates a temporary virtual display.
-   * @return Result indicating success and whether a temporary display was created.
+   * @return Ownership, exact target identity, and readiness for encoder probing.
    */
   ensure_display_result ensure_display();
+
+  /**
+   * @brief Resolve an exact Windows device id to a usable GDI display name.
+   * @details Devices with a blank display name are intentionally rejected even
+   * if Windows publishes mode or other device information for them.
+   */
+  std::optional<std::string> resolveUsableDisplayName(const std::string &device_id);
 
   /**
    * @brief Cleans up temporary display created by ensure_display().

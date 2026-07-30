@@ -628,6 +628,7 @@ int main(int argc, char *argv[]) {
       return;
     }
 
+    std::string probe_display_name;
 #ifdef _WIN32
     if (!platf::is_default_input_desktop_active()) {
       BOOST_LOG(info) << "Startup encoder probe deferred until the interactive desktop is ready.";
@@ -636,9 +637,12 @@ int main(int argc, char *argv[]) {
 
     // Ensure a display is available first; probing encoders generally requires a display.
     auto encoder_probe_display_result = VDISPLAY::ensure_display();
-    if (!encoder_probe_display_result.success) {
-      BOOST_LOG(warning) << "Unable to ensure display for encoder probing. Probe may fail.";
+    if (!encoder_probe_display_result.ready_for_probe()) {
+      BOOST_LOG(info)
+        << "Startup encoder probe deferred until the exact display target has a usable name and is visible through DXGI.";
+      return;
     }
+    probe_display_name = encoder_probe_display_result.probe_display_name();
 
     bool encoder_probe_succeeded = false;
     auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
@@ -650,27 +654,18 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    bool encoder_probe_failed = video::probe_encoders();
+    bool encoder_probe_failed = video::probe_encoders(probe_display_name);
 
 #ifdef _WIN32
-    // If the probe failed and there's no active display (headless virtual display),
-    // wait for the display to become available via DXGI and retry.
+    // Re-resolve the exact retained target before retrying. Never let another
+    // active output satisfy readiness for the requested probe display.
     if (encoder_probe_failed && !shutdown_event->peek()) {
-      BOOST_LOG(info) << "Startup encoder probe failed; waiting for display activation before retry.";
-      constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-      const auto deadline = std::chrono::steady_clock::now() + kDisplayActivationTimeout;
-      bool display_activated = false;
-      while (std::chrono::steady_clock::now() < deadline && !shutdown_event->peek()) {
-        if (VDISPLAY::has_active_physical_display() ||
-            !VDISPLAY::enumerateVirtualDisplays().empty()) {
-          display_activated = true;
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-      }
-      if (display_activated) {
-        BOOST_LOG(info) << "Display became active; retrying startup encoder probe.";
-        encoder_probe_failed = video::probe_encoders();
+      BOOST_LOG(info) << "Startup encoder probe failed; rechecking exact display readiness before retry.";
+      auto retry_display_result = VDISPLAY::ensure_display();
+      if (retry_display_result.ready_for_probe()) {
+        BOOST_LOG(info) << "Exact display target became ready; retrying startup encoder probe.";
+        encoder_probe_failed =
+          video::probe_encoders(retry_display_result.probe_display_name());
       }
     }
 

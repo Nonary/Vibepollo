@@ -1,6 +1,7 @@
 #include "virtual_display.h"
 
 #include "src/config.h"
+#include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_coordinator.h"
 #include "src/platform/windows/misc.h"
@@ -894,6 +895,32 @@ namespace VDISPLAY {
 
   ensure_display_result ensure_display() {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::ensure_display() : VDISPLAY_SUDOVDA::ensure_display();
+  }
+
+  std::optional<std::string> resolveUsableDisplayName(const std::string &device_id) {
+    if (device_id.empty()) {
+      return std::nullopt;
+    }
+
+    const auto devices =
+      platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Minimal
+      );
+    if (!devices) {
+      return std::nullopt;
+    }
+
+    for (const auto &device : *devices) {
+      if (device.m_device_id.empty() ||
+          !boost::iequals(device.m_device_id, device_id)) {
+        continue;
+      }
+      if (device.m_display_name.empty()) {
+        return std::nullopt;
+      }
+      return device.m_display_name;
+    }
+    return std::nullopt;
   }
 
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown) {

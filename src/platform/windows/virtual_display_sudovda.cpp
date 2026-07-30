@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <cctype>
@@ -78,6 +79,7 @@ namespace VDISPLAY_SUDOVDA {
   using VDISPLAY::VirtualDisplayCreationResult;
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
+  using VDISPLAY::ensure_display_readiness_e;
   using VDISPLAY::ensure_display_result;
 
   extern HANDLE SUDOVDA_DRIVER_HANDLE;
@@ -2750,7 +2752,7 @@ namespace VDISPLAY_SUDOVDA {
           }
         }
 
-        const bool is_active = device.m_info.has_value() || !device.m_display_name.empty();
+        const bool is_active = !device.m_display_name.empty();
         if (is_active) {
           return MonitorTargetPresence::present_active;
         }
@@ -3808,7 +3810,7 @@ namespace VDISPLAY_SUDOVDA {
           enumerated_at = now;
         }
 
-        if (candidate.m_info) {
+        if (candidate.m_info && !candidate.m_display_name.empty()) {
           if (candidate.m_info->m_resolution.m_width == width &&
               candidate.m_info->m_resolution.m_height == height) {
             if (confirmed_active) {
@@ -4005,13 +4007,12 @@ namespace VDISPLAY_SUDOVDA {
 
           if (exact_match &&
               exact_match->m_info &&
+              !exact_match->m_display_name.empty() &&
               exact_match->m_info->m_resolution.m_width == width &&
               exact_match->m_info->m_resolution.m_height == height) {
             return exact_virtual_display_identity_t {
               .device_id = exact_match->m_device_id,
-              .display_name = exact_match->m_display_name.empty() ?
-                                std::nullopt :
-                                std::make_optional(platf::from_utf8(exact_match->m_display_name)),
+              .display_name = platf::from_utf8(exact_match->m_display_name),
               .monitor_device_path = exact_match->m_monitor_device_path.empty() ?
                                        std::nullopt :
                                        std::make_optional(platf::from_utf8(exact_match->m_monitor_device_path)),
@@ -4112,13 +4113,12 @@ namespace VDISPLAY_SUDOVDA {
 
             if (exact_match &&
                 exact_match->m_info &&
+                !exact_match->m_display_name.empty() &&
                 exact_match->m_info->m_resolution.m_width == width &&
                 exact_match->m_info->m_resolution.m_height == height) {
               return exact_virtual_display_identity_t {
                 .device_id = exact_match->m_device_id,
-                .display_name = exact_match->m_display_name.empty() ?
-                                  std::nullopt :
-                                  std::make_optional(platf::from_utf8(exact_match->m_display_name)),
+                .display_name = platf::from_utf8(exact_match->m_display_name),
                 .monitor_device_path = exact_match->m_monitor_device_path.empty() ?
                                          std::nullopt :
                                          std::make_optional(platf::from_utf8(exact_match->m_monitor_device_path)),
@@ -4923,7 +4923,7 @@ namespace VDISPLAY_SUDOVDA {
       if (!any_match) {
         any_match = device.m_device_id;
       }
-      if (device.m_info) {
+      if (device.m_info && !device.m_display_name.empty()) {
         active_match = device.m_device_id;
         break;
       }
@@ -4981,7 +4981,7 @@ namespace VDISPLAY_SUDOVDA {
       if (!any_match) {
         any_match = device.m_device_id;
       }
-      if (!active_any_match && device.m_info) {
+      if (!active_any_match && device.m_info && !device.m_display_name.empty()) {
         active_any_match = device.m_device_id;
       }
 
@@ -4999,7 +4999,7 @@ namespace VDISPLAY_SUDOVDA {
       }
 
       if (matches_output) {
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           BOOST_LOG(debug) << "Resolved active virtual display by preferred output: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
@@ -5014,7 +5014,7 @@ namespace VDISPLAY_SUDOVDA {
       }
 
       if (matches_client_name) {
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           BOOST_LOG(debug) << "Resolved active virtual display by client name: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
@@ -5089,7 +5089,8 @@ namespace VDISPLAY_SUDOVDA {
     for (const auto &device : *devices) {
       if (!is_virtual_display_device(device) ||
           device.m_device_id.empty() ||
-          !device.m_info) {
+          !device.m_info ||
+          device.m_display_name.empty()) {
         continue;
       }
 
@@ -5119,7 +5120,7 @@ namespace VDISPLAY_SUDOVDA {
         if (!any_match) {
           any_match = device.m_device_id;
         }
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           active_match = device.m_device_id;
           break;
         }
@@ -5239,7 +5240,9 @@ namespace VDISPLAY_SUDOVDA {
       SudaVDADisplayInfo info;
       info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
       info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
-      info.is_active = device.m_info.has_value() || !device.m_display_name.empty();
+      // A blank GDI name is not a usable capture target even when Windows
+      // publishes mode information for the device.
+      info.is_active = !device.m_display_name.empty();
       info.width = 0;
       info.height = 0;
 
@@ -5303,11 +5306,53 @@ uuid_util::uuid_t VDISPLAY_SUDOVDA::persistentVirtualDisplayUuid() {
   return ensure_persistent_guid();
 }
 
+namespace {
+  void wait_for_sudovda_ensure_target(
+    VDISPLAY::ensure_display_result &result,
+    std::chrono::steady_clock::duration timeout
+  ) {
+    result.readiness = VDISPLAY::ensure_display_readiness_e::request_retained;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (true) {
+      const auto device_id =
+        VDISPLAY_SUDOVDA::resolveActiveVirtualDisplayDeviceIdForStableId(
+          "sunshine-ensure",
+          {},
+          "Sunshine Temporary",
+          false
+        );
+      result.device_id = device_id.value_or(std::string {});
+      result.display_name.clear();
+
+      if (device_id) {
+        const auto display_name = VDISPLAY::resolveUsableDisplayName(*device_id);
+        if (display_name && !display_name->empty()) {
+          result.display_name = *display_name;
+          result.readiness = VDISPLAY::ensure_display_readiness_e::target_enumerated;
+          const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+          if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+                return !name.empty() && boost::iequals(name, *display_name);
+              })) {
+            result.readiness = VDISPLAY::ensure_display_readiness_e::target_ready;
+            return;
+          }
+        }
+      }
+
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+}  // namespace
+
 VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
-  ensure_display_result result {false, false, false, {}};
+  ensure_display_result result;
 
   if (has_active_physical_display()) {
-    result.success = true;
+    result.readiness = ensure_display_readiness_e::existing_display;
     return result;
   }
 
@@ -5343,10 +5388,14 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
         result.temporary_guid,
         "retained SudoVDA encoder-probe display"
       )) {
-    result.success = true;
     result.tracks_temporary_for_probe = true;
+    wait_for_sudovda_ensure_target(result, std::chrono::seconds(3));
     BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
-                    << retained_failure_count << ").";
+                    << retained_failure_count << ", readiness="
+                    << static_cast<int>(result.readiness)
+                    << ", display_name='"
+                    << (result.display_name.empty() ? std::string("<pending>") : result.display_name)
+                    << "').";
     return result;
   }
 
@@ -5400,7 +5449,7 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
 
   result.created_temporary = true;
   result.tracks_temporary_for_probe = true;
-  result.success = true;
+  result.readiness = ensure_display_readiness_e::request_retained;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
     g_ensure_display_retained = true;
@@ -5408,26 +5457,19 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display() {
     g_ensure_display_failure_count = 0;
   }
 
-  // Wait for DXGI to enumerate the new virtual display.
-  // CCD (used by wait_for_virtual_display_ready) and DXGI are different enumeration
-  // paths; DXGI may lag behind CCD by hundreds of milliseconds.
-  {
-    const auto dxgi_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    bool dxgi_ready = false;
-    while (std::chrono::steady_clock::now() < dxgi_deadline) {
-      auto names = platf::display_names(platf::mem_type_e::dxgi);
-      if (!names.empty()) {
-        dxgi_ready = true;
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (!dxgi_ready) {
-      BOOST_LOG(warning) << "Temporary virtual display created but DXGI has not enumerated it yet; probe may fail.";
-    }
+  // Require the exact retained target to have a non-empty GDI name and appear
+  // in DXGI. An unrelated output must not satisfy readiness on its behalf.
+  wait_for_sudovda_ensure_target(result, std::chrono::seconds(3));
+  if (result.ready_for_probe()) {
+    BOOST_LOG(info) << "Temporary virtual display ready at " << result.display_name << '.';
+  } else {
+    BOOST_LOG(warning)
+      << "Temporary virtual display remains pending; refusing to probe another output"
+      << " (readiness=" << static_cast<int>(result.readiness)
+      << ", device_id='" << (result.device_id.empty() ? std::string("<pending>") : result.device_id)
+      << "', display_name='" << (result.display_name.empty() ? std::string("<pending>") : result.display_name)
+      << "').";
   }
-
-  BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }
 

@@ -3035,6 +3035,9 @@ namespace webrtc_stream {
 
       if (!rtsp_active) {
 #ifdef _WIN32
+        bool display_helper_verified_for_probe = true;
+#endif
+#ifdef _WIN32
         stream::cancel_paused_display_cleanup();
 #endif
         // Ensure the latest config is applied before starting capture.
@@ -3068,8 +3071,10 @@ namespace webrtc_stream {
           display_helper_integration::ApplyVerificationTicket verification_ticket;
           if (!request) {
             BOOST_LOG(warning) << "Display helper: failed to build display configuration request; continuing with existing display.";
+            display_helper_verified_for_probe = false;
           } else if (!(applied = display_helper_integration::apply(*request, &verification_ticket))) {
             BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
+            display_helper_verified_for_probe = false;
           }
 
           if (applied) {
@@ -3079,37 +3084,68 @@ namespace webrtc_stream {
               display_helper_integration::wait_for_apply_verification(
                 verification_ticket,
                 display_helper_integration::kApplyVerificationTimeout);
-            if (verification_status == display_helper_integration::ApplyVerificationStatus::Failed) {
+            if (verification_status != display_helper_integration::ApplyVerificationStatus::Verified) {
+              display_helper_verified_for_probe = false;
               BOOST_LOG(warning)
-                << "Display helper validation failed; continuing with WebRTC capture anyway.";
+                << "Display helper validation did not confirm the WebRTC target; encoder probing will fail closed.";
             }
           }
         }
 #endif
 
-        if (video::probe_encoders()) {
 #ifdef _WIN32
-          // If probe failed, try ensuring a display is available for headless systems.
-          // Never substitute a generic temporary display for a session that owns a per-client
-          // virtual display: it would displace that display and capture the wrong resolution.
-          // Instead just re-probe (the per-client display's async recovery re-applies it).
+        if (!video::has_successful_encoder_probe()) {
           VDISPLAY::ensure_display_result ensure_result {};
-          if (!launch_session->virtual_display) {
+          std::string probe_display_name;
+
+          if (launch_session->virtual_display) {
+            if (!display_helper_verified_for_probe) {
+              return std::string {"The requested display did not become ready for encoder probing."};
+            }
+
+            const auto deadline =
+              std::chrono::steady_clock::now() +
+              display_helper_integration::kApplyVerificationTimeout;
+            while (probe_display_name.empty()) {
+              if (const auto exact_display =
+                    VDISPLAY::resolveUsableDisplayName(
+                      launch_session->virtual_display_device_id
+                    )) {
+                const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+                if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+                      return !name.empty() && boost::iequals(name, *exact_display);
+                    })) {
+                  probe_display_name = *exact_display;
+                  break;
+                }
+              }
+              if (std::chrono::steady_clock::now() >= deadline) {
+                return std::string {"The requested display did not acquire a usable name for encoder probing."};
+              }
+              std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+          } else {
             ensure_result = VDISPLAY::ensure_display();
+            if (!ensure_result.ready_for_probe()) {
+              return std::string {"No exact display target is ready for encoder probing."};
+            }
+            probe_display_name = ensure_result.probe_display_name();
           }
-          bool retry_failed = (launch_session->virtual_display || ensure_result.success) ? video::probe_encoders() : true;
-          VDISPLAY::cleanup_ensure_display(ensure_result, !retry_failed);
-          if (retry_failed) {
+
+          const bool probe_failed = video::probe_encoders(probe_display_name);
+          VDISPLAY::cleanup_ensure_display(ensure_result, !probe_failed);
+          if (probe_failed) {
             return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
           }
-#else
-          return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
-#endif
+        } else {
+          BOOST_LOG(debug) << "WebRTC encoder probe skipped (matching selected-GPU cache).";
         }
-      }
-
-#ifdef _WIN32
+#else
+        if (video::probe_encoders()) {
+          return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+        }
 #endif
+      }
 
       auto mail = std::make_shared<safe::mail_raw_t>();
       webrtc_capture.mail = mail;

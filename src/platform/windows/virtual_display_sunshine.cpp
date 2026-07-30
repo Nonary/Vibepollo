@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <charconv>
@@ -84,6 +85,7 @@ namespace VDISPLAY_SUNSHINE {
   using VDISPLAY::VirtualDisplayCreationResult;
   using VDISPLAY::VirtualDisplayInfo;
   using VDISPLAY::VirtualDisplayRecoveryParams;
+  using VDISPLAY::ensure_display_readiness_e;
   using VDISPLAY::ensure_display_result;
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = VDISPLAY::VIRTUAL_DISPLAY_SELECTION;
 
@@ -4068,65 +4070,92 @@ namespace VDISPLAY_SUNSHINE {
         return MonitorTargetPresence::no_devices;
       }
 
-      bool matched_inactive = false;
+      const bool has_stable_identity =
+        (state.current_device_id && !state.current_device_id->empty()) ||
+        state.normalized_monitor_device_path.has_value();
+      bool matched_strong_inactive = false;
+      std::optional<display_device::EnumeratedDevice> unique_weak_candidate;
+      bool weak_candidate_conflict = false;
+
       for (const auto &device : *devices) {
         if (!is_virtual_display_device(device)) {
           continue;
         }
 
-        bool matches = false;
-        bool matched_by_client_name = false;
-        if (!matches && !state.params.client_name.empty() && !device.m_friendly_name.empty() && equals_ci(device.m_friendly_name, state.params.client_name)) {
-          matches = true;
-          matched_by_client_name = true;
-        }
-        if (!matches && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
-          matches = equals_ci(device.m_device_id, *state.current_device_id);
-        }
-        if (!matches && state.normalized_display_name) {
-          auto normalized_display = normalize_display_name(device.m_display_name);
-          if (!normalized_display.empty() && normalized_display == *state.normalized_display_name) {
-            matches = true;
-          } else {
-            auto normalized_friendly = normalize_display_name(device.m_friendly_name);
-            if (!normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name) {
-              matches = true;
-            }
+        bool strong_match = false;
+        if (state.normalized_monitor_device_path && !device.m_monitor_device_path.empty()) {
+          const auto normalized_path = normalize_display_name(device.m_monitor_device_path);
+          if (!normalized_path.empty() && normalized_path == *state.normalized_monitor_device_path) {
+            strong_match = true;
           }
         }
-        if (!matches) {
+        if (!strong_match && state.current_device_id && !state.current_device_id->empty() && !device.m_device_id.empty()) {
+          strong_match = equals_ci(device.m_device_id, *state.current_device_id);
+        }
+        if (!strong_match && state.normalized_display_name && !device.m_display_name.empty()) {
+          const auto normalized_display = normalize_display_name(device.m_display_name);
+          if (!normalized_display.empty() && normalized_display == *state.normalized_display_name) {
+            strong_match = true;
+          }
+        }
+
+        if (strong_match) {
+          if (!device.m_display_name.empty()) {
+            return MonitorTargetPresence::present_active;
+          }
+          matched_strong_inactive = true;
           continue;
         }
 
-        if (matched_by_client_name) {
-          auto adopted_display_name = state.current_display_name;
-          if (!device.m_display_name.empty()) {
-            adopted_display_name = platf::from_utf8(device.m_display_name);
+        if (!has_stable_identity) {
+          bool weak_match =
+            !state.params.client_name.empty() &&
+            !device.m_friendly_name.empty() &&
+            equals_ci(device.m_friendly_name, state.params.client_name);
+          if (!weak_match && state.normalized_display_name && !device.m_friendly_name.empty()) {
+            const auto normalized_friendly = normalize_display_name(device.m_friendly_name);
+            weak_match = !normalized_friendly.empty() && normalized_friendly == *state.normalized_display_name;
           }
-          auto adopted_device_id = state.current_device_id;
-          if (!device.m_device_id.empty()) {
-            adopted_device_id = device.m_device_id;
-          }
-          auto adopted_monitor_device_path = state.current_monitor_device_path;
-
-          if (adopted_display_name != state.current_display_name
-              || adopted_device_id != state.current_device_id
-              || adopted_monitor_device_path != state.current_monitor_device_path) {
-            const auto before = state.describe_target();
-            state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
-            BOOST_LOG(debug) << "Virtual display recovery monitor adopted updated identifiers via client_name '"
-                             << state.params.client_name << "': " << before << " -> " << state.describe_target();
+          if (weak_match && !weak_candidate_conflict) {
+            if (!unique_weak_candidate) {
+              unique_weak_candidate = device;
+            } else {
+              weak_candidate_conflict = true;
+              unique_weak_candidate.reset();
+            }
           }
         }
-
-        const bool is_active = device.m_info.has_value() || !device.m_display_name.empty();
-        if (is_active) {
-          return MonitorTargetPresence::present_active;
-        }
-        matched_inactive = true;
       }
 
-      return matched_inactive ? MonitorTargetPresence::present_inactive : MonitorTargetPresence::missing;
+      if (matched_strong_inactive) {
+        return MonitorTargetPresence::present_inactive;
+      }
+
+      if (!weak_candidate_conflict && unique_weak_candidate) {
+        const auto &device = *unique_weak_candidate;
+        auto adopted_display_name = state.current_display_name;
+        if (!device.m_display_name.empty()) {
+          adopted_display_name = platf::from_utf8(device.m_display_name);
+        }
+        auto adopted_device_id = state.current_device_id;
+        if (!device.m_device_id.empty()) {
+          adopted_device_id = device.m_device_id;
+        }
+        auto adopted_monitor_device_path = state.current_monitor_device_path;
+        if (!device.m_monitor_device_path.empty()) {
+          adopted_monitor_device_path = platf::from_utf8(device.m_monitor_device_path);
+        }
+
+        const auto before = state.describe_target();
+        state.update_identifiers(adopted_display_name, adopted_device_id, adopted_monitor_device_path);
+        BOOST_LOG(debug) << "Virtual display recovery monitor adopted unique identifiers via client_name '"
+                         << state.params.client_name << "': " << before << " -> " << state.describe_target();
+        return !device.m_display_name.empty() ?
+                 MonitorTargetPresence::present_active :
+                 MonitorTargetPresence::present_inactive;
+      }
+
+      return MonitorTargetPresence::missing;
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token) {
@@ -5473,6 +5502,14 @@ namespace VDISPLAY_SUNSHINE {
 
         if (!enumerated_at) {
           enumerated_at = now;
+        }
+
+        if (candidate.m_info && candidate.m_display_name.empty()) {
+          if (exact_target) {
+            BOOST_LOG(debug) << "Virtual display target is enumerated without a usable GDI name; continuing so the display helper can activate it.";
+            return true;
+          }
+          return false;
         }
 
         if (candidate.m_info) {
@@ -6975,7 +7012,7 @@ namespace VDISPLAY_SUNSHINE {
       if (!any_match) {
         any_match = device.m_device_id;
       }
-      if (device.m_info) {
+      if (device.m_info && !device.m_display_name.empty()) {
         active_match = device.m_device_id;
         break;
       }
@@ -7033,7 +7070,7 @@ namespace VDISPLAY_SUNSHINE {
       if (!any_match) {
         any_match = device.m_device_id;
       }
-      if (!active_any_match && device.m_info) {
+      if (!active_any_match && device.m_info && !device.m_display_name.empty()) {
         active_any_match = device.m_device_id;
       }
 
@@ -7051,7 +7088,7 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       if (matches_output) {
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           BOOST_LOG(debug) << "Resolved active virtual display by preferred output: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
@@ -7066,7 +7103,7 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       if (matches_client_name) {
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           BOOST_LOG(debug) << "Resolved active virtual display by client name: device_id='" << device.m_device_id << "'.";
           return device.m_device_id;
         }
@@ -7135,7 +7172,7 @@ namespace VDISPLAY_SUNSHINE {
         continue;
       }
 
-      if (device.m_info) {
+      if (device.m_info && !device.m_display_name.empty()) {
         BOOST_LOG(debug) << "Resolved active virtual display by stable EDID identity: device_id='"
                          << device.m_device_id << "'.";
         return device.m_device_id;
@@ -7170,7 +7207,7 @@ namespace VDISPLAY_SUNSHINE {
         if (!any_match) {
           any_match = device.m_device_id;
         }
-        if (device.m_info) {
+        if (device.m_info && !device.m_display_name.empty()) {
           active_match = device.m_device_id;
           break;
         }
@@ -7236,7 +7273,9 @@ namespace VDISPLAY_SUNSHINE {
       VirtualDisplayInfo info;
       info.device_name = !device.m_display_name.empty() ? platf::from_utf8(device.m_display_name) : platf::from_utf8(device.m_device_id.empty() ? device.m_friendly_name : device.m_device_id);
       info.friendly_name = !device.m_friendly_name.empty() ? platf::from_utf8(device.m_friendly_name) : info.device_name;
-      info.is_active = device.m_info.has_value() || !device.m_display_name.empty();
+      // A blank GDI name is not a usable capture target even when Windows
+      // publishes mode information for the device.
+      info.is_active = !device.m_display_name.empty();
       info.width = 0;
       info.height = 0;
 
@@ -7307,11 +7346,79 @@ uuid_util::uuid_t VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid() {
   return virtualDisplayUuidFromStableId("sunshine-ensure");
 }
 
+namespace {
+  struct ensure_target_snapshot_t {
+    std::string device_id;
+    std::string display_name;
+    bool active = false;
+  };
+
+  ensure_target_snapshot_t sunshine_ensure_target_snapshot(const GUID &guid) {
+    ensure_target_snapshot_t snapshot;
+    const auto expected_display_id = VDISPLAY_SUNSHINE::client_uuid_to_virtual_display_id(guid);
+    const auto devices =
+      platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Minimal
+      );
+    if (!devices) {
+      return snapshot;
+    }
+
+    for (const auto &device : *devices) {
+      if (!VDISPLAY_SUNSHINE::is_virtual_display_device(device) ||
+          !VDISPLAY_SUNSHINE::matches_virtual_display_id_edid(device, expected_display_id)) {
+        continue;
+      }
+
+      snapshot.device_id = device.m_device_id;
+      if (device.m_display_name.empty()) {
+        return snapshot;
+      }
+
+      snapshot.display_name = device.m_display_name;
+      snapshot.active = device.m_info.has_value();
+      return snapshot;
+    }
+    return snapshot;
+  }
+
+  void wait_for_sunshine_ensure_target(
+    VDISPLAY::ensure_display_result &result,
+    std::chrono::steady_clock::duration timeout
+  ) {
+    result.readiness = VDISPLAY::ensure_display_readiness_e::request_retained;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    while (true) {
+      const auto snapshot = sunshine_ensure_target_snapshot(result.temporary_guid);
+      result.device_id = snapshot.device_id;
+      result.display_name = snapshot.display_name;
+      if (!snapshot.display_name.empty()) {
+        result.readiness = VDISPLAY::ensure_display_readiness_e::target_enumerated;
+        if (snapshot.active) {
+          const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+          if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+                return !name.empty() && boost::iequals(name, snapshot.display_name);
+              })) {
+            result.readiness = VDISPLAY::ensure_display_readiness_e::target_ready;
+            return;
+          }
+        }
+      }
+
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+}  // namespace
+
 VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
-  ensure_display_result result {false, false, false, {}};
+  ensure_display_result result;
 
   if (has_active_physical_display()) {
-    result.success = true;
+    result.readiness = ensure_display_readiness_e::existing_display;
     return result;
   }
 
@@ -7347,10 +7454,14 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
         result.temporary_guid,
         "retained Sunshine encoder-probe display"
       )) {
-    result.success = true;
     result.tracks_temporary_for_probe = true;
+    wait_for_sunshine_ensure_target(result, std::chrono::seconds(3));
     BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
-                    << retained_failure_count << ").";
+                    << retained_failure_count << ", readiness="
+                    << static_cast<int>(result.readiness)
+                    << ", display_name='"
+                    << (result.display_name.empty() ? std::string("<pending>") : result.display_name)
+                    << "').";
     return result;
   }
 
@@ -7393,7 +7504,23 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
         sunshine_driver::ControlClient client {*transport};
         if (set_permanent_display_count(client, permanent_count, false)) {
           BOOST_LOG(info) << "Refreshed active permanent Sunshine virtual display(s) after the render-adapter request was accepted.";
-          result.success = true;
+          const auto active_display = std::find_if(
+            virtual_displays.begin(),
+            virtual_displays.end(),
+            [](const VirtualDisplayInfo &info) {
+              return info.is_active && !info.device_name.empty();
+            }
+          );
+          if (active_display != virtual_displays.end()) {
+            result.display_name = platf::to_utf8(active_display->device_name);
+            result.readiness = ensure_display_readiness_e::target_enumerated;
+            const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+            if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+                  return !name.empty() && boost::iequals(name, result.display_name);
+                })) {
+              result.readiness = ensure_display_readiness_e::target_ready;
+            }
+          }
           return result;
         }
       }
@@ -7425,7 +7552,7 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
 
   result.created_temporary = true;
   result.tracks_temporary_for_probe = true;
-  result.success = true;
+  result.readiness = ensure_display_readiness_e::request_retained;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
     g_ensure_display_retained = true;
@@ -7433,26 +7560,20 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
     g_ensure_display_failure_count = 0;
   }
 
-  // Wait for DXGI to enumerate the new virtual display.
-  // CCD (used by wait_for_virtual_display_ready) and DXGI are different enumeration
-  // paths; DXGI may lag behind CCD by hundreds of milliseconds.
-  {
-    const auto dxgi_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    bool dxgi_ready = false;
-    while (std::chrono::steady_clock::now() < dxgi_deadline) {
-      auto names = platf::display_names(platf::mem_type_e::dxgi);
-      if (!names.empty()) {
-        dxgi_ready = true;
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (!dxgi_ready) {
-      BOOST_LOG(warning) << "Temporary virtual display created but DXGI has not enumerated it yet; probe may fail.";
-    }
+  // CCD and DXGI are distinct enumeration paths. Require the exact retained
+  // target to have a non-empty GDI name and appear in DXGI; another output
+  // must never satisfy readiness on its behalf.
+  wait_for_sunshine_ensure_target(result, std::chrono::seconds(3));
+  if (result.ready_for_probe()) {
+    BOOST_LOG(info) << "Temporary virtual display ready at " << result.display_name << '.';
+  } else {
+    BOOST_LOG(warning)
+      << "Temporary virtual display remains pending; refusing to probe another output"
+      << " (readiness=" << static_cast<int>(result.readiness)
+      << ", device_id='" << (result.device_id.empty() ? std::string("<pending>") : result.device_id)
+      << "', display_name='" << (result.display_name.empty() ? std::string("<pending>") : result.display_name)
+      << "').";
   }
-
-  BOOST_LOG(info) << "Temporary virtual display ready.";
   return result;
 }
 

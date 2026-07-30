@@ -219,14 +219,63 @@ namespace nvhttp {
       );
     }
 
-    bool has_any_active_display() {
-      if (VDISPLAY::has_active_physical_display()) {
+    bool wait_for_probe_helper_verification(
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
+      const std::chrono::steady_clock::time_point deadline
+    ) {
+      if (!launch_session->display_helper_gate.valid()) {
         return true;
       }
-      if (VDISPLAY::has_retained_ensure_display()) {
-        return true;
+      if (launch_session->display_helper_gate.wait_until(deadline) != std::future_status::ready) {
+        BOOST_LOG(warning) << "Encoder probe deferred: display-helper verification did not finish within the shared startup deadline.";
+        return false;
       }
-      return has_active_virtual_display();
+
+      try {
+        const auto status = launch_session->display_helper_gate.get();
+        if (status != rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed) {
+          BOOST_LOG(warning) << "Encoder probe deferred: display-helper verification did not confirm the target.";
+          return false;
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(warning) << "Encoder probe deferred: display-helper verification failed (" << e.what() << ").";
+        return false;
+      } catch (...) {
+        BOOST_LOG(warning) << "Encoder probe deferred: display-helper verification failed.";
+        return false;
+      }
+      return true;
+    }
+
+    std::optional<std::string> wait_for_exact_virtual_probe_display(
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
+      const std::chrono::steady_clock::time_point deadline
+    ) {
+      if (!launch_session->virtual_display ||
+          launch_session->virtual_display_device_id.empty()) {
+        return std::nullopt;
+      }
+
+      while (true) {
+        if (const auto display_name =
+              VDISPLAY::resolveUsableDisplayName(launch_session->virtual_display_device_id)) {
+          const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+          if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+                return !name.empty() && boost::iequals(name, *display_name);
+              })) {
+            return display_name;
+          }
+        }
+
+        if (std::chrono::steady_clock::now() >= deadline) {
+          BOOST_LOG(warning)
+            << "Encoder probe deferred: exact virtual display device_id='"
+            << launch_session->virtual_display_device_id
+            << "' never acquired a usable DXGI display name.";
+          return std::nullopt;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     }
 
     bool has_stream_session_activity();
@@ -268,7 +317,15 @@ namespace nvhttp {
       }
 
       auto ensure_result = VDISPLAY::ensure_display();
-      const auto caps = video::advertised_encoder_capabilities(true);
+      if (!ensure_result.ready_for_probe()) {
+        BOOST_LOG(info)
+          << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
+        return publish(video::advertised_encoder_capabilities(false), "target-pending");
+      }
+      const auto caps = video::advertised_encoder_capabilities(
+        true,
+        ensure_result.probe_display_name()
+      );
       if (ensure_result.tracks_temporary_for_probe) {
         BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
       }
@@ -3208,53 +3265,49 @@ namespace nvhttp {
         // or any number of other factors).
 
 #ifdef _WIN32
-      // Ensure a display is available for probing (creates a temporary virtual display if headless).
-      // Skip this when the session owns a per-client virtual display: that display IS the probe
-      // target, and its async recovery monitor re-creates/re-applies it if a topology APPLY fails.
-      // Substituting a generic 1080p temporary display here would tear the per-client display down
-      // and make the temp the capture target (wrong resolution). Creation failure clears
-      // virtual_display, so genuinely headless sessions still fall through to ensure_display().
+      bool encoder_probe_failed = false;
+      bool probe_target_not_ready = false;
       VDISPLAY::ensure_display_result ensure_result {};
-      if (!launch_session->virtual_display) {
-        ensure_result = VDISPLAY::ensure_display();
-      }
-#endif
-
-        bool encoder_probe_failed = video::probe_encoders();
-
-
-#ifdef _WIN32
-        if (encoder_probe_failed && !has_any_active_display()) {
-          BOOST_LOG(info) << "Encoder probe failed with no active display; waiting for activation before retry.";
-          constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-          if (wait_for_display_activation(kDisplayActivationTimeout)) {
-            BOOST_LOG(info) << "Display became active; retrying encoder probe.";
-            encoder_probe_failed = video::probe_encoders();
+      if (!video::has_successful_encoder_probe()) {
+        std::string probe_display_name;
+        if (launch_session->virtual_display) {
+          if (!wait_for_probe_helper_verification(launch_session, display_startup_deadline)) {
+            probe_target_not_ready = true;
+          } else if (const auto exact_display =
+                       wait_for_exact_virtual_probe_display(launch_session, display_startup_deadline)) {
+            probe_display_name = *exact_display;
           } else {
-            BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying encoder probe.";
+            probe_target_not_ready = true;
           }
+        } else {
+          ensure_result = VDISPLAY::ensure_display();
+          probe_target_not_ready = !ensure_result.ready_for_probe();
+          probe_display_name = ensure_result.probe_display_name();
         }
-        VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
+
+        if (!probe_target_not_ready) {
+          encoder_probe_failed = video::probe_encoders(probe_display_name);
+          VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
+        } else {
+          encoder_probe_failed = true;
+        }
+      } else {
+        BOOST_LOG(debug) << "Launch encoder probe skipped (matching selected-GPU cache).";
+      }
+#else
+      bool encoder_probe_failed = video::probe_encoders();
 #endif
 
-        if (encoder_probe_failed && !is_input_only) {
-          BOOST_LOG(error) << "Failed to initialize video capture/encoding. Is a display connected and turned on?";
-          tree.put("root.<xmlattr>.status_code", 503);
-          tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
-          tree.put("root.gamesession", 0);
-
-          return;
-        }
-      }
-
-
-
-      auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
-      if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-        BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
-
-        tree.put("root.<xmlattr>.status_code", 403);
-        tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
+      if (encoder_probe_failed && !is_input_only) {
+        const std::string status_message =
+#ifdef _WIN32
+          probe_target_not_ready ?
+            "The requested display did not become ready for encoder probing." :
+#endif
+            "Failed to initialize video capture/encoding. Is a display connected and turned on?";
+        BOOST_LOG(error) << status_message;
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", status_message);
         tree.put("root.gamesession", 0);
 
         return;
@@ -3736,35 +3789,49 @@ namespace nvhttp {
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
 #ifdef _WIN32
-      // See the launch path above: never let the generic encoder-probe ensure display replace a
-      // per-client virtual display. Only create a temporary probe display when this session does
-      // not own one (genuinely headless, or per-client creation failed).
+      bool encoder_probe_failed = false;
+      bool probe_target_not_ready = false;
       VDISPLAY::ensure_display_result ensure_result {};
-      if (!launch_session->virtual_display) {
-        ensure_result = VDISPLAY::ensure_display();
-      }
-#endif
-      bool encoder_probe_failed = video::probe_encoders();
-
-#ifdef _WIN32
-      if (encoder_probe_failed && !has_any_active_display()) {
-        BOOST_LOG(info) << "Resume encoder probe failed with no active display; waiting for activation before retry.";
-        constexpr auto kDisplayActivationTimeout = std::chrono::seconds(5);
-        if (wait_for_display_activation(kDisplayActivationTimeout)) {
-          BOOST_LOG(info) << "Display became active; retrying resume encoder probe.";
-          encoder_probe_failed = video::probe_encoders();
+      if (!video::has_successful_encoder_probe()) {
+        std::string probe_display_name;
+        if (launch_session->virtual_display) {
+          if (!wait_for_probe_helper_verification(launch_session, display_startup_deadline)) {
+            probe_target_not_ready = true;
+          } else if (const auto exact_display =
+                       wait_for_exact_virtual_probe_display(launch_session, display_startup_deadline)) {
+            probe_display_name = *exact_display;
+          } else {
+            probe_target_not_ready = true;
+          }
         } else {
-          BOOST_LOG(warning) << "Timed out waiting for a display to become active before retrying resume encoder probe.";
+          ensure_result = VDISPLAY::ensure_display();
+          probe_target_not_ready = !ensure_result.ready_for_probe();
+          probe_display_name = ensure_result.probe_display_name();
         }
+
+        if (!probe_target_not_ready) {
+          encoder_probe_failed = video::probe_encoders(probe_display_name);
+          VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
+        } else {
+          encoder_probe_failed = true;
+        }
+      } else {
+        BOOST_LOG(debug) << "Resume encoder probe skipped (matching selected-GPU cache).";
       }
-      VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
+#else
+      bool encoder_probe_failed = video::probe_encoders();
 #endif
 
-      // Skip encoder probing failure for input-only mode
       if (encoder_probe_failed && !launch_session->input_only) {
+        const std::string status_message =
+#ifdef _WIN32
+          probe_target_not_ready ?
+            "The requested display did not become ready for encoder probing." :
+#endif
+            "Failed to initialize video capture/encoding. Is a display connected and turned on?";
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
+        tree.put("root.<xmlattr>.status_message", status_message);
 
         return;
       }
