@@ -243,9 +243,6 @@ namespace VDISPLAY {
              (readiness == ensure_display_readiness_e::target_ready && !display_name.empty());
     }
 
-    [[nodiscard]] const std::string &probe_display_name() const {
-      return display_name;
-    }
   };
 
   /**

@@ -452,28 +452,18 @@ namespace video {
     }
 #endif
 
-    probe_adapter_identity_t resolve_probe_adapter_identity(std::string_view probe_display_name = {}) {
+    probe_adapter_identity_t resolve_probe_adapter_identity() {
 #ifdef _WIN32
-      const bool explicit_probe_target = !probe_display_name.empty();
-      const auto active_output = explicit_probe_target ?
-                                   std::string(probe_display_name) :
-                                   display_device::map_output_name(config::get_active_output_name());
+      const auto active_output = config::get_active_output_name();
       const auto current_wgc_identity = [&]() -> std::optional<platf::dxgi::wgc_adapter_identity_t> {
-        if (explicit_probe_target) {
-          return std::nullopt;
-        }
         const auto identity = platf::dxgi::get_last_wgc_adapter_identity();
         if (!identity ||
             active_output.empty() ||
-            !boost::iequals(
-              display_device::map_output_name(identity->output_name),
-              active_output
-            )) {
+            !boost::iequals(identity->output_name, active_output)) {
           return std::nullopt;
         }
         return identity;
       }();
-      const auto output_adapter = platf::resolve_output_adapter(active_output);
 
       const bool adapter_is_configured =
         !config::video.adapter_name.empty() ||
@@ -484,18 +474,6 @@ namespace video {
           config::video.adapter_pnp_id
         );
         if (configured_adapter) {
-          if (explicit_probe_target &&
-              output_adapter &&
-              !platf::adapter_luid_equal(*configured_adapter.luid, *output_adapter.luid)) {
-            return probe_adapter_identity_t {
-              .identity =
-                "configured-target-mismatch=" +
-                luid_cache_identity(*configured_adapter.luid) + ':' +
-                luid_cache_identity(*output_adapter.luid),
-              .source = "configured-target-mismatch",
-              .resolved = false,
-            };
-          }
           if (current_wgc_identity &&
               !platf::adapter_luid_equal(*configured_adapter.luid, current_wgc_identity->luid)) {
             return probe_adapter_identity_t {
@@ -531,10 +509,12 @@ namespace video {
         };
       }
 
+      const auto mapped_output = display_device::map_output_name(active_output);
+      const auto output_adapter = platf::resolve_output_adapter(mapped_output);
       if (output_adapter) {
         return probe_adapter_identity_t {
           .identity = luid_cache_identity(*output_adapter.luid),
-          .source = explicit_probe_target ? "explicit-probe-target-dxgi" : "current-output-dxgi",
+          .source = "current-output-dxgi",
           .resolved = true,
         };
       }
@@ -558,7 +538,7 @@ namespace video {
 #endif
     }
 
-    probe_cache_key_t build_probe_cache_key(std::string_view probe_display_name = {}) {
+    probe_cache_key_t build_probe_cache_key() {
       std::ostringstream oss;
       // Keep encoder configuration separate from the exact selected adapter.
       // Output identifiers and the whole-machine GPU inventory are deliberately
@@ -602,7 +582,7 @@ namespace video {
       // though the software encoder would have validated. Re-key so the next
       // probe re-runs and selection can degrade to software as designed.
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
-      auto adapter_identity = resolve_probe_adapter_identity(probe_display_name);
+      auto adapter_identity = resolve_probe_adapter_identity();
       return probe_cache_key_t {
         .encoder_configuration = oss.str(),
         .adapter_identity = adapter_identity.identity,
@@ -2215,36 +2195,29 @@ namespace video {
     }
   }  // namespace
 
-  bool has_attempted_encoder_probe(const std::string &probe_display_name) {
-    const auto current_key = build_probe_cache_key(probe_display_name);
+  bool has_attempted_encoder_probe() {
+    const auto current_key = build_probe_cache_key();
     auto &state = encoder_probe_cache_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     return state.attempted_cache_key && *state.attempted_cache_key == current_key;
   }
 
-  bool has_successful_encoder_probe(const std::string &probe_display_name) {
-    const auto current_key = build_probe_cache_key(probe_display_name);
+  bool has_successful_encoder_probe() {
+    const auto current_key = build_probe_cache_key();
     auto &state = encoder_probe_cache_state();
     std::lock_guard<std::mutex> lock(state.mutex);
     return state.valid && state.cache_key && *state.cache_key == current_key;
   }
 
-  advertised_encoder_capabilities_t advertised_encoder_capabilities(
-    bool probe_before_negative,
-    const std::string &probe_display_name
-  ) {
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
     auto caps = current_advertised_capabilities_snapshot();
-    if (probe_before_negative &&
-        !has_successful_encoder_probe(probe_display_name) &&
-        !has_attempted_encoder_probe(probe_display_name)) {
+    if (probe_before_negative && !has_successful_encoder_probe() && !has_attempted_encoder_probe()) {
       BOOST_LOG(info) << "Encoder capabilities are unprobed for the current adapter identity; probing encoders now.";
-      if (probe_encoders(probe_display_name)) {
+      if (probe_encoders()) {
         BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
       }
       caps = current_advertised_capabilities_snapshot();
-    } else if (probe_before_negative &&
-               !has_successful_encoder_probe(probe_display_name) &&
-               has_attempted_encoder_probe(probe_display_name)) {
+    } else if (probe_before_negative && !has_successful_encoder_probe() && has_attempted_encoder_probe()) {
       const auto now = std::chrono::steady_clock::now();
       const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
       const auto last_ns = last_negative_hdr_advertisement_probe_ns.load(std::memory_order_acquire);
@@ -2252,7 +2225,7 @@ namespace video {
       if (last_ns <= 0 || now_ns - last_ns >= retry_interval) {
         last_negative_hdr_advertisement_probe_ns.store(now_ns, std::memory_order_release);
         BOOST_LOG(info) << "Encoder capabilities lack a successful probe for the current adapter identity; re-probing before advertisement.";
-        if (probe_encoders(probe_display_name)) {
+        if (probe_encoders()) {
           BOOST_LOG(warning) << "Encoder re-probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
         }
         caps = current_advertised_capabilities_snapshot();
@@ -2262,8 +2235,8 @@ namespace video {
     // Capability globals describe the last successful probe, which may belong
     // to a different adapter key. Never publish those stale positive values
     // when the current identity has not produced a successful probe.
-    if (!has_successful_encoder_probe(probe_display_name)) {
-      log_probe_cache_miss(build_probe_cache_key(probe_display_name));
+    if (!has_successful_encoder_probe()) {
+      log_probe_cache_miss(build_probe_cache_key());
       return {};
     }
     return caps;
@@ -5684,13 +5657,13 @@ namespace video {
 
   static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
   static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
-  static thread_local std::string cached_probe_display_name;
 
-  bool validate_encoder(
-    encoder_t &encoder,
-    bool expect_failure,
-    const std::string &probe_display_name
-  ) {
+  bool validate_encoder(encoder_t &encoder, bool expect_failure) {
+    // During encoder probing, always use the current active display and do not
+    // attempt to select/swap displays based on configured output_name. Display
+    // swaps are now handled externally when a stream starts.
+    const std::string probe_display_name;  // empty selects the current active display
+
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -5717,15 +5690,12 @@ namespace video {
 
     // If the encoder isn't supported at all (not even H.264), bail early
     // Try to reuse cached display if same device type
-    if (cached_probe_display &&
-        cached_display_type == encoder.platform_formats->dev_type &&
-        cached_probe_display_name == probe_display_name) {
+    if (cached_probe_display && cached_display_type == encoder.platform_formats->dev_type) {
       disp = cached_probe_display;
     } else {
       reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
-      cached_probe_display_name = probe_display_name;
     }
 
     if (!disp) {
@@ -5897,16 +5867,16 @@ namespace video {
     return true;
   }
 
-  int probe_encoders(const std::string &probe_display_name) {
+  int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
-    const auto cache_key = build_probe_cache_key(probe_display_name);
+    const auto cache_key = build_probe_cache_key();
     mark_probe_attempted(cache_key);
     // WGC learns its adapter while a probe is in progress. Record the final
     // effective key on every exit so a pre-WGC attempt cannot masquerade as an
     // unattempted post-WGC configuration.
-    auto final_attempt_key_guard = util::fail_guard([&probe_display_name]() {
+    auto final_attempt_key_guard = util::fail_guard([]() {
       try {
-        mark_probe_attempted(build_probe_cache_key(probe_display_name));
+        mark_probe_attempted(build_probe_cache_key());
       } catch (...) {
         BOOST_LOG(warning) << "Unable to record the final encoder probe adapter key.";
       }
@@ -5931,9 +5901,6 @@ namespace video {
               std::string("<none>"))
         << ", effective_cache_adapter='" << cache_key.adapter_identity
         << "', effective_cache_source=" << cache_key.adapter_identity_source
-        << ", requested_probe_display='"
-        << (probe_display_name.empty() ? std::string("<current-active>") : probe_display_name)
-        << '\''
         << '.';
     }
 #endif
@@ -6015,7 +5982,7 @@ namespace video {
 
         if (encoder->name == config::video.encoder) {
           // Remove the encoder from the list entirely if it fails validation
-          if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder, probe_display_name)) {
+          if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
             pos = encoder_list.erase(pos);
             break;
           }
@@ -6049,7 +6016,7 @@ namespace video {
         auto encoder = *pos;
 
         // Remove the encoder from the list entirely if it fails validation
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder, probe_display_name)) {
+        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
           pos = encoder_list.erase(pos);
           continue;
         }
@@ -6086,7 +6053,7 @@ namespace video {
         // If we've used a previous encoder and it's not this one, we expect this encoder to
         // fail to validate. It will use a slightly different order of checks to more quickly
         // eliminate failing encoders.
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder, probe_display_name)) {
+        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
           pos = encoder_list.erase(pos);
           continue;
         }
@@ -6181,7 +6148,7 @@ namespace video {
     // Bind success to the adapter/output identity observed after capture
     // initialization. The first WGC probe commonly transitions from no runtime
     // LUID to the helper-reported LUID while validation is running.
-    const auto successful_cache_key = build_probe_cache_key(probe_display_name);
+    const auto successful_cache_key = build_probe_cache_key();
     update_probe_cache(successful_cache_key, true, cache_hdr_supported, hevc_passed, hevc_hdr_supported, av1_passed, av1_hdr_supported);
     // Publish the new encoder only after the probe has fully succeeded,
     // so concurrent capture threads never observe a null chosen_encoder.

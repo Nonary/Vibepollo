@@ -628,22 +628,19 @@ int main(int argc, char *argv[]) {
       return;
     }
 
-    std::string probe_display_name;
 #ifdef _WIN32
     if (!platf::is_default_input_desktop_active()) {
       BOOST_LOG(info) << "Startup encoder probe deferred until the interactive desktop is ready.";
       return;
     }
 
-    // Ensure a display is available first; probing encoders generally requires a display.
+    // Ensure the selected adapter has a usable output before a cold probe.
     auto encoder_probe_display_result = VDISPLAY::ensure_display();
     if (!encoder_probe_display_result.ready_for_probe()) {
       BOOST_LOG(info)
         << "Startup encoder probe deferred until the exact display target has a usable name and is visible through DXGI.";
       return;
     }
-    probe_display_name = encoder_probe_display_result.probe_display_name();
-
     bool encoder_probe_succeeded = false;
     auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
       VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
@@ -654,7 +651,7 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    bool encoder_probe_failed = video::probe_encoders(probe_display_name);
+    bool encoder_probe_failed = video::probe_encoders();
 
 #ifdef _WIN32
     // Re-resolve the exact retained target before retrying. Never let another
@@ -664,8 +661,7 @@ int main(int argc, char *argv[]) {
       auto retry_display_result = VDISPLAY::ensure_display();
       if (retry_display_result.ready_for_probe()) {
         BOOST_LOG(info) << "Exact display target became ready; retrying startup encoder probe.";
-        encoder_probe_failed =
-          video::probe_encoders(retry_display_result.probe_display_name());
+        encoder_probe_failed = video::probe_encoders();
       }
     }
 
