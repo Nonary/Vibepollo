@@ -433,6 +433,12 @@ namespace video {
       bool hevc_hdr_supported = false;
       bool av1_passed = false;
       bool av1_hdr_supported = false;
+#ifdef _WIN32
+      std::optional<LUID> pending_virtual_display_adapter_hint;
+      std::uint64_t pending_virtual_display_adapter_hint_lease = 0;
+      std::uint64_t next_pending_virtual_display_adapter_hint_lease = 0;
+      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
+#endif
 
       // Track failed probe attempts per cache key for diagnostics.
       std::optional<probe_cache_key_t> failure_cache_key;
@@ -464,6 +470,64 @@ namespace video {
         }
         return identity;
       }();
+
+      std::optional<LUID> pending_virtual_display_adapter_hint;
+      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
+      {
+        auto &state = encoder_probe_cache_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        pending_virtual_display_adapter_hint =
+          state.pending_virtual_display_adapter_hint;
+        pending_virtual_display_adapter_hint_ready_for_verification =
+          state.pending_virtual_display_adapter_hint_ready_for_verification;
+      }
+      if (pending_virtual_display_adapter_hint) {
+        if (pending_virtual_display_adapter_hint_ready_for_verification) {
+          std::optional<LUID> observed_adapter;
+          std::string_view observed_source;
+          if (current_wgc_identity) {
+            observed_adapter = current_wgc_identity->luid;
+            observed_source = "wgc";
+          } else {
+            const auto mapped_output = display_device::map_output_name(active_output);
+            const auto output_adapter = platf::resolve_output_adapter(mapped_output);
+            if (output_adapter) {
+              observed_adapter = *output_adapter.luid;
+              observed_source = "dxgi";
+            }
+          }
+
+          if (observed_adapter &&
+              !platf::adapter_luid_equal(
+                *pending_virtual_display_adapter_hint,
+                *observed_adapter
+              )) {
+            return probe_adapter_identity_t {
+              .identity =
+                "pending-virtual-display-actual-mismatch=" +
+                luid_cache_identity(*pending_virtual_display_adapter_hint) + ':' +
+                luid_cache_identity(*observed_adapter),
+              .source =
+                "pending-virtual-display-" + std::string(observed_source) + "-mismatch",
+              .resolved = false,
+            };
+          }
+          if (observed_adapter) {
+            return probe_adapter_identity_t {
+              .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+              .source =
+                "pending-virtual-display-adapter-confirmed-by-" +
+                std::string(observed_source),
+              .resolved = true,
+            };
+          }
+        }
+        return probe_adapter_identity_t {
+          .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+          .source = "pending-virtual-display-adapter",
+          .resolved = true,
+        };
+      }
 
       const bool adapter_is_configured =
         !config::video.adapter_name.empty() ||
@@ -2208,6 +2272,52 @@ namespace video {
     std::lock_guard<std::mutex> lock(state.mutex);
     return state.valid && state.cache_key && *state.cache_key == current_key;
   }
+
+#ifdef _WIN32
+  encoder_probe_adapter_hint_lease_t set_pending_virtual_display_adapter_hint(const LUID &adapter_luid) {
+    auto &state = encoder_probe_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto lease = ++state.next_pending_virtual_display_adapter_hint_lease;
+    state.pending_virtual_display_adapter_hint = adapter_luid;
+    state.pending_virtual_display_adapter_hint_lease = lease;
+    state.pending_virtual_display_adapter_hint_ready_for_verification = false;
+    BOOST_LOG(debug)
+      << "Published pending virtual-display adapter identity "
+      << luid_cache_identity(adapter_luid)
+      << " for encoder capability matching (lease=" << lease << ").";
+    return lease;
+  }
+
+  bool mark_pending_virtual_display_adapter_hint_ready_for_verification(
+    const encoder_probe_adapter_hint_lease_t lease
+  ) {
+    auto &state = encoder_probe_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (lease == 0 || state.pending_virtual_display_adapter_hint_lease != lease) {
+      return false;
+    }
+    state.pending_virtual_display_adapter_hint_ready_for_verification = true;
+    BOOST_LOG(debug)
+      << "Pending virtual-display adapter identity is ready for WGC verification (lease="
+      << lease << ").";
+    return true;
+  }
+
+  bool clear_pending_virtual_display_adapter_hint(const encoder_probe_adapter_hint_lease_t lease) {
+    auto &state = encoder_probe_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (lease == 0 || state.pending_virtual_display_adapter_hint_lease != lease) {
+      return false;
+    }
+    state.pending_virtual_display_adapter_hint.reset();
+    state.pending_virtual_display_adapter_hint_lease = 0;
+    state.pending_virtual_display_adapter_hint_ready_for_verification = false;
+    BOOST_LOG(debug)
+      << "Cleared pending virtual-display adapter identity after display publication (lease="
+      << lease << ").";
+    return true;
+  }
+#endif
 
   advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
     auto caps = current_advertised_capabilities_snapshot();

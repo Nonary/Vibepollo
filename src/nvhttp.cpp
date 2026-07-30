@@ -249,6 +249,24 @@ namespace nvhttp {
     bool has_active_or_stopping_stream_session();
 
     video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+      std::optional<video::encoder_probe_adapter_hint_lease_t> idle_virtual_adapter_hint;
+      if (config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+          !has_stream_session_activity()) {
+        const auto intended_adapter = platf::resolve_preferred_render_adapter(
+          config::video.adapter_name,
+          config::video.adapter_pnp_id
+        );
+        if (intended_adapter) {
+          idle_virtual_adapter_hint =
+            video::set_pending_virtual_display_adapter_hint(*intended_adapter.luid);
+        }
+      }
+      auto idle_virtual_adapter_hint_guard = util::fail_guard([&] {
+        if (idle_virtual_adapter_hint) {
+          (void) video::clear_pending_virtual_display_adapter_hint(*idle_virtual_adapter_hint);
+        }
+      });
+
       const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
         BOOST_LOG(debug)
           << "HTTP encoder capabilities: hdr="
@@ -398,6 +416,7 @@ namespace nvhttp {
       bool allow_display_changes,
       bool is_input_only,
       std::optional<std::string> &pending_output_override,
+      std::optional<video::encoder_probe_adapter_hint_lease_t> &pending_adapter_hint,
       const std::function<bool()> &display_startup_cancelled,
       const std::chrono::steady_clock::time_point display_startup_deadline
     ) {
@@ -654,6 +673,19 @@ namespace nvhttp {
             return;
           }
 
+          const auto intended_adapter = platf::resolve_preferred_render_adapter(
+            config::video.adapter_name,
+            config::video.adapter_pnp_id
+          );
+          if (intended_adapter) {
+            pending_adapter_hint =
+              video::set_pending_virtual_display_adapter_hint(*intended_adapter.luid);
+          } else {
+            BOOST_LOG(warning)
+              << "Cannot publish the pending virtual-display adapter identity before creation (status="
+              << platf::adapter_resolution_status_name(intended_adapter.status) << ").";
+          }
+
           if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {
             proc::initVDisplayDriver();
             const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
@@ -832,6 +864,15 @@ namespace nvhttp {
               launch_session->virtual_display_device_id = *resolved_device;
             } else {
               launch_session->virtual_display_device_id.clear();
+            }
+            if (!launch_session->virtual_display_device_id.empty()) {
+              config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
+              pending_output_override = launch_session->virtual_display_device_id;
+              if (pending_adapter_hint) {
+                (void) video::mark_pending_virtual_display_adapter_hint_ready_for_verification(
+                  *pending_adapter_hint
+                );
+              }
             }
             launch_session->virtual_display_ready_since = display_info->ready_since;
             if (display_info->display_name && !display_info->display_name->empty()) {
@@ -3124,12 +3165,19 @@ namespace nvhttp {
       }
 
 #ifdef _WIN32
+      std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
+      auto pending_adapter_hint_guard = util::fail_guard([&] {
+        if (pending_adapter_hint) {
+          (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
+        }
+      });
       prepare_virtual_display_for_session(
         launch_session,
         no_active_sessions,
         allow_display_changes,
         is_input_only,
         pending_output_override,
+        pending_adapter_hint,
         display_startup_cancelled,
         display_startup_deadline
       );
@@ -3619,12 +3667,19 @@ namespace nvhttp {
     });
 
 #ifdef _WIN32
+    std::optional<video::encoder_probe_adapter_hint_lease_t> pending_adapter_hint;
+    auto pending_adapter_hint_guard = util::fail_guard([&] {
+      if (pending_adapter_hint) {
+        (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
+      }
+    });
     prepare_virtual_display_for_session(
       launch_session,
       no_active_sessions,
       allow_display_changes,
       is_input_only,
       pending_output_override,
+      pending_adapter_hint,
       display_startup_cancelled,
       display_startup_deadline
     );

@@ -424,6 +424,18 @@ namespace video {
 
   advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative = false);
 
+#ifdef _WIN32
+  // Bridge the interval between selecting a virtual-display render adapter and
+  // Windows publishing its replacement output. The lease prevents an older
+  // request from clearing a newer session's identity.
+  using encoder_probe_adapter_hint_lease_t = std::uint64_t;
+  encoder_probe_adapter_hint_lease_t set_pending_virtual_display_adapter_hint(const LUID &adapter_luid);
+  // Once the replacement output is published, capability identity must agree
+  // with its WGC/DXGI adapter before a successful probe can remain cached.
+  bool mark_pending_virtual_display_adapter_hint_ready_for_verification(encoder_probe_adapter_hint_lease_t lease);
+  bool clear_pending_virtual_display_adapter_hint(encoder_probe_adapter_hint_lease_t lease);
+#endif
+
   void capture(
     safe::mail_t mail,
     config_t config,
