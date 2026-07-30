@@ -2468,6 +2468,80 @@ namespace platf {
     };
   }
 
+  adapter_resolution_t resolve_output_adapter(const std::string_view output_name) {
+    if (output_name.empty()) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::not_found,
+      };
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf())))) {
+      return adapter_resolution_t {
+        .status = adapter_resolution_status_e::unknown,
+      };
+    }
+
+    const auto wanted_output = from_utf8(std::string(output_name));
+    bool enumeration_incomplete = false;
+    for (UINT adapter_index = 0;; ++adapter_index) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      const auto adapter_status = factory->EnumAdapters1(adapter_index, adapter.GetAddressOf());
+      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(adapter_status) || !adapter) {
+        enumeration_incomplete = true;
+        break;
+      }
+
+      DXGI_ADAPTER_DESC1 adapter_desc {};
+      if (FAILED(adapter->GetDesc1(&adapter_desc))) {
+        enumeration_incomplete = true;
+        continue;
+      }
+      if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        continue;
+      }
+
+      for (UINT output_index = 0;; ++output_index) {
+        Microsoft::WRL::ComPtr<IDXGIOutput> output;
+        const auto output_status = adapter->EnumOutputs(output_index, output.GetAddressOf());
+        if (output_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(output_status) || !output) {
+          enumeration_incomplete = true;
+          break;
+        }
+
+        DXGI_OUTPUT_DESC output_desc {};
+        if (FAILED(output->GetDesc(&output_desc))) {
+          enumeration_incomplete = true;
+          continue;
+        }
+        if (_wcsicmp(output_desc.DeviceName, wanted_output.c_str()) != 0) {
+          continue;
+        }
+
+        return adapter_resolution_t {
+          .status = adapter_resolution_status_e::resolved,
+          .luid = adapter_desc.AdapterLuid,
+          .description = to_utf8(adapter_desc.Description),
+          .pnp_id = query_adapter_pnp_id(adapter_desc.AdapterLuid).value_or(std::string {}),
+          .dedicated_video_memory = adapter_desc.DedicatedVideoMemory,
+          .shared_system_memory = adapter_desc.SharedSystemMemory,
+        };
+      }
+    }
+
+    return adapter_resolution_t {
+      .status = enumeration_incomplete ?
+                  adapter_resolution_status_e::unknown :
+                  adapter_resolution_status_e::not_found,
+    };
+  }
+
   adapter_resolution_t resolve_preferred_render_adapter(
     const std::string_view adapter_name,
     const std::string_view adapter_pnp_id

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 // platform includes
 #include <winsock2.h>
@@ -53,7 +54,7 @@ namespace platf::dxgi {
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
 
     std::mutex g_adapter_luid_mutex;
-    std::optional<LUID> g_last_wgc_adapter_luid;
+    std::optional<wgc_adapter_identity_t> g_last_wgc_adapter_identity;
     std::optional<LUID> g_dxgi_adapter_luid_override;
 
     void sleep_until_capture_target(high_precision_timer *timer, const std::chrono::steady_clock::time_point &sleep_target) {
@@ -218,14 +219,29 @@ namespace platf::dxgi {
     return 0;
   }
 
-  void set_last_wgc_adapter_luid(std::optional<LUID> luid) {
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name) {
     std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
-    g_last_wgc_adapter_luid = luid;
+    if (luid) {
+      g_last_wgc_adapter_identity = wgc_adapter_identity_t {
+        .luid = *luid,
+        .output_name = std::move(output_name),
+      };
+    } else {
+      g_last_wgc_adapter_identity.reset();
+    }
   }
 
   std::optional<LUID> get_last_wgc_adapter_luid() {
     std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
-    return g_last_wgc_adapter_luid;
+    if (!g_last_wgc_adapter_identity) {
+      return std::nullopt;
+    }
+    return g_last_wgc_adapter_identity->luid;
+  }
+
+  std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity() {
+    std::lock_guard<std::mutex> lock(g_adapter_luid_mutex);
+    return g_last_wgc_adapter_identity;
   }
 
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid) {

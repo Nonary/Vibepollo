@@ -251,6 +251,16 @@ namespace platf {
   );
 
   /**
+   * Resolve a current GDI output name (for example, \\.\DISPLAY1) to the
+   * adapter that owns it.
+   *
+   * The returned LUID is process-local but authoritative for the lifetime of
+   * the encoder capability cache. A missing or currently unenumerated output
+   * is reported as not_found/unknown instead of falling back to another GPU.
+   */
+  adapter_resolution_t resolve_output_adapter(std::string_view output_name);
+
+  /**
    * Resolve the effective virtual-display render-adapter preference without
    * mutating either driver.
    *

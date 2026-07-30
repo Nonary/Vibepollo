@@ -49,8 +49,17 @@ namespace platf::dxgi {
   using factory1_t = util::safe_ptr<IDXGIFactory1, Release<IDXGIFactory1>>;
   using dxgi_t = util::safe_ptr<IDXGIDevice, Release<IDXGIDevice>>;
 
-  void set_last_wgc_adapter_luid(std::optional<LUID> luid);
+  struct wgc_adapter_identity_t {
+    LUID luid {};
+    // Stable configured/runtime output identity observed when WGC created its
+    // D3D device. This prevents a sticky LUID from being reused after capture
+    // moves to another output.
+    std::string output_name;
+  };
+
+  void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name = {});
   std::optional<LUID> get_last_wgc_adapter_luid();
+  std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity();
   void set_dxgi_adapter_luid_override(std::optional<LUID> luid);
   std::optional<LUID> get_dxgi_adapter_luid_override();
   bool should_use_wgc_default();

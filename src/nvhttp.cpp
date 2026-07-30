@@ -233,8 +233,18 @@ namespace nvhttp {
     bool has_active_or_stopping_stream_session();
 
     video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+      const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
+        BOOST_LOG(debug)
+          << "HTTP encoder capabilities: hdr="
+          << (caps.hevc_mode == 3 || caps.av1_mode == 3)
+          << ", hevc_mode=" << caps.hevc_mode
+          << ", av1_mode=" << caps.av1_mode
+          << ", source=" << reason << '.';
+        return caps;
+      };
+
       if (video::has_successful_encoder_probe()) {
-        return video::advertised_encoder_capabilities(false);
+        return publish(video::advertised_encoder_capabilities(false), "matching-cache");
       }
 
       // Session starts publish their pending owner while holding this gate.
@@ -246,15 +256,15 @@ namespace nvhttp {
       );
       if (!lifecycle_lock.owns_lock()) {
         BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
-        return video::advertised_encoder_capabilities(false);
+        return publish(video::advertised_encoder_capabilities(false), "lifecycle-gate");
       }
       if (video::has_successful_encoder_probe()) {
-        return video::advertised_encoder_capabilities(false);
+        return publish(video::advertised_encoder_capabilities(false), "matching-cache-after-gate");
       }
 
       if (has_active_or_stopping_stream_session()) {
         BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
-        return video::advertised_encoder_capabilities(false);
+        return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
       }
 
       auto ensure_result = VDISPLAY::ensure_display();
@@ -262,7 +272,7 @@ namespace nvhttp {
       if (ensure_result.tracks_temporary_for_probe) {
         BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
       }
-      return caps;
+      return publish(caps, "idle-probe");
     }
 
     bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
