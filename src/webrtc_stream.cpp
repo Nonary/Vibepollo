@@ -2476,6 +2476,7 @@ namespace webrtc_stream {
       config.width = options.width.value_or(kDefaultWidth);
       config.height = options.height.value_or(kDefaultHeight);
       config.framerate = options.fps.value_or(kDefaultFps);
+      config.framerateX100 = config.framerate * 100;
       int bitrate = options.bitrate_kbps.value_or(0);
       if (bitrate <= 0) {
         bitrate = config::video.max_bitrate > 0 ? config::video.max_bitrate : 20000;
@@ -2974,7 +2975,7 @@ namespace webrtc_stream {
       auto audio_config = build_audio_config(options);
       apply_rtsp_video_overrides(video_config, rtsp_config);
       apply_rtx_hdr_stream_policy(video_config);
-      const auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
+      auto desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (
         webrtc_capture.active.load(std::memory_order_acquire) &&
@@ -3029,6 +3030,8 @@ namespace webrtc_stream {
           return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
         }
       }
+
+      desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (!rtsp_active) {
 #ifdef _WIN32
