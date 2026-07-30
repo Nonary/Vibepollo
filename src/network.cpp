@@ -123,20 +123,10 @@ namespace net {
   std::string get_bind_address(const af_e af) {
     // If bind_address is configured, use it
     if (!config::sunshine.bind_address.empty()) {
-      // The config parser keeps trailing whitespace on values, so "0.0.0.0 # lan only"
-      // arrives here as "0.0.0.0 ".
       const auto configured = boost::algorithm::trim_copy(config::sunshine.bind_address);
-
-      // Validate here with the non-throwing overload: the acceptors bind through the
-      // throwing make_address(), whose exception is treated as fatal and shuts the whole
-      // process down. Degrading to the wildcard keeps the host reachable instead.
-      boost::system::error_code ec;
-      ip::make_address(configured, ec);
-      if (!ec) {
+      if (!configured.empty()) {
         return configured;
       }
-
-      BOOST_LOG(error) << "Ignoring invalid bind_address '"sv << config::sunshine.bind_address << "': "sv << ec.message() << ". Binding to the wildcard address instead."sv;
     }
 
     // Otherwise use the wildcard address for the given address family
