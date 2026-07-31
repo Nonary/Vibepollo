@@ -5505,10 +5505,6 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         if (candidate.m_info && candidate.m_display_name.empty()) {
-          if (exact_target) {
-            BOOST_LOG(debug) << "Virtual display target is enumerated without a usable GDI name; continuing so the display helper can activate it.";
-            return true;
-          }
           return false;
         }
 

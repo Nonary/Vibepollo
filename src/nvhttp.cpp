@@ -219,6 +219,16 @@ namespace nvhttp {
       );
     }
 
+    bool has_any_active_display() {
+      if (VDISPLAY::has_active_physical_display()) {
+        return true;
+      }
+      if (VDISPLAY::has_retained_ensure_display()) {
+        return true;
+      }
+      return has_active_virtual_display();
+    }
+
     void wait_for_probe_helper_settle(
       const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
       const std::chrono::steady_clock::time_point deadline
@@ -312,22 +322,6 @@ namespace nvhttp {
         BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
       }
       return publish(caps, "idle-probe");
-    }
-
-    bool wait_for_display_activation(std::chrono::steady_clock::duration timeout) {
-      if (timeout <= std::chrono::steady_clock::duration::zero()) {
-        return has_any_active_display();
-      }
-
-      const auto deadline = std::chrono::steady_clock::now() + timeout;
-      while (std::chrono::steady_clock::now() < deadline) {
-        if (has_any_active_display()) {
-          return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-
-      return has_any_active_display();
     }
 
     void cleanup_virtual_display_state() {
@@ -3316,6 +3310,7 @@ namespace nvhttp {
         tree.put("root.gamesession", 0);
 
         return;
+      }
       }
 
       no_active_sessions = !has_stream_session_activity();
