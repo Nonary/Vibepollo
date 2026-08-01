@@ -276,6 +276,23 @@ namespace nvhttp {
   std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid);
 
   /**
+   * @brief Encoder capabilities safe to expose to the browser WebRTC UI.
+   * @details Resolves the same selected-adapter capability view used for HTTP
+   *          protocol advertisement. A false `probe_complete` means the host
+   *          has not safely verified an encoder for the current capture target.
+   */
+  struct web_stream_capabilities_t {
+    bool probe_complete {false};
+    bool h264 {false};
+    bool hevc {false};
+    bool av1 {false};
+    bool hevc_hdr {false};
+    bool av1_hdr {false};
+  };
+
+  web_stream_capabilities_t get_web_stream_capabilities();
+
+  /**
    * @brief Serialize shared stream start and final teardown across RTSP and WebRTC.
    *
    * Acquire after the RTSP launch-request mutex, before protocol capture locks.

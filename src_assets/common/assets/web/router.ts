@@ -10,6 +10,16 @@ const router = createRouter({
       meta: { titleKey: 'ui.nav.overview' },
     },
     {
+      path: '/stream',
+      name: 'browser-stream',
+      component: () => import('@/views/BrowserStreamView.vue'),
+      meta: { titleKey: 'ui.nav.browser_stream' },
+    },
+    {
+      path: '/webrtc',
+      redirect: '/stream',
+    },
+    {
       path: '/library',
       name: 'library',
       component: () => import('@/views/LibraryView.vue'),

@@ -772,6 +772,7 @@
       }
     },
     "nav": {
+      "browser_stream": "Browser stream",
       "devices": "Devices",
       "integrations": "Integrations",
       "library": "Library",
@@ -780,6 +781,93 @@
       "overview": "Overview",
       "sessions": "Sessions",
       "settings": "Settings"
+    },
+    "browser_stream": {
+      "capabilities": {
+        "available": "Available",
+        "hdr_ready": "HDR ready",
+        "sdr_only": "SDR only",
+        "title": "This browser and host",
+        "unavailable": "Unavailable"
+      },
+      "cancel": "Cancel connection",
+      "codecs": {
+        "av1": "AV1",
+        "h264": "H.264",
+        "hevc": "HEVC"
+      },
+      "connecting_detail": "Negotiating a direct WebRTC stream with this host.",
+      "controls": {
+        "description": "Send mouse, keyboard, and wheel input only while the stream surface has focus.",
+        "input": "Forward browser input",
+        "input_help": "Click the stream, then use its mouse and keyboard controls.",
+        "title": "Browser controls"
+      },
+      "desktop": "Desktop",
+      "description": "Start and control a WebRTC stream directly in this browser.",
+      "disconnect": "Disconnect stream",
+      "errors": {
+        "connect": "Unable to start browser stream",
+        "connection_failed": "The browser stream connection failed.",
+        "inspect_browser": "This browser could not confirm its video decoding capabilities.",
+        "load_apps": "The application library could not be loaded.",
+        "playback": "Click to start browser playback",
+        "playback_detail": "The stream connected, but this browser needs a user gesture before it can play remote video or audio.",
+        "refresh": "Some browser stream data is unavailable",
+        "unavailable": "This browser stream configuration is not available."
+      },
+      "fullscreen": "Fullscreen",
+      "host_not_ready": "Browser streaming is not ready yet",
+      "input_ready": "Input forwarding is ready",
+      "input_unavailable": "Input forwarding is unavailable",
+      "ready_to_start": "Ready to stream in this browser",
+      "ready_to_start_detail": "Choose an application and video settings, then start the browser stream.",
+      "resume_playback": "Play stream",
+      "reasons": {
+        "browser_codec_unavailable": "This browser cannot receive {codec} WebRTC video.",
+        "browser_hdr_unavailable": "This browser cannot confirm HDR {codec} decoding and HDR display output.",
+        "hdr_policy_disabled": "HDR is disabled by the host display policy.",
+        "hdr_required": "The host display policy requires HDR, but this codec or browser cannot support it.",
+        "host_codec_unavailable": "The selected capture adapter does not support {codec}.",
+        "host_disabled": "WebRTC support is disabled in this host build.",
+        "host_hdr_unavailable": "The selected capture adapter does not support HDR {codec}.",
+        "host_unavailable": "The host did not provide browser-stream capabilities.",
+        "host_unverified": "The selected capture adapter has not completed encoder validation.",
+        "invalid_bitrate": "Bitrate must be an integer between {min} and {max} Kbps.",
+        "invalid_dimensions": "Width and height must be even values between {min} and {max}.",
+        "invalid_fps": "Frame rate must be an integer between {min} and {max}."
+      },
+      "refreshing": "Refreshing browser stream readiness",
+      "settings": {
+        "application": "Application",
+        "application_help": "Desktop starts the configured desktop entry. Select an application to launch it instead.",
+        "bitrate": "Bitrate (Kbps; 0 = host default)",
+        "codec": "Video codec",
+        "description": "Unavailable options stay disabled instead of silently falling back to another codec or SDR.",
+        "fps": "Frame rate",
+        "hdr": "Use HDR",
+        "hdr_forced_off": "HDR is disabled by the host display policy.",
+        "hdr_forced_on": "HDR is required by the host display policy. Choose a confirmed HDR-capable codec.",
+        "hdr_help": "HDR is available only when both the host and this browser confirm a compatible HDR codec and display.",
+        "height": "Height",
+        "mute_host_audio": "Mute host speakers while streaming",
+        "mute_host_audio_help": "Keep audio in this browser without playing it through the host speakers.",
+        "title": "Stream settings",
+        "video": "Video",
+        "width": "Width"
+      },
+      "stage_description": "The stream opens here. Focus this surface to forward browser input.",
+      "start": "Start browser stream",
+      "status": {
+        "connected": "Connected",
+        "connecting": "Connecting",
+        "disconnected": "Disconnected",
+        "failed": "Connection failed",
+        "ready": "Ready"
+      },
+      "stream_surface": "Browser stream surface",
+      "title": "Browser stream",
+      "unnamed_application": "Unnamed application"
     },
     "not_found": {
       "action": "Return to overview",
@@ -796,6 +884,7 @@
         "openLogs": "Open logs",
         "pairDevice": "Pair a device",
         "reviewSession": "Review session",
+        "startBrowserStream": "Start browser stream",
         "viewActiveSession": "View active session",
         "viewAll": "View all",
         "viewSessions": "View sessions"
@@ -1407,6 +1496,7 @@
       "unsaved_short": "{count} unsaved"
     },
     "shell": {
+      "appearance": "Appearance",
       "brand_overview": "Vibepollo overview",
       "change_theme": "Theme: {theme}. Change theme",
       "close_navigation": "Close navigation",
@@ -1416,7 +1506,10 @@
       "open_navigation": "Open navigation",
       "primary_navigation": "Primary navigation",
       "refresh_host_status": "Refresh host status",
-      "theme": "Theme: {theme}"
+      "theme": "Theme: {theme}",
+      "theme_auto": "System",
+      "theme_dark": "Dark",
+      "theme_light": "Light"
     },
     "status": {
       "needs_attention": "Needs attention",

@@ -3226,7 +3226,7 @@ namespace confighttp {
     print_req(request);
 
     nlohmann::json output_tree;
-    const int active = rtsp_stream::session_count();
+    const int active = rtsp_stream::session_count() + static_cast<int>(webrtc_stream::active_session_count());
     const bool app_running = proc::proc.running() > 0;
     output_tree["activeSessions"] = active;
     output_tree["appRunning"] = app_running;
@@ -3385,6 +3385,70 @@ namespace confighttp {
     send_response(response, output);
   }
 
+  void getWebRTCCapabilities(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    nlohmann::json output;
+#ifndef SUNSHINE_ENABLE_WEBRTC
+    output["enabled"] = false;
+    output["availability"] = {
+      {"state", "disabled"},
+      {"reason", "WebRTC support is disabled in this build"},
+    };
+    send_response(response, output);
+    return;
+#else
+    const auto capabilities = nvhttp::get_web_stream_capabilities();
+    constexpr int kMaxWebRtcDimension = 16384;
+    constexpr int kMaxWebRtcFps = 1000;
+    constexpr int kAbsoluteMaxWebRtcBitrateKbps = 500000;
+    const int max_bitrate_kbps = config::video.max_bitrate > 0 ?
+                                      std::min(config::video.max_bitrate, kAbsoluteMaxWebRtcBitrateKbps) :
+                                      kAbsoluteMaxWebRtcBitrateKbps;
+
+    bool hdr_policy_allows = true;
+    std::string_view hdr_policy = "automatic";
+#ifdef _WIN32
+    using hdr_request_override_e = config::video_t::dd_t::hdr_request_override_e;
+    switch (config::video.dd.hdr_request_override) {
+      case hdr_request_override_e::force_on:
+        hdr_policy = "force_on";
+        break;
+      case hdr_request_override_e::force_off:
+        hdr_policy = "force_off";
+        hdr_policy_allows = false;
+        break;
+      case hdr_request_override_e::automatic:
+        break;
+    }
+#endif
+
+    output["enabled"] = true;
+    output["availability"] = {
+      {"state", capabilities.probe_complete ? "ready" : "unverified"},
+      {"reason", capabilities.probe_complete ? "" : "The selected capture adapter has not reported a usable encoder."},
+    };
+    output["codecs"] = {
+      {"h264", {{"supported", capabilities.h264}, {"hdr", false}}},
+      {"hevc", {{"supported", capabilities.hevc}, {"hdr", capabilities.hevc_hdr}}},
+      {"av1", {{"supported", capabilities.av1}, {"hdr", capabilities.av1_hdr}}},
+    };
+    output["hdr_policy_allows"] = hdr_policy_allows;
+    output["hdr_policy"] = std::string {hdr_policy};
+    output["limits"] = {
+      {"min_dimension", 64},
+      {"max_dimension", kMaxWebRtcDimension},
+      {"min_fps", 1},
+      {"max_fps", kMaxWebRtcFps},
+      {"min_bitrate_kbps", 0},
+      {"max_bitrate_kbps", max_bitrate_kbps},
+    };
+    send_response(response, output);
+#endif
+  }
+
   void createWebRTCSession(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3535,6 +3599,12 @@ namespace confighttp {
           }
         }
         if (options.hdr.value_or(false)) {
+#ifdef _WIN32
+          if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_off) {
+            bad_request(response, request, "HDR is disabled by the host display policy");
+            return;
+          }
+#endif
           if (!options.encoded) {
             bad_request(response, request, "HDR requires encoded video for WebRTC sessions");
             return;
@@ -3544,15 +3614,38 @@ namespace confighttp {
             return;
           }
         }
-        if (options.hdr.value_or(false)) {
-          if (!options.encoded) {
-            bad_request(response, request, "HDR requires encoded video for WebRTC sessions");
-            return;
-          }
-          if (!options.codec || (*options.codec != "hevc" && *options.codec != "av1")) {
-            bad_request(response, request, "HDR requires HEVC or AV1 video encoding");
-            return;
-          }
+#ifdef _WIN32
+        if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_on &&
+            (!options.codec || (*options.codec != "hevc" && *options.codec != "av1"))) {
+          bad_request(response, request, "The host HDR display policy requires HEVC or AV1 video encoding");
+          return;
+        }
+#endif
+
+        constexpr int kMinWebRtcDimension = 64;
+        constexpr int kMaxWebRtcDimension = 16384;
+        constexpr int kMaxWebRtcFps = 1000;
+        constexpr int kAbsoluteMaxWebRtcBitrateKbps = 500000;
+        const int max_bitrate_kbps = config::video.max_bitrate > 0 ?
+                                          std::min(config::video.max_bitrate, kAbsoluteMaxWebRtcBitrateKbps) :
+                                          kAbsoluteMaxWebRtcBitrateKbps;
+        const auto valid_dimension = [=](const std::optional<int> &dimension) {
+          return !dimension ||
+                 (*dimension >= kMinWebRtcDimension &&
+                  *dimension <= kMaxWebRtcDimension &&
+                  *dimension % 2 == 0);
+        };
+        if (!valid_dimension(options.width) || !valid_dimension(options.height)) {
+          bad_request(response, request, "WebRTC width and height must be even values between 64 and 16384");
+          return;
+        }
+        if (options.fps && (*options.fps < 1 || *options.fps > kMaxWebRtcFps)) {
+          bad_request(response, request, "WebRTC fps must be between 1 and 1000");
+          return;
+        }
+        if (options.bitrate_kbps && (*options.bitrate_kbps < 0 || *options.bitrate_kbps > max_bitrate_kbps)) {
+          bad_request(response, request, "WebRTC bitrate_kbps exceeds this host's allowed range");
+          return;
         }
       } catch (const std::exception &e) {
         bad_request(response, request, e.what());
@@ -3666,7 +3759,8 @@ namespace confighttp {
         if (!webrtc_stream::get_session(session_id)) {
           output["error"] = "Session not found";
         } else {
-          output["error"] = "Failed to process offer";
+          const auto negotiation_error = webrtc_stream::get_negotiation_error(session_id);
+          output["error"] = negotiation_error.empty() ? "Failed to process offer" : negotiation_error;
         }
         send_response(response, output);
         return;
@@ -5666,6 +5760,7 @@ namespace confighttp {
     register_api_route("^/api/host/stats$", "GET", getHostStats);
     register_api_route("^/api/host/info$", "GET", getHostInfo);
     register_api_route("^/api/rtsp/sessions$", "GET", listRTSPSessions);
+    register_blocking_api_route("^/api/webrtc/capabilities$", "GET", getWebRTCCapabilities);
     register_api_route("^/api/webrtc/sessions$", "GET", listWebRTCSessions);
     register_api_route("^/api/history/sessions$", "GET", listSessionHistory);
     register_api_route("^/api/history/sessions/active$", "GET", getActiveSessionHistory);

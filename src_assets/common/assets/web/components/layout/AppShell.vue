@@ -12,6 +12,7 @@ const { t } = useI18n();
 
 const primaryNavigation = [
   { labelKey: 'ui.nav.overview', icon: 'overview', to: '/' },
+  { labelKey: 'ui.nav.browser_stream', icon: 'play', to: '/stream' },
   { labelKey: 'ui.nav.library', icon: 'library', to: '/library' },
   { labelKey: 'ui.nav.devices', icon: 'devices', to: '/devices' },
   { labelKey: 'ui.nav.sessions', icon: 'sessions', to: '/sessions' },
@@ -41,10 +42,11 @@ function isCurrent(path: string): boolean {
   return route.path.startsWith(path);
 }
 
-function cycleTheme(): void {
-  const values: ThemePreference[] = ['auto', 'dark', 'light'];
-  const next = values[(values.indexOf(system.theme) + 1) % values.length];
-  system.setTheme(next);
+function setTheme(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value === 'auto' || value === 'dark' || value === 'light') {
+    system.setTheme(value as ThemePreference);
+  }
 }
 
 function closeMobileNavigation(): void {
@@ -161,21 +163,39 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
           </span>
         </button>
 
-        <div class="sidebar__utility">
-          <button
-            class="icon-button"
-            type="button"
-            :aria-label="t('ui.shell.change_theme', { theme: t(`navbar.theme_${system.theme}`) })"
-            :title="t('ui.shell.theme', { theme: t(`navbar.theme_${system.theme}`) })"
-            @click="cycleTheme"
+        <div class="theme-picker">
+          <UiIcon name="settings" :size="18" aria-hidden="true" />
+          <label class="sidebar__label" for="appearance-theme">{{
+            t('ui.shell.appearance')
+          }}</label>
+          <select
+            id="appearance-theme"
+            class="theme-picker__select"
+            :value="system.theme"
+            :aria-label="t('ui.shell.appearance')"
+            :title="t('ui.shell.theme', { theme: t(`ui.shell.theme_${system.theme}`) })"
+            @change="setTheme"
           >
-            <UiIcon name="activity" />
-          </button>
+            <option value="auto">{{ t('ui.shell.theme_auto') }}</option>
+            <option value="light">{{ t('ui.shell.theme_light') }}</option>
+            <option value="dark">{{ t('ui.shell.theme_dark') }}</option>
+          </select>
+        </div>
+
+        <div class="sidebar__utility">
           <button
             class="icon-button sidebar__collapse"
             type="button"
-            :aria-label="system.navCollapsed ? t('ui.shell.expand_navigation') : t('ui.shell.collapse_navigation')"
-            :title="system.navCollapsed ? t('ui.shell.expand_navigation') : t('ui.shell.collapse_navigation')"
+            :aria-label="
+              system.navCollapsed
+                ? t('ui.shell.expand_navigation')
+                : t('ui.shell.collapse_navigation')
+            "
+            :title="
+              system.navCollapsed
+                ? t('ui.shell.expand_navigation')
+                : t('ui.shell.collapse_navigation')
+            "
             @click="system.toggleNav"
           >
             <UiIcon :name="system.navCollapsed ? 'chevron-right' : 'chevron-left'" />

@@ -138,8 +138,8 @@ async function refresh(silent = false): Promise<void> {
   loading.value = false;
 }
 
-const isStreaming = computed(
-  () => Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
+const isStreaming = computed(() =>
+  Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
 );
 
 const activeDevices = computed(() => devices.value.filter((device) => device.connected).length);
@@ -222,9 +222,10 @@ const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(
 const libraryPreview = computed(() => apps.value.slice(-4).reverse());
 const lastUpdatedLabel = computed(() =>
   lastUpdatedAt.value
-    ? new Intl.DateTimeFormat(locale.value || undefined, { hour: 'numeric', minute: '2-digit' }).format(
-        lastUpdatedAt.value,
-      )
+    ? new Intl.DateTimeFormat(locale.value || undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(lastUpdatedAt.value)
     : t('ui.overview.notUpdated'),
 );
 
@@ -257,12 +258,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page page--wide overview-page">
-    <PageHeader
-      :title="t('ui.overview.title')"
-      :description="t('ui.overview.description')"
-    >
+    <PageHeader :title="t('ui.overview.title')" :description="t('ui.overview.description')">
       <template #meta>
-        <span class="overview-updated">{{ t('ui.overview.updated', { time: lastUpdatedLabel }) }}</span>
+        <span class="overview-updated">{{
+          t('ui.overview.updated', { time: lastUpdatedLabel })
+        }}</span>
       </template>
       <template #actions>
         <AppButton
@@ -281,11 +281,7 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="loading">
-      <LoadingSkeleton
-        variant="block"
-        height="168px"
-        :label="t('ui.overview.loadingReadiness')"
-      />
+      <LoadingSkeleton variant="block" height="168px" :label="t('ui.overview.loadingReadiness')" />
       <div class="overview-summary-grid" aria-hidden="true">
         <LoadingSkeleton variant="block" height="136px" />
         <LoadingSkeleton variant="block" height="136px" />
@@ -293,10 +289,17 @@ onBeforeUnmount(() => {
     </template>
 
     <template v-else>
-      <section class="readiness-panel" :data-tone="readiness.tone" aria-labelledby="readiness-title">
+      <section
+        class="readiness-panel"
+        :data-tone="readiness.tone"
+        aria-labelledby="readiness-title"
+      >
         <div class="readiness-panel__state">
           <span class="readiness-panel__icon" aria-hidden="true">
-            <UiIcon :name="isStreaming ? 'activity' : warnings.length ? 'alert-triangle' : 'check-circle'" :size="24" />
+            <UiIcon
+              :name="isStreaming ? 'activity' : warnings.length ? 'alert-triangle' : 'check-circle'"
+              :size="24"
+            />
           </span>
           <div>
             <StatusBadge :label="readiness.label" :tone="readiness.tone" />
@@ -307,16 +310,32 @@ onBeforeUnmount(() => {
             </p>
           </div>
         </div>
-        <RouterLink class="button button--secondary" :to="isStreaming ? '/sessions' : '/library'">
-          {{ isStreaming ? t('ui.overview.actions.viewActiveSession') : t('ui.overview.actions.openLibrary') }}
-          <UiIcon name="chevron-right" aria-hidden="true" />
-        </RouterLink>
+        <div class="readiness-panel__actions">
+          <RouterLink class="button button--secondary" :to="isStreaming ? '/sessions' : '/library'">
+            {{
+              isStreaming
+                ? t('ui.overview.actions.viewActiveSession')
+                : t('ui.overview.actions.openLibrary')
+            }}
+            <UiIcon name="chevron-right" aria-hidden="true" />
+          </RouterLink>
+          <RouterLink v-if="!isStreaming" class="button button--primary" to="/stream">
+            <UiIcon name="play" aria-hidden="true" />
+            {{ t('ui.overview.actions.startBrowserStream') }}
+          </RouterLink>
+        </div>
       </section>
 
       <div v-if="isStreaming || warnings.length" class="overview-summary-grid">
-        <section v-if="isStreaming" class="overview-summary-card" aria-labelledby="active-stream-title">
+        <section
+          v-if="isStreaming"
+          class="overview-summary-card"
+          aria-labelledby="active-stream-title"
+        >
           <div class="overview-summary-card__heading">
-            <span class="summary-icon summary-icon--info" aria-hidden="true"><UiIcon name="activity" /></span>
+            <span class="summary-icon summary-icon--info" aria-hidden="true"
+              ><UiIcon name="activity"
+            /></span>
             <StatusBadge :label="t('_common.active')" tone="info" compact />
           </div>
           <h2 id="active-stream-title">{{ session?.appName || t('ui.overview.remoteStream') }}</h2>
@@ -340,7 +359,9 @@ onBeforeUnmount(() => {
           :aria-labelledby="`warning-${warning.key}`"
         >
           <div class="overview-summary-card__heading">
-            <span class="summary-icon summary-icon--warning" aria-hidden="true"><UiIcon name="alert-triangle" /></span>
+            <span class="summary-icon summary-icon--warning" aria-hidden="true"
+              ><UiIcon name="alert-triangle"
+            /></span>
             <StatusBadge :label="t('ui.overview.attention')" tone="warning" compact />
           </div>
           <h2 :id="`warning-${warning.key}`">{{ warning.title }}</h2>
@@ -367,10 +388,22 @@ onBeforeUnmount(() => {
             <RouterLink to="/sessions">{{ t('ui.overview.sessions') }}</RouterLink>
           </div>
           <dl v-if="hostStats" class="metric-grid">
-            <div><dt>{{ t('host.cpu') }}</dt><dd>{{ percent(hostStats.cpu_percent) }}</dd></div>
-            <div><dt>{{ t('host.gpu') }}</dt><dd>{{ percent(hostStats.gpu_percent) }}</dd></div>
-            <div><dt>{{ t('ui.overview.memory') }}</dt><dd>{{ percent(hostStats.ram_percent) }}</dd></div>
-            <div><dt>{{ t('host.vram') }}</dt><dd>{{ percent(hostStats.vram_percent) }}</dd></div>
+            <div>
+              <dt>{{ t('host.cpu') }}</dt>
+              <dd>{{ percent(hostStats.cpu_percent) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('host.gpu') }}</dt>
+              <dd>{{ percent(hostStats.gpu_percent) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('ui.overview.memory') }}</dt>
+              <dd>{{ percent(hostStats.ram_percent) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t('host.vram') }}</dt>
+              <dd>{{ percent(hostStats.vram_percent) }}</dd>
+            </div>
           </dl>
           <EmptyState
             v-else
@@ -432,7 +465,10 @@ onBeforeUnmount(() => {
           </EmptyState>
         </section>
 
-        <section class="overview-panel overview-panel--library" aria-labelledby="library-summary-title">
+        <section
+          class="overview-panel overview-panel--library"
+          aria-labelledby="library-summary-title"
+        >
           <div class="overview-panel__heading">
             <div>
               <h2 id="library-summary-title">{{ t('ui.overview.library.title') }}</h2>
@@ -515,6 +551,13 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: flex-start;
   gap: var(--vs-space-16);
+}
+
+.readiness-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
 }
 
 .readiness-panel__icon,
@@ -711,7 +754,12 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .readiness-panel > .button {
+  .readiness-panel__actions {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .readiness-panel__actions > .button {
     width: 100%;
   }
 

@@ -92,6 +92,7 @@ namespace webrtc_stream {
   };
 
   bool has_active_sessions();
+  unsigned int active_session_count();
   bool has_active_or_pending_sessions();
   bool has_capture_active();
   // True while a WebRTC close is completing peer, media, capture, display,

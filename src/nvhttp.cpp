@@ -1074,6 +1074,63 @@ namespace nvhttp {
     }  // namespace
 #endif
 
+#ifndef _WIN32
+  namespace {
+    bool has_stream_session_activity_for_http_probe() {
+      return rtsp_stream::has_pending_launch_or_startup() ||
+             rtsp_stream::session_count_no_cleanup() > 0 ||
+             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+             webrtc_stream::has_active_or_pending_sessions() ||
+             webrtc_stream::has_capture_active() ||
+             webrtc_stream::has_teardown_in_progress();
+    }
+
+    video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+      const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
+        BOOST_LOG(debug)
+          << "HTTP encoder capabilities: hdr="
+          << (caps.hevc_mode == 3 || caps.av1_mode == 3)
+          << ", hevc_mode=" << caps.hevc_mode
+          << ", av1_mode=" << caps.av1_mode
+          << ", source=" << reason << '.';
+        return caps;
+      };
+
+      if (video::has_successful_encoder_probe()) {
+        return publish(video::advertised_encoder_capabilities(false), "matching-cache");
+      }
+
+      std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex(), std::try_to_lock);
+      if (!lifecycle_lock.owns_lock()) {
+        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
+        return publish(video::advertised_encoder_capabilities(false), "lifecycle-gate");
+      }
+      if (video::has_successful_encoder_probe()) {
+        return publish(video::advertised_encoder_capabilities(false), "matching-cache-after-gate");
+      }
+      if (has_stream_session_activity_for_http_probe()) {
+        BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
+        return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
+      }
+
+      return publish(video::advertised_encoder_capabilities(true), "idle-probe");
+    }
+  }  // namespace
+#endif
+
+  web_stream_capabilities_t get_web_stream_capabilities() {
+    const auto caps = advertised_encoder_capabilities_for_http();
+    const bool probe_complete = video::has_successful_encoder_probe();
+    return {
+      .probe_complete = probe_complete,
+      .h264 = probe_complete,
+      .hevc = probe_complete && caps.hevc_mode >= 2,
+      .av1 = probe_complete && caps.av1_mode >= 2,
+      .hevc_hdr = probe_complete && caps.hevc_mode >= 3,
+      .av1_hdr = probe_complete && caps.av1_mode >= 3,
+    };
+  }
 
     // uniqueID, session
     std::unordered_map<std::string, pair_session_t> map_id_sess;

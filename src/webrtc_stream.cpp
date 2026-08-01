@@ -2132,6 +2132,7 @@ namespace webrtc_stream {
     Av1OfferInfo parse_av1_offer(std::string_view sdp) {
       std::unordered_map<int, Av1FmtpParams> fmtp_params;
       std::vector<int> av1_payloads;
+      bool in_video = false;
 
       std::size_t line_start = 0;
       while (line_start < sdp.size()) {
@@ -2144,7 +2145,9 @@ namespace webrtc_stream {
           line.remove_suffix(1);
         }
 
-        if (line.rfind("a=rtpmap:", 0) == 0) {
+        if (line.rfind("m=", 0) == 0) {
+          in_video = line.rfind("m=video", 0) == 0;
+        } else if (in_video && line.rfind("a=rtpmap:", 0) == 0) {
           auto rest = line.substr(9);
           auto space = rest.find_first_of(" \t");
           if (space != std::string_view::npos) {
@@ -2152,7 +2155,7 @@ namespace webrtc_stream {
             auto codec = trim_ascii(rest.substr(space + 1));
             auto slash = codec.find('/');
             auto codec_name = slash == std::string_view::npos ? codec : codec.substr(0, slash);
-            if (boost::istarts_with(codec_name, "AV1")) {
+            if (boost::iequals(codec_name, "AV1")) {
               int pt = -1;
               auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
               if (result.ec == std::errc() && pt >= 0) {
@@ -2160,7 +2163,7 @@ namespace webrtc_stream {
               }
             }
           }
-        } else if (line.rfind("a=fmtp:", 0) == 0) {
+        } else if (in_video && line.rfind("a=fmtp:", 0) == 0) {
           auto rest = line.substr(7);
           auto space = rest.find_first_of(" \t");
           if (space != std::string_view::npos) {
@@ -2223,7 +2226,7 @@ namespace webrtc_stream {
 
     struct HevcOfferInfo {
       bool offered = false;
-      std::optional<std::string> fmtp;
+      std::vector<std::string> fmtp_candidates;
     };
 
     HevcOfferInfo parse_hevc_offer(std::string_view sdp) {
@@ -2252,7 +2255,7 @@ namespace webrtc_stream {
             auto codec = trim_ascii(rest.substr(space + 1));
             auto slash = codec.find('/');
             auto codec_name = slash == std::string_view::npos ? codec : codec.substr(0, slash);
-            if (boost::istarts_with(codec_name, "H265") || boost::istarts_with(codec_name, "HEVC")) {
+            if (boost::iequals(codec_name, "H265") || boost::iequals(codec_name, "HEVC")) {
               int pt = -1;
               auto result = std::from_chars(pt_str.data(), pt_str.data() + pt_str.size(), pt);
               if (result.ec == std::errc() && pt >= 0) {
@@ -2282,12 +2285,54 @@ namespace webrtc_stream {
         return info;
       }
       info.offered = true;
-      const int pt = h265_payloads.front();
-      auto it = fmtp_params.find(pt);
-      if (it != fmtp_params.end()) {
-        info.fmtp = it->second;
+      for (const int pt : h265_payloads) {
+        auto it = fmtp_params.find(pt);
+        if (it != fmtp_params.end()) {
+          info.fmtp_candidates.push_back(it->second);
+        }
       }
       return info;
+    }
+
+    bool hevc_offer_supports_main10(std::string_view fmtp) {
+      std::optional<unsigned int> profile_id;
+      std::optional<unsigned int> profile_space;
+      std::size_t start = 0;
+      while (start < fmtp.size()) {
+        const std::size_t end = fmtp.find(';', start);
+        const auto token = trim_ascii(
+          fmtp.substr(start, end == std::string::npos ? std::string::npos : end - start)
+        );
+        const auto equals = token.find('=');
+        if (equals != std::string_view::npos) {
+          std::string key {trim_ascii(token.substr(0, equals))};
+          boost::algorithm::to_lower(key);
+          if (key == "profile-id" || key == "profile-space") {
+            const auto value = trim_ascii(token.substr(equals + 1));
+            unsigned int parsed = 0;
+            const auto result = std::from_chars(
+              value.data(),
+              value.data() + value.size(),
+              parsed
+            );
+            if (result.ec != std::errc() || result.ptr != value.data() + value.size()) {
+              return false;
+            }
+            if (key == "profile-id") {
+              profile_id = parsed;
+            } else {
+              profile_space = parsed;
+            }
+          }
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        start = end + 1;
+      }
+      // A missing profile-id is Main (1). Browser-stream HDR uses Main 10
+      // only, whose RFC 7798 profile-space/id pair is 0/2.
+      return profile_space.value_or(0) == 0 && profile_id.value_or(1) == 2;
     }
 
     /**
@@ -2529,6 +2574,55 @@ namespace webrtc_stream {
       }
 
       return config;
+    }
+
+    std::optional<std::string> validate_requested_video_capabilities(const SessionOptions &options) {
+      if (!video::has_successful_encoder_probe()) {
+        return std::string {"The selected capture adapter has not completed encoder validation."};
+      }
+
+      const auto capabilities = video::advertised_encoder_capabilities(false);
+      const std::string_view codec = options.codec ? std::string_view {*options.codec} : "h264"sv;
+      const int codec_mode = codec == "hevc"sv ? capabilities.hevc_mode :
+                             codec == "av1"sv  ? capabilities.av1_mode :
+                                                 0;
+      bool hdr_requested = options.hdr.value_or(false);
+
+#ifdef _WIN32
+      if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_on) {
+        hdr_requested = true;
+      } else if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_off) {
+        hdr_requested = false;
+      }
+#endif
+
+      if (codec != "h264"sv && codec_mode < 2) {
+        return std::string {codec == "hevc"sv ?
+                               "HEVC is not available on the selected capture adapter." :
+                               "AV1 is not available on the selected capture adapter."};
+      }
+
+      if (!hdr_requested) {
+        return std::nullopt;
+      }
+
+#ifdef _WIN32
+      if (config::video.dd.hdr_request_override == config::video_t::dd_t::hdr_request_override_e::force_off) {
+        return std::string {"HDR is disabled by the host display policy."};
+      }
+#endif
+
+      if (codec_mode < 3) {
+        if (codec == "hevc"sv) {
+          return std::string {"HEVC Main10 HDR is not available on the selected capture adapter."};
+        }
+        if (codec == "av1"sv) {
+          return std::string {"AV1 Main10 HDR is not available on the selected capture adapter."};
+        }
+        return std::string {"HDR requires HEVC or AV1 Main10 video encoding."};
+      }
+
+      return std::nullopt;
     }
 
     void apply_rtx_hdr_stream_policy(video::config_t &config) {
@@ -3016,21 +3110,6 @@ namespace webrtc_stream {
       }
 #endif
 
-      if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
-        const auto &apps = proc::proc.get_apps();
-        const auto requested_id_str = std::to_string(requested_app_id);
-        auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
-          return app.id == requested_id_str;
-        });
-        if (app_iter == apps.end()) {
-          return std::string {"Cannot find requested application"};
-        }
-        auto result = proc::proc.execute(*app_iter, launch_session);
-        if (result != 0) {
-          return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
-        }
-      }
-
       desired_key = build_capture_config_key(effective_app_id, video_config, options);
 
       if (!rtsp_active) {
@@ -3111,6 +3190,41 @@ namespace webrtc_stream {
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
         }
 #endif
+      }
+
+      if (const auto capability_error = validate_requested_video_capabilities(options)) {
+        return capability_error;
+      }
+
+      // Capability probing can change the active HEVC/AV1 modes. Rebuild the
+      // request afterward so the capture, session state, and cache key all
+      // reflect the verified adapter rather than the pre-probe configuration.
+      video_config = build_video_config(options, prefer_10bit_sdr);
+      apply_rtsp_video_overrides(video_config, rtsp_config);
+      apply_rtx_hdr_stream_policy(video_config);
+      desired_key = build_capture_config_key(effective_app_id, video_config, options);
+      launch_session->enable_hdr = video_config.dynamicRange != 0 &&
+                                   !video_config.prefer_sdr_10bit &&
+                                   !video_config.force_sdr;
+      launch_session->prefer_sdr_10bit = video_config.prefer_sdr_10bit;
+      launch_session->force_sdr = video_config.force_sdr;
+
+      // Do not launch an application until the selected adapter has proven it
+      // can satisfy the requested codec and dynamic range. Otherwise a bad
+      // browser request can start the app and then fail before any stream exists.
+      if (!rtsp_active && requested_app_id > 0 && requested_app_id != current_app_id) {
+        const auto &apps = proc::proc.get_apps();
+        const auto requested_id_str = std::to_string(requested_app_id);
+        auto app_iter = std::find_if(apps.begin(), apps.end(), [&](const auto &app) {
+          return app.id == requested_id_str;
+        });
+        if (app_iter == apps.end()) {
+          return std::string {"Cannot find requested application"};
+        }
+        auto result = proc::proc.execute(*app_iter, launch_session);
+        if (result != 0) {
+          return std::string {"Failed to launch application (code "} + std::to_string(result) + ")";
+        }
       }
 
       auto mail = std::make_shared<safe::mail_raw_t>();
@@ -5225,6 +5339,10 @@ namespace webrtc_stream {
     return webrtc_capture.active.load(std::memory_order_acquire);
   }
 
+  unsigned int active_session_count() {
+    return active_sessions.load(std::memory_order_acquire);
+  }
+
   bool has_active_or_pending_sessions() {
     if (webrtc_capture.pending_session_creations.load(std::memory_order_acquire) > 0) {
       return true;
@@ -5782,6 +5900,7 @@ namespace webrtc_stream {
     BOOST_LOG(debug) << "WebRTC: set_remote_offer enter id=" << session_id;
     lwrtc_peer_t *peer = nullptr;
     int audio_channels = kDefaultAudioChannels;
+    std::vector<Session::IceCandidate> queued_remote_candidates;
 #endif
     {
       std::lock_guard lg {session_mutex};
@@ -5812,12 +5931,30 @@ namespace webrtc_stream {
       }
       if (it->second.state.codec && boost::iequals(*it->second.state.codec, "hevc")) {
         const auto hevc_offer = parse_hevc_offer(sdp);
-        it->second.hevc_fmtp = hevc_offer.fmtp;
+        it->second.hevc_fmtp.reset();
         if (!hevc_offer.offered) {
           BOOST_LOG(error) << "WebRTC: HEVC requested but offer does not include H265";
           return false;
-        } else if (hevc_offer.fmtp) {
-          BOOST_LOG(debug) << "WebRTC: parsed HEVC fmtp params " << *hevc_offer.fmtp;
+        }
+
+        const auto main10_fmtp = std::find_if(
+          hevc_offer.fmtp_candidates.begin(),
+          hevc_offer.fmtp_candidates.end(),
+          [](const std::string &fmtp) {
+            return hevc_offer_supports_main10(fmtp);
+          }
+        );
+        if (it->second.state.hdr.value_or(false)) {
+          if (main10_fmtp == hevc_offer.fmtp_candidates.end()) {
+            it->second.negotiation_error = "HDR HEVC requires a Main10-capable browser offer";
+            BOOST_LOG(error) << "WebRTC: rejected HDR HEVC offer without a Main10 profile";
+            return false;
+          }
+          it->second.hevc_fmtp = *main10_fmtp;
+          BOOST_LOG(debug) << "WebRTC: selected Main10 HEVC fmtp params " << *main10_fmtp;
+        } else if (!hevc_offer.fmtp_candidates.empty()) {
+          it->second.hevc_fmtp = hevc_offer.fmtp_candidates.front();
+          BOOST_LOG(debug) << "WebRTC: parsed HEVC fmtp params " << *it->second.hevc_fmtp;
         } else {
           BOOST_LOG(warning) << "WebRTC: no HEVC fmtp params found in offer";
         }
@@ -5862,12 +5999,28 @@ namespace webrtc_stream {
       }
       peer = it->second.peer;
       audio_channels = it->second.state.audio_channels.value_or(kDefaultAudioChannels);
+      if (created_peer) {
+        queued_remote_candidates = it->second.candidates;
+      }
 #endif
     }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
     if (!peer) {
       return false;
+    }
+
+    // ICE can arrive immediately after the browser sets its local offer. The
+    // HTTP route stores those candidates before this peer exists, so replay
+    // the stored set once the peer is ready instead of stranding the first
+    // candidate until a later trickle update happens to arrive.
+    for (const auto &candidate : queued_remote_candidates) {
+      lwrtc_peer_add_candidate(
+        peer,
+        candidate.mid.c_str(),
+        candidate.mline_index,
+        candidate.candidate.c_str()
+      );
     }
 
     auto *ctx = new SessionPeerContext {session_id, peer, audio_channels};
