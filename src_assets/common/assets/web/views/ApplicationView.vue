@@ -23,6 +23,12 @@ import {
   saveApp,
   type AppRecord,
 } from '@/services/apps';
+import {
+  settingsCategories,
+  settingsDefaults,
+  type SettingsField,
+  type SettingsOption,
+} from '@/configs/settingsSchema';
 
 interface PrepEntry {
   do: string;
@@ -91,6 +97,10 @@ interface FrameGenConfig extends Record<string, unknown> {
 }
 
 interface FrameGenMetadata {
+  gpus?: Array<{
+    description?: string;
+    pnp_id?: string;
+  }>;
   platform?: unknown;
   windows_build_number?: unknown;
 }
@@ -161,7 +171,7 @@ interface FrameGenHealth {
 
 const route = useRoute();
 const router = useRouter();
-const { t } = useI18n();
+const { t, te } = useI18n();
 const loading = ref(true);
 const saving = ref(false);
 const deleting = ref(false);
@@ -174,7 +184,6 @@ const coverFailed = ref(false);
 const deleteOpen = ref(false);
 const deleteError = ref('');
 const errors = reactive<Record<string, string>>({});
-const advancedOpen = ref(false);
 const playnitePickerOpen = ref(false);
 const playniteGames = ref<PlayniteGame[]>([]);
 const playniteGamesLoaded = ref(false);
@@ -191,7 +200,15 @@ let formHydrating = false;
 let formHydrationEpoch = 0;
 let playniteCloseTimer: number | null = null;
 const form = reactive<EditorForm>(emptyForm());
+const overrideMetadata = ref<FrameGenMetadata>({});
 
+const frameGenerationModes = computed<SelectOption[]>(() => [
+  { value: '', label: t('ui.application.options.hostDefault') },
+  { value: 'off', label: t('ui.application.options.frameMode.off') },
+  { value: 'lossless-scaling', label: t('ui.application.options.frameMode.lossless') },
+  { value: 'nvidia-smooth-motion', label: t('ui.application.options.frameMode.nvidia') },
+  { value: 'game-provided', label: t('ui.application.options.frameMode.game') },
+]);
 const virtualDisplayModes = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
   { value: 'disabled', label: t('_common.disabled') },
@@ -202,14 +219,8 @@ const virtualDisplayLayouts = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
   { value: 'exclusive', label: t('ui.application.options.displayLayout.exclusive') },
   { value: 'extended', label: t('ui.application.options.displayLayout.extended') },
-  {
-    value: 'extended_primary',
-    label: t('ui.application.options.displayLayout.extendedPrimary'),
-  },
-  {
-    value: 'extended_isolated',
-    label: t('ui.application.options.displayLayout.extendedIsolated'),
-  },
+  { value: 'extended_primary', label: t('ui.application.options.displayLayout.extendedPrimary') },
+  { value: 'extended_isolated', label: t('ui.application.options.displayLayout.extendedIsolated') },
   {
     value: 'extended_primary_isolated',
     label: t('ui.application.options.displayLayout.extendedPrimaryIsolated'),
@@ -221,34 +232,17 @@ const displayConfigurationOptions = computed<SelectOption[]>(() => [
   { value: 'verify_only', label: t('ui.application.options.displayAction.verify') },
   { value: 'ensure_active', label: t('ui.application.options.displayAction.ensureActive') },
   { value: 'ensure_primary', label: t('ui.application.options.displayAction.ensurePrimary') },
-  {
-    value: 'ensure_only_display',
-    label: t('ui.application.options.displayAction.ensureOnly'),
-  },
-]);
-const frameGenerationModes = computed<SelectOption[]>(() => [
-  { value: '', label: t('ui.application.options.hostDefault') },
-  { value: 'off', label: t('ui.application.options.frameMode.off') },
-  { value: 'lossless-scaling', label: t('ui.application.options.frameMode.lossless') },
-  { value: 'nvidia-smooth-motion', label: t('ui.application.options.frameMode.nvidia') },
-  { value: 'game-provided', label: t('ui.application.options.frameMode.game') },
-]);
-const losslessProfiles = computed<SelectOption[]>(() => [
-  { value: '', label: t('ui.application.options.hostDefault') },
-  { value: 'recommended', label: t('ui.application.options.profile.recommended') },
-  { value: 'custom', label: t('ui.application.options.profile.custom') },
+  { value: 'ensure_only_display', label: t('ui.application.options.displayAction.ensureOnly') },
 ]);
 const isPlayniteLinked = computed(() => Boolean(form.playniteId.trim()));
 const filteredPlayniteGames = computed(() => {
   const query = form.name.trim().toLocaleLowerCase();
   const games = playniteGames.value.filter((game) => game.installed !== false);
-  return query
-    ? games.filter((game) => game.name.toLocaleLowerCase().includes(query))
-    : games;
+  return query ? games.filter((game) => game.name.toLocaleLowerCase().includes(query)) : games;
 });
 const frameGenerationEnabled = computed(() => {
   if (form.frameGenerationMode === 'off') return false;
-  return Boolean(form.frameGenerationMode) || form.gen1FramegenFix || form.gen2FramegenFix;
+  return Boolean(form.frameGenerationMode);
 });
 const frameGenHealthRows = computed(() => {
   if (!frameGenHealth.value) return [];
@@ -274,6 +268,332 @@ const frameGenHealthRows = computed(() => {
     },
   ];
 });
+
+const overrideFieldsByKey = computed(() => {
+  const fields = new Map<string, SettingsField>();
+  for (const category of settingsCategories) {
+    for (const group of category.groups) {
+      for (const field of group.fields) fields.set(field.key, field);
+    }
+  }
+  return fields;
+});
+const overrideSearch = ref('');
+const overrideAnnouncement = ref('');
+const overrideKeys = computed(() =>
+  Object.keys(readConfigOverrides())
+    .filter((key) => key !== 'adapter_pnp_id')
+    .sort(),
+);
+const overrideCatalogGroups = computed(() => {
+  const seen = new Set<string>();
+  return settingsCategories
+    .map((category) => ({
+      id: category.id,
+      label: overrideMessageExists(`ui.settings.categories.${category.id}.label`)
+        ? t(`ui.settings.categories.${category.id}.label`)
+        : humanizeOverrideText(category.id),
+      fields: category.groups
+        .flatMap((group) => group.fields)
+        .filter((field) => {
+          if (field.key === 'adapter_pnp_id' || seen.has(field.key)) return false;
+          seen.add(field.key);
+          return true;
+        })
+        .sort((a, b) => overrideLabel(a.key).localeCompare(overrideLabel(b.key))),
+    }))
+    .filter((category) => category.fields.length > 0);
+});
+const overrideCatalogCount = computed(() =>
+  overrideCatalogGroups.value.reduce((count, category) => count + category.fields.length, 0),
+);
+const filteredOverrideCatalogGroups = computed(() => {
+  const query = overrideSearch.value.trim().toLocaleLowerCase();
+  if (!query) return overrideCatalogGroups.value;
+  return overrideCatalogGroups.value
+    .map((category) => ({
+      ...category,
+      fields: category.fields.filter((field) =>
+        `${overrideLabel(field.key)} ${overrideDescription(field.key)} ${field.key}`
+          .toLocaleLowerCase()
+          .includes(query),
+      ),
+    }))
+    .filter((category) => category.fields.length > 0);
+});
+const filteredOverrideCatalogCount = computed(() =>
+  filteredOverrideCatalogGroups.value.reduce(
+    (count, category) => count + category.fields.length,
+    0,
+  ),
+);
+const activeOverrideGroups = computed(() => {
+  const remaining = new Set(overrideKeys.value);
+  const groups = overrideCatalogGroups.value
+    .map((category) => {
+      const keys = category.fields.map((field) => field.key).filter((key) => remaining.delete(key));
+      return { id: category.id, label: category.label, keys };
+    })
+    .filter((category) => category.keys.length > 0);
+  if (remaining.size) {
+    groups.push({
+      id: 'additional',
+      label: t('apps.overrides.override_editor'),
+      keys: [...remaining].sort(),
+    });
+  }
+  return groups;
+});
+
+function readConfigOverrides(): Record<string, unknown> {
+  try {
+    const value = JSON.parse(form.configOverridesJson || '{}') as unknown;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeConfigOverrides(value: Record<string, unknown>): void {
+  form.configOverridesJson = JSON.stringify(value, null, 2);
+}
+
+function overrideField(key: string): SettingsField | undefined {
+  return overrideFieldsByKey.value.get(key);
+}
+
+function overrideMessageExists(key: string): boolean {
+  return te(key) || te(key, 'en');
+}
+
+function humanizeOverrideText(value: string): string {
+  const acronyms = new Map<string, string>([
+    ['amd', 'AMD'],
+    ['av1', 'AV1'],
+    ['fps', 'FPS'],
+    ['gpu', 'GPU'],
+    ['h264', 'H.264'],
+    ['hdr', 'HDR'],
+    ['hevc', 'HEVC'],
+    ['nvenc', 'NVENC'],
+    ['qsv', 'QSV'],
+    ['rtss', 'RTSS'],
+    ['vaapi', 'VA-API'],
+    ['wgc', 'WGC'],
+  ]);
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map(
+      (part) =>
+        acronyms.get(part.toLocaleLowerCase()) ?? `${part[0]?.toLocaleUpperCase()}${part.slice(1)}`,
+    )
+    .join(' ');
+}
+
+function overrideLabel(key: string): string {
+  const field = overrideField(key);
+  const translationKey = field?.labelKey || `config.${key}`;
+  return overrideMessageExists(translationKey) ? t(translationKey) : humanizeOverrideText(key);
+}
+
+function overrideDescription(key: string): string {
+  const field = overrideField(key);
+  const candidates = [
+    field?.descriptionKey,
+    `config.${key}_desc`,
+    `ui.settings.fields.${key}.description`,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const translationKey = candidates.find((candidate) => overrideMessageExists(candidate));
+  return translationKey ? t(translationKey) : '';
+}
+
+function overrideOptionLabel(option: SettingsOption): string {
+  return option.labelKey && overrideMessageExists(option.labelKey)
+    ? t(option.labelKey)
+    : humanizeOverrideText(option.value);
+}
+
+function overrideGpuOptions(): Array<{
+  adapterName: string;
+  label: string;
+  pnpId: string;
+  value: string;
+}> {
+  const options = [
+    {
+      label: t('ui.settings.options.gpu.auto'),
+      value: '',
+      adapterName: '',
+      pnpId: '',
+    },
+    ...(overrideMetadata.value.gpus ?? [])
+      .map((gpu) => ({
+        label: gpu.description?.trim() ?? '',
+        value: gpu.pnp_id?.trim() || gpu.description?.trim() || '',
+        adapterName: gpu.description?.trim() ?? '',
+        pnpId: gpu.pnp_id?.trim() ?? '',
+      }))
+      .filter((option) => option.adapterName),
+  ];
+  const currentName = String(overrideValue('adapter_name') ?? '');
+  const currentPnpId = String(overrideValue('adapter_pnp_id') ?? '');
+  if (
+    currentName &&
+    !options.some(
+      (option) =>
+        option.adapterName === currentName && (!currentPnpId || option.pnpId === currentPnpId),
+    )
+  ) {
+    options.push({
+      label: t('ui.application.options.currentValue', { value: currentName }),
+      value: currentPnpId || currentName,
+      adapterName: currentName,
+      pnpId: currentPnpId,
+    });
+  }
+  return options;
+}
+
+function overrideSelectOptions(key: string): Array<{ label: string; value: string }> {
+  const field = overrideField(key);
+  if (field?.source === 'gpu') {
+    return overrideGpuOptions().map(({ label, value }) => ({ label, value }));
+  }
+
+  let declaredOptions = field?.options ?? [];
+  if (key === 'encoder') {
+    const auto: SettingsOption = { value: '', labelKey: '_common.auto' };
+    const platform = String(overrideMetadata.value.platform ?? '').toLocaleLowerCase();
+    declaredOptions = platform.includes('windows')
+      ? [
+          auto,
+          { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
+          { value: 'quicksync', labelKey: 'ui.settings.options.encoder.quicksync' },
+          { value: 'amdvce', labelKey: 'ui.settings.options.encoder.amdvce' },
+          { value: 'amdvce_legacy', labelKey: 'ui.settings.options.encoder.amdvce_legacy' },
+          { value: 'mediafoundation', labelKey: 'ui.settings.options.encoder.mediafoundation' },
+          { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
+        ]
+      : platform.includes('mac')
+        ? [
+            auto,
+            { value: 'videotoolbox', labelKey: 'ui.settings.options.encoder.videotoolbox' },
+            { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
+          ]
+        : platform
+          ? [
+              auto,
+              { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
+              { value: 'vulkan', labelKey: 'ui.settings.options.encoder.vulkan' },
+              { value: 'vaapi', labelKey: 'ui.settings.options.encoder.vaapi' },
+              { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
+            ]
+          : [auto];
+  }
+
+  const options = declaredOptions.map((option) => ({
+    label: overrideOptionLabel(option),
+    value: String(option.value),
+  }));
+  const current = String(overrideValue(key) ?? '');
+  if (options.length && current && !options.some((option) => option.value === current)) {
+    options.push({
+      label: t('ui.application.options.currentValue', { value: current }),
+      value: current,
+    });
+  }
+  return options;
+}
+
+function overrideControlValue(key: string): string {
+  if (overrideField(key)?.source === 'gpu') {
+    return String(overrideValue('adapter_pnp_id') || overrideValue('adapter_name') || '');
+  }
+  return String(overrideValue(key) ?? '');
+}
+
+function overridePlaceholder(key: string): string | undefined {
+  const placeholderKey = overrideField(key)?.placeholderKey;
+  return placeholderKey && overrideMessageExists(placeholderKey) ? t(placeholderKey) : undefined;
+}
+
+function overrideValue(key: string): unknown {
+  return readConfigOverrides()[key];
+}
+
+function setOverrideValue(key: string, value: unknown): void {
+  const overrides = readConfigOverrides();
+  overrides[key] = value;
+  writeConfigOverrides(overrides);
+}
+
+function overrideBooleanValue(key: string): boolean {
+  const value = overrideValue(key);
+  return (
+    value === true ||
+    ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLocaleLowerCase())
+  );
+}
+
+function updateOverrideFromEvent(
+  key: string,
+  field: SettingsField | undefined,
+  event: Event,
+): void {
+  const target = event.target as HTMLInputElement | HTMLSelectElement;
+  if (field?.source === 'gpu') {
+    const selected = overrideGpuOptions().find((option) => option.value === target.value);
+    const overrides = readConfigOverrides();
+    overrides.adapter_name = selected?.adapterName ?? '';
+    overrides.adapter_pnp_id = selected?.pnpId ?? '';
+    writeConfigOverrides(overrides);
+  } else if (field?.kind === 'boolean') {
+    setOverrideValue(key, (target as HTMLInputElement).checked);
+  } else if (field?.kind === 'number') {
+    setOverrideValue(key, target.value === '' ? '' : Number(target.value));
+  } else {
+    setOverrideValue(key, target.value);
+  }
+}
+
+function overrideIsConfigured(key: string): boolean {
+  return overrideKeys.value.includes(key);
+}
+
+async function focusOverride(key: string): Promise<void> {
+  await nextTick();
+  document.getElementById(`app-override-${key}`)?.focus();
+}
+
+async function chooseOverride(key: string): Promise<void> {
+  if (!overrideIsConfigured(key)) await addOverride(key);
+  else await focusOverride(key);
+}
+
+async function addOverride(key: string): Promise<void> {
+  if (!key || overrideIsConfigured(key)) return;
+  const field = overrideField(key);
+  const options = field?.options ?? [];
+  const defaultValue =
+    settingsDefaults[key] ??
+    (field?.kind === 'boolean' ? false : field?.kind === 'number' ? 0 : (options[0]?.value ?? ''));
+  setOverrideValue(key, defaultValue);
+  overrideAnnouncement.value = `${t('apps.overrides.add_setting')}: ${overrideLabel(key)}`;
+  await focusOverride(key);
+}
+
+async function removeOverride(key: string): Promise<void> {
+  const overrides = readConfigOverrides();
+  delete overrides[key];
+  if (key === 'adapter_name') delete overrides.adapter_pnp_id;
+  writeConfigOverrides(overrides);
+  overrideAnnouncement.value = `${t('_common.remove')}: ${overrideLabel(key)}`;
+  await nextTick();
+  document.getElementById(`app-override-catalog-${key}`)?.focus();
+}
 
 const editableKeys = new Set([
   'uuid',
@@ -358,10 +678,14 @@ function emptyForm(): EditorForm {
 const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''));
 const isNew = computed(() => route.name === 'application-new' || !routeId.value);
 const pageTitle = computed(() =>
-  isNew.value ? t('ui.application.page.addTitle') : form.name || t('ui.application.page.fallbackTitle'),
+  isNew.value
+    ? t('ui.application.page.addTitle')
+    : form.name || t('ui.application.page.fallbackTitle'),
 );
 const isDirty = computed(
-  () => isNew.value || (Boolean(initialSnapshot.value) && JSON.stringify(form) !== initialSnapshot.value),
+  () =>
+    isNew.value ||
+    (Boolean(initialSnapshot.value) && JSON.stringify(form) !== initialSnapshot.value),
 );
 const errorMessages = computed(() => Object.values(errors));
 const sourceCoverUrl = computed(() => (sourceApp.value ? appCoverUrl(sourceApp.value) : ''));
@@ -411,44 +735,11 @@ function frameGenerationModeFor(app: AppRecord): string {
   if (configured) return configured;
 
   const provider = normalizeFrameGenerationMode(asString(app['frame-generation-provider']));
-  if (
-    provider === 'lossless-scaling' &&
-    asBoolean(app['lossless-scaling-framegen'])
-  ) {
+  if (provider === 'lossless-scaling' && asBoolean(app['lossless-scaling-framegen'])) {
     return provider;
   }
   if (['nvidia-smooth-motion', 'game-provided'].includes(provider)) return provider;
   return asBoolean(app['lossless-scaling-framegen']) ? 'lossless-scaling' : '';
-}
-
-function hasAdvancedConfiguration(): boolean {
-  return Boolean(
-    form.output ||
-      form.displayOutput ||
-      form.imagePath ||
-      form.playniteIconPath ||
-      form.elevated ||
-      form.autoDetach ||
-      form.waitAll ||
-      form.excludeGlobalPrepCmd ||
-      form.exitTimeout ||
-      form.virtualScreen ||
-      form.virtualDisplayMode ||
-      form.virtualDisplayLayout ||
-      form.ddConfigurationOption ||
-      form.gen1FramegenFix ||
-      form.gen2FramegenFix ||
-      form.frameGenLimiterFix ||
-      form.losslessScalingEnabled ||
-      form.losslessScalingTargetFps ||
-      form.losslessScalingRtssLimit ||
-      form.losslessScalingProfile ||
-      form.losslessScalingLaunchDelay ||
-      form.prepCmd.length ||
-      form.detachedText.trim() ||
-      jsonHasEntries(form.configOverridesJson) ||
-      jsonHasEntries(form.advancedJson),
-  );
 }
 
 function clearFrameGenHealth(): void {
@@ -470,19 +761,11 @@ function endFormSynchronizationDeferral(epoch: number): void {
   });
 }
 
-function jsonHasEntries(text: string): boolean {
-  try {
-    const value = JSON.parse(text || '{}') as unknown;
-    return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
-  } catch {
-    return Boolean(text.trim() && text.trim() !== '{}');
-  }
-}
-
 function prepEntry(value: unknown): PrepEntry {
-  const source = value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  const source =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   const extras = Object.fromEntries(
     Object.entries(source).filter(([key]) => !['do', 'undo', 'elevated'].includes(key)),
   );
@@ -502,9 +785,7 @@ function hydrate(app: AppRecord): void {
     ? app.cmd.filter((part): part is string => typeof part === 'string').join('\n')
     : asString(app.cmd);
   const unknown = Object.fromEntries(
-    Object.entries(app).filter(
-      ([key]) => !editableKeys.has(key) && !transientKeys.has(key),
-    ),
+    Object.entries(app).filter(([key]) => !editableKeys.has(key) && !transientKeys.has(key)),
   );
 
   Object.assign(form, {
@@ -548,7 +829,6 @@ function hydrate(app: AppRecord): void {
   coverFailed.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  advancedOpen.value = hasAdvancedConfiguration();
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
@@ -565,7 +845,6 @@ function hydrateNew(): void {
   coverFailed.value = true;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
-  advancedOpen.value = false;
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
@@ -577,14 +856,19 @@ async function load(): Promise<void> {
   loading.value = true;
   loadError.value = '';
   saveError.value = '';
+  const metadataPromise = apiGet<FrameGenMetadata>('/api/metadata').catch(
+    (): FrameGenMetadata => ({}),
+  );
   if (isNew.value) {
+    overrideMetadata.value = await metadataPromise;
     hydrateNew();
     loading.value = false;
     return;
   }
 
   try {
-    const appList = await fetchApps();
+    const [appList, metadata] = await Promise.all([fetchApps(), metadataPromise]);
+    overrideMetadata.value = metadata;
     const app = appList.find(
       (candidate) => appUuid(candidate).toLocaleLowerCase() === routeId.value.toLocaleLowerCase(),
     );
@@ -601,78 +885,15 @@ function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key];
 }
 
-function parseObject(text: string, key: string, labelKey: string): Record<string, unknown> | null {
-  const label = t(labelKey);
-  try {
-    const value = JSON.parse(text || '{}') as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      errors[key] = t('ui.application.validation.jsonObject', { label });
-      return null;
-    }
-    return value as Record<string, unknown>;
-  } catch {
-    errors[key] = t('ui.application.validation.invalidJson', { label });
-    return null;
-  }
-}
-
-function validateInteger(key: string, labelKey: string, value: string, minimum: number): void {
-  if (!value.trim()) return;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < minimum) {
-    errors[key] = t('ui.application.validation.integerMinimum', {
-      label: t(labelKey),
-      minimum,
-    });
-  }
-}
-
 async function validate(): Promise<boolean> {
   clearErrors();
   if (!form.name.trim()) errors.name = t('ui.application.validation.nameRequired');
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(form.uuid)) {
     errors.uuid = t('ui.application.validation.uuidInvalid');
   }
-  validateInteger('exitTimeout', 'apps.exit_timeout', form.exitTimeout, 0);
-  validateInteger(
-    'targetFps',
-    'ui.application.fields.losslessTarget.label',
-    form.losslessScalingTargetFps,
-    1,
-  );
-  validateInteger(
-    'rtssLimit',
-    'ui.application.fields.losslessRtss.label',
-    form.losslessScalingRtssLimit,
-    0,
-  );
-  validateInteger(
-    'launchDelay',
-    'ui.application.fields.losslessDelay.label',
-    form.losslessScalingLaunchDelay,
-    0,
-  );
-  parseObject(
-    form.configOverridesJson,
-    'configOverrides',
-    'ui.application.fields.configOverrides.label',
-  );
-  parseObject(form.advancedJson, 'advanced', 'ui.application.fields.advanced.label');
-
-  const invalidPrep = form.prepCmd.findIndex(
-    (entry) => !entry.do.trim() && !entry.undo.trim() && Object.keys(entry.extras).length > 0,
-  );
-  if (invalidPrep >= 0) {
-    errors.prep = t('ui.application.validation.prepMissingCommand', {
-      number: invalidPrep + 1,
-    });
-  }
 
   const firstKey = Object.keys(errors)[0];
   if (!firstKey) return true;
-  if (['exitTimeout', 'targetFps', 'rtssLimit', 'launchDelay', 'configOverrides', 'advanced', 'prep'].includes(firstKey)) {
-    advancedOpen.value = true;
-  }
   await nextTick();
   document.querySelector<HTMLElement>(`[data-field-key="${firstKey}"]`)?.focus();
   return false;
@@ -742,10 +963,6 @@ function buildPayload(): AppRecord {
   setOptionalInteger(payload, 'lossless-scaling-rtss-limit', form.losslessScalingRtssLimit);
   setOptionalInteger(payload, 'lossless-scaling-launch-delay', form.losslessScalingLaunchDelay);
   return payload;
-}
-
-function updateAdvancedOpen(event: Event): void {
-  advancedOpen.value = (event.currentTarget as HTMLDetailsElement).open;
 }
 
 function clearPlayniteLink(): void {
@@ -889,7 +1106,9 @@ function handleNameKeydown(event: KeyboardEvent): void {
   }
 }
 
-function healthTone(status: FrameGenRequirementStatus): 'success' | 'warning' | 'danger' | 'neutral' {
+function healthTone(
+  status: FrameGenRequirementStatus,
+): 'success' | 'warning' | 'danger' | 'neutral' {
   if (status === 'pass') return 'success';
   if (status === 'configured') return 'neutral';
   if (status === 'warn') return 'warning';
@@ -931,16 +1150,19 @@ function parseRefreshHz(raw: unknown): number | null {
   }
   const numerator = Number(value.numerator ?? value.m_numerator ?? value.num ?? value.n);
   const denominator = Number(value.denominator ?? value.m_denominator ?? value.den ?? 1);
-  return Number.isFinite(numerator) && Number.isFinite(denominator) && numerator > 0 && denominator > 0
+  return Number.isFinite(numerator) &&
+    Number.isFinite(denominator) &&
+    numerator > 0 &&
+    denominator > 0
     ? numerator / denominator
     : null;
 }
 
 function parseRefreshRates(raw: unknown): number[] {
   const source = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
-  return [...new Set(source.map(parseRefreshHz).filter((value): value is number => value !== null))].sort(
-    (left, right) => left - right,
-  );
+  return [
+    ...new Set(source.map(parseRefreshHz).filter((value): value is number => value !== null)),
+  ].sort((left, right) => left - right);
 }
 
 function normalizedDeviceId(value: unknown): string {
@@ -949,7 +1171,9 @@ function normalizedDeviceId(value: unknown): string {
 
 function isVirtualDisplaySelection(value: string): boolean {
   const normalized = value.trim().toLocaleLowerCase();
-  return normalized === 'sunshine:virtual_display' || normalized === 'sunshine:sudovda_virtual_display';
+  return (
+    normalized === 'sunshine:virtual_display' || normalized === 'sunshine:sudovda_virtual_display'
+  );
 }
 
 function effectiveAppOutput(): string {
@@ -1051,9 +1275,11 @@ async function inspectFrameGenDisplay(
   }
 
   const devices = displayResult.value as DisplayDevice[];
-  const candidates = (resolution.hasAppOutput
-    ? [resolution.output]
-    : [resolution.output, asString(config.output_name)])
+  const candidates = (
+    resolution.hasAppOutput
+      ? [resolution.output]
+      : [resolution.output, asString(config.output_name)]
+  )
     .filter(Boolean)
     .map(normalizedDeviceId);
   const matchingTarget = devices.find((device) => {
@@ -1066,7 +1292,11 @@ async function inspectFrameGenDisplay(
       candidates.includes(friendlyName)
     );
   });
-  const target = matchingTarget ?? (resolution.hasAppOutput ? undefined : devices.find((device) => Boolean(device.info)) ?? devices[0]);
+  const target =
+    matchingTarget ??
+    (resolution.hasAppOutput
+      ? undefined
+      : (devices.find((device) => Boolean(device.info)) ?? devices[0]));
 
   if (!target) {
     return {
@@ -1100,9 +1330,10 @@ async function inspectFrameGenDisplay(
       });
       const edid = await apiGet<EdidRefresh>(`/api/framegen/edid-refresh?${query.toString()}`);
       if (edid.status !== false) {
-        const maximums = [parseRefreshHz(edid.max_vertical_hz), parseRefreshHz(edid.max_timing_hz)].filter(
-          (value): value is number => value !== null,
-        );
+        const maximums = [
+          parseRefreshHz(edid.max_vertical_hz),
+          parseRefreshHz(edid.max_timing_hz),
+        ].filter((value): value is number => value !== null);
         edidMaximum = maximums.length ? Math.max(...maximums) : null;
         if (Array.isArray(edid.targets)) {
           for (const rawTarget of edid.targets) {
@@ -1110,10 +1341,7 @@ async function inspectFrameGenDisplay(
             const entry = rawTarget as EdidTarget;
             const hz = parseRefreshHz(entry.hz);
             if (hz !== null) {
-              capabilityMap.set(
-                hz,
-                typeof entry.supported === 'boolean' ? entry.supported : null,
-              );
+              capabilityMap.set(hz, typeof entry.supported === 'boolean' ? entry.supported : null);
             }
           }
         }
@@ -1127,8 +1355,7 @@ async function inspectFrameGenDisplay(
     .map(([hz, supported]) => ({ hz, supported }))
     .sort((left, right) => left.hz - right.hz);
   const maximum =
-    edidMaximum ??
-    (supportedRates.length ? supportedRates[supportedRates.length - 1] : currentHz);
+    edidMaximum ?? (supportedRates.length ? supportedRates[supportedRates.length - 1] : currentHz);
 
   if (maximum === null) {
     return {
@@ -1278,7 +1505,6 @@ function enableVirtualDisplayForFrameGen(): void {
   }
   form.virtualScreen = true;
   form.virtualDisplayMode = 'per_client';
-  advancedOpen.value = true;
 }
 
 async function submit(): Promise<void> {
@@ -1367,15 +1593,11 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 </script>
 
 <template>
-  <div class="vs-page vs-page--settings application-page">
+  <div class="vs-page application-page">
     <PageHeader
       :title="pageTitle"
       :description="
-        t(
-          isNew
-            ? 'ui.application.page.addDescription'
-            : 'ui.application.page.editDescription',
-        )
+        t(isNew ? 'ui.application.page.addDescription' : 'ui.application.page.editDescription')
       "
     >
       <template #meta>
@@ -1387,11 +1609,7 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
         </StatusBadge>
       </template>
       <template #actions>
-        <AppButton
-          variant="secondary"
-          :label="t('ui.application.actions.back')"
-          @click="cancel"
-        />
+        <AppButton variant="secondary" :label="t('ui.application.actions.back')" @click="cancel" />
         <AppButton
           variant="primary"
           icon="check"
@@ -1457,7 +1675,13 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
       </div>
     </template>
 
-    <form v-else-if="!loadError" id="application-form" class="editor-form" novalidate @submit.prevent="submit">
+    <form
+      v-else-if="!loadError"
+      id="application-form"
+      class="editor-form"
+      novalidate
+      @submit.prevent="submit"
+    >
       <section class="editor-section" aria-labelledby="identity-heading">
         <div class="editor-section__heading">
           <h2 id="identity-heading">{{ t('ui.application.sections.identity.title') }}</h2>
@@ -1481,7 +1705,11 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
                 :aria-autocomplete="isNew ? 'list' : undefined"
                 :aria-controls="isNew ? 'app-playnite-options' : undefined"
                 :aria-expanded="isNew ? playnitePickerOpen : undefined"
-                :aria-activedescendant="isNew && playniteActiveIndex >= 0 ? `app-playnite-option-${playniteActiveIndex}` : undefined"
+                :aria-activedescendant="
+                  isNew && playniteActiveIndex >= 0
+                    ? `app-playnite-option-${playniteActiveIndex}`
+                    : undefined
+                "
                 :aria-invalid="Boolean(errors.name)"
                 :aria-describedby="errors.name ? 'app-name-error' : 'app-name-help'"
                 @focus="isNew && openPlaynitePicker()"
@@ -1506,7 +1734,9 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
                   : t('ui.application.fields.name.help')
               }}
             </span>
-            <span v-if="errors.name" id="app-name-error" class="vs-field__error">{{ errors.name }}</span>
+            <span v-if="errors.name" id="app-name-error" class="vs-field__error">{{
+              errors.name
+            }}</span>
 
             <div
               v-if="isNew && playnitePickerOpen"
@@ -1576,7 +1806,9 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             <span id="app-uuid-help" class="vs-field__helper">
               {{ t('ui.application.fields.uuid.help') }}
             </span>
-            <span v-if="errors.uuid" id="app-uuid-error" class="vs-field__error">{{ errors.uuid }}</span>
+            <span v-if="errors.uuid" id="app-uuid-error" class="vs-field__error">{{
+              errors.uuid
+            }}</span>
           </label>
         </div>
       </section>
@@ -1598,13 +1830,21 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             <img
               v-if="sourceCoverUrl && !coverFailed"
               :src="sourceCoverUrl"
-              :alt="t('ui.application.cover.alt', { name: form.name || t('ui.application.page.fallbackTitle') })"
+              :alt="
+                t('ui.application.cover.alt', {
+                  name: form.name || t('ui.application.page.fallbackTitle'),
+                })
+              "
               @error="coverFailed = true"
             />
             <div
               v-else
               role="img"
-              :aria-label="t('ui.application.cover.unavailableLabel', { name: form.name || t('ui.application.page.fallbackTitle') })"
+              :aria-label="
+                t('ui.application.cover.unavailableLabel', {
+                  name: form.name || t('ui.application.page.fallbackTitle'),
+                })
+              "
             >
               <UiIcon name="gamepad" :size="40" aria-hidden="true" />
               <span>{{ t('ui.application.cover.unavailable') }}</span>
@@ -1612,7 +1852,11 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
           </div>
 
           <div class="editor-grid">
-            <label v-if="!isPlayniteLinked" class="vs-field editor-field editor-field--full" for="app-command">
+            <label
+              v-if="!isPlayniteLinked"
+              class="vs-field editor-field editor-field--full"
+              for="app-command"
+            >
               <span class="vs-field__label">{{ t('apps.cmd') }}</span>
               <textarea
                 id="app-command"
@@ -1634,7 +1878,12 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 
             <label v-if="!isPlayniteLinked" class="vs-field editor-field" for="app-working-dir">
               <span class="vs-field__label">{{ t('apps.working_dir') }}</span>
-              <input id="app-working-dir" v-model="form.workingDir" class="vs-input vs-monospace" type="text" />
+              <input
+                id="app-working-dir"
+                v-model="form.workingDir"
+                class="vs-input vs-monospace"
+                type="text"
+              />
             </label>
 
             <InlineAlert
@@ -1651,17 +1900,28 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 
       <section class="editor-section" aria-labelledby="frame-generation-heading">
         <div class="editor-section__heading">
-          <h2 id="frame-generation-heading">{{ t('ui.application.sections.frameGeneration.title') }}</h2>
+          <h2 id="frame-generation-heading">
+            {{ t('ui.application.sections.frameGeneration.title') }}
+          </h2>
           <p>{{ t('apps.framegen.kind_hint') }}</p>
         </div>
         <div class="editor-group editor-grid">
           <label class="vs-field editor-field editor-field--full" for="app-frame-mode">
             <span class="vs-field__label">{{ t('ui.application.fields.frameMode.label') }}</span>
             <select id="app-frame-mode" v-model="form.frameGenerationMode" class="vs-select">
-              <option v-if="optionIsCustom(frameGenerationModes, form.frameGenerationMode)" :value="form.frameGenerationMode">
+              <option
+                v-if="optionIsCustom(frameGenerationModes, form.frameGenerationMode)"
+                :value="form.frameGenerationMode"
+              >
                 {{ t('ui.application.options.currentValue', { value: form.frameGenerationMode }) }}
               </option>
-              <option v-for="option in frameGenerationModes" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option
+                v-for="option in frameGenerationModes"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
             </select>
           </label>
 
@@ -1681,7 +1941,11 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
               />
             </div>
 
-            <InlineAlert v-if="frameGenHealthError" tone="danger" :title="t('apps.framegen.run_health_check')">
+            <InlineAlert
+              v-if="frameGenHealthError"
+              tone="danger"
+              :title="t('apps.framegen.run_health_check')"
+            >
               {{ frameGenHealthError }}
             </InlineAlert>
             <InlineAlert
@@ -1696,22 +1960,35 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
                 <div>
                   <div class="framegen-health__row-title vs-cluster">
                     <strong>{{ row.label }}</strong>
-                    <StatusBadge :label="healthStatusLabel(row.status)" :tone="healthTone(row.status)" compact />
+                    <StatusBadge
+                      :label="healthStatusLabel(row.status)"
+                      :tone="healthTone(row.status)"
+                      compact
+                    />
                   </div>
                   <p>{{ row.message }}</p>
                 </div>
               </div>
-              <div v-if="frameGenHealth.display.capabilities.length" class="framegen-health__coverage">
+              <div
+                v-if="frameGenHealth.display.capabilities.length"
+                class="framegen-health__coverage"
+              >
                 <strong>{{ t('ui.application.framegenHealth.refreshCapabilitiesTitle') }}</strong>
-                <span v-for="capability in frameGenHealth.display.capabilities" :key="capability.hz">
-                  {{ t('ui.application.framegenHealth.refreshCapability', {
-                    hz: capability.hz,
-                    status: capability.supported === true
-                      ? t('apps.framegen.target_supported')
-                      : capability.supported === false
-                        ? t('apps.framegen.target_unsupported')
-                        : t('apps.framegen.target_unknown'),
-                  }) }}
+                <span
+                  v-for="capability in frameGenHealth.display.capabilities"
+                  :key="capability.hz"
+                >
+                  {{
+                    t('ui.application.framegenHealth.refreshCapability', {
+                      hz: capability.hz,
+                      status:
+                        capability.supported === true
+                          ? t('apps.framegen.target_supported')
+                          : capability.supported === false
+                            ? t('apps.framegen.target_unsupported')
+                            : t('apps.framegen.target_unknown'),
+                    })
+                  }}
                 </span>
               </div>
               <AppButton
@@ -1723,92 +2000,6 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
               />
             </div>
           </div>
-        </div>
-      </section>
-
-      <details class="editor-disclosure" :open="advancedOpen" @toggle="updateAdvancedOpen">
-        <summary>
-          <span>
-            <UiIcon name="settings" :size="18" aria-hidden="true" />
-            {{ t('ui.application.advanced.summary') }}
-          </span>
-          <UiIcon class="editor-disclosure__chevron" name="chevron-down" :size="18" aria-hidden="true" />
-        </summary>
-        <p class="editor-disclosure__description">{{ t('ui.application.advanced.description') }}</p>
-        <div class="editor-disclosure__content">
-
-      <section class="editor-section" aria-labelledby="launch-heading">
-        <div class="editor-section__heading">
-          <h2 id="launch-heading">{{ t('ui.application.sections.launch.title') }}</h2>
-          <p>{{ t('ui.application.sections.launch.description') }}</p>
-        </div>
-        <div class="vs-settings-group">
-          <SettingRow
-            :label="t('ui.application.fields.elevated.label')"
-            :description="t('ui.application.fields.elevated.description')"
-            control-id="app-elevated"
-          >
-            <label class="vs-switch">
-              <input id="app-elevated" v-model="form.elevated" type="checkbox" />
-              <span class="vs-switch__track" aria-hidden="true" />
-              <span class="vs-sr-only">{{ t('ui.application.fields.elevated.label') }}</span>
-            </label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.autoDetach.label')"
-            :description="t('ui.application.fields.autoDetach.description')"
-            control-id="app-auto-detach"
-          >
-            <label class="vs-switch">
-              <input id="app-auto-detach" v-model="form.autoDetach" type="checkbox" />
-              <span class="vs-switch__track" aria-hidden="true" />
-              <span class="vs-sr-only">{{ t('ui.application.fields.autoDetach.label') }}</span>
-            </label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.waitAll.label')"
-            :description="t('ui.application.fields.waitAll.description')"
-            control-id="app-wait-all"
-          >
-            <label class="vs-switch">
-              <input id="app-wait-all" v-model="form.waitAll" type="checkbox" />
-              <span class="vs-switch__track" aria-hidden="true" />
-              <span class="vs-sr-only">{{ t('ui.application.fields.waitAll.label') }}</span>
-            </label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.excludePrep.label')"
-            :description="t('ui.application.fields.excludePrep.description')"
-            control-id="app-exclude-prep"
-          >
-            <label class="vs-switch">
-              <input id="app-exclude-prep" v-model="form.excludeGlobalPrepCmd" type="checkbox" />
-              <span class="vs-switch__track" aria-hidden="true" />
-              <span class="vs-sr-only">{{ t('ui.application.fields.excludePrep.label') }}</span>
-            </label>
-          </SettingRow>
-          <SettingRow
-            :label="t('apps.exit_timeout')"
-            :description="t('ui.application.fields.exitTimeout.description')"
-            control-id="app-exit-timeout"
-          >
-            <div class="editor-inline-control">
-              <input
-                id="app-exit-timeout"
-                v-model="form.exitTimeout"
-                class="vs-input"
-                data-field-key="exitTimeout"
-                type="number"
-                min="0"
-                step="1"
-                inputmode="numeric"
-                :aria-invalid="Boolean(errors.exitTimeout)"
-                :aria-describedby="errors.exitTimeout ? 'app-exit-timeout-error' : undefined"
-              />
-              <span aria-hidden="true">{{ t('_common.seconds') }}</span>
-              <span v-if="errors.exitTimeout" id="app-exit-timeout-error" class="vs-field__error">{{ errors.exitTimeout }}</span>
-            </div>
-          </SettingRow>
         </div>
       </section>
 
@@ -1835,10 +2026,19 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             control-id="app-display-mode"
           >
             <select id="app-display-mode" v-model="form.virtualDisplayMode" class="vs-select">
-              <option v-if="optionIsCustom(virtualDisplayModes, form.virtualDisplayMode)" :value="form.virtualDisplayMode">
+              <option
+                v-if="optionIsCustom(virtualDisplayModes, form.virtualDisplayMode)"
+                :value="form.virtualDisplayMode"
+              >
                 {{ t('ui.application.options.currentValue', { value: form.virtualDisplayMode }) }}
               </option>
-              <option v-for="option in virtualDisplayModes" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option
+                v-for="option in virtualDisplayModes"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
             </select>
           </SettingRow>
           <SettingRow
@@ -1847,10 +2047,19 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             control-id="app-display-layout"
           >
             <select id="app-display-layout" v-model="form.virtualDisplayLayout" class="vs-select">
-              <option v-if="optionIsCustom(virtualDisplayLayouts, form.virtualDisplayLayout)" :value="form.virtualDisplayLayout">
+              <option
+                v-if="optionIsCustom(virtualDisplayLayouts, form.virtualDisplayLayout)"
+                :value="form.virtualDisplayLayout"
+              >
                 {{ t('ui.application.options.currentValue', { value: form.virtualDisplayLayout }) }}
               </option>
-              <option v-for="option in virtualDisplayLayouts" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option
+                v-for="option in virtualDisplayLayouts"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
             </select>
           </SettingRow>
           <SettingRow
@@ -1858,103 +2067,28 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             :description="t('ui.application.fields.displayAction.description')"
             control-id="app-display-configuration"
           >
-            <select id="app-display-configuration" v-model="form.ddConfigurationOption" class="vs-select">
-              <option v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)" :value="form.ddConfigurationOption">
-                {{ t('ui.application.options.currentValue', { value: form.ddConfigurationOption }) }}
+            <select
+              id="app-display-configuration"
+              v-model="form.ddConfigurationOption"
+              class="vs-select"
+            >
+              <option
+                v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)"
+                :value="form.ddConfigurationOption"
+              >
+                {{
+                  t('ui.application.options.currentValue', { value: form.ddConfigurationOption })
+                }}
               </option>
-              <option v-for="option in displayConfigurationOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option
+                v-for="option in displayConfigurationOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
             </select>
           </SettingRow>
-        </div>
-        <div class="editor-group editor-grid editor-subgroup">
-          <label class="vs-field editor-field" for="app-output">
-            <span class="vs-field__label">{{ t('ui.application.fields.output.label') }}</span>
-            <input id="app-output" v-model="form.output" class="vs-input vs-monospace" type="text" />
-          </label>
-          <label class="vs-field editor-field" for="app-display-output">
-            <span class="vs-field__label">{{ t('ui.application.fields.displayOutput.label') }}</span>
-            <input id="app-display-output" v-model="form.displayOutput" class="vs-input vs-monospace" type="text" />
-          </label>
-          <label class="vs-field editor-field" for="app-image-path">
-            <span class="vs-field__label">{{ t('ui.application.fields.imagePath.label') }}</span>
-            <input id="app-image-path" v-model="form.imagePath" class="vs-input vs-monospace" type="text" />
-          </label>
-          <label class="vs-field editor-field" for="app-icon-path">
-            <span class="vs-field__label">{{ t('ui.application.fields.iconPath.label') }}</span>
-            <input id="app-icon-path" v-model="form.playniteIconPath" class="vs-input vs-monospace" type="text" />
-          </label>
-        </div>
-      </section>
-
-      <section class="editor-section" aria-labelledby="frame-generation-tuning-heading">
-        <div class="editor-section__heading">
-          <h2 id="frame-generation-tuning-heading">
-            {{ t('ui.application.sections.frameGeneration.title') }}
-          </h2>
-          <p>{{ t('ui.application.sections.frameGeneration.description') }}</p>
-        </div>
-        <div class="vs-settings-group editor-subgroup">
-          <SettingRow
-            :label="t('ui.application.fields.gen1Fix.label')"
-            :description="t('ui.application.fields.gen1Fix.description')"
-            control-id="app-gen1-fix"
-          >
-            <label class="vs-switch"><input id="app-gen1-fix" v-model="form.gen1FramegenFix" type="checkbox" /><span class="vs-switch__track" aria-hidden="true" /><span class="vs-sr-only">{{ t('ui.application.fields.gen1Fix.label') }}</span></label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.gen2Fix.label')"
-            :description="t('ui.application.fields.gen2Fix.description')"
-            control-id="app-gen2-fix"
-          >
-            <label class="vs-switch"><input id="app-gen2-fix" v-model="form.gen2FramegenFix" type="checkbox" /><span class="vs-switch__track" aria-hidden="true" /><span class="vs-sr-only">{{ t('ui.application.fields.gen2Fix.label') }}</span></label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.limiterFix.label')"
-            :description="t('ui.application.fields.limiterFix.description')"
-            control-id="app-limiter-fix"
-          >
-            <label class="vs-switch"><input id="app-limiter-fix" v-model="form.frameGenLimiterFix" type="checkbox" /><span class="vs-switch__track" aria-hidden="true" /><span class="vs-sr-only">{{ t('ui.application.fields.limiterFix.label') }}</span></label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.losslessEnabled.label')"
-            :description="t('ui.application.fields.losslessEnabled.description')"
-            control-id="app-lossless-enabled"
-          >
-            <label class="vs-switch"><input id="app-lossless-enabled" v-model="form.losslessScalingEnabled" type="checkbox" /><span class="vs-switch__track" aria-hidden="true" /><span class="vs-sr-only">{{ t('ui.application.fields.losslessEnabled.label') }}</span></label>
-          </SettingRow>
-        </div>
-        <div class="editor-group editor-grid editor-subgroup">
-          <label class="vs-field editor-field" for="app-lossless-target">
-            <span class="vs-field__label">
-              {{ t('ui.application.fields.losslessTarget.label') }}
-            </span>
-            <input id="app-lossless-target" v-model="form.losslessScalingTargetFps" class="vs-input" data-field-key="targetFps" type="number" min="1" step="1" inputmode="numeric" :aria-invalid="Boolean(errors.targetFps)" :aria-describedby="errors.targetFps ? 'app-lossless-target-error' : undefined" />
-            <span v-if="errors.targetFps" id="app-lossless-target-error" class="vs-field__error">{{ errors.targetFps }}</span>
-          </label>
-          <label class="vs-field editor-field" for="app-lossless-rtss">
-            <span class="vs-field__label">
-              {{ t('ui.application.fields.losslessRtss.label') }}
-            </span>
-            <input id="app-lossless-rtss" v-model="form.losslessScalingRtssLimit" class="vs-input" data-field-key="rtssLimit" type="number" min="0" step="1" inputmode="numeric" :aria-invalid="Boolean(errors.rtssLimit)" :aria-describedby="errors.rtssLimit ? 'app-lossless-rtss-error' : undefined" />
-            <span v-if="errors.rtssLimit" id="app-lossless-rtss-error" class="vs-field__error">{{ errors.rtssLimit }}</span>
-          </label>
-          <label class="vs-field editor-field" for="app-lossless-profile">
-            <span class="vs-field__label">{{ t('apps.framegen.profile_label') }}</span>
-            <select id="app-lossless-profile" v-model="form.losslessScalingProfile" class="vs-select">
-              <option v-if="optionIsCustom(losslessProfiles, form.losslessScalingProfile)" :value="form.losslessScalingProfile">{{ t('ui.application.options.currentValue', { value: form.losslessScalingProfile }) }}</option>
-              <option v-for="option in losslessProfiles" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-          </label>
-          <label class="vs-field editor-field" for="app-lossless-delay">
-            <span class="vs-field__label">
-              {{ t('ui.application.fields.losslessDelay.label') }}
-            </span>
-            <input id="app-lossless-delay" v-model="form.losslessScalingLaunchDelay" class="vs-input" data-field-key="launchDelay" type="number" min="0" step="1" inputmode="numeric" :aria-invalid="Boolean(errors.launchDelay)" :aria-describedby="errors.launchDelay ? 'app-lossless-delay-error' : undefined" />
-            <span class="vs-field__helper">
-              {{ t('ui.application.fields.losslessDelay.help') }}
-            </span>
-            <span v-if="errors.launchDelay" id="app-lossless-delay-error" class="vs-field__error">{{ errors.launchDelay }}</span>
-          </label>
         </div>
       </section>
 
@@ -1971,25 +2105,30 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             @click="addPrepCommand"
           />
         </div>
-        <InlineAlert
-          v-if="errors.prep"
-          tone="danger"
-          :title="t('ui.application.alerts.prepAttention')"
-        >
-          {{ errors.prep }}
-        </InlineAlert>
         <div v-if="form.prepCmd.length" class="prep-list">
-          <fieldset v-for="(entry, index) in form.prepCmd" :key="index" class="editor-group prep-entry">
-            <legend>
-              {{ t('ui.application.prep.legend', { number: index + 1 }) }}
-            </legend>
+          <fieldset
+            v-for="(entry, index) in form.prepCmd"
+            :key="index"
+            class="editor-group prep-entry"
+          >
+            <legend>{{ t('ui.application.prep.legend', { number: index + 1 }) }}</legend>
             <label class="vs-field editor-field" :for="`prep-do-${index}`">
               <span class="vs-field__label">{{ t('ui.application.prep.before') }}</span>
-              <input :id="`prep-do-${index}`" v-model="entry.do" class="vs-input vs-monospace" :data-field-key="errors.prep ? 'prep' : undefined" type="text" />
+              <input
+                :id="`prep-do-${index}`"
+                v-model="entry.do"
+                class="vs-input vs-monospace"
+                type="text"
+              />
             </label>
             <label class="vs-field editor-field" :for="`prep-undo-${index}`">
               <span class="vs-field__label">{{ t('ui.application.prep.after') }}</span>
-              <input :id="`prep-undo-${index}`" v-model="entry.undo" class="vs-input vs-monospace" type="text" />
+              <input
+                :id="`prep-undo-${index}`"
+                v-model="entry.undo"
+                class="vs-input vs-monospace"
+                type="text"
+              />
             </label>
             <label class="vs-checkbox prep-entry__elevated">
               <input v-model="entry.elevated" type="checkbox" />
@@ -2003,84 +2142,242 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
             />
           </fieldset>
         </div>
-        <div v-else class="editor-empty-row">
-          {{ t('ui.application.prep.empty') }}
-        </div>
-        <div class="editor-group editor-subgroup">
-          <label class="vs-field editor-field editor-field--full" for="app-detached">
-            <span class="vs-field__label">{{ t('apps.detached_cmds') }}</span>
-            <textarea
-              id="app-detached"
-              v-model="form.detachedText"
-              class="vs-textarea vs-monospace"
-              rows="5"
-              :placeholder="t('ui.application.fields.detached.placeholder')"
-            />
-            <span class="vs-field__helper">
-              {{ t('ui.application.fields.detached.help') }}
-            </span>
-          </label>
-        </div>
+        <div v-else class="editor-empty-row">{{ t('ui.application.prep.empty') }}</div>
+        <label class="vs-field editor-field editor-field--full" for="app-detached">
+          <span class="vs-field__label">{{ t('apps.detached_cmds') }}</span>
+          <textarea
+            id="app-detached"
+            v-model="form.detachedText"
+            class="vs-textarea vs-monospace"
+            rows="4"
+            :placeholder="t('ui.application.fields.detached.placeholder')"
+          />
+          <span class="vs-field__helper">{{ t('ui.application.fields.detached.help') }}</span>
+        </label>
       </section>
 
       <section class="editor-section" aria-labelledby="overrides-heading">
         <div class="editor-section__heading">
-          <h2 id="overrides-heading">{{ t('ui.application.sections.overrides.title') }}</h2>
-          <p>{{ t('ui.application.sections.overrides.description') }}</p>
+          <h2 id="overrides-heading">{{ t('apps.overrides.title') }}</h2>
+          <p>
+            {{
+              t('apps.overrides.adjustment_hint', { scope: t('apps.overrides.scope_application') })
+            }}
+          </p>
         </div>
-        <div class="editor-group">
-          <label class="vs-field editor-field editor-field--full" for="app-config-overrides">
-            <span class="vs-field__label">
-              {{ t('ui.application.fields.configOverrides.label') }}
-            </span>
-            <textarea
-              id="app-config-overrides"
-              v-model="form.configOverridesJson"
-              class="vs-textarea vs-monospace editor-json"
-              data-field-key="configOverrides"
-              rows="10"
-              spellcheck="false"
-              :aria-invalid="Boolean(errors.configOverrides)"
-              :aria-describedby="errors.configOverrides ? 'app-config-overrides-error' : 'app-config-overrides-help'"
-            />
-            <span id="app-config-overrides-help" class="vs-field__helper">
-              {{ t('ui.application.fields.configOverrides.help') }}
-            </span>
-            <span v-if="errors.configOverrides" id="app-config-overrides-error" class="vs-field__error">{{ errors.configOverrides }}</span>
-          </label>
-        </div>
-      </section>
+        <div class="application-overrides" aria-labelledby="overrides-heading">
+          <aside class="application-overrides__catalog" aria-labelledby="override-catalog-heading">
+            <div class="application-overrides__pane-heading">
+              <span class="application-overrides__step" aria-hidden="true">1</span>
+              <div>
+                <h3 id="override-catalog-heading">{{ t('apps.overrides.browse_available') }}</h3>
+                <p>{{ t('apps.overrides.browse_available_hint') }}</p>
+              </div>
+            </div>
 
-      <section class="editor-section" aria-labelledby="advanced-heading">
-        <div class="editor-section__heading">
-          <h2 id="advanced-heading">{{ t('ui.application.sections.advanced.title') }}</h2>
-          <p>{{ t('ui.application.sections.advanced.description') }}</p>
-        </div>
-        <InlineAlert tone="warning" :title="t('ui.application.alerts.expertTitle')">
-          {{ t('ui.application.alerts.expertDescription') }}
-        </InlineAlert>
-        <div class="editor-group editor-subgroup">
-          <label class="vs-field editor-field editor-field--full" for="app-advanced-json">
-            <span class="vs-field__label">{{ t('ui.application.fields.advanced.label') }}</span>
-            <textarea
-              id="app-advanced-json"
-              v-model="form.advancedJson"
-              class="vs-textarea vs-monospace editor-json"
-              data-field-key="advanced"
-              rows="12"
-              spellcheck="false"
-              :aria-invalid="Boolean(errors.advanced)"
-              :aria-describedby="errors.advanced ? 'app-advanced-json-error' : 'app-advanced-json-help'"
-            />
-            <span id="app-advanced-json-help" class="vs-field__helper">
-              {{ t('ui.application.fields.advanced.help') }}
-            </span>
-            <span v-if="errors.advanced" id="app-advanced-json-error" class="vs-field__error">{{ errors.advanced }}</span>
-          </label>
+            <div class="application-overrides__catalog-tools">
+              <label class="vs-sr-only" for="app-override-search">
+                {{ t('apps.overrides.browse_available') }}
+              </label>
+              <div class="application-overrides__search">
+                <UiIcon name="search" :size="16" aria-hidden="true" />
+                <input
+                  id="app-override-search"
+                  v-model="overrideSearch"
+                  class="vs-input"
+                  type="search"
+                  :placeholder="t('apps.overrides.filter_placeholder')"
+                />
+              </div>
+              <span class="application-overrides__result-count">
+                {{
+                  t('apps.overrides.showing_count', {
+                    shown: filteredOverrideCatalogCount,
+                    total: overrideCatalogCount,
+                  })
+                }}
+              </span>
+            </div>
+
+            <div
+              v-if="filteredOverrideCatalogGroups.length"
+              class="application-overrides__catalog-list"
+            >
+              <section
+                v-for="category in filteredOverrideCatalogGroups"
+                :key="category.id"
+                class="application-overrides__catalog-group"
+                :aria-labelledby="`override-catalog-${category.id}`"
+              >
+                <h4 :id="`override-catalog-${category.id}`">{{ category.label }}</h4>
+                <button
+                  v-for="field in category.fields"
+                  :id="`app-override-catalog-${field.key}`"
+                  :key="field.key"
+                  type="button"
+                  class="application-overrides__catalog-item"
+                  :class="{
+                    'application-overrides__catalog-item--active': overrideIsConfigured(field.key),
+                  }"
+                  :aria-label="`${overrideIsConfigured(field.key) ? t('_common.active') : t('apps.overrides.add_setting')}: ${overrideLabel(field.key)}`"
+                  @click="chooseOverride(field.key)"
+                >
+                  <span class="application-overrides__catalog-copy">
+                    <strong>{{ overrideLabel(field.key) }}</strong>
+                    <span v-if="overrideDescription(field.key)">
+                      {{ overrideDescription(field.key) }}
+                    </span>
+                  </span>
+                  <span class="application-overrides__catalog-action">
+                    <UiIcon
+                      :name="overrideIsConfigured(field.key) ? 'check' : 'plus'"
+                      :size="14"
+                      aria-hidden="true"
+                    />
+                    {{
+                      t(
+                        overrideIsConfigured(field.key)
+                          ? '_common.active'
+                          : 'apps.overrides.add_setting',
+                      )
+                    }}
+                  </span>
+                </button>
+              </section>
+            </div>
+            <div v-else class="application-overrides__catalog-empty">
+              <strong>{{ t('apps.overrides.no_matching_settings') }}</strong>
+              <p>{{ t('apps.overrides.no_matching_settings_hint') }}</p>
+              <AppButton
+                variant="tertiary"
+                size="compact"
+                :label="t('_common.clear')"
+                @click="overrideSearch = ''"
+              />
+            </div>
+          </aside>
+
+          <div class="application-overrides__editor" aria-labelledby="override-editor-heading">
+            <div class="application-overrides__pane-heading application-overrides__editor-heading">
+              <span class="application-overrides__step" aria-hidden="true">2</span>
+              <div>
+                <h3 id="override-editor-heading">{{ t('apps.overrides.active_overrides') }}</h3>
+                <p>{{ t('apps.overrides.new_settings_hint') }}</p>
+              </div>
+              <StatusBadge
+                tone="neutral"
+                compact
+                :label="t('apps.overrides.configured_count', { count: overrideKeys.length })"
+              />
+            </div>
+            <div class="vs-sr-only" aria-live="polite">{{ overrideAnnouncement }}</div>
+
+            <div v-if="overrideKeys.length" class="application-overrides__active-groups">
+              <section
+                v-for="category in activeOverrideGroups"
+                :key="category.id"
+                class="application-overrides__active-group"
+                :aria-labelledby="`override-active-${category.id}`"
+              >
+                <h4 :id="`override-active-${category.id}`">{{ category.label }}</h4>
+                <div class="vs-settings-group application-overrides__list">
+                  <SettingRow
+                    v-for="key in category.keys"
+                    :key="key"
+                    :label="overrideLabel(key)"
+                    :control-id="`app-override-${key}`"
+                    :stacked="
+                      overrideField(key)?.kind === 'textarea' || overrideField(key)?.stacked
+                    "
+                    :restart-required="overrideField(key)?.restartRequired"
+                  >
+                    <template #description>
+                      <span v-if="overrideDescription(key)">{{ overrideDescription(key) }}</span>
+                    </template>
+
+                    <template #default="{ descriptionId }">
+                      <div class="application-override__controls">
+                        <label v-if="overrideField(key)?.kind === 'boolean'" class="vs-switch">
+                          <input
+                            :id="`app-override-${key}`"
+                            type="checkbox"
+                            :checked="overrideBooleanValue(key)"
+                            :aria-describedby="descriptionId"
+                            @change="updateOverrideFromEvent(key, overrideField(key), $event)"
+                          />
+                          <span class="vs-switch__track" aria-hidden="true" />
+                          <span class="vs-sr-only">{{ overrideLabel(key) }}</span>
+                        </label>
+                        <select
+                          v-else-if="
+                            overrideField(key)?.kind === 'select' &&
+                            overrideSelectOptions(key).length
+                          "
+                          :id="`app-override-${key}`"
+                          class="vs-select"
+                          :value="overrideControlValue(key)"
+                          :aria-describedby="descriptionId"
+                          @change="updateOverrideFromEvent(key, overrideField(key), $event)"
+                        >
+                          <option
+                            v-for="option in overrideSelectOptions(key)"
+                            :key="option.value"
+                            :value="option.value"
+                          >
+                            {{ option.label }}
+                          </option>
+                        </select>
+                        <textarea
+                          v-else-if="overrideField(key)?.kind === 'textarea'"
+                          :id="`app-override-${key}`"
+                          :class="[
+                            'vs-textarea',
+                            { 'vs-monospace': overrideField(key)?.monospace },
+                          ]"
+                          :value="String(overrideValue(key) ?? '')"
+                          :placeholder="overridePlaceholder(key)"
+                          :aria-describedby="descriptionId"
+                          rows="4"
+                          @input="updateOverrideFromEvent(key, overrideField(key), $event)"
+                        />
+                        <input
+                          v-else
+                          :id="`app-override-${key}`"
+                          :class="['vs-input', { 'vs-monospace': overrideField(key)?.monospace }]"
+                          :type="overrideField(key)?.kind === 'number' ? 'number' : 'text'"
+                          :min="overrideField(key)?.min"
+                          :max="overrideField(key)?.max"
+                          :step="overrideField(key)?.step"
+                          :value="String(overrideValue(key) ?? '')"
+                          :placeholder="overridePlaceholder(key)"
+                          :aria-describedby="descriptionId"
+                          @input="updateOverrideFromEvent(key, overrideField(key), $event)"
+                        />
+                        <AppButton
+                          variant="tertiary"
+                          size="compact"
+                          icon="trash"
+                          icon-only
+                          :label="t('_common.remove')"
+                          :aria-label="`${t('_common.remove')}: ${overrideLabel(key)}`"
+                          @click="removeOverride(key)"
+                        />
+                      </div>
+                    </template>
+                  </SettingRow>
+                </div>
+              </section>
+            </div>
+            <div v-else class="application-overrides__empty">
+              <span class="application-overrides__empty-icon" aria-hidden="true">
+                <UiIcon name="settings" :size="20" />
+              </span>
+              <strong>{{ t('apps.overrides.empty_picker') }}</strong>
+              <p>{{ t('apps.overrides.new_settings_hint') }}</p>
+            </div>
+          </div>
         </div>
       </section>
-        </div>
-      </details>
 
       <section v-if="!isNew" class="editor-danger" aria-labelledby="danger-heading">
         <div>
@@ -2091,33 +2388,20 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
           variant="danger"
           icon="trash"
           :label="t('ui.application.delete.action')"
-          @click="deleteError = ''; deleteOpen = true"
+          @click="
+            deleteError = '';
+            deleteOpen = true;
+          "
         />
       </section>
 
-      <div
-        class="editor-save-bar"
-        role="region"
-        :aria-label="t('ui.application.saveBar.region')"
-      >
+      <div class="editor-save-bar" role="region" :aria-label="t('ui.application.saveBar.region')">
         <div>
           <strong>
-            {{
-              t(
-                isDirty
-                  ? 'ui.application.saveBar.unsaved'
-                  : 'ui.application.saveBar.current',
-              )
-            }}
+            {{ t(isDirty ? 'ui.application.saveBar.unsaved' : 'ui.application.saveBar.current') }}
           </strong>
           <span>
-            {{
-              t(
-                isNew
-                  ? 'ui.application.saveBar.addHint'
-                  : 'ui.application.saveBar.editHint',
-              )
-            }}
+            {{ t(isNew ? 'ui.application.saveBar.addHint' : 'ui.application.saveBar.editHint') }}
           </span>
         </div>
         <div class="editor-save-bar__actions">
@@ -2142,7 +2426,11 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 
     <ConfirmDialog
       v-model:open="deleteOpen"
-      :title="t('ui.application.delete.dialogTitle', { name: form.name || t('ui.application.delete.fallbackName') })"
+      :title="
+        t('ui.application.delete.dialogTitle', {
+          name: form.name || t('ui.application.delete.fallbackName'),
+        })
+      "
       :description="t('ui.application.delete.dialogDescription')"
       :confirm-label="t('ui.application.delete.action')"
       :cancel-label="t('_common.cancel')"
@@ -2209,8 +2497,7 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 .editor-section__heading--actions,
 .editor-danger,
 .editor-save-bar,
-.editor-save-bar__actions,
-.editor-inline-control {
+.editor-save-bar__actions {
   display: flex;
   align-items: center;
 }
@@ -2358,82 +2645,6 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
   text-align: center;
 }
 
-.editor-inline-control {
-  min-inline-size: min(100%, 15rem);
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--vs-space-8);
-  color: var(--vs-color-text-secondary);
-}
-
-.editor-inline-control .vs-input {
-  inline-size: 7rem;
-}
-
-.editor-inline-control .vs-field__error {
-  flex-basis: 100%;
-  text-align: end;
-}
-
-.editor-subgroup {
-  margin-block-start: var(--vs-space-12);
-}
-
-.editor-disclosure {
-  overflow: hidden;
-  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  border-radius: var(--vs-radius-card);
-  background: var(--vs-color-bg-surface);
-}
-
-.editor-disclosure > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--vs-space-16);
-  padding: var(--vs-space-16) var(--vs-space-20);
-  color: var(--vs-color-text-primary);
-  font-weight: var(--vs-type-weight-semibold);
-  cursor: pointer;
-  list-style: none;
-}
-
-.editor-disclosure > summary::-webkit-details-marker {
-  display: none;
-}
-
-.editor-disclosure > summary > span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--vs-space-8);
-}
-
-.editor-disclosure > summary:hover {
-  background: var(--vs-color-bg-subtle);
-}
-
-.editor-disclosure__chevron {
-  transition: rotate var(--vs-motion-duration-fast) var(--vs-motion-easing-standard);
-}
-
-.editor-disclosure[open] .editor-disclosure__chevron {
-  rotate: 180deg;
-}
-
-.editor-disclosure__description {
-  margin: 0;
-  padding: 0 var(--vs-space-20) var(--vs-space-20);
-  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-helper);
-}
-
-.editor-disclosure__content {
-  display: grid;
-  gap: var(--vs-space-32);
-  padding: var(--vs-space-24) var(--vs-space-20);
-}
-
 .framegen-health {
   display: grid;
   gap: var(--vs-space-16);
@@ -2527,9 +2738,280 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
   text-align: center;
 }
 
-.editor-json {
-  min-block-size: 14rem;
-  tab-size: 2;
+.application-overrides {
+  display: grid;
+  overflow: hidden;
+  grid-template-columns: minmax(18rem, 0.82fr) minmax(0, 1.18fr);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+
+.application-overrides__catalog,
+.application-overrides__editor {
+  min-inline-size: 0;
+}
+
+.application-overrides__catalog {
+  border-inline-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  background: var(--vs-color-bg-subtle);
+}
+
+.application-overrides__pane-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--vs-space-12);
+  min-block-size: 5.5rem;
+  padding: var(--vs-space-16) var(--vs-space-20);
+}
+
+.application-overrides__editor-heading {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.application-overrides__pane-heading h3 {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  line-height: var(--vs-type-line-height-control);
+}
+
+.application-overrides__pane-heading p {
+  margin-block-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+  line-height: var(--vs-type-line-height-metadata);
+}
+
+.application-overrides__step {
+  display: inline-flex;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--vs-color-accent-default);
+  color: var(--vs-color-text-on-accent);
+  font-size: var(--vs-type-size-metadata);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.application-overrides__catalog-tools {
+  display: grid;
+  gap: var(--vs-space-8);
+  padding: 0 var(--vs-space-16) var(--vs-space-16);
+}
+
+.application-overrides__search {
+  position: relative;
+}
+
+.application-overrides__search > svg {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: var(--vs-space-12);
+  inset-block-start: 50%;
+  color: var(--vs-color-text-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.application-overrides__search .vs-input {
+  inline-size: 100%;
+  padding-inline-start: 2.25rem;
+}
+
+.application-overrides__result-count {
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.application-overrides__catalog-list {
+  max-block-size: 42rem;
+  overflow-y: auto;
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.application-overrides__catalog-group h4,
+.application-overrides__active-group > h4 {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+  font-weight: var(--vs-type-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.application-overrides__catalog-group h4 {
+  position: sticky;
+  z-index: 1;
+  inset-block-start: 0;
+  padding: var(--vs-space-8) var(--vs-space-16);
+  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  background: var(--vs-color-bg-raised);
+}
+
+.application-overrides__catalog-group + .application-overrides__catalog-group h4 {
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.application-overrides__catalog-item {
+  display: grid;
+  inline-size: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-12) var(--vs-space-16);
+  border: 0;
+  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.application-overrides__catalog-item:hover,
+.application-overrides__catalog-item:focus-visible {
+  background: var(--vs-color-bg-surface);
+}
+
+.application-overrides__catalog-item:focus-visible {
+  outline: 2px solid var(--vs-color-accent-default);
+  outline-offset: -2px;
+}
+
+.application-overrides__catalog-item--active {
+  background: color-mix(in srgb, var(--vs-color-accent-default) 7%, transparent);
+}
+
+.application-overrides__catalog-copy {
+  display: grid;
+  min-inline-size: 0;
+  gap: var(--vs-space-4);
+}
+
+.application-overrides__catalog-copy strong {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-medium);
+  line-height: var(--vs-type-line-height-control);
+}
+
+.application-overrides__catalog-copy > span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+  line-height: var(--vs-type-line-height-metadata);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.application-overrides__catalog-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vs-space-4);
+  color: var(--vs-color-accent-default);
+  font-size: var(--vs-type-size-metadata);
+  font-weight: var(--vs-type-weight-semibold);
+  white-space: nowrap;
+}
+
+.application-overrides__catalog-item--active .application-overrides__catalog-action {
+  color: var(--vs-color-status-success);
+}
+
+.application-overrides__catalog-empty {
+  display: grid;
+  justify-items: start;
+  gap: var(--vs-space-8);
+  padding: var(--vs-space-24) var(--vs-space-16);
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.application-overrides__catalog-empty p {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.application-overrides__editor {
+  overflow: hidden;
+  background: var(--vs-color-bg-surface);
+}
+
+.application-overrides__active-groups {
+  display: grid;
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.application-overrides__active-group > h4 {
+  padding: var(--vs-space-8) var(--vs-space-20);
+  border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  background: var(--vs-color-bg-subtle);
+}
+
+.application-overrides__active-group + .application-overrides__active-group > h4 {
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.application-overrides__list {
+  border: 0;
+  border-radius: 0;
+}
+
+.application-overrides__list :deep(.vs-setting-row__control) {
+  min-inline-size: min(100%, 20rem);
+}
+
+.application-override__controls {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
+}
+
+.application-override__controls > .vs-input,
+.application-override__controls > .vs-select,
+.application-override__controls > .vs-textarea {
+  inline-size: min(100%, 18rem);
+}
+
+.application-override__controls > .vs-textarea {
+  inline-size: min(100%, 30rem);
+  resize: vertical;
+}
+
+.application-overrides__empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--vs-space-8);
+  padding: var(--vs-space-32) var(--vs-space-20);
+  min-block-size: 18rem;
+  border-block-start: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  text-align: center;
+}
+
+.application-overrides__empty-icon {
+  display: inline-flex;
+  inline-size: 3rem;
+  block-size: 3rem;
+  align-items: center;
+  justify-content: center;
+  margin-block-end: var(--vs-space-4);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--vs-color-accent-default) 12%, transparent);
+  color: var(--vs-color-accent-default);
+}
+
+.application-overrides__empty strong {
+  color: var(--vs-color-text-primary);
+}
+
+.application-overrides__empty p {
+  max-inline-size: 38rem;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+  line-height: var(--vs-type-line-height-metadata);
 }
 
 .editor-danger {
@@ -2549,7 +3031,7 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
   inset-inline-start: calc(var(--vs-navigation-width-expanded) + var(--vs-space-32));
   inset-inline-end: var(--vs-space-32);
   inset-block-end: var(--vs-space-24);
-  max-inline-size: var(--vs-content-width-settings);
+  max-inline-size: var(--vs-content-width-general);
   padding: var(--vs-space-12) var(--vs-space-16);
   border: var(--vs-border-width) solid var(--vs-color-border-strong);
   border-radius: var(--vs-radius-card);
@@ -2576,6 +3058,19 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
 }
 
 @media (max-width: 1023px) {
+  .application-overrides {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .application-overrides__catalog {
+    border-inline-end: 0;
+    border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  }
+
+  .application-overrides__catalog-list {
+    max-block-size: 28rem;
+  }
+
   .editor-save-bar {
     inset-inline-start: calc(var(--vs-navigation-width-collapsed) + var(--vs-space-24));
     inset-inline-end: var(--vs-space-24);
@@ -2607,6 +3102,32 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
   .editor-name-control .vs-button,
   .framegen-health__heading .vs-button {
     align-self: flex-start;
+  }
+
+  .application-overrides__list :deep(.vs-setting-row__control),
+  .application-override__controls,
+  .application-override__controls > .vs-input,
+  .application-override__controls > .vs-select,
+  .application-override__controls > .vs-textarea {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  .application-override__controls > .vs-button {
+    flex: 0 0 auto;
+  }
+
+  .application-override__controls {
+    justify-content: flex-start;
+  }
+
+  .application-overrides__editor-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .application-overrides__editor-heading .vs-status-badge {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .editor-save-bar {
