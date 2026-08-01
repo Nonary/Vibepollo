@@ -509,6 +509,9 @@ onBeforeUnmount(() => {
         </span>
       </template>
       <template #actions>
+        <RouterLink class="vs-button vs-button--secondary vs-button--default" to="/stats">
+          {{ t('stats.title') }}
+        </RouterLink>
         <AppButton
           :label="t('_common.refresh')"
           icon="refresh"

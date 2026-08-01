@@ -16,6 +16,7 @@ const primaryNavigation = [
   { labelKey: 'ui.nav.library', icon: 'library', to: '/library' },
   { labelKey: 'ui.nav.devices', icon: 'devices', to: '/devices' },
   { labelKey: 'ui.nav.sessions', icon: 'sessions', to: '/sessions' },
+  { labelKey: 'ui.nav.stats', icon: 'activity', to: '/stats' },
   { labelKey: 'ui.nav.integrations', icon: 'integrations', to: '/integrations' },
   { labelKey: 'ui.nav.logs', icon: 'logs', to: '/logs' },
 ] as const;

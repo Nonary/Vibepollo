@@ -56,6 +56,12 @@ const router = createRouter({
       meta: { titleKey: 'ui.nav.sessions' },
     },
     {
+      path: '/stats',
+      name: 'stats',
+      component: () => import('@/views/StatsView.vue'),
+      meta: { titleKey: 'ui.nav.stats' },
+    },
+    {
       path: '/integrations',
       name: 'integrations',
       component: () => import('@/views/IntegrationsView.vue'),

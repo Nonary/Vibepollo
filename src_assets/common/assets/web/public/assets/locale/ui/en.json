@@ -788,6 +788,7 @@
       "maintenance": "Maintenance",
       "overview": "Overview",
       "sessions": "Sessions",
+      "stats": "Statistics",
       "settings": "Settings"
     },
     "browser_stream": {
@@ -1135,6 +1136,12 @@
         "unknown_codec": "Unknown codec",
         "unknown_time": "Unknown time"
       }
+    },
+    "stats": {
+      "close_detail": "Close session details",
+      "maximum": "Max {value}",
+      "minimum": "Min {value}",
+      "sample_count": "{count} sample | {count} samples"
     },
     "settings": {
       "all_settings": "All settings",
