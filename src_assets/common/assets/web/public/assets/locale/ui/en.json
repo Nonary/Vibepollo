@@ -1299,11 +1299,15 @@
           "title": "Where you can manage and connect"
         },
         "everyday_capture": {
-          "title": "Capture, sound, and controllers"
+          "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
           "description": "A per-client virtual display is the simplest option for headless hosts, HDR, and client-sized resolutions.",
           "title": "Screen used for streaming"
+        },
+        "everyday_host": {
+          "description": "Set how this host appears, reports activity, and notifies you about updates.",
+          "title": "Host identity and diagnostics"
         },
         "everyday_pacing": {
           "description": "Match games to the requested stream rate to reduce uneven motion and unnecessary GPU work.",
@@ -1430,6 +1434,15 @@
           "none": "None",
           "verbose": "Verbose",
           "warning": "Warning"
+        },
+        "nvenc_preset": {
+          "p1": "P1 (fastest, default)",
+          "p2": "P2",
+          "p3": "P3",
+          "p4": "P4 (balanced quality)",
+          "p5": "P5",
+          "p6": "P6",
+          "p7": "P7 (slowest)"
         },
         "origin": {
           "lan": "Local network",

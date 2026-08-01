@@ -93,6 +93,18 @@ const captureOptions = [
   option('ddx', 'ui.settings.options.capture.ddx'),
 ];
 
+const nvencPresetOptions = [
+  option('1', 'ui.settings.options.nvenc_preset.p1'),
+  option('2', 'ui.settings.options.nvenc_preset.p2'),
+  option('3', 'ui.settings.options.nvenc_preset.p3'),
+  option('4', 'ui.settings.options.nvenc_preset.p4'),
+  option('5', 'ui.settings.options.nvenc_preset.p5'),
+  option('6', 'ui.settings.options.nvenc_preset.p6'),
+  option('7', 'ui.settings.options.nvenc_preset.p7'),
+];
+
+const nvencPresetField = (): SettingsField => select('nvenc_preset', nvencPresetOptions);
+
 const frameLimiterOptions = [
   option('auto', '_common.auto'),
   option('rtss', 'ui.settings.options.frame_limiter_provider.rtss'),
@@ -158,6 +170,7 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'everyday_capture',
         fields: [
           select('capture', captureOptions, { recommended: true }),
+          nvencPresetField(),
           boolean('stream_audio'),
           boolean('controller'),
         ],
@@ -171,6 +184,24 @@ export const settingsCategories: SettingsCategory[] = [
             option('wan', 'ui.settings.options.origin.wan'),
           ]),
           boolean('upnp', { restartRequired: true }),
+        ],
+      },
+      {
+        id: 'everyday_host',
+        fields: [
+          text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
+          boolean('system_tray'),
+          boolean('notify_pre_releases'),
+          select('min_log_level', [
+            option('0', 'ui.settings.options.log_level.verbose'),
+            option('1', 'ui.settings.options.log_level.debug'),
+            option('2', 'ui.settings.options.log_level.info'),
+            option('3', 'ui.settings.options.log_level.warning'),
+            option('4', 'ui.settings.options.log_level.error'),
+            option('5', 'ui.settings.options.log_level.fatal'),
+            option('6', 'ui.settings.options.log_level.none'),
+          ]),
+          boolean('realtime_stats_enabled'),
         ],
       },
     ],
@@ -328,7 +359,11 @@ export const settingsCategories: SettingsCategory[] = [
     groups: [
       {
         id: 'video_encoder',
-        fields: [select('encoder', [option('', '_common.auto')]), boolean('wgc_pacing_smoothing')],
+        fields: [
+          select('encoder', [option('', '_common.auto')]),
+          nvencPresetField(),
+          boolean('wgc_pacing_smoothing'),
+        ],
       },
       {
         id: 'video_codecs',
@@ -371,10 +406,14 @@ export const settingsCategories: SettingsCategory[] = [
             option('wan', 'ui.settings.options.origin.wan'),
           ]),
           boolean('upnp', { restartRequired: true }),
-          select('address_family', [
-            option('ipv4', 'ui.settings.options.address_family.ipv4'),
-            option('both', 'ui.settings.options.address_family.both'),
-          ], { restartRequired: true }),
+          select(
+            'address_family',
+            [
+              option('ipv4', 'ui.settings.options.address_family.ipv4'),
+              option('both', 'ui.settings.options.address_family.both'),
+            ],
+            { restartRequired: true },
+          ),
           number('port', { min: 1019, max: 65514, restartRequired: true }),
           text('bind_address', { monospace: true, stacked: true }),
           text('external_ip', { monospace: true, stacked: true }),
@@ -508,6 +547,7 @@ export const settingsDefaults: Record<string, unknown> = {
   audio_sink: '',
   virtual_sink: '',
   encoder: '',
+  nvenc_preset: 1,
   wgc_pacing_smoothing: true,
   hevc_mode: 0,
   av1_mode: 0,
