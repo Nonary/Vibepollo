@@ -146,16 +146,26 @@ function parseFmtpValue(fmtp: string | undefined, key: string): string | null {
   return entry ? entry.slice(entry.indexOf('=') + 1).trim() : null;
 }
 
-function isHevcMain10Profile(profile: string | null): boolean {
-  return profile !== null && /^\d+$/.test(profile) && Number(profile) === 2;
+function parseFmtpDecimal(value: string | null, defaultValue: number): number {
+  if (value === null) return defaultValue;
+  return /^\d+$/.test(value) ? Number(value) : Number.NaN;
+}
+
+function isHevcMain10Profile(profileId: string | null, profileSpace: string | null): boolean {
+  // RFC 7798 Main10 is profile-space 0, profile-id 2. A missing profile-space
+  // defaults to zero; a missing profile-id defaults to Main (1), not Main10.
+  const parsedProfileId = parseFmtpDecimal(profileId, 1);
+  const parsedProfileSpace = parseFmtpDecimal(profileSpace, 0);
+  return parsedProfileSpace === 0 && parsedProfileId === 2;
 }
 
 function hasHevcMain10Capability(capabilities: RTCRtpCapabilities | null): boolean {
   if (!capabilities?.codecs?.length) return false;
   return capabilities.codecs.some((codec) => {
     if (!videoMimeTypes.hevc.includes(codec.mimeType.toLocaleLowerCase())) return false;
-    const profile = parseFmtpValue(codec.sdpFmtpLine, 'profile-id');
-    return isHevcMain10Profile(profile);
+    const profileId = parseFmtpValue(codec.sdpFmtpLine, 'profile-id');
+    const profileSpace = parseFmtpValue(codec.sdpFmtpLine, 'profile-space');
+    return isHevcMain10Profile(profileId, profileSpace);
   });
 }
 
@@ -313,8 +323,9 @@ function preferredCodecs(encoding: EncodingType, hdr: boolean): RTCRtpCodecCapab
   );
   if (hdr && encoding === 'hevc') {
     preferred = preferred.filter((codec) => {
-      const profile = parseFmtpValue(codec.sdpFmtpLine, 'profile-id');
-      return isHevcMain10Profile(profile);
+      const profileId = parseFmtpValue(codec.sdpFmtpLine, 'profile-id');
+      const profileSpace = parseFmtpValue(codec.sdpFmtpLine, 'profile-space');
+      return isHevcMain10Profile(profileId, profileSpace);
     });
   }
   if (encoding === 'h264') {
