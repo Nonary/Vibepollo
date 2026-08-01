@@ -1,0 +1,548 @@
+export type SettingsFieldKind = 'boolean' | 'number' | 'select' | 'text' | 'textarea';
+
+export interface SettingsOption {
+  labelKey: string;
+  value: string;
+}
+
+export interface SettingsVisibility {
+  key: string;
+  equals?: string | boolean;
+  notEquals?: string | boolean;
+}
+
+export interface SettingsField {
+  key: string;
+  kind: SettingsFieldKind;
+  labelKey?: string;
+  descriptionKey?: string;
+  options?: SettingsOption[];
+  min?: number;
+  max?: number;
+  step?: number;
+  placeholderKey?: string;
+  monospace?: boolean;
+  restartRequired?: boolean;
+  stacked?: boolean;
+  recommended?: boolean;
+  visibleWhen?: SettingsVisibility;
+  source?: 'gpu';
+}
+
+export interface SettingsGroup {
+  id: string;
+  fields: SettingsField[];
+}
+
+export interface SettingsCategory {
+  id: string;
+  groups: SettingsGroup[];
+}
+
+const option = (value: string, labelKey: string): SettingsOption => ({ value, labelKey });
+const boolean = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
+  key,
+  kind: 'boolean',
+  ...extra,
+});
+const number = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
+  key,
+  kind: 'number',
+  ...extra,
+});
+const text = (key: string, extra: Partial<SettingsField> = {}): SettingsField => ({
+  key,
+  kind: 'text',
+  ...extra,
+});
+const select = (
+  key: string,
+  options: SettingsOption[],
+  extra: Partial<SettingsField> = {},
+): SettingsField => ({ key, kind: 'select', options, ...extra });
+
+const virtualDisplayOptions = [
+  option('disabled', 'ui.settings.options.virtual_display_mode.disabled'),
+  option('per_client', 'ui.settings.options.virtual_display_mode.per_client'),
+  option('shared', 'ui.settings.options.virtual_display_mode.shared'),
+];
+
+const virtualLayoutOptions = [
+  option('exclusive', 'ui.settings.options.virtual_display_layout.exclusive'),
+  option('extended', 'ui.settings.options.virtual_display_layout.extended'),
+  option('extended_primary', 'ui.settings.options.virtual_display_layout.extended_primary'),
+  option('extended_isolated', 'ui.settings.options.virtual_display_layout.extended_isolated'),
+  option(
+    'extended_primary_isolated',
+    'ui.settings.options.virtual_display_layout.extended_primary_isolated',
+  ),
+];
+
+const virtualScaleOptions = [
+  option('-1', 'ui.settings.options.virtual_scale.recommended'),
+  option('0', 'ui.settings.options.virtual_scale.preserve'),
+  ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((scale) =>
+    option(String(scale), 'ui.settings.options.virtual_scale.percent'),
+  ),
+];
+
+const captureOptions = [
+  option('', '_common.auto'),
+  option('wgc', 'ui.settings.options.capture.wgc'),
+  option('wgcc', 'ui.settings.options.capture.wgcc'),
+  option('ddx', 'ui.settings.options.capture.ddx'),
+];
+
+const frameLimiterOptions = [
+  option('auto', '_common.auto'),
+  option('rtss', 'ui.settings.options.frame_limiter_provider.rtss'),
+  option('nvidia-control-panel', 'ui.settings.options.frame_limiter_provider.nvidia'),
+  option('none', 'ui.settings.options.frame_limiter_provider.none'),
+];
+
+const frameGenerationOptions = [
+  option('enabled', '_common.enabled'),
+  option('legacy', 'ui.settings.options.frame_generation.legacy'),
+  option('disabled', '_common.disabled'),
+];
+
+const everydayDisplayFields = (): SettingsField[] => [
+  select('virtual_display_mode', virtualDisplayOptions, {
+    labelKey: 'ui.settings.fields.virtual_display_mode.label',
+    descriptionKey: 'ui.settings.fields.virtual_display_mode.description',
+    recommended: true,
+  }),
+  select('virtual_display_layout', virtualLayoutOptions, {
+    labelKey: 'ui.settings.fields.virtual_display_layout.label',
+    descriptionKey: 'ui.settings.fields.virtual_display_layout.description',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
+  select('dd_virtual_display_scale', virtualScaleOptions, {
+    labelKey: 'ui.settings.fields.dd_virtual_display_scale.label',
+    descriptionKey: 'ui.settings.fields.dd_virtual_display_scale.description',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
+];
+
+const everydayPacingFields = (): SettingsField[] => [
+  boolean('frame_limiter_enable', {
+    labelKey: 'ui.settings.fields.frame_limiter_enable.label',
+    descriptionKey: 'ui.settings.fields.frame_limiter_enable.description',
+    recommended: true,
+  }),
+  select('frame_limiter_provider', frameLimiterOptions, {
+    visibleWhen: { key: 'frame_limiter_enable', equals: true },
+  }),
+  number('frame_limiter_fps_limit', {
+    min: 0,
+    max: 1000,
+    step: 0.001,
+    placeholderKey: 'ui.settings.placeholders.follow_client',
+    visibleWhen: { key: 'frame_limiter_enable', equals: true },
+  }),
+  select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),
+  boolean('frame_limiter_disable_vsync', {
+    visibleWhen: { key: 'frame_limiter_enable', equals: true },
+  }),
+];
+
+export const settingsCategories: SettingsCategory[] = [
+  {
+    id: 'everyday',
+    groups: [
+      { id: 'everyday_display', fields: everydayDisplayFields() },
+      { id: 'everyday_pacing', fields: everydayPacingFields() },
+      {
+        id: 'everyday_capture',
+        fields: [
+          select('capture', captureOptions, { recommended: true }),
+          boolean('stream_audio'),
+          boolean('controller'),
+        ],
+      },
+      {
+        id: 'everyday_access',
+        fields: [
+          select('origin_web_ui_allowed', [
+            option('pc', 'ui.settings.options.origin.pc'),
+            option('lan', 'ui.settings.options.origin.lan'),
+            option('wan', 'ui.settings.options.origin.wan'),
+          ]),
+          boolean('upnp', { restartRequired: true }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'display',
+    groups: [
+      { id: 'display_virtual', fields: everydayDisplayFields() },
+      {
+        id: 'display_target',
+        fields: [
+          text('output_name', { monospace: true, stacked: true }),
+          select('adapter_name', [], { source: 'gpu' }),
+          select('dd_configuration_option', [
+            option('verify_only', 'ui.settings.options.display_preparation.verify_only'),
+            option('ensure_active', 'ui.settings.options.display_preparation.ensure_active'),
+            option('ensure_primary', 'ui.settings.options.display_preparation.ensure_primary'),
+            option('ensure_only_display', 'ui.settings.options.display_preparation.ensure_only'),
+            option('disabled', '_common.disabled'),
+          ]),
+          select('dd_resolution_option', [
+            option('auto', 'ui.settings.options.resolution.auto'),
+            option('disabled', 'ui.settings.options.resolution.preserve'),
+            option('manual', 'ui.settings.options.resolution.manual'),
+          ]),
+          text('dd_manual_resolution', {
+            placeholderKey: 'ui.settings.placeholders.resolution',
+            visibleWhen: { key: 'dd_resolution_option', equals: 'manual' },
+          }),
+          select('dd_refresh_rate_option', [
+            option('auto', 'ui.settings.options.refresh.auto'),
+            option('prefer_highest', 'ui.settings.options.refresh.highest'),
+            option('disabled', 'ui.settings.options.refresh.preserve'),
+            option('manual', 'ui.settings.options.refresh.manual'),
+          ]),
+          number('dd_manual_refresh_rate', {
+            min: 1,
+            max: 1000,
+            step: 0.001,
+            placeholderKey: 'ui.settings.placeholders.refresh_rate',
+            visibleWhen: { key: 'dd_refresh_rate_option', equals: 'manual' },
+          }),
+          select('dd_hdr_option', [
+            option('auto', 'ui.settings.options.hdr.auto'),
+            option('disabled', 'ui.settings.options.hdr.preserve'),
+          ]),
+          select('dd_hdr_request_override', [
+            option('auto', 'ui.settings.options.hdr_request.auto'),
+            option('force_on', 'ui.settings.options.hdr_request.force_on'),
+            option('force_off', 'ui.settings.options.hdr_request.force_off'),
+          ]),
+        ],
+      },
+      {
+        id: 'display_driver',
+        fields: [
+          boolean('dd_use_sunshine_virtual_display_driver', { recommended: true }),
+          boolean('dd_activate_virtual_display', {
+            visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
+          }),
+          number('dd_virtual_display_permanent_count', {
+            min: 0,
+            max: 4,
+            step: 1,
+            visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
+          }),
+          select('dd_display_helper_engine', [
+            option('auto', '_common.auto'),
+            option('v2', 'ui.settings.options.display_engine.current'),
+            option('legacy', 'ui.settings.options.display_engine.legacy'),
+          ]),
+          boolean('vulkan_hdr_layer'),
+          boolean('dd_wa_dummy_plug_hdr10', {
+            visibleWhen: { key: 'virtual_display_mode', equals: 'disabled' },
+          }),
+        ],
+      },
+      {
+        id: 'display_recovery',
+        fields: [
+          boolean('dd_config_revert_on_disconnect'),
+          boolean('dd_always_restore_from_golden'),
+          number('dd_config_revert_delay', { min: 0, step: 1 }),
+          number('dd_paused_virtual_display_timeout_secs', { min: 0, step: 1 }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'pacing',
+    groups: [
+      {
+        id: 'pacing_capture',
+        fields: [select('capture', captureOptions), boolean('wgc_pacing_smoothing')],
+      },
+      { id: 'pacing_limiter', fields: everydayPacingFields() },
+      {
+        id: 'pacing_integrations',
+        fields: [
+          text('rtss_install_path', { monospace: true, stacked: true }),
+          select('rtss_frame_limit_type', [
+            option('async', 'ui.settings.options.rtss_type.async'),
+            option('front edge sync', 'ui.settings.options.rtss_type.front_edge'),
+            option('back edge sync', 'ui.settings.options.rtss_type.back_edge'),
+            option('nvidia reflex', 'ui.settings.options.rtss_type.reflex'),
+          ]),
+          text('lossless_scaling_path', { monospace: true, stacked: true }),
+          boolean('lossless_scaling_legacy_auto_detect'),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'input',
+    groups: [
+      {
+        id: 'input_devices',
+        fields: [
+          boolean('keyboard'),
+          boolean('mouse'),
+          boolean('controller'),
+          boolean('motion_as_ds4'),
+          boolean('touchpad_as_ds4'),
+          boolean('ds4_back_as_touchpad_click'),
+          boolean('always_send_scancodes'),
+          boolean('high_resolution_scrolling'),
+          boolean('native_pen_touch'),
+        ],
+      },
+      {
+        id: 'input_repeat',
+        fields: [
+          number('key_repeat_delay', { min: 0, step: 1 }),
+          number('key_repeat_frequency', { min: 0.1, step: 0.1 }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'audio',
+    groups: [
+      {
+        id: 'audio_routing',
+        fields: [
+          boolean('stream_audio'),
+          text('audio_sink', { monospace: true, stacked: true }),
+          text('virtual_sink', { monospace: true, stacked: true }),
+          boolean('install_steam_audio_drivers'),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'video',
+    groups: [
+      {
+        id: 'video_encoder',
+        fields: [select('encoder', [option('', '_common.auto')]), boolean('wgc_pacing_smoothing')],
+      },
+      {
+        id: 'video_codecs',
+        fields: [
+          select('hevc_mode', [
+            option('0', '_common.auto'),
+            option('1', '_common.disabled'),
+            option('2', 'ui.settings.options.codec.eight_bit'),
+            option('3', 'ui.settings.options.codec.hdr_ten_bit'),
+          ]),
+          select('av1_mode', [
+            option('0', '_common.auto'),
+            option('1', '_common.disabled'),
+            option('2', 'ui.settings.options.codec.eight_bit'),
+            option('3', 'ui.settings.options.codec.hdr_ten_bit'),
+          ]),
+        ],
+      },
+      {
+        id: 'video_quality',
+        fields: [
+          number('max_bitrate', { min: 0, step: 1 }),
+          number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
+          number('qp', { min: 0, max: 51, step: 1 }),
+          number('fec_percentage', { min: 0, max: 255, step: 1 }),
+          number('video_max_batch_size_kb', { min: 1, step: 1 }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'network',
+    groups: [
+      {
+        id: 'network_access',
+        fields: [
+          select('origin_web_ui_allowed', [
+            option('pc', 'ui.settings.options.origin.pc'),
+            option('lan', 'ui.settings.options.origin.lan'),
+            option('wan', 'ui.settings.options.origin.wan'),
+          ]),
+          boolean('upnp', { restartRequired: true }),
+          select('address_family', [
+            option('ipv4', 'ui.settings.options.address_family.ipv4'),
+            option('both', 'ui.settings.options.address_family.both'),
+          ], { restartRequired: true }),
+          number('port', { min: 1019, max: 65514, restartRequired: true }),
+          text('bind_address', { monospace: true, stacked: true }),
+          text('external_ip', { monospace: true, stacked: true }),
+          number('ping_timeout', { min: 0, step: 1 }),
+        ],
+      },
+      {
+        id: 'network_security',
+        fields: [
+          select('lan_encryption_mode', [
+            option('0', '_common.disabled'),
+            option('1', 'ui.settings.options.encryption.optional'),
+            option('2', 'ui.settings.options.encryption.required'),
+          ]),
+          select('wan_encryption_mode', [
+            option('0', '_common.disabled'),
+            option('1', 'ui.settings.options.encryption.optional'),
+            option('2', 'ui.settings.options.encryption.required'),
+          ]),
+          text('csrf_allowed_origins', { stacked: true }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'host',
+    groups: [
+      {
+        id: 'host_identity',
+        fields: [
+          text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
+          boolean('system_tray'),
+          boolean('notify_pre_releases'),
+          select('min_log_level', [
+            option('0', 'ui.settings.options.log_level.verbose'),
+            option('1', 'ui.settings.options.log_level.debug'),
+            option('2', 'ui.settings.options.log_level.info'),
+            option('3', 'ui.settings.options.log_level.warning'),
+            option('4', 'ui.settings.options.log_level.error'),
+            option('5', 'ui.settings.options.log_level.fatal'),
+            option('6', 'ui.settings.options.log_level.none'),
+          ]),
+        ],
+      },
+      {
+        id: 'host_history',
+        fields: [
+          boolean('session_history_enabled'),
+          number('session_history_ttl_days', {
+            min: 0,
+            step: 1,
+            visibleWhen: { key: 'session_history_enabled', equals: true },
+          }),
+          number('session_history_db_size_limit_mb', {
+            min: 0,
+            step: 1,
+            visibleWhen: { key: 'session_history_enabled', equals: true },
+          }),
+          boolean('realtime_stats_enabled'),
+          number('realtime_stats_poll_interval_ms', {
+            min: 250,
+            max: 60000,
+            step: 50,
+            visibleWhen: { key: 'realtime_stats_enabled', equals: true },
+          }),
+        ],
+      },
+    ],
+  },
+  {
+    id: 'files',
+    groups: [
+      {
+        id: 'file_paths',
+        fields: [
+          text('file_apps', { monospace: true, stacked: true }),
+          text('log_path', { monospace: true, stacked: true }),
+          text('pkey', { monospace: true, restartRequired: true, stacked: true }),
+          text('cert', { monospace: true, restartRequired: true, stacked: true }),
+        ],
+      },
+    ],
+  },
+];
+
+export const settingsDefaults: Record<string, unknown> = {
+  virtual_display_mode: 'per_client',
+  virtual_display_layout: 'exclusive',
+  dd_virtual_display_scale: -1,
+  frame_limiter_enable: false,
+  frame_limiter_provider: 'auto',
+  frame_limiter_fps_limit: 0,
+  frame_limiter_auto_virtual_framegen: 'enabled',
+  frame_limiter_disable_vsync: false,
+  capture: '',
+  stream_audio: true,
+  controller: true,
+  origin_web_ui_allowed: 'lan',
+  upnp: false,
+  output_name: '',
+  adapter_name: '',
+  adapter_pnp_id: '',
+  dd_configuration_option: 'verify_only',
+  dd_resolution_option: 'auto',
+  dd_manual_resolution: '',
+  dd_refresh_rate_option: 'auto',
+  dd_manual_refresh_rate: '',
+  dd_hdr_option: 'auto',
+  dd_hdr_request_override: 'auto',
+  dd_use_sunshine_virtual_display_driver: true,
+  dd_activate_virtual_display: false,
+  dd_virtual_display_permanent_count: 0,
+  dd_display_helper_engine: 'auto',
+  vulkan_hdr_layer: true,
+  dd_wa_dummy_plug_hdr10: false,
+  dd_config_revert_on_disconnect: false,
+  dd_always_restore_from_golden: false,
+  dd_config_revert_delay: 3000,
+  dd_paused_virtual_display_timeout_secs: 0,
+  keyboard: true,
+  mouse: true,
+  motion_as_ds4: true,
+  touchpad_as_ds4: true,
+  ds4_back_as_touchpad_click: true,
+  always_send_scancodes: true,
+  high_resolution_scrolling: true,
+  native_pen_touch: true,
+  key_repeat_delay: 500,
+  key_repeat_frequency: 24.9,
+  install_steam_audio_drivers: true,
+  audio_sink: '',
+  virtual_sink: '',
+  encoder: '',
+  wgc_pacing_smoothing: true,
+  hevc_mode: 0,
+  av1_mode: 0,
+  max_bitrate: 0,
+  minimum_fps_target: 20,
+  qp: 28,
+  fec_percentage: 20,
+  video_max_batch_size_kb: 64,
+  rtss_install_path: '',
+  rtss_frame_limit_type: 'async',
+  lossless_scaling_path: '',
+  lossless_scaling_legacy_auto_detect: false,
+  address_family: 'ipv4',
+  port: 47989,
+  bind_address: '',
+  external_ip: '',
+  ping_timeout: 10000,
+  lan_encryption_mode: 0,
+  wan_encryption_mode: 1,
+  csrf_allowed_origins: '',
+  system_tray: true,
+  notify_pre_releases: false,
+  min_log_level: 2,
+  session_history_enabled: true,
+  session_history_ttl_days: 0,
+  session_history_db_size_limit_mb: 0,
+  realtime_stats_enabled: true,
+  realtime_stats_poll_interval_ms: 2000,
+};
+
+export const knownSettingsKeys = new Set(
+  settingsCategories.flatMap((category) =>
+    category.groups.flatMap((group) => group.fields.map((field) => field.key)),
+  ),
+);
+knownSettingsKeys.add('adapter_pnp_id');
+
+export const restartRequiredKeys = new Set(['address_family', 'cert', 'pkey', 'port', 'upnp']);

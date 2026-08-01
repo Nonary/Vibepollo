@@ -1,0 +1,1396 @@
+{
+  "ui": {
+    "app": {
+      "connecting": "Connecting to this host...",
+      "skip_to_content": "Skip to main content"
+    },
+    "application": {
+      "actions": {
+        "addPrep": "Add preparation command",
+        "back": "Back to library",
+        "returnToLibrary": "Return to library",
+        "save": "Save application",
+        "saving": "Saving",
+        "tryAgain": "Try again"
+      },
+      "alerts": {
+        "correctFields": "Correct the highlighted fields",
+        "expertDescription": "Removing a property here removes it from the saved application. Guided fields above always take precedence over duplicate keys.",
+        "expertTitle": "Expert configuration",
+        "prepAttention": "Preparation command needs attention",
+        "saveFailed": "Save failed",
+        "unavailable": "Application unavailable"
+      },
+      "cover": {
+        "alt": "{name} cover",
+        "unavailable": "Cover preview unavailable",
+        "unavailableLabel": "{name} cover unavailable"
+      },
+      "delete": {
+        "action": "Delete application",
+        "busy": "Deleting",
+        "dialogDescription": "This removes the application from every streaming client. It does not delete files from the host.",
+        "dialogTitle": "Delete {name}?",
+        "errorTitle": "Delete failed",
+        "fallbackName": "application",
+        "sectionDescription": "Remove this entry from the streaming library. The executable and artwork files remain on disk.",
+        "sectionTitle": "Delete application"
+      },
+      "errors": {
+        "delete": "Unable to delete this application.",
+        "load": "Unable to load this application.",
+        "missingUuid": "This application does not have a UUID.",
+        "notFound": "The requested application no longer exists.",
+        "save": "Unable to save this application."
+      },
+      "fields": {
+        "advanced": {
+          "help": "Unknown values from the server are retained verbatim unless edited here.",
+          "label": "Additional server fields"
+        },
+        "autoDetach": {
+          "description": "Do not keep the main command attached to the streaming session.",
+          "label": "Automatically detach"
+        },
+        "command": {
+          "arrayHelp": "One argument or command entry per line, preserving the server array format.",
+          "help": "Executable and optional arguments.",
+          "placeholder": "C:/Games/Example/game.exe"
+        },
+        "configOverrides": {
+          "help": "Use valid JSON with an object at the top level.",
+          "label": "Overrides JSON object"
+        },
+        "detached": {
+          "help": "Each non-empty line is started independently from the main command.",
+          "placeholder": "One command per line"
+        },
+        "displayAction": {
+          "description": "Control how aggressively Vibepollo applies the requested layout.",
+          "label": "Display configuration action"
+        },
+        "displayLayout": {
+          "description": "Select how the virtual display joins the physical desktop.",
+          "label": "Desktop layout"
+        },
+        "displayMode": {
+          "description": "Choose whether each client receives a display or clients share one.",
+          "label": "Virtual display mode"
+        },
+        "displayOutput": {
+          "label": "Display output override"
+        },
+        "elevated": {
+          "description": "Launch the application with administrator privileges.",
+          "label": "Run elevated"
+        },
+        "excludePrep": {
+          "description": "Run only this application's preparation commands.",
+          "label": "Exclude global preparation commands"
+        },
+        "exitTimeout": {
+          "description": "Seconds to wait for a graceful exit before continuing shutdown."
+        },
+        "frameMode": {
+          "label": "Frame-generation mode"
+        },
+        "frameProvider": {
+          "label": "Frame-generation provider"
+        },
+        "gen1Fix": {
+          "description": "Enable the first-generation frame-generation capture workaround.",
+          "label": "Generation 1 capture fix"
+        },
+        "gen2Fix": {
+          "description": "Enable the second-generation frame-generation capture workaround.",
+          "label": "Generation 2 capture fix"
+        },
+        "iconPath": {
+          "label": "Client icon path"
+        },
+        "imagePath": {
+          "label": "Cover image path"
+        },
+        "limiterFix": {
+          "description": "Apply the application-specific limiter workaround.",
+          "label": "Frame-generation limiter fix"
+        },
+        "losslessDelay": {
+          "help": "Seconds before Lossless Scaling is applied.",
+          "label": "Launch delay"
+        },
+        "losslessEnabled": {
+          "description": "Launch and manage Lossless Scaling for this application.",
+          "label": "Enable Lossless Scaling"
+        },
+        "losslessFramegen": {
+          "description": "Enable the Lossless Scaling frame-generation path.",
+          "label": "Lossless Scaling frame generation"
+        },
+        "losslessRtss": {
+          "label": "RTSS frame limit"
+        },
+        "losslessTarget": {
+          "label": "Target frame rate"
+        },
+        "name": {
+          "help": "Shown in Artemis and this library."
+        },
+        "output": {
+          "label": "Output identifier"
+        },
+        "uuid": {
+          "help": "Stable server identity. It cannot be changed here.",
+          "label": "UUID"
+        },
+        "virtualScreen": {
+          "description": "Request a virtual display for this application.",
+          "label": "Use a virtual screen"
+        },
+        "waitAll": {
+          "description": "Keep the session active until all launched processes exit.",
+          "label": "Wait for every process"
+        }
+      },
+      "loading": "Loading application",
+      "options": {
+        "currentValue": "Current value: {value}",
+        "displayAction": {
+          "disabled": "Do not manage displays",
+          "ensureActive": "Ensure target is active",
+          "ensureOnly": "Ensure target is the only display",
+          "ensurePrimary": "Ensure target is primary",
+          "verify": "Verify configuration only"
+        },
+        "displayLayout": {
+          "exclusive": "Virtual display only",
+          "extended": "Extend desktop",
+          "extendedIsolated": "Extend with client isolation",
+          "extendedPrimary": "Extend and make virtual display primary",
+          "extendedPrimaryIsolated": "Primary virtual display with isolation"
+        },
+        "displayMode": {
+          "perClient": "One display per client",
+          "shared": "Shared display"
+        },
+        "frameMode": {
+          "game": "Game-provided",
+          "lossless": "Lossless Scaling",
+          "nvidia": "NVIDIA Smooth Motion",
+          "off": "Off"
+        },
+        "frameProvider": {
+          "game": "Game-provided frame generation",
+          "lossless": "Lossless Scaling",
+          "nvidia": "NVIDIA Smooth Motion"
+        },
+        "hostDefault": "Use host default",
+        "profile": {
+          "custom": "Custom profile",
+          "recommended": "Recommended profile"
+        }
+      },
+      "page": {
+        "addDescription": "Add a streamable application.",
+        "addTitle": "Add application",
+        "editDescription": "Edit how this application launches and streams.",
+        "fallbackTitle": "Application"
+      },
+      "prep": {
+        "after": "Run after exit",
+        "before": "Run before launch",
+        "elevated": "Run this pair elevated",
+        "empty": "No application-specific preparation commands.",
+        "legend": "Preparation command {number}",
+        "remove": "Remove command {number}"
+      },
+      "saveBar": {
+        "addHint": "Save to add this application to the library.",
+        "current": "Application is up to date",
+        "editHint": "Changes take effect after saving.",
+        "region": "Application save controls",
+        "unsaved": "Unsaved application changes"
+      },
+      "sections": {
+        "advanced": {
+          "description": "Application fields without a guided control are preserved here.",
+          "title": "Advanced fields"
+        },
+        "commands": {
+          "description": "Preparation commands run before launch and may be undone after the session.",
+          "title": "Preparation and detached commands"
+        },
+        "display": {
+          "description": "Override host display policy only for this application.",
+          "title": "Virtual display and layout"
+        },
+        "execution": {
+          "description": "Paths are interpreted by the host running Vibepollo.",
+          "title": "Executable, output, and artwork"
+        },
+        "frameGeneration": {
+          "description": "Application-specific capture fixes and Lossless Scaling launch policy.",
+          "title": "Frame generation and Lossless Scaling"
+        },
+        "identity": {
+          "description": "The name clients see and the stable identifier used for safe edits and deletion.",
+          "title": "Identity"
+        },
+        "launch": {
+          "description": "Control process elevation, lifecycle, preparation, and exit handling.",
+          "title": "Launch behavior"
+        },
+        "overrides": {
+          "description": "Structured host settings applied only while this application streams.",
+          "title": "Configuration overrides"
+        }
+      },
+      "status": {
+        "saved": "Saved",
+        "unsaved": "Unsaved changes"
+      },
+      "validation": {
+        "integerMinimum": "{label} must be a whole number of at least {minimum}.",
+        "invalidJson": "{label} contains invalid JSON.",
+        "invalidJsonDetail": "{label} contains invalid JSON: {detail}",
+        "jsonObject": "{label} must be a JSON object.",
+        "nameRequired": "Enter a name for this application.",
+        "prepMissingCommand": "Preparation command {number} has preserved fields but no command. Add a command or remove the row.",
+        "uuidInvalid": "The application UUID is missing or invalid."
+      }
+    },
+    "auth": {
+      "credentials_required": "Enter a username and password.",
+      "login_description": "Sign in to manage this Vibepollo host.",
+      "security_note": "This page is served directly by your host. Credentials do not leave this machine.",
+      "setup_description": "Create the administrator account used to manage streaming and paired devices."
+    },
+    "common": {
+      "confirm": "Confirm",
+      "working": "Working..."
+    },
+    "devices": {
+      "action": {
+        "disconnect_named": "Disconnect {name}",
+        "pair": "Pair device",
+        "pair_indefinite": "Pair a device",
+        "refreshing": "Refreshing",
+        "save": "Save device",
+        "saving": "Saving",
+        "unpair": "Unpair",
+        "unpair_named": "Unpair {name}",
+        "working": "Working"
+      },
+      "alert": {
+        "action_failed": "Device action failed",
+        "updated": "Device list updated"
+      },
+      "confirm": {
+        "disconnect_description": "The active stream from this device will be stopped. The device will remain paired.",
+        "disconnect_label": "Disconnect stream",
+        "disconnect_title": "Disconnect {name}?",
+        "generic_title": "Confirm device action",
+        "unpair_label": "Unpair device"
+      },
+      "count": {
+        "blocked": "{count} blocked",
+        "offline": "{count} offline",
+        "streaming": "{count} streaming"
+      },
+      "editor": {
+        "allow_stream": "Allow this device to stream",
+        "blocking_help": "Blocking a device keeps it paired but rejects future stream requests.",
+        "name_helper": "Use a name that identifies the person or screen using this client.",
+        "title": "Edit device"
+      },
+      "empty": {
+        "description": "Start pairing from Artemis, then enter its PIN here to approve the device.",
+        "filtered_description": "Try a different device name or ID.",
+        "filtered_title": "No matching devices",
+        "title": "No paired devices"
+      },
+      "error": {
+        "action": "Unable to complete the device action.",
+        "list_rejected": "The host could not list paired devices.",
+        "load": "Unable to load paired devices.",
+        "name_required": "Device name cannot be empty.",
+        "partial_update": "The host did not save every device setting. Refresh and try again.",
+        "unpair_rejected": "The host did not unpair this device."
+      },
+      "filters": {
+        "aria_label": "Device filters",
+        "result_count": "{shown} of {total} device | {shown} of {total} devices",
+        "search_label": "Search devices",
+        "search_placeholder": "Name or device ID"
+      },
+      "last_seen": {
+        "active_now": "Active now",
+        "never": "Never seen"
+      },
+      "list": {
+        "aria_label": "Paired devices"
+      },
+      "loading": {
+        "aria_label": "Loading paired devices"
+      },
+      "notice": {
+        "disconnected": "{name} was disconnected.",
+        "unpaired": "{name} was unpaired.",
+        "updated": "{name} was updated."
+      },
+      "page": {
+        "description": "Manage the clients allowed to stream from this host. Connection state refreshes automatically.",
+        "title": "Devices"
+      },
+      "status": {
+        "blocked": "Blocked",
+        "streaming": "Streaming"
+      }
+    },
+    "integrations": {
+      "actions": {
+        "install": "Install",
+        "installDriver": "Install driver",
+        "installExtension": "Install extension",
+        "refreshStatus": "Refresh status",
+        "registerLayer": "Register layer",
+        "removeExtension": "Remove extension",
+        "repair": "Repair",
+        "repairDriver": "Repair driver",
+        "repairRegistration": "Repair registration",
+        "rescan": "Rescan",
+        "update": "Update",
+        "updateExtension": "Update extension"
+      },
+      "applying": "Applying",
+      "checksFailed": "Some integration checks failed",
+      "confirm": {
+        "defaultTitle": "Confirm integration action",
+        "playniteInstallDescription": "Vibepollo will write its bundled extension into the detected Playnite extensions directory.",
+        "playniteInstallTitle": "Install the Playnite extension?",
+        "playniteRemoveDescription": "Playnite library synchronization will stop until the extension is installed again.",
+        "playniteRemoveTitle": "Remove the Playnite extension?",
+        "playniteUpdateTitle": "Update the Playnite extension?",
+        "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
+        "vigemInstallTitle": "Install ViGEmBus?",
+        "vigemRepairTitle": "Repair ViGEmBus?",
+        "vulkanRegisterDescription": "Vibepollo will repair the system registration for its bundled implicit Vulkan layer.",
+        "vulkanRegisterTitle": "Register the Vulkan HDR layer?"
+      },
+      "description": "Optional host components and their current operational state.",
+      "details": {
+        "bundledVersion": "Bundled {version}",
+        "installedVersion": "Installed {version}"
+      },
+      "errors": {
+        "actionFailed": "The integration action failed.",
+        "actionIncomplete": "The integration action did not complete.",
+        "losslessStatus": "Lossless Scaling status is unavailable.",
+        "playniteStatus": "Playnite status is unavailable.",
+        "playniteSyncFailed": "Unable to synchronize Playnite.",
+        "playniteSyncRejected": "Playnite did not accept the synchronization request.",
+        "rtssStatus": "RTSS status is unavailable.",
+        "statusLoad": "Status could not be loaded.",
+        "vigemStatus": "ViGEmBus status is unavailable.",
+        "vulkanStatus": "Vulkan HDR layer status is unavailable."
+      },
+      "failedCount": {
+        "one": "{count} integration is showing the last known or unavailable state.",
+        "other": "{count} integrations are showing the last known or unavailable state."
+      },
+      "installedIntegrations": "Installed integrations",
+      "loadingStatus": "Loading integration status",
+      "lossless": {
+        "description": "Optional application scaling and frame-generation integration.",
+        "name": "Lossless Scaling",
+        "pathIsDirectory": "Configured path is a folder",
+        "pathNotFound": "Configured path not found",
+        "shortDescription": "Scaling and frame-generation launch support."
+      },
+      "notices": {
+        "playniteInstalled": "The Playnite extension was installed.",
+        "playniteRemoved": "The Playnite extension was removed.",
+        "playniteSynced": "Playnite synchronization completed.",
+        "vigemCompleted": "The ViGEmBus installer completed.",
+        "vulkanRefreshed": "The Vulkan HDR layer registration was refreshed."
+      },
+      "playnite": {
+        "description": "Synchronizes installed games and metadata through the Vibepollo extension.",
+        "shortDescription": "Library synchronization and launch integration."
+      },
+      "refreshing": "Refreshing",
+      "rtss": {
+        "description": "Provides the preferred frame limiter for consistent stream pacing.",
+        "name": "RTSS",
+        "processRunning": "Process running",
+        "shortDescription": "Frame limiting and pacing integration."
+      },
+      "status": {
+        "detected": "Detected",
+        "installationUnknown": "Installation unknown",
+        "notConfigured": "Not configured",
+        "notDetected": "Not detected",
+        "notInstalled": "Not installed",
+        "ready": "Ready",
+        "repairNeeded": "Repair needed",
+        "unavailable": "Unavailable",
+        "updateAvailable": "Update available",
+        "updateRequired": "Update required",
+        "windowsOnly": "Windows only"
+      },
+      "syncing": "Syncing",
+      "title": "Integrations",
+      "updated": "Integration updated",
+      "vigem": {
+        "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
+        "name": "ViGEmBus",
+        "shortDescription": "Virtual controller driver support."
+      },
+      "vulkan": {
+        "description": "Registers the implicit Vulkan layer used by virtual-display HDR workflows.",
+        "disabledInConfiguration": "Disabled in configuration",
+        "enabledAndRegistered": "Enabled and registered",
+        "enabledInConfiguration": "Enabled in configuration",
+        "registeredDisabled": "Registered, disabled",
+        "registrationMissing": "Registration missing",
+        "shortDescription": "HDR support for the virtual display path."
+      }
+    },
+    "library": {
+      "actions": {
+        "add": "Add application",
+        "editLabel": "Edit {name}",
+        "menuLabel": "Actions for {name}",
+        "moreLabel": "More actions for {name}",
+        "showMore": "Show more",
+        "tryAgain": "Try again"
+      },
+      "alerts": {
+        "unavailable": "Library unavailable"
+      },
+      "collection": {
+        "label": "Applications"
+      },
+      "command": {
+        "none": "No executable command configured"
+      },
+      "controls": {
+        "region": "Library controls"
+      },
+      "cover": {
+        "alt": "{name} cover",
+        "unavailable": "Cover unavailable",
+        "unavailableLabel": "{name} cover unavailable"
+      },
+      "delete": {
+        "busy": "Deleting",
+        "confirm": "Delete application",
+        "description": "This removes the application from every streaming client. It does not delete the executable from disk.",
+        "errorTitle": "Delete failed",
+        "fallbackName": "application",
+        "title": "Delete {name}?"
+      },
+      "empty": {
+        "description": "Add an application to make it available to your streaming clients.",
+        "noMatchDescription": "Nothing matches “{search}”. Try a different search or clear it.",
+        "noMatchTitle": "No matching applications",
+        "title": "No applications yet"
+      },
+      "errors": {
+        "delete": "Unable to delete the application.",
+        "load": "Unable to load the application library.",
+        "missingUuid": "{name} does not have a UUID and cannot be edited safely.",
+        "missingUuidGeneric": "This application does not have a UUID."
+      },
+      "loading": "Loading applications",
+      "page": {
+        "description": "Manage the applications available to streaming clients.",
+        "title": "Library"
+      },
+      "progress": {
+        "shown": "{visible} of {total} shown"
+      },
+      "result": {
+        "many": "{count} applications",
+        "one": "{count} application"
+      },
+      "search": {
+        "clear": "Clear search",
+        "label": "Search applications",
+        "placeholder": "Search applications"
+      },
+      "selection": {
+        "clear": "Clear selection",
+        "count": "{count} selected",
+        "escapeHint": "Press Escape to clear selection.",
+        "selected": "Selected"
+      },
+      "sort": {
+        "configured": "Configured order",
+        "label": "Sort applications",
+        "nameAsc": "Name, A to Z",
+        "nameDesc": "Name, Z to A"
+      },
+      "unnamed": "Unnamed application",
+      "view": {
+        "grid": "Grid",
+        "label": "Library view",
+        "list": "List"
+      }
+    },
+    "logs": {
+      "action": {
+        "copy_visible": "Copy visible",
+        "download_text": "Download text",
+        "pause": "Pause updates",
+        "refreshing": "Refreshing…",
+        "resume": "Resume updates"
+      },
+      "alert": {
+        "export_ready": "Export ready",
+        "unavailable_description": "The last successfully loaded text remains visible.",
+        "unavailable_title": "Logs unavailable"
+      },
+      "count": {
+        "errors": "No errors | {count} error | {count} errors",
+        "total_lines": "No lines | {count} total line | {count} total lines",
+        "warnings": "No warnings | {count} warning | {count} warnings"
+      },
+      "empty": {
+        "description": "This source has not written any readable log output yet.",
+        "filtered_description": "Change the severity or search filter to broaden the result.",
+        "filtered_title": "No matching log lines",
+        "title": "No log lines available"
+      },
+      "error": {
+        "clipboard_unavailable": "Clipboard access is not available in this browser.",
+        "copy": "Unable to copy the visible logs.",
+        "load": "Unable to load logs from this host."
+      },
+      "filters": {
+        "follow_newest": "Follow newest lines",
+        "matching_count": "No matches | {count} match | {count} matches",
+        "search_label": "Search log text",
+        "search_placeholder": "Message, module, or code",
+        "severity": "Severity"
+      },
+      "notice": {
+        "copied": "No visible lines copied. | {count} visible line copied. | {count} visible lines copied.",
+        "downloaded": "No visible lines downloaded. | {count} visible line downloaded. | {count} visible lines downloaded."
+      },
+      "page": {
+        "description": "Filter current host diagnostics, pause incoming updates, and export exactly what is visible."
+      },
+      "severity": {
+        "all": "All severities",
+        "error": "Error",
+        "errors": "Errors",
+        "other": "Log",
+        "trace": "Trace",
+        "warning": "Warning",
+        "warnings": "Warnings"
+      },
+      "status": {
+        "following": "Following live log",
+        "paused": "Updates paused"
+      },
+      "summary": {
+        "clear": "No errors or warnings were detected in {count} line. | No errors or warnings were detected in {count} lines.",
+        "counts_aria_label": "Log severity counts",
+        "empty": "No lines are currently available from {source}.",
+        "errors": "{count} error line needs attention. | {count} error lines need attention.",
+        "title": "{source} summary",
+        "warnings_also": "No additional warnings were recorded. | {count} warning line was also recorded. | {count} warning lines were also recorded.",
+        "warnings_only": "No errors were detected. {count} warning line was recorded. | No errors were detected. {count} warning lines were recorded."
+      },
+      "viewer": {
+        "aria_label": "Filtered log lines",
+        "line_numbers_preserved": "Original line numbers are preserved while filtering.",
+        "loading": "Loading {source} log…",
+        "title": "Log output",
+        "truncated": "Rendering the newest {limit} matches; exports still include all filtered lines."
+      }
+    },
+    "maintenance": {
+      "actionCompleted": "Maintenance action completed",
+      "actionFailed": "Action failed",
+      "actions": {
+        "acknowledge": "Acknowledge",
+        "captureSnapshot": "Capture snapshot",
+        "deleteSnapshot": "Delete snapshot",
+        "replaceSnapshot": "Replace snapshot",
+        "restartService": "Restart service",
+        "revokeSession": "Revoke session"
+      },
+      "applying": "Applying",
+      "confirm": {
+        "captureSnapshotDescription": "The current Windows display topology will become the known-good recovery baseline.",
+        "captureSnapshotTitle": "Capture this display layout?",
+        "defaultTitle": "Confirm maintenance action",
+        "deleteSnapshotDescription": "Automatic display recovery will no longer have this known-good layout available.",
+        "deleteSnapshotTitle": "Delete the recovery snapshot?",
+        "replaceSnapshotTitle": "Replace the recovery snapshot?",
+        "restartDescription": "Active streams will disconnect and this interface will be unavailable while the service restarts.",
+        "restartTitle": "Restart Vibepollo?",
+        "revokeSessionDescription": "That browser will need to sign in again before it can manage this host.",
+        "revokeSessionTitle": "Revoke {browser}?"
+      },
+      "crash": {
+        "acknowledged": "Crash acknowledged",
+        "detected": "Recent crash detected",
+        "noneFound": "No crash dump from the last seven days was found.",
+        "noneRecent": "No recent crash",
+        "recentDump": "Recent crash dump"
+      },
+      "credentials": {
+        "currentPassword": "Current password",
+        "description": "Update the password used to administer this host.",
+        "title": "Change web credentials"
+      },
+      "dataUnavailable": "Some maintenance data is unavailable",
+      "description": "Version details, support artifacts, recovery state, and administrative access.",
+      "errors": {
+        "actionFailed": "The maintenance action failed.",
+        "crashDismiss": "Unable to dismiss the crash notice.",
+        "crashStatus": "Crash-dump status is unavailable.",
+        "metadata": "Installed version metadata is unavailable.",
+        "passwordChange": "Unable to change the web UI password.",
+        "passwordUnchanged": "The password was not changed.",
+        "recoveryStatus": "Display recovery status is unavailable.",
+        "sessions": "Trusted browser sessions are unavailable.",
+        "snapshotCapture": "The display snapshot could not be captured.",
+        "snapshotNotDeleted": "The display recovery snapshot was not deleted."
+      },
+      "notices": {
+        "crashAcknowledged": "The crash notice was acknowledged.",
+        "credentialsUpdated": "Web UI credentials were updated.",
+        "restartRequested": "Restart requested. Reconnect after the Vibepollo service comes back online.",
+        "sessionRevoked": "{browser} was revoked.",
+        "snapshotCaptured": "The current display layout is now the recovery baseline.",
+        "snapshotDeleted": "The display recovery snapshot was deleted."
+      },
+      "recovery": {
+        "available": "Available",
+        "availableDetail": "A known-good display layout is available for recovery.",
+        "lastFailure": "Last failure",
+        "noneRecorded": "None recorded",
+        "notCaptured": "Not captured",
+        "notCapturedDetail": "No known-good display layout has been saved.",
+        "refreshRecommended": "Refresh recommended",
+        "refreshRecommendedDetail": "The saved layout is outdated or has repeated restore failures.",
+        "snapshotSchema": "Snapshot schema",
+        "statusUpdated": "Status updated",
+        "title": "Golden display recovery",
+        "unavailable": "The recovery snapshot status could not be loaded.",
+        "unresolvedRestores": "Unresolved restores",
+        "windowsOnly": "Golden display recovery is available on Windows hosts."
+      },
+      "refreshing": "Refreshing",
+      "restart": {
+        "description": "Disconnect every active stream and restart the host service."
+      },
+      "saving": "Saving",
+      "sessions": {
+        "activeCount": "{count} active",
+        "browser": "Browser",
+        "current": "Current",
+        "description": "Review browsers that can currently manage this host.",
+        "emptyDescription": "Sign in again if this session list was recently cleared.",
+        "emptyTitle": "No trusted sessions found",
+        "expires": "Expires",
+        "lastSeen": "Last seen",
+        "now": "now",
+        "rememberedDevice": "Remembered device",
+        "thisBrowser": "This browser",
+        "title": "Trusted browser sessions",
+        "trustedBrowser": "Trusted browser"
+      },
+      "status": {
+        "unavailable": "Unavailable",
+        "windowsOnly": "Windows only"
+      },
+      "support": {
+        "description": "Download local diagnostics before changing recovery or integration state.",
+        "downloadCrash": "Download crash bundle",
+        "downloadLogs": "Download logs bundle",
+        "title": "Support bundles",
+        "windowsUnavailable": "Windows support-bundle endpoints are not available on this platform."
+      },
+      "title": "Maintenance",
+      "updating": "Updating",
+      "validation": {
+        "currentPassword": "Enter the current password.",
+        "newPassword": "Enter a new password.",
+        "passwordMismatch": "The new passwords do not match.",
+        "username": "Enter the current web UI username."
+      },
+      "version": {
+        "branch": "Branch",
+        "commit": "Commit",
+        "description": "The exact build currently serving this interface.",
+        "metadataIncomplete": "Metadata incomplete",
+        "platform": "Platform",
+        "releaseDate": "Release date",
+        "title": "Installed version",
+        "unknown": "Unknown version",
+        "version": "Version"
+      }
+    },
+    "nav": {
+      "devices": "Devices",
+      "integrations": "Integrations",
+      "library": "Library",
+      "logs": "Logs",
+      "maintenance": "Maintenance",
+      "overview": "Overview",
+      "sessions": "Sessions",
+      "settings": "Settings"
+    },
+    "not_found": {
+      "action": "Return to overview",
+      "description": "That Vibepollo page does not exist or may have moved.",
+      "title": "Page not found"
+    },
+    "overview": {
+      "actions": {
+        "addApplication": "Add application",
+        "inspectSession": "Inspect session details",
+        "manage": "Manage",
+        "manageDevices": "Manage devices",
+        "openLibrary": "Open library",
+        "openLogs": "Open logs",
+        "pairDevice": "Pair a device",
+        "reviewSession": "Review session",
+        "viewActiveSession": "View active session",
+        "viewAll": "View all",
+        "viewSessions": "View sessions"
+      },
+      "activeSessions": {
+        "one": "{count} active session.",
+        "other": "{count} active sessions."
+      },
+      "additionalDataUnavailable": "Additional data is unavailable",
+      "attention": "Attention",
+      "currentApplication": "The current application",
+      "description": "Host readiness, active streaming, and the next useful action.",
+      "devices": {
+        "allowed": {
+          "one": "{count} device allowed to connect",
+          "other": "{count} devices allowed to connect"
+        },
+        "connected": {
+          "one": "{count} connected now",
+          "other": "{count} connected now"
+        },
+        "emptyDescription": "Pair an Artemis client to begin streaming.",
+        "emptyTitle": "No paired devices",
+        "title": "Paired devices"
+      },
+      "errors": {
+        "hostInfo": "Host information is unavailable.",
+        "hostMetrics": "Live host metrics are unavailable.",
+        "library": "The application library is unavailable.",
+        "pairedDevices": "Paired devices are unavailable.",
+        "streamStatus": "Stream status is unavailable."
+      },
+      "hardwareUnavailable": "Host hardware details unavailable",
+      "hostLoad": {
+        "description": "Current utilization; values update without reordering.",
+        "memoryInUse": "{used} of {total} memory in use",
+        "title": "Host load",
+        "unavailableDescription": "Refresh to request a new host sample.",
+        "unavailableTitle": "Host metrics unavailable"
+      },
+      "library": {
+        "configured": {
+          "one": "{count} configured application",
+          "other": "{count} configured applications"
+        },
+        "emptyDescription": "Add an application or desktop entry to make it available to clients.",
+        "emptyTitle": "Library is empty",
+        "title": "Library",
+        "unnamedApplication": "Unnamed application"
+      },
+      "loadingReadiness": "Loading host readiness",
+      "memory": "Memory",
+      "notUpdated": "Not updated yet",
+      "readiness": {
+        "attention": "Needs attention",
+        "ready": "Ready for a stream",
+        "readyDetail": "The host is online and no immediate problems were detected.",
+        "remoteSessionActive": "A remote session is active.",
+        "streaming": "Streaming now"
+      },
+      "refreshing": "Refreshing",
+      "remoteStream": "Remote stream",
+      "sessions": "Sessions",
+      "title": "Overview",
+      "unavailable": "Unavailable",
+      "updated": "Updated {time}",
+      "warnings": {
+        "blockedDevices": {
+          "detail": "Enable at least one paired device before streaming.",
+          "title": "All paired devices are blocked"
+        },
+        "hostLoad": {
+          "detail": "CPU or GPU utilization is above {threshold}%. Stream quality may be affected.",
+          "title": "Host load is very high"
+        },
+        "noDevices": {
+          "detail": "Pair a client before starting a remote stream.",
+          "title": "No devices are paired"
+        },
+        "partialData": {
+          "title": "Some host data is unavailable"
+        },
+        "paused": {
+          "detail": "{app} has no connected stream.",
+          "title": "Application is still running"
+        }
+      }
+    },
+    "pair": {
+      "action": {
+        "approve": "Approve device",
+        "approving": "Approving",
+        "back_to_devices": "Back to devices",
+        "pair_another": "Pair another",
+        "view_devices": "View devices"
+      },
+      "alert": {
+        "failed": "Pairing failed",
+        "paired": "Device paired"
+      },
+      "error": {
+        "name_required": "Enter a name for this device.",
+        "pin_invalid": "Enter the one- to four-digit PIN shown by Artemis.",
+        "pin_rejected": "No pending Artemis request accepted that PIN. Start pairing on the client and try again.",
+        "submit": "Unable to pair this device."
+      },
+      "form": {
+        "description": "The device name will appear in session and device lists.",
+        "name_helper": "Choose a name you will recognize later.",
+        "name_placeholder": "Living room TV",
+        "pin_helper": "Enter up to four digits.",
+        "pin_label": "Artemis PIN",
+        "pin_placeholder": "0000",
+        "pin_submit_as": "Will submit as {pin}",
+        "title": "Approve client"
+      },
+      "notice": {
+        "connected": "{name} can now connect to this host."
+      },
+      "page": {
+        "description": "Approve an Artemis client with the PIN it displays. Pairing only authorizes this host; it does not start a stream.",
+        "local_approval": "Local approval",
+        "title": "Pair a device"
+      },
+      "privacy": "The PIN is sent only to this Vibepollo host over the current authenticated connection.",
+      "steps": {
+        "approve_description": "Short PINs are submitted as four digits, including leading zeroes.",
+        "approve_title": "Approve it here",
+        "number": "{number}",
+        "open_moonlight_description": "Select this Vibepollo host from the Artemis client you want to authorize.",
+        "open_moonlight_title": "Open Artemis",
+        "start_pairing_description": "Keep Artemis open while its numeric PIN is visible.",
+        "start_pairing_title": "Start pairing",
+        "title": "Before you enter the PIN"
+      }
+    },
+    "sessions": {
+      "action": {
+        "delete_record": "Delete session record",
+        "refreshing": "Refreshing",
+        "stop_stream": "Stop stream",
+        "stop_stream_named": "Stop {protocol} stream for {client}",
+        "working": "Working"
+      },
+      "active": {
+        "empty_description": "Sessions appear here as soon as an Artemis or browser client connects.",
+        "list_aria_label": "Active streaming sessions",
+        "refresh_description": "Auto-refreshes every four seconds while this tab is visible.",
+        "title": "Active sessions"
+      },
+      "alert": {
+        "action_complete": "Session action complete",
+        "app_running_description": "{app} has no active RTSP clients. It may be paused for reconnection.",
+        "app_running_title": "Application is still running",
+        "history_degraded_description": "Live streams are unaffected, but new diagnostics may be incomplete.",
+        "history_degraded_title": "Session history is degraded",
+        "partial_failure_description": "Existing rows remain visible while Vibepollo retries.",
+        "partial_failure_title": "Some session data is unavailable"
+      },
+      "confirm": {
+        "delete_title": "Delete this session record?",
+        "generic_title": "Confirm session action",
+        "stop_rtsp_all_description": "Stopping the running application ends every active RTSP stream on this host.",
+        "stop_rtsp_description": "Stopping the running application ends this RTSP stream.",
+        "stop_rtsp_title": "Stop the RTSP stream?",
+        "stop_webrtc_description": "The selected WebRTC session will close immediately.",
+        "stop_webrtc_title": "Stop this browser stream?"
+      },
+      "count": {
+        "active": "{count} active session | {count} active sessions",
+        "rtsp": "{count} RTSP session active | {count} RTSP sessions active",
+        "webrtc": "{count} WebRTC session active | {count} WebRTC sessions active"
+      },
+      "diagnostic": {
+        "ice_candidates": "ICE candidates",
+        "session_id": "Session ID",
+        "title": "Diagnostics"
+      },
+      "error": {
+        "action": "Unable to complete the session action.",
+        "source_detail": "{source}: {detail}",
+        "source_load": "Unable to load {source}.",
+        "stop_rtsp_rejected": "The host did not stop the RTSP stream.",
+        "webrtc_not_found": "The browser stream was not found."
+      },
+      "history": {
+        "actions": "Actions",
+        "client_and_game": "Client and game",
+        "description": "The latest 50 completed sessions stored by this host.",
+        "empty_description": "Completed streams will appear here when session history is available.",
+        "empty_title": "No session history",
+        "outcome": "Outcome",
+        "stream": "Stream",
+        "table_caption": "Recent completed streaming sessions"
+      },
+      "metric": {
+        "picture": "Picture"
+      },
+      "notice": {
+        "history_deleted": "The session record was deleted.",
+        "stop_rtsp": "The running application and its RTSP stream were asked to stop.",
+        "stop_webrtc": "The browser stream was stopped."
+      },
+      "page": {
+        "description": "See active Artemis and browser streams, inspect diagnostics, and review recent session outcomes. Live values update without moving rows.",
+        "title": "Sessions"
+      },
+      "protocol": {
+        "rtsp": "RTSP",
+        "webrtc": "WebRTC"
+      },
+      "source": {
+        "host_status": "Host session status",
+        "rtsp": "RTSP sessions",
+        "webrtc": "WebRTC sessions"
+      },
+      "status": {
+        "awaiting_offer": "Awaiting offer",
+        "error": "Error",
+        "negotiating": "Negotiating",
+        "no_active": "No active streams",
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "stopping": "Stopping",
+        "streaming": "Streaming"
+      },
+      "value": {
+        "browser_session": "Browser session {id}",
+        "browser_stream": "Browser stream",
+        "desktop_stream": "Desktop stream",
+        "fps": "{value} fps",
+        "frame_count": "No frames | {count} frame | {count} frames",
+        "milliseconds": "{value} ms",
+        "milliseconds_ago": "{value} ms ago",
+        "moonlight_client": "Artemis client",
+        "negotiating_codec": "Negotiating codec",
+        "not_reported": "Not reported",
+        "streamed_application": "The streamed application",
+        "unknown_client": "Unknown client",
+        "unknown_codec": "Unknown codec",
+        "unknown_time": "Unknown time"
+      }
+    },
+    "settings": {
+      "all_settings": "All settings",
+      "categories": {
+        "audio": {
+          "description": "Host capture and virtual audio-device routing.",
+          "label": "Audio"
+        },
+        "display": {
+          "description": "Virtual screens, physical display targeting, HDR, and recovery behavior.",
+          "label": "Displays"
+        },
+        "everyday": {
+          "description": "The choices that most directly affect how a stream looks, feels, and starts.",
+          "label": "Everyday setup"
+        },
+        "files": {
+          "description": "Paths normally managed by the installer or service.",
+          "label": "Files & certificates"
+        },
+        "host": {
+          "description": "Identity, local behavior, history retention, and live metrics.",
+          "label": "Host & diagnostics"
+        },
+        "input": {
+          "description": "Keyboard, pointer, controller, pen, touch, and repeat behavior.",
+          "label": "Input"
+        },
+        "network": {
+          "description": "Listening interfaces, remote access, ports, encryption, and trusted origins.",
+          "label": "Network & security"
+        },
+        "pacing": {
+          "description": "Capture method, frame limiting, and pacing integrations.",
+          "label": "Capture & pacing"
+        },
+        "video": {
+          "description": "Encoder selection, codec capability, bitrate, and resilience.",
+          "label": "Video & quality"
+        }
+      },
+      "categories_label": "Settings categories",
+      "dependency_inactive": "Currently inactive because “{setting}” is off or uses another mode.",
+      "description": "Start with the choices that shape every stream, then use the focused categories for less common configuration.",
+      "discard": "Discard",
+      "display_recovery": {
+        "action": "Clear display state",
+        "description": "Clear persisted display state if automatic restoration repeatedly targets the wrong screen.",
+        "title": "Display recovery"
+      },
+      "errors": {
+        "load": "Unable to load configuration.",
+        "reset_display": "Unable to reset display state.",
+        "save": "Unable to save configuration.",
+        "title": "Settings are unavailable"
+      },
+      "expert": {
+        "description": "Options already present in this host configuration that do not have a guided control.",
+        "direct_title": "Direct configuration",
+        "empty": "No expert values match this search.",
+        "label": "Expert",
+        "title": "Expert configuration",
+        "warning": "These values are passed directly to Vibepollo. Preserve their expected format.",
+        "warning_title": "Expert settings"
+      },
+      "fields": {
+        "audio_sink": {
+          "description": "Leave blank to select the host audio output automatically."
+        },
+        "bind_address": {
+          "description": "Leave blank to listen on all available interfaces."
+        },
+        "csrf_allowed_origins": {
+          "description": "Add only trusted HTTPS origins, separated by commas."
+        },
+        "dd_configuration_option": {
+          "description": "Choose how Vibepollo prepares the selected display before a stream."
+        },
+        "dd_hdr_option": {
+          "description": "Follow the client HDR request when the selected display supports it."
+        },
+        "dd_hdr_request_override": {
+          "description": "Force a state only when a client or display reports HDR incorrectly."
+        },
+        "dd_manual_refresh_rate": {
+          "description": "Enter a whole or decimal refresh rate in hertz."
+        },
+        "dd_manual_resolution": {
+          "description": "Use WIDTHxHEIGHT, for example 2560x1440."
+        },
+        "dd_refresh_rate_option": {
+          "description": "Match the client request, prefer the highest compatible rate, or use a fixed value."
+        },
+        "dd_resolution_option": {
+          "description": "Match the client request, preserve the current mode, or use a fixed resolution."
+        },
+        "dd_virtual_display_permanent_count": {
+          "description": "Keep up to four virtual monitors outside streams. 0 creates them only when needed.",
+          "label": "Always-available virtual displays"
+        },
+        "dd_virtual_display_scale": {
+          "description": "Adjust interface size without changing the resolution requested by the client.",
+          "label": "Windows scaling"
+        },
+        "frame_limiter_disable_vsync": {
+          "description": "Avoid two competing pacing mechanisms. Leave off if a game behaves poorly without VSYNC."
+        },
+        "frame_limiter_enable": {
+          "description": "Apply a frame limit while streaming. Automatic provider selection works for most systems.",
+          "label": "Match games to the stream frame rate"
+        },
+        "frame_limiter_provider": {
+          "description": "Automatic prefers RTSS when available, then uses NVIDIA Control Panel on supported GPUs."
+        },
+        "lossless_scaling_legacy_auto_detect": {
+          "label": "Use legacy Lossless Scaling detection"
+        },
+        "lossless_scaling_path": {
+          "description": "Leave blank to detect the Lossless Scaling executable automatically."
+        },
+        "output_name": {
+          "description": "Leave blank to let Vibepollo choose the display. Otherwise use an exact device name."
+        },
+        "rtss_frame_limit_type": {
+          "description": "Async is the recommended low-latency limiter mode."
+        },
+        "rtss_install_path": {
+          "description": "Leave blank to detect the RTSS installation automatically."
+        },
+        "virtual_display_layout": {
+          "description": "Choose whether physical displays remain part of the Windows desktop while streaming.",
+          "label": "How it joins the desktop"
+        },
+        "virtual_display_mode": {
+          "description": "Choose whether Vibepollo captures a physical monitor or creates a display sized for the client.",
+          "label": "Streaming display"
+        },
+        "wgc_pacing_smoothing": {
+          "description": "Reduce visible pacing changes when Windows Graphics Capture is active.",
+          "label": "Smooth Windows capture cadence"
+        }
+      },
+      "groups": {
+        "audio_routing": {
+          "title": "Audio routing"
+        },
+        "display_driver": {
+          "description": "Keep the recommended choices unless diagnosing display startup.",
+          "title": "Virtual-display driver"
+        },
+        "display_recovery": {
+          "title": "Restore behavior"
+        },
+        "display_target": {
+          "title": "Display targeting and automation"
+        },
+        "display_virtual": {
+          "description": "The core streaming-display choices, with display-specific controls below.",
+          "title": "Virtual display"
+        },
+        "everyday_access": {
+          "title": "Where you can manage and connect"
+        },
+        "everyday_capture": {
+          "title": "Capture, sound, and controllers"
+        },
+        "everyday_display": {
+          "description": "A per-client virtual display is the simplest option for headless hosts, HDR, and client-sized resolutions.",
+          "title": "Screen used for streaming"
+        },
+        "everyday_pacing": {
+          "description": "Match games to the requested stream rate to reduce uneven motion and unnecessary GPU work.",
+          "title": "Smoothness and frame pacing"
+        },
+        "file_paths": {
+          "title": "Data paths"
+        },
+        "host_history": {
+          "title": "History and live diagnostics"
+        },
+        "host_identity": {
+          "title": "Identity and local behavior"
+        },
+        "input_devices": {
+          "title": "Client input"
+        },
+        "input_repeat": {
+          "title": "Keyboard repeat"
+        },
+        "network_access": {
+          "title": "Access and connectivity"
+        },
+        "network_security": {
+          "title": "Stream and browser security"
+        },
+        "pacing_capture": {
+          "title": "Capture method"
+        },
+        "pacing_integrations": {
+          "description": "Paths and behavior for RTSS and Lossless Scaling.",
+          "title": "Pacing integrations"
+        },
+        "pacing_limiter": {
+          "title": "Frame limiter"
+        },
+        "video_codecs": {
+          "title": "Codec capability"
+        },
+        "video_encoder": {
+          "title": "Encoder selection"
+        },
+        "video_quality": {
+          "title": "Quality and transport budget"
+        }
+      },
+      "loading": "Loading settings",
+      "no_results": "No settings match “{query}”.",
+      "notices": {
+        "display_state_cleared": "Saved display-device state was cleared.",
+        "restarting": "Vibepollo is restarting. This page will reconnect when the host is ready.",
+        "saved": "Configuration saved and applied.",
+        "saved_deferred": "Saved. Changes will apply after the active stream ends.",
+        "saved_restart": "Saved. Restart Vibepollo to apply these changes.",
+        "title": "Configuration updated"
+      },
+      "options": {
+        "address_family": {
+          "both": "IPv4 and IPv6",
+          "ipv4": "IPv4 only"
+        },
+        "capture": {
+          "ddx": "Desktop Duplication · Compatibility",
+          "wgc": "Windows Graphics Capture · Variable",
+          "wgcc": "Windows Graphics Capture · Constant"
+        },
+        "codec": {
+          "eight_bit": "8-bit",
+          "hdr_ten_bit": "8-bit and 10-bit HDR"
+        },
+        "current": "{value} · Currently configured",
+        "display_engine": {
+          "current": "Current engine",
+          "legacy": "Legacy engine"
+        },
+        "display_preparation": {
+          "ensure_active": "Activate it",
+          "ensure_only": "Use only this display",
+          "ensure_primary": "Activate and make primary",
+          "verify_only": "Verify it is active"
+        },
+        "encoder": {
+          "amdvce": "AMD AMF",
+          "amdvce_legacy": "AMD AMF · Legacy",
+          "auto": "Automatic · Recommended",
+          "mediafoundation": "Windows Media Foundation",
+          "nvenc": "NVIDIA NVENC",
+          "quicksync": "Intel Quick Sync",
+          "software": "Software",
+          "vaapi": "VA-API",
+          "videotoolbox": "Apple VideoToolbox",
+          "vulkan": "Vulkan Video"
+        },
+        "encryption": {
+          "optional": "Use when supported",
+          "required": "Required"
+        },
+        "frame_generation": {
+          "legacy": "Legacy fixed 2× refresh"
+        },
+        "frame_limiter_provider": {
+          "none": "None",
+          "nvidia": "NVIDIA Control Panel",
+          "rtss": "RivaTuner Statistics Server"
+        },
+        "gpu": {
+          "auto": "Automatic · Recommended",
+          "current": "{name} · Currently configured"
+        },
+        "hdr": {
+          "auto": "Match the client",
+          "preserve": "Do not change HDR"
+        },
+        "hdr_request": {
+          "auto": "Follow the client",
+          "force_off": "Always disable HDR",
+          "force_on": "Always enable HDR"
+        },
+        "log_level": {
+          "debug": "Debug",
+          "error": "Error",
+          "fatal": "Fatal only",
+          "info": "Info",
+          "none": "None",
+          "verbose": "Verbose",
+          "warning": "Warning"
+        },
+        "origin": {
+          "lan": "Local network",
+          "pc": "This PC only",
+          "wan": "Any network"
+        },
+        "refresh": {
+          "auto": "Match the client",
+          "highest": "Prefer the highest available",
+          "manual": "Use a manual refresh rate",
+          "preserve": "Keep the current refresh rate"
+        },
+        "resolution": {
+          "auto": "Match the client",
+          "manual": "Use a manual resolution",
+          "preserve": "Keep the current resolution"
+        },
+        "rtss_type": {
+          "async": "Async",
+          "back_edge": "Back-edge sync",
+          "front_edge": "Front-edge sync",
+          "reflex": "NVIDIA Reflex"
+        },
+        "virtual_display_layout": {
+          "exclusive": "Virtual display only",
+          "extended": "Extend the desktop",
+          "extended_isolated": "Extend and isolate the virtual display",
+          "extended_primary": "Extend and make virtual primary",
+          "extended_primary_isolated": "Primary and isolated"
+        },
+        "virtual_display_mode": {
+          "disabled": "Physical display",
+          "per_client": "Virtual display for each client",
+          "shared": "One shared virtual display"
+        },
+        "virtual_scale": {
+          "percent": "{value}%",
+          "preserve": "Preserve the current Windows choice",
+          "recommended": "Recommended for the resolution"
+        }
+      },
+      "placeholders": {
+        "follow_client": "0 · Follow the client",
+        "host_name": "Use this PC name",
+        "refresh_rate": "120",
+        "resolution": "2560x1440"
+      },
+      "recommended": "Recommended",
+      "reload": "Reload",
+      "restart": "Restart",
+      "restart_now": "Restart now",
+      "restart_required": "Restart required",
+      "restart_required_description": "One or more unsaved changes require a Vibepollo restart.",
+      "save": "Save changes",
+      "save_hint": "Changes apply after saving.",
+      "save_restart_hint": "A restart will be required.",
+      "saving": "Saving...",
+      "search": "Search settings",
+      "search_description": "Results from every category, with their section shown for context.",
+      "search_results": "Search results",
+      "selected_category": "Selected category",
+      "summary": {
+        "display": "Streaming display",
+        "frame_limiting": "Frame limiting",
+        "host_default": "Host default",
+        "label": "Current everyday setup"
+      },
+      "title": "Settings",
+      "unsaved_many": "{count} unsaved changes",
+      "unsaved_one": "1 unsaved change",
+      "unsaved_region": "Unsaved settings",
+      "unsaved_short": "{count} unsaved"
+    },
+    "shell": {
+      "brand_overview": "Vibepollo overview",
+      "change_theme": "Theme: {theme}. Change theme",
+      "close_navigation": "Close navigation",
+      "collapse_navigation": "Collapse navigation",
+      "expand_navigation": "Expand navigation",
+      "host_status": "Host status",
+      "open_navigation": "Open navigation",
+      "primary_navigation": "Primary navigation",
+      "refresh_host_status": "Refresh host status",
+      "theme": "Theme: {theme}"
+    },
+    "status": {
+      "needs_attention": "Needs attention",
+      "ready": "Ready",
+      "streaming": "Streaming"
+    },
+    "system": {
+      "host_status_unavailable": "Host status is temporarily unavailable.",
+      "unreachable": "Unable to reach Vibepollo."
+    }
+  }
+}

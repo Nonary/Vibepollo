@@ -230,9 +230,9 @@ namespace service_ctrl {
   }
 
   bool wait_for_ui_ready() {
-    std::cout << "Waiting for Web UI to be ready...";
+    std::cout << "Waiting for configuration API to be ready...";
 
-    // Wait up to 30 seconds for the web UI to start
+    // Wait up to 30 seconds for the configuration API to start.
     for (int i = 0; i < 30; i++) {
       PMIB_TCPTABLE tcp_table = nullptr;
       ULONG table_size = 0;
@@ -243,7 +243,7 @@ namespace service_ctrl {
       });
 
       do {
-        // Query all open TCP sockets to look for our web UI port
+        // Query all open TCP sockets to look for the configuration API port.
         err = GetTcpTable(tcp_table, &table_size, false);
         if (err == ERROR_INSUFFICIENT_BUFFER) {
           free(tcp_table);

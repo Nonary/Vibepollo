@@ -1,191 +1,39 @@
-import fs from 'fs';
-import { resolve } from 'path';
-import { defineConfig } from 'vite';
-import type { Plugin } from 'vite';
-import Components from 'unplugin-vue-components/vite';
-import { NaiveUiResolver } from 'unplugin-vue-components/resolvers';
+import { resolve } from 'node:path';
+import { fileURLToPath, URL } from 'node:url';
+
 import vue from '@vitejs/plugin-vue';
-import { ViteEjsPlugin } from 'vite-plugin-ejs';
-import { fileURLToPath } from 'url';
-import { parseBundledReleaseNote, sortChangelogEntries } from './utils/changelog';
+import { defineConfig } from 'vite';
 
-// Resolve directory of this config file (works even if the folder was moved)
-const CONFIG_DIR = fileURLToPath(new URL('.', import.meta.url));
+const configuredOutputDirectory = process.env.SUNSHINE_WEB_OUTPUT_DIR;
 
-// Find the repo root by walking up until a CMakeLists.txt is found (best-effort, capped depth)
-function findRepoRoot(startDir: string): string {
-  let dir = startDir;
-  for (let i = 0; i < 8; i++) {
-    if (fs.existsSync(resolve(dir, 'CMakeLists.txt'))) return dir;
-    const parent = resolve(dir, '..');
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return startDir;
-}
-
-// Resolve source assets directory, supporting legacy env override and new layouts
-function resolveAssetsSrcPath(): string {
-  let src = CONFIG_DIR; // default to the folder containing this config
-
-  if (!process.env['SUNSHINE_BUILD_HOMEBREW'] && process.env['SUNSHINE_SOURCE_ASSETS_DIR']) {
-    const override = fs.realpathSync(process.env['SUNSHINE_SOURCE_ASSETS_DIR'] as string);
-    // If override points directly to a folder with index.html, use it
-    if (fs.existsSync(resolve(override, 'index.html'))) {
-      src = override;
-    } else if (fs.existsSync(resolve(override, 'common/assets/web/index.html'))) {
-      // Backward-compat with original layout where override was repo/src_assets root
-      src = resolve(override, 'common/assets/web');
-    } else if (fs.existsSync(resolve(override, 'assets/web/index.html'))) {
-      // Alternate layout where override is repo root
-      src = resolve(override, 'assets/web');
-    } else {
-      // Fallback to override itself if it exists
-      src = override;
-    }
-  }
-
-  return src;
-}
-
-// Resolve destination assets directory; defaults to <repoRoot>/build/assets/web
-function resolveAssetsDstPath(): string {
-  const repoRoot = findRepoRoot(CONFIG_DIR);
-  let dst = resolve(repoRoot, 'build/assets/web');
-
-  if (!process.env['SUNSHINE_BUILD_HOMEBREW'] && process.env['SUNSHINE_ASSETS_DIR']) {
-    // Keep legacy behavior: env points to install root, append assets/web
-    dst = resolve(fs.realpathSync(process.env['SUNSHINE_ASSETS_DIR'] as string), 'assets/web');
-  }
-
-  return dst;
-}
-
-const assetsSrcPath = resolveAssetsSrcPath();
-const assetsDstPath = resolveAssetsDstPath();
-
-const header = fs.readFileSync(resolve(assetsSrcPath, 'template_header.html'), 'utf-8');
-
-function getManualChunk(id: string): string | undefined {
-  const normalized = id.replace(/\\/g, '/');
-  const nodeModulesMarker = '/node_modules/';
-  const markerIndex = normalized.indexOf(nodeModulesMarker);
-  if (markerIndex === -1) {
-    return undefined;
-  }
-
-  const packagePath = normalized.slice(markerIndex + nodeModulesMarker.length);
-  const packageName = packagePath.startsWith('@')
-    ? packagePath.split('/').slice(0, 2).join('/')
-    : (packagePath.split('/')[0] ?? '');
-
-  if (
-    packageName === 'vue' ||
-    packageName === 'pinia' ||
-    packageName === 'vue-router' ||
-    packageName === 'vue-i18n' ||
-    packageName.startsWith('@vue/') ||
-    packageName.startsWith('@intlify/')
-  ) {
-    return 'vue-core';
-  }
-
-  if (
-    packageName === 'naive-ui' ||
-    packageName === 'vueuc' ||
-    packageName === 'vooks' ||
-    packageName === 'css-render' ||
-    packageName === 'seemly' ||
-    packageName === 'evtd'
-  ) {
-    // Keep the Naive UI stack in the general vendor chunk. Splitting it into its
-    // own manual chunk can create a circular import with the remaining vendor
-    // bundle in release builds, which prevents the app from mounting at all.
-    return 'vendor';
-  }
-
-  if (packageName.startsWith('@fortawesome/')) {
-    return 'fontawesome';
-  }
-
-  return 'vendor';
-}
-
-function bundledChangelogPlugin(repoRoot: string): Plugin {
-  return {
-    name: 'vibepollo-bundled-changelog',
-    generateBundle() {
-      const releaseNotesDir = resolve(repoRoot, 'release_notes');
-      const releases = fs.existsSync(releaseNotesDir)
-        ? fs
-            .readdirSync(releaseNotesDir)
-            .filter((name) => name.toLowerCase().endsWith('.md'))
-            .map((name) => {
-              const path = resolve(releaseNotesDir, name);
-              return parseBundledReleaseNote(name, fs.readFileSync(path, 'utf-8'));
-            })
-            .filter((entry) => entry !== null)
-        : [];
-
-      this.emitFile({
-        type: 'asset',
-        fileName: 'assets/changelog.json',
-        source: JSON.stringify(
-          {
-            generatedAt: new Date().toISOString(),
-            releases: sortChangelogEntries(releases),
-          },
-          null,
-          2,
-        ),
-      });
+export default defineConfig({
+  plugins: [vue()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('.', import.meta.url)),
     },
-  };
-}
-
-export default defineConfig(({ mode }) => {
-  const isDebug = mode === 'debug';
-  const repoRoot = findRepoRoot(CONFIG_DIR);
-
-  return {
-    root: resolve(assetsSrcPath),
-    base: './',
-    resolve: {
-      alias: { '@': resolve(assetsSrcPath) },
-    },
-    // Compile-time Vue feature flags
-    // - Keep Options API off
-    // - Enable Vue devtools in production when building Debug bundles
-    define: {
-      __VUE_OPTIONS_API__: false,
-      __VUE_PROD_DEVTOOLS__: isDebug,
-    },
-    plugins: [
-      vue(),
-      Components({
-        // Auto-import only used Naive UI components to minimize bundle
-        resolvers: [NaiveUiResolver()],
-        dts: false,
-      }),
-      bundledChangelogPlugin(repoRoot),
-      ViteEjsPlugin({ header }),
-    ],
-    css: {
-      // Include CSS sources in sourcemaps during debug
-      devSourcemap: isDebug,
-    },
-    build: {
-      outDir: resolve(assetsDstPath),
-      sourcemap: isDebug ? 'inline' : false,
-      emptyOutDir: true,
-      chunkSizeWarningLimit: 600,
-      minify: isDebug ? false : 'esbuild',
-      rollupOptions: {
-        input: { index: resolve(assetsSrcPath, 'index.html') },
-        output: {
-          manualChunks: getManualChunk,
-        },
+  },
+  build: {
+    outDir: configuredOutputDirectory
+      ? resolve(configuredOutputDirectory)
+      : fileURLToPath(new URL('../../../../build/assets/web', import.meta.url)),
+    emptyOutDir: true,
+    target: 'es2022',
+  },
+  server: {
+    host: '127.0.0.1',
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'https://127.0.0.1:47990',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/covers': {
+        target: 'https://127.0.0.1:47990',
+        changeOrigin: true,
+        secure: false,
       },
     },
-  };
+  },
 });

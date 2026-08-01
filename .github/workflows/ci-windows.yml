@@ -111,7 +111,6 @@ jobs:
       unsigned_msi_signpath_artifact_id: ${{ steps.upload-unsigned-msi.outputs.artifact-id }}
       versioninfo_artifact_id: ${{ steps.upload-windows-version-metadata.outputs.artifact-id }}
     env:
-      NODE_VERSION: 22.22.2
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
       SIGNPATH_ORGANIZATION_ID: ${{ inputs.signpath_organization_id }}
       SIGNPATH_PROJECT_SLUG: ${{ inputs.signpath_project_slug }}
@@ -254,25 +253,6 @@ jobs:
         with:
           dotnet-version: '10.x'
 
-      - name: Setup NodeJS
-        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238  # v6.2.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: NodeJS Path
-        shell: pwsh
-        run: |
-          # get NodeJS PATH
-          $NODEJS_BINARY_PATH = (Get-Command node).Source
-          $NODEJS_PATH = Split-Path -Path "$NODEJS_BINARY_PATH" -Parent
-
-          # setup environment variables
-          echo "NODEJS_PATH=$NODEJS_PATH" >> $env:GITHUB_ENV
-
-          # step output
-          echo "nodejs-path=$NODEJS_PATH"
-          echo "nodejs-path=$NODEJS_PATH" >> $env:GITHUB_OUTPUT
-
       - name: Install WiX Toolset
         shell: pwsh
         run: |
@@ -413,12 +393,6 @@ jobs:
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
-          # Prefer the pinned actions/setup-node runtime over rolling MSYS2 packages.
-          NODEJS_PATH=$(cygpath -u "$NODEJS_PATH")
-          export PATH="${NODEJS_PATH}:$PATH"
-          NPM_PATH="$(cygpath -m "${NODEJS_PATH}/npm.cmd")"
-          echo "Using node: $(command -v node) ($(node --version))"
-          echo "Using npm: ${NPM_PATH} ($(npm --version))"
           vdd_prebuilt_arg=()
           if [[ -n "${VDD_PREBUILT_PACKAGE_DIR:-}" ]]; then
             vdd_prebuilt_arg=(-DSUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR="$(cygpath -u "${VDD_PREBUILT_PACKAGE_DIR}")")
@@ -449,7 +423,6 @@ jobs:
             -DWEBRTC_MSYS2_BIN="$(cygpath -u "${WEBRTC_MSYS2_BIN}")" \
             -DWEBRTC_VS_PATH="$(cygpath -u "${WEBRTC_VS_PATH}")" \
             -DWEBRTC_WINSDK_DIR="$(cygpath -u "${WEBRTC_WINSDK_DIR}")" \
-            -DNPM="${NPM_PATH}" \
             -DSUNSHINE_ASSETS_DIR=assets \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \

@@ -983,7 +983,7 @@ namespace confighttp {
 
   APIResponse SessionTokenAPI::login(const std::string &username, const std::string &password, const std::string &redirect_url, bool remember_me, const std::string &user_agent, const std::string &remote_address) {
     if (!validate_credentials(username, password)) {
-      BOOST_LOG(info) << "Web UI: Login failed for user: " << username;
+      BOOST_LOG(info) << "Configuration API: Login failed for user: " << username;
       return create_error_response("Invalid credentials", StatusCode::client_error_unauthorized);
     }
 
@@ -1335,7 +1335,7 @@ namespace confighttp {
     }
 
     if (auto ip_type = net::from_address(remote_address); ip_type > http::origin_web_ui_allowed) {
-      BOOST_LOG(info) << "Web UI: ["sv << remote_address << "] -- denied"sv;
+      BOOST_LOG(info) << "Configuration API: ["sv << remote_address << "] -- denied"sv;
       return make_auth_error(StatusCode::client_error_forbidden, "Forbidden");
     }
 

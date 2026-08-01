@@ -10,6 +10,9 @@ foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
     add_dependencies(sunshine ${dep})  # compile these before sunshine
 endforeach()
 
+include(${CMAKE_MODULE_PATH}/targets/web.cmake)
+add_dependencies(sunshine web_ui)
+
 # platform specific target definitions
 if(WIN32)
     include(${CMAKE_MODULE_PATH}/targets/windows.cmake)
@@ -39,58 +42,6 @@ if(CUDA_INHERIT_COMPILE_OPTIONS)
 endif()
 
 target_compile_options(sunshine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
-
-# Homebrew build fails the vite build if we set these environment variables
-if(${SUNSHINE_BUILD_HOMEBREW})
-    set(NPM_SOURCE_ASSETS_DIR "")
-    set(NPM_ASSETS_DIR "")
-    set(NPM_BUILD_HOMEBREW "true")
-else()
-    set(NPM_SOURCE_ASSETS_DIR ${SUNSHINE_SOURCE_ASSETS_DIR})
-    set(NPM_ASSETS_DIR ${CMAKE_BINARY_DIR})
-    set(NPM_BUILD_HOMEBREW "")
-endif()
-
-# Web UI source dir (where package.json lives)
-# Default layout: ${CMAKE_SOURCE_DIR}/src_assets/common/assets/web
-set(WEB_UI_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/web")
-
-#WebUI build
-find_program(NPM npm REQUIRED)
-
-set(NPM_INSTALL_FLAGS
-    --ignore-scripts
-    --no-audit
-    --no-fund
-    --loglevel=error
-)
-if (NPM_OFFLINE)
-    list(APPEND NPM_INSTALL_FLAGS --offline)
-endif()
-
-# Choose web UI build mode based on active CMake configuration.
-# In Debug config, build Vite in "debug" mode to enable Vue devtools.
-# In other configs, build production assets.
-set(NPM_BUILD_COMMAND_RUN "run")
-set(NPM_BUILD_COMMAND_ARG "$<IF:$<CONFIG:Debug>,build:debug,build>")
-set(NPM_BUILD_ENV        "$<IF:$<CONFIG:Debug>,NODE_ENV=development,>")
-
-# Some Node versions support enabling source-map support; keep empty if not needed
-set(NPM_BUILD_NODE_OPTIONS "")
-
-add_custom_target(web-ui ALL
-    WORKING_DIRECTORY "${WEB_UI_DIR}"
-    COMMENT "Installing NPM dependencies and building the Web UI"
-    COMMAND "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ci ${NPM_INSTALL_FLAGS}
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "SUNSHINE_BUILD_HOMEBREW=${NPM_BUILD_HOMEBREW}"
-            "SUNSHINE_SOURCE_ASSETS_DIR=${NPM_SOURCE_ASSETS_DIR}"
-            "SUNSHINE_ASSETS_DIR=${NPM_ASSETS_DIR}"
-            "${NPM_BUILD_ENV}"
-            "${NPM_BUILD_NODE_OPTIONS}"
-            "$<$<BOOL:${WIN32}>:cmd;/C>" "${NPM}" ${NPM_BUILD_COMMAND_RUN} ${NPM_BUILD_COMMAND_ARG}  # cmake-lint: disable=C0301
-    COMMAND_EXPAND_LISTS
-    VERBATIM)
 
 # docs
 if(BUILD_DOCS)

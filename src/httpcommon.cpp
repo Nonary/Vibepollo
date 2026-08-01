@@ -229,10 +229,10 @@ namespace http {
     }
     switch (user_creds_state(config::sunshine.credentials_file)) {
       case creds_state::missing_file:
-        BOOST_LOG(info) << "Open the Web UI to set your new username and password and getting started";
+        BOOST_LOG(info) << "Use the configuration API to set your new username and password before getting started";
         break;
       case creds_state::missing_fields:
-        BOOST_LOG(warning) << "Credential file is missing required fields; open the Web UI to set your username and password: "
+        BOOST_LOG(warning) << "Credential file is missing required fields; use the configuration API to set your username and password: "
                            << config::sunshine.credentials_file;
         break;
       case creds_state::configured:
@@ -242,7 +242,7 @@ namespace http {
         break;
       case creds_state::unreadable:
       case creds_state::malformed:
-        BOOST_LOG(error) << "Credential file cannot be used; refusing to start Web UI credential setup from "
+        BOOST_LOG(error) << "Credential file cannot be used; refusing to start configuration API credential setup from "
                          << config::sunshine.credentials_file;
         return -1;
     }

@@ -124,7 +124,6 @@ jobs:
               ports-mgmt/pkg \
               security/openssl \
               shells/bash \
-              www/npm \
               x11/libX11 \
               x11/libxcb \
               x11/libXfixes \

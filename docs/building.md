@@ -1,5 +1,14 @@
 # Building
 Sunshine binaries are built using [CMake](https://cmake.org) and requires `cmake` > 3.25.
+The browser interface is built with Node.js and npm. CMake's `web_ui` target
+installs the locked dependencies with lifecycle scripts disabled, generates the
+design tokens, type-checks the Vue source, and writes the production bundle to
+`<build-dir>/assets/web`. The `sunshine` target and installer packaging depend on
+this target, and packaging fails rather than shipping an incomplete
+configuration interface.
+
+For frontend-only development, run `npm ci --ignore-scripts` and `npm run dev`
+from `src_assets/common/assets/web`. Use `npm run build` for a production bundle.
 
 ## Building Locally
 
@@ -39,7 +48,6 @@ pkg install -y \
   ports-mgmt/pkg \
   security/openssl \
   shells/bash \
-  www/npm \
   x11/libX11 \
   x11/libxcb \
   x11/libXfixes \
@@ -89,7 +97,6 @@ dependencies=(
   "icu4c"  # Optional, if boost is not installed
   "miniupnpc"
   "ninja"
-  "node"
   "openssl@3"
   "opus"
   "pkg-config"
@@ -119,7 +126,6 @@ dependencies=(
   "libopus"
   "miniupnpc"
   "ninja"
-  "npm9"
   "pkgconfig"
 )
 sudo port install "${dependencies[@]}"
@@ -169,7 +175,6 @@ dependencies=(
 if [[ "${MSYSTEM}" == "UCRT64" ]]; then
   dependencies+=(
     "mingw-w64-${TOOLCHAIN}-MinHook"
-    "mingw-w64-${TOOLCHAIN}-nodejs"
     "mingw-w64-${TOOLCHAIN}-nsis"
   )
 fi
@@ -236,8 +241,6 @@ If you cannot use the helper script, the underlying steps are:
    `WEBRTC_INCLUDE_DIR` and `WEBRTC_LIBRARY` explicitly.
 
 To create a WiX installer, you also need to install [.NET](https://dotnet.microsoft.com/download).
-
-For ARM64: To build frontend, you also need to install [Node.JS](https://nodejs.org/en/download)
 
 ### Clone
 Ensure [git](https://git-scm.com) is installed on your system, then clone the repository using the following command:

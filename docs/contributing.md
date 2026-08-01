@@ -10,48 +10,12 @@ Read our contribution guide in our organization level
 
 ## Project Patterns
 
-### Web UI
-* The Web UI uses [Vite](https://vitejs.dev) as its build system.
-* The HTML pages used by the Web UI are found in `./src_assets/common/assets/web`.
-* [EJS](https://www.npmjs.com/package/vite-plugin-ejs) is used as a templating system for the pages
-  (check `template_header.html` and `template_header_main.html`).
-* The Style System is now powered by [Tailwind CSS](https://tailwindcss.com). (Bootstrap has been removed; a lightweight shim layer maps a few legacy classes like `btn` and `form-control` to Tailwind utilities for backward compatibility.)
-* Icons are provided by [Lucide](https://lucide.dev) and [Simple Icons](https://simpleicons.org).
-* The JS framework used by the more interactive pages is [Vus.js](https://vuejs.org).
-
-#### Routing Mode (History API)
-
-The Vue router is configured with `createWebHistory('/')` (no hash fragment). The C++ config HTTP server provides a SPA fallback (`getSpaEntry` in `src/confighttp.cpp`) that serves `index.html` for any non-API, non-static route so deep links and refreshes work. When adding a new top‑level UI path under `/`, no backend change is needed unless it conflicts with existing static prefixes (`/api`, `/assets`, `/covers`, `/images`).
-
-#### Tailwind CSS Integration
-
-Tailwind utilities are compiled via PostCSS. The entry stylesheet `src_assets/common/assets/web/styles/tailwind.css` includes:
-
-```
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-```
-
-and is imported in `main.js`. The purge/content configuration lives in `tailwind.config.js`:
-
-```
-content: ['./src_assets/common/assets/web/**/*.{html,js,ts,vue}']
-```
-
-If you place Vue/HTML/TS files outside that tree, extend the glob so their class names are not purged. Tailwind `preflight` is enabled; any remaining Bootstrap-era markup should be updated to utilities. A shim layer in `styles/tailwind.css` defines legacy class aliases (`.btn`, variants, `.form-control`) to ease incremental refactors. Prefer replacing those with first-class Tailwind utilities over time. For dynamic class generation (string concatenation) add a `safelist` in `tailwind.config.js` instead of dummy elements.
-
-#### Building
-
-@tabs{
-  @tab{CMake | ```bash
-    cmake -B build -G Ninja -S . --target web-ui
-    ninja -C build web-ui
-    ```}
-  @tab{Manual | ```bash
-    npm run dev
-    ```}
-}
+### Browser interface
+The browser interface lives under `src_assets/common/assets/web`. It uses Vue,
+Pinia, Vue Router, and project-owned components and design tokens; do not add a
+third-party component framework. Keep common controls in `components/ui`, use
+the semantic tokens generated from `design/tokens.json`, and preserve the
+task-first information hierarchy documented in `docs/design-principles.md`.
 
 ### Localization
 Sunshine and related LizardByte projects are being localized into various languages.
@@ -83,62 +47,21 @@ next release.
 
 #### Extraction
 
-##### Web UI
-Sunshine uses [Vue I18n](https://vue-i18n.intlify.dev) for localizing the UI.
-The following is a simple example of how to use it.
+##### Locale catalogs
 
-* Add the string to the `./src_assets/common/assets/web/public/assets/locale/en.json` file, in English.
-  ```json
-  {
-   "index": {
-     "welcome": "Hello, Sunshine!"
-   }
-  }
-  ```
+Add or update English locale entries in
+`src_assets/common/assets/web/public/assets/locale/en.json` when extending an
+established catalog namespace. New interface copy belongs in
+`src_assets/common/assets/web/public/assets/locale/ui/en.json` under the `ui`
+namespace. Keep JSON keys sorted alphabetically and reuse an established key
+when its wording and meaning are an exact match.
 
-  > [!NOTE]
-  > The JSON keys should be sorted alphabetically. You can use [jsonabc](https://novicelab.org/jsonabc)
-  > to sort the keys.
-
-  > [!IMPORTANT]
-  > Due to the integration with Crowdin, it is important to only add strings to the *en.json* file,
-  > and to not modify any other language files. After the PR is merged, the translations can take place
-  > on [CrowdIn][crowdin-url]. Once the translations are complete, a PR will be made
-  > to merge the translations into Sunshine.
-
-* Use the string in the Vue component.
-  ```html
-  <template>
-    <div>
-      <p>{{ $t('index.welcome') }}</p>
-    </div>
-  </template>
-  ```
-
-  > [!TIP]
-  > More formatting examples can be found in the
-  > [Vue I18n guide](https://kazupon.github.io/vue-i18n/guide/formatting.html).
-
-##### Web UI Localization Review
-When reviewing localized Web UI pages, treat all visible user-facing copy as localizable. Hard-coded English in Vue
-templates, page headers, button labels, placeholders, empty states, saving/loading states, and status labels should be
-moved behind Vue I18n keys with `$t(...)`.
-
-Prefer adding keys under the existing page or component namespace, for example `settings`, `apps`, `index`,
-`resource_card`, `webrtc`, or the relevant configuration tab. Use named placeholders for dynamic values, such as
-`$t('index.version', { version })`, so translators can reorder text naturally.
-
-For normal source changes, add new strings only to `en.json` and let CrowdIn handle translated locale files. For
-explicit localization review branches where translated locale files are in scope, update the target locale files at the
-same time and keep terminology consistent across related UI surfaces.
-
-For Chinese locale review:
-
-* Preserve product, protocol, executable, and service names such as `Playnite`, `WebRTC`, `GitHub Issues`, `H.264`,
-  and `LosslessScaling.exe`.
-* In Simplified Chinese, use `故障排查` for troubleshooting UI and `崩溃诊断包` for crash diagnostics bundles.
-* In Traditional Chinese, use `指令` for command UI, `當機診斷套件` for crash diagnostics bundles, and `記錄檔` for
-  log-file UI.
+> [!IMPORTANT]
+> For normal source changes, modify only the applicable English source catalog,
+> not translated locale files. The mappings in `crowdin.yml` publish both
+> English catalogs; translations are contributed through [CrowdIn][crowdin-url]
+> and returned in a localization pull request. Components must use locale keys
+> for all user-facing copy rather than embedding English fallback text.
 
 ##### C++
 

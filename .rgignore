@@ -6,15 +6,12 @@ cmake-build-*/
 test-results/
 tmp/
 venv/
-node_modules/
-.npm/
 
 # Ignore common nested build output directories.
 **/build/**
 **/out/**
 **/CMakeFiles/**
 **/cmake-build-*/
-**/node_modules/**
 **/venv/**
 **/test-results/**
 

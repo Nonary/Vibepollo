@@ -115,11 +115,14 @@ namespace confighttp {
     {"jpg", "image/jpeg"},
     {"js", "application/javascript"},
     {"json", "application/json"},
+    {"map", "application/json"},
     {"png", "image/png"},
     {"webp", "image/webp"},
     {"svg", "image/svg+xml"},
     {"ttf", "font/ttf"},
     {"txt", "text/plain"},
+    {"wasm", "application/wasm"},
+    {"webmanifest", "application/manifest+json"},
     {"woff2", "font/woff2"},
     {"xml", "text/xml"},
   };
@@ -918,7 +921,7 @@ namespace confighttp {
    */
   void send_unauthorized(resp_https_t response, req_https_t request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
-    BOOST_LOG(info) << "Web UI: ["sv << address << "] -- not authorized"sv;
+    BOOST_LOG(info) << "Configuration API: ["sv << address << "] -- not authorized"sv;
 
     constexpr auto code = client_error_unauthorized;
 
@@ -1268,12 +1271,16 @@ namespace confighttp {
   }
 
   std::string generate_csrf_token(const std::string &client_id) {
-    std::string token = crypto::rand_alphabet(CSRF_TOKEN_SIZE);
     const auto now = std::chrono::steady_clock::now();
     std::scoped_lock lock(csrf_tokens_mutex);
     std::erase_if(csrf_tokens, [&now](const auto &entry) {
       return entry.second.expiration < now;
     });
+    if (const auto existing = csrf_tokens.find(client_id); existing != csrf_tokens.end()) {
+      return existing->second.token;
+    }
+
+    std::string token = crypto::rand_alphabet(CSRF_TOKEN_SIZE);
     csrf_tokens[client_id] = csrf_token_t {token, now + CSRF_TOKEN_LIFETIME};
     return token;
   }
@@ -1334,9 +1341,9 @@ namespace confighttp {
   }
 
   void getCSRFToken(resp_https_t response, req_https_t request) {
-    if (!authenticate(response, request)) {
-      return;
-    }
+    // The browser needs a token before login. Issuing one does not grant any
+    // authority: it is bound to the request's client identity and every API
+    // handler still performs its own authentication and authorization checks.
     nlohmann::json output_tree;
     output_tree["csrf_token"] = generate_csrf_token(get_client_id(request));
     send_response(response, output_tree);
@@ -1437,38 +1444,108 @@ namespace confighttp {
    */
   // Consolidated redirect helper: use the const char* variant below.
 
-  /**
-   * @brief SPA entry responder - serves the single-page app shell (index.html)
-   * for any non-API and non-static-asset GET requests. Allows unauthenticated
-   * access so the frontend can render login/first-run flows. Static and API
-   * routes are expected to be registered explicitly; this function returns
-   * a 404 for reserved prefixes to avoid accidentally exposing files.
-   */
-  void getSpaEntry(resp_https_t response, req_https_t request) {
-    print_req(request);
+  namespace {
+    bool is_safe_web_path(std::string_view relative_path) {
+      if (relative_path.empty() || relative_path.front() == '/' || relative_path.find('\\') != std::string_view::npos ||
+          relative_path.find('%') != std::string_view::npos || relative_path.find(':') != std::string_view::npos ||
+          relative_path.find('\0') != std::string_view::npos) {
+        return false;
+      }
 
-    const std::string &p = request->path;
-    // Reserved prefixes that should not be handled by the SPA entry
-    static const std::vector<std::string> reserved = {"/api", "/assets", "/covers", "/images", "/images/"};
-    for (const auto &r : reserved) {
-      if (p.rfind(r, 0) == 0) {
-        // Let explicit handlers or default not_found handle these
+      const fs::path path {relative_path};
+      if (path.is_absolute() || path.has_root_name() || path.has_root_directory()) {
+        return false;
+      }
+      return std::ranges::none_of(path, [](const fs::path &part) {
+        return part == "..";
+      });
+    }
+
+    SimpleWeb::CaseInsensitiveMultimap web_headers(std::string_view content_type, bool cache_immutable) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", std::string {content_type});
+      headers.emplace("Cache-Control", cache_immutable ? "public, max-age=31536000, immutable" : "no-cache");
+      headers.emplace("Content-Security-Policy",
+                      "default-src 'self'; base-uri 'self'; connect-src 'self' wss:; font-src 'self'; "
+                      "form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; media-src 'self' blob:; "
+                      "object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:");
+      headers.emplace("Referrer-Policy", "no-referrer");
+      headers.emplace("X-Content-Type-Options", "nosniff");
+      headers.emplace("X-Frame-Options", "DENY");
+      return headers;
+    }
+
+    void serve_web_file(resp_https_t response, req_https_t request, std::string_view relative_path) {
+      if (!is_safe_web_path(relative_path)) {
         not_found(response, request);
         return;
       }
-    }
 
-    // Serve the SPA shell (index.html) without server-side auth so frontend
-    // can manage routing and authentication flows.
-    std::string content = file_handler::read_file(WEB_DIR "index.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(content, headers);
+      const fs::path file_path = fs::path {WEB_DIR} / fs::path {relative_path};
+      std::error_code error;
+      if (!fs::is_regular_file(file_path, error) || error) {
+        not_found(response, request);
+        return;
+      }
+
+      auto extension = file_path.extension().string();
+      if (!extension.empty() && extension.front() == '.') {
+        extension.erase(0, 1);
+      }
+      boost::algorithm::to_lower(extension);
+      const auto mime_type = mime_types.find(extension);
+      if (mime_type == mime_types.end()) {
+        not_found(response, request);
+        return;
+      }
+
+      std::ifstream input {file_path, std::ios::binary};
+      if (!input) {
+        not_found(response, request);
+        return;
+      }
+
+      const bool cache_immutable = extension == "css" || extension == "js" || extension == "woff2";
+      response->write(success_ok, input, web_headers(mime_type->second, cache_immutable));
+    }
+  }  // namespace
+
+  /**
+   * @brief Serve a built browser asset from the isolated web root.
+   */
+  void getWebAsset(resp_https_t response, req_https_t request) {
+    print_req(request);
+    if (request->path.size() <= 1) {
+      not_found(response, request);
+      return;
+    }
+    const std::string relative_path = request->path.substr(1);
+    serve_web_file(std::move(response), std::move(request), relative_path);
   }
 
-  // legacy per-page handlers removed; SPA entry handles these routes
+  /**
+   * @brief Serve the Vue application shell for browser navigation routes.
+   */
+  void getWebUi(resp_https_t response, req_https_t request) {
+    print_req(request);
+
+    const std::string &path = request->path;
+    static constexpr std::array reserved_prefixes {"/api"sv, "/assets"sv, "/covers"sv, "/images"sv};
+    if (std::ranges::any_of(reserved_prefixes, [&path](std::string_view prefix) {
+          return std::string_view {path}.starts_with(prefix);
+        })) {
+      not_found(response, request);
+      return;
+    }
+
+    // Missing files should remain 404s. Extension-free paths are client-side
+    // navigation routes and receive the single application shell.
+    if (fs::path {path}.has_extension()) {
+      not_found(response, request);
+      return;
+    }
+    serve_web_file(std::move(response), std::move(request), "index.html");
+  }
 
   /**
    * @brief Get the favicon image.
@@ -5494,20 +5571,10 @@ namespace confighttp {
       bad_request(response, request);
     };
 
-    // Serve the SPA shell for any unmatched GET route. Explicit static and API
-    // routes are registered below; UI page routes are deprecated server-side
-    // and are handled by the SPA entry responder so frontend can manage
-    // authentication and routing.
-    server.default_resource["GET"] = getSpaEntry;
-    server.resource["^/$"]["GET"] = getSpaEntry;
-    server.resource["^/pin/?$"]["GET"] = getSpaEntry;
-    server.resource["^/apps/?$"]["GET"] = getSpaEntry;
-    server.resource["^/clients/?$"]["GET"] = getSpaEntry;
-    server.resource["^/config/?$"]["GET"] = getSpaEntry;
-    server.resource["^/password/?$"]["GET"] = getSpaEntry;
-    server.resource["^/welcome/?$"]["GET"] = getSpaEntry;
-    server.resource["^/login/?$"]["GET"] = getSpaEntry;
-    server.resource["^/troubleshooting/?$"]["GET"] = getSpaEntry;
+    // Static browser assets are public; every state-changing API below still
+    // passes through the existing authentication and CSRF gates.
+    server.resource["^/(assets|images)/.+$"]["GET"] = getWebAsset;
+    server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
     clear_token_route_catalog();

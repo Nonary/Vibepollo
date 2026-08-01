@@ -1,5 +1,3 @@
-require "language/node"
-
 class Sunshine < Formula
   include Language::Python::Virtualenv
 
@@ -46,7 +44,6 @@ class Sunshine < Formula
   depends_on "cmake" => :build
   depends_on "doxygen" => :build if build.with? "docs"
   depends_on "graphviz" => :build if build.with? "docs"
-  depends_on "node" => :build
   depends_on "pkgconf" => :build
   depends_on "boost"
   depends_on "curl"

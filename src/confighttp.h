@@ -1,6 +1,6 @@
 /**
  * @file src/confighttp.h
- * @brief Declarations for the Web UI Config HTTP server.
+ * @brief Declarations for the configuration HTTP server.
  */
 #pragma once
 
@@ -37,7 +37,7 @@ namespace confighttp {
   std::string get_web_ui_url(std::string_view path = {});
   void start();
 
-  // Token scopes for API tokens used by tests and UI
+  // Token scopes for API tokens used by clients.
   enum class TokenScope {
     Read,  ///< Read-only scope: allows GET/HEAD style operations
     Write  ///< Read-write scope: allows modifying operations (POST/PUT/DELETE)
@@ -63,7 +63,6 @@ namespace confighttp {
   void refreshSession(resp_https_t response, req_https_t request);
   void authStatus(resp_https_t response, req_https_t request);
   void logoutUser(resp_https_t response, req_https_t request);
-  void getSpaEntry(resp_https_t response, req_https_t request);
   void getCSRFToken(resp_https_t response, req_https_t request);
   void browseDirectory(resp_https_t response, req_https_t request);
   bool is_browsable_executable(const std::filesystem::directory_entry &entry, const std::filesystem::file_status &status);

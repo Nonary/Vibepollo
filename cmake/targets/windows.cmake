@@ -86,7 +86,7 @@ endforeach()
 # Convenience target to build MSI via CPack (WiX)
 add_custom_target(package_msi
     COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
-    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} copy_playnite_plugin build_uninstall_ui
+    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} copy_playnite_plugin build_uninstall_ui web_ui
     COMMENT "Building MSI installer via CPack (WiX)"
 )
 

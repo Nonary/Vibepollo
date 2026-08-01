@@ -54,7 +54,6 @@ apt-get install -y --no-install-recommends \
   libxfixes-dev \
   libxrandr-dev \
   libxtst-dev \
-  npm \
   udev \
   wget \
   x11-xserver-utils \

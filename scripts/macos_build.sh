@@ -29,7 +29,6 @@ required_formulas=(
   "cmake"
   "doxygen"
   "graphviz"
-  "node"
   "pkgconf"
   "icu4c@78"
   "miniupnpc"

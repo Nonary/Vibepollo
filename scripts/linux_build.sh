@@ -146,25 +146,6 @@ function detect_nvcc_path() {
   return 1
 }
 
-# Reusable function to setup NVM environment
-function setup_nvm_environment() {
-  # Only setup NVM if it should be used for this distro
-  if [[ "$nvm_node" == 1 ]]; then
-    # Check if NVM is installed and source it
-    if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
-      # shellcheck source=/dev/null
-      source "$HOME/.nvm/nvm.sh"
-      # Use the default node version installed by NVM
-      nvm use default 2>/dev/null || nvm use node 2>/dev/null || true
-      echo "Using NVM Node.js version: $(node --version 2>/dev/null || echo 'not available')"
-      echo "Using NVM npm version: $(npm --version 2>/dev/null || echo 'not available')"
-    else
-      echo "NVM not found, using system Node.js if available"
-    fi
-  fi
-  return 0
-}
-
 function _usage() {
   local exit_code=$1
 
@@ -294,8 +275,6 @@ function add_arch_deps() {
     'libxtst'
     'miniupnpc'
     'ninja'
-    'nodejs'
-    'npm'
     'numactl'
     'openssl'
     'opus'
@@ -362,7 +341,6 @@ function add_debian_based_deps() {
     "libvulkan-dev"  # Vulkan
     "glslang-tools"  # Vulkan shader compiler
     "ninja-build"
-    "npm"  # web-ui
     "python3-jinja2"  # glad OpenGL/EGL loader generator
     "python3-setuptools"  # glad OpenGL/EGL loader generated, v2.0.0
     "systemd"
@@ -448,7 +426,6 @@ function add_fedora_deps() {
     "mesa-libgbm-devel"
     "miniupnpc-devel"
     "ninja-build"
-    "npm"
     "numactl-devel"
     "openssl-devel"
     "opus-devel"
@@ -631,18 +608,6 @@ function run_step_deps() {
     fi
   fi
 
-  # install node from nvm
-  if [[ "$nvm_node" == 1 ]]; then
-    nvm_url="https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh"
-    echo "nvm url: ${nvm_url}"
-    wget -qO- ${nvm_url} | bash
-
-    # shellcheck source=/dev/null  # we don't care that shellcheck cannot find nvm.sh
-    source "$HOME/.nvm/nvm.sh"
-    nvm install node
-    nvm use node
-  fi
-
   # run the cuda install
   if [[ "$skip_cuda" == 0 ]]; then
     install_cuda
@@ -653,8 +618,6 @@ function run_step_deps() {
 function run_step_cmake() {
   echo "Running step: CMake configure"
 
-  # Setup NVM environment if needed (for web UI builds)
-  setup_nvm_environment
   setup_cuda_system_package_environment
   if [[ "$skip_cuda" == 0 ]] && [[ "$cuda_system_package" == 1 ]]; then
     apply_cuda_patches "$(cuda_system_toolkit_path)"
@@ -747,9 +710,6 @@ function run_step_validation() {
 function run_step_build() {
   echo "Running step: Build"
 
-  # Setup NVM environment if needed (for web UI builds)
-  setup_nvm_environment
-
   # Build the project
   ninja -C "build"
   return 0
@@ -824,7 +784,6 @@ if grep -q "Arch Linux" /etc/os-release; then
   version=""
   package_update_command="${sudo_cmd} pacman -Syu --noconfirm"
   package_install_command="${sudo_cmd} pacman -Sy --needed"
-  nvm_node=0
   gcc_version="14"
 elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then
   distro="debian"
@@ -832,35 +791,30 @@ elif grep -q "Debian GNU/Linux 12 (bookworm)" /etc/os-release; then
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="13"
-  nvm_node=0
 elif grep -q "Debian GNU/Linux 13 (trixie)" /etc/os-release; then
   distro="debian"
   version="13"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q "PLATFORM_ID=\"platform:f42\"" /etc/os-release; then
   distro="fedora"
   version="42"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=43$' /etc/os-release; then
   distro="fedora"
   version="43"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=44$' /etc/os-release; then
   distro="fedora"
   version="44"
   package_update_command="${sudo_cmd} dnf update -y"
   package_install_command="${sudo_cmd} dnf install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=45$' /etc/os-release; then
   distro="fedora"
   version="45"
@@ -869,35 +823,30 @@ elif grep -q '^ID=fedora$' /etc/os-release && grep -q '^VERSION_ID=45$' /etc/os-
   cuda_version="13.1.1"
   cuda_build="590.48.01"
   gcc_version="15"
-  nvm_node=0
 elif grep -q "Ubuntu 22.04" /etc/os-release; then
   distro="ubuntu"
   version="22.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=1
 elif grep -q "Ubuntu 24.04" /etc/os-release; then
   distro="ubuntu"
   version="24.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=1
 elif grep -q "Ubuntu 25.04" /etc/os-release; then
   distro="ubuntu"
   version="25.04"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q "Ubuntu 25.10" /etc/os-release; then
   distro="ubuntu"
   version="25.10"
   package_update_command="${sudo_cmd} apt-get update"
   package_install_command="${sudo_cmd} apt-get install -y"
   gcc_version="14"
-  nvm_node=0
 elif grep -q 'VERSION_ID="26.04"' /etc/os-release; then
   distro="ubuntu"
   version="26.04"
@@ -911,7 +860,6 @@ elif grep -q 'VERSION_ID="26.04"' /etc/os-release; then
     fi
   fi
   gcc_version="14"
-  nvm_node=0
 else
   echo "Unsupported Distro or Version"
   exit 1

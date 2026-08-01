@@ -9,8 +9,6 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL "https://github.com/Nonary/Vibepollo/issues"
 
 option(BUILD_DOCS "Build documentation" OFF)
 set(BUILD_TESTS OFF CACHE BOOL "Build unit tests (disabled by repository policy)." FORCE)
-option(NPM_OFFLINE "Use offline npm packages. You must ensure packages are in your npm cache." OFF)
-
 option(BUILD_WERROR "Enable -Werror flag." OFF)
 
 # if this option is set, the build will exit after configuring special package configuration files
