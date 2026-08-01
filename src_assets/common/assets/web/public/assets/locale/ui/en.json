@@ -575,9 +575,14 @@
     },
     "logs": {
       "action": {
+        "clear_search": "Clear search",
         "copy_visible": "Copy visible",
         "download_text": "Download text",
+        "jump_to_latest": "Jump to latest",
+        "new_lines": "{count} new line - jump to latest | {count} new lines - jump to latest",
+        "next_match": "Next match",
         "pause": "Pause updates",
+        "previous_match": "Previous match",
         "refreshing": "Refreshing…",
         "resume": "Resume updates"
       },
@@ -641,6 +646,9 @@
       "viewer": {
         "aria_label": "Filtered log lines",
         "line_numbers_preserved": "Original line numbers are preserved while filtering.",
+        "match_line": "Match on line {line}",
+        "search_aria_label": "Log search results with surrounding context",
+        "search_context": "Match {current} of {total}, with {count} lines before and after",
         "loading": "Loading {source} log…",
         "title": "Log output",
         "truncated": "Rendering the newest {limit} matches; exports still include all filtered lines."

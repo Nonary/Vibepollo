@@ -43,10 +43,22 @@ interface LogLine {
   severity: LogSeverity;
 }
 
+interface LogSearchResult {
+  id: number;
+  line: LogLine;
+  snippet: LogLine[];
+}
+
+interface LogSegment {
+  text: string;
+  match: boolean;
+}
+
 const source = ref<LogSource>('sunshine');
 const severity = ref<SeverityFilter>('all');
 const search = ref('');
 const rawText = ref('');
+const latestText = ref('');
 const paused = ref(false);
 const autoscroll = ref(true);
 const loading = ref(true);
@@ -55,28 +67,96 @@ const error = ref('');
 const notice = ref('');
 const lastLoaded = ref<number | null>(null);
 const viewer = ref<HTMLElement | null>(null);
+const activeMatchIndex = ref(0);
+const resultRefs = new Map<number, HTMLElement>();
 let refreshTimer: number | undefined;
 let latestRequest = 0;
 
+const searchContextLines = 5;
+const searchResultLimit = 200;
+
+function splitLogLines(text: string): string[] {
+  if (!text) return [];
+  const lines = text.split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
 const allLines = computed<LogLine[]>(() => {
-  if (!rawText.value) return [];
-  const textLines = rawText.value.split(/\r?\n/);
-  if (textLines.at(-1) === '') textLines.pop();
-  return textLines.map((text, index) => ({
+  return splitLogLines(rawText.value).map((text, index) => ({
     number: index + 1,
     text,
     severity: detectSeverity(text),
   }));
 });
 
+const latestLineCount = computed(() => splitLogLines(latestText.value).length);
+const unseenLines = computed(() => Math.max(0, latestLineCount.value - allLines.value.length));
+const newLogsAvailable = computed(() => unseenLines.value > 0);
+const isAtBottom = ref(true);
+const showJumpToLatest = computed(
+  () => newLogsAvailable.value || !isAtBottom.value || !autoscroll.value,
+);
+const normalizedSearch = computed(() => search.value.trim().toLocaleLowerCase(locale.value));
+const searchActive = computed(() => normalizedSearch.value.length > 0);
+
 const filteredLines = computed(() => {
-  const needle = search.value.trim().toLocaleLowerCase(locale.value);
+  const needle = normalizedSearch.value;
   return allLines.value.filter((line) => {
     const severityMatches = severity.value === 'all' || line.severity === severity.value;
-    const textMatches =
-      !needle || line.text.toLocaleLowerCase(locale.value).includes(needle);
+    const textMatches = !needle || line.text.toLocaleLowerCase(locale.value).includes(needle);
     return severityMatches && textMatches;
   });
+});
+
+const matchingLineIndexes = computed(() => {
+  const needle = normalizedSearch.value;
+  if (!needle) return [];
+  const matches: number[] = [];
+  for (let index = 0; index < allLines.value.length; index += 1) {
+    const line = allLines.value[index];
+    if (!line) continue;
+    if (severity.value !== 'all' && line.severity !== severity.value) continue;
+    if (line.text.toLocaleLowerCase(locale.value).includes(needle)) matches.push(index);
+  }
+  return matches;
+});
+
+const matchOccurrenceCount = computed(() => {
+  const needle = normalizedSearch.value;
+  if (!needle) return 0;
+  let count = 0;
+  for (const lineIndex of matchingLineIndexes.value) {
+    const text = allLines.value[lineIndex]?.text.toLocaleLowerCase(locale.value) ?? '';
+    let offset = 0;
+    while (offset <= text.length) {
+      const matchIndex = text.indexOf(needle, offset);
+      if (matchIndex < 0) break;
+      count += 1;
+      offset = matchIndex + needle.length;
+    }
+  }
+  return count;
+});
+
+const searchWindow = computed(() => {
+  const total = matchingLineIndexes.value.length;
+  if (total <= searchResultLimit) return { start: 0, end: total };
+  const half = Math.floor(searchResultLimit / 2);
+  const start = Math.max(0, Math.min(activeMatchIndex.value - half, total - searchResultLimit));
+  return { start, end: start + searchResultLimit };
+});
+
+const searchResults = computed<LogSearchResult[]>(() => {
+  const { start, end } = searchWindow.value;
+  return matchingLineIndexes.value.slice(start, end).map((lineIndex, offset) => ({
+    id: start + offset,
+    line: allLines.value[lineIndex]!,
+    snippet: allLines.value.slice(
+      Math.max(0, lineIndex - searchContextLines),
+      Math.min(allLines.value.length, lineIndex + searchContextLines + 1),
+    ),
+  }));
 });
 
 const displayedLines = computed(() => filteredLines.value.slice(-5000));
@@ -95,23 +175,17 @@ const counts = computed(() => {
   return result;
 });
 
-const sourceLabel = computed(
-  () => {
-    const option = logSources.find((candidate) => candidate.value === source.value);
-    return option ? t(option.labelKey) : source.value;
-  },
-);
+const sourceLabel = computed(() => {
+  const option = logSources.find((candidate) => candidate.value === source.value);
+  return option ? t(option.labelKey) : source.value;
+});
 
 const summary = computed(() => {
   if (!allLines.value.length) {
     return t('ui.logs.summary.empty', { source: sourceLabel.value });
   }
   if (counts.value.error) {
-    return `${t(
-      'ui.logs.summary.errors',
-      { count: counts.value.error },
-      counts.value.error,
-    )} ${t(
+    return `${t('ui.logs.summary.errors', { count: counts.value.error }, counts.value.error)} ${t(
       'ui.logs.summary.warnings_also',
       { count: counts.value.warning },
       counts.value.warning,
@@ -132,7 +206,9 @@ const summary = computed(() => {
 });
 
 function detectSeverity(line: string): LogSeverity {
-  const match = line.match(/(?:^|[\[\]\s:])(fatal|error|warning|warn|info|debug|trace)(?=[:\]\s])/i);
+  const match = line.match(
+    /(?:^|[\[\]\s:])(fatal|error|warning|warn|info|debug|trace)(?=[:\]\s])/i,
+  );
   const value = match?.[1]?.toLocaleLowerCase();
   if (value === 'fatal' || value === 'error') return 'error';
   if (value === 'warning' || value === 'warn') return 'warning';
@@ -161,11 +237,79 @@ function severityTone(value: LogSeverity): StatusTone {
   return 'neutral';
 }
 
+function isNearBottom(element: HTMLElement): boolean {
+  return element.scrollTop + element.clientHeight >= element.scrollHeight - 24;
+}
+
+function hasViewerSelection(): boolean {
+  const element = viewer.value;
+  const selection = window.getSelection();
+  if (!element || !selection || selection.isCollapsed) return false;
+  return Boolean(
+    selection.anchorNode &&
+      selection.focusNode &&
+      element.contains(selection.anchorNode) &&
+      element.contains(selection.focusNode),
+  );
+}
+
 async function scrollToLatest(): Promise<void> {
-  if (!autoscroll.value || paused.value) return;
   await nextTick();
   const element = viewer.value;
-  if (element) element.scrollTop = element.scrollHeight;
+  if (!element) return;
+  element.scrollTop = element.scrollHeight;
+  isAtBottom.value = true;
+}
+
+async function jumpToLatest(): Promise<void> {
+  rawText.value = latestText.value;
+  autoscroll.value = true;
+  await scrollToLatest();
+}
+
+function onViewerScroll(): void {
+  const element = viewer.value;
+  if (!element) return;
+  const atBottom = isNearBottom(element);
+  isAtBottom.value = atBottom;
+  if (!atBottom) {
+    autoscroll.value = false;
+    return;
+  }
+  if (!searchActive.value) void jumpToLatest();
+}
+
+function setResultRef(index: number): (element: unknown) => void {
+  return (element) => {
+    if (element instanceof HTMLElement) resultRefs.set(index, element);
+    else resultRefs.delete(index);
+  };
+}
+
+function setActiveMatch(index: number): void {
+  const total = matchingLineIndexes.value.length;
+  if (!total) return;
+  activeMatchIndex.value = ((index % total) + total) % total;
+  void nextTick(() => {
+    resultRefs.get(activeMatchIndex.value)?.scrollIntoView({ block: 'center' });
+  });
+}
+
+function lineSegments(line: string): LogSegment[] {
+  const needle = normalizedSearch.value;
+  if (!needle) return [{ text: line || ' ', match: false }];
+  const lower = line.toLocaleLowerCase(locale.value);
+  const segments: LogSegment[] = [];
+  let offset = 0;
+  let matchIndex = lower.indexOf(needle);
+  while (matchIndex >= 0) {
+    if (matchIndex > offset) segments.push({ text: line.slice(offset, matchIndex), match: false });
+    segments.push({ text: line.slice(matchIndex, matchIndex + needle.length), match: true });
+    offset = matchIndex + needle.length;
+    matchIndex = lower.indexOf(needle, offset);
+  }
+  if (offset < line.length) segments.push({ text: line.slice(offset), match: false });
+  return segments.length ? segments : [{ text: line || ' ', match: false }];
 }
 
 async function refreshLogs(silent = false): Promise<void> {
@@ -178,10 +322,20 @@ async function refreshLogs(silent = false): Promise<void> {
       `/api/logs?source=${encodeURIComponent(requestedSource)}`,
     );
     if (requestId !== latestRequest) return;
-    rawText.value = typeof response === 'string' ? response : String(response ?? '');
+    const nextText = typeof response === 'string' ? response : String(response ?? '');
+    const nextLineCount = splitLogLines(nextText).length;
+    const displayedLineCount = allLines.value.length;
+    const element = viewer.value;
+    const atBottom = element ? isNearBottom(element) : isAtBottom.value;
+    const shouldFollow =
+      autoscroll.value && atBottom && !searchActive.value && !hasViewerSelection();
+    latestText.value = nextText;
+    if (!rawText.value || shouldFollow || nextLineCount < displayedLineCount) {
+      rawText.value = nextText;
+    }
     error.value = '';
     lastLoaded.value = Date.now();
-    await scrollToLatest();
+    if (shouldFollow) await scrollToLatest();
   } catch (cause) {
     if (requestId !== latestRequest) return;
     error.value =
@@ -246,6 +400,10 @@ function downloadVisible(): void {
 
 watch(source, () => {
   rawText.value = '';
+  latestText.value = '';
+  autoscroll.value = true;
+  isAtBottom.value = true;
+  activeMatchIndex.value = 0;
   loading.value = true;
   error.value = '';
   void refreshLogs();
@@ -256,7 +414,17 @@ watch(paused, (isPaused) => {
 });
 
 watch(autoscroll, (enabled) => {
-  if (enabled) void scrollToLatest();
+  if (enabled) void jumpToLatest();
+});
+
+watch(normalizedSearch, (value) => {
+  activeMatchIndex.value = 0;
+  if (value) autoscroll.value = false;
+});
+
+watch(matchingLineIndexes, (matches) => {
+  if (!matches.length) activeMatchIndex.value = 0;
+  else if (activeMatchIndex.value >= matches.length) activeMatchIndex.value = matches.length - 1;
 });
 
 onMounted(() => {
@@ -274,10 +442,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="vs-page vs-page--fluid logs-page">
-    <PageHeader
-      :title="t('troubleshooting.logs')"
-      :description="t('ui.logs.page.description')"
-    >
+    <PageHeader :title="t('troubleshooting.logs')" :description="t('ui.logs.page.description')">
       <template #meta>
         <StatusBadge
           :label="paused ? t('ui.logs.status.paused') : t('ui.logs.status.following')"
@@ -399,11 +564,36 @@ onBeforeUnmount(() => {
               {{
                 t(
                   'ui.logs.filters.matching_count',
-                  { count: filteredLines.length.toLocaleString(locale || undefined) },
-                  filteredLines.length,
+                  {
+                    count: (searchActive
+                      ? matchOccurrenceCount
+                      : filteredLines.length
+                    ).toLocaleString(locale || undefined),
+                  },
+                  searchActive ? matchOccurrenceCount : filteredLines.length,
                 )
               }}
             </span>
+            <template v-if="searchActive">
+              <AppButton
+                :label="t('ui.logs.action.previous_match')"
+                size="compact"
+                :disabled="!matchingLineIndexes.length"
+                @click="setActiveMatch(activeMatchIndex - 1)"
+              />
+              <AppButton
+                :label="t('ui.logs.action.next_match')"
+                size="compact"
+                :disabled="!matchingLineIndexes.length"
+                @click="setActiveMatch(activeMatchIndex + 1)"
+              />
+              <AppButton
+                :label="t('ui.logs.action.clear_search')"
+                size="compact"
+                variant="tertiary"
+                @click="search = ''"
+              />
+            </template>
             <AppButton
               :label="t('ui.logs.action.copy_visible')"
               icon="copy"
@@ -423,7 +613,16 @@ onBeforeUnmount(() => {
 
         <div class="log-viewer-heading">
           <h2 id="log-viewer-title">{{ t('ui.logs.viewer.title') }}</h2>
-          <p v-if="omittedLines">
+          <p v-if="searchActive">
+            {{
+              t('ui.logs.viewer.search_context', {
+                count: searchContextLines,
+                current: matchingLineIndexes.length ? activeMatchIndex + 1 : 0,
+                total: matchingLineIndexes.length,
+              })
+            }}
+          </p>
+          <p v-else-if="omittedLines">
             {{ t('ui.logs.viewer.truncated', { limit: 5000 }) }}
           </p>
           <p v-else>{{ t('ui.logs.viewer.line_numbers_preserved') }}</p>
@@ -449,29 +648,87 @@ onBeforeUnmount(() => {
           compact
         />
 
-        <div
-          v-else
-          ref="viewer"
-          class="log-viewer"
-          role="region"
-          :aria-label="t('ui.logs.viewer.aria_label')"
-          aria-live="off"
-          tabindex="0"
-        >
-          <ol :start="displayedLines[0]?.number">
-            <li
-              v-for="line in displayedLines"
-              :key="line.number"
-              class="log-line"
-              :data-severity="line.severity"
+        <div v-else class="log-viewer-shell">
+          <AppButton
+            v-if="showJumpToLatest && !searchActive"
+            class="log-jump-latest"
+            :label="
+              newLogsAvailable
+                ? t('ui.logs.action.new_lines', { count: unseenLines })
+                : t('ui.logs.action.jump_to_latest')
+            "
+            variant="primary"
+            size="compact"
+            @click="jumpToLatest"
+          />
+
+          <div
+            v-if="searchActive"
+            class="log-viewer log-search-results"
+            role="region"
+            :aria-label="t('ui.logs.viewer.search_aria_label')"
+            aria-live="off"
+            tabindex="0"
+          >
+            <article
+              v-for="result in searchResults"
+              :key="result.id"
+              :ref="setResultRef(result.id)"
+              class="log-search-result"
+              :class="{ 'log-search-result--active': result.id === activeMatchIndex }"
+              tabindex="0"
+              @click="setActiveMatch(result.id)"
+              @focus="setActiveMatch(result.id)"
             >
-              <span class="log-line__number" aria-hidden="true">{{ line.number }}</span>
-              <span class="log-line__severity" :data-tone="severityTone(line.severity)">
-                {{ severityLabel(line.severity) }}
-              </span>
-              <code>{{ line.text || ' ' }}</code>
-            </li>
-          </ol>
+              <header>{{ t('ui.logs.viewer.match_line', { line: result.line.number }) }}</header>
+              <ol :start="result.snippet[0]?.number">
+                <li
+                  v-for="line in result.snippet"
+                  :key="line.number"
+                  class="log-line"
+                  :data-severity="line.severity"
+                  :data-match-line="line.number === result.line.number || undefined"
+                >
+                  <span class="log-line__number" aria-hidden="true">{{ line.number }}</span>
+                  <span class="log-line__severity" :data-tone="severityTone(line.severity)">
+                    {{ severityLabel(line.severity) }}
+                  </span>
+                  <code>
+                    <template v-for="(segment, index) in lineSegments(line.text)" :key="index">
+                      <mark v-if="segment.match" class="log-match">{{ segment.text }}</mark>
+                      <template v-else>{{ segment.text }}</template>
+                    </template>
+                  </code>
+                </li>
+              </ol>
+            </article>
+          </div>
+
+          <div
+            v-else
+            ref="viewer"
+            class="log-viewer"
+            role="region"
+            :aria-label="t('ui.logs.viewer.aria_label')"
+            aria-live="off"
+            tabindex="0"
+            @scroll="onViewerScroll"
+          >
+            <ol :start="displayedLines[0]?.number">
+              <li
+                v-for="line in displayedLines"
+                :key="line.number"
+                class="log-line"
+                :data-severity="line.severity"
+              >
+                <span class="log-line__number" aria-hidden="true">{{ line.number }}</span>
+                <span class="log-line__severity" :data-tone="severityTone(line.severity)">
+                  {{ severityLabel(line.severity) }}
+                </span>
+                <code>{{ line.text || ' ' }}</code>
+              </li>
+            </ol>
+          </div>
         </div>
       </section>
     </div>
@@ -586,12 +843,76 @@ onBeforeUnmount(() => {
   color: var(--vs-color-text-secondary);
 }
 
+.log-viewer-shell {
+  position: relative;
+}
+
+.log-jump-latest {
+  position: absolute;
+  right: var(--vs-space-20);
+  bottom: var(--vs-space-20);
+  z-index: 3;
+  box-shadow: var(--vs-shadow-overlay);
+}
+
 .log-viewer {
   height: clamp(24rem, 62vh, 52rem);
   overflow: auto;
   background: var(--vs-color-bg-canvas);
   color: var(--vs-color-text-secondary);
   scrollbar-gutter: stable both-edges;
+}
+
+.log-search-results {
+  display: grid;
+  align-content: start;
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-12);
+}
+
+.log-search-result {
+  min-width: max-content;
+  overflow: clip;
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-raised);
+  cursor: pointer;
+}
+
+.log-search-result:hover,
+.log-search-result:focus-visible,
+.log-search-result--active {
+  border-color: var(--vs-color-border-strong);
+}
+
+.log-search-result:focus-visible {
+  outline: 2px solid var(--vs-color-accent-default);
+  outline-offset: 2px;
+}
+
+.log-search-result--active {
+  box-shadow: inset 3px 0 0 var(--vs-color-accent-default);
+}
+
+.log-search-result header {
+  position: sticky;
+  left: 0;
+  padding: var(--vs-space-8) var(--vs-space-12);
+  border-bottom: 1px solid var(--vs-color-border-subtle);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.log-search-result .log-line[data-match-line='true'] {
+  background: color-mix(in srgb, var(--vs-color-accent-default) 10%, transparent);
+}
+
+.log-match {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--vs-color-status-warning) 38%, transparent);
+  color: inherit;
+  font: inherit;
 }
 
 .log-viewer ol {
