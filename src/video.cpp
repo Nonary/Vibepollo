@@ -482,49 +482,42 @@ namespace video {
           state.pending_virtual_display_adapter_hint_ready_for_verification;
       }
       if (pending_virtual_display_adapter_hint) {
-        if (pending_virtual_display_adapter_hint_ready_for_verification) {
-          std::optional<LUID> observed_adapter;
-          std::string_view observed_source;
-          if (current_wgc_identity) {
-            observed_adapter = current_wgc_identity->luid;
-            observed_source = "wgc";
-          } else {
-            const auto mapped_output = display_device::map_output_name(active_output);
-            const auto output_adapter = platf::resolve_output_adapter(mapped_output);
-            if (output_adapter) {
-              observed_adapter = *output_adapter.luid;
-              observed_source = "dxgi";
-            }
-          }
-
-          if (observed_adapter &&
-              !platf::adapter_luid_equal(
-                *pending_virtual_display_adapter_hint,
-                *observed_adapter
-              )) {
-            return probe_adapter_identity_t {
-              .identity =
-                "pending-virtual-display-actual-mismatch=" +
-                luid_cache_identity(*pending_virtual_display_adapter_hint) + ':' +
-                luid_cache_identity(*observed_adapter),
-              .source =
-                "pending-virtual-display-" + std::string(observed_source) + "-mismatch",
-              .resolved = false,
-            };
-          }
-          if (observed_adapter) {
-            return probe_adapter_identity_t {
-              .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
-              .source =
-                "pending-virtual-display-adapter-confirmed-by-" +
-                std::string(observed_source),
-              .resolved = true,
-            };
+        std::optional<LUID> observed_adapter;
+        std::string_view observed_source;
+        if (current_wgc_identity) {
+          observed_adapter = current_wgc_identity->luid;
+          observed_source = "wgc";
+        } else {
+          const auto mapped_output = display_device::map_output_name(active_output);
+          const auto output_adapter = platf::resolve_output_adapter(mapped_output);
+          if (output_adapter) {
+            observed_adapter = *output_adapter.luid;
+            observed_source = "dxgi";
           }
         }
+
+        // The GPU actually backing the current output always owns the cache
+        // entry. A pending replacement LUID is only a bridge while Windows has
+        // not exposed any current adapter identity.
+        if (observed_adapter) {
+          const bool matches_pending = platf::adapter_luid_equal(
+            *pending_virtual_display_adapter_hint,
+            *observed_adapter
+          );
+          return probe_adapter_identity_t {
+            .identity = luid_cache_identity(*observed_adapter),
+            .source =
+              "pending-virtual-display-actual-" + std::string(observed_source) +
+              (matches_pending ? "-match" : "-mismatch"),
+            .resolved = true,
+          };
+        }
+
         return probe_adapter_identity_t {
           .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
-          .source = "pending-virtual-display-adapter",
+          .source = pending_virtual_display_adapter_hint_ready_for_verification ?
+                      "pending-virtual-display-adapter-awaiting-observation" :
+                      "pending-virtual-display-adapter-before-publication",
           .resolved = true,
         };
       }
