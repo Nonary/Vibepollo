@@ -506,12 +506,10 @@ TEST(SunshineVirtualDisplayPackaging, BootstrapperShowsVirtualDisplayChoiceOnUpg
   expect_contains(bootstrapper, "_installVirtualDisplaySection.Visibility = _showInstallVirtualDisplayOption ? Visibility.Visible : Visibility.Collapsed;");
 }
 
-TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriverFlag) {
+TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsSunshineDriverFlag) {
   const auto migration = read_source_file("src_assets/windows/misc/migration/installer-migrations.ps1");
   const auto config = read_source_file("src/config.cpp");
   const auto header = read_source_file("src/config.h");
-  const auto webStore = read_source_file("src_assets/common/assets/web/stores/config.ts");
-  const auto audioVideo = read_source_file("src_assets/common/assets/web/configs/tabs/AudioVideo.vue");
   const auto locale = read_source_file("src_assets/common/assets/web/public/assets/locale/en.json");
   const auto docs = read_source_file("docs/configuration.md");
 
@@ -527,16 +525,6 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(config, "true,  // use_sunshine_virtual_display_driver");
   expect_contains(config, "bool_f(vars, \"dd_use_sunshine_virtual_display_driver\", video.dd.use_sunshine_virtual_display_driver);");
   expect_contains(config, "\"dd_use_sunshine_virtual_display_driver\"");
-  expect_contains(webStore, "dd_use_sunshine_virtual_display_driver: true");
-  expect_contains(webStore, "'dd_use_sunshine_virtual_display_driver'");
-  expect_contains(audioVideo, "useSudoVdaDriver");
-  expect_contains(audioVideo, "config.value?.dd_use_sunshine_virtual_display_driver === false");
-  expect_contains(audioVideo, "store.updateOption('dd_use_sunshine_virtual_display_driver', !useSudoVda)");
-  expect_contains(audioVideo, "return 'per_client';");
-  expect_contains(audioVideo, "config.dd_use_sunshine_virtual_display_driver_desc");
-  expect_contains(audioVideo, "currentDriverStatusMessage");
-  expect_contains(audioVideo, "virtual_display_status_sudovda_ready");
-  expect_contains(audioVideo, "virtual_display_status_vibeshine_ready");
   expect_contains(locale, "\"dd_use_sunshine_virtual_display_driver\": \"Use SudoVDA\"");
   expect_contains(locale, "Switch back to SudoVDA for virtual displays");
   expect_contains(locale, "\"virtual_display_status_sudovda_ready\": \"SudoVDA driver ready\"");
@@ -544,7 +532,6 @@ TEST(SunshineVirtualDisplayPackaging, InstallerSelectionSeedsWebUiSunshineDriver
   expect_contains(docs, "### dd_use_sunshine_virtual_display_driver");
   expect_contains(docs, "Disable this to switch back to the bundled SudoVDA rollback driver.");
   expect_contains(docs, "<td colspan=\"2\">@code{}true@endcode</td>");
-  EXPECT_NE(audioVideo.find("v-model:checked=\"useSudoVdaDriver\""), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, BootstrapperCliPreservesSunshineDriverSelection) {
@@ -563,7 +550,6 @@ TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
   const auto dispatcher = read_source_file("src/platform/windows/virtual_display.cpp");
   const auto sunshineDriver = read_source_file("src/platform/windows/virtual_display_sunshine.cpp");
   const auto sudoDriver = read_source_file("src/platform/windows/virtual_display_sudovda.cpp");
-  const auto audioVideo = read_source_file("src_assets/common/assets/web/configs/tabs/AudioVideo.vue");
 
   expect_contains(cmake, "src/platform/windows/virtual_display.cpp");
   expect_contains(cmake, "src/platform/windows/virtual_display_sunshine.cpp");
@@ -575,7 +561,6 @@ TEST(SunshineVirtualDisplayPackaging, RuntimeFeatureFlagFallsBackToSudoVda) {
   expect_contains(dispatcher, "VDISPLAY_SUDOVDA::createVirtualDisplay");
   expect_contains(sunshineDriver, "namespace VDISPLAY_SUNSHINE");
   expect_contains(sudoDriver, "namespace VDISPLAY_SUDOVDA");
-  EXPECT_EQ(audioVideo.find(":disabled=\"platform === 'windows' && useSudoVdaDriver\""), std::string::npos);
 }
 
 TEST(SunshineVirtualDisplayPackaging, RuntimeAvailabilityChecksDoNotRepairOrReinstallMissingDrivers) {

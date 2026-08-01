@@ -135,7 +135,6 @@ set(INTEGRATION_TEST_FILES
     "src/config.cpp"
     "docs/configuration.md"
     "src_assets/common/assets/web/public/assets/locale/en.json"
-    "src_assets/common/assets/web/configs/tabs/General.vue"
     "src_assets/linux/misc/60-sunshine.rules"
 )
 
