@@ -620,14 +620,16 @@ onMounted(() => void load());
               <tr v-for="sessionItem in browserSessions" :key="sessionItem.id">
                 <td :data-label="t('ui.maintenance.sessions.browser')">
                   <div class="session-identity">
-                    <strong>{{ sessionName(sessionItem) }}</strong>
-                    <StatusBadge
-                      v-if="sessionItem.current"
-                      :label="t('ui.maintenance.sessions.thisBrowser')"
-                      tone="info"
-                      compact
-                    />
-                    <span v-else-if="sessionItem.remember_me">
+                    <div class="session-identity__title vs-cluster">
+                      <strong>{{ sessionName(sessionItem) }}</strong>
+                      <StatusBadge
+                        v-if="sessionItem.current"
+                        :label="t('ui.maintenance.sessions.thisBrowser')"
+                        tone="info"
+                        compact
+                      />
+                    </div>
+                    <span v-if="!sessionItem.current && sessionItem.remember_me">
                       {{ t('ui.maintenance.sessions.rememberedDevice') }}
                     </span>
                   </div>
@@ -811,8 +813,8 @@ onMounted(() => void load());
   display: block;
 }
 
-.crash-summary span,
-.session-identity span {
+.crash-summary > span,
+.session-identity > span {
   margin-top: var(--vs-space-2);
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-helper);
@@ -822,8 +824,8 @@ onMounted(() => void load());
   min-width: 13rem;
 }
 
-.session-identity strong {
-  margin-inline-end: var(--vs-space-8);
+.session-identity__title {
+  --vs-cluster-gap: var(--vs-space-8);
 }
 
 .credentials-form,

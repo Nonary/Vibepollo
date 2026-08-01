@@ -192,8 +192,15 @@
 
 .vs-status-badge--compact {
   min-block-size: 1.375rem;
-  padding-block: 0;
+  gap: var(--vs-space-4);
+  padding: 0 var(--vs-space-8);
   font-size: var(--vs-type-size-helper);
+  line-height: var(--vs-type-line-height-helper);
+}
+
+.vs-status-badge--compact .vs-status-badge__icon {
+  inline-size: var(--vs-size-icon-inline);
+  block-size: var(--vs-size-icon-inline);
 }
 
 .vs-status-badge--info {

@@ -579,10 +579,10 @@ onMounted(() => void load());
                 <label class="settings-row__copy" :for="`setting-${field.key}`">
                   <span class="settings-row__label">
                     {{ fieldLabel(field) }}
-                    <StatusBadge v-if="field.recommended" tone="success">
+                    <StatusBadge v-if="field.recommended" tone="success" compact>
                       {{ t('ui.settings.recommended') }}
                     </StatusBadge>
-                    <StatusBadge v-if="field.restartRequired" tone="warning">
+                    <StatusBadge v-if="field.restartRequired" tone="warning" compact>
                       {{ t('ui.settings.restart') }}
                     </StatusBadge>
                   </span>
@@ -956,7 +956,9 @@ onMounted(() => void load());
 .settings-row__label {
   display: flex;
   align-items: center;
-  gap: var(--vs-space-8);
+  flex-wrap: wrap;
+  column-gap: var(--vs-space-8);
+  row-gap: var(--vs-space-4);
   color: var(--vs-color-text-primary);
   font-weight: 600;
 }

@@ -13,6 +13,10 @@
         "saving": "Saving",
         "tryAgain": "Try again"
       },
+      "advanced": {
+        "description": "Optional launch, display, automation, and compatibility controls. Existing values stay intact unless you change them.",
+        "summary": "Customize launch, display, and compatibility"
+      },
       "alerts": {
         "correctFields": "Correct the highlighted fields",
         "expertDescription": "Removing a property here removes it from the saved application. Guided fields above always take precedence over duplicate keys.",
@@ -134,7 +138,8 @@
           "label": "Target frame rate"
         },
         "name": {
-          "help": "Shown in Artemis and this library."
+          "help": "Type a custom name or search the installed games from Playnite.",
+          "label": "Application or Playnite game"
         },
         "output": {
           "label": "Output identifier"
@@ -151,6 +156,26 @@
           "description": "Keep the session active until all launched processes exit.",
           "label": "Wait for every process"
         }
+      },
+      "framegenHealth": {
+        "appOutputNotFound": "The configured display output could not be found, so this check will not inspect a different display.",
+        "captureAutoUnknown": "Capture is automatic, but this form cannot determine the selected display path.",
+        "captureConfigured": "{capture} is selected. Verify the live stream if this application needs a specific capture path.",
+        "configured": "Configured",
+        "displayTargetLabel": "Display target",
+        "displayTargetUnknown": "The saved host settings do not identify a display target. Check the host virtual-display mode before streaming.",
+        "gameProvidedVirtualCapture": "Virtual game-provided frame generation forces Windows Graphics Capture when the stream starts.",
+        "physicalCaptureDdx": "Desktop Duplication is selected for a physical display. The live stream determines its exact frame-generation pacing.",
+        "physicalCaptureDefault": "Physical-display frame generation uses Desktop Duplication when no capture method is selected.",
+        "physicalDisplayConfigured": "This display reports up to {hz} Hz. The required frame-generation refresh is negotiated from the client FPS when streaming.",
+        "physicalDisplayCapabilitiesOnly": "This display's EDID reports the listed refresh capabilities. The negotiated stream target still depends on client FPS.",
+        "physicalDisplayLabel": "Physical display configuration",
+        "refreshCapabilitiesTitle": "Reported refresh capabilities",
+        "refreshCapability": "{hz} Hz: {status}",
+        "rtssOptional": "RTSS is optional for this frame-generation mode; it is not required for game-provided or NVIDIA frame generation.",
+        "virtualCaptureDdx": "Desktop Duplication is explicitly selected. A virtual display needs Windows Graphics Capture for this frame-generation mode.",
+        "virtualDisplayConfigured": "This app is configured to request a virtual display. Its driver and stream refresh are created at launch, so this editor cannot verify them yet.",
+        "virtualDisplayLabel": "Virtual display configuration"
       },
       "loading": "Loading application",
       "options": {
@@ -195,6 +220,16 @@
         "addTitle": "Add application",
         "editDescription": "Edit how this application launches and streams.",
         "fallbackTitle": "Application"
+      },
+      "playnite": {
+        "browse": "Browse Playnite games",
+        "empty": "No installed Playnite games match this name.",
+        "linkedHelp": "This entry will launch through its linked Playnite game.",
+        "loadFailed": "Unable to load Playnite games. Check that the Playnite integration is installed and active.",
+        "loading": "Loading Playnite games...",
+        "resultsLabel": "Matching Playnite games",
+        "unavailable": "Playnite game search is unavailable because its integration is not installed or active.",
+        "useCustom": "Use a custom application"
       },
       "prep": {
         "after": "Run after exit",
