@@ -1675,6 +1675,7 @@ namespace nvhttp {
       launch_session->lossless_scaling_target_fps.reset();
       launch_session->lossless_scaling_rtss_limit.reset();
       launch_session->frame_generation_provider = "lossless-scaling";
+      launch_session->client_vrr_requested = false;
 #ifdef _WIN32
 #endif
       const auto identity_uuid = resolved_client_identity ? resolved_client_identity->uuid : (verified_client ? verified_client->uuid : std::string());
@@ -1934,6 +1935,7 @@ namespace nvhttp {
       launch_session->surround_params = (get_arg(args, "surroundParams", ""));
       launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+      launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
       launch_session->prefer_sdr_10bit = verified_client->prefer_10bit_sdr;
 #ifdef _WIN32
       {

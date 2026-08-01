@@ -2272,6 +2272,17 @@ namespace platf::dxgi {
       amf_cfg.max_ltr_frames = config::video.amd.amd_ltr_frames;  // 0 = RFI off
       if (config::video.amd.amd_input_queue_size > 0) {
         amf_cfg.input_queue_size = config::video.amd.amd_input_queue_size;
+        if (client_config.vrr_low_latency && config::video.amd.amd_input_queue_size > 1) {
+          BOOST_LOG(info) << "AMF: explicit input queue size "
+                          << config::video.amd.amd_input_queue_size
+                          << " overrides the VRR low-latency queue request";
+        }
+      } else if (client_config.vrr_low_latency) {
+        // Queue depth 1 is the lowest-latency AMF path, but some drivers need
+        // a larger explicit host setting for stability. Respect that override
+        // above and otherwise make this tradeoff only for negotiated VRR.
+        amf_cfg.input_queue_size = 1;
+        BOOST_LOG(info) << "AMF: using input queue size 1 for VRR low-latency mode";
       }
 
       // Xbox clients request rolling intra refresh because they cannot always

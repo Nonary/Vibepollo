@@ -196,6 +196,7 @@ namespace rtsp_stream {
     snapshot->enable_hdr = enable_hdr;
     snapshot->prefer_sdr_10bit = prefer_sdr_10bit;
     snapshot->force_sdr = force_sdr;
+    snapshot->client_vrr_requested = client_vrr_requested;
     snapshot->perm = perm;
     snapshot->fps = fps;
     // Copied, not moved: the io_context thread still owns the original session.
@@ -1674,6 +1675,7 @@ namespace rtsp_stream {
       config.monitor.dynamicRange = (int) util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
+      config.monitor.vrr_low_latency = session->client_vrr_requested;
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session->fps;
@@ -1776,6 +1778,10 @@ namespace rtsp_stream {
     }
 
     config.audio.input_only = session->input_only;
+
+    if (config.monitor.vrr_low_latency) {
+      BOOST_LOG(info) << "Client requested VRR low-latency stream policy";
+    }
 
     const bool prefer_10bit_sdr = effective_10bit_sdr_requested(*session);
     const bool hevc_main10 = config.monitor.videoFormat == 1 && video::active_hevc_mode >= 3;

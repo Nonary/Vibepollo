@@ -64,6 +64,9 @@ namespace video {
 
     int encodingFramerate;  // Requested display framerate
     bool input_only;
+    // Opt into the smallest supported host-side queues for a launch-qualified VRR
+    // session. This remains false for clients that do not negotiate the mode.
+    bool vrr_low_latency = false;
     // Original client-requested wire-bandwidth budget in Kbps, before Sunshine
     // subtracts FEC/audio/control overhead from `bitrate` for the encoder.
     // Same as `bitrate` for clients that don't send maximumBitrateKbps.

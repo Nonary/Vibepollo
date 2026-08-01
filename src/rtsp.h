@@ -86,6 +86,9 @@ namespace rtsp_stream {
     // Explicit HDR-off override. Unlike prefer_sdr_10bit, this does not request Main10.
     bool force_sdr = false;
     bool enable_sops;
+    // Moonlight's VRR request passed its launch-time VSync, display-refresh,
+    // and adaptive-headroom checks. The renderer may still fall back later.
+    bool client_vrr_requested = false;
     bool client_display_mode_override;
     // Exact refresh requested by a per-client display-mode override, expressed
     // in millihertz. The existing fps field remains the legacy stream cadence.

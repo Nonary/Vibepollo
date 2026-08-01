@@ -91,8 +91,11 @@ namespace platf::dxgi {
       return kWgcLowLatencyInitialBufferSize;
     }
 
-    uint32_t wgc_max_frame_buffer_size() {
-      return kWgcAdaptiveMaxBufferSize;
+    uint32_t wgc_max_frame_buffer_size(const ::video::config_t &config) {
+      // A launch-qualified VRR session explicitly trades burst resilience for
+      // newest-frame latency. Other sessions retain adaptive growth to two.
+      return config.vrr_low_latency ?
+        kWgcLowLatencyInitialBufferSize : kWgcAdaptiveMaxBufferSize;
     }
 
     struct frame_metadata_snapshot_t {
@@ -331,7 +334,7 @@ namespace platf::dxgi {
     config_data.target_fps = wgc_target_fps(_config);
     config_data.flags = wgc_ipc_flags(_config);
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
-    config_data.max_frame_buffer_size = wgc_max_frame_buffer_size();
+    config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
 
     // Convert display_name (std::string) to wchar_t[32]
     if (!_display_name.empty()) {
