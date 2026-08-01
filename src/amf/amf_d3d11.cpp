@@ -217,6 +217,8 @@ namespace amf {
     rfi_enabled = false;
     preanalysis_enabled = false;
     preanalysis_lookahead_depth = 0;
+    configured_rate_control_mode.reset();
+    skip_frame_control_verified = false;
 
     const bool suppress_preanalysis_for_10bit = colorspace.bit_depth == 10;
     if (suppress_preanalysis_for_10bit &&
@@ -282,13 +284,46 @@ namespace amf {
       }
       return true;
     };
+    enum class optional_property_result_e {
+      applied,
+      unavailable,
+      failed,
+    };
+    auto is_definitely_unavailable = [](AMF_RESULT result) {
+      return result == AMF_ACCESS_DENIED || result == AMF_NOT_IMPLEMENTED ||
+             result == AMF_NOT_SUPPORTED || result == AMF_NOT_FOUND;
+    };
+    auto set_optional_property = [&](const wchar_t *property, auto requested, const char *label, bool invalid_arg_can_mean_unavailable) {
+      const auto set_result = encoder->SetProperty(property, requested);
+      decltype(requested) applied {};
+      const auto get_result = encoder->GetProperty(property, &applied);
+      // INVALID_ARG is ambiguous, so only classify it as an unavailable optional
+      // property when both operations reject the property identically. This is
+      // the old-VCE signature from the affected RX 580, not a blanket exemption
+      // for bad values, types, modes, or lifecycle ordering.
+      const bool invalid_arg_means_unavailable = invalid_arg_can_mean_unavailable &&
+                                                 set_result == AMF_INVALID_ARG &&
+                                                 get_result == AMF_INVALID_ARG;
+      if (is_definitely_unavailable(set_result) || invalid_arg_means_unavailable) {
+        BOOST_LOG(info) << "AMF: " << label << " is unavailable on this runtime"
+                        << " (set=" << set_result << ", get=" << get_result
+                        << "); continuing with the driver default";
+        return optional_property_result_e::unavailable;
+      }
+      if (set_result != AMF_OK || get_result != AMF_OK || applied != requested) {
+        BOOST_LOG(warning) << "AMF: failed to apply " << label << " (requested=" << requested
+                           << ", applied=" << applied << ", set=" << set_result
+                           << ", get=" << get_result << ')';
+        return optional_property_result_e::failed;
+      }
+      return optional_property_result_e::applied;
+    };
     auto set_optional_max_au_size = [&](const wchar_t *property, amf_int64 requested, const char *label) {
       const auto set_result = encoder->SetProperty(property, requested);
-      // A runtime refuses a supplemental property three different ways: ACCESS_DENIED when the
-      // component registered it as private, NOT_SUPPORTED when this encoder cannot honor it, and
-      // NOT_FOUND when the property was never registered at all. All three mean the cap does not
-      // exist for us; only other results indicate a genuine failure to apply it.
-      if (set_result == AMF_ACCESS_DENIED || set_result == AMF_NOT_SUPPORTED || set_result == AMF_NOT_FOUND) {
+      // A runtime can refuse a supplemental property as private, unimplemented,
+      // unsupported, or absent. Those outcomes mean the optional cap does not
+      // exist for us; only other results indicate a genuine application failure.
+      if (is_definitely_unavailable(set_result)) {
         BOOST_LOG(info) << "AMF: " << label << " is unavailable on this runtime"
                         << " (set=" << set_result << "); continuing without the optional cap";
         return true;
@@ -539,11 +574,17 @@ namespace amf {
         nullptr);
 
       // High motion quality boost
-      if (config.high_motion_quality_boost_enable &&
-          !set_verified_bool(
-            AMF_VIDEO_ENCODER_HIGH_MOTION_QUALITY_BOOST_ENABLE,
-            *config.high_motion_quality_boost_enable,
-            "H.264 high-motion quality boost")) return false;
+      if (config.high_motion_quality_boost_enable) {
+        const auto result = set_optional_property(
+          AMF_VIDEO_ENCODER_HIGH_MOTION_QUALITY_BOOST_ENABLE,
+          static_cast<amf_bool>(*config.high_motion_quality_boost_enable),
+          "H.264 high-motion quality boost",
+          true
+        );
+        if (result == optional_property_result_e::failed) {
+          return false;
+        }
+      }
 
       // Intra refresh
       if (config.intra_refresh_mbs &&
@@ -635,11 +676,17 @@ namespace amf {
         nullptr);
 
       // High motion quality boost
-      if (config.high_motion_quality_boost_enable &&
-          !set_verified_bool(
-            AMF_VIDEO_ENCODER_HEVC_HIGH_MOTION_QUALITY_BOOST_ENABLE,
-            *config.high_motion_quality_boost_enable,
-            "HEVC high-motion quality boost")) return false;
+      if (config.high_motion_quality_boost_enable) {
+        const auto result = set_optional_property(
+          AMF_VIDEO_ENCODER_HEVC_HIGH_MOTION_QUALITY_BOOST_ENABLE,
+          static_cast<amf_bool>(*config.high_motion_quality_boost_enable),
+          "HEVC high-motion quality boost",
+          true
+        );
+        if (result == optional_property_result_e::failed) {
+          return false;
+        }
+      }
 
       // Intra refresh
       if (config.intra_refresh_mbs &&
@@ -708,11 +755,17 @@ namespace amf {
           !set_verified_bool(AMF_VIDEO_ENCODER_AV1_FORCE_INTEGER_MV, *config.av1_force_integer_mv, "AV1 integer motion vectors")) return false;
 
       // AV1 high motion quality boost
-      if (config.high_motion_quality_boost_enable &&
-          !set_verified_bool(
-            AMF_VIDEO_ENCODER_AV1_HIGH_MOTION_QUALITY_BOOST,
-            *config.high_motion_quality_boost_enable,
-            "AV1 high-motion quality boost")) return false;
+      if (config.high_motion_quality_boost_enable) {
+        const auto result = set_optional_property(
+          AMF_VIDEO_ENCODER_AV1_HIGH_MOTION_QUALITY_BOOST,
+          static_cast<amf_bool>(*config.high_motion_quality_boost_enable),
+          "AV1 high-motion quality boost",
+          true
+        );
+        if (result == optional_property_result_e::failed) {
+          return false;
+        }
+      }
 
       // The codec-unqualified amd_vbaq setting maps to AV1 content-adaptive
       // quantization. PAQ remains a fallback for callers that configure the
@@ -760,31 +813,50 @@ namespace amf {
     }
 
     // AMD's TranscodePipeline sample sets rate control before enabling PA because
-    // PA property application can otherwise fail. Keep that dependency ordering
-    // and verify the complete pair. A driver that rejects either property fails
-    // this native session so the upper layer can choose legacy AMF without
-    // silently changing modes.
+    // PA property application can otherwise fail. Keep that dependency ordering.
+    // Older VCE runtimes can deny the default latency-constrained mode even though
+    // their usage preset provides a working streaming rate control. In that case,
+    // leave this optional override unset and verify only modes the runtime accepted.
     const int requested_depth = preanalysis_plan.enabled ?
                                   std::max(1, config.pa_lookahead_depth.value_or(preanalysis_plan.lookahead_depth)) :
                                   0;
-    if (!lifecycle::apply_rate_control_and_preanalysis(
-          effective_rc_mode,
-          config.preanalysis.has_value() || preanalysis_plan.enabled ||
-            suppress_preanalysis_for_10bit,
-          preanalysis_plan,
-          requested_depth,
-          [&](int value) {
-            return set_verified_int64(rate_control_property, value, "rate-control mode");
-          },
-          [&](bool value) {
-            return set_verified_bool(preanalysis_property, value, "PreAnalysis");
-          },
-          [&](int value) {
-            return set_verified_int64(AMF_PA_LOOKAHEAD_BUFFER_DEPTH, value, "PreAnalysis lookahead depth");
-          })) {
-      return false;
+    if (effective_rc_mode) {
+      const auto requested_mode = *effective_rc_mode;
+      const auto result = set_optional_property(
+        rate_control_property,
+        static_cast<amf_int64>(requested_mode),
+        "rate-control mode",
+        true
+      );
+      if (result == optional_property_result_e::failed) {
+        return false;
+      }
+      if (result == optional_property_result_e::unavailable) {
+        // PA-dependent modes are a coupled feature request and cannot be replaced
+        // by an unknown driver default without changing their semantics.
+        if (lifecycle::rate_control_requires_preanalysis(requested_mode)) {
+          BOOST_LOG(warning) << "AMF: rate-control mode " << requested_mode
+                             << " requires PreAnalysis and cannot fall back to the usage-preset default";
+          return false;
+        }
+        user_configured_rate_control = false;
+        BOOST_LOG(warning) << "AMF: rate-control mode " << requested_mode
+                           << " is unavailable; using the encoder usage-preset default";
+      } else {
+        configured_rate_control_mode = requested_mode;
+      }
     }
     if (preanalysis_plan.enabled) {
+      if (!set_verified_bool(preanalysis_property, true, "PreAnalysis")) {
+        return false;
+      }
+      if (!set_verified_int64(
+            AMF_PA_LOOKAHEAD_BUFFER_DEPTH,
+            requested_depth,
+            "PreAnalysis lookahead depth"
+          )) {
+        return false;
+      }
       preanalysis_enabled = true;
       preanalysis_lookahead_depth = requested_depth;
     }
@@ -795,13 +867,20 @@ namespace amf {
     const wchar_t *skip_frame_property = video_format == 0 ? AMF_VIDEO_ENCODER_RATE_CONTROL_SKIP_FRAME_ENABLE :
                                            video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_SKIP_FRAME_ENABLE :
                                                                AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_SKIP_FRAME;
-    if (!set_verified_bool(skip_frame_property, false, "rate-control frame skipping")) {
+    const auto skip_frame_result = set_optional_property(
+      skip_frame_property,
+      static_cast<amf_bool>(false),
+      "rate-control frame skipping",
+      true
+    );
+    if (skip_frame_result == optional_property_result_e::failed) {
       return false;
     }
+    skip_frame_control_verified = skip_frame_result == optional_property_result_e::applied;
 
     // Gate on the mode that was actually written: a 10-bit demotion away from
     // QVBR makes the quality level meaningless and some runtimes reject it.
-    if (config.qvbr_quality_level && effective_rc_mode && *effective_rc_mode == 4) {
+    if (config.qvbr_quality_level && configured_rate_control_mode && *configured_rate_control_mode == 4) {
       const wchar_t *qvbr_quality_property = video_format == 0 ? AMF_VIDEO_ENCODER_QVBR_QUALITY_LEVEL :
                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_QVBR_QUALITY_LEVEL :
                                                                    AMF_VIDEO_ENCODER_AV1_QVBR_QUALITY_LEVEL;
@@ -985,66 +1064,53 @@ namespace amf {
     }
 
     // Some runtimes accept a property before Init but substitute a different
-    // value while constructing the hardware pipeline. Verify the semantic pair
-    // again after Init so probing cannot advertise a mode the driver did not keep.
-    const bool suppress_preanalysis_for_10bit = colorspace.bit_depth == 10;
-    const auto applied_preanalysis_plan = lifecycle::resolve_preanalysis(
-      config.rc_mode,
-      config.preanalysis,
-      suppress_preanalysis_for_10bit);
-    // Verify against the mode configure_encoder actually requested. On a 10-bit
-    // session that is the PA-free demotion, not config.rc_mode; comparing the
-    // readback against the raw request would fail our own substitution closed.
-    const auto effective_rc_mode = lifecycle::effective_rate_control(
-      config.rc_mode,
-      suppress_preanalysis_for_10bit);
-    if (config.preanalysis || applied_preanalysis_plan.enabled ||
-        suppress_preanalysis_for_10bit) {
+    // value while constructing the hardware pipeline. Verify only properties
+    // that configure_encoder() successfully applied; unavailable old-VCE
+    // controls were deliberately left at their usage-preset defaults.
+    if (preanalysis_enabled) {
       const wchar_t *preanalysis_property = video_format == 0 ? AMF_VIDEO_ENCODER_PRE_ANALYSIS_ENABLE :
                                             video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_PRE_ANALYSIS_ENABLE :
                                                                 AMF_VIDEO_ENCODER_AV1_PRE_ANALYSIS_ENABLE;
       amf_bool applied_preanalysis = false;
       const auto preanalysis_result = encoder->GetProperty(preanalysis_property, &applied_preanalysis);
-      if (preanalysis_result != AMF_OK || static_cast<bool>(applied_preanalysis) != applied_preanalysis_plan.enabled) {
+      if (preanalysis_result != AMF_OK || !static_cast<bool>(applied_preanalysis)) {
         BOOST_LOG(error) << "AMF: driver changed the requested PreAnalysis state after Init"
-                         << " (requested=" << applied_preanalysis_plan.enabled
+                         << " (requested=true"
                          << ", applied=" << static_cast<bool>(applied_preanalysis)
                          << ", result=" << preanalysis_result << ')';
         return false;
       }
-      if (applied_preanalysis_plan.enabled) {
-        // PAEngineType is optional and defaults to automatic selection. Older
-        // AMF runtimes do not expose it through the integrated encoder and
-        // return AMF_INVALID_ARG when it is set or queried. Do not turn an
-        // implementation-specific optimization hint into a codec failure.
-        amf_int64 applied_engine_type = AMF_MEMORY_UNKNOWN;
-        const auto engine_result = encoder->GetProperty(AMF_PA_ENGINE_TYPE, &applied_engine_type);
-        if (engine_result == AMF_OK) {
-          BOOST_LOG(debug) << "AMF: driver-selected PreAnalysis engine=" << applied_engine_type;
-        } else {
-          BOOST_LOG(debug) << "AMF: runtime does not expose the optional PreAnalysis engine"
-                           << " (result=" << engine_result << ')';
-        }
-        amf_int64 applied_depth = 0;
-        const auto depth_result = encoder->GetProperty(AMF_PA_LOOKAHEAD_BUFFER_DEPTH, &applied_depth);
-        if (depth_result != AMF_OK || applied_depth != preanalysis_lookahead_depth) {
-          BOOST_LOG(error) << "AMF: driver changed the requested PreAnalysis depth after Init"
-                           << " (requested=" << preanalysis_lookahead_depth << ", applied=" << applied_depth
-                           << ", result=" << depth_result << ')';
-          return false;
-        }
+      // PAEngineType is optional and defaults to automatic selection. Older
+      // AMF runtimes do not expose it through the integrated encoder and
+      // return AMF_INVALID_ARG when it is set or queried. Do not turn an
+      // implementation-specific optimization hint into a codec failure.
+      amf_int64 applied_engine_type = AMF_MEMORY_UNKNOWN;
+      const auto engine_result = encoder->GetProperty(AMF_PA_ENGINE_TYPE, &applied_engine_type);
+      if (engine_result == AMF_OK) {
+        BOOST_LOG(debug) << "AMF: driver-selected PreAnalysis engine=" << applied_engine_type;
+      } else {
+        BOOST_LOG(debug) << "AMF: runtime does not expose the optional PreAnalysis engine"
+                         << " (result=" << engine_result << ')';
+      }
+      amf_int64 applied_depth = 0;
+      const auto depth_result = encoder->GetProperty(AMF_PA_LOOKAHEAD_BUFFER_DEPTH, &applied_depth);
+      if (depth_result != AMF_OK || applied_depth != preanalysis_lookahead_depth) {
+        BOOST_LOG(error) << "AMF: driver changed the requested PreAnalysis depth after Init"
+                         << " (requested=" << preanalysis_lookahead_depth << ", applied=" << applied_depth
+                         << ", result=" << depth_result << ')';
+        return false;
       }
     }
 
-    if (effective_rc_mode) {
+    if (configured_rate_control_mode) {
       const wchar_t *rate_control_property = video_format == 0 ? AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD :
                                              video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD :
                                                                  AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD;
       amf_int64 applied_rate_control = -1;
       const auto rate_control_result = encoder->GetProperty(rate_control_property, &applied_rate_control);
-      if (rate_control_result != AMF_OK || applied_rate_control != *effective_rc_mode) {
+      if (rate_control_result != AMF_OK || applied_rate_control != *configured_rate_control_mode) {
         BOOST_LOG(error) << "AMF: driver changed the requested rate-control mode after Init"
-                         << " (requested=" << *effective_rc_mode << ", applied=" << applied_rate_control
+                         << " (requested=" << *configured_rate_control_mode << ", applied=" << applied_rate_control
                          << ", result=" << rate_control_result << ')';
         return false;
       }
@@ -1071,7 +1137,7 @@ namespace amf {
     }
 
     const bool adaptive_quantization_supported_after_init =
-      lifecycle::rate_control_supports_adaptive_quantization(effective_rc_mode);
+      lifecycle::rate_control_supports_adaptive_quantization(configured_rate_control_mode);
     if (!adaptive_quantization_supported_after_init) {
       if (video_format == 2) {
         amf_int64 applied_aq_mode = AMF_VIDEO_ENCODER_AV1_AQ_MODE_CAQ;
@@ -1095,7 +1161,7 @@ namespace amf {
       }
     }
 
-    {
+    if (skip_frame_control_verified) {
       const wchar_t *skip_frame_property = video_format == 0 ? AMF_VIDEO_ENCODER_RATE_CONTROL_SKIP_FRAME_ENABLE :
                                              video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_SKIP_FRAME_ENABLE :
                                                                  AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_SKIP_FRAME;
@@ -1111,7 +1177,7 @@ namespace amf {
 
     // Mirrors the configure-time gate: the QVBR quality level is only written,
     // and therefore only verifiable, when QVBR survived the 10-bit demotion.
-    if (config.qvbr_quality_level && effective_rc_mode && *effective_rc_mode == 4) {
+    if (config.qvbr_quality_level && configured_rate_control_mode && *configured_rate_control_mode == 4) {
       const wchar_t *qvbr_quality_property = video_format == 0 ? AMF_VIDEO_ENCODER_QVBR_QUALITY_LEVEL :
                                                video_format == 1 ? AMF_VIDEO_ENCODER_HEVC_QVBR_QUALITY_LEVEL :
                                                                    AMF_VIDEO_ENCODER_AV1_QVBR_QUALITY_LEVEL;
@@ -1331,6 +1397,8 @@ namespace amf {
     preanalysis_enabled = false;
     preanalysis_lookahead_depth = 0;
     query_timeout_supported = false;
+    configured_rate_control_mode.reset();
+    skip_frame_control_verified = false;
     encoder_input_queue_size = lifecycle::default_amf_input_queue_size;
     input_surface_desc = {};
 
