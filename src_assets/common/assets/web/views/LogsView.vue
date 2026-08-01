@@ -68,8 +68,11 @@ const notice = ref('');
 const lastLoaded = ref<number | null>(null);
 const viewer = ref<HTMLElement | null>(null);
 const activeMatchIndex = ref(0);
+const selectedLineNumber = ref<number | null>(null);
+const highlightedLineNumber = ref<number | null>(null);
 const resultRefs = new Map<number, HTMLElement>();
 let refreshTimer: number | undefined;
+let highlightTimer: number | undefined;
 let latestRequest = 0;
 
 const searchContextLines = 5;
@@ -159,7 +162,14 @@ const searchResults = computed<LogSearchResult[]>(() => {
   }));
 });
 
-const displayedLines = computed(() => filteredLines.value.slice(-5000));
+const displayedLines = computed(() => {
+  const lines = filteredLines.value;
+  if (selectedLineNumber.value === null || searchActive.value) return lines.slice(-5000);
+  const targetIndex = lines.findIndex((line) => line.number === selectedLineNumber.value);
+  if (targetIndex < 0) return lines.slice(-5000);
+  const start = Math.max(0, Math.min(targetIndex - 2500, lines.length - 5000));
+  return lines.slice(start, start + 5000);
+});
 const omittedLines = computed(() => filteredLines.value.length - displayedLines.value.length);
 
 const counts = computed(() => {
@@ -262,6 +272,8 @@ async function scrollToLatest(): Promise<void> {
 }
 
 async function jumpToLatest(): Promise<void> {
+  selectedLineNumber.value = null;
+  highlightedLineNumber.value = null;
   rawText.value = latestText.value;
   autoscroll.value = true;
   await scrollToLatest();
@@ -293,6 +305,31 @@ function setActiveMatch(index: number): void {
   void nextTick(() => {
     resultRefs.get(activeMatchIndex.value)?.scrollIntoView({ block: 'center' });
   });
+}
+
+async function openSearchResult(index: number): Promise<void> {
+  const lineIndex = matchingLineIndexes.value[index];
+  const lineNumber = lineIndex === undefined ? undefined : allLines.value[lineIndex]?.number;
+  if (lineNumber === undefined) return;
+
+  activeMatchIndex.value = index;
+  selectedLineNumber.value = lineNumber;
+  highlightedLineNumber.value = lineNumber;
+  autoscroll.value = false;
+  search.value = '';
+
+  await nextTick();
+  const element = viewer.value;
+  const line = element?.querySelector<HTMLElement>(`[data-log-line="${lineNumber}"]`);
+  if (!element || !line) return;
+  element.scrollTop = line.offsetTop - element.clientHeight / 2 + line.offsetHeight / 2;
+  isAtBottom.value = isNearBottom(element);
+
+  if (highlightTimer !== undefined) window.clearTimeout(highlightTimer);
+  highlightTimer = window.setTimeout(() => {
+    if (highlightedLineNumber.value === lineNumber) highlightedLineNumber.value = null;
+    highlightTimer = undefined;
+  }, 3000);
 }
 
 function lineSegments(line: string): LogSegment[] {
@@ -404,6 +441,8 @@ watch(source, () => {
   autoscroll.value = true;
   isAtBottom.value = true;
   activeMatchIndex.value = 0;
+  selectedLineNumber.value = null;
+  highlightedLineNumber.value = null;
   loading.value = true;
   error.value = '';
   void refreshLogs();
@@ -419,7 +458,16 @@ watch(autoscroll, (enabled) => {
 
 watch(normalizedSearch, (value) => {
   activeMatchIndex.value = 0;
-  if (value) autoscroll.value = false;
+  if (value) {
+    selectedLineNumber.value = null;
+    highlightedLineNumber.value = null;
+    autoscroll.value = false;
+  }
+});
+
+watch(severity, () => {
+  selectedLineNumber.value = null;
+  highlightedLineNumber.value = null;
 });
 
 watch(matchingLineIndexes, (matches) => {
@@ -437,6 +485,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   latestRequest += 1;
   if (refreshTimer !== undefined) window.clearInterval(refreshTimer);
+  if (highlightTimer !== undefined) window.clearTimeout(highlightTimer);
 });
 </script>
 
@@ -677,7 +726,7 @@ onBeforeUnmount(() => {
               class="log-search-result"
               :class="{ 'log-search-result--active': result.id === activeMatchIndex }"
               tabindex="0"
-              @click="setActiveMatch(result.id)"
+              @click="openSearchResult(result.id)"
               @focus="setActiveMatch(result.id)"
             >
               <header>{{ t('ui.logs.viewer.match_line', { line: result.line.number }) }}</header>
@@ -719,7 +768,9 @@ onBeforeUnmount(() => {
                 v-for="line in displayedLines"
                 :key="line.number"
                 class="log-line"
+                :class="{ 'log-line--highlighted': line.number === highlightedLineNumber }"
                 :data-severity="line.severity"
+                :data-log-line="line.number"
               >
                 <span class="log-line__number" aria-hidden="true">{{ line.number }}</span>
                 <span class="log-line__severity" :data-tone="severityTone(line.severity)">
@@ -943,6 +994,12 @@ onBeforeUnmount(() => {
 .log-line[data-severity='warning'] {
   border-left-color: var(--vs-color-status-warning);
   background: color-mix(in srgb, var(--vs-color-status-warning) 6%, transparent);
+}
+
+.log-line--highlighted,
+.log-line--highlighted[data-severity] {
+  background: color-mix(in srgb, var(--vs-color-accent-default) 20%, transparent);
+  box-shadow: inset 0 0 0 2px var(--vs-color-accent-default);
 }
 
 .log-line__number {
