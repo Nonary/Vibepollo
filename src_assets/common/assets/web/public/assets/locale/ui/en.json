@@ -1220,6 +1220,10 @@
         "dd_configuration_option": {
           "description": "Choose how Vibepollo prepares the selected display before a stream."
         },
+        "dd_config_revert_on_disconnect": {
+          "description": "Restore the physical desktop as soon as the last client disconnects instead of keeping the virtual screen ready for reconnection.",
+          "label": "Restore when the client disconnects"
+        },
         "dd_hdr_option": {
           "description": "Follow the client HDR request when the selected display supports it."
         },
@@ -1231,6 +1235,14 @@
         },
         "dd_manual_resolution": {
           "description": "Use WIDTHxHEIGHT, for example 2560x1440."
+        },
+        "dd_mode_remapping": {
+          "description": "Use a different resolution on the streaming display when the client requests a specific size.",
+          "label": "Resolution overrides"
+        },
+        "dd_paused_virtual_display_timeout_secs": {
+          "description": "Remove a paused session's virtual display after this many seconds. 0 keeps it available until the stream resumes or the application exits.",
+          "label": "Paused virtual-display timeout (seconds)"
         },
         "dd_refresh_rate_option": {
           "description": "Match the client request, prefer the highest compatible rate, or use a fixed value."
@@ -1246,15 +1258,26 @@
           "description": "Adjust interface size without changing the resolution requested by the client.",
           "label": "Windows scaling"
         },
+        "dd_use_sunshine_virtual_display_driver": {
+          "description": "Recommended. Uses Vibepollo's bundled driver for per-client and shared virtual screens. Turn this off only to fall back to SudoVDA.",
+          "label": "Use the Vibepollo Display Driver"
+        },
         "frame_limiter_disable_vsync": {
-          "description": "Avoid two competing pacing mechanisms. Leave off if a game behaves poorly without VSYNC."
+          "description": "Controls the manual limiter. Automatic virtual-screen game smoothness temporarily disables VSYNC while its pacing policy is active."
         },
         "frame_limiter_enable": {
-          "description": "Apply a frame limit while streaming. Automatic provider selection works for most systems.",
-          "label": "Match games to the stream frame rate"
+          "description": "Apply the configured limiter to every stream. Virtual screens already use a matching limiter automatically while automatic game smoothness is enabled.",
+          "label": "Always limit rendered frames"
+        },
+        "frame_limiter_auto_virtual_framegen": {
+          "description": "Automatic uses the stream rate on the desktop, switches the virtual screen to 4× while gaming, and caps the game through the selected limiter. Selecting no limiter keeps refresh switching but disables the matching cap. Compatibility keeps the older fixed 2× behavior. A manual refresh rate disables automatic switching.",
+          "label": "Virtual-screen game smoothness"
         },
         "frame_limiter_provider": {
-          "description": "Automatic prefers RTSS when available, then uses NVIDIA Control Panel on supported GPUs."
+          "description": "Used by both manual limiting and automatic virtual-screen game smoothness. Automatic prefers RTSS, then NVIDIA Control Panel on supported GPUs."
+        },
+        "frame_limiter_fps_limit": {
+          "description": "0 follows the stream rate. A nonzero value also replaces the automatically calculated virtual-screen limit."
         },
         "lossless_scaling_legacy_auto_detect": {
           "label": "Use legacy Lossless Scaling detection"
@@ -1319,6 +1342,18 @@
         "everyday_pacing": {
           "description": "Match games to the requested stream rate to reduce uneven motion and unnecessary GPU work.",
           "title": "Smoothness and frame pacing"
+        },
+        "everyday_resolution": {
+          "description": "Keep client-sized streaming by default, with simple substitutions for requests that should use a larger or different virtual resolution.",
+          "title": "Resolution substitutions"
+        },
+        "everyday_recovery": {
+          "description": "Keep a known-good physical display layout and an emergency shortcut within reach.",
+          "title": "Display recovery"
+        },
+        "everyday_virtual_display": {
+          "description": "Customize layout, Windows scaling, automatic 1×/4× pacing, and cleanup for virtual screens selected here or requested by an app or client.",
+          "title": "Advanced virtual-screen options"
         },
         "file_paths": {
           "title": "Data paths"
@@ -1413,7 +1448,9 @@
           "required": "Required"
         },
         "frame_generation": {
-          "legacy": "Legacy fixed 2× refresh"
+          "automatic": "Automatic — 1× desktop / 4× games (recommended)",
+          "compatibility": "Compatibility — fixed 2× refresh",
+          "off": "Off — no automatic virtual refresh or matching limiter"
         },
         "frame_limiter_provider": {
           "none": "None",
@@ -1497,6 +1534,73 @@
         "refresh_rate": "120",
         "resolution": "2560x1440"
       },
+      "overrides": {
+        "add": "Add resolution override",
+        "empty_description": "For example, use 3840x2160 on the streaming display when the client requests 2560x1440.",
+        "empty_title": "No resolution overrides",
+        "final_refresh": "Use this refresh rate on the host",
+        "final_required": "Choose the resolution or refresh rate to use on the host.",
+        "final_resolution": "Use this on the streaming display",
+        "hint": "When a client requests one resolution, use another on the streaming display. Common resolutions appear as you type; rules are checked from top to bottom.",
+        "inactive_description": "Resolution overrides are not applied while both resolution and refresh behavior are fixed or preserved.",
+        "inactive_title": "Overrides are currently inactive",
+        "invalid_saved_description": "The saved value is not in the supported three-list format. It has been preserved unchanged so these controls cannot silently replace it. Correct it in the configuration file before editing substitutions here.",
+        "invalid_saved_title": "Saved resolution overrides could not be read",
+        "manual_description": "A fixed resolution or refresh rate takes priority for that part of the display mode. Overrides remain active for each value set to Match the client.",
+        "manual_title": "A fixed display mode is active",
+        "policy_conflict_description": "The automatic-refresh and fixed-refresh rule lists contain different behavior for the same resolution. Preserve those policy-specific rules in Advanced Display settings, or make them agree before using the simple editor.",
+        "policy_conflict_title": "Policy-specific resolution rules need attention",
+        "policy_unsynced_action": "Use these substitutions with every refresh policy",
+        "policy_unsynced_description": "Existing resolution rules differ between automatic and fixed refresh behavior. You can keep managing them separately in Advanced Display settings, or explicitly make the simple substitutions apply to both.",
+        "policy_unsynced_title": "Existing substitutions are policy-specific",
+        "refresh_error": "Enter a refresh rate greater than 0 and no more than 1000.",
+        "requested_fps_error": "Enter a whole-number requested frame rate from 1 to 1000.",
+        "refresh_optional": "Also match or change the frame rate",
+        "remove": "Remove override",
+        "remove_rule": "Remove resolution override {number}",
+        "requested_fps": "When the client requests this frame rate",
+        "requested_required": "Choose the client resolution this substitution should match.",
+        "requested_resolution": "When the client requests",
+        "resolution_error": "Use WIDTHxHEIGHT, for example 1920x1080.",
+        "rule": "Override {number}",
+        "shadowed_description": "An earlier advanced rule may match before one of these substitutions. Review rule order in Advanced Display settings if the shown substitution does not take effect.",
+        "shadowed_title": "An advanced rule may take precedence",
+        "simple_hint": "When the client requests one resolution, deliver another instead. These substitutions continue to work with automatic or fixed refresh behavior."
+      },
+      "recovery": {
+        "checking": "Checking",
+        "checking_detail": "Checking the saved display recovery baseline.",
+        "clear_hotkey": "Clear shortcut",
+        "create_confirm": "Save the current Windows display layout as the golden recovery snapshot?",
+        "create_snapshot": "Create snapshot",
+        "golden_title": "Golden recovery snapshot",
+        "hotkey_configured": "Configured",
+        "hotkey_detail": "When Vibepollo runs in your Windows desktop session, use this shortcut to restore the session baseline, fall back to the golden layout when needed, remove virtual displays, and stop recovery. Service-mode installs may not receive desktop shortcuts.",
+        "hotkey_invalid": "Use F1–F24, a letter, or a number as the main key.",
+        "hotkey_modifier_required": "Include Ctrl, Alt, Shift, or Win so ordinary typing cannot trigger display recovery.",
+        "hotkey_listening": "Listening — press the shortcut you want to use.",
+        "hotkey_not_configured": "Not configured",
+        "hotkey_placeholder": "Click and press a shortcut",
+        "hotkey_title": "Emergency virtual-display shortcut",
+        "hotkey_unsafe": "Needs a modifier",
+        "hotkey_unsafe_detail": "This saved shortcut could trigger during ordinary typing. Add Ctrl, Alt, Shift, or Win, or replace it with the recommended shortcut.",
+        "not_created": "Not created",
+        "not_created_detail": "Save the physical desktop layout Vibepollo should recover when normal session restoration is unavailable.",
+        "ready": "Ready",
+        "ready_detail": "A known-good physical display layout is available as the final recovery fallback.",
+        "refresh_recommended": "Refresh recommended",
+        "refresh_recommended_detail": "The saved layout is old or has accumulated repeated restore failures. Update it while the physical desktop is arranged correctly.",
+        "replace_confirm": "Replace the golden recovery snapshot with the current Windows display layout?",
+        "retry_status": "Retry status",
+        "saving_snapshot": "Requesting snapshot",
+        "snapshot_error": "The golden recovery snapshot could not be saved.",
+        "snapshot_requested": "Snapshot capture was requested. The status will refresh after the display helper finishes.",
+        "status_error": "The golden recovery snapshot status could not be loaded.",
+        "unavailable": "Unavailable",
+        "unavailable_detail": "Vibepollo could not read the golden recovery snapshot status.",
+        "update_snapshot": "Update snapshot",
+        "use_recommended_hotkey": "Use Ctrl + Alt + Shift + F12"
+      },
       "recommended": "Recommended",
       "reload": "Reload",
       "restart": "Restart",
@@ -1513,8 +1617,21 @@
       "selected_category": "Selected category",
       "summary": {
         "display": "Streaming display",
-        "frame_limiting": "Frame limiting",
+        "automatic_pacing": "Automatic · 1× desktop / 4× games",
+        "automatic_pacing_limiter_off": "Automatic · 1× / 4× · limiter off",
+        "compatibility_pacing": "Compatibility · fixed 2×",
+        "compatibility_pacing_limiter_off": "Compatibility · fixed 2× · limiter off",
+        "fixed_resolution": "Fixed at {resolution}",
+        "game_smoothness": "Game smoothness",
         "host_default": "Host default",
+        "manual_refresh_pacing": "Manual refresh · automatic switching off",
+        "matches_client": "Matches client",
+        "overrides_need_attention": "Overrides need attention",
+        "pacing_off": "Automatic pacing off",
+        "physical_pacing": "Physical-display behavior",
+        "preserves_host_resolution": "Preserves host resolution",
+        "resolution": "Resolution",
+        "substitutions": "{count} substitution | {count} substitutions",
         "label": "Current everyday setup"
       },
       "title": "Settings",

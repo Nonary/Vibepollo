@@ -1,4 +1,11 @@
-export type SettingsFieldKind = 'boolean' | 'number' | 'select' | 'text' | 'textarea';
+export type SettingsFieldKind =
+  | 'boolean'
+  | 'number'
+  | 'select'
+  | 'text'
+  | 'textarea'
+  | 'mode-remapping'
+  | 'display-recovery';
 
 export interface SettingsOption {
   labelKey: string;
@@ -25,6 +32,8 @@ export interface SettingsField {
   restartRequired?: boolean;
   stacked?: boolean;
   recommended?: boolean;
+  simple?: boolean;
+  platform?: 'windows' | 'linux' | 'macos';
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
 }
@@ -32,6 +41,8 @@ export interface SettingsField {
 export interface SettingsGroup {
   id: string;
   fields: SettingsField[];
+  collapsed?: boolean;
+  visibleWhen?: SettingsVisibility;
 }
 
 export interface SettingsCategory {
@@ -60,6 +71,18 @@ const select = (
   options: SettingsOption[],
   extra: Partial<SettingsField> = {},
 ): SettingsField => ({ key, kind: 'select', options, ...extra });
+const modeRemapping = (extra: Partial<SettingsField> = {}): SettingsField => ({
+  key: 'dd_mode_remapping',
+  kind: 'mode-remapping',
+  stacked: true,
+  ...extra,
+});
+const displayRecovery = (): SettingsField => ({
+  key: 'dd_snapshot_restore_hotkey',
+  kind: 'display-recovery',
+  platform: 'windows',
+  stacked: true,
+});
 
 const virtualDisplayOptions = [
   option('disabled', 'ui.settings.options.virtual_display_mode.disabled'),
@@ -113,9 +136,9 @@ const frameLimiterOptions = [
 ];
 
 const frameGenerationOptions = [
-  option('enabled', '_common.enabled'),
-  option('legacy', 'ui.settings.options.frame_generation.legacy'),
-  option('disabled', '_common.disabled'),
+  option('enabled', 'ui.settings.options.frame_generation.automatic'),
+  option('legacy', 'ui.settings.options.frame_generation.compatibility'),
+  option('disabled', 'ui.settings.options.frame_generation.off'),
 ];
 
 const everydayDisplayFields = (): SettingsField[] => [
@@ -124,6 +147,9 @@ const everydayDisplayFields = (): SettingsField[] => [
     descriptionKey: 'ui.settings.fields.virtual_display_mode.description',
     recommended: true,
   }),
+];
+
+const virtualDisplayCustomizationFields = (): SettingsField[] => [
   select('virtual_display_layout', virtualLayoutOptions, {
     labelKey: 'ui.settings.fields.virtual_display_layout.label',
     descriptionKey: 'ui.settings.fields.virtual_display_layout.description',
@@ -140,24 +166,21 @@ const everydayPacingFields = (): SettingsField[] => [
   boolean('frame_limiter_enable', {
     labelKey: 'ui.settings.fields.frame_limiter_enable.label',
     descriptionKey: 'ui.settings.fields.frame_limiter_enable.description',
-    recommended: true,
   }),
   select('frame_limiter_provider', frameLimiterOptions, {
-    visibleWhen: { key: 'frame_limiter_enable', equals: true },
+    descriptionKey: 'ui.settings.fields.frame_limiter_provider.description',
   }),
   number('frame_limiter_fps_limit', {
     min: 0,
     max: 1000,
     step: 0.001,
     placeholderKey: 'ui.settings.placeholders.follow_client',
-    visibleWhen: { key: 'frame_limiter_enable', equals: true },
+    descriptionKey: 'ui.settings.fields.frame_limiter_fps_limit.description',
   }),
   select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
-  boolean('frame_limiter_disable_vsync', {
-    visibleWhen: { key: 'frame_limiter_enable', equals: true },
-  }),
+  boolean('frame_limiter_disable_vsync'),
 ];
 
 export const settingsCategories: SettingsCategory[] = [
@@ -165,12 +188,47 @@ export const settingsCategories: SettingsCategory[] = [
     id: 'everyday',
     groups: [
       { id: 'everyday_display', fields: everydayDisplayFields() },
-      { id: 'everyday_pacing', fields: everydayPacingFields() },
+      {
+        id: 'everyday_resolution',
+        fields: [
+          modeRemapping({
+            labelKey: 'ui.settings.fields.dd_mode_remapping.label',
+            descriptionKey: 'ui.settings.fields.dd_mode_remapping.description',
+            simple: true,
+          }),
+        ],
+      },
+      {
+        id: 'everyday_recovery',
+        fields: [displayRecovery()],
+      },
+      {
+        id: 'everyday_virtual_display',
+        collapsed: true,
+        fields: [
+          ...virtualDisplayCustomizationFields(),
+          select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
+            labelKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.label',
+            descriptionKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.description',
+            visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+          }),
+          boolean('dd_config_revert_on_disconnect', {
+            labelKey: 'ui.settings.fields.dd_config_revert_on_disconnect.label',
+            descriptionKey: 'ui.settings.fields.dd_config_revert_on_disconnect.description',
+          }),
+          number('dd_paused_virtual_display_timeout_secs', {
+            min: 0,
+            step: 1,
+            labelKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.label',
+            descriptionKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
+            visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
+          }),
+        ],
+      },
       {
         id: 'everyday_capture',
         fields: [
           select('capture', captureOptions, { recommended: true }),
-          nvencPresetField(),
           boolean('stream_audio'),
           boolean('controller'),
         ],
@@ -191,17 +249,6 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
           boolean('system_tray'),
-          boolean('notify_pre_releases'),
-          select('min_log_level', [
-            option('0', 'ui.settings.options.log_level.verbose'),
-            option('1', 'ui.settings.options.log_level.debug'),
-            option('2', 'ui.settings.options.log_level.info'),
-            option('3', 'ui.settings.options.log_level.warning'),
-            option('4', 'ui.settings.options.log_level.error'),
-            option('5', 'ui.settings.options.log_level.fatal'),
-            option('6', 'ui.settings.options.log_level.none'),
-          ]),
-          boolean('realtime_stats_enabled'),
         ],
       },
     ],
@@ -209,7 +256,10 @@ export const settingsCategories: SettingsCategory[] = [
   {
     id: 'display',
     groups: [
-      { id: 'display_virtual', fields: everydayDisplayFields() },
+      {
+        id: 'display_virtual',
+        fields: [...everydayDisplayFields(), ...virtualDisplayCustomizationFields()],
+      },
       {
         id: 'display_target',
         fields: [
@@ -253,12 +303,20 @@ export const settingsCategories: SettingsCategory[] = [
             option('force_on', 'ui.settings.options.hdr_request.force_on'),
             option('force_off', 'ui.settings.options.hdr_request.force_off'),
           ]),
+          modeRemapping({
+            labelKey: 'ui.settings.fields.dd_mode_remapping.label',
+            descriptionKey: 'ui.settings.fields.dd_mode_remapping.description',
+          }),
         ],
       },
       {
         id: 'display_driver',
         fields: [
-          boolean('dd_use_sunshine_virtual_display_driver', { recommended: true }),
+          boolean('dd_use_sunshine_virtual_display_driver', {
+            labelKey: 'ui.settings.fields.dd_use_sunshine_virtual_display_driver.label',
+            descriptionKey: 'ui.settings.fields.dd_use_sunshine_virtual_display_driver.description',
+            recommended: true,
+          }),
           boolean('dd_activate_virtual_display', {
             visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
           }),
@@ -284,8 +342,9 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           boolean('dd_config_revert_on_disconnect'),
           boolean('dd_always_restore_from_golden'),
-          number('dd_config_revert_delay', { min: 0, step: 1 }),
           number('dd_paused_virtual_display_timeout_secs', { min: 0, step: 1 }),
+          text('dd_snapshot_restore_hotkey'),
+          text('dd_snapshot_restore_hotkey_modifiers'),
         ],
       },
     ],
@@ -523,6 +582,11 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_manual_refresh_rate: '',
   dd_hdr_option: 'auto',
   dd_hdr_request_override: 'auto',
+  dd_mode_remapping: {
+    mixed: [],
+    resolution_only: [],
+    refresh_rate_only: [],
+  },
   dd_use_sunshine_virtual_display_driver: true,
   dd_activate_virtual_display: false,
   dd_virtual_display_permanent_count: 0,
@@ -531,8 +595,9 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_wa_dummy_plug_hdr10: false,
   dd_config_revert_on_disconnect: false,
   dd_always_restore_from_golden: false,
-  dd_config_revert_delay: 3000,
   dd_paused_virtual_display_timeout_secs: 0,
+  dd_snapshot_restore_hotkey: '',
+  dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
   keyboard: true,
   mouse: true,
   motion_as_ds4: true,

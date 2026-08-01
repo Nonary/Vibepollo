@@ -3,21 +3,17 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { apiGet, apiPatch, apiPost } from '@/api/client';
+import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
+import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
+import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
-  InlineAlert,
-  LoadingSkeleton,
-  PageHeader,
-  StatusBadge,
-  UiIcon,
-} from '@/components/ui';
-import {
-  knownSettingsKeys,
   restartRequiredKeys,
   settingsCategories,
   settingsDefaults,
   type SettingsField,
   type SettingsGroup,
   type SettingsOption,
+  type SettingsVisibility,
 } from '@/configs/settingsSchema';
 
 const { locale, t, te } = useI18n();
@@ -61,6 +57,7 @@ const loading = ref(true);
 const saving = ref(false);
 const restarting = ref(false);
 const restartAvailable = ref(false);
+const displayOverridesValid = ref(true);
 const error = ref('');
 const notice = ref('');
 const search = ref('');
@@ -69,12 +66,22 @@ const hostMetadata = ref<MetadataResponse>({});
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
 
+function comparableValue(value: unknown): string {
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return String(value ?? '');
+}
+
 const dirtyKeys = computed(() => {
   const keys = new Set([...Object.keys(original.value), ...Object.keys(values)]);
-  return [...keys].filter((key) => String(values[key] ?? '') !== String(original.value[key] ?? ''));
+  return [...keys].filter(
+    (key) => comparableValue(values[key]) !== comparableValue(original.value[key]),
+  );
 });
 
 const isDirty = computed(() => dirtyKeys.value.length > 0);
+const saveAllowed = computed(
+  () => displayOverridesValid.value || !dirtyKeys.value.includes('dd_mode_remapping'),
+);
 const restartPending = computed(() => dirtyKeys.value.some((key) => restartRequiredKeys.has(key)));
 
 const category = computed(
@@ -98,6 +105,7 @@ const filteredGroups = computed(() => {
 
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
+      .filter((group) => query || groupIsVisible(group))
       .map<DisplaySettingsGroup>((group) => ({
         ...group,
         categoryId: settingsCategory.id,
@@ -107,7 +115,9 @@ const filteredGroups = computed(() => {
             `${categoryLabel(settingsCategory.id)} ${groupTitle(group.id)} ${fieldLabel(field)} ${fieldDescription(field)} ${field.key}`
               .toLocaleLowerCase(locale.value)
               .includes(query);
-          if (!matches || (!query && !fieldIsVisible(field))) return false;
+          if (!matches || !fieldMatchesPlatform(field) || (!query && !fieldIsVisible(field))) {
+            return false;
+          }
           if (query && seenKeys.has(field.key)) return false;
           if (query) seenKeys.add(field.key);
           return true;
@@ -117,18 +127,92 @@ const filteredGroups = computed(() => {
   );
 });
 
+function normalizedModeRemapping(value: unknown): Record<string, unknown[]> | null {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  if (
+    !Array.isArray(source.mixed) ||
+    !Array.isArray(source.resolution_only) ||
+    !Array.isArray(source.refresh_rate_only)
+  ) {
+    return null;
+  }
+  return {
+    mixed: source.mixed,
+    resolution_only: source.resolution_only,
+    refresh_rate_only: source.refresh_rate_only,
+  };
+}
+
+const resolutionSubstitutionCount = computed(() => {
+  const remapping = normalizedModeRemapping(values.dd_mode_remapping);
+  if (!remapping) return 0;
+  if (String(values.dd_resolution_option ?? 'auto') !== 'auto') return 0;
+  const rules =
+    String(values.dd_refresh_rate_option ?? 'auto') === 'auto'
+      ? remapping.mixed
+      : remapping.resolution_only;
+  return new Set(
+    rules
+      .filter((value) => value && typeof value === 'object')
+      .map((value) => value as Record<string, unknown>)
+      .filter(
+        (entry) =>
+          String(entry.requested_resolution ?? '').trim() &&
+          String(entry.final_resolution ?? '').trim() &&
+          !String(entry.requested_fps ?? '').trim() &&
+          !String(entry.final_refresh_rate ?? '').trim(),
+      )
+      .map(
+        (entry) =>
+          `${String(entry.requested_resolution).trim()}=>${String(entry.final_resolution).trim()}`,
+      ),
+  ).size;
+});
+
 const everydaySummary = computed(() => [
   {
     label: t('ui.settings.summary.display'),
     value: optionLabel('virtual_display_mode', t('ui.settings.summary.host_default')),
   },
   {
-    label: t('ui.settings.summary.frame_limiting'),
-    value: t(isTrue(values.frame_limiter_enable) ? '_common.enabled' : '_common.disabled'),
+    label: t('ui.settings.summary.resolution'),
+    value:
+      String(values.dd_resolution_option ?? 'auto') === 'manual'
+        ? t('ui.settings.summary.fixed_resolution', {
+            resolution: String(values.dd_manual_resolution ?? '').trim() || t('_common.unknown'),
+          })
+        : String(values.dd_resolution_option ?? 'auto') === 'disabled'
+          ? t('ui.settings.summary.preserves_host_resolution')
+          : !normalizedModeRemapping(values.dd_mode_remapping)
+            ? t('ui.settings.summary.overrides_need_attention')
+            : resolutionSubstitutionCount.value
+              ? t('ui.settings.summary.substitutions', {
+                  count: resolutionSubstitutionCount.value,
+                })
+              : t('ui.settings.summary.matches_client'),
   },
   {
-    label: t('config.capture'),
-    value: optionLabel('capture', t('_common.auto')),
+    label: t('ui.settings.summary.game_smoothness'),
+    value:
+      String(values.virtual_display_mode ?? '') === 'disabled'
+        ? t('ui.settings.summary.physical_pacing')
+        : String(values.dd_refresh_rate_option ?? 'auto') === 'manual'
+          ? t('ui.settings.summary.manual_refresh_pacing')
+          : String(values.frame_limiter_provider ?? 'auto') === 'none' &&
+              String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') !== 'disabled'
+            ? t(
+                String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') === 'legacy'
+                  ? 'ui.settings.summary.compatibility_pacing_limiter_off'
+                  : 'ui.settings.summary.automatic_pacing_limiter_off',
+              )
+            : t(
+                String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') === 'enabled'
+                  ? 'ui.settings.summary.automatic_pacing'
+                  : String(values.frame_limiter_auto_virtual_framegen ?? '') === 'legacy'
+                    ? 'ui.settings.summary.compatibility_pacing'
+                    : 'ui.settings.summary.pacing_off',
+              ),
   },
 ]);
 
@@ -158,7 +242,8 @@ const gpuOptions = computed<GpuOption[]>(() => {
   if (
     currentName &&
     !options.some(
-      (option) => option.adapterName === currentName && (!currentPnpId || option.pnpId === currentPnpId),
+      (option) =>
+        option.adapterName === currentName && (!currentPnpId || option.pnpId === currentPnpId),
     )
   ) {
     options.push({
@@ -171,19 +256,6 @@ const gpuOptions = computed<GpuOption[]>(() => {
   return options;
 });
 
-const uncategorized = computed(() =>
-  Object.keys(values)
-    .filter((key) => key !== 'status' && !knownSettingsKeys.has(key))
-    .filter((key) => {
-      const query = search.value.trim().toLocaleLowerCase(locale.value);
-      return (
-        !query ||
-        `${advancedLabel(key)} ${key}`.toLocaleLowerCase(locale.value).includes(query)
-      );
-    })
-    .sort((a, b) => a.localeCompare(b)),
-);
-
 function isTrue(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLocaleLowerCase());
@@ -195,8 +267,15 @@ function valuesMatch(current: unknown, expected: string | boolean): boolean {
     : String(current ?? '') === expected;
 }
 
-function fieldIsVisible(field: SettingsField): boolean {
-  const condition = field.visibleWhen;
+function fieldMatchesPlatform(field: SettingsField): boolean {
+  if (field.platform) {
+    const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
+    return platform.includes(field.platform);
+  }
+  return true;
+}
+
+function visibilityMatches(condition?: SettingsVisibility): boolean {
   if (!condition) return true;
   if (condition.equals !== undefined) {
     return valuesMatch(values[condition.key], condition.equals);
@@ -205,6 +284,14 @@ function fieldIsVisible(field: SettingsField): boolean {
     return !valuesMatch(values[condition.key], condition.notEquals);
   }
   return true;
+}
+
+function groupIsVisible(group: SettingsGroup): boolean {
+  return visibilityMatches(group.visibleWhen);
+}
+
+function fieldIsVisible(field: SettingsField): boolean {
+  return fieldMatchesPlatform(field) && visibilityMatches(field.visibleWhen);
 }
 
 function fieldByKey(key: string): SettingsField | undefined {
@@ -250,11 +337,6 @@ function fieldDescription(field: SettingsField): string {
   ].filter(Boolean);
   const key = candidates.find((candidate) => messageExists(candidate));
   return key ? t(key) : '';
-}
-
-function advancedLabel(key: string): string {
-  const translationKey = `config.${key}`;
-  return messageExists(translationKey) ? t(translationKey) : key;
 }
 
 function optionText(option: SettingsOption): string {
@@ -327,7 +409,8 @@ function controlValue(field: SettingsField): string {
   const currentPnpId = String(values.adapter_pnp_id ?? '');
   return (
     gpuOptions.value.find(
-      (option) => option.adapterName === currentName && (!currentPnpId || option.pnpId === currentPnpId),
+      (option) =>
+        option.adapterName === currentName && (!currentPnpId || option.pnpId === currentPnpId),
     )?.value ?? ''
   );
 }
@@ -371,6 +454,24 @@ function normalizeConfiguredValues(configured: Record<string, unknown>): Record<
   if (normalized.frame_limiter_provider === 'nvidia_control_panel') {
     normalized.frame_limiter_provider = 'nvidia-control-panel';
   }
+  if (typeof normalized.dd_mode_remapping === 'string') {
+    if (!normalized.dd_mode_remapping.trim()) {
+      normalized.dd_mode_remapping = {
+        mixed: [],
+        resolution_only: [],
+        refresh_rate_only: [],
+      };
+    } else {
+      try {
+        const parsed = JSON.parse(normalized.dd_mode_remapping);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          normalized.dd_mode_remapping = parsed;
+        }
+      } catch {
+        // Retain malformed persisted data so the editor can block a destructive overwrite.
+      }
+    }
+  }
   return normalized;
 }
 
@@ -410,7 +511,7 @@ async function load(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!isDirty.value || saving.value) return;
+  if (!isDirty.value || saving.value || !saveAllowed.value) return;
   saving.value = true;
   error.value = '';
   notice.value = '';
@@ -468,10 +569,7 @@ onMounted(() => void load());
 
 <template>
   <div class="page page--narrow settings-page">
-    <PageHeader
-      :title="t('ui.settings.title')"
-      :description="t('ui.settings.description')"
-    >
+    <PageHeader :title="t('ui.settings.title')" :description="t('ui.settings.description')">
       <template #actions>
         <button class="button button--secondary" type="button" :disabled="loading" @click="load">
           <UiIcon name="refresh" />
@@ -491,7 +589,11 @@ onMounted(() => void load());
         </button>
       </template>
     </InlineAlert>
-    <InlineAlert v-else-if="restartPending" tone="warning" :title="t('ui.settings.restart_required')">
+    <InlineAlert
+      v-else-if="restartPending"
+      tone="warning"
+      :title="t('ui.settings.restart_required')"
+    >
       {{ t('ui.settings.restart_required_description') }}
     </InlineAlert>
 
@@ -523,17 +625,6 @@ onMounted(() => void load());
         >
           {{ categoryLabel(item.id) }}
         </button>
-        <button
-          type="button"
-          :class="[
-            'settings-nav__item--expert',
-            { 'settings-nav__item--active': activeCategory === 'advanced' },
-          ]"
-          :aria-current="activeCategory === 'advanced' ? 'page' : undefined"
-          @click="activeCategory = 'advanced'"
-        >
-          {{ t('ui.settings.expert.label') }}
-        </button>
       </nav>
 
       <div class="settings-content">
@@ -541,10 +632,14 @@ onMounted(() => void load());
           <LoadingSkeleton v-for="index in 6" :key="index" height="64px" />
         </div>
 
-        <template v-else-if="activeCategory !== 'advanced' || isSearching">
+        <template v-else>
           <header class="settings-category-heading">
-            <span>{{ t(isSearching ? 'ui.settings.all_settings' : 'ui.settings.selected_category') }}</span>
-            <h2>{{ isSearching ? t('ui.settings.search_results') : categoryLabel(category.id) }}</h2>
+            <span>{{
+              t(isSearching ? 'ui.settings.all_settings' : 'ui.settings.selected_category')
+            }}</span>
+            <h2>
+              {{ isSearching ? t('ui.settings.search_results') : categoryLabel(category.id) }}
+            </h2>
             <p>{{ categoryDescription }}</p>
           </header>
 
@@ -564,151 +659,130 @@ onMounted(() => void load());
             :key="`${group.categoryId}-${group.id}`"
             class="settings-section"
           >
-            <div class="settings-section__heading">
-              <span v-if="isSearching">{{ categoryLabel(group.categoryId) }}</span>
-              <h3>{{ groupTitle(group.id) }}</h3>
-              <p v-if="groupDescription(group.id)">{{ groupDescription(group.id) }}</p>
-            </div>
-            <div class="settings-group">
-              <div
-                v-for="field in group.fields"
-                :key="field.key"
-                class="settings-row"
-                :class="{ 'settings-row--stacked': field.stacked }"
+            <component
+              :is="group.collapsed && !isSearching ? 'details' : 'div'"
+              :class="{ 'settings-disclosure': group.collapsed && !isSearching }"
+            >
+              <component
+                :is="group.collapsed && !isSearching ? 'summary' : 'div'"
+                class="settings-section__heading"
               >
-                <label class="settings-row__copy" :for="`setting-${field.key}`">
-                  <span class="settings-row__label">
-                    {{ fieldLabel(field) }}
-                    <StatusBadge v-if="field.recommended" tone="success" compact>
-                      {{ t('ui.settings.recommended') }}
-                    </StatusBadge>
-                    <StatusBadge v-if="field.restartRequired" tone="warning" compact>
-                      {{ t('ui.settings.restart') }}
-                    </StatusBadge>
-                  </span>
-                  <span v-if="fieldDescription(field)" class="settings-row__description">
-                    {{ fieldDescription(field) }}
-                  </span>
-                  <span v-if="dependencyHint(field)" class="settings-row__dependency">
-                    {{ dependencyHint(field) }}
-                  </span>
-                </label>
-
-                <label v-if="field.kind === 'boolean'" class="vs-switch">
-                  <input
-                    :id="`setting-${field.key}`"
-                    type="checkbox"
-                    :checked="isTrue(values[field.key])"
-                    @change="updateBoolean(field.key, $event)"
-                  />
-                  <span class="vs-switch__track" aria-hidden="true" />
-                  <span class="visually-hidden">{{ fieldLabel(field) }}</span>
-                </label>
-
-                <select
-                  v-else-if="field.kind === 'select'"
-                  :id="`setting-${field.key}`"
-                  class="vs-select"
-                  :value="controlValue(field)"
-                  @change="updateValue(field.key, $event, field)"
+                <span v-if="isSearching">{{ categoryLabel(group.categoryId) }}</span>
+                <h3>{{ groupTitle(group.id) }}</h3>
+                <p v-if="groupDescription(group.id)">{{ groupDescription(group.id) }}</p>
+              </component>
+              <div class="settings-group">
+                <div
+                  v-for="field in group.fields"
+                  :key="field.key"
+                  class="settings-row"
+                  :class="{ 'settings-row--stacked': field.stacked }"
                 >
-                  <option
-                    v-for="option in optionsFor(field)"
-                    :key="option.value"
-                    :value="option.value"
+                  <div v-if="field.kind === 'mode-remapping'" class="settings-row__copy">
+                    <span class="settings-row__label">{{ fieldLabel(field) }}</span>
+                    <span v-if="fieldDescription(field)" class="settings-row__description">
+                      {{ fieldDescription(field) }}
+                    </span>
+                  </div>
+
+                  <label
+                    v-else-if="field.kind !== 'display-recovery'"
+                    class="settings-row__copy"
+                    :for="`setting-${field.key}`"
                   >
-                    {{ optionText(option) }}
-                  </option>
-                </select>
+                    <span class="settings-row__label">
+                      {{ fieldLabel(field) }}
+                      <StatusBadge v-if="field.recommended" tone="success" compact>
+                        {{ t('ui.settings.recommended') }}
+                      </StatusBadge>
+                      <StatusBadge v-if="field.restartRequired" tone="warning" compact>
+                        {{ t('ui.settings.restart') }}
+                      </StatusBadge>
+                    </span>
+                    <span v-if="fieldDescription(field)" class="settings-row__description">
+                      {{ fieldDescription(field) }}
+                    </span>
+                    <span v-if="dependencyHint(field)" class="settings-row__dependency">
+                      {{ dependencyHint(field) }}
+                    </span>
+                  </label>
 
-                <textarea
-                  v-else-if="field.kind === 'textarea'"
-                  :id="`setting-${field.key}`"
-                  :class="['vs-textarea', { monospace: field.monospace }]"
-                  :value="String(values[field.key] ?? '')"
-                  :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
-                  rows="4"
-                  @input="updateValue(field.key, $event, field)"
-                />
+                  <label v-if="field.kind === 'boolean'" class="vs-switch">
+                    <input
+                      :id="`setting-${field.key}`"
+                      type="checkbox"
+                      :checked="isTrue(values[field.key])"
+                      @change="updateBoolean(field.key, $event)"
+                    />
+                    <span class="vs-switch__track" aria-hidden="true" />
+                    <span class="visually-hidden">{{ fieldLabel(field) }}</span>
+                  </label>
 
-                <input
-                  v-else
-                  :id="`setting-${field.key}`"
-                  :class="['vs-input', { monospace: field.monospace }]"
-                  :type="field.kind === 'number' ? 'number' : 'text'"
-                  :min="field.min"
-                  :max="field.max"
-                  :step="field.step"
-                  :value="String(values[field.key] ?? '')"
-                  :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
-                  @input="updateValue(field.key, $event, field)"
-                />
+                  <select
+                    v-else-if="field.kind === 'select'"
+                    :id="`setting-${field.key}`"
+                    class="vs-select"
+                    :value="controlValue(field)"
+                    @change="updateValue(field.key, $event, field)"
+                  >
+                    <option
+                      v-for="option in optionsFor(field)"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ optionText(option) }}
+                    </option>
+                  </select>
+
+                  <textarea
+                    v-else-if="field.kind === 'textarea'"
+                    :id="`setting-${field.key}`"
+                    :class="['vs-textarea', { monospace: field.monospace }]"
+                    :value="String(values[field.key] ?? '')"
+                    :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
+                    rows="4"
+                    @input="updateValue(field.key, $event, field)"
+                  />
+
+                  <DisplayModeOverrides
+                    v-else-if="field.kind === 'mode-remapping'"
+                    :model-value="values[field.key]"
+                    :resolution-mode="String(values.dd_resolution_option ?? 'auto')"
+                    :refresh-mode="String(values.dd_refresh_rate_option ?? 'auto')"
+                    :simple="field.simple"
+                    @update:model-value="values[field.key] = $event"
+                    @validity-change="displayOverridesValid = $event"
+                  />
+
+                  <DisplayRecoverySettings
+                    v-else-if="field.kind === 'display-recovery'"
+                    :hotkey="values.dd_snapshot_restore_hotkey"
+                    :modifiers="values.dd_snapshot_restore_hotkey_modifiers"
+                    @update:hotkey="values.dd_snapshot_restore_hotkey = $event"
+                    @update:modifiers="values.dd_snapshot_restore_hotkey_modifiers = $event"
+                  />
+
+                  <input
+                    v-else
+                    :id="`setting-${field.key}`"
+                    :class="['vs-input', { monospace: field.monospace }]"
+                    :type="field.kind === 'number' ? 'number' : 'text'"
+                    :min="field.min"
+                    :max="field.max"
+                    :step="field.step"
+                    :value="String(values[field.key] ?? '')"
+                    :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
+                    @input="updateValue(field.key, $event, field)"
+                  />
+                </div>
               </div>
-            </div>
+            </component>
           </section>
 
-          <section v-if="isSearching && uncategorized.length" class="settings-section">
-            <div class="settings-section__heading">
-              <span>{{ t('ui.settings.expert.label') }}</span>
-              <h3>{{ t('ui.settings.expert.direct_title') }}</h3>
-              <p>{{ t('ui.settings.expert.description') }}</p>
-            </div>
-            <InlineAlert tone="warning" :title="t('ui.settings.expert.warning_title')">
-              {{ t('ui.settings.expert.warning') }}
-            </InlineAlert>
-            <div class="settings-group settings-group--advanced">
-              <div
-                v-for="key in uncategorized"
-                :key="key"
-                class="settings-row settings-row--stacked"
-              >
-                <label class="settings-row__copy" :for="`setting-${key}`">
-                  <span class="settings-row__label">{{ advancedLabel(key) }}</span>
-                  <code>{{ key }}</code>
-                </label>
-                <textarea
-                  :id="`setting-${key}`"
-                  class="vs-textarea monospace"
-                  :value="String(values[key] ?? '')"
-                  rows="2"
-                  @input="updateValue(key, $event)"
-                />
-              </div>
-            </div>
-          </section>
-
-          <div v-if="filteredGroups.length === 0 && uncategorized.length === 0" class="settings-empty">
+          <div v-if="filteredGroups.length === 0" class="settings-empty">
             {{ t('ui.settings.no_results', { query: search }) }}
           </div>
         </template>
-
-        <section v-else class="settings-section">
-          <div class="settings-section__heading">
-            <h2>{{ t('ui.settings.expert.title') }}</h2>
-            <p>{{ t('ui.settings.expert.description') }}</p>
-          </div>
-          <InlineAlert tone="warning" :title="t('ui.settings.expert.warning_title')">
-            {{ t('ui.settings.expert.warning') }}
-          </InlineAlert>
-          <div class="settings-group settings-group--advanced">
-            <div v-for="key in uncategorized" :key="key" class="settings-row settings-row--stacked">
-              <label class="settings-row__copy" :for="`setting-${key}`">
-                <span class="settings-row__label">{{ advancedLabel(key) }}</span>
-                <code>{{ key }}</code>
-              </label>
-              <textarea
-                :id="`setting-${key}`"
-                class="vs-textarea monospace"
-                :value="String(values[key] ?? '')"
-                rows="2"
-                @input="updateValue(key, $event)"
-              />
-            </div>
-            <p v-if="uncategorized.length === 0" class="settings-empty">
-              {{ t('ui.settings.expert.empty') }}
-            </p>
-          </div>
-        </section>
 
         <section
           v-if="activeCategory === 'display' && !isSearching"
@@ -735,12 +809,9 @@ onMounted(() => void load());
       <div>
         <strong>
           {{
-            t(
-              dirtyKeys.length === 1
-                ? 'ui.settings.unsaved_one'
-                : 'ui.settings.unsaved_many',
-              { count: dirtyKeys.length },
-            )
+            t(dirtyKeys.length === 1 ? 'ui.settings.unsaved_one' : 'ui.settings.unsaved_many', {
+              count: dirtyKeys.length,
+            })
           }}
         </strong>
         <span>
@@ -751,7 +822,12 @@ onMounted(() => void load());
         <button class="button button--secondary" type="button" :disabled="saving" @click="discard">
           {{ t('ui.settings.discard') }}
         </button>
-        <button class="button button--primary" type="button" :disabled="saving" @click="save">
+        <button
+          class="button button--primary"
+          type="button"
+          :disabled="saving || !saveAllowed"
+          @click="save"
+        >
           <UiIcon name="check" />
           {{ t(saving ? 'ui.settings.saving' : 'ui.settings.save') }}
         </button>
@@ -828,12 +904,6 @@ onMounted(() => void load());
 .settings-nav__item--active {
   color: var(--vs-color-text-primary) !important;
   background: var(--vs-color-bg-subtle) !important;
-}
-
-.settings-nav__item--expert {
-  margin-top: var(--vs-space-8);
-  border-top: 1px solid var(--vs-color-border-subtle) !important;
-  border-radius: 0 0 var(--vs-radius-control) var(--vs-radius-control) !important;
 }
 
 .settings-content {
@@ -921,6 +991,47 @@ onMounted(() => void load());
 .danger-zone p {
   margin: var(--vs-space-4) 0 0;
   color: var(--vs-color-text-secondary);
+}
+
+.settings-disclosure > summary {
+  position: relative;
+  padding: var(--vs-space-16) var(--vs-space-48) var(--vs-space-16) var(--vs-space-20);
+  margin-bottom: 0;
+  border: 1px solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+  cursor: pointer;
+  list-style: none;
+}
+
+.settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-disclosure > summary::after {
+  position: absolute;
+  top: 50%;
+  right: var(--vs-space-20);
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--vs-color-text-secondary);
+  border-bottom: 2px solid var(--vs-color-text-secondary);
+  content: '';
+  transform: translateY(-65%) rotate(45deg);
+  transition: transform 120ms ease;
+}
+
+.settings-disclosure[open] > summary {
+  border-radius: var(--vs-radius-card) var(--vs-radius-card) 0 0;
+}
+
+.settings-disclosure[open] > summary::after {
+  transform: translateY(-35%) rotate(225deg);
+}
+
+.settings-disclosure > .settings-group {
+  border-top: 0;
+  border-radius: 0 0 var(--vs-radius-card) var(--vs-radius-card);
 }
 
 .settings-group {
@@ -1067,14 +1178,6 @@ onMounted(() => void load());
   .settings-nav button {
     flex: 0 0 auto;
     white-space: nowrap;
-  }
-
-  .settings-nav__item--expert {
-    margin-top: 0;
-    margin-left: var(--vs-space-8);
-    border-top: 0 !important;
-    border-left: 1px solid var(--vs-color-border-subtle) !important;
-    border-radius: 0 var(--vs-radius-control) var(--vs-radius-control) 0 !important;
   }
 
   .settings-summary {
