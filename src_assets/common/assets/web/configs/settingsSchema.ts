@@ -4,6 +4,7 @@ export type SettingsFieldKind =
   | 'select'
   | 'duration'
   | 'text'
+  | 'integration-path'
   | 'textarea'
   | 'mode-remapping'
   | 'display-recovery';
@@ -39,6 +40,7 @@ export interface SettingsField {
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
   encoderFamily?: 'nvidia' | 'intel' | 'amd';
+  integration?: 'rtss' | 'lossless';
 }
 
 // Keep this list aligned with config::is_allowed_override_key(). The global
@@ -271,6 +273,20 @@ const frameGenerationOptions = [
   option('legacy', 'ui.settings.options.frame_generation.compatibility'),
   option('disabled', 'ui.settings.options.frame_generation.off'),
 ];
+
+const integrationPath = (
+  key: string,
+  integration: SettingsField['integration'],
+  extra: Partial<SettingsField> = {},
+): SettingsField => ({
+  key,
+  kind: 'integration-path',
+  integration,
+  monospace: true,
+  platform: 'windows',
+  stacked: true,
+  ...extra,
+});
 
 const everydayDisplayFields = (): SettingsField[] => [
   select('virtual_display_mode', virtualDisplayOptions, {
@@ -510,15 +526,25 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'pacing_integrations',
         fields: [
-          text('rtss_install_path', { monospace: true, stacked: true }),
-          select('rtss_frame_limit_type', [
-            option('async', 'ui.settings.options.rtss_type.async'),
-            option('front edge sync', 'ui.settings.options.rtss_type.front_edge'),
-            option('back edge sync', 'ui.settings.options.rtss_type.back_edge'),
-            option('nvidia reflex', 'ui.settings.options.rtss_type.reflex'),
-          ]),
-          text('lossless_scaling_path', { monospace: true, stacked: true }),
-          boolean('lossless_scaling_legacy_auto_detect'),
+          integrationPath('rtss_install_path', 'rtss', {
+            labelKey: 'ui.settings.fields.rtss_install_path.label',
+            descriptionKey: 'ui.settings.fields.rtss_install_path.description',
+          }),
+          select(
+            'rtss_frame_limit_type',
+            [
+              option('async', 'ui.settings.options.rtss_type.async'),
+              option('front edge sync', 'ui.settings.options.rtss_type.front_edge'),
+              option('back edge sync', 'ui.settings.options.rtss_type.back_edge'),
+              option('nvidia reflex', 'ui.settings.options.rtss_type.reflex'),
+            ],
+            { platform: 'windows' },
+          ),
+          integrationPath('lossless_scaling_path', 'lossless', {
+            labelKey: 'ui.settings.fields.lossless_scaling_path.label',
+            descriptionKey: 'ui.settings.fields.lossless_scaling_path.description',
+          }),
+          boolean('lossless_scaling_legacy_auto_detect', { platform: 'windows' }),
         ],
       },
     ],

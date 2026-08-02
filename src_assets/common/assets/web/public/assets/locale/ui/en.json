@@ -1332,10 +1332,12 @@
           "description": "0 follows the stream rate. A nonzero value also replaces the automatically calculated virtual-screen limit."
         },
         "lossless_scaling_legacy_auto_detect": {
+          "description": "Use the legacy timer-based detection path only if the normal Lossless Scaling hotkey path is unavailable.",
           "label": "Use legacy Lossless Scaling detection"
         },
         "lossless_scaling_path": {
-          "description": "Leave blank to detect the Lossless Scaling executable automatically."
+          "description": "Leave blank to detect LosslessScaling.exe automatically. Choose a detected installation or enter the full executable path to pin one.",
+          "label": "Lossless Scaling executable"
         },
         "output_name": {
           "description": "Leave blank to let Vibepollo choose the display. Otherwise use an exact device name."
@@ -1344,7 +1346,8 @@
           "description": "Async is the recommended low-latency limiter mode."
         },
         "rtss_install_path": {
-          "description": "Leave blank to detect the RTSS installation automatically."
+          "description": "Leave blank to detect the RTSS installation folder automatically. RTSS is ready when its hooks are present.",
+          "label": "RTSS installation folder"
         },
         "virtual_display_layout": {
           "description": "Choose whether physical displays remain part of the Windows desktop while streaming.",
@@ -1357,6 +1360,41 @@
         "wgc_pacing_smoothing": {
           "description": "Reduce visible pacing changes when Windows Graphics Capture is active.",
           "label": "Smooth Windows capture cadence"
+        }
+      },
+      "integrations": {
+        "automatic_path_hint": "This path was detected on the host. It is not saved until you choose “Save detected path”; leaving it this way keeps automatic detection.",
+        "browse_detected": "Browse detected paths",
+        "checking": "Checking…",
+        "checking_description": "Checking the host for a usable installation.",
+        "choose_detected": "Choose a detected installation",
+        "detected_installations": "Detected installations",
+        "explicit_path_hint": "This path is saved as an explicit installation override. Clear it to return to automatic detection.",
+        "hide_detected": "Hide detected paths",
+        "needs_attention": "Needs attention",
+        "not_detected": "Not detected",
+        "not_found": "Path not found",
+        "ready": "Ready to use",
+        "rescan": "Rescan",
+        "status_unavailable": "Status unavailable",
+        "status_unavailable_description": "The host could not report installation status. You can still enter a path manually.",
+        "use_detected": "Save detected path",
+        "use_selected": "Use selected path",
+        "lossless": {
+          "not_detected": "Lossless Scaling was not found. Install it from Steam or enter the full path to LosslessScaling.exe.",
+          "path_is_directory": "The selected path is a folder. Choose LosslessScaling.exe itself.",
+          "path_missing": "The configured Lossless Scaling executable was not found. Choose another detected installation or clear the path to resume automatic detection.",
+          "ready": "Lossless Scaling was found and is ready for in-process frame generation."
+        },
+        "rtss": {
+          "active": "RTSS is active for the current stream.",
+          "auto": "RTSS is installed and ready. Automatic selection will prefer it for frame pacing.",
+          "disabled": "RTSS is installed and ready, but frame limiting is currently disabled.",
+          "hooks_missing": "RTSS was found, but its hooks DLL was not found. Reinstall RTSS to enable frame pacing.",
+          "not_detected": "RTSS was not found. Install it or enter its installation folder; automatic selection will use another limiter when available.",
+          "path_missing": "The configured RTSS folder was not found. Choose another folder or clear the path to resume automatic detection.",
+          "ready": "RTSS and its hooks are installed. Frame pacing is ready to use.",
+          "selected": "RTSS is selected and ready for the next stream."
         }
       },
       "groups": {

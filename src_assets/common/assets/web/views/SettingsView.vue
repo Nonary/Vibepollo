@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 import { apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
+import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPath.vue';
 import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
   restartRequiredKeys,
@@ -813,6 +814,14 @@ onMounted(() => void load());
                     @update:hotkey="values.dd_snapshot_restore_hotkey = $event"
                     @update:modifiers="values.dd_snapshot_restore_hotkey_modifiers = $event"
                     @update:prefer-golden="values.dd_always_restore_from_golden = $event"
+                  />
+
+                  <SettingsIntegrationPath
+                    v-else-if="field.kind === 'integration-path'"
+                    :kind="field.integration ?? 'rtss'"
+                    :input-id="`setting-${field.key}`"
+                    :model-value="values[field.key]"
+                    @update:model-value="values[field.key] = $event"
                   />
 
                   <input
