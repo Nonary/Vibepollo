@@ -1221,14 +1221,15 @@
           "description": "Choose how Vibepollo prepares the selected display before a stream."
         },
         "dd_config_revert_on_disconnect": {
-          "description": "Restore the physical desktop as soon as the last client disconnects instead of keeping the virtual screen ready for reconnection.",
-          "label": "Restore when the client disconnects"
+          "description": "Restore the physical desktop immediately instead of keeping the game and virtual screen available for reconnection.",
+          "label": "Restore as soon as the client disconnects"
         },
         "dd_hdr_option": {
           "description": "Follow the client HDR request when the selected display supports it."
         },
         "dd_hdr_request_override": {
-          "description": "Force a state only when a client or display reports HDR incorrectly."
+          "description": "Follow the client by default, or override HDR for clients and games that report it incorrectly.",
+          "label": "HDR requested by the client"
         },
         "dd_manual_refresh_rate": {
           "description": "Enter a whole or decimal refresh rate in hertz."
@@ -1241,8 +1242,9 @@
           "label": "Resolution overrides"
         },
         "dd_paused_virtual_display_timeout_secs": {
-          "description": "Remove a paused session's virtual display after this many seconds. 0 keeps it available until the stream resumes or the application exits.",
-          "label": "Paused virtual-display timeout (seconds)"
+          "description": "When a disconnected stream leaves its game running, keep the virtual display available for this long before removing it.",
+          "label": "Keep a disconnected virtual display for",
+          "warning": "When this expires, Vibepollo removes the virtual display even if the game is still running. Some older games can crash when their display disappears. Close the game first or choose Until the game closes."
         },
         "dd_refresh_rate_option": {
           "description": "Match the client request, prefer the highest compatible rate, or use a fixed value."
@@ -1257,6 +1259,18 @@
         "dd_virtual_display_scale": {
           "description": "Adjust interface size without changing the resolution requested by the client.",
           "label": "Windows scaling"
+        },
+        "capture": {
+          "description": "Automatic follows the capture backend Vibepollo already chooses for this Windows version. Override it only for compatibility or a specific pacing behavior.",
+          "label": "Capture method"
+        },
+        "encoder": {
+          "description": "Automatic follows the configured display adapter, or the dedicated GPU with the most video memory, then verifies the encoder before streaming.",
+          "label": "Video encoder"
+        },
+        "fec_percentage": {
+          "description": "Adds recovery packets to each video frame. The 20% default handles ordinary packet loss; higher values use more bandwidth.",
+          "label": "Network recovery (FEC)"
         },
         "dd_use_sunshine_virtual_display_driver": {
           "description": "Recommended. Uses Vibepollo's bundled driver for per-client and shared virtual screens. Turn this off only to fall back to SudoVDA.",
@@ -1332,8 +1346,12 @@
           "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
-          "description": "A per-client virtual display is the simplest option for headless hosts, HDR, and client-sized resolutions.",
+          "description": "Choose the streaming screen, how it joins the Windows desktop, and how Windows captures it.",
           "title": "Screen used for streaming"
+        },
+        "everyday_encoding": {
+          "description": "Use the preferred dedicated GPU automatically, then adjust only its relevant preset and stream recovery overhead.",
+          "title": "Encoding and stream recovery"
         },
         "everyday_host": {
           "description": "Set how this host appears, reports activity, and notifies you about updates.",
@@ -1344,12 +1362,16 @@
           "title": "Smoothness and frame pacing"
         },
         "everyday_resolution": {
-          "description": "Keep client-sized streaming by default, with simple substitutions for requests that should use a larger or different virtual resolution.",
+          "description": "Use a different streaming resolution for a few common client sizes without replacing automatic matching.",
           "title": "Resolution substitutions"
         },
         "everyday_recovery": {
-          "description": "Keep a known-good physical display layout and an emergency shortcut within reach.",
-          "title": "Display recovery"
+          "description": "Choose what happens after a disconnect and keep a known-good desktop layout ready for restoration.",
+          "title": "Display lifecycle and recovery"
+        },
+        "everyday_smoothness": {
+          "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
+          "title": "Automatic virtual-screen smoothness"
         },
         "everyday_virtual_display": {
           "description": "Customize layout, Windows scaling, automatic 1×/4× pacing, and cleanup for virtual screens selected here or requested by an app or client.",
@@ -1412,6 +1434,8 @@
           "ipv4": "IPv4 only"
         },
         "capture": {
+          "auto_ddx": "Automatic · Desktop Duplication",
+          "auto_wgc": "Automatic · Windows Graphics Capture · Variable",
           "ddx": "Desktop Duplication · Compatibility",
           "wgc": "Windows Graphics Capture · Variable",
           "wgcc": "Windows Graphics Capture · Constant"
@@ -1435,6 +1459,7 @@
           "amdvce": "AMD AMF",
           "amdvce_legacy": "AMD AMF · Legacy",
           "auto": "Automatic · Recommended",
+          "auto_selected": "Automatic · {encoder}",
           "mediafoundation": "Windows Media Foundation",
           "nvenc": "NVIDIA NVENC",
           "quicksync": "Intel Quick Sync",
@@ -1488,10 +1513,32 @@
           "p6": "P6",
           "p7": "P7 (slowest)"
         },
+        "qsv_preset": {
+          "fast": "Fast (lower quality)",
+          "faster": "Faster",
+          "medium": "Medium (default)",
+          "slow": "Slow (good quality)",
+          "slower": "Slower (better quality)",
+          "veryfast": "Very fast (lowest quality)",
+          "veryslow": "Very slow (best quality)"
+        },
+        "amd_quality": {
+          "auto": "Automatic · Driver default",
+          "balanced": "Balanced (default)",
+          "quality": "Quality",
+          "speed": "Speed"
+        },
         "origin": {
           "lan": "Local network",
           "pc": "This PC only",
           "wan": "Any network"
+        },
+        "paused_display_timeout": {
+          "four_hours": "4 hours",
+          "one_hour": "1 hour",
+          "thirty_minutes": "30 minutes",
+          "two_hours": "2 hours · Recommended",
+          "until_game_closes": "Until the game closes"
         },
         "refresh": {
           "auto": "Match the client",
@@ -1586,6 +1633,9 @@
         "hotkey_unsafe_detail": "This saved shortcut could trigger during ordinary typing. Add Ctrl, Alt, Shift, or Win, or replace it with the recommended shortcut.",
         "not_created": "Not created",
         "not_created_detail": "Save the physical desktop layout Vibepollo should recover when normal session restoration is unavailable.",
+        "prefer_golden_detail": "Use this known-good layout first whenever Vibepollo restores the desktop. If it cannot be restored, Vibepollo falls back to the session snapshot.",
+        "prefer_golden_title": "Restore this desktop by default",
+        "prefer_golden_unavailable": "Create a recovery snapshot to make a known-good desktop layout the default. Session-based restoration remains available as the fallback.",
         "ready": "Ready",
         "ready_detail": "A known-good physical display layout is available as the final recovery fallback.",
         "refresh_recommended": "Refresh recommended",
@@ -1621,6 +1671,7 @@
         "automatic_pacing_limiter_off": "Automatic · 1× / 4× · limiter off",
         "compatibility_pacing": "Compatibility · fixed 2×",
         "compatibility_pacing_limiter_off": "Compatibility · fixed 2× · limiter off",
+        "capture": "Capture",
         "fixed_resolution": "Fixed at {resolution}",
         "game_smoothness": "Game smoothness",
         "host_default": "Host default",

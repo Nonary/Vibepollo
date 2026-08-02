@@ -414,9 +414,15 @@ function synchronizeSimplePolicies(): void {
     </p>
 
     <div v-if="sourceValid && entries.length" class="display-overrides__list">
-      <article v-for="(entry, index) in entries" :key="index" class="display-override">
+      <article
+        v-for="(entry, index) in entries"
+        :key="index"
+        :class="['display-override', { 'display-override--simple': simple }]"
+      >
         <div class="display-override__heading">
-          <strong>{{ t('ui.settings.overrides.rule', { number: index + 1 }) }}</strong>
+          <strong v-if="!simple">{{
+            t('ui.settings.overrides.rule', { number: index + 1 })
+          }}</strong>
           <AppButton
             :label="t('ui.settings.overrides.remove')"
             :aria-label="t('ui.settings.overrides.remove_rule', { number: index + 1 })"
@@ -614,6 +620,25 @@ function synchronizeSimplePolicies(): void {
   background: var(--vs-color-bg-subtle);
 }
 
+.display-override--simple {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-12);
+}
+
+.display-override--simple .display-override__heading {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  padding-bottom: 3px;
+}
+
+.display-override--simple .display-override__mapping {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 .display-override__heading {
   display: flex;
   align-items: center;
@@ -697,6 +722,21 @@ function synchronizeSimplePolicies(): void {
 }
 
 @media (max-width: 639px) {
+  .display-override--simple {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .display-override--simple .display-override__heading {
+    grid-column: 1;
+    grid-row: 1;
+    justify-content: flex-end;
+  }
+
+  .display-override--simple .display-override__mapping {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
   .display-override__mapping {
     grid-template-columns: minmax(0, 1fr);
   }

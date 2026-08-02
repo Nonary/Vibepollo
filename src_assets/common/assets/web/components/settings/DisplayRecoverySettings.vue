@@ -20,11 +20,13 @@ interface MutationResponse {
 const props = defineProps<{
   hotkey?: unknown;
   modifiers?: unknown;
+  preferGolden?: unknown;
 }>();
 
 const emit = defineEmits<{
   'update:hotkey': [value: string];
   'update:modifiers': [value: string];
+  'update:preferGolden': [value: boolean];
 }>();
 
 const { t } = useI18n();
@@ -57,6 +59,11 @@ const hotkeyParts = computed(() => {
 });
 const hotkeyConfiguredSafely = computed(
   () => Boolean(String(props.hotkey ?? '').trim()) && modifierParts(props.modifiers).length > 0,
+);
+const preferGoldenEnabled = computed(() =>
+  ['1', 'true', 'yes', 'on', 'enabled'].includes(
+    String(props.preferGolden ?? '').toLocaleLowerCase(),
+  ),
 );
 
 const goldenState = computed<{ label: string; detail: string; tone: StatusTone }>(() => {
@@ -182,6 +189,10 @@ function clearHotkey(): void {
   emit('update:modifiers', '');
 }
 
+function updatePreferGolden(event: Event): void {
+  emit('update:preferGolden', (event.target as HTMLInputElement).checked);
+}
+
 onMounted(() => void loadGoldenStatus());
 </script>
 
@@ -209,6 +220,37 @@ onMounted(() => void loadGoldenStatus());
         variant="secondary"
         @click="golden ? captureGoldenSnapshot() : loadGoldenStatus()"
       />
+
+      <div class="recovery-preference">
+        <div class="recovery-item__copy">
+          <div class="recovery-item__title">
+            <strong>{{ t('ui.settings.recovery.prefer_golden_title') }}</strong>
+            <StatusBadge
+              v-if="golden?.exists"
+              :label="t('ui.settings.recommended')"
+              tone="success"
+              compact
+            />
+          </div>
+          <p>
+            {{
+              golden?.exists
+                ? t('ui.settings.recovery.prefer_golden_detail')
+                : t('ui.settings.recovery.prefer_golden_unavailable')
+            }}
+          </p>
+        </div>
+        <label class="vs-switch">
+          <input
+            type="checkbox"
+            :checked="preferGoldenEnabled"
+            :disabled="statusLoading || !golden?.exists"
+            @change="updatePreferGolden"
+          />
+          <span class="vs-switch__track" aria-hidden="true" />
+          <span class="visually-hidden">{{ t('ui.settings.recovery.prefer_golden_title') }}</span>
+        </label>
+      </div>
     </article>
 
     <article class="recovery-item recovery-item--hotkey">
@@ -293,7 +335,7 @@ onMounted(() => void loadGoldenStatus());
 .display-recovery-settings {
   display: grid;
   width: 100%;
-  gap: var(--vs-space-12);
+  gap: 0;
 }
 
 .recovery-item {
@@ -301,10 +343,12 @@ onMounted(() => void loadGoldenStatus());
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--vs-space-16);
-  padding: var(--vs-space-16);
-  border: 1px solid var(--vs-color-border-subtle);
-  border-radius: var(--vs-radius-control);
-  background: var(--vs-color-bg-subtle);
+  padding: var(--vs-space-16) var(--vs-space-20);
+  background: transparent;
+}
+
+.recovery-item + .recovery-item {
+  border-top: 1px solid var(--vs-color-border-subtle);
 }
 
 .recovery-item--hotkey {
@@ -313,9 +357,29 @@ onMounted(() => void loadGoldenStatus());
 
 .recovery-item__copy,
 .hotkey-control {
-  display: grid;
   min-width: 0;
+}
+
+.recovery-item__copy {
+  display: grid;
   gap: var(--vs-space-8);
+}
+
+.hotkey-control {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: var(--vs-space-8);
+}
+
+.recovery-preference {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-16);
+  padding-top: var(--vs-space-12);
+  border-top: 1px solid var(--vs-color-border-subtle);
 }
 
 .recovery-item__title {
@@ -382,16 +446,24 @@ onMounted(() => void loadGoldenStatus());
 
 .hotkey-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .recovery-message--error {
   color: var(--vs-color-status-danger);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 899px) {
   .recovery-item {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hotkey-control {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .recovery-preference {
+    align-items: flex-start;
   }
 
   .hotkey-recorder {

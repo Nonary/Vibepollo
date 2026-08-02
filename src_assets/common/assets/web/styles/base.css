@@ -28,7 +28,7 @@ body {
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
-    "Segoe UI",
+    'Segoe UI',
     sans-serif
   );
   font-size: var(--vs-type-size-body, 0.9375rem);
@@ -107,7 +107,7 @@ samp,
     ui-monospace,
     SFMono-Regular,
     Consolas,
-    "Liberation Mono",
+    'Liberation Mono',
     monospace
   );
   font-size: var(--vs-type-size-metadata, 0.8125rem);
@@ -259,6 +259,11 @@ hr {
 .vs-select:hover:not(:disabled),
 .vs-textarea:hover:not(:disabled) {
   border-color: var(--vs-color-accent-default);
+}
+
+.vs-select {
+  padding-inline-end: var(--vs-space-40);
+  text-overflow: ellipsis;
 }
 
 .vs-control::placeholder,

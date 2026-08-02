@@ -926,8 +926,8 @@ namespace config {
       video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
       {},  // config_revert_on_disconnect
-      0,  // paused_virtual_display_timeout_secs
-      false,  // always_restore_from_golden
+      7200,  // paused_virtual_display_timeout_secs (2 hours)
+      true,  // always_restore_from_golden (uses session fallback until a golden snapshot exists)
       video_t::dd_t::helper_engine_e::automatic,  // display_helper_engine
       0,  // snapshot_restore_hotkey
 #ifdef _WIN32

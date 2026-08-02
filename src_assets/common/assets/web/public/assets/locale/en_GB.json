@@ -496,7 +496,7 @@
     "dd_paused_virtual_display_timeout_secs_warning": "Removing a virtual display while a game is still running can cause crashes regardless of trigger (timeout, hotkey, or manual restore). This option helps prevent returning to a stuck virtual screen after inactivity.",
     "dd_paused_virtual_display_timeout_secs_hotkey_hint": "Alternative: use the restore hotkey to immediately terminate and restore display state when needed.",
     "dd_always_restore_from_golden": "Always restore from snapshot",
-    "dd_always_restore_from_golden_desc": "When enabled, the saved snapshot above is used first during display restore (reduces risk of stuck virtual screens). If the snapshot fails, falls back to session-based restore. Leave off unless you experience stuck displays.",
+    "dd_always_restore_from_golden_desc": "Use the saved recovery snapshot first whenever Vibeshine restores the desktop. If the snapshot is unavailable or cannot be restored, Vibeshine falls back to the session snapshot. Recommended when a recovery snapshot exists.",
     "golden_layout_upgrade_title": "Golden display snapshot needs an update",
     "golden_layout_upgrade_desc": "Your saved snapshot predates display layout support. Recreate it to restore portrait and landscape monitor layouts correctly.",
     "golden_layout_upgrade_action": "Open Display Settings",

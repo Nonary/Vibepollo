@@ -33,11 +33,15 @@ interface SaveResult {
   status?: boolean;
 }
 
+interface GpuMetadata {
+  description?: string;
+  pnp_id?: string;
+  vendor_id?: number | string;
+  dedicated_video_memory?: number | string;
+}
+
 interface MetadataResponse {
-  gpus?: Array<{
-    description?: string;
-    pnp_id?: string;
-  }>;
+  gpus?: GpuMetadata[];
   platform?: string;
   prerelease?: string;
   windows_build_number?: number;
@@ -65,6 +69,92 @@ const activeCategory = ref(settingsCategories[0].id);
 const hostMetadata = ref<MetadataResponse>({});
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
+
+function numericMetadataValue(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const preferredGpu = computed<GpuMetadata | null>(() => {
+  const gpus = hostMetadata.value.gpus ?? [];
+  const configuredName = String(values.adapter_name ?? '').trim();
+  const configuredPnpId = String(values.adapter_pnp_id ?? '').trim();
+  const configured = gpus.find((gpu) => {
+    const pnpId = gpu.pnp_id?.trim() ?? '';
+    const name = gpu.description?.trim() ?? '';
+    return configuredPnpId
+      ? pnpId.toLocaleLowerCase() === configuredPnpId.toLocaleLowerCase()
+      : configuredName && name === configuredName;
+  });
+  if (configured) return configured;
+  if (configuredName || configuredPnpId) return null;
+
+  return (
+    gpus.reduce<GpuMetadata | null>((best, gpu) => {
+      if (!best) return gpu;
+      return numericMetadataValue(gpu.dedicated_video_memory) >
+        numericMetadataValue(best.dedicated_video_memory)
+        ? gpu
+        : best;
+    }, null) ?? null
+  );
+});
+
+function encoderFamily(encoder: string): SettingsField['encoderFamily'] | undefined {
+  if (encoder === 'nvenc') return 'nvidia';
+  if (encoder === 'quicksync') return 'intel';
+  if (encoder === 'amdvce' || encoder === 'amdvce_legacy') return 'amd';
+  return undefined;
+}
+
+const preferredAutomaticEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
+  switch (numericMetadataValue(preferredGpu.value?.vendor_id)) {
+    case 0x10de:
+      return 'nvidia';
+    case 0x8086:
+      return 'intel';
+    case 0x1002:
+    case 0x1022:
+      return 'amd';
+    default:
+      return undefined;
+  }
+});
+
+const effectiveEncoderFamily = computed<SettingsField['encoderFamily'] | undefined>(() => {
+  const configuredEncoder = String(values.encoder ?? '');
+  return configuredEncoder
+    ? encoderFamily(configuredEncoder)
+    : preferredAutomaticEncoderFamily.value;
+});
+
+const automaticCaptureLabel = computed(() => {
+  const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
+  if (!platform.includes('windows')) return t('_common.auto');
+  return t(
+    Number(hostMetadata.value.windows_build_number ?? 0) >= 22631
+      ? 'ui.settings.options.capture.auto_wgc'
+      : 'ui.settings.options.capture.auto_ddx',
+  );
+});
+
+const automaticEncoderLabel = computed(() => {
+  const family = preferredAutomaticEncoderFamily.value;
+  const gpuName = preferredGpu.value?.description?.trim() ?? '';
+  const encoderKey =
+    family === 'nvidia'
+      ? 'ui.settings.options.encoder.nvenc'
+      : family === 'intel'
+        ? 'ui.settings.options.encoder.quicksync'
+        : family === 'amd'
+          ? 'ui.settings.options.encoder.amdvce'
+          : '';
+  if (!encoderKey || !gpuName) return t('ui.settings.options.encoder.auto');
+  return t('ui.settings.options.encoder.auto_selected', {
+    encoder: t(encoderKey),
+    name: gpuName,
+  });
+});
 
 function comparableValue(value: unknown): string {
   if (value && typeof value === 'object') return JSON.stringify(value);
@@ -127,70 +217,14 @@ const filteredGroups = computed(() => {
   );
 });
 
-function normalizedModeRemapping(value: unknown): Record<string, unknown[]> | null {
-  if (!value || typeof value !== 'object') return null;
-  const source = value as Record<string, unknown>;
-  if (
-    !Array.isArray(source.mixed) ||
-    !Array.isArray(source.resolution_only) ||
-    !Array.isArray(source.refresh_rate_only)
-  ) {
-    return null;
-  }
-  return {
-    mixed: source.mixed,
-    resolution_only: source.resolution_only,
-    refresh_rate_only: source.refresh_rate_only,
-  };
-}
-
-const resolutionSubstitutionCount = computed(() => {
-  const remapping = normalizedModeRemapping(values.dd_mode_remapping);
-  if (!remapping) return 0;
-  if (String(values.dd_resolution_option ?? 'auto') !== 'auto') return 0;
-  const rules =
-    String(values.dd_refresh_rate_option ?? 'auto') === 'auto'
-      ? remapping.mixed
-      : remapping.resolution_only;
-  return new Set(
-    rules
-      .filter((value) => value && typeof value === 'object')
-      .map((value) => value as Record<string, unknown>)
-      .filter(
-        (entry) =>
-          String(entry.requested_resolution ?? '').trim() &&
-          String(entry.final_resolution ?? '').trim() &&
-          !String(entry.requested_fps ?? '').trim() &&
-          !String(entry.final_refresh_rate ?? '').trim(),
-      )
-      .map(
-        (entry) =>
-          `${String(entry.requested_resolution).trim()}=>${String(entry.final_resolution).trim()}`,
-      ),
-  ).size;
-});
-
 const everydaySummary = computed(() => [
   {
     label: t('ui.settings.summary.display'),
     value: optionLabel('virtual_display_mode', t('ui.settings.summary.host_default')),
   },
   {
-    label: t('ui.settings.summary.resolution'),
-    value:
-      String(values.dd_resolution_option ?? 'auto') === 'manual'
-        ? t('ui.settings.summary.fixed_resolution', {
-            resolution: String(values.dd_manual_resolution ?? '').trim() || t('_common.unknown'),
-          })
-        : String(values.dd_resolution_option ?? 'auto') === 'disabled'
-          ? t('ui.settings.summary.preserves_host_resolution')
-          : !normalizedModeRemapping(values.dd_mode_remapping)
-            ? t('ui.settings.summary.overrides_need_attention')
-            : resolutionSubstitutionCount.value
-              ? t('ui.settings.summary.substitutions', {
-                  count: resolutionSubstitutionCount.value,
-                })
-              : t('ui.settings.summary.matches_client'),
+    label: t('ui.settings.summary.capture'),
+    value: optionLabel('capture', automaticCaptureLabel.value),
   },
   {
     label: t('ui.settings.summary.game_smoothness'),
@@ -291,7 +325,11 @@ function groupIsVisible(group: SettingsGroup): boolean {
 }
 
 function fieldIsVisible(field: SettingsField): boolean {
-  return fieldMatchesPlatform(field) && visibilityMatches(field.visibleWhen);
+  return (
+    fieldMatchesPlatform(field) &&
+    visibilityMatches(field.visibleWhen) &&
+    (!field.encoderFamily || field.encoderFamily === effectiveEncoderFamily.value)
+  );
 }
 
 function fieldByKey(key: string): SettingsField | undefined {
@@ -339,7 +377,9 @@ function fieldDescription(field: SettingsField): string {
   return key ? t(key) : '';
 }
 
-function optionText(option: SettingsOption): string {
+function optionText(option: SettingsOption, fieldKey = ''): string {
+  if (!option.value && fieldKey === 'capture') return automaticCaptureLabel.value;
+  if (!option.value && fieldKey === 'encoder') return automaticEncoderLabel.value;
   const gpu = gpuOptions.value.find((candidate) => candidate.value === option.value);
   if (!option.labelKey) {
     return gpu?.adapterName || option.value;
@@ -355,7 +395,7 @@ function optionLabel(key: string, fallback: string): string {
   const field = fieldByKey(key);
   const value = String(values[key] ?? '');
   const selected = field ? optionsFor(field).find((option) => option.value === value) : undefined;
-  return selected ? optionText(selected) : fallback;
+  return selected ? optionText(selected, key) : fallback;
 }
 
 function optionsFor(field: SettingsField): SettingsOption[] {
@@ -435,7 +475,8 @@ function updateValue(key: string, event: Event, field?: SettingsField): void {
     values.adapter_pnp_id = option?.pnpId ?? '';
     return;
   }
-  values[key] = field?.kind === 'number' && raw !== '' ? Number(raw) : raw;
+  values[key] =
+    (field?.kind === 'number' || field?.kind === 'duration') && raw !== '' ? Number(raw) : raw;
 }
 
 function normalizeConfiguredValues(configured: Record<string, unknown>): Record<string, unknown> {
@@ -568,7 +609,7 @@ onMounted(() => void load());
 </script>
 
 <template>
-  <div class="page page--narrow settings-page">
+  <div class="page settings-page">
     <PageHeader :title="t('ui.settings.title')" :description="t('ui.settings.description')">
       <template #actions>
         <button class="button button--secondary" type="button" :disabled="loading" @click="load">
@@ -676,7 +717,10 @@ onMounted(() => void load());
                   v-for="field in group.fields"
                   :key="field.key"
                   class="settings-row"
-                  :class="{ 'settings-row--stacked': field.stacked }"
+                  :class="{
+                    'settings-row--stacked': field.stacked,
+                    'settings-row--recovery': field.kind === 'display-recovery',
+                  }"
                 >
                   <div v-if="field.kind === 'mode-remapping'" class="settings-row__copy">
                     <span class="settings-row__label">{{ fieldLabel(field) }}</span>
@@ -702,6 +746,12 @@ onMounted(() => void load());
                     <span v-if="fieldDescription(field)" class="settings-row__description">
                       {{ fieldDescription(field) }}
                     </span>
+                    <span
+                      v-if="field.warningKey && Number(values[field.key]) > 0"
+                      class="settings-row__warning"
+                    >
+                      {{ t(field.warningKey) }}
+                    </span>
                     <span v-if="dependencyHint(field)" class="settings-row__dependency">
                       {{ dependencyHint(field) }}
                     </span>
@@ -719,10 +769,11 @@ onMounted(() => void load());
                   </label>
 
                   <select
-                    v-else-if="field.kind === 'select'"
+                    v-else-if="field.kind === 'select' || field.kind === 'duration'"
                     :id="`setting-${field.key}`"
                     class="vs-select"
                     :value="controlValue(field)"
+                    :title="optionLabel(field.key, '')"
                     @change="updateValue(field.key, $event, field)"
                   >
                     <option
@@ -730,7 +781,7 @@ onMounted(() => void load());
                       :key="option.value"
                       :value="option.value"
                     >
-                      {{ optionText(option) }}
+                      {{ optionText(option, field.key) }}
                     </option>
                   </select>
 
@@ -758,8 +809,10 @@ onMounted(() => void load());
                     v-else-if="field.kind === 'display-recovery'"
                     :hotkey="values.dd_snapshot_restore_hotkey"
                     :modifiers="values.dd_snapshot_restore_hotkey_modifiers"
+                    :prefer-golden="values.dd_always_restore_from_golden"
                     @update:hotkey="values.dd_snapshot_restore_hotkey = $event"
                     @update:modifiers="values.dd_snapshot_restore_hotkey_modifiers = $event"
+                    @update:prefer-golden="values.dd_always_restore_from_golden = $event"
                   />
 
                   <input
@@ -963,16 +1016,14 @@ onMounted(() => void load());
 }
 
 .settings-summary strong {
-  overflow: hidden;
   margin-top: var(--vs-space-2);
   color: var(--vs-color-text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 18px;
 }
 
 .settings-section + .settings-section,
 .danger-zone {
-  margin-top: var(--vs-space-32);
+  margin-top: var(--vs-space-24);
 }
 
 .settings-section__heading {
@@ -1042,9 +1093,10 @@ onMounted(() => void load());
 }
 
 .settings-row {
+  display: grid;
   min-height: var(--vs-size-row-settings);
+  grid-template-columns: minmax(240px, 1fr) minmax(300px, 420px);
   align-items: center;
-  justify-content: space-between;
   gap: var(--vs-space-24);
   padding: var(--vs-space-16) var(--vs-space-20);
 }
@@ -1054,14 +1106,17 @@ onMounted(() => void load());
 }
 
 .settings-row--stacked {
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
-  flex-direction: column;
   gap: var(--vs-space-12);
+}
+
+.settings-row--recovery {
+  padding: 0;
 }
 
 .settings-row__copy {
   min-width: 0;
-  flex: 1;
 }
 
 .settings-row__label {
@@ -1075,6 +1130,7 @@ onMounted(() => void load());
 }
 
 .settings-row__description,
+.settings-row__warning,
 .settings-row__dependency,
 .settings-row code {
   display: block;
@@ -1088,16 +1144,30 @@ onMounted(() => void load());
   color: var(--vs-color-status-warning);
 }
 
+.settings-row__warning {
+  display: block;
+  margin-top: var(--vs-space-8);
+  color: var(--vs-color-status-warning);
+  font-size: 13px;
+  line-height: 18px;
+}
+
 .settings-row input:not([type='checkbox']),
 .settings-row select,
 .settings-row textarea {
-  width: min(100%, 320px);
+  width: 100%;
+  min-width: 0;
 }
 
 .settings-row--stacked input:not([type='checkbox']),
 .settings-row--stacked select,
 .settings-row--stacked textarea {
   width: 100%;
+  min-width: 0;
+}
+
+.settings-row > .vs-switch {
+  justify-self: end;
 }
 
 .settings-group--advanced {
@@ -1154,6 +1224,18 @@ onMounted(() => void load());
 @media (max-width: 1023px) {
   .save-bar {
     left: calc(var(--vs-navigation-width-collapsed) + var(--vs-space-24));
+  }
+}
+
+@media (max-width: 899px) {
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: var(--vs-space-12);
+  }
+
+  .settings-row > .vs-switch {
+    justify-self: start;
   }
 }
 

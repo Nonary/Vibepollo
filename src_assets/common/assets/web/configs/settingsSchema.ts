@@ -2,6 +2,7 @@ export type SettingsFieldKind =
   | 'boolean'
   | 'number'
   | 'select'
+  | 'duration'
   | 'text'
   | 'textarea'
   | 'mode-remapping'
@@ -23,6 +24,7 @@ export interface SettingsField {
   kind: SettingsFieldKind;
   labelKey?: string;
   descriptionKey?: string;
+  warningKey?: string;
   options?: SettingsOption[];
   min?: number;
   max?: number;
@@ -36,6 +38,7 @@ export interface SettingsField {
   platform?: 'windows' | 'linux' | 'macos';
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
+  encoderFamily?: 'nvidia' | 'intel' | 'amd';
 }
 
 export interface SettingsGroup {
@@ -71,6 +74,11 @@ const select = (
   options: SettingsOption[],
   extra: Partial<SettingsField> = {},
 ): SettingsField => ({ key, kind: 'select', options, ...extra });
+const duration = (
+  key: string,
+  options: SettingsOption[],
+  extra: Partial<SettingsField> = {},
+): SettingsField => ({ key, kind: 'duration', options, ...extra });
 const modeRemapping = (extra: Partial<SettingsField> = {}): SettingsField => ({
   key: 'dd_mode_remapping',
   kind: 'mode-remapping',
@@ -127,6 +135,23 @@ const nvencPresetOptions = [
 ];
 
 const nvencPresetField = (): SettingsField => select('nvenc_preset', nvencPresetOptions);
+
+const qsvPresetOptions = [
+  option('veryslow', 'ui.settings.options.qsv_preset.veryslow'),
+  option('slower', 'ui.settings.options.qsv_preset.slower'),
+  option('slow', 'ui.settings.options.qsv_preset.slow'),
+  option('medium', 'ui.settings.options.qsv_preset.medium'),
+  option('fast', 'ui.settings.options.qsv_preset.fast'),
+  option('faster', 'ui.settings.options.qsv_preset.faster'),
+  option('veryfast', 'ui.settings.options.qsv_preset.veryfast'),
+];
+
+const amdQualityOptions = [
+  option('auto', 'ui.settings.options.amd_quality.auto'),
+  option('speed', 'ui.settings.options.amd_quality.speed'),
+  option('balanced', 'ui.settings.options.amd_quality.balanced'),
+  option('quality', 'ui.settings.options.amd_quality.quality'),
+];
 
 const frameLimiterOptions = [
   option('auto', '_common.auto'),
@@ -187,7 +212,19 @@ export const settingsCategories: SettingsCategory[] = [
   {
     id: 'everyday',
     groups: [
-      { id: 'everyday_display', fields: everydayDisplayFields() },
+      {
+        id: 'everyday_display',
+        fields: [
+          ...everydayDisplayFields(),
+          ...virtualDisplayCustomizationFields(),
+          select('capture', captureOptions, {
+            labelKey: 'ui.settings.fields.capture.label',
+            descriptionKey: 'ui.settings.fields.capture.description',
+            platform: 'windows',
+            recommended: true,
+          }),
+        ],
+      },
       {
         id: 'everyday_resolution',
         fields: [
@@ -199,56 +236,63 @@ export const settingsCategories: SettingsCategory[] = [
         ],
       },
       {
-        id: 'everyday_recovery',
-        fields: [displayRecovery()],
-      },
-      {
-        id: 'everyday_virtual_display',
-        collapsed: true,
+        id: 'everyday_smoothness',
+        visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
         fields: [
-          ...virtualDisplayCustomizationFields(),
           select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
             labelKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.label',
             descriptionKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.description',
+            recommended: true,
             visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
           }),
+        ],
+      },
+      {
+        id: 'everyday_encoding',
+        fields: [
+          select('encoder', [option('', '_common.auto')], {
+            labelKey: 'ui.settings.fields.encoder.label',
+            descriptionKey: 'ui.settings.fields.encoder.description',
+            recommended: true,
+          }),
+          select('nvenc_preset', nvencPresetOptions, { encoderFamily: 'nvidia' }),
+          select('qsv_preset', qsvPresetOptions, { encoderFamily: 'intel' }),
+          select('amd_quality', amdQualityOptions, { encoderFamily: 'amd' }),
+          number('fec_percentage', {
+            min: 1,
+            max: 255,
+            step: 1,
+            labelKey: 'ui.settings.fields.fec_percentage.label',
+            descriptionKey: 'ui.settings.fields.fec_percentage.description',
+          }),
+        ],
+      },
+      {
+        id: 'everyday_recovery',
+        fields: [
+          displayRecovery(),
           boolean('dd_config_revert_on_disconnect', {
             labelKey: 'ui.settings.fields.dd_config_revert_on_disconnect.label',
             descriptionKey: 'ui.settings.fields.dd_config_revert_on_disconnect.description',
           }),
-          number('dd_paused_virtual_display_timeout_secs', {
-            min: 0,
-            step: 1,
-            labelKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.label',
-            descriptionKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
-            visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
-          }),
-        ],
-      },
-      {
-        id: 'everyday_capture',
-        fields: [
-          select('capture', captureOptions, { recommended: true }),
-          boolean('stream_audio'),
-          boolean('controller'),
-        ],
-      },
-      {
-        id: 'everyday_access',
-        fields: [
-          select('origin_web_ui_allowed', [
-            option('pc', 'ui.settings.options.origin.pc'),
-            option('lan', 'ui.settings.options.origin.lan'),
-            option('wan', 'ui.settings.options.origin.wan'),
-          ]),
-          boolean('upnp', { restartRequired: true }),
-        ],
-      },
-      {
-        id: 'everyday_host',
-        fields: [
-          text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
-          boolean('system_tray'),
+          duration(
+            'dd_paused_virtual_display_timeout_secs',
+            [
+              option('0', 'ui.settings.options.paused_display_timeout.until_game_closes'),
+              option('1800', 'ui.settings.options.paused_display_timeout.thirty_minutes'),
+              option('3600', 'ui.settings.options.paused_display_timeout.one_hour'),
+              option('7200', 'ui.settings.options.paused_display_timeout.two_hours'),
+              option('14400', 'ui.settings.options.paused_display_timeout.four_hours'),
+            ],
+            {
+              labelKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.label',
+              descriptionKey:
+                'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
+              warningKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.warning',
+              recommended: true,
+              visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
+            },
+          ),
         ],
       },
     ],
@@ -594,8 +638,8 @@ export const settingsDefaults: Record<string, unknown> = {
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   dd_config_revert_on_disconnect: false,
-  dd_always_restore_from_golden: false,
-  dd_paused_virtual_display_timeout_secs: 0,
+  dd_always_restore_from_golden: true,
+  dd_paused_virtual_display_timeout_secs: 7200,
   dd_snapshot_restore_hotkey: '',
   dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
   keyboard: true,
@@ -613,6 +657,8 @@ export const settingsDefaults: Record<string, unknown> = {
   virtual_sink: '',
   encoder: '',
   nvenc_preset: 1,
+  qsv_preset: 'medium',
+  amd_quality: 'balanced',
   wgc_pacing_smoothing: true,
   hevc_mode: 0,
   av1_mode: 0,
