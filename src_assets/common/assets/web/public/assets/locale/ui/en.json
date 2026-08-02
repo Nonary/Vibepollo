@@ -703,13 +703,13 @@
       },
       "viewer": {
         "aria_label": "Filtered log lines",
-        "line_numbers_preserved": "Original line numbers are preserved while filtering.",
+        "line_numbers_preserved": "Line numbers refer to the loaded log window.",
         "match_line": "Match on line {line}",
         "search_aria_label": "Log search results with surrounding context",
         "search_context": "Match {current} of {total}, with {count} lines before and after",
         "loading": "Loading {source} log…",
         "title": "Log output",
-        "truncated": "Rendering the newest {limit} matches; exports still include all filtered lines."
+        "truncated": "Rendering the newest {limit} matches; exports include all filtered lines in the loaded window."
       }
     },
     "maintenance": {
@@ -958,10 +958,12 @@
         "addApplication": "Add application",
         "manage": "Manage",
         "manageDevices": "Manage devices",
+        "checkUpdates": "Check for updates",
         "openLibrary": "Open library",
         "openLogs": "Open logs",
         "openStats": "Open statistics",
         "pairDevice": "Pair a device",
+        "reportBug": "Report a bug",
         "startBrowserStream": "Start browser stream",
         "viewAll": "View all"
       },
@@ -995,9 +997,9 @@
       },
       "hardwareUnavailable": "Host hardware details unavailable",
       "hostLoad": {
-        "description": "Current utilization; values update without reordering.",
+        "description": "Live CPU, GPU, memory, and VRAM utilization.",
         "memoryInUse": "{used} of {total} memory in use",
-        "title": "Host load",
+        "title": "Current stats",
         "unavailableDescription": "Refresh to request a new host sample.",
         "unavailableTitle": "Host metrics unavailable"
       },
@@ -1014,6 +1016,10 @@
       "loadingReadiness": "Loading host readiness",
       "memory": "Memory",
       "notUpdated": "Not updated yet",
+      "reportBug": {
+        "description": "Found something that is not working? Open a GitHub issue and include the relevant logs.",
+        "title": "Report a bug"
+      },
       "readiness": {
         "attention": "Needs attention",
         "ready": "Ready for a stream",
@@ -1027,6 +1033,10 @@
       "title": "Overview",
       "unavailable": "Unavailable",
       "updated": "Updated {time}",
+      "updates": {
+        "installed": "Installed version: {version}. Review the latest release before updating.",
+        "title": "Updates"
+      },
       "warnings": {
         "blockedDevices": {
           "detail": "Enable at least one paired device before streaming.",

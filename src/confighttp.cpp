@@ -4328,6 +4328,40 @@ namespace confighttp {
     if (!handled) {
       read_sunshine_log(content);
     }
+
+    // The logs page polls this endpoint. Returning the complete file on every poll
+    // can overwhelm the browser once a long-running host has accumulated a large log.
+    // Keep the legacy full response unless the caller explicitly requests a tail.
+    if (const auto it = query.find("tail"); it != query.end()) {
+      try {
+        constexpr std::size_t kMaxTailLines = 10000;
+        const auto requested = std::stoull(it->second);
+        const auto tail_lines = std::min<std::size_t>(requested, kMaxTailLines);
+        if (tail_lines > 0 && !content.empty()) {
+          std::size_t cursor = content.size();
+          if (content.back() == '\n') {
+            --cursor;
+          }
+
+          std::size_t tail_start = 0;
+          for (std::size_t line = 0; line < tail_lines && cursor > 0; ++line) {
+            const auto separator = content.rfind('\n', cursor - 1);
+            if (separator == std::string::npos) {
+              tail_start = 0;
+              break;
+            }
+            tail_start = separator + 1;
+            cursor = separator;
+          }
+          if (tail_start > 0) {
+            content.erase(0, tail_start);
+          }
+        }
+      } catch (const std::exception &) {
+        // Invalid tail values preserve the legacy full-log response.
+      }
+    }
+
     SimpleWeb::CaseInsensitiveMultimap headers;
     std::string contentType = "text/plain";
 #ifdef _WIN32

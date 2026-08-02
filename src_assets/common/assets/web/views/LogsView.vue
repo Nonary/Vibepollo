@@ -75,14 +75,30 @@ let refreshTimer: number | undefined;
 let highlightTimer: number | undefined;
 let latestRequest = 0;
 
-const searchContextLines = 5;
-const searchResultLimit = 200;
+const searchContextLines = 3;
+const searchResultLimit = 50;
+const logTailLines = 2000;
+const displayedLineLimit = 1000;
 
 function splitLogLines(text: string): string[] {
   if (!text) return [];
   const lines = text.split(/\r?\n/);
   if (lines.at(-1) === '') lines.pop();
   return lines;
+}
+
+function tailLogText(text: string, maxLines: number): string {
+  if (!text || maxLines <= 0) return text;
+  let cursor = text.length;
+  if (text.endsWith('\n')) cursor -= 1;
+  let tailStart = 0;
+  for (let line = 0; line < maxLines && cursor > 0; line += 1) {
+    const separator = text.lastIndexOf('\n', cursor - 1);
+    if (separator < 0) return text;
+    tailStart = separator + 1;
+    cursor = separator;
+  }
+  return tailStart > 0 ? text.slice(tailStart) : text;
 }
 
 const allLines = computed<LogLine[]>(() => {
@@ -95,7 +111,9 @@ const allLines = computed<LogLine[]>(() => {
 
 const latestLineCount = computed(() => splitLogLines(latestText.value).length);
 const unseenLines = computed(() => Math.max(0, latestLineCount.value - allLines.value.length));
-const newLogsAvailable = computed(() => unseenLines.value > 0);
+const newLogsAvailable = computed(
+  () => unseenLines.value > 0 || latestText.value !== rawText.value,
+);
 const isAtBottom = ref(true);
 const showJumpToLatest = computed(
   () => newLogsAvailable.value || !isAtBottom.value || !autoscroll.value,
@@ -164,11 +182,13 @@ const searchResults = computed<LogSearchResult[]>(() => {
 
 const displayedLines = computed(() => {
   const lines = filteredLines.value;
-  if (selectedLineNumber.value === null || searchActive.value) return lines.slice(-5000);
+  if (selectedLineNumber.value === null || searchActive.value)
+    return lines.slice(-displayedLineLimit);
   const targetIndex = lines.findIndex((line) => line.number === selectedLineNumber.value);
-  if (targetIndex < 0) return lines.slice(-5000);
-  const start = Math.max(0, Math.min(targetIndex - 2500, lines.length - 5000));
-  return lines.slice(start, start + 5000);
+  if (targetIndex < 0) return lines.slice(-displayedLineLimit);
+  const halfWindow = Math.floor(displayedLineLimit / 2);
+  const start = Math.max(0, Math.min(targetIndex - halfWindow, lines.length - displayedLineLimit));
+  return lines.slice(start, start + displayedLineLimit);
 });
 const omittedLines = computed(() => filteredLines.value.length - displayedLines.value.length);
 
@@ -356,10 +376,13 @@ async function refreshLogs(silent = false): Promise<void> {
 
   try {
     const response = await apiGet<string>(
-      `/api/logs?source=${encodeURIComponent(requestedSource)}`,
+      `/api/logs?source=${encodeURIComponent(requestedSource)}&tail=${logTailLines}`,
     );
     if (requestId !== latestRequest) return;
-    const nextText = typeof response === 'string' ? response : String(response ?? '');
+    const responseText = typeof response === 'string' ? response : String(response ?? '');
+    // Keep the browser bounded even when connected to an older host that ignores
+    // the tail query parameter.
+    const nextText = tailLogText(responseText, logTailLines);
     const nextLineCount = splitLogLines(nextText).length;
     const displayedLineCount = allLines.value.length;
     const element = viewer.value;
@@ -479,7 +502,7 @@ onMounted(() => {
   void refreshLogs();
   refreshTimer = window.setInterval(() => {
     if (!paused.value && !document.hidden) void refreshLogs(true);
-  }, 3000);
+  }, 5000);
 });
 
 onBeforeUnmount(() => {
@@ -672,7 +695,7 @@ onBeforeUnmount(() => {
             }}
           </p>
           <p v-else-if="omittedLines">
-            {{ t('ui.logs.viewer.truncated', { limit: 5000 }) }}
+            {{ t('ui.logs.viewer.truncated', { limit: displayedLineLimit }) }}
           </p>
           <p v-else>{{ t('ui.logs.viewer.line_numbers_preserved') }}</p>
         </div>
@@ -1066,6 +1089,63 @@ onBeforeUnmount(() => {
   .log-viewer {
     height: calc(100vh - 10rem);
     min-height: 24rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: auto;
+  }
+
+  .log-viewer ol {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .log-search-results {
+    padding: var(--vs-space-8);
+  }
+
+  .log-search-result {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .log-search-result header {
+    position: static;
+  }
+
+  .log-line {
+    min-width: 0;
+    grid-template-areas:
+      'number severity'
+      'message message';
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0 var(--vs-space-8);
+    padding: var(--vs-space-4) var(--vs-space-12);
+    line-height: 1.45;
+    white-space: normal;
+  }
+
+  .log-line__number {
+    position: static;
+    grid-area: number;
+    padding: 0;
+    border-right: 0;
+    background: transparent;
+    text-align: left;
+  }
+
+  .log-line__severity {
+    grid-area: severity;
+    padding: 0;
+    text-align: right;
+  }
+
+  .log-line code {
+    min-width: 0;
+    grid-area: message;
+    padding: var(--vs-space-2) 0 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 }
 

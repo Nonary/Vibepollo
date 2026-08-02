@@ -15,30 +15,8 @@ import {
 } from '@/components/ui';
 import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { SessionStatus } from '@/types/sessions';
+import { useSystemStore } from '@/stores/system';
 import { formatBytes } from '@/utils/format';
-
-interface PairedDevice {
-  uuid: string;
-  name: string;
-  enabled: boolean;
-  connected: boolean;
-}
-
-interface ClientsResponse {
-  named_certs?: PairedDevice[];
-  status?: boolean;
-}
-
-interface LibraryApp {
-  uuid?: string;
-  name?: string;
-  index?: number;
-  'image-version'?: number;
-}
-
-interface AppsResponse {
-  apps?: LibraryApp[];
-}
 
 interface OverviewWarning {
   key: string;
@@ -49,29 +27,15 @@ interface OverviewWarning {
 }
 
 const { locale, t } = useI18n();
+const system = useSystemStore();
 const session = ref<SessionStatus | null>(null);
-const devices = ref<PairedDevice[]>([]);
-const apps = ref<LibraryApp[]>([]);
 const hostStats = ref<HostStatsSnapshot | null>(null);
 const hostInfo = ref<HostInfo | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
-const clientsLoaded = ref(false);
 const fetchErrors = ref<string[]>([]);
 const lastUpdatedAt = ref<number | null>(null);
 let pollTimer: number | undefined;
-
-function reconcileStable<T>(current: T[], incoming: T[], keyFor: (item: T) => string): T[] {
-  const incomingByKey = new Map(incoming.map((item) => [keyFor(item), item]));
-  const stable = current.flatMap((item) => {
-    const key = keyFor(item);
-    const replacement = incomingByKey.get(key);
-    if (!replacement) return [];
-    incomingByKey.delete(key);
-    return [replacement];
-  });
-  return [...stable, ...incomingByKey.values()];
-}
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
@@ -84,40 +48,17 @@ async function refresh(silent = false): Promise<void> {
 
   const results = await Promise.allSettled([
     apiGet<SessionStatus>('/api/session/status'),
-    apiGet<ClientsResponse>('/api/clients/list'),
-    apiGet<AppsResponse>('/api/apps'),
     apiGet<HostStatsSnapshot>('/api/host/stats'),
     apiGet<HostInfo>('/api/host/info'),
   ]);
 
   const nextErrors: string[] = [];
-  const [sessionResult, clientsResult, appsResult, statsResult, infoResult] = results;
+  const [sessionResult, statsResult, infoResult] = results;
 
   if (sessionResult.status === 'fulfilled') {
     session.value = sessionResult.value;
   } else {
     nextErrors.push(errorMessage(sessionResult.reason, t('ui.overview.errors.streamStatus')));
-  }
-
-  if (clientsResult.status === 'fulfilled') {
-    const incoming = Array.isArray(clientsResult.value.named_certs)
-      ? clientsResult.value.named_certs
-      : [];
-    devices.value = reconcileStable(devices.value, incoming, (device) => device.uuid);
-    clientsLoaded.value = true;
-  } else {
-    nextErrors.push(errorMessage(clientsResult.reason, t('ui.overview.errors.pairedDevices')));
-  }
-
-  if (appsResult.status === 'fulfilled') {
-    const incoming = Array.isArray(appsResult.value.apps) ? appsResult.value.apps : [];
-    apps.value = reconcileStable(
-      apps.value,
-      incoming,
-      (app) => app.uuid || String(app.index ?? app.name ?? ''),
-    );
-  } else {
-    nextErrors.push(errorMessage(appsResult.reason, t('ui.overview.errors.library')));
   }
 
   if (statsResult.status === 'fulfilled') {
@@ -142,9 +83,6 @@ const isStreaming = computed(() =>
   Boolean(session.value?.appRunning || (session.value?.activeSessions ?? 0) > 0),
 );
 
-const activeDevices = computed(() => devices.value.filter((device) => device.connected).length);
-const enabledDevices = computed(() => devices.value.filter((device) => device.enabled).length);
-
 const warnings = computed<OverviewWarning[]>(() => {
   const result: OverviewWarning[] = [];
   if (fetchErrors.value.length) {
@@ -165,23 +103,6 @@ const warnings = computed<OverviewWarning[]>(() => {
       }),
       to: '/stats',
       action: t('ui.overview.actions.openStats'),
-    });
-  }
-  if (clientsLoaded.value && devices.value.length === 0) {
-    result.push({
-      key: 'no-devices',
-      title: t('ui.overview.warnings.noDevices.title'),
-      detail: t('ui.overview.warnings.noDevices.detail'),
-      to: '/pair',
-      action: t('ui.overview.actions.pairDevice'),
-    });
-  } else if (clientsLoaded.value && enabledDevices.value === 0) {
-    result.push({
-      key: 'blocked-devices',
-      title: t('ui.overview.warnings.blockedDevices.title'),
-      detail: t('ui.overview.warnings.blockedDevices.detail'),
-      to: '/devices',
-      action: t('ui.overview.actions.manageDevices'),
     });
   }
   const hottest = Math.max(hostStats.value?.cpu_percent ?? 0, hostStats.value?.gpu_percent ?? 0);
@@ -219,7 +140,6 @@ const readiness = computed<{ label: string; detail: string; tone: StatusTone }>(
   };
 });
 
-const libraryPreview = computed(() => apps.value.slice(-4).reverse());
 const lastUpdatedLabel = computed(() =>
   lastUpdatedAt.value
     ? new Intl.DateTimeFormat(locale.value || undefined, {
@@ -311,12 +231,8 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="readiness-panel__actions">
-          <RouterLink class="button button--secondary" :to="isStreaming ? '/stats' : '/library'">
-            {{
-              isStreaming
-                ? t('ui.overview.actions.openStats')
-                : t('ui.overview.actions.openLibrary')
-            }}
+          <RouterLink class="button button--secondary" to="/stats">
+            {{ t('ui.overview.actions.openStats') }}
             <UiIcon name="chevron-right" aria-hidden="true" />
           </RouterLink>
           <RouterLink v-if="!isStreaming" class="button button--primary" to="/stream">
@@ -385,7 +301,7 @@ onBeforeUnmount(() => {
               <h2 id="host-metrics-title">{{ t('ui.overview.hostLoad.title') }}</h2>
               <p>{{ t('ui.overview.hostLoad.description') }}</p>
             </div>
-            <RouterLink to="/stats">{{ t('ui.overview.sessions') }}</RouterLink>
+            <RouterLink to="/stats">{{ t('ui.overview.actions.openStats') }}</RouterLink>
           </div>
           <dl v-if="hostStats" class="metric-grid">
             <div>
@@ -422,86 +338,52 @@ onBeforeUnmount(() => {
           </p>
         </section>
 
-        <section class="overview-panel" aria-labelledby="devices-summary-title">
+        <section class="overview-panel overview-action-panel" aria-labelledby="report-bug-title">
           <div class="overview-panel__heading">
             <div>
-              <h2 id="devices-summary-title">{{ t('ui.overview.devices.title') }}</h2>
-              <p>
-                {{
-                  t(
-                    activeDevices === 1
-                      ? 'ui.overview.devices.connected.one'
-                      : 'ui.overview.devices.connected.other',
-                    { count: activeDevices },
-                  )
-                }}
-              </p>
+              <span class="overview-action-panel__icon" aria-hidden="true">
+                <UiIcon name="help" :size="20" />
+              </span>
+              <h2 id="report-bug-title">{{ t('ui.overview.reportBug.title') }}</h2>
+              <p>{{ t('ui.overview.reportBug.description') }}</p>
             </div>
-            <RouterLink to="/devices">{{ t('ui.overview.actions.manage') }}</RouterLink>
           </div>
-          <div v-if="devices.length" class="overview-count">
-            <strong>{{ devices.length }}</strong>
-            <span>
-              {{
-                t(
-                  enabledDevices === 1
-                    ? 'ui.overview.devices.allowed.one'
-                    : 'ui.overview.devices.allowed.other',
-                  { count: enabledDevices },
-                )
-              }}
-            </span>
-          </div>
-          <EmptyState
-            v-else
-            compact
-            icon="devices"
-            :title="t('ui.overview.devices.emptyTitle')"
-            :description="t('ui.overview.devices.emptyDescription')"
+          <a
+            class="button button--secondary button--compact"
+            href="https://github.com/Nonary/vibeshine/issues/new/choose"
+            target="_blank"
+            rel="noopener noreferrer"
           >
-            <RouterLink class="button button--secondary button--compact" to="/pair">
-              {{ t('ui.overview.actions.pairDevice') }}
-            </RouterLink>
-          </EmptyState>
+            {{ t('ui.overview.actions.reportBug') }}
+            <UiIcon name="external-link" :size="16" aria-hidden="true" />
+          </a>
         </section>
 
-        <section
-          class="overview-panel overview-panel--library"
-          aria-labelledby="library-summary-title"
-        >
+        <section class="overview-panel overview-action-panel" aria-labelledby="updates-title">
           <div class="overview-panel__heading">
             <div>
-              <h2 id="library-summary-title">{{ t('ui.overview.library.title') }}</h2>
+              <span class="overview-action-panel__icon" aria-hidden="true">
+                <UiIcon name="download" :size="20" />
+              </span>
+              <h2 id="updates-title">{{ t('ui.overview.updates.title') }}</h2>
               <p>
                 {{
-                  t(
-                    apps.length === 1
-                      ? 'ui.overview.library.configured.one'
-                      : 'ui.overview.library.configured.other',
-                    { count: apps.length },
-                  )
+                  t('ui.overview.updates.installed', {
+                    version: system.metadata?.version || t('_common.unknown'),
+                  })
                 }}
               </p>
             </div>
-            <RouterLink to="/library">{{ t('ui.overview.actions.viewAll') }}</RouterLink>
           </div>
-          <ul v-if="libraryPreview.length" class="library-preview">
-            <li v-for="app in libraryPreview" :key="app.uuid || app.index || app.name">
-              <span aria-hidden="true"><UiIcon name="gamepad" /></span>
-              <strong>{{ app.name || t('ui.overview.library.unnamedApplication') }}</strong>
-            </li>
-          </ul>
-          <EmptyState
-            v-else
-            compact
-            icon="library"
-            :title="t('ui.overview.library.emptyTitle')"
-            :description="t('ui.overview.library.emptyDescription')"
+          <a
+            class="button button--secondary button--compact"
+            href="https://github.com/Nonary/vibeshine/releases/latest"
+            target="_blank"
+            rel="noopener noreferrer"
           >
-            <RouterLink class="button button--secondary button--compact" to="/library/new">
-              {{ t('ui.overview.actions.addApplication') }}
-            </RouterLink>
-          </EmptyState>
+            {{ t('ui.overview.actions.checkUpdates') }}
+            <UiIcon name="external-link" :size="16" aria-hidden="true" />
+          </a>
         </section>
       </div>
     </template>
@@ -646,16 +528,12 @@ onBeforeUnmount(() => {
 }
 
 .overview-detail-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(14rem, 0.65fr));
 }
 
 .overview-panel {
   min-width: 0;
   padding: var(--vs-card-padding);
-}
-
-.overview-panel--library {
-  grid-column: 1 / -1;
 }
 
 .overview-panel__heading p {
@@ -694,57 +572,36 @@ onBeforeUnmount(() => {
   font-size: var(--vs-type-size-metadata);
 }
 
-.overview-count {
+.overview-action-panel {
   display: flex;
-  min-height: 7.5rem;
+  min-height: 13rem;
   flex-direction: column;
-  justify-content: center;
-  margin-top: var(--vs-space-8);
+  justify-content: space-between;
+  gap: var(--vs-space-20);
 }
 
-.overview-count strong {
-  font-size: var(--vs-type-size-page);
-  line-height: var(--vs-type-line-height-page);
-  font-variant-numeric: tabular-nums;
-}
-
-.overview-count span {
-  color: var(--vs-color-text-secondary);
-}
-
-.library-preview {
+.overview-action-panel__icon {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--vs-space-8);
-  padding: 0;
-  margin-top: var(--vs-space-16);
-  list-style: none;
-}
-
-.library-preview li {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: var(--vs-space-8);
-  padding: var(--vs-space-12);
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  margin-bottom: var(--vs-space-12);
   border-radius: var(--vs-radius-control);
   background: var(--vs-color-bg-subtle);
+  color: var(--vs-color-accent-default);
 }
 
-.library-preview li > span {
-  color: var(--vs-color-text-muted);
-}
-
-.library-preview strong {
-  overflow: hidden;
-  font-size: var(--vs-type-size-control);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.overview-action-panel > .button {
+  width: fit-content;
 }
 
 @media (max-width: 63.999rem) {
-  .library-preview {
+  .overview-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-detail-grid > :first-child {
+    grid-column: 1 / -1;
   }
 }
 
@@ -768,10 +625,6 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .overview-panel--library {
-    grid-column: auto;
-  }
-
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -781,18 +634,13 @@ onBeforeUnmount(() => {
   .readiness-panel__state {
     flex-direction: column;
   }
-
-  .library-preview {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 @media (forced-colors: active) {
   .readiness-panel,
   .overview-summary-card,
   .overview-panel,
-  .metric-grid > div,
-  .library-preview li {
+  .metric-grid > div {
     border: var(--vs-border-width) solid CanvasText;
   }
 }
