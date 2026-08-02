@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { ApiError, apiGet, apiPost } from '@/api/client';
@@ -14,6 +14,13 @@ import {
   UiIcon,
   type StatusTone,
 } from '@/components/ui';
+import ClientSettingsEditor, {
+  type ClientDeviceDraft,
+  type ClientSettingsMetadata,
+  type DisplayDevice,
+  type HdrProfileEntry,
+} from '@/components/devices/ClientSettingsEditor.vue';
+import { settingsDefaults } from '@/configs/settingsSchema';
 import { formatRelativeTime } from '@/utils/format';
 
 const { locale, t } = useI18n();
@@ -45,24 +52,33 @@ interface MutationResponse {
   enabled_updated?: boolean;
 }
 
-interface DeviceDraft {
-  name: string;
-  enabled: boolean;
-}
-
 interface PendingAction {
   kind: 'disconnect' | 'unpair';
   device: PairedDevice;
 }
 
 const devices = ref<PairedDevice[]>([]);
-const drafts = ref<Record<string, DeviceDraft>>({});
+const drafts = ref<Record<string, ClientDeviceDraft>>({});
+const draftOrigins = ref<Record<string, ClientDeviceDraft>>({});
+const commonSettings = ref<Record<string, unknown>>({});
+const metadata = ref<ClientSettingsMetadata>({});
+const platform = ref('');
+const commonSettingsError = ref('');
+const displayDevices = ref<DisplayDevice[]>([]);
+const displayDevicesLoading = ref(false);
+const displayDevicesLoaded = ref(false);
+const displayDevicesError = ref('');
+const hdrProfiles = ref<HdrProfileEntry[]>([]);
+const hdrProfilesLoading = ref(false);
+const hdrProfilesLoaded = ref(false);
+const hdrProfilesError = ref('');
 const query = ref('');
 const loading = ref(true);
 const refreshing = ref(false);
 const error = ref('');
 const notice = ref('');
 const busyUuid = ref('');
+const openEditors = ref<Set<string>>(new Set());
 const pendingAction = ref<PendingAction | null>(null);
 const confirmOpen = ref(false);
 let refreshTimer: number | undefined;
@@ -108,22 +124,160 @@ function reconcileStable(current: PairedDevice[], incoming: PairedDevice[]): Pai
   return [...stable, ...byUuid.values()];
 }
 
+function cloneDraft(value: ClientDeviceDraft): ClientDeviceDraft {
+  return {
+    ...value,
+    configOverrides: structuredClone(toRaw(value.configOverrides ?? {})),
+  };
+}
+
+function normalizeVirtualMode(value: unknown): ClientDeviceDraft['virtualDisplayMode'] {
+  const mode = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase();
+  return ['global', 'per_client', 'shared', 'disabled'].includes(mode)
+    ? (mode as ClientDeviceDraft['virtualDisplayMode'])
+    : null;
+}
+
+function normalizeVirtualLayout(value: unknown): ClientDeviceDraft['virtualDisplayLayout'] {
+  const layout = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase();
+  return [
+    'exclusive',
+    'extended',
+    'extended_primary',
+    'extended_isolated',
+    'extended_primary_isolated',
+  ].includes(layout)
+    ? (layout as ClientDeviceDraft['virtualDisplayLayout'])
+    : null;
+}
+
+function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
+  const virtualDisplayMode = normalizeVirtualMode(device.virtual_display_mode);
+  const virtualDisplayLayout = normalizeVirtualLayout(device.virtual_display_layout);
+  const physicalOutputOverride = device.output_name_override?.trim() || null;
+  const displayOverrideEnabled =
+    Boolean(device.always_use_virtual_display) ||
+    Boolean(physicalOutputOverride) ||
+    virtualDisplayMode !== null ||
+    virtualDisplayLayout !== null;
+  const displaySelection =
+    Boolean(device.always_use_virtual_display) ||
+    (virtualDisplayMode !== null && virtualDisplayMode !== 'disabled')
+      ? 'virtual'
+      : 'physical';
+
+  return {
+    name: device.name,
+    enabled: device.enabled,
+    displayMode: device.display_mode ?? '',
+    displayOverrideEnabled,
+    displaySelection,
+    physicalOutputOverride,
+    virtualDisplayMode,
+    virtualDisplayLayout,
+    hdrProfile: device.hdr_profile?.trim() ?? '',
+    prefer10BitSdr: Boolean(device.prefer_10bit_sdr),
+    configOverrides:
+      device.config_overrides && typeof device.config_overrides === 'object'
+        ? structuredClone(toRaw(device.config_overrides))
+        : {},
+  };
+}
+
+function serializedDraft(value: ClientDeviceDraft): string {
+  return JSON.stringify({
+    ...value,
+    configOverrides: Object.fromEntries(
+      Object.entries(value.configOverrides ?? {}).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+  });
+}
+
+function sameDraft(left: ClientDeviceDraft, right: ClientDeviceDraft): boolean {
+  return serializedDraft(left) === serializedDraft(right);
+}
+
 function syncDrafts(incoming: PairedDevice[]): void {
-  const previous = new Map(devices.value.map((device) => [device.uuid, device]));
+  const uuids = new Set(incoming.map((device) => device.uuid));
   for (const device of incoming) {
-    const draft = drafts.value[device.uuid];
-    const oldDevice = previous.get(device.uuid);
-    const draftIsUntouched =
-      !draft ||
-      (oldDevice && draft.name === oldDevice.name && draft.enabled === oldDevice.enabled);
-    if (draftIsUntouched) {
-      drafts.value[device.uuid] = { name: device.name, enabled: device.enabled };
+    const nextDraft = draftFromDevice(device);
+    const currentDraft = drafts.value[device.uuid];
+    const origin = draftOrigins.value[device.uuid];
+    if (!currentDraft || !origin || sameDraft(currentDraft, origin)) {
+      drafts.value[device.uuid] = cloneDraft(nextDraft);
+      draftOrigins.value[device.uuid] = cloneDraft(nextDraft);
     }
   }
 
-  const uuids = new Set(incoming.map((device) => device.uuid));
   for (const uuid of Object.keys(drafts.value)) {
     if (!uuids.has(uuid)) delete drafts.value[uuid];
+  }
+  for (const uuid of Object.keys(draftOrigins.value)) {
+    if (!uuids.has(uuid)) delete draftOrigins.value[uuid];
+  }
+  openEditors.value = new Set([...openEditors.value].filter((uuid) => uuids.has(uuid)));
+}
+
+function resetDraft(device: PairedDevice): void {
+  const nextDraft = draftFromDevice(device);
+  drafts.value[device.uuid] = cloneDraft(nextDraft);
+  draftOrigins.value[device.uuid] = cloneDraft(nextDraft);
+}
+
+async function loadCommonSettings(): Promise<void> {
+  commonSettingsError.value = '';
+  try {
+    const [configResponse, metadataResponse] = await Promise.all([
+      apiGet<Record<string, unknown>>('/api/config'),
+      apiGet<ClientSettingsMetadata>('/api/metadata'),
+    ]);
+    const configured = Object.fromEntries(
+      Object.entries(configResponse).filter(([key]) => key !== 'status'),
+    );
+    commonSettings.value = { ...settingsDefaults, ...configured };
+    metadata.value = { ...metadataResponse, platform: metadataResponse.platform || platform.value };
+  } catch {
+    commonSettingsError.value = t('ui.devices.common_settings_unavailable');
+  }
+}
+
+async function loadDisplayDevices(force = false): Promise<void> {
+  if (displayDevicesLoading.value || (displayDevicesLoaded.value && !force)) return;
+  displayDevicesLoading.value = true;
+  displayDevicesError.value = '';
+  try {
+    const response = await apiGet<unknown>('/api/display-devices?detail=full');
+    if (!Array.isArray(response)) throw new Error('invalid-display-device-response');
+    displayDevices.value = response as DisplayDevice[];
+    displayDevicesLoaded.value = true;
+  } catch {
+    displayDevicesError.value = t('config.display_devices_load_failed');
+  } finally {
+    displayDevicesLoading.value = false;
+  }
+}
+
+async function loadHdrProfiles(force = false): Promise<void> {
+  if (hdrProfilesLoading.value || (hdrProfilesLoaded.value && !force)) return;
+  hdrProfilesLoading.value = true;
+  hdrProfilesError.value = '';
+  try {
+    const response = await apiGet<{ status?: boolean; profiles?: HdrProfileEntry[] }>(
+      '/api/clients/hdr-profiles',
+    );
+    if (response.status === false) throw new Error('rejected');
+    hdrProfiles.value = Array.isArray(response.profiles) ? response.profiles : [];
+    hdrProfilesLoaded.value = true;
+  } catch {
+    hdrProfilesError.value = t('clients.hdr_profile_load_failed');
+  } finally {
+    hdrProfilesLoading.value = false;
   }
 }
 
@@ -135,6 +289,10 @@ async function loadDevices(silent = false): Promise<void> {
     const response = await apiGet<ClientsResponse>('/api/clients/list');
     if (response.status === false) throw new Error(t('ui.devices.error.list_rejected'));
     const incoming = Array.isArray(response.named_certs) ? response.named_certs : [];
+    platform.value = response.platform ?? platform.value;
+    if (!metadata.value.platform && platform.value) {
+      metadata.value = { ...metadata.value, platform: platform.value };
+    }
     syncDrafts(incoming);
     devices.value = reconcileStable(devices.value, incoming);
     if (!silent) notice.value = '';
@@ -171,21 +329,134 @@ function lastSeen(device: PairedDevice): string {
   );
 }
 
-function updatePayload(device: PairedDevice, draft: DeviceDraft): Record<string, unknown> {
+function hasCustomSettings(device: PairedDevice): boolean {
+  return Boolean(
+    device.display_mode ||
+      device.output_name_override ||
+      device.virtual_display_mode ||
+      device.virtual_display_layout ||
+      device.always_use_virtual_display ||
+      device.hdr_profile ||
+      device.prefer_10bit_sdr ||
+      Object.keys(device.config_overrides ?? {}).length,
+  );
+}
+
+function editorIsOpen(uuid: string): boolean {
+  return openEditors.value.has(uuid);
+}
+
+function toggleEditor(uuid: string): void {
+  const next = new Set(openEditors.value);
+  if (next.has(uuid)) {
+    next.delete(uuid);
+  } else {
+    next.clear();
+    next.add(uuid);
+    void loadDisplayDevices();
+    void loadHdrProfiles();
+  }
+  openEditors.value = next;
+}
+
+function cleanOverrides(overrides: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(overrides).filter(
+      ([key, value]) => key.trim() && value !== undefined && value !== null,
+    ),
+  );
+}
+
+function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<string, unknown> {
+  const useVirtualDisplay = draft.displayOverrideEnabled && draft.displaySelection === 'virtual';
+  const outputName =
+    draft.displayOverrideEnabled && draft.displaySelection === 'physical'
+      ? (draft.physicalOutputOverride?.trim() ?? '')
+      : '';
   const payload: Record<string, unknown> = {
     uuid: device.uuid,
     name: draft.name.trim(),
     enabled: draft.enabled,
-    display_mode: device.display_mode ?? '',
-    output_name_override: device.output_name_override ?? '',
-    always_use_virtual_display: device.always_use_virtual_display ?? false,
-    virtual_display_mode: device.virtual_display_mode ?? '',
-    virtual_display_layout: device.virtual_display_layout ?? '',
-    prefer_10bit_sdr: device.prefer_10bit_sdr ?? false,
+    display_mode: draft.displayMode.trim(),
+    output_name_override: outputName,
+    always_use_virtual_display:
+      useVirtualDisplay &&
+      draft.virtualDisplayMode !== 'global' &&
+      draft.virtualDisplayMode !== null,
+    virtual_display_mode: outputName
+      ? 'disabled'
+      : useVirtualDisplay
+        ? draft.virtualDisplayMode === 'global' || draft.virtualDisplayMode === null
+          ? 'global'
+          : draft.virtualDisplayMode
+        : '',
+    virtual_display_layout: useVirtualDisplay ? (draft.virtualDisplayLayout ?? '') : '',
+    prefer_10bit_sdr: draft.prefer10BitSdr,
+    hdr_profile: draft.hdrProfile.trim(),
+    config_overrides: cleanOverrides(draft.configOverrides),
   };
-  if (device.config_overrides !== undefined) payload.config_overrides = device.config_overrides;
-  if (device.hdr_profile !== undefined) payload.hdr_profile = device.hdr_profile;
   return payload;
+}
+
+const draftScalarKeys = [
+  'name',
+  'enabled',
+  'displayMode',
+  'displayOverrideEnabled',
+  'displaySelection',
+  'physicalOutputOverride',
+  'virtualDisplayMode',
+  'virtualDisplayLayout',
+  'hdrProfile',
+  'prefer10BitSdr',
+] as const satisfies ReadonlyArray<Exclude<keyof ClientDeviceDraft, 'configOverrides'>>;
+
+function serializedValue(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function mergeLatestDraft(
+  origin: ClientDeviceDraft,
+  local: ClientDeviceDraft,
+  latest: ClientDeviceDraft,
+): { draft?: ClientDeviceDraft; conflict: boolean } {
+  const merged = cloneDraft(latest);
+  for (const key of draftScalarKeys) {
+    const localChanged = serializedValue(local[key]) !== serializedValue(origin[key]);
+    const latestChanged = serializedValue(latest[key]) !== serializedValue(origin[key]);
+    if (
+      localChanged &&
+      latestChanged &&
+      serializedValue(local[key]) !== serializedValue(latest[key])
+    ) {
+      return { conflict: true };
+    }
+    if (localChanged) Object.assign(merged, { [key]: local[key] });
+  }
+
+  const overrideKeys = new Set([
+    ...Object.keys(origin.configOverrides),
+    ...Object.keys(local.configOverrides),
+    ...Object.keys(latest.configOverrides),
+  ]);
+  for (const key of overrideKeys) {
+    const originValue = origin.configOverrides[key];
+    const localValue = local.configOverrides[key];
+    const latestValue = latest.configOverrides[key];
+    const localChanged = serializedValue(localValue) !== serializedValue(originValue);
+    const latestChanged = serializedValue(latestValue) !== serializedValue(originValue);
+    if (
+      localChanged &&
+      latestChanged &&
+      serializedValue(localValue) !== serializedValue(latestValue)
+    ) {
+      return { conflict: true };
+    }
+    if (!localChanged) continue;
+    if (localValue === undefined) delete merged.configOverrides[key];
+    else merged.configOverrides[key] = structuredClone(toRaw(localValue));
+  }
+  return { draft: merged, conflict: false };
 }
 
 async function saveDevice(device: PairedDevice): Promise<void> {
@@ -197,17 +468,36 @@ async function saveDevice(device: PairedDevice): Promise<void> {
     error.value = t('ui.devices.error.name_required');
     return;
   }
+  if (draft.displayMode.trim() && !/^\d{2,5}x\d{2,5}x\d{1,4}$/.test(draft.displayMode.trim())) {
+    error.value = t('ui.devices.editor.display_mode_invalid');
+    return;
+  }
 
   busyUuid.value = device.uuid;
   try {
+    let saveDraft = cloneDraft(draft);
+    const origin = draftOrigins.value[device.uuid];
+    const latestResponse = await apiGet<ClientsResponse>('/api/clients/list');
+    if (latestResponse.status === false) throw new Error(t('ui.devices.error.list_rejected'));
+    const latestDevice = latestResponse.named_certs?.find((item) => item.uuid === device.uuid);
+    if (origin && latestDevice) {
+      const merged = mergeLatestDraft(origin, draft, draftFromDevice(latestDevice));
+      if (merged.conflict || !merged.draft) {
+        error.value = t('ui.devices.error.conflict');
+        return;
+      }
+      saveDraft = merged.draft;
+    }
     const response = await apiPost<MutationResponse>(
       '/api/clients/update',
-      updatePayload(device, draft),
+      updatePayload(device, saveDraft),
     );
     if (response.status !== true || response.enabled_updated === false) {
       throw new Error(t('ui.devices.error.partial_update'));
     }
-    notice.value = t('ui.devices.notice.updated', { name: draft.name.trim() });
+    drafts.value[device.uuid] = cloneDraft(saveDraft);
+    draftOrigins.value[device.uuid] = cloneDraft(saveDraft);
+    notice.value = t('ui.devices.notice.updated', { name: saveDraft.name.trim() });
     await loadDevices(true);
   } catch (cause) {
     error.value =
@@ -237,8 +527,7 @@ async function confirmAction(): Promise<void> {
   notice.value = '';
   busyUuid.value = action.device.uuid;
   try {
-    const path =
-      action.kind === 'unpair' ? '/api/clients/unpair' : '/api/clients/disconnect';
+    const path = action.kind === 'unpair' ? '/api/clients/unpair' : '/api/clients/disconnect';
     const response = await apiPost<MutationResponse>(path, { uuid: action.device.uuid });
     if (response.status !== true) {
       throw new Error(
@@ -267,6 +556,9 @@ async function confirmAction(): Promise<void> {
 }
 
 onMounted(() => {
+  void loadCommonSettings();
+  void loadDisplayDevices();
+  void loadHdrProfiles();
   void loadDevices();
   refreshTimer = window.setInterval(() => void loadDevices(true), 8000);
 });
@@ -278,10 +570,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="vs-page devices-page">
-    <PageHeader
-      :title="t('ui.devices.page.title')"
-      :description="t('ui.devices.page.description')"
-    >
+    <PageHeader :title="t('ui.devices.page.title')" :description="t('ui.devices.page.description')">
       <template #meta>
         <StatusBadge
           :label="t('ui.devices.count.streaming', { count: deviceCounts.streaming })"
@@ -334,6 +623,13 @@ onBeforeUnmount(() => {
       >
         {{ notice }}
       </InlineAlert>
+      <InlineAlert
+        v-if="commonSettingsError"
+        tone="warning"
+        :title="t('ui.devices.common_settings_title')"
+      >
+        {{ commonSettingsError }}
+      </InlineAlert>
 
       <section class="devices-toolbar vs-surface" :aria-label="t('ui.devices.filters.aria_label')">
         <label class="vs-field device-search" for="device-search">
@@ -361,11 +657,7 @@ onBeforeUnmount(() => {
         </p>
       </section>
 
-      <div
-        v-if="loading"
-        class="device-loading"
-        :aria-label="t('ui.devices.loading.aria_label')"
-      >
+      <div v-if="loading" class="device-loading" :aria-label="t('ui.devices.loading.aria_label')">
         <LoadingSkeleton v-for="item in 3" :key="item" variant="block" height="10rem" />
       </div>
 
@@ -394,13 +686,21 @@ onBeforeUnmount(() => {
         <li v-for="device in filteredDevices" :key="device.uuid">
           <article class="device-row vs-surface" :aria-labelledby="`device-name-${device.uuid}`">
             <div class="device-row__summary">
-              <div class="device-row__icon" aria-hidden="true"><UiIcon name="devices" :size="20" /></div>
+              <div class="device-row__icon" aria-hidden="true">
+                <UiIcon name="devices" :size="20" />
+              </div>
               <div class="device-row__identity">
                 <div class="device-row__title-line">
                   <h2 :id="`device-name-${device.uuid}`">{{ device.name }}</h2>
                   <StatusBadge
                     :label="statusFor(device).label"
                     :tone="statusFor(device).tone"
+                    compact
+                  />
+                  <StatusBadge
+                    v-if="hasCustomSettings(device)"
+                    :label="t('ui.devices.editor.custom_settings')"
+                    tone="neutral"
                     compact
                   />
                 </div>
@@ -428,48 +728,42 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <details class="device-editor">
-              <summary>
+            <section class="device-editor">
+              <button
+                type="button"
+                class="device-editor__toggle"
+                :aria-expanded="editorIsOpen(device.uuid)"
+                :aria-controls="`device-editor-panel-${device.uuid}`"
+                @click="toggleEditor(device.uuid)"
+              >
                 <UiIcon name="edit" :size="16" aria-hidden="true" />
                 <span>{{ t('ui.devices.editor.title') }}</span>
-              </summary>
-              <form v-if="drafts[device.uuid]" class="device-editor__form" @submit.prevent="saveDevice(device)">
-                <label class="vs-field" :for="`device-name-input-${device.uuid}`">
-                  <span class="vs-field__label">{{ t('pin.device_name') }}</span>
-                  <input
-                    :id="`device-name-input-${device.uuid}`"
-                    v-model="drafts[device.uuid].name"
-                    class="vs-input"
-                    autocomplete="off"
-                    maxlength="96"
-                    required
-                    :disabled="busyUuid === device.uuid"
-                  />
-                  <span class="vs-field__helper">{{ t('ui.devices.editor.name_helper') }}</span>
-                </label>
-
-                <label class="vs-switch device-enabled">
-                  <input
-                    v-model="drafts[device.uuid].enabled"
-                    type="checkbox"
-                    :disabled="busyUuid === device.uuid"
-                  />
-                  <span class="vs-switch__track" aria-hidden="true" />
-                  <span>{{ t('ui.devices.editor.allow_stream') }}</span>
-                </label>
-
-                <div class="device-editor__footer">
-                  <p>{{ t('ui.devices.editor.blocking_help') }}</p>
-                  <AppButton
-                    type="submit"
-                    variant="primary"
-                    :label="t('ui.devices.action.save')"
-                    :busy="busyUuid === device.uuid"
-                    :busy-label="t('ui.devices.action.saving')"
-                  />
-                </div>
-              </form>
-            </details>
+              </button>
+              <div
+                v-if="editorIsOpen(device.uuid) && drafts[device.uuid]"
+                :id="`device-editor-panel-${device.uuid}`"
+              >
+                <ClientSettingsEditor
+                  v-model="drafts[device.uuid]"
+                  :common-settings="commonSettings"
+                  :metadata="{ ...metadata, platform: metadata.platform || platform }"
+                  :display-devices="displayDevices"
+                  :display-devices-loading="displayDevicesLoading"
+                  :display-devices-loaded="displayDevicesLoaded"
+                  :display-devices-error="displayDevicesError"
+                  :hdr-profiles="hdrProfiles"
+                  :hdr-profiles-loading="hdrProfilesLoading"
+                  :hdr-profiles-loaded="hdrProfilesLoaded"
+                  :hdr-profiles-error="hdrProfilesError"
+                  :busy="busyUuid === device.uuid"
+                  :control-id-prefix="`client-${device.uuid}`"
+                  @save="saveDevice(device)"
+                  @cancel="resetDraft(device)"
+                  @load-display-devices="loadDisplayDevices"
+                  @load-hdr-profiles="loadHdrProfiles"
+                />
+              </div>
+            </section>
           </article>
         </li>
       </ul>
@@ -579,8 +873,7 @@ onBeforeUnmount(() => {
 }
 
 .device-row__title-line,
-.device-row__actions,
-.device-editor__footer {
+.device-row__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -614,57 +907,31 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--vs-color-border-subtle);
 }
 
-.device-editor summary {
+.device-editor__toggle {
   display: flex;
+  width: 100%;
   min-height: 44px;
   align-items: center;
   gap: var(--vs-space-8);
   padding: 0 var(--vs-space-20);
+  border: 0;
+  background: transparent;
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-control);
   font-weight: var(--vs-type-weight-medium);
+  text-align: start;
   cursor: pointer;
-  list-style: none;
 }
 
-.device-editor summary::-webkit-details-marker {
-  display: none;
-}
-
-.device-editor summary:hover {
+.device-editor__toggle:hover,
+.device-editor__toggle[aria-expanded='true'] {
   color: var(--vs-color-text-primary);
   background: var(--vs-color-bg-subtle);
 }
 
-.device-editor__form {
-  display: grid;
-  grid-template-columns: minmax(15rem, 1fr) minmax(13rem, auto);
-  align-items: end;
-  gap: var(--vs-space-20);
-  padding: var(--vs-space-20);
-  border-top: 1px solid var(--vs-color-border-subtle);
-  background: var(--vs-color-bg-subtle);
-}
-
-.device-enabled {
-  align-self: center;
-}
-
-.device-editor__footer {
-  grid-column: 1 / -1;
-  justify-content: space-between;
-  padding-top: var(--vs-space-4);
-}
-
-.device-editor__footer p {
-  margin: 0;
-  white-space: normal;
-}
-
 @media (max-width: 767px) {
   .devices-toolbar,
-  .device-row__summary,
-  .device-editor__form {
+  .device-row__summary {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
@@ -685,16 +952,11 @@ onBeforeUnmount(() => {
   .device-row__actions > :deep(.vs-button) {
     flex: 1 1 10rem;
   }
-
-  .device-editor__footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
 
 @media (forced-colors: active) {
   .device-row__icon,
-  .device-editor__form {
+  .device-editor {
     border: 1px solid CanvasText;
   }
 }

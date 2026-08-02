@@ -335,9 +335,30 @@
       "editor": {
         "allow_stream": "Allow this device to stream",
         "blocking_help": "Blocking a device keeps it paired but rejects future stream requests.",
+        "common_display_summary": "Common virtual display mode: {mode}; layout: {layout}.",
+        "custom_settings": "Custom settings",
+        "display_description": "Keep the common host settings or define a display route and stream presentation for this client.",
+        "display_mode_invalid": "Use WIDTHxHEIGHTxFPS, for example 1920x1080x60.",
+        "display_override": "Use a client-specific display route",
+        "hdr_description": "Apply HDR calibration and virtual-display presentation settings for this client.",
+        "hdr_peak_description": "Set a manual peak brightness for this client's virtual display and HDR stream, or leave it automatic.",
+        "hdr_profile_description": "Choose an installed Windows HDR color profile for this client, or leave it automatic.",
         "name_helper": "Use a name that identifies the person or screen using this client.",
-        "title": "Edit device"
+        "no_displays": "No displays were reported by this host",
+        "no_hdr_profiles": "No installed HDR color profiles",
+        "physical_display_description": "Choose the host display for this client. Inactive dummy plugs remain available.",
+        "prefer_10bit_description": "When this client requests HDR, send a 10-bit SDR stream instead. HEVC or AV1 Main10 is required.",
+        "route_target": "Route this client to",
+        "sections": {
+          "display": "Display routing",
+          "hdr": "HDR and presentation",
+          "identity": "Identity and access"
+        },
+        "title": "Edit device",
+        "use_common_value": "Use common setting: {value}"
       },
+      "common_settings_title": "Common host settings unavailable",
+      "common_settings_unavailable": "The common host settings could not be loaded. Existing client overrides are preserved, but inherited values may be incomplete.",
       "empty": {
         "description": "Start pairing from Artemis, then enter its PIN here to approve the device.",
         "filtered_description": "Try a different device name or ID.",
@@ -346,6 +367,7 @@
       },
       "error": {
         "action": "Unable to complete the device action.",
+        "conflict": "This device changed while you were editing it. Refresh the editor, review the current values, and save again.",
         "list_rejected": "The host could not list paired devices.",
         "load": "Unable to load paired devices.",
         "name_required": "Device name cannot be empty.",
