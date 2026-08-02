@@ -33,13 +33,19 @@ function mergeMessages(base: LocaleMessages, overlay: LocaleMessages): LocaleMes
 }
 
 async function loadMessages(locale: string): Promise<LocaleMessages> {
+  const englishBase = await loadJson('/assets/locale/en.json');
+  const englishInterface = await loadJson('/assets/locale/ui/en.json');
+  let messages = mergeMessages(englishBase, englishInterface);
+  if (locale === 'en') return messages;
+
   const encoded = encodeURIComponent(locale);
   const base = await loadJson(`/assets/locale/${encoded}.json`);
+  messages = mergeMessages(messages, base);
   try {
     const interfaceMessages = await loadJson(`/assets/locale/ui/${encoded}.json`);
-    return mergeMessages(base, interfaceMessages);
+    return mergeMessages(messages, interfaceMessages);
   } catch {
-    return base;
+    return messages;
   }
 }
 

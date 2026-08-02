@@ -2,9 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { apiGet } from '@/api/client';
+import { ApiError, apiDelete, apiGet, apiPost } from '@/api/client';
 import {
   AppButton,
+  ConfirmDialog,
   EmptyState,
   InlineAlert,
   LoadingSkeleton,
@@ -28,6 +29,11 @@ interface ConfigResponse extends Record<string, unknown> {
 
 interface SessionsPayload<T> {
   sessions?: T[];
+}
+
+interface MutationResponse {
+  status?: boolean | string;
+  error?: string;
 }
 
 interface CounterSnapshot {
@@ -68,10 +74,14 @@ const counterSnapshots = new Map<string, CounterSnapshot>();
 const sessionHistory = ref<SessionSummary[]>([]);
 const selectedHistory = ref<SessionSummary | null>(null);
 const detailOpen = ref(false);
+const stopConfirmOpen = ref(false);
+const pendingStop = ref<ActiveVisualSession | null>(null);
 const ready = ref(false);
 const refreshing = ref(false);
 const error = ref('');
+const notice = ref('');
 const lastUpdated = ref<number | null>(null);
+const stoppingSessionKey = ref('');
 let refreshTimer: number | undefined;
 let refreshInFlight = false;
 
@@ -135,6 +145,22 @@ const activeSessions = computed<ActiveVisualSession[]>(() => [
     hdr: session.hdr ?? false,
   })),
 ]);
+
+const activeRtspSessionCount = computed(
+  () => activeSessions.value.filter((session) => session.protocol === 'rtsp').length,
+);
+const stopConfirmTitle = computed(() =>
+  pendingStop.value?.protocol === 'rtsp'
+    ? t('ui.sessions.confirm.stop_rtsp_title')
+    : t('ui.sessions.confirm.stop_webrtc_title'),
+);
+const stopConfirmDescription = computed(() => {
+  if (pendingStop.value?.protocol !== 'rtsp')
+    return t('ui.sessions.confirm.stop_webrtc_description');
+  return activeRtspSessionCount.value > 1
+    ? t('ui.sessions.confirm.stop_rtsp_all_description')
+    : t('ui.sessions.confirm.stop_rtsp_description');
+});
 
 const cpuHistory = computed(() => hostHistory.value.map((point) => point.cpu_percent));
 const gpuHistory = computed(() => hostHistory.value.map((point) => point.gpu_percent));
@@ -293,6 +319,52 @@ function openHistory(history: SessionSummary): void {
   detailOpen.value = true;
 }
 
+function requestStop(session: ActiveVisualSession): void {
+  pendingStop.value = session;
+  stopConfirmOpen.value = true;
+}
+
+function clearPendingStop(): void {
+  if (!stoppingSessionKey.value) pendingStop.value = null;
+}
+
+async function confirmStop(): Promise<void> {
+  const session = pendingStop.value;
+  if (!session) return;
+
+  error.value = '';
+  notice.value = '';
+  stoppingSessionKey.value = session.key;
+  try {
+    if (session.protocol === 'rtsp') {
+      const response = await apiPost<MutationResponse>('/api/apps/close', {});
+      if (response.status !== true) throw new Error(t('ui.sessions.error.stop_rtsp_rejected'));
+      notice.value = t('ui.sessions.notice.stop_rtsp');
+    } else {
+      const response = await apiDelete<MutationResponse>(
+        `/api/webrtc/sessions/${encodeURIComponent(session.id)}`,
+      );
+      if (response.status !== true) {
+        throw new Error(response.error || t('ui.sessions.error.webrtc_not_found'));
+      }
+      notice.value = t('ui.sessions.notice.stop_webrtc');
+    }
+
+    stopConfirmOpen.value = false;
+    pendingStop.value = null;
+    await refresh(true);
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError
+        ? t('ui.sessions.error.action')
+        : cause instanceof Error
+          ? cause.message
+          : t('ui.sessions.error.action');
+  } finally {
+    stoppingSessionKey.value = '';
+  }
+}
+
 function historyDate(history: SessionSummary): string {
   const timestamp = history.end_time_unix || history.start_time_unix;
   return formatRelativeTime(timestamp * 1000, locale.value, t('ui.sessions.value.unknown_time'));
@@ -355,6 +427,16 @@ onBeforeUnmount(() => {
       >
         {{ error }}
       </InlineAlert>
+      <InlineAlert
+        v-if="notice"
+        tone="success"
+        :title="t('ui.sessions.alert.action_complete')"
+        announce="polite"
+        :dismiss-label="t('_common.dismiss')"
+        @dismiss="notice = ''"
+      >
+        {{ notice }}
+      </InlineAlert>
       <InlineAlert v-if="!statsEnabled" tone="info" :title="t('stats.disabled_title')">
         {{ t('stats.disabled_desc') }}
       </InlineAlert>
@@ -366,7 +448,7 @@ onBeforeUnmount(() => {
       >
         <div class="stats-section__heading">
           <div>
-            <h2 id="host-vitals-title">{{ t('host_stats.title') }}</h2>
+            <h2 id="host-vitals-title">{{ t('ui.stats.host_vitals_title') }}</h2>
             <p>
               {{ hostInfo?.cpu_model || ''
               }}<span v-if="hostInfo?.gpu_model"> · {{ hostInfo.gpu_model }}</span>
@@ -383,25 +465,25 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="hostStats" class="gauge-grid">
           <MetricGauge
-            :label="t('host_stats.cpu')"
+            :label="t('ui.stats.host_cpu')"
             :value="hostStats.cpu_percent"
             :detail="temperature(hostStats.cpu_temp_c)"
             color="var(--vs-color-status-info)"
           />
           <MetricGauge
-            :label="t('host_stats.gpu')"
+            :label="t('ui.stats.host_gpu')"
             :value="hostStats.gpu_percent"
             :detail="temperature(hostStats.gpu_temp_c)"
             color="var(--vs-color-status-success)"
           />
           <MetricGauge
-            :label="t('host_stats.ram')"
+            :label="t('ui.stats.host_ram')"
             :value="hostStats.ram_percent"
             :detail="`${formatBytes(hostStats.ram_used_bytes, locale)} / ${formatBytes(hostStats.ram_total_bytes, locale)}`"
             color="var(--vs-color-status-warning)"
           />
           <MetricGauge
-            :label="t('host_stats.vram')"
+            :label="t('ui.stats.host_vram')"
             :value="hostStats.vram_percent"
             :detail="`${formatBytes(hostStats.vram_used_bytes, locale)} / ${formatBytes(hostStats.vram_total_bytes, locale)}`"
             color="#d946ef"
@@ -464,7 +546,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section
-        v-if="statsEnabled && showActiveSessions"
+        v-if="showActiveSessions"
         class="stats-section"
         aria-labelledby="stream-performance-title"
       >
@@ -522,6 +604,23 @@ onBeforeUnmount(() => {
                   <dd>{{ session.duration }}</dd>
                 </div>
               </dl>
+              <AppButton
+                :label="t('ui.sessions.action.stop_stream')"
+                icon="stop"
+                variant="secondary"
+                class="visual-session__stop"
+                :disabled="Boolean(stoppingSessionKey)"
+                :aria-label="
+                  t('ui.sessions.action.stop_stream_named', {
+                    protocol:
+                      session.protocol === 'rtsp'
+                        ? t('ui.sessions.protocol.rtsp')
+                        : t('ui.sessions.protocol.webrtc'),
+                    client: session.client,
+                  })
+                "
+                @click="requestStop(session)"
+              />
             </header>
             <SessionPerformanceCharts
               :points="session.points"
@@ -581,6 +680,18 @@ onBeforeUnmount(() => {
     </div>
 
     <SessionDetailDialog v-model:open="detailOpen" :summary="selectedHistory" />
+    <ConfirmDialog
+      v-model:open="stopConfirmOpen"
+      :title="stopConfirmTitle"
+      :description="stopConfirmDescription"
+      :confirm-label="t('ui.sessions.action.stop_stream')"
+      :cancel-label="t('_common.cancel')"
+      :busy="Boolean(pendingStop && stoppingSessionKey === pendingStop.key)"
+      :busy-label="t('ui.sessions.action.working')"
+      :close-on-confirm="false"
+      @confirm="confirmStop"
+      @cancel="clearPendingStop"
+    />
   </div>
 </template>
 
@@ -666,6 +777,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, auto);
   gap: var(--vs-space-24);
+}
+
+.visual-session__stop {
+  flex: 0 0 auto;
 }
 
 .visual-session__header dt {
@@ -759,6 +874,10 @@ onBeforeUnmount(() => {
   .visual-session__header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .visual-session__stop {
+    align-self: stretch;
   }
 }
 

@@ -163,8 +163,8 @@ const warnings = computed<OverviewWarning[]>(() => {
       detail: t('ui.overview.warnings.paused.detail', {
         app: session.value.appName || t('ui.overview.currentApplication'),
       }),
-      to: '/sessions',
-      action: t('ui.overview.actions.reviewSession'),
+      to: '/stats',
+      action: t('ui.overview.actions.openStats'),
     });
   }
   if (clientsLoaded.value && devices.value.length === 0) {
@@ -190,8 +190,8 @@ const warnings = computed<OverviewWarning[]>(() => {
       key: 'host-load',
       title: t('ui.overview.warnings.hostLoad.title'),
       detail: t('ui.overview.warnings.hostLoad.detail', { threshold: 95 }),
-      to: '/sessions',
-      action: t('ui.overview.actions.viewSessions'),
+      to: '/stats',
+      action: t('ui.overview.actions.openStats'),
     });
   }
   return result;
@@ -311,10 +311,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="readiness-panel__actions">
-          <RouterLink class="button button--secondary" :to="isStreaming ? '/sessions' : '/library'">
+          <RouterLink class="button button--secondary" :to="isStreaming ? '/stats' : '/library'">
             {{
               isStreaming
-                ? t('ui.overview.actions.viewActiveSession')
+                ? t('ui.overview.actions.openStats')
                 : t('ui.overview.actions.openLibrary')
             }}
             <UiIcon name="chevron-right" aria-hidden="true" />
@@ -349,7 +349,7 @@ onBeforeUnmount(() => {
               )
             }}
           </p>
-          <RouterLink to="/sessions">{{ t('ui.overview.actions.inspectSession') }}</RouterLink>
+          <RouterLink to="/stats">{{ t('ui.overview.actions.openStats') }}</RouterLink>
         </section>
 
         <section

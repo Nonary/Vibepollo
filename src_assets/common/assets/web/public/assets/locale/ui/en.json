@@ -809,7 +809,6 @@
       "logs": "Logs",
       "maintenance": "Maintenance",
       "overview": "Overview",
-      "sessions": "Sessions",
       "stats": "Statistics",
       "settings": "Settings"
     },
@@ -921,17 +920,14 @@
     "overview": {
       "actions": {
         "addApplication": "Add application",
-        "inspectSession": "Inspect session details",
         "manage": "Manage",
         "manageDevices": "Manage devices",
         "openLibrary": "Open library",
         "openLogs": "Open logs",
+        "openStats": "Open statistics",
         "pairDevice": "Pair a device",
-        "reviewSession": "Review session",
         "startBrowserStream": "Start browser stream",
-        "viewActiveSession": "View active session",
-        "viewAll": "View all",
-        "viewSessions": "View sessions"
+        "viewAll": "View all"
       },
       "activeSessions": {
         "one": "{count} active session.",
@@ -1174,6 +1170,11 @@
     },
     "stats": {
       "close_detail": "Close session details",
+      "host_cpu": "CPU",
+      "host_gpu": "GPU",
+      "host_ram": "RAM",
+      "host_vitals_title": "Host vitals",
+      "host_vram": "VRAM",
       "maximum": "Max {value}",
       "minimum": "Min {value}",
       "sample_count": "{count} sample | {count} samples"

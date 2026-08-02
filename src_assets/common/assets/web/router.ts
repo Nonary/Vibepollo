@@ -10,7 +10,6 @@ import MaintenanceView from '@/views/MaintenanceView.vue';
 import NotFoundView from '@/views/NotFoundView.vue';
 import OverviewView from '@/views/OverviewView.vue';
 import PairView from '@/views/PairView.vue';
-import SessionsView from '@/views/SessionsView.vue';
 import SettingsView from '@/views/SettingsView.vue';
 import StatsView from '@/views/StatsView.vue';
 
@@ -62,12 +61,6 @@ const router = createRouter({
       name: 'pair',
       component: PairView,
       meta: { titleKey: 'ui.pair.page.title' },
-    },
-    {
-      path: '/sessions',
-      name: 'sessions',
-      component: SessionsView,
-      meta: { titleKey: 'ui.nav.sessions' },
     },
     {
       path: '/stats',
