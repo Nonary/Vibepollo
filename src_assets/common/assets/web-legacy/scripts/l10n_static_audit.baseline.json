@@ -1,0 +1,3706 @@
+{
+  "version": 1,
+  "generatedAt": "2026-07-29T02:18:23.361Z",
+  "issueCount": 411,
+  "issues": [
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.collect_playnite_logs_desc|Export Vibepollo, Playnite, plugin, and display-helper logs.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.collect_playnite_logs_desc",
+      "value": "Export Vibepollo, Playnite, plugin, and display-helper logs.",
+      "message": "I18n expression uses an English fallback literal: Export Vibepollo, Playnite, plugin, and display-helper logs."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.collect_playnite_logs|Export Logs||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.collect_playnite_logs",
+      "value": "Export Logs",
+      "message": "I18n expression uses an English fallback literal: Export Logs"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.collect_playnite_logs|Export Logs||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.collect_playnite_logs",
+      "value": "Export Logs",
+      "message": "I18n expression uses an English fallback literal: Export Logs"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.export_crash_bundle_desc|Download logs and the most recent Vibepollo crash dump for issue reports.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.export_crash_bundle_desc",
+      "value": "Download logs and the most recent Vibepollo crash dump for issue reports.",
+      "message": "I18n expression uses an English fallback literal: Download logs and the most recent Vibepollo crash dump for issue reports."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.export_crash_bundle_preparing|Preparing Crash Bundle...||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.export_crash_bundle_preparing",
+      "value": "Preparing Crash Bundle...",
+      "message": "I18n fallback literal should be represented in en.json: Preparing Crash Bundle..."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.export_crash_bundle|Export Crash Bundle||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.export_crash_bundle",
+      "value": "Export Crash Bundle",
+      "message": "I18n fallback literal should be represented in en.json: Export Crash Bundle"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.export_crash_bundle|Export Crash Bundle||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.export_crash_bundle",
+      "value": "Export Crash Bundle",
+      "message": "I18n expression uses an English fallback literal: Export Crash Bundle"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source_display_helper|Display helper||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source_display_helper",
+      "value": "Display helper",
+      "message": "I18n fallback literal should be represented in en.json: Display helper"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source_playnite_launcher|Playnite launcher||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source_playnite_launcher",
+      "value": "Playnite launcher",
+      "message": "I18n fallback literal should be represented in en.json: Playnite launcher"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source_playnite|Playnite||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source_playnite",
+      "value": "Playnite",
+      "message": "I18n fallback literal should be represented in en.json: Playnite"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source_sunshine|Vibepollo||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source_sunshine",
+      "value": "Vibepollo",
+      "message": "I18n fallback literal should be represented in en.json: Vibepollo"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source_wgc|WGC helper||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source_wgc",
+      "value": "WGC helper",
+      "message": "I18n fallback literal should be represented in en.json: WGC helper"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.logs_source|Log source||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.logs_source",
+      "value": "Log source",
+      "message": "I18n fallback literal should be represented in en.json: Log source"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_clear|Clear||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_clear",
+      "value": "Clear",
+      "message": "I18n fallback literal should be represented in en.json: Clear"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_line|Line||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_line",
+      "value": "Line",
+      "message": "I18n fallback literal should be represented in en.json: Line"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_next|Next||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_next",
+      "value": "Next",
+      "message": "I18n fallback literal should be represented in en.json: Next"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_no_matches|No matches||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_no_matches",
+      "value": "No matches",
+      "message": "I18n fallback literal should be represented in en.json: No matches"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_no_matches|No matches||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_no_matches",
+      "value": "No matches",
+      "message": "I18n fallback literal should be represented in en.json: No matches"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_pending|Searching...||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_pending",
+      "value": "Searching...",
+      "message": "I18n fallback literal should be represented in en.json: Searching..."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_pending|Searching...||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_pending",
+      "value": "Searching...",
+      "message": "I18n fallback literal should be represented in en.json: Searching..."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_prev|Prev||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_prev",
+      "value": "Prev",
+      "message": "I18n fallback literal should be represented in en.json: Prev"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||troubleshooting.search_results|Results||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "troubleshooting.search_results",
+      "value": "Results",
+      "message": "I18n fallback literal should be represented in en.json: Results"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.install_error|Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.install_error",
+      "value": "Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges.",
+      "message": "I18n expression uses an English fallback literal: Failed to install the Vulkan HDR layer. Make sure Sunshine is running with administrator privileges."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.install_success|Vulkan HDR layer installed.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.install_success",
+      "value": "Vulkan HDR layer installed.",
+      "message": "I18n expression uses an English fallback literal: Vulkan HDR layer installed."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.install|Install||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.install",
+      "value": "Install",
+      "message": "I18n expression uses an English fallback literal: Install"
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.installed|Vulkan HDR layer is installed.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.installed",
+      "value": "Vulkan HDR layer is installed.",
+      "message": "I18n expression uses an English fallback literal: Vulkan HDR layer is installed."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.not_installed_desc|The Vulkan HDR layer for virtual displays isn't registered, so HDR may not work on virtual displays. You can install it now, or disable this feature in Settings if it's causing app crashes.||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.not_installed_desc",
+      "value": "The Vulkan HDR layer for virtual displays isn't registered, so HDR may not work on virtual displays. You can install it now, or disable this feature in Settings if it's causing app crashes.",
+      "message": "I18n expression uses an English fallback literal: The Vulkan HDR layer for virtual displays isn't registered, so HDR may not work on virtual displays. You can install it now, or disable this feature in Settings if it's causing app crashes."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.settings_hint|You can enable or disable this layer in Settings (Audio/Video).||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.settings_hint",
+      "value": "You can enable or disable this layer in Settings (Audio/Video).",
+      "message": "I18n expression uses an English fallback literal: You can enable or disable this layer in Settings (Audio/Video)."
+    },
+    {
+      "fingerprint": "fallback-literal|Troubleshooting.vue||vulkan_hdr.troubleshooting_title|Vulkan HDR layer||",
+      "rule": "fallback-literal",
+      "file": "Troubleshooting.vue",
+      "locale": null,
+      "key": "vulkan_hdr.troubleshooting_title",
+      "value": "Vulkan HDR layer",
+      "message": "I18n expression uses an English fallback literal: Vulkan HDR layer"
+    },
+    {
+      "fingerprint": "hardcoded-template-text|configs/tabs/AudioVideo.vue|||tools\\audio-info.exe||",
+      "rule": "hardcoded-template-text",
+      "file": "configs/tabs/AudioVideo.vue",
+      "locale": null,
+      "key": null,
+      "value": "tools\\audio-info.exe",
+      "message": "Hard-coded template text should use i18n: tools\\audio-info.exe"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/app-edit/lossless.ts|||Lossless Scaling||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/app-edit/lossless.ts",
+      "locale": null,
+      "key": null,
+      "value": "Lossless Scaling",
+      "message": "Hard-coded UI property \"label\" should use i18n: Lossless Scaling"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/app-edit/lossless.ts|||NVIDIA Smooth Motion||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/app-edit/lossless.ts",
+      "locale": null,
+      "key": null,
+      "value": "NVIDIA Smooth Motion",
+      "message": "Hard-coded UI property \"label\" should use i18n: NVIDIA Smooth Motion"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||Default (Global)||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "Default (Global)",
+      "message": "Hard-coded UI property \"label\" should use i18n: Default (Global)"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||DualSense (PS5)||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "DualSense (PS5)",
+      "message": "Hard-coded UI property \"label\" should use i18n: DualSense (PS5)"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||DualShock 4||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "DualShock 4",
+      "message": "Hard-coded UI property \"label\" should use i18n: DualShock 4"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||Switch Pro||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "Switch Pro",
+      "message": "Hard-coded UI property \"label\" should use i18n: Switch Pro"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||Xbox 360||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "Xbox 360",
+      "message": "Hard-coded UI property \"label\" should use i18n: Xbox 360"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|components/AppEditModal.vue|||Xbox One||",
+      "rule": "hardcoded-ui-prop",
+      "file": "components/AppEditModal.vue",
+      "locale": null,
+      "key": null,
+      "value": "Xbox One",
+      "message": "Hard-coded UI property \"label\" should use i18n: Xbox One"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|configs/configSelectOptions.ts|||P1 ${presetExtra(1)}||",
+      "rule": "hardcoded-ui-prop",
+      "file": "configs/configSelectOptions.ts",
+      "locale": null,
+      "key": null,
+      "value": "P1 ${presetExtra(1)}",
+      "message": "Hard-coded UI property \"label\" should use i18n: P1 ${presetExtra(1)}"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|configs/configSelectOptions.ts|||P4 ${presetExtra(4)}||",
+      "rule": "hardcoded-ui-prop",
+      "file": "configs/configSelectOptions.ts",
+      "locale": null,
+      "key": null,
+      "value": "P4 ${presetExtra(4)}",
+      "message": "Hard-coded UI property \"label\" should use i18n: P4 ${presetExtra(4)}"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|configs/configSelectOptions.ts|||P7 ${presetExtra(7)}||",
+      "rule": "hardcoded-ui-prop",
+      "file": "configs/configSelectOptions.ts",
+      "locale": null,
+      "key": null,
+      "value": "P7 ${presetExtra(7)}",
+      "message": "Hard-coded UI property \"label\" should use i18n: P7 ${presetExtra(7)}"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|configs/tabs/audiovideo/AdapterNameSelector.vue|||${name} - ${configuredPnpId} - ${unavailableLabel}||",
+      "rule": "hardcoded-ui-prop",
+      "file": "configs/tabs/audiovideo/AdapterNameSelector.vue",
+      "locale": null,
+      "key": null,
+      "value": "${name} - ${configuredPnpId} - ${unavailableLabel}",
+      "message": "Hard-coded UI property \"label\" should use i18n: ${name} - ${configuredPnpId} - ${unavailableLabel}"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|stores/hostStats.ts|||host_info fetch failed||",
+      "rule": "hardcoded-ui-prop",
+      "file": "stores/hostStats.ts",
+      "locale": null,
+      "key": null,
+      "value": "host_info fetch failed",
+      "message": "Hard-coded UI property \"message\" should use i18n: host_info fetch failed"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|stores/hostStats.ts|||host_stats fetch failed||",
+      "rule": "hardcoded-ui-prop",
+      "file": "stores/hostStats.ts",
+      "locale": null,
+      "key": null,
+      "value": "host_stats fetch failed",
+      "message": "Hard-coded UI property \"message\" should use i18n: host_stats fetch failed"
+    },
+    {
+      "fingerprint": "hardcoded-ui-prop|views/ClientManagementView.vue|||${displayName} - ${value}${suffix}||",
+      "rule": "hardcoded-ui-prop",
+      "file": "views/ClientManagementView.vue",
+      "locale": null,
+      "key": null,
+      "value": "${displayName} - ${value}${suffix}",
+      "message": "Hard-coded UI property \"label\" should use i18n: ${displayName} - ${value}${suffix}"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/bg.json|bg|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "bg.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/bg.json|bg|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "bg.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/bg.json|bg|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "bg.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/cs.json|cs|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "cs.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/cs.json|cs|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "cs.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/cs.json|cs|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "cs.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/de.json|de|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "de.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/de.json|de|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "de.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/de.json|de|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "de.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|config.legacy_ordering_desc||Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly, and with third-party integrations that match app names literally, such as MoonDeck and the Moonlight CLI. Artemis clients support this by default.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "config.legacy_ordering_desc",
+      "value": null,
+      "message": "en_GB.json is missing key config.legacy_ordering_desc"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|config.legacy_ordering||App ordering for legacy clients|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "config.legacy_ordering",
+      "value": null,
+      "message": "en_GB.json is missing key config.legacy_ordering"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|pin.enable_legacy_ordering_desc||Enable app ordering for legacy clients. Disable if this client can't handle UTF8 correctly or is used by third-party integrations such as MoonDeck or the Moonlight CLI. Needs to enable \"App ordering for legacy clients\" in the Advanced settings.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "pin.enable_legacy_ordering_desc",
+      "value": null,
+      "message": "en_GB.json is missing key pin.enable_legacy_ordering_desc"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_GB.json|en_GB|pin.enable_legacy_ordering||Enable legacy ordering|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_GB.json",
+      "locale": "en_GB",
+      "key": "pin.enable_legacy_ordering",
+      "value": null,
+      "message": "en_GB.json is missing key pin.enable_legacy_ordering"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|config.legacy_ordering_desc||Enable ordering support workaround for legacy clients. Can cause issues with clients or scripts that can't handle UTF8 correctly, and with third-party integrations that match app names literally, such as MoonDeck and the Moonlight CLI. Artemis clients support this by default.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "config.legacy_ordering_desc",
+      "value": null,
+      "message": "en_US.json is missing key config.legacy_ordering_desc"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|config.legacy_ordering||App ordering for legacy clients|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "config.legacy_ordering",
+      "value": null,
+      "message": "en_US.json is missing key config.legacy_ordering"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|pin.enable_legacy_ordering_desc||Enable app ordering for legacy clients. Disable if this client can't handle UTF8 correctly or is used by third-party integrations such as MoonDeck or the Moonlight CLI. Needs to enable \"App ordering for legacy clients\" in the Advanced settings.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "pin.enable_legacy_ordering_desc",
+      "value": null,
+      "message": "en_US.json is missing key pin.enable_legacy_ordering_desc"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/en_US.json|en_US|pin.enable_legacy_ordering||Enable legacy ordering|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/en_US.json",
+      "locale": "en_US",
+      "key": "pin.enable_legacy_ordering",
+      "value": null,
+      "message": "en_US.json is missing key pin.enable_legacy_ordering"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/es.json|es|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "es.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/es.json|es|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "es.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/es.json|es|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "es.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/fr.json|fr|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "fr.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/fr.json|fr|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "fr.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/fr.json|fr|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "fr.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/hu.json|hu|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "hu.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/hu.json|hu|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "hu.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/hu.json|hu|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "hu.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/it.json|it|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "it.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/it.json|it|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "it.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/it.json|it|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "it.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ja.json|ja|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ja.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ja.json|ja|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "ja.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ja.json|ja|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ja.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ko.json|ko|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ko.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ko.json|ko|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "ko.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ko.json|ko|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ko.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pl.json|pl|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pl.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pl.json|pl|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "pl.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pl.json|pl|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pl.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pt_BR.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "pt_BR.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pt_BR.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt.json|pt|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "pt.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt.json|pt|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "pt.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/pt.json|pt|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "pt.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ru.json|ru|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "ru.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ru.json|ru|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "ru.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/ru.json|ru|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "ru.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/sv.json|sv|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "sv.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/sv.json|sv|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "sv.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/sv.json|sv|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "sv.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/tr.json|tr|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "tr.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/tr.json|tr|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "tr.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/tr.json|tr|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "tr.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/uk.json|uk|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "uk.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/uk.json|uk|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "uk.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/uk.json|uk|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "uk.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/vi.json|vi|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "vi.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/vi.json|vi|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "vi.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/vi.json|vi|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "vi.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "zh_TW.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "zh_TW.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "zh_TW.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh.json|zh|config.adapter_name_default||Automatic (recommended)|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_default",
+      "value": null,
+      "message": "zh.json is missing key config.adapter_name_default"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh.json|zh|config.adapter_name_desc_windows||Choose the GPU used for capture. Automatic selection is recommended. Windows stores the selected GPU's persistent device identity so adapters with identical names remain distinct. Physical capture requires an active display on that GPU; virtual-display mode can create the capture target there when no physical output is active.|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_desc_windows",
+      "value": null,
+      "message": "zh.json is missing key config.adapter_name_desc_windows"
+    },
+    {
+      "fingerprint": "locale-missing-key|public/assets/locale/zh.json|zh|config.adapter_name_not_detected||Not currently detected|",
+      "rule": "locale-missing-key",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_not_detected",
+      "value": null,
+      "message": "zh.json is missing key config.adapter_name_not_detected"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "bg.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "bg.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.adapter_name_placeholder_windows|Radeon RX 580 Series||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.adapter_name_placeholder_windows",
+      "value": "Radeon RX 580 Series",
+      "message": "bg.json value is identical to English at config.adapter_name_placeholder_windows"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "bg.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.capture_ddx_legacy|Desktop Duplication API (legacy)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.capture_ddx_legacy",
+      "value": "Desktop Duplication API (legacy)",
+      "message": "bg.json value is identical to English at config.capture_ddx_legacy"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "bg.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "bg.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "bg.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "bg.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "bg.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "bg.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.nvenc_split_encode|Split Frame Encoding||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.nvenc_split_encode",
+      "value": "Split Frame Encoding",
+      "message": "bg.json value is identical to English at config.nvenc_split_encode"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|config.rtx_hdr_title|RTX HDR (AI SDR → HDR)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "config.rtx_hdr_title",
+      "value": "RTX HDR (AI SDR → HDR)",
+      "message": "bg.json value is identical to English at config.rtx_hdr_title"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "bg.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "bg.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "bg.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "bg.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/bg.json|bg|troubleshooting.logs_source_wgc|WGC helper||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/bg.json",
+      "locale": "bg",
+      "key": "troubleshooting.logs_source_wgc",
+      "value": "WGC helper",
+      "message": "bg.json value is identical to English at troubleshooting.logs_source_wgc"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "cs.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "cs.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "cs.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "cs.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "cs.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "cs.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "cs.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "cs.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "cs.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "cs.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "cs.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "cs.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/cs.json|cs|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/cs.json",
+      "locale": "cs",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "cs.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "de.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "de.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "de.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "de.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "de.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "de.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "de.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "de.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "de.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "de.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "de.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "de.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|resource_card.github_discussions|GitHub Discussions||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "resource_card.github_discussions",
+      "value": "GitHub Discussions",
+      "message": "de.json value is identical to English at resource_card.github_discussions"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "de.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "de.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|sessions.chart_host_net_rx|Download (RX)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "sessions.chart_host_net_rx",
+      "value": "Download (RX)",
+      "message": "de.json value is identical to English at sessions.chart_host_net_rx"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|sessions.chart_host_net_tx|Upload (TX)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "sessions.chart_host_net_tx",
+      "value": "Upload (TX)",
+      "message": "de.json value is identical to English at sessions.chart_host_net_tx"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/de.json|de|webrtc.bitrate|Bitrate (kbps)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/de.json",
+      "locale": "de",
+      "key": "webrtc.bitrate",
+      "value": "Bitrate (kbps)",
+      "message": "de.json value is identical to English at webrtc.bitrate"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "es.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|apps.playnite_manual|Playnite (Manual)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "apps.playnite_manual",
+      "value": "Playnite (Manual)",
+      "message": "es.json value is identical to English at apps.playnite_manual"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "es.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "es.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "es.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "es.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "es.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "es.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "es.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "es.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "es.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "es.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "es.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/es.json|es|sessions.history_group_total|(total)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/es.json",
+      "locale": "es",
+      "key": "sessions.history_group_total",
+      "value": "(total)",
+      "message": "es.json value is identical to English at sessions.history_group_total"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "fr.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "fr.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "fr.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "fr.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "fr.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "fr.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/fr.json|fr|sessions.history_group_total|(total)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/fr.json",
+      "locale": "fr",
+      "key": "sessions.history_group_total",
+      "value": "(total)",
+      "message": "fr.json value is identical to English at sessions.history_group_total"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "hu.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "hu.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "hu.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "hu.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "hu.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "hu.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "hu.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "hu.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "hu.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "hu.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|frameLimiter.syncLimiter.back|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "frameLimiter.syncLimiter.back",
+      "value": "Back edge sync",
+      "message": "hu.json value is identical to English at frameLimiter.syncLimiter.back"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|frameLimiter.syncLimiter.front|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "frameLimiter.syncLimiter.front",
+      "value": "Front edge sync",
+      "message": "hu.json value is identical to English at frameLimiter.syncLimiter.front"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "hu.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "hu.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|rtss.sync_limiter_back_edge|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "rtss.sync_limiter_back_edge",
+      "value": "Back edge sync",
+      "message": "hu.json value is identical to English at rtss.sync_limiter_back_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|rtss.sync_limiter_front_edge|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "rtss.sync_limiter_front_edge",
+      "value": "Front edge sync",
+      "message": "hu.json value is identical to English at rtss.sync_limiter_front_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/hu.json|hu|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/hu.json",
+      "locale": "hu",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "hu.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "it.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|changelog.channel_rc|Release candidate||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "changelog.channel_rc",
+      "value": "Release candidate",
+      "message": "it.json value is identical to English at changelog.channel_rc"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "it.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "it.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.adapter_name_placeholder_windows|Radeon RX 580 Series||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.adapter_name_placeholder_windows",
+      "value": "Radeon RX 580 Series",
+      "message": "it.json value is identical to English at config.adapter_name_placeholder_windows"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "it.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "it.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "it.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "it.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "it.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "it.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "it.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "it.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "it.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "it.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/it.json|it|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/it.json",
+      "locale": "it",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "it.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "ja.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "ja.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "ja.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "ja.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "ja.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "ja.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "ja.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "ja.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "ja.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "ja.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ja.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|frameLimiter.syncLimiter.back|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "frameLimiter.syncLimiter.back",
+      "value": "Back edge sync",
+      "message": "ja.json value is identical to English at frameLimiter.syncLimiter.back"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|frameLimiter.syncLimiter.front|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "frameLimiter.syncLimiter.front",
+      "value": "Front edge sync",
+      "message": "ja.json value is identical to English at frameLimiter.syncLimiter.front"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "ja.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|resource_card.github_discussions|GitHub Discussions||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "resource_card.github_discussions",
+      "value": "GitHub Discussions",
+      "message": "ja.json value is identical to English at resource_card.github_discussions"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ja.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.sync_limiter_back_edge|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.sync_limiter_back_edge",
+      "value": "Back edge sync",
+      "message": "ja.json value is identical to English at rtss.sync_limiter_back_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.sync_limiter_back_short|Back edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.sync_limiter_back_short",
+      "value": "Back edge",
+      "message": "ja.json value is identical to English at rtss.sync_limiter_back_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.sync_limiter_front_edge|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.sync_limiter_front_edge",
+      "value": "Front edge sync",
+      "message": "ja.json value is identical to English at rtss.sync_limiter_front_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.sync_limiter_front_short|Front edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.sync_limiter_front_short",
+      "value": "Front edge",
+      "message": "ja.json value is identical to English at rtss.sync_limiter_front_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ja.json|ja|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ja.json",
+      "locale": "ja",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "ja.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "ko.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "ko.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "ko.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "ko.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "ko.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "ko.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "ko.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|config.virtual_sink_placeholder|Steam Streaming Speakers||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "config.virtual_sink_placeholder",
+      "value": "Steam Streaming Speakers",
+      "message": "ko.json value is identical to English at config.virtual_sink_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ko.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "ko.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ko.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ko.json|ko|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ko.json",
+      "locale": "ko",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "ko.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "pl.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "pl.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "pl.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "pl.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "pl.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "pl.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "pl.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "pl.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "pl.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "pl.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "pl.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pl.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "pl.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pl.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pl.json|pl|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pl.json",
+      "locale": "pl",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "pl.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "pt_BR.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|changelog.channel_rc|Release candidate||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "changelog.channel_rc",
+      "value": "Release candidate",
+      "message": "pt_BR.json value is identical to English at changelog.channel_rc"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|changelog.release_count|{count} releases||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "changelog.release_count",
+      "value": "{count} releases",
+      "message": "pt_BR.json value is identical to English at changelog.release_count"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "pt_BR.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "pt_BR.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "pt_BR.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "pt_BR.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "pt_BR.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "pt_BR.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "pt_BR.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "pt_BR.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "pt_BR.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pt_BR.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "pt_BR.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|index.version_branch|Branch: {branch} (commit {commit})||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "index.version_branch",
+      "value": "Branch: {branch} (commit {commit})",
+      "message": "pt_BR.json value is identical to English at index.version_branch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pt_BR.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "pt_BR.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|sessions.chart_host_net_rx|Download (RX)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "sessions.chart_host_net_rx",
+      "value": "Download (RX)",
+      "message": "pt_BR.json value is identical to English at sessions.chart_host_net_rx"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|sessions.chart_host_net_tx|Upload (TX)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "sessions.chart_host_net_tx",
+      "value": "Upload (TX)",
+      "message": "pt_BR.json value is identical to English at sessions.chart_host_net_tx"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt_BR.json|pt_BR|sessions.history_group_total|(total)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt_BR.json",
+      "locale": "pt_BR",
+      "key": "sessions.history_group_total",
+      "value": "(total)",
+      "message": "pt_BR.json value is identical to English at sessions.history_group_total"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "pt.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "pt.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "pt.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "pt.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "pt.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "pt.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "pt.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "pt.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "pt.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "pt.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pt.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|frameLimiter.syncLimiter.back|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "frameLimiter.syncLimiter.back",
+      "value": "Back edge sync",
+      "message": "pt.json value is identical to English at frameLimiter.syncLimiter.back"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|frameLimiter.syncLimiter.front|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "frameLimiter.syncLimiter.front",
+      "value": "Front edge sync",
+      "message": "pt.json value is identical to English at frameLimiter.syncLimiter.front"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "pt.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "pt.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.sync_limiter_back_edge|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.sync_limiter_back_edge",
+      "value": "Back edge sync",
+      "message": "pt.json value is identical to English at rtss.sync_limiter_back_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.sync_limiter_back_short|Back edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.sync_limiter_back_short",
+      "value": "Back edge",
+      "message": "pt.json value is identical to English at rtss.sync_limiter_back_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.sync_limiter_front_edge|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.sync_limiter_front_edge",
+      "value": "Front edge sync",
+      "message": "pt.json value is identical to English at rtss.sync_limiter_front_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.sync_limiter_front_short|Front edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.sync_limiter_front_short",
+      "value": "Front edge",
+      "message": "pt.json value is identical to English at rtss.sync_limiter_front_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "pt.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/pt.json|pt|sessions.history_group_total|(total)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/pt.json",
+      "locale": "pt",
+      "key": "sessions.history_group_total",
+      "value": "(total)",
+      "message": "pt.json value is identical to English at sessions.history_group_total"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "ru.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "ru.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "ru.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "ru.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "ru.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "ru.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "ru.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "ru.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "ru.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ru.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "ru.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "ru.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/ru.json|ru|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/ru.json",
+      "locale": "ru",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "ru.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "sv.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "sv.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "sv.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "sv.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "sv.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "sv.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "sv.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "sv.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "sv.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "sv.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "sv.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "sv.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|frameLimiter.syncLimiter.back|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "frameLimiter.syncLimiter.back",
+      "value": "Back edge sync",
+      "message": "sv.json value is identical to English at frameLimiter.syncLimiter.back"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|frameLimiter.syncLimiter.front|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "frameLimiter.syncLimiter.front",
+      "value": "Front edge sync",
+      "message": "sv.json value is identical to English at frameLimiter.syncLimiter.front"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "sv.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|resource_card.github_discussions|GitHub Discussions||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "resource_card.github_discussions",
+      "value": "GitHub Discussions",
+      "message": "sv.json value is identical to English at resource_card.github_discussions"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "sv.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.sync_limiter_back_edge|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.sync_limiter_back_edge",
+      "value": "Back edge sync",
+      "message": "sv.json value is identical to English at rtss.sync_limiter_back_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.sync_limiter_back_short|Back edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.sync_limiter_back_short",
+      "value": "Back edge",
+      "message": "sv.json value is identical to English at rtss.sync_limiter_back_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.sync_limiter_front_edge|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.sync_limiter_front_edge",
+      "value": "Front edge sync",
+      "message": "sv.json value is identical to English at rtss.sync_limiter_front_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.sync_limiter_front_short|Front edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.sync_limiter_front_short",
+      "value": "Front edge",
+      "message": "sv.json value is identical to English at rtss.sync_limiter_front_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/sv.json|sv|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/sv.json",
+      "locale": "sv",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "sv.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|_common.beta|(beta)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "_common.beta",
+      "value": "(beta)",
+      "message": "tr.json value is identical to English at _common.beta"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "tr.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "tr.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "tr.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "tr.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "tr.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "tr.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "tr.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "tr.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "tr.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "tr.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.virtual_sink_placeholder|Steam Streaming Speakers||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.virtual_sink_placeholder",
+      "value": "Steam Streaming Speakers",
+      "message": "tr.json value is identical to English at config.virtual_sink_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.vk_rc_cbr|CBR (Constant Bitrate)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.vk_rc_cbr",
+      "value": "CBR (Constant Bitrate)",
+      "message": "tr.json value is identical to English at config.vk_rc_cbr"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.vk_rc_cqp|CQP (Constant QP)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.vk_rc_cqp",
+      "value": "CQP (Constant QP)",
+      "message": "tr.json value is identical to English at config.vk_rc_cqp"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|config.vk_rc_vbr|VBR (Variable Bitrate)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "config.vk_rc_vbr",
+      "value": "VBR (Variable Bitrate)",
+      "message": "tr.json value is identical to English at config.vk_rc_vbr"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "tr.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "tr.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "tr.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/tr.json|tr|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/tr.json",
+      "locale": "tr",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "tr.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "uk.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "uk.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "uk.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "uk.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "uk.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "uk.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "uk.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "uk.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "uk.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.nvenc_intra_refresh|Intra Refresh||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.nvenc_intra_refresh",
+      "value": "Intra Refresh",
+      "message": "uk.json value is identical to English at config.nvenc_intra_refresh"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|config.nvenc_split_encode|Split Frame Encoding||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "config.nvenc_split_encode",
+      "value": "Split Frame Encoding",
+      "message": "uk.json value is identical to English at config.nvenc_split_encode"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "uk.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|frameLimiter.syncLimiter.back|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "frameLimiter.syncLimiter.back",
+      "value": "Back edge sync",
+      "message": "uk.json value is identical to English at frameLimiter.syncLimiter.back"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|frameLimiter.syncLimiter.front|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "frameLimiter.syncLimiter.front",
+      "value": "Front edge sync",
+      "message": "uk.json value is identical to English at frameLimiter.syncLimiter.front"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "uk.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "uk.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.sync_limiter_back_edge|Back edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.sync_limiter_back_edge",
+      "value": "Back edge sync",
+      "message": "uk.json value is identical to English at rtss.sync_limiter_back_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.sync_limiter_back_short|Back edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.sync_limiter_back_short",
+      "value": "Back edge",
+      "message": "uk.json value is identical to English at rtss.sync_limiter_back_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.sync_limiter_front_edge|Front edge sync||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.sync_limiter_front_edge",
+      "value": "Front edge sync",
+      "message": "uk.json value is identical to English at rtss.sync_limiter_front_edge"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.sync_limiter_front_short|Front edge||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.sync_limiter_front_short",
+      "value": "Front edge",
+      "message": "uk.json value is identical to English at rtss.sync_limiter_front_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/uk.json|uk|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/uk.json",
+      "locale": "uk",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "uk.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "vi.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "vi.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "vi.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "vi.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "vi.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "vi.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "vi.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/vi.json|vi|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/vi.json",
+      "locale": "vi",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "vi.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "zh_TW.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "zh_TW.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "zh_TW.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "zh_TW.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "zh_TW.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "zh_TW.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "zh_TW.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "zh_TW.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "zh_TW.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "zh_TW.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "zh_TW.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh_TW.json|zh_TW|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh_TW.json",
+      "locale": "zh_TW",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "zh_TW.json value is identical to English at rtss.sync_limiter_reflex_short"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.adapter_name_placeholder_linux|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_placeholder_linux",
+      "value": "/dev/dri/renderD128",
+      "message": "zh.json value is identical to English at config.adapter_name_placeholder_linux"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.adapter_name_placeholder_unix|/dev/dri/renderD128||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.adapter_name_placeholder_unix",
+      "value": "/dev/dri/renderD128",
+      "message": "zh.json value is identical to English at config.adapter_name_placeholder_unix"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.address_family_both|IPv4+IPv6||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.address_family_both",
+      "value": "IPv4+IPv6",
+      "message": "zh.json value is identical to English at config.address_family_both"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.audio_sink_placeholder_macos|BlackHole 2ch||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.audio_sink_placeholder_macos",
+      "value": "BlackHole 2ch",
+      "message": "zh.json value is identical to English at config.audio_sink_placeholder_macos"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.gamepad_ds4|DS4 (PS4)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.gamepad_ds4",
+      "value": "DS4 (PS4)",
+      "message": "zh.json value is identical to English at config.gamepad_ds4"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.gamepad_ds5|DS5 (PS5)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.gamepad_ds5",
+      "value": "DS5 (PS5)",
+      "message": "zh.json value is identical to English at config.gamepad_ds5"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.gamepad_switch|Nintendo Pro (Switch)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.gamepad_switch",
+      "value": "Nintendo Pro (Switch)",
+      "message": "zh.json value is identical to English at config.gamepad_switch"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.gamepad_x360|X360 (Xbox 360)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.gamepad_x360",
+      "value": "X360 (Xbox 360)",
+      "message": "zh.json value is identical to English at config.gamepad_x360"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.gamepad_xone|XOne (Xbox One)||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.gamepad_xone",
+      "value": "XOne (Xbox One)",
+      "message": "zh.json value is identical to English at config.gamepad_xone"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|config.virtual_sink_placeholder|Steam Streaming Speakers||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "config.virtual_sink_placeholder",
+      "value": "Steam Streaming Speakers",
+      "message": "zh.json value is identical to English at config.virtual_sink_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|frameLimiter.rtssPathPlaceholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "frameLimiter.rtssPathPlaceholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "zh.json value is identical to English at frameLimiter.rtssPathPlaceholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|frameLimiter.syncLimiter.reflex|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "frameLimiter.syncLimiter.reflex",
+      "value": "NVIDIA Reflex",
+      "message": "zh.json value is identical to English at frameLimiter.syncLimiter.reflex"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|rtss.install_path_placeholder|C:\\Program Files (x86)\\RivaTuner Statistics Server||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "rtss.install_path_placeholder",
+      "value": "C:\\Program Files (x86)\\RivaTuner Statistics Server",
+      "message": "zh.json value is identical to English at rtss.install_path_placeholder"
+    },
+    {
+      "fingerprint": "locale-untranslated-value|public/assets/locale/zh.json|zh|rtss.sync_limiter_reflex_short|NVIDIA Reflex||",
+      "rule": "locale-untranslated-value",
+      "file": "public/assets/locale/zh.json",
+      "locale": "zh",
+      "key": "rtss.sync_limiter_reflex_short",
+      "value": "NVIDIA Reflex",
+      "message": "zh.json value is identical to English at rtss.sync_limiter_reflex_short"
+    }
+  ]
+}

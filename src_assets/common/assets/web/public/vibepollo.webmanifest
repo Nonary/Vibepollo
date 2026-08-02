@@ -1,10 +1,10 @@
 {
-  "id": "/stream",
+  "id": "/v2/stream",
   "name": "Vibepollo Browser Stream",
   "short_name": "Vibepollo",
   "description": "Low-latency remote streaming from Vibepollo",
-  "start_url": "/stream",
-  "scope": "/",
+  "start_url": "/v2/stream",
+  "scope": "/v2/",
   "display": "fullscreen",
   "display_override": ["fullscreen", "standalone"],
   "background_color": "#090b10",
@@ -12,7 +12,7 @@
   "orientation": "any",
   "icons": [
     {
-      "src": "/images/apollo.ico",
+      "src": "/v2/images/apollo.ico",
       "sizes": "any",
       "type": "image/x-icon"
     }

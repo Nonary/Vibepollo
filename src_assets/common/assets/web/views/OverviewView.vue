@@ -185,6 +185,9 @@ onBeforeUnmount(() => {
         }}</span>
       </template>
       <template #actions>
+        <a class="button button--secondary" href="/">
+          {{ t('ui.overview.actions.useLegacyWebUi') }}
+        </a>
         <AppButton
           icon="refresh"
           :label="t('_common.refresh')"

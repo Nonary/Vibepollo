@@ -1,0 +1,18 @@
+build/
+node_modules/
+third-party/
+docs/
+packaging/
+**/dist/
+coverage/
+.cpack_artifacts/
+
+# Exclude Markdown and YAML from formatting
+*.md
+**/*.md
+*.MD
+**/*.MD
+*.yml
+*.yaml
+**/*.yml
+**/*.yaml

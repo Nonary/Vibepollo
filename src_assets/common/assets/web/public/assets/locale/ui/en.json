@@ -965,6 +965,7 @@
         "pairDevice": "Pair a device",
         "reportBug": "Report a bug",
         "startBrowserStream": "Start browser stream",
+        "useLegacyWebUi": "Use legacy Web UI",
         "viewAll": "View all"
       },
       "activeSessions": {

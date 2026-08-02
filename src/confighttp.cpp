@@ -1530,10 +1530,19 @@ namespace confighttp {
     print_req(request);
 
     const std::string &path = request->path;
+    const std::string_view path_view {path};
     static constexpr std::array reserved_prefixes {"/api"sv, "/assets"sv, "/covers"sv, "/images"sv};
     if (std::ranges::any_of(reserved_prefixes, [&path](std::string_view prefix) {
           return std::string_view {path}.starts_with(prefix);
         })) {
+      not_found(response, request);
+      return;
+    }
+
+    const bool is_v2_route = path_view == "/v2" || path_view.starts_with("/v2/");
+    const bool is_v2_static_path = path_view == "/v2/assets" || path_view.starts_with("/v2/assets/") ||
+                                   path_view == "/v2/images" || path_view.starts_with("/v2/images/");
+    if (is_v2_static_path) {
       not_found(response, request);
       return;
     }
@@ -1544,7 +1553,7 @@ namespace confighttp {
       not_found(response, request);
       return;
     }
-    serve_web_file(std::move(response), std::move(request), "index.html");
+    serve_web_file(std::move(response), std::move(request), is_v2_route ? "v2/index.html" : "index.html");
   }
 
   /**
@@ -5702,6 +5711,7 @@ namespace confighttp {
     // Static browser assets are public; every state-changing API below still
     // passes through the existing authentication and CSRF gates.
     server.resource["^/(assets|images)/.+$"]["GET"] = getWebAsset;
+    server.resource["^/v2/(assets|images)/.+$"]["GET"] = getWebAsset;
     server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);

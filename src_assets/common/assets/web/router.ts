@@ -14,7 +14,7 @@ import SettingsView from '@/views/SettingsView.vue';
 import StatsView from '@/views/StatsView.vue';
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory('/v2/'),
   routes: [
     {
       path: '/',

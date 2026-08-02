@@ -1,0 +1,580 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { $tp } from '@/platform-i18n';
+import Checkbox from '@/Checkbox.vue';
+import ConfigFieldRenderer from '@/ConfigFieldRenderer.vue';
+import PlatformLayout from '@/PlatformLayout.vue';
+import AdapterNameSelector from '@/configs/tabs/audiovideo/AdapterNameSelector.vue';
+import DisplayOutputSelector from '@/configs/tabs/audiovideo/DisplayOutputSelector.vue';
+import DisplayDeviceOptions from '@/configs/tabs/audiovideo/DisplayDeviceOptions.vue';
+import DisplayModesSettings from '@/configs/tabs/audiovideo/DisplayModesSettings.vue';
+import FrameLimiterStep from '@/configs/tabs/audiovideo/FrameLimiterStep.vue';
+import { NCheckbox, NSelect, NSwitch, NRadioGroup, NRadio } from 'naive-ui';
+import { useConfigStore } from '@/stores/config';
+import { storeToRefs } from 'pinia';
+
+const { t } = useI18n();
+const store = useConfigStore();
+const { config, isWindows10Host } = storeToRefs(store);
+const platform = computed(() => (config.value as any)?.platform || '');
+const ddConfigDisabled = computed(
+  () => (config.value as any)?.dd_configuration_option === 'disabled',
+);
+const frameLimiterStepLabel = computed(() =>
+  ddConfigDisabled.value ? t('config.dd_step_3') : t('config.dd_step_4'),
+);
+
+const virtualDisplayDriverStatus = computed(() => ({
+  '1': t('config.virtual_display_driver_status_unknown'),
+  '0': t('config.virtual_display_driver_status_ready'),
+  '-1': t('config.virtual_display_driver_status_uninitialized'),
+  '-2': t('config.virtual_display_driver_status_version_incompatible'),
+  '-3': t('config.virtual_display_driver_status_watchdog_failed'),
+}));
+const vdisplay = computed(() => (config.value as any)?.vdisplay || 0);
+const currentDriverStatus = computed(
+  () =>
+    virtualDisplayDriverStatus.value[
+      String(vdisplay.value) as keyof typeof virtualDisplayDriverStatus.value
+    ] || t('config.virtual_display_driver_status_unknown'),
+);
+const lastAutomationOption = ref('verify_only');
+watch(
+  () => config.value?.dd_configuration_option,
+  (next) => {
+    if (typeof next === 'string' && next !== 'disabled') {
+      lastAutomationOption.value = next;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => config.value?.virtual_display_mode,
+  (next, prev) => {
+    if (typeof next === 'string' && next !== 'disabled' && prev === 'disabled') {
+      const currentLayout = config.value?.['virtual_display_layout'];
+      if (!currentLayout || currentLayout === 'disabled') {
+        store.updateOption('virtual_display_layout', 'exclusive');
+      }
+    }
+  },
+);
+
+const displayAutomationEnabled = computed<boolean>({
+  get() {
+    return config.value?.dd_configuration_option !== 'disabled';
+  },
+  set(enabled) {
+    if (!config.value) return;
+    if (!enabled) {
+      const next = 'disabled';
+      if (typeof store.updateOption === 'function') {
+        store.updateOption('dd_configuration_option', next as any);
+      } else {
+        (config.value as any).dd_configuration_option = next as any;
+      }
+      return;
+    }
+
+    if (config.value.dd_configuration_option === 'disabled') {
+      const fallback = lastAutomationOption.value || 'verify_only';
+      const next = fallback === 'disabled' ? 'verify_only' : fallback;
+      if (typeof store.updateOption === 'function') {
+        store.updateOption('dd_configuration_option', next as any);
+      } else {
+        (config.value as any).dd_configuration_option = next as any;
+      }
+    }
+  },
+});
+
+const useSudoVdaDriver = computed<boolean>(
+  () => config.value?.dd_use_sunshine_virtual_display_driver === false,
+);
+const virtualDisplayDriver = computed<'vibeshine' | 'sudovda'>({
+  get() {
+    return useSudoVdaDriver.value ? 'sudovda' : 'vibeshine';
+  },
+  set(driver) {
+    if (!config.value) return;
+    store.updateOption('dd_use_sunshine_virtual_display_driver', driver !== 'sudovda');
+  },
+});
+const virtualDisplayDriverOptions = computed(() => [
+  { label: t('config.virtual_display_driver_vibeshine_option'), value: 'vibeshine' },
+  { label: t('config.virtual_display_driver_sudovda_option'), value: 'sudovda' },
+]);
+const vulkanHdrLayerEnabled = computed<boolean>({
+  get() {
+    return config.value?.vulkan_hdr_layer !== false;
+  },
+  set(enabled) {
+    if (!config.value) return;
+    store.updateOption('vulkan_hdr_layer', enabled);
+  },
+});
+const selectedVirtualDisplayDriverName = computed(() =>
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_driver_sudovda_name')
+    : t('config.virtual_display_driver_vibeshine_name'),
+);
+const currentDriverStatusMessage = computed(() => {
+  if (!vdisplay.value) {
+    return useSudoVdaDriver.value
+      ? t('config.virtual_display_status_sudovda_ready')
+      : t('config.virtual_display_status_vibeshine_ready');
+  }
+
+  return t('config.virtual_display_status_driver_state', {
+    driver: selectedVirtualDisplayDriverName.value,
+    status: currentDriverStatus.value,
+  });
+});
+const currentDriverStatusHint = computed(() =>
+  useSudoVdaDriver.value
+    ? t('config.virtual_display_status_hint_sudovda')
+    : t('config.virtual_display_status_hint_vibeshine'),
+);
+
+const virtualDisplayMode = computed<'disabled' | 'per_client' | 'shared'>({
+  get() {
+    const mode = config.value?.['virtual_display_mode'];
+    if (typeof mode === 'string') {
+      if (mode === 'disabled' || mode === 'per_client' || mode === 'shared') {
+        return mode;
+      }
+    }
+    return 'per_client';
+  },
+  set(mode) {
+    if (!config.value) return;
+    store.updateOption('virtual_display_mode', mode);
+  },
+});
+
+const virtualDisplayScale = computed<number>({
+  get() {
+    const value = Number(config.value?.['dd_virtual_display_scale']);
+    return Number.isFinite(value) ? value : -1;
+  },
+  set(value) {
+    if (!config.value) return;
+    store.updateOption('dd_virtual_display_scale', value);
+  },
+});
+
+const virtualDisplayScaleOptions = computed(() => [
+  { label: t('config.virtual_display_scale_recommended'), value: -1 },
+  { label: t('config.virtual_display_scale_auto'), value: 0 },
+  ...[100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500].map((value) => ({
+    label: `${value}%`,
+    value,
+  })),
+]);
+
+const virtualDisplayLayout = computed<
+  'exclusive' | 'extended' | 'extended_primary' | 'extended_isolated' | 'extended_primary_isolated'
+>({
+  get() {
+    const layout = config.value?.['virtual_display_layout'];
+    if (
+      layout === 'extended' ||
+      layout === 'extended_primary' ||
+      layout === 'extended_isolated' ||
+      layout === 'extended_primary_isolated'
+    ) {
+      return layout;
+    }
+    return 'exclusive';
+  },
+  set(layout) {
+    if (!config.value) return;
+    store.updateOption('virtual_display_layout', layout);
+  },
+});
+
+const virtualDisplayLayoutOptions = computed(() => [
+  {
+    value: 'exclusive',
+    label: `${t('config.virtual_display_layout_exclusive')} ${t('_common.default_parenthetical')}`,
+    description: t('config.virtual_display_layout_exclusive_desc'),
+  },
+  {
+    value: 'extended',
+    label: t('config.virtual_display_layout_extended'),
+    description: t('config.virtual_display_layout_extended_desc'),
+  },
+  {
+    value: 'extended_primary',
+    label: t('config.virtual_display_layout_extended_primary'),
+    description: t('config.virtual_display_layout_extended_primary_desc'),
+  },
+  {
+    value: 'extended_isolated',
+    label: t('config.virtual_display_layout_extended_isolated'),
+    description: t('config.virtual_display_layout_extended_isolated_desc'),
+  },
+  {
+    value: 'extended_primary_isolated',
+    label: t('config.virtual_display_layout_extended_primary_isolated'),
+    description: t('config.virtual_display_layout_extended_primary_isolated_desc'),
+  },
+]);
+
+function selectVirtualDisplayLayout(v: unknown) {
+  const sv = String(v);
+  const opts = virtualDisplayLayoutOptions.value.map((o) => o.value);
+  if (opts.includes(sv)) {
+    virtualDisplayLayout.value = sv as any;
+  }
+}
+</script>
+
+<template>
+  <div id="av" class="config-page">
+    <ConfigFieldRenderer
+      setting-key="audio_sink"
+      v-model="config.audio_sink"
+      class="mb-6"
+      :desc="$tp('config.audio_sink_desc')"
+      :placeholder="
+        $tp('config.audio_sink_placeholder', 'alsa_output.pci-0000_09_00.3.analog-stereo')
+      "
+    >
+      <br />
+      <PlatformLayout>
+        <template #windows>
+          <pre>tools\audio-info.exe</pre>
+        </template>
+        <template #freebsd>
+          <pre>pacmd list-sinks | grep "name:"</pre>
+          <pre>pactl info | grep Source</pre>
+        </template>
+        <template #linux>
+          <pre>pacmd list-sinks | grep "name:"</pre>
+          <pre>pactl info | grep Source</pre>
+        </template>
+        <template #macos>
+          <a href="https://github.com/mattingalls/Soundflower" target="_blank">Soundflower</a><br />
+          <a href="https://github.com/ExistentialAudio/BlackHole" target="_blank">BlackHole</a>.
+        </template>
+      </PlatformLayout>
+    </ConfigFieldRenderer>
+
+    <PlatformLayout>
+      <template #windows>
+        <ConfigFieldRenderer
+          setting-key="virtual_sink"
+          v-model="config.virtual_sink"
+          class="mb-6"
+          :placeholder="$t('config.virtual_sink_placeholder')"
+        />
+
+        <ConfigFieldRenderer
+          setting-key="install_steam_audio_drivers"
+          v-model="config.install_steam_audio_drivers"
+          class="mb-3"
+        />
+      </template>
+    </PlatformLayout>
+
+    <ConfigFieldRenderer setting-key="stream_audio" v-model="config.stream_audio" class="mb-3" />
+
+    <ConfigFieldRenderer
+      v-if="config.stream_audio === 'enabled'"
+      setting-key="keep_sink_default"
+      v-model="config.keep_sink_default"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
+      v-if="config.stream_audio === 'enabled'"
+      setting-key="auto_capture_sink"
+      v-model="config.auto_capture_sink"
+      class="mb-6"
+    />
+
+    <AdapterNameSelector />
+
+    <!-- Display configuration: clear, guided, pre-stream focused -->
+    <section class="mb-8">
+      <div class="rounded-md overflow-hidden border border-dark/10 dark:border-light/10">
+        <div class="bg-surface/40 px-3 py-3 sm:px-4">
+          <h3 class="text-sm font-medium">{{ $t('config.dd_display_setup_title') }}</h3>
+          <p class="text-[11px] opacity-70 mt-1">
+            {{ $t('config.dd_display_setup_intro') }}
+          </p>
+        </div>
+
+        <div class="p-3 sm:p-4">
+          <!-- Step 1: Which display to capture -->
+          <section class="mb-5 min-w-0">
+            <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
+              {{ $t('config.dd_step_1') }}: {{ $t('config.dd_choose_display') }}
+            </h4>
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-3 space-y-3">
+                  <div
+                    class="px-4 py-3 rounded-md"
+                    :class="[
+                      vdisplay ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success',
+                    ]"
+                  >
+                    <i class="fa-solid fa-circle-info mr-2"></i>
+                    {{ currentDriverStatusMessage }}
+                  </div>
+                  <p v-if="vdisplay" class="text-[11px] opacity-70 mt-2 leading-snug">
+                    {{ currentDriverStatusHint }}
+                  </p>
+                  <div
+                    v-if="isWindows10Host"
+                    class="rounded-md bg-warning/10 px-4 py-3 text-warning"
+                  >
+                    <div class="flex items-start gap-2">
+                      <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                      <div>
+                        <div class="text-[13px] font-semibold">
+                          {{ $t('config.win10_notice_title') }}
+                        </div>
+                        <p class="mt-1 text-[11px] leading-snug opacity-90">
+                          {{ $t('config.win10_notice_body') }}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </PlatformLayout>
+            <p class="text-[11px] opacity-70 mt-2 leading-snug">
+              {{
+                isWindows10Host
+                  ? $t('config.virtual_display_mode_step_hint_win10')
+                  : $t('config.virtual_display_mode_step_hint')
+              }}
+            </p>
+            <n-radio-group v-model:value="virtualDisplayMode" class="grid gap-2 sm:grid-cols-3">
+              <n-radio value="disabled">
+                {{
+                  isWindows10Host
+                    ? $t('config.virtual_display_mode_disabled_win10')
+                    : $t('config.virtual_display_mode_disabled')
+                }}
+              </n-radio>
+              <n-radio value="per_client">
+                {{
+                  isWindows10Host
+                    ? $t('config.virtual_display_mode_per_client_plain')
+                    : $t('config.virtual_display_mode_per_client')
+                }}
+              </n-radio>
+              <n-radio value="shared">
+                {{ $t('config.virtual_display_mode_shared') }}
+              </n-radio>
+            </n-radio-group>
+            <transition name="fade">
+              <div
+                v-if="virtualDisplayMode === 'shared'"
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.virtual_display_shared_hdr_warning') }}</span>
+                  </span>
+                </p>
+              </div>
+            </transition>
+            <div v-if="virtualDisplayMode === 'disabled'" class="mt-3">
+              <DisplayOutputSelector />
+              <div
+                class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/30"
+              >
+                <p class="text-[11px] leading-snug text-amber-900 dark:text-amber-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-exclamation-triangle mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400"
+                    />
+                    <span class="block">{{ $t('config.physical_display_framegen_warning') }}</span>
+                  </span>
+                </p>
+              </div>
+            </div>
+            <div v-else class="mt-3 space-y-2">
+              <div class="pb-3">
+                <div class="text-sm font-medium">
+                  {{ $t('config.virtual_display_scale_label') }}
+                </div>
+                <p class="text-[11px] opacity-70 leading-snug">
+                  {{ $t('config.virtual_display_scale_desc') }}
+                </p>
+                <n-select
+                  v-model:value="virtualDisplayScale"
+                  :options="virtualDisplayScaleOptions"
+                  size="small"
+                  class="mt-2 max-w-md"
+                />
+              </div>
+              <div class="text-sm font-medium">
+                {{ $t('config.virtual_display_layout_label') }}
+              </div>
+              <p class="text-[11px] opacity-70 leading-snug">
+                {{ $t('config.virtual_display_layout_hint') }}
+              </p>
+              <n-radio-group v-model:value="virtualDisplayLayout" class="space-y-4">
+                <div
+                  v-for="option in virtualDisplayLayoutOptions"
+                  :key="option.value"
+                  class="flex flex-col cursor-pointer py-2 px-2 rounded-md hover:bg-surface/10"
+                  @click.prevent="selectVirtualDisplayLayout(option.value)"
+                  @keydown.enter.prevent="selectVirtualDisplayLayout(option.value)"
+                  @keydown.space.prevent="selectVirtualDisplayLayout(option.value)"
+                  tabindex="0"
+                >
+                  <div class="flex items-center gap-3">
+                    <n-radio :value="option.value" />
+                    <span class="text-sm font-semibold">{{ option.label }}</span>
+                  </div>
+                  <span class="text-[11px] opacity-70 leading-snug ml-6">{{
+                    option.description
+                  }}</span>
+                </div>
+              </n-radio-group>
+
+              <!-- Warning for extended modes without primary -->
+              <transition name="fade">
+                <div
+                  v-if="
+                    virtualDisplayLayout === 'extended' ||
+                    virtualDisplayLayout === 'extended_isolated'
+                  "
+                  class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+                >
+                  <p class="text-[11px] text-amber-900 dark:text-amber-100">
+                    <span class="flex items-start gap-2">
+                      <i
+                        class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                      />
+                      <span class="block">{{ $t('config.dd_config_ensure_active_warning') }}</span>
+                    </span>
+                  </p>
+                </div>
+              </transition>
+            </div>
+
+            <!-- HDR Calibration Tip for per-client virtual display -->
+            <transition name="fade">
+              <div
+                v-if="virtualDisplayMode === 'per_client'"
+                class="mt-4 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3"
+              >
+                <p class="text-[11px] text-blue-900 dark:text-blue-100">
+                  <span class="flex items-start gap-2">
+                    <i
+                      class="fas fa-lightbulb text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5"
+                    />
+                    <span class="block">{{ $t('config.virtual_display_hdr_tip') }}</span>
+                  </span>
+                </p>
+              </div>
+            </transition>
+
+            <div
+              class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+            >
+              <div>
+                <div class="text-sm font-medium">
+                  {{ $t('config.dd_automation_label') }}
+                </div>
+                <p class="text-[11px] opacity-70 mt-1 max-w-xl">
+                  {{ $t('config.dd_automation_desc') }}
+                </p>
+              </div>
+              <n-switch
+                v-model:value="displayAutomationEnabled"
+                size="medium"
+                class="self-start sm:self-center"
+              >
+                <template #checked>{{ $t('_common.enabled') }}</template>
+                <template #unchecked>{{ $t('_common.disabled') }}</template>
+              </n-switch>
+            </div>
+
+            <PlatformLayout>
+              <template #windows>
+                <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
+                  <div class="text-sm font-medium">
+                    {{ $t('config.virtual_display_driver_label') }}
+                  </div>
+                  <p class="mt-1 text-[11px] leading-snug opacity-70">
+                    {{ $t('config.virtual_display_driver_desc') }}
+                  </p>
+                  <n-select
+                    v-model:value="virtualDisplayDriver"
+                    :options="virtualDisplayDriverOptions"
+                    size="small"
+                    class="mt-2 max-w-md"
+                  />
+                </div>
+                <div class="mt-4 border-t border-dark/5 pt-4 dark:border-light/5">
+                  <n-checkbox v-model:checked="vulkanHdrLayerEnabled">
+                    <div class="flex flex-col">
+                      <span class="text-sm font-medium">
+                        {{ $t('config.vulkan_hdr_layer') }}
+                      </span>
+                      <span class="mt-1 text-[11px] leading-snug opacity-70">
+                        {{ $t('config.vulkan_hdr_layer_desc') }}
+                      </span>
+                    </div>
+                  </n-checkbox>
+                </div>
+              </template>
+            </PlatformLayout>
+          </section>
+
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
+
+          <!-- Step 2: What to do before the stream starts -->
+          <div>
+            <DisplayDeviceOptions section="pre" />
+          </div>
+
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
+
+          <!-- Step 3: Optional adjustments -->
+          <div>
+            <DisplayDeviceOptions section="options" />
+          </div>
+
+          <div class="my-5 border-t border-dark/10 dark:border-light/10" />
+
+          <FrameLimiterStep :step-label="frameLimiterStepLabel" />
+        </div>
+      </div>
+    </section>
+
+    <!-- Display Modes -->
+    <DisplayModesSettings />
+  </div>
+</template>
+
+<style scoped>
+.display-mode-option {
+  @apply block w-full rounded-xl border border-dark/10 dark:border-light/10 px-4 py-3 text-sm font-semibold transition-colors;
+  min-height: 56px;
+}
+
+.display-mode-option :deep(.n-radio__label) {
+  width: 100%;
+  @apply flex items-center justify-center gap-3;
+  text-align: center;
+}
+
+.display-mode-option :deep(.n-radio__indicator) {
+  @apply flex-shrink-0;
+}
+</style>
