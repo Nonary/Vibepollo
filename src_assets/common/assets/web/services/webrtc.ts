@@ -585,12 +585,12 @@ export class BrowserWebRtcSession {
         }
       }
 
-      // Input must not wait behind stale pointer motion or a retransmitted
-      // packet. The host treats this channel as an immediate state feed and
-      // releases held input when the channel or session closes.
+      // Abandon lost packets instead of retransmitting them, but preserve
+      // event order so a delayed iPad pointer move cannot arrive after a tap
+      // and pull the host cursor back to an older coordinate.
       this.dataChannel = connection.createDataChannel('input', {
         maxRetransmits: 0,
-        ordered: false,
+        ordered: true,
         priority: 'high',
       } as RTCDataChannelInit & { priority: 'high' });
       this.dataChannel.onopen = () => {

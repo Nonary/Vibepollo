@@ -825,10 +825,19 @@
         "refresh": "Some browser stream data is unavailable",
         "unavailable": "This browser stream configuration is not available."
       },
+      "exit_fullscreen": "Exit fullscreen",
+      "exit_fullscreen_cancel_hint": "Release Esc to cancel",
+      "exit_fullscreen_swipe_hint": "Swipe down to exit",
       "fullscreen": "Fullscreen",
       "host_not_ready": "Browser streaming is not ready yet",
       "input_ready": "Input forwarding is ready",
       "input_unavailable": "Input forwarding is unavailable",
+      "install": {
+        "action": "Improve iPad fullscreen",
+        "description": "To remove Safari's address bar before opening fullscreen, tap Safari's Share button, choose Add to Home Screen, keep Open as Web App enabled, then launch Vibepollo from its Home Screen icon. Safari may still briefly show its own fullscreen exit control.",
+        "done": "Got it",
+        "title": "Set up iPad fullscreen"
+      },
       "picker": {
         "cover_alt": "Box art for {name}",
         "desktop_detail": "Stream the host desktop"

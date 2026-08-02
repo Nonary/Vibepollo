@@ -62,11 +62,15 @@ interface PointerPosition {
 }
 
 interface TouchPointerGesture {
+  button: number;
+  dragThresholdPx: number;
   dragging: boolean;
   lastPosition: PointerPosition;
+  modifiers: Record<string, boolean>;
   startClientX: number;
   startClientY: number;
   startPosition: PointerPosition;
+  startedAtMs: number;
 }
 
 interface MutationResponse {
@@ -80,8 +84,15 @@ interface WebKitFullscreenElement extends HTMLElement {
 }
 
 interface WebKitFullscreenVideoElement extends HTMLVideoElement {
+  webkitDisplayingFullscreen?: boolean;
   webkitEnterFullScreen?: () => void;
   webkitEnterFullscreen?: () => void;
+  webkitExitFullscreen?: () => void;
+}
+
+interface WebKitFullscreenDocument extends Document {
+  webkitCancelFullScreen?: () => Promise<void> | void;
+  webkitExitFullscreen?: () => Promise<void> | void;
 }
 
 interface KeyboardLockNavigator extends Navigator {
@@ -89,6 +100,10 @@ interface KeyboardLockNavigator extends Navigator {
     lock?: (keys?: string[]) => Promise<void>;
     unlock?: () => void;
   };
+}
+
+interface StandaloneNavigator extends Navigator {
+  standalone?: boolean;
 }
 
 const { t } = useI18n();
@@ -106,8 +121,12 @@ const connectionState = ref<RTCPeerConnectionState | 'idle'>('idle');
 const hostCapabilities = ref<WebRtcHostCapabilities>({ ...unavailableHostCapabilities });
 const inputChannelState = ref<RTCDataChannelState>('closed');
 const inputForwarding = ref(true);
+const fullscreenExitHoldActive = ref(false);
+const installHelpOpen = ref(false);
 const isConnecting = ref(false);
 const loading = ref(true);
+const nativeFullscreen = ref(false);
+const nativeVideoFullscreen = ref(false);
 const playbackBlocked = ref(false);
 const pseudoFullscreen = ref(false);
 const refreshError = ref('');
@@ -117,6 +136,7 @@ const sessionStatus = ref<SessionStatus | null>(null);
 const startAfterTerminate = ref(false);
 const streamError = ref('');
 const streamSurface = ref<HTMLElement | null>(null);
+const standaloneWebApp = ref(false);
 const terminateOpen = ref(false);
 const audioEl = ref<HTMLAudioElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
@@ -124,11 +144,15 @@ const failedAppCovers = ref(new Set<number>());
 const pressedKeys = new Map<string, PressedKey>();
 const pressedMouseButtons = new Map<number, PressedMouseButton>();
 const touchPointerGestures = new Map<number, TouchPointerGesture>();
-const touchClickJitterPx = 10;
+const fullscreenExitHoldMs = 3000;
+const fullscreenExitSwipeThresholdPx = 120;
 const videoLatencyResetCooldownMs = 4000;
 const videoRenderDelayResetThresholdMs = 100;
 const videoRenderDelaySustainMs = 900;
 let audioPlaybackStream: MediaStream | null = null;
+let fullscreenExitEscapePressed = false;
+let fullscreenExitHoldTimer: number | undefined;
+let fullscreenExitSwipe: { pointerId: number; startX: number; startY: number } | null = null;
 let fullscreenKeyboardLockRequest = 0;
 let pageOverflowBeforePseudoFullscreen: { body: string; root: string } | null = null;
 let sessionStatusTimer: number | undefined;
@@ -225,6 +249,20 @@ const terminateDescription = computed(() =>
 const terminateConfirmLabel = computed(() =>
   startAfterTerminate.value ? t('webrtc.terminate_confirm_action') : t('webrtc.terminate'),
 );
+
+const fullscreenActive = computed(
+  () => nativeFullscreen.value || nativeVideoFullscreen.value || pseudoFullscreen.value,
+);
+
+const fullscreenExitControlLabel = computed(() =>
+  fullscreenExitHoldActive.value
+    ? t('ui.browser_stream.exit_fullscreen_cancel_hint')
+    : t('ui.browser_stream.exit_fullscreen'),
+);
+
+const showFullscreenSwipeExit = computed(() => fullscreenActive.value && isTouchSafariBrowser());
+
+const showInstallWebAppAction = computed(() => isTouchSafariBrowser() && !standaloneWebApp.value);
 
 function selectApp(appId?: number): void {
   form.appId = appId === undefined ? '' : String(appId);
@@ -528,6 +566,32 @@ function isSafariBrowser(): boolean {
   }
 }
 
+function isTouchSafariBrowser(): boolean {
+  try {
+    const userAgent = navigator.userAgent ?? '';
+    const platform = navigator.platform ?? '';
+    return (
+      /apple/i.test(navigator.vendor ?? '') &&
+      navigator.maxTouchPoints > 1 &&
+      (/\b(iPad|iPhone|iPod)\b/i.test(userAgent) || /MacIntel/i.test(platform))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runningAsStandaloneWebApp(): boolean {
+  try {
+    return (
+      (navigator as StandaloneNavigator).standalone === true ||
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 function resetVideoLatencyFence(): void {
   videoBufferOverloadedSince = null;
   videoRenderOverloadedSince = null;
@@ -823,8 +887,22 @@ function sendPointerMove(event: PointerEvent): void {
         event.clientX - touchGesture.startClientX,
         event.clientY - touchGesture.startClientY,
       );
-      if (distance < touchClickJitterPx) return;
+      const elapsedMs = performance.now() - touchGesture.startedAtMs;
+      const immediateDragThresholdPx = Math.max(48, touchGesture.dragThresholdPx * 2.5);
+      if (
+        distance < touchGesture.dragThresholdPx ||
+        (elapsedMs < 140 && distance < immediateDragThresholdPx)
+      ) {
+        return;
+      }
       touchGesture.dragging = true;
+      const pressed = {
+        button: touchGesture.button,
+        modifiers: touchGesture.modifiers,
+        ...touchGesture.startPosition,
+      };
+      pressedMouseButtons.set(touchGesture.button, pressed);
+      browserSession.sendInput({ ...pressed, type: 'mouse_down' });
     }
   }
 
@@ -848,13 +926,20 @@ function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up')
   const surface = streamSurface.value;
   const touchLike = event.pointerType === 'touch' || event.pointerType === 'pen';
   if (touchLike) event.preventDefault();
-  try {
-    surface?.focus({ preventScroll: true });
-  } catch {
-    surface?.focus();
+  const touchGesture = touchPointerGestures.get(event.pointerId);
+  if (type === 'mouse_up' && !pressedMouseButtons.has(event.button) && !touchGesture) {
+    // WebKit can emit a late pointerup after pointer capture was already lost.
+    // Its stale coordinate must not reposition the host cursor a second time.
+    return;
+  }
+  if (!touchLike && surface && document.activeElement !== surface) {
+    try {
+      surface.focus({ preventScroll: true });
+    } catch {
+      surface.focus();
+    }
   }
 
-  const touchGesture = touchPointerGestures.get(event.pointerId);
   const position =
     type === 'mouse_up' && touchGesture && !touchGesture.dragging
       ? touchGesture.startPosition
@@ -864,13 +949,26 @@ function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up')
 
   if (type === 'mouse_down') {
     if (touchLike) {
-      touchPointerGestures.set(event.pointerId, {
+      const contactRadius = Math.max(event.width || 0, event.height || 0) / 2;
+      const gesture: TouchPointerGesture = {
+        button: event.button,
+        dragThresholdPx:
+          event.pointerType === 'pen' ? 8 : Math.max(18, Math.min(32, contactRadius || 18)),
         dragging: false,
         lastPosition: position,
+        modifiers: modifiers(event),
         startClientX: event.clientX,
         startClientY: event.clientY,
         startPosition: position,
-      });
+        startedAtMs: performance.now(),
+      };
+      touchPointerGestures.set(event.pointerId, gesture);
+      try {
+        surface?.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is optional; the pending tap remains frozen.
+      }
+      return;
     }
     pressedMouseButtons.set(event.button, {
       button: event.button,
@@ -882,9 +980,24 @@ function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up')
     } catch {
       // Pointer capture is an optimization; the button event is still valid.
     }
+  } else if (touchGesture) {
+    const releasePosition = touchGesture.dragging
+      ? (pointerPosition(event, true) ?? touchGesture.lastPosition)
+      : touchGesture.startPosition;
+    const release = {
+      button: touchGesture.button,
+      modifiers: touchGesture.modifiers,
+      ...releasePosition,
+    };
+    if (!touchGesture.dragging) {
+      browserSession.sendInput({ ...release, type: 'mouse_down' });
+    }
+    pressedMouseButtons.delete(touchGesture.button);
+    touchPointerGestures.delete(event.pointerId);
+    browserSession.sendInput({ ...release, type: 'mouse_up' });
+    return;
   } else {
     pressedMouseButtons.delete(event.button);
-    touchPointerGestures.delete(event.pointerId);
   }
   browserSession.sendInput({
     ...position,
@@ -908,7 +1021,40 @@ function sendWheel(event: WheelEvent): void {
   });
 }
 
+function cancelFullscreenExitHold(releaseEscape = true): void {
+  if (fullscreenExitHoldTimer !== undefined) {
+    window.clearTimeout(fullscreenExitHoldTimer);
+    fullscreenExitHoldTimer = undefined;
+  }
+  fullscreenExitHoldActive.value = false;
+  if (releaseEscape) fullscreenExitEscapePressed = false;
+}
+
+function handleFullscreenExitHold(event: KeyboardEvent, type: 'key_down' | 'key_up'): boolean {
+  if (event.code !== 'Escape' || (!fullscreenActive.value && !fullscreenExitEscapePressed)) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (type === 'key_up') {
+    cancelFullscreenExitHold();
+    return true;
+  }
+  if (fullscreenExitEscapePressed) return true;
+
+  fullscreenExitEscapePressed = true;
+  fullscreenExitHoldActive.value = true;
+  fullscreenExitHoldTimer = window.setTimeout(() => {
+    fullscreenExitHoldTimer = undefined;
+    fullscreenExitHoldActive.value = false;
+    if (fullscreenActive.value) void exitFullscreen();
+  }, fullscreenExitHoldMs);
+  return true;
+}
+
 function sendKey(event: KeyboardEvent, type: 'key_down' | 'key_up'): void {
+  if (handleFullscreenExitHold(event, type)) return;
   if (!inputReady.value) return;
   event.preventDefault();
   if (type === 'key_down') {
@@ -925,6 +1071,41 @@ function sendKey(event: KeyboardEvent, type: 'key_down' | 'key_up'): void {
   });
 }
 
+function startFullscreenExitSwipe(event: PointerEvent): void {
+  if (event.pointerType !== 'touch' || !fullscreenActive.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  fullscreenExitSwipe = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+  };
+  try {
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+  } catch {
+    // The gesture remains usable without pointer capture.
+  }
+}
+
+function updateFullscreenExitSwipe(event: PointerEvent): void {
+  const swipe = fullscreenExitSwipe;
+  if (!swipe || swipe.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const dx = event.clientX - swipe.startX;
+  const dy = event.clientY - swipe.startY;
+  if (dy < fullscreenExitSwipeThresholdPx || dy < Math.abs(dx) * 1.4) return;
+  fullscreenExitSwipe = null;
+  void exitFullscreen();
+}
+
+function finishFullscreenExitSwipe(event?: PointerEvent): void {
+  if (event && fullscreenExitSwipe?.pointerId !== event.pointerId) return;
+  event?.preventDefault();
+  event?.stopPropagation();
+  fullscreenExitSwipe = null;
+}
+
 function releaseForwardedInput(): void {
   for (const pressed of pressedMouseButtons.values()) {
     browserSession.sendInput({ ...pressed, type: 'mouse_up' });
@@ -939,11 +1120,17 @@ function releaseForwardedInput(): void {
 }
 
 function onWindowBlur(): void {
+  cancelFullscreenExitHold();
+  finishFullscreenExitSwipe();
   releaseForwardedInput();
 }
 
 function onVisibilityChange(): void {
-  if (document.visibilityState !== 'visible') releaseForwardedInput();
+  if (document.visibilityState !== 'visible') {
+    cancelFullscreenExitHold();
+    finishFullscreenExitSwipe();
+    releaseForwardedInput();
+  }
 }
 
 async function enterFullscreen(): Promise<void> {
@@ -1013,11 +1200,24 @@ function releaseFullscreenKeyboardLock(): void {
 }
 
 function onFullscreenChange(): void {
-  if (currentFullscreenElement()) {
+  nativeFullscreen.value = Boolean(currentFullscreenElement());
+  if (nativeFullscreen.value) {
     void requestFullscreenKeyboardLock();
   } else {
+    cancelFullscreenExitHold(false);
+    finishFullscreenExitSwipe();
     releaseFullscreenKeyboardLock();
   }
+}
+
+function onNativeVideoFullscreenBegin(): void {
+  nativeVideoFullscreen.value = true;
+}
+
+function onNativeVideoFullscreenEnd(): void {
+  nativeVideoFullscreen.value = false;
+  cancelFullscreenExitHold(false);
+  finishFullscreenExitSwipe();
 }
 
 function enterNativeVideoFullscreen(video: HTMLVideoElement): boolean {
@@ -1051,26 +1251,67 @@ function exitPseudoFullscreen(): void {
   pageOverflowBeforePseudoFullscreen = null;
 }
 
+async function exitFullscreen(): Promise<void> {
+  releaseFullscreenKeyboardLock();
+
+  if (currentFullscreenElement()) {
+    const webkitDocument = document as WebKitFullscreenDocument;
+    const exits = [
+      document.exitFullscreen,
+      webkitDocument.webkitExitFullscreen,
+      webkitDocument.webkitCancelFullScreen,
+    ];
+    for (const exit of exits) {
+      if (typeof exit !== 'function') continue;
+      try {
+        await exit.call(document);
+        return;
+      } catch {
+        // Try the next browser-specific exit API.
+      }
+    }
+  }
+
+  const webkitVideo = videoEl.value as WebKitFullscreenVideoElement | null;
+  if (webkitVideo?.webkitDisplayingFullscreen && webkitVideo.webkitExitFullscreen) {
+    try {
+      webkitVideo.webkitExitFullscreen();
+      return;
+    } catch {
+      // The compatibility fallback may still be active.
+    }
+  }
+
+  exitPseudoFullscreen();
+}
+
 watch(inputForwarding, (enabled, wasEnabled) => {
   if (!enabled && wasEnabled) releaseForwardedInput();
 });
 
 onMounted(() => {
+  standaloneWebApp.value = runningAsStandaloneWebApp();
   void refresh();
   startSessionStatusPolling();
   window.addEventListener('blur', onWindowBlur);
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
+  videoEl.value?.addEventListener('webkitbeginfullscreen', onNativeVideoFullscreenBegin);
+  videoEl.value?.addEventListener('webkitendfullscreen', onNativeVideoFullscreenEnd);
 });
 onBeforeUnmount(() => {
   stopSessionStatusPolling();
+  cancelFullscreenExitHold();
+  finishFullscreenExitSwipe();
   exitPseudoFullscreen();
   releaseFullscreenKeyboardLock();
   window.removeEventListener('blur', onWindowBlur);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.removeEventListener('visibilitychange', onVisibilityChange);
+  videoEl.value?.removeEventListener('webkitbeginfullscreen', onNativeVideoFullscreenBegin);
+  videoEl.value?.removeEventListener('webkitendfullscreen', onNativeVideoFullscreenEnd);
   releaseForwardedInput();
   stopVideoFrameLatencyMonitoring();
   void disconnect(false);
@@ -1274,14 +1515,40 @@ onBeforeUnmount(() => {
       >
         <video ref="videoEl" autoplay muted playsinline disablepictureinpicture />
         <audio ref="audioEl" autoplay hidden />
-        <AppButton
-          v-if="pseudoFullscreen"
+        <div
+          v-if="showFullscreenSwipeExit"
+          class="stream-surface__exit-swipe"
+          aria-hidden="true"
+          @click.stop
+          @keydown.stop
+          @keyup.stop
+          @lostpointercapture="finishFullscreenExitSwipe"
+          @pointercancel="finishFullscreenExitSwipe"
+          @pointerdown="startFullscreenExitSwipe"
+          @pointermove="updateFullscreenExitSwipe"
+          @pointerup="finishFullscreenExitSwipe"
+        >
+          <span aria-hidden="true" />
+          {{ t('ui.browser_stream.exit_fullscreen_swipe_hint') }}
+        </div>
+        <div
+          v-if="fullscreenActive"
           class="stream-surface__exit-fullscreen"
-          icon="x"
-          :label="t('_common.close')"
-          variant="secondary"
-          @click.stop="exitPseudoFullscreen"
-        />
+          @click.stop
+          @keydown.stop
+          @keyup.stop
+          @pointercancel.stop
+          @pointerdown.stop
+          @pointermove.stop
+          @pointerup.stop
+        >
+          <AppButton
+            icon="x"
+            :label="fullscreenExitControlLabel"
+            variant="secondary"
+            @click="exitFullscreen"
+          />
+        </div>
         <div v-if="!isConnected && !connectionPending" class="stream-surface__empty">
           <span class="stream-surface__empty-icon" aria-hidden="true"
             ><UiIcon name="play" :size="28"
@@ -1333,6 +1600,13 @@ onBeforeUnmount(() => {
           variant="secondary"
           :disabled="!isConnected"
           @click="enterFullscreen"
+        />
+        <AppButton
+          v-if="showInstallWebAppAction"
+          icon="help"
+          :label="t('ui.browser_stream.install.action')"
+          variant="secondary"
+          @click="installHelpOpen = true"
         />
         <span class="stream-stage__input-status" :data-ready="inputReady">
           <UiIcon :name="inputReady ? 'check-circle' : 'info'" :size="16" />
@@ -1527,6 +1801,15 @@ onBeforeUnmount(() => {
     </div>
 
     <ConfirmDialog
+      v-model:open="installHelpOpen"
+      :title="t('ui.browser_stream.install.title')"
+      :description="t('ui.browser_stream.install.description')"
+      :confirm-label="t('ui.browser_stream.install.done')"
+      :cancel-label="t('_common.cancel')"
+      initial-focus="confirm"
+    />
+
+    <ConfirmDialog
       v-model:open="terminateOpen"
       :title="t('webrtc.terminate_confirm_title')"
       :description="terminateDescription"
@@ -1717,7 +2000,10 @@ onBeforeUnmount(() => {
 
 .stream-surface--interactive {
   cursor: none;
+  overscroll-behavior: none;
   touch-action: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 .stream-surface video {
@@ -1743,6 +2029,8 @@ onBeforeUnmount(() => {
 .stream-surface--pseudo-fullscreen {
   position: fixed;
   z-index: 10000;
+  width: 100lvw;
+  height: 100lvh;
   inset: 0;
 }
 
@@ -1757,19 +2045,6 @@ onBeforeUnmount(() => {
   object-fit: contain;
 }
 
-.stream-surface__exit-fullscreen {
-  position: absolute;
-  z-index: 1;
-  top: max(var(--vs-space-12), env(safe-area-inset-top));
-  right: max(var(--vs-space-12), env(safe-area-inset-right));
-  opacity: 0.78;
-}
-
-.stream-surface__exit-fullscreen:hover,
-.stream-surface__exit-fullscreen:focus-visible {
-  opacity: 1;
-}
-
 .stream-surface__empty {
   position: absolute;
   inset: 0;
@@ -1780,6 +2055,43 @@ onBeforeUnmount(() => {
   padding: var(--vs-space-24);
   color: rgb(255 255 255 / 0.82);
   text-align: center;
+}
+
+.stream-surface__exit-fullscreen {
+  position: absolute;
+  z-index: 2;
+  right: max(var(--vs-space-16), env(safe-area-inset-right));
+  bottom: max(var(--vs-space-16), env(safe-area-inset-bottom));
+  cursor: default;
+}
+
+.stream-surface__exit-swipe {
+  position: absolute;
+  z-index: 2;
+  top: max(var(--vs-space-12), env(safe-area-inset-top));
+  left: 50%;
+  display: grid;
+  width: min(13rem, 50vw);
+  min-height: 2.75rem;
+  padding: var(--vs-space-8) var(--vs-space-12);
+  transform: translateX(-50%);
+  place-items: center;
+  gap: var(--vs-space-4);
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 999px;
+  background: rgb(10 12 18 / 0.68);
+  color: rgb(255 255 255 / 0.82);
+  font-size: var(--vs-type-size-helper);
+  cursor: default;
+  touch-action: none;
+  backdrop-filter: blur(10px);
+}
+
+.stream-surface__exit-swipe span {
+  width: 2.25rem;
+  height: 0.2rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.72);
 }
 
 .stream-surface__empty span:not(.stream-surface__empty-icon):not(.stream-surface__spinner) {
