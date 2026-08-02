@@ -37,6 +37,13 @@ export interface WebRtcConnectionCallbacks {
   onConnectionState?: (state: RTCPeerConnectionState) => void;
   onInputState?: (state: RTCDataChannelState) => void;
   onRemoteStream?: (stream: MediaStream) => void;
+  onVideoPlayoutDelay?: (delayMs: number | undefined) => void;
+}
+
+interface VideoJitterStatsState {
+  delay?: number;
+  emitted?: number;
+  id?: string;
 }
 
 interface WebRtcSessionResponse {
@@ -90,6 +97,37 @@ const defaultLimits: WebRtcStreamLimits = {
   min_bitrate_kbps: 0,
   max_bitrate_kbps: 500000,
 };
+
+const receiverHintRefreshMs = 250;
+const videoStatsPollMs = 250;
+
+function normalizedLatencyTargetMs(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(100, value))
+    : fallback;
+}
+
+function applyReceiverLatencyHints(receiver: RTCRtpReceiver | undefined, targetMs: number): void {
+  if (!receiver) return;
+  const receiverWithHints = receiver as RTCRtpReceiver & {
+    jitterBufferTarget?: number;
+    playoutDelayHint?: number | null;
+  };
+  try {
+    if ('playoutDelayHint' in receiverWithHints) {
+      receiverWithHints.playoutDelayHint = targetMs / 1000;
+    }
+  } catch {
+    // Receiver latency hints are optional and vary across browser versions.
+  }
+  try {
+    if (typeof receiverWithHints.jitterBufferTarget === 'number') {
+      receiverWithHints.jitterBufferTarget = targetMs;
+    }
+  } catch {
+    // Continue with the browser's default jitter buffer when hints are read-only.
+  }
+}
 
 type PeerConnectionConstructor = new (configuration?: RTCConfiguration) => RTCPeerConnection;
 
@@ -469,10 +507,14 @@ export class BrowserWebRtcSession {
   private localCandidateTimer: number | undefined;
   private localCandidates: RTCIceCandidateInit[] = [];
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
+  private receiverHintTimer: number | undefined;
   private remoteCandidateIndex = 0;
   private remoteCandidatePollTimer: number | undefined;
   private remoteStream: MediaStream | null = null;
   private sessionId = '';
+  private videoJitterStats: VideoJitterStatsState = {};
+  private videoLatencyTargetMs = 0;
+  private videoStatsTimer: number | undefined;
   private peerConnection: RTCPeerConnection | null = null;
 
   get connected(): boolean {
@@ -487,6 +529,10 @@ export class BrowserWebRtcSession {
     } catch {
       return false;
     }
+  }
+
+  requestLatencyResync(): boolean {
+    return this.sendInput({ type: 'latency_resync' });
   }
 
   async connect(config: StreamConfig, callbacks: WebRtcConnectionCallbacks = {}): Promise<void> {
@@ -508,6 +554,10 @@ export class BrowserWebRtcSession {
     }
     this.sessionId = session.id;
     this.activeGeneration = generation;
+    this.videoLatencyTargetMs = normalizedLatencyTargetMs(
+      config.videoMaxFrameAgeMs,
+      Math.max(5, Math.min(100, 1000 / Math.max(1, config.fps))),
+    );
     try {
       const remoteStream = typeof MediaStream === 'function' ? new MediaStream() : null;
       this.remoteStream = remoteStream;
@@ -535,10 +585,14 @@ export class BrowserWebRtcSession {
         }
       }
 
-      // This channel carries key/button transitions as well as pointer motion.
-      // Keep it reliable and ordered so a dropped key-up cannot leave input held
-      // down on the host.
-      this.dataChannel = connection.createDataChannel('input');
+      // Input must not wait behind stale pointer motion or a retransmitted
+      // packet. The host treats this channel as an immediate state feed and
+      // releases held input when the channel or session closes.
+      this.dataChannel = connection.createDataChannel('input', {
+        maxRetransmits: 0,
+        ordered: false,
+        priority: 'high',
+      } as RTCDataChannelInit & { priority: 'high' });
       this.dataChannel.onopen = () => {
         if (this.isActiveGeneration(generation)) callbacks.onInputState?.('open');
       };
@@ -555,6 +609,16 @@ export class BrowserWebRtcSession {
       };
       connection.ontrack = (event) => {
         if (!this.isActiveGeneration(generation)) return;
+        if (event.track.kind === 'video') {
+          try {
+            event.track.contentHint = 'motion';
+          } catch {
+            // contentHint is advisory and unavailable in some Safari releases.
+          }
+          applyReceiverLatencyHints(event.receiver, this.videoLatencyTargetMs);
+        } else if (event.track.kind === 'audio') {
+          applyReceiverLatencyHints(event.receiver, 20);
+        }
         const stream = remoteStream ?? event.streams[0];
         if (!stream) return;
         this.remoteStream = stream;
@@ -566,6 +630,8 @@ export class BrowserWebRtcSession {
         }
         callbacks.onRemoteStream?.(stream);
       };
+      this.startReceiverHintRefresh(generation);
+      this.startVideoStatsPolling(connection, callbacks, generation);
       connection.onicecandidate = (event) => {
         if (event.candidate && this.isActiveGeneration(generation)) {
           this.queueLocalCandidate(event.candidate.toJSON(), generation);
@@ -633,6 +699,7 @@ export class BrowserWebRtcSession {
   private async disposeCurrentSession(): Promise<void> {
     const sessionId = this.sessionId;
     this.stopRemoteCandidateSubscription();
+    this.stopLatencyMonitoring();
     if (this.localCandidateTimer) window.clearTimeout(this.localCandidateTimer);
     this.localCandidateTimer = undefined;
     this.localCandidates = [];
@@ -653,9 +720,95 @@ export class BrowserWebRtcSession {
     this.peerConnection = null;
     this.remoteStream?.getTracks().forEach((track) => track.stop());
     this.remoteStream = null;
+    this.videoJitterStats = {};
     this.sessionId = '';
     this.activeGeneration = 0;
     await deleteSessionQuietly(sessionId);
+  }
+
+  private startReceiverHintRefresh(generation: number): void {
+    if (this.receiverHintTimer) return;
+    this.receiverHintTimer = window.setInterval(() => {
+      const connection = this.peerConnection;
+      if (!connection || !this.isActiveGeneration(generation)) return;
+      for (const receiver of connection.getReceivers()) {
+        if (receiver.track?.kind === 'video') {
+          applyReceiverLatencyHints(receiver, this.videoLatencyTargetMs);
+        } else if (receiver.track?.kind === 'audio') {
+          applyReceiverLatencyHints(receiver, 20);
+        }
+      }
+    }, receiverHintRefreshMs);
+  }
+
+  private startVideoStatsPolling(
+    connection: RTCPeerConnection,
+    callbacks: WebRtcConnectionCallbacks,
+    generation: number,
+  ): void {
+    if (this.videoStatsTimer) return;
+    const poll = async (): Promise<void> => {
+      if (this.peerConnection !== connection || !this.isActiveGeneration(generation)) return;
+      try {
+        const report = await connection.getStats();
+        let inbound: RTCStats | undefined;
+        report.forEach((entry) => {
+          const candidate = entry as RTCStats & {
+            isRemote?: boolean;
+            kind?: string;
+            mediaType?: string;
+          };
+          if (
+            candidate.type === 'inbound-rtp' &&
+            candidate.isRemote !== true &&
+            (candidate.kind === 'video' || candidate.mediaType === 'video')
+          ) {
+            inbound = candidate;
+          }
+        });
+
+        const sample = inbound as
+          | (RTCStats & {
+              jitterBufferDelay?: number;
+              jitterBufferEmittedCount?: number;
+            })
+          | undefined;
+        const delay = sample?.jitterBufferDelay;
+        const emitted = sample?.jitterBufferEmittedCount;
+        const previous = this.videoJitterStats;
+        let delayMs: number | undefined;
+        if (
+          sample &&
+          previous.id === sample.id &&
+          typeof delay === 'number' &&
+          typeof emitted === 'number' &&
+          typeof previous.delay === 'number' &&
+          typeof previous.emitted === 'number'
+        ) {
+          const deltaDelay = delay - previous.delay;
+          const deltaEmitted = emitted - previous.emitted;
+          if (deltaDelay >= 0 && deltaEmitted > 0) delayMs = (deltaDelay / deltaEmitted) * 1000;
+        }
+        this.videoJitterStats = { delay, emitted, id: sample?.id };
+        callbacks.onVideoPlayoutDelay?.(delayMs);
+      } catch {
+        // Stats are diagnostic input only; streaming must continue without them.
+      }
+
+      if (this.peerConnection !== connection || !this.isActiveGeneration(generation)) return;
+      this.videoStatsTimer = window.setTimeout(() => {
+        this.videoStatsTimer = undefined;
+        void poll();
+      }, videoStatsPollMs);
+    };
+    void poll();
+  }
+
+  private stopLatencyMonitoring(): void {
+    if (this.receiverHintTimer) window.clearInterval(this.receiverHintTimer);
+    if (this.videoStatsTimer) window.clearTimeout(this.videoStatsTimer);
+    this.receiverHintTimer = undefined;
+    this.videoStatsTimer = undefined;
   }
 
   private queueLocalCandidate(candidate: RTCIceCandidateInit, generation: number): void {

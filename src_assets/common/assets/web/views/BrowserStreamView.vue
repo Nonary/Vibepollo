@@ -125,10 +125,17 @@ const pressedKeys = new Map<string, PressedKey>();
 const pressedMouseButtons = new Map<number, PressedMouseButton>();
 const touchPointerGestures = new Map<number, TouchPointerGesture>();
 const touchClickJitterPx = 10;
+const videoLatencyResetCooldownMs = 4000;
+const videoRenderDelayResetThresholdMs = 100;
+const videoRenderDelaySustainMs = 900;
 let audioPlaybackStream: MediaStream | null = null;
 let fullscreenKeyboardLockRequest = 0;
 let pageOverflowBeforePseudoFullscreen: { body: string; root: string } | null = null;
 let sessionStatusTimer: number | undefined;
+let videoBufferOverloadedSince: number | null = null;
+let videoFrameCallbackHandle: number | undefined;
+let videoRenderOverloadedSince: number | null = null;
+let videoLatencyResetAt: number | null = null;
 let videoPlaybackStream: MediaStream | null = null;
 
 const form = reactive<StreamLaunchForm>({
@@ -507,6 +514,116 @@ async function playAttachedMedia(): Promise<void> {
   playbackBlocked.value = results.some((result) => result.status === 'rejected');
 }
 
+function isSafariBrowser(): boolean {
+  try {
+    const userAgent = navigator.userAgent ?? '';
+    const vendor = navigator.vendor ?? '';
+    return (
+      /\bsafari\//i.test(userAgent) &&
+      /apple/i.test(vendor) &&
+      !/\b(chrome|chromium|crios|fxios|edgios|edg|opr|opera)\b/i.test(userAgent)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resetVideoLatencyFence(): void {
+  videoBufferOverloadedSince = null;
+  videoRenderOverloadedSince = null;
+}
+
+function resetVideoElementForLatency(): void {
+  const player = videoEl.value;
+  const stream = videoPlaybackStream;
+  if (!player || !stream || !stream.getVideoTracks().length) return;
+
+  resetVideoLatencyFence();
+  videoLatencyResetAt = performance.now();
+  browserSession.requestLatencyResync();
+  try {
+    player.pause();
+    player.srcObject = null;
+    player.load();
+  } catch {
+    // Reattaching on the next frame is still worth attempting.
+  }
+  window.requestAnimationFrame(() => {
+    if (videoEl.value !== player || videoPlaybackStream !== stream || !isConnected.value) return;
+    player.muted = true;
+    player.playbackRate = 1;
+    player.srcObject = stream;
+    void player.play().catch(() => {
+      playbackBlocked.value = true;
+    });
+  });
+}
+
+function applyVideoLatencyFence(
+  delayMs: number | undefined,
+  thresholdMs: number,
+  sustainMs: number,
+  source: 'buffer' | 'render',
+): void {
+  const overloadedSince =
+    source === 'buffer' ? videoBufferOverloadedSince : videoRenderOverloadedSince;
+  if (
+    !isConnected.value ||
+    document.visibilityState !== 'visible' ||
+    typeof delayMs !== 'number' ||
+    !Number.isFinite(delayMs) ||
+    delayMs < thresholdMs
+  ) {
+    if (source === 'buffer') videoBufferOverloadedSince = null;
+    else videoRenderOverloadedSince = null;
+    return;
+  }
+
+  const now = performance.now();
+  const startedAt = overloadedSince ?? now;
+  if (source === 'buffer') videoBufferOverloadedSince = startedAt;
+  else videoRenderOverloadedSince = startedAt;
+  if (now - startedAt < sustainMs) return;
+  if (videoLatencyResetAt !== null && now - videoLatencyResetAt < videoLatencyResetCooldownMs)
+    return;
+  resetVideoElementForLatency();
+}
+
+function handleVideoPlayoutDelay(delayMs: number | undefined): void {
+  applyVideoLatencyFence(
+    delayMs,
+    isSafariBrowser() ? 160 : 220,
+    isSafariBrowser() ? 1500 : 900,
+    'buffer',
+  );
+}
+
+function stopVideoFrameLatencyMonitoring(): void {
+  const player = videoEl.value;
+  if (player && videoFrameCallbackHandle !== undefined) {
+    player.cancelVideoFrameCallback(videoFrameCallbackHandle);
+  }
+  videoFrameCallbackHandle = undefined;
+}
+
+function startVideoFrameLatencyMonitoring(player: HTMLVideoElement): void {
+  stopVideoFrameLatencyMonitoring();
+  if (typeof player.requestVideoFrameCallback !== 'function') return;
+  const onFrame = (now: number, metadata: VideoFrameCallbackMetadata): void => {
+    if (videoEl.value !== player) return;
+    const expected = metadata.expectedDisplayTime;
+    const delayMs = Number.isFinite(expected) ? Math.max(0, now - expected) : undefined;
+    applyVideoLatencyFence(
+      delayMs,
+      videoRenderDelayResetThresholdMs,
+      videoRenderDelaySustainMs,
+      'render',
+    );
+    videoFrameCallbackHandle = player.requestVideoFrameCallback(onFrame);
+  };
+  videoFrameCallbackHandle = player.requestVideoFrameCallback(onFrame);
+}
+
 function attachRemoteStream(stream: MediaStream): void {
   const player = videoEl.value;
   if (!player) return;
@@ -523,6 +640,7 @@ function attachRemoteStream(stream: MediaStream): void {
     videoPlaybackStream = replaceTracks(videoPlaybackStream, videoTracks);
     player.muted = true;
     player.srcObject = videoPlaybackStream;
+    startVideoFrameLatencyMonitoring(player);
   }
 
   const audioTracks = stream.getAudioTracks();
@@ -557,6 +675,9 @@ async function connect(resume: boolean): Promise<void> {
     height: form.height,
     muteHostAudio: form.muteHostAudio,
     resume,
+    videoMaxFrameAgeMs: Math.max(5, Math.min(100, Math.round(1000 / Math.max(1, form.fps)))),
+    videoPacingMode: 'latency',
+    videoPacingSlackMs: 0,
     width: form.width,
   };
 
@@ -577,6 +698,7 @@ async function connect(resume: boolean): Promise<void> {
         inputChannelState.value = state;
       },
       onRemoteStream: attachRemoteStream,
+      onVideoPlayoutDelay: handleVideoPlayoutDelay,
     });
   } catch (error) {
     if (error instanceof WebRtcConnectionCanceledError) {
@@ -633,6 +755,9 @@ async function confirmTerminate(): Promise<void> {
 
 async function disconnect(restartStatusPolling = true): Promise<void> {
   releaseForwardedInput();
+  stopVideoFrameLatencyMonitoring();
+  resetVideoLatencyFence();
+  videoLatencyResetAt = null;
   isConnecting.value = false;
   inputChannelState.value = 'closed';
   await browserSession.disconnect();
@@ -947,6 +1072,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.removeEventListener('visibilitychange', onVisibilityChange);
   releaseForwardedInput();
+  stopVideoFrameLatencyMonitoring();
   void disconnect(false);
 });
 </script>
