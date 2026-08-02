@@ -13,12 +13,7 @@ import {
   StatusBadge,
   type StatusTone,
 } from '@/components/ui';
-import type {
-  RTSPSession,
-  SessionStatus,
-  SessionSummary,
-  WebRTCSession,
-} from '@/types/sessions';
+import type { RTSPSession, SessionStatus, SessionSummary, WebRTCSession } from '@/types/sessions';
 import { formatBitrate, formatBytes, formatDuration, formatRelativeTime } from '@/utils/format';
 
 const { locale, t } = useI18n();
@@ -65,6 +60,7 @@ interface ActiveSessionRow {
   fps: string;
   bitrate: string;
   codec: string;
+  encodeLatency: string;
   duration: string;
   hdr: boolean;
   diagnostics: DiagnosticValue[];
@@ -166,12 +162,17 @@ function rtspState(session: RTSPSession): { label: string; tone: StatusTone } {
   if (state.includes('stop') || state.includes('error')) {
     return { label: localizedSessionState(state), tone: 'warning' };
   }
-  return { label: state ? localizedSessionState(state) : t('ui.sessions.status.streaming'), tone: 'success' };
+  return {
+    label: state ? localizedSessionState(state) : t('ui.sessions.status.streaming'),
+    tone: 'success',
+  };
 }
 
 function webRtcState(session: WebRTCSession): { label: string; tone: StatusTone } {
-  if (!session.has_remote_offer) return { label: t('ui.sessions.status.awaiting_offer'), tone: 'warning' };
-  if (!session.has_local_answer) return { label: t('ui.sessions.status.negotiating'), tone: 'info' };
+  if (!session.has_remote_offer)
+    return { label: t('ui.sessions.status.awaiting_offer'), tone: 'warning' };
+  if (!session.has_local_answer)
+    return { label: t('ui.sessions.status.negotiating'), tone: 'info' };
   if (session.video_packets > 0 || session.audio_packets > 0) {
     return { label: t('ui.sessions.status.streaming'), tone: 'success' };
   }
@@ -192,6 +193,7 @@ function normalizeRtsp(session: RTSPSession): ActiveSessionRow {
     fps: numeric(session.fps, 'ui.sessions.value.fps'),
     bitrate: formatBitrate(session.encoder_bitrate_kbps, locale.value),
     codec: session.codec || t('ui.sessions.value.unknown_codec'),
+    encodeLatency: numeric(session.encode_latency_ms, 'ui.sessions.value.milliseconds'),
     duration: formatDuration(session.uptime_seconds, locale.value),
     hdr: session.hdr,
     diagnostics: [
@@ -244,6 +246,7 @@ function normalizeWebRtc(session: WebRTCSession): ActiveSessionRow {
     fps: numeric(session.fps, 'ui.sessions.value.fps'),
     bitrate: formatBitrate(session.encoder_bitrate_kbps ?? 0, locale.value),
     codec: session.codec || t('ui.sessions.value.negotiating_codec'),
+    encodeLatency: t('ui.sessions.value.not_reported'),
     duration: t('sessions.live'),
     hdr: session.hdr ?? false,
     diagnostics: [
@@ -309,8 +312,8 @@ function settledMessage(result: PromiseSettledResult<unknown>, labelKey: string)
     result.reason instanceof ApiError
       ? t('ui.sessions.error.source_load', { source })
       : result.reason instanceof Error
-      ? result.reason.message
-      : t('ui.sessions.error.source_load', { source });
+        ? result.reason.message
+        : t('ui.sessions.error.source_load', { source });
   return t('ui.sessions.error.source_detail', { source, detail });
 }
 
@@ -337,7 +340,9 @@ async function refreshSessions(silent = false): Promise<void> {
       : [];
   }
   if (historyResult.status === 'fulfilled') {
-    const incoming = Array.isArray(historyResult.value.sessions) ? historyResult.value.sessions : [];
+    const incoming = Array.isArray(historyResult.value.sessions)
+      ? historyResult.value.sessions
+      : [];
     historyRows.value = stableReconcile(historyRows.value, incoming, (row) => row.uuid);
     historyStatus.value = historyResult.value.history_status ?? null;
   }
@@ -583,7 +588,10 @@ onBeforeUnmount(() => {
 
         <ul v-else class="active-list" :aria-label="t('ui.sessions.active.list_aria_label')">
           <li v-for="session in activeRows" :key="session.key">
-            <article class="session-card vs-surface" :aria-labelledby="`session-title-${session.key}`">
+            <article
+              class="session-card vs-surface"
+              :aria-labelledby="`session-title-${session.key}`"
+            >
               <div class="session-card__header">
                 <div class="session-card__identity">
                   <div class="session-card__badges">
@@ -598,6 +606,7 @@ onBeforeUnmount(() => {
                   </div>
                   <h3 :id="`session-title-${session.key}`">{{ session.client }}</h3>
                   <p>{{ session.app }}</p>
+                  <p>{{ session.resolution }} @ {{ session.fps }} · {{ session.codec }}</p>
                 </div>
                 <AppButton
                   :label="t('ui.sessions.action.stop_stream')"
@@ -616,15 +625,15 @@ onBeforeUnmount(() => {
 
               <dl class="session-metrics">
                 <div>
-                  <dt>{{ t('ui.sessions.metric.picture') }}</dt>
-                  <dd>{{ session.resolution }} · {{ session.fps }}</dd>
+                  <dt>{{ t('sessions.bitrate') }}</dt>
+                  <dd>{{ session.bitrate }}</dd>
                 </div>
                 <div>
-                  <dt>{{ t('sessions.video') }}</dt>
-                  <dd>{{ session.codec }} · {{ session.bitrate }}</dd>
+                  <dt>{{ t('sessions.encode_latency') }}</dt>
+                  <dd>{{ session.encodeLatency }}</dd>
                 </div>
                 <div>
-                  <dt>{{ t('sessions.history_duration') }}</dt>
+                  <dt>{{ t('sessions.uptime') }}</dt>
                   <dd>{{ session.duration }}</dd>
                 </div>
               </dl>
@@ -665,7 +674,9 @@ onBeforeUnmount(() => {
         <div v-else-if="historyRows.length" class="vs-table-wrap">
           <table class="vs-table vs-table--responsive history-table">
             <caption class="vs-sr-only">
-              {{ t('ui.sessions.history.table_caption') }}
+              {{
+                t('ui.sessions.history.table_caption')
+              }}
             </caption>
             <thead>
               <tr>
@@ -713,7 +724,11 @@ onBeforeUnmount(() => {
                   </details>
                 </td>
                 <td :data-label="t('sessions.history_ended')">
-                  <time :datetime="unixDate(history.end_time_unix || history.start_time_unix)?.toISOString()">
+                  <time
+                    :datetime="
+                      unixDate(history.end_time_unix || history.start_time_unix)?.toISOString()
+                    "
+                  >
                     {{ historyWhen(history) }}
                   </time>
                   <span>{{ historyDateTime(history) }}</span>

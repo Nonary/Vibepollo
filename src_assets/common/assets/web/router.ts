@@ -1,18 +1,32 @@
 import { createRouter, createWebHistory } from 'vue-router';
 
+import ApplicationView from '@/views/ApplicationView.vue';
+import BrowserStreamView from '@/views/BrowserStreamView.vue';
+import DevicesView from '@/views/DevicesView.vue';
+import IntegrationsView from '@/views/IntegrationsView.vue';
+import LibraryView from '@/views/LibraryView.vue';
+import LogsView from '@/views/LogsView.vue';
+import MaintenanceView from '@/views/MaintenanceView.vue';
+import NotFoundView from '@/views/NotFoundView.vue';
+import OverviewView from '@/views/OverviewView.vue';
+import PairView from '@/views/PairView.vue';
+import SessionsView from '@/views/SessionsView.vue';
+import SettingsView from '@/views/SettingsView.vue';
+import StatsView from '@/views/StatsView.vue';
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
       name: 'overview',
-      component: () => import('@/views/OverviewView.vue'),
+      component: OverviewView,
       meta: { titleKey: 'ui.nav.overview' },
     },
     {
       path: '/stream',
       name: 'browser-stream',
-      component: () => import('@/views/BrowserStreamView.vue'),
+      component: BrowserStreamView,
       meta: { titleKey: 'ui.nav.browser_stream' },
     },
     {
@@ -22,73 +36,73 @@ const router = createRouter({
     {
       path: '/library',
       name: 'library',
-      component: () => import('@/views/LibraryView.vue'),
+      component: LibraryView,
       meta: { titleKey: 'ui.nav.library' },
     },
     {
       path: '/library/new',
       name: 'application-new',
-      component: () => import('@/views/ApplicationView.vue'),
+      component: ApplicationView,
       meta: { titleKey: 'ui.application.page.addTitle' },
     },
     {
       path: '/library/:id',
       name: 'application',
-      component: () => import('@/views/ApplicationView.vue'),
+      component: ApplicationView,
       meta: { titleKey: 'ui.application.page.fallbackTitle' },
     },
     {
       path: '/devices',
       name: 'devices',
-      component: () => import('@/views/DevicesView.vue'),
+      component: DevicesView,
       meta: { titleKey: 'ui.nav.devices' },
     },
     {
       path: '/pair',
       name: 'pair',
-      component: () => import('@/views/PairView.vue'),
+      component: PairView,
       meta: { titleKey: 'ui.pair.page.title' },
     },
     {
       path: '/sessions',
       name: 'sessions',
-      component: () => import('@/views/SessionsView.vue'),
+      component: SessionsView,
       meta: { titleKey: 'ui.nav.sessions' },
     },
     {
       path: '/stats',
       name: 'stats',
-      component: () => import('@/views/StatsView.vue'),
+      component: StatsView,
       meta: { titleKey: 'ui.nav.stats' },
     },
     {
       path: '/integrations',
       name: 'integrations',
-      component: () => import('@/views/IntegrationsView.vue'),
+      component: IntegrationsView,
       meta: { titleKey: 'ui.nav.integrations' },
     },
     {
       path: '/logs',
       name: 'logs',
-      component: () => import('@/views/LogsView.vue'),
+      component: LogsView,
       meta: { titleKey: 'ui.nav.logs' },
     },
     {
       path: '/settings',
       name: 'settings',
-      component: () => import('@/views/SettingsView.vue'),
+      component: SettingsView,
       meta: { titleKey: 'ui.nav.settings' },
     },
     {
       path: '/maintenance',
       name: 'maintenance',
-      component: () => import('@/views/MaintenanceView.vue'),
+      component: MaintenanceView,
       meta: { titleKey: 'ui.nav.maintenance' },
     },
     {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
-      component: () => import('@/views/NotFoundView.vue'),
+      component: NotFoundView,
       meta: { titleKey: 'ui.not_found.title' },
     },
   ],

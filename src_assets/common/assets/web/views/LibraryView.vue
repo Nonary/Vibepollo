@@ -1,12 +1,5 @@
 <script setup lang="ts">
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  ref,
-  watch,
-} from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -89,7 +82,7 @@ function commandSummary(app: AppRecord): string {
   if (Array.isArray(app.cmd)) return app.cmd.filter((part) => typeof part === 'string').join(' ');
   if (typeof app.cmd === 'string' && app.cmd.trim()) return app.cmd;
   if (typeof app.output === 'string' && app.output.trim()) return app.output;
-  return t('ui.library.command.none');
+  return '';
 }
 
 function displayName(app: AppRecord): string {
@@ -158,7 +151,8 @@ async function load(): Promise<void> {
     failedCovers.value = new Set();
     const liveIds = new Set(apps.value.map(appUuid).filter(Boolean));
     selectedUuids.value = new Set([...selectedUuids.value].filter((uuid) => liveIds.has(uuid)));
-    if (!liveIds.has(focusedUuid.value)) focusedUuid.value = appUuid(apps.value[0] ?? ({} as AppRecord));
+    if (!liveIds.has(focusedUuid.value))
+      focusedUuid.value = appUuid(apps.value[0] ?? ({} as AppRecord));
   } catch (cause) {
     error.value = serviceError(cause, 'ui.library.errors.load');
   } finally {
@@ -224,7 +218,11 @@ function itemButtons(): HTMLButtonElement[] {
 
 function focusItem(uuid: string): void {
   focusedUuid.value = uuid;
-  nextTick(() => itemButtons().find((button) => button.dataset.uuid === uuid)?.focus());
+  nextTick(() =>
+    itemButtons()
+      .find((button) => button.dataset.uuid === uuid)
+      ?.focus(),
+  );
 }
 
 function nextDirectionalButton(
@@ -388,9 +386,12 @@ watch(loadMoreSentinel, (current, previous) => {
 
 onMounted(() => {
   if ('IntersectionObserver' in window) {
-    observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) loadMore();
-    }, { rootMargin: '320px' });
+    observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMore();
+      },
+      { rootMargin: '320px' },
+    );
     if (loadMoreSentinel.value) observer.observe(loadMoreSentinel.value);
   }
   document.addEventListener('pointerdown', onDocumentPointerDown);
@@ -406,10 +407,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="vs-page vs-page--dashboard library-page">
-    <PageHeader
-      :title="t('ui.library.page.title')"
-      :description="t('ui.library.page.description')"
-    >
+    <PageHeader :title="t('ui.library.page.title')" :description="t('ui.library.page.description')">
       <template #actions>
         <AppButton
           icon="plus"
@@ -528,11 +526,7 @@ onBeforeUnmount(() => {
       compact
     >
       <template #actions>
-        <AppButton
-          variant="secondary"
-          :label="t('ui.library.search.clear')"
-          @click="search = ''"
-        />
+        <AppButton variant="secondary" :label="t('ui.library.search.clear')" @click="search = ''" />
       </template>
     </EmptyState>
 
@@ -562,7 +556,9 @@ onBeforeUnmount(() => {
             role="option"
             data-library-item
             :data-uuid="appUuid(app)"
-            :tabindex="focusedUuid === appUuid(app) || (!focusedUuid && app === visibleApps[0]) ? 0 : -1"
+            :tabindex="
+              focusedUuid === appUuid(app) || (!focusedUuid && app === visibleApps[0]) ? 0 : -1
+            "
             :aria-label="displayName(app)"
             :aria-selected="selectedUuids.has(appUuid(app))"
             @focus="focusedUuid = appUuid(app)"
@@ -593,7 +589,11 @@ onBeforeUnmount(() => {
             </span>
             <span class="library-item__copy">
               <span class="library-item__title">{{ displayName(app) }}</span>
-              <span class="library-item__command vs-monospace" :title="commandSummary(app)">
+              <span
+                v-if="commandSummary(app)"
+                class="library-item__command vs-monospace"
+                :title="commandSummary(app)"
+              >
                 {{ commandSummary(app) }}
               </span>
             </span>
@@ -606,7 +606,7 @@ onBeforeUnmount(() => {
               icon="edit"
               icon-only
               :label="t('ui.library.actions.editLabel', { name: displayName(app) })"
-              @click="openApp(app)"
+              @click.stop="openApp(app)"
             />
             <AppButton
               size="compact"
@@ -667,7 +667,11 @@ onBeforeUnmount(() => {
 
     <ConfirmDialog
       v-model:open="deleteOpen"
-      :title="t('ui.library.delete.title', { name: deleteTarget ? displayName(deleteTarget) : t('ui.library.delete.fallbackName') })"
+      :title="
+        t('ui.library.delete.title', {
+          name: deleteTarget ? displayName(deleteTarget) : t('ui.library.delete.fallbackName'),
+        })
+      "
       :description="t('ui.library.delete.description')"
       :confirm-label="t('ui.library.delete.confirm')"
       :cancel-label="t('_common.cancel')"
@@ -897,6 +901,7 @@ onBeforeUnmount(() => {
 
 .library-item__actions {
   position: absolute;
+  z-index: 2;
   inset-block-start: var(--vs-space-8);
   inset-inline-end: var(--vs-space-8);
   gap: var(--vs-space-2);
@@ -906,6 +911,7 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--vs-color-bg-raised) 94%, transparent);
   box-shadow: var(--vs-shadow-raised);
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--vs-motion-duration-control) var(--vs-motion-easing-standard);
 }
 
@@ -913,6 +919,7 @@ onBeforeUnmount(() => {
 .library-item:focus-within .library-item__actions,
 .library-item--selected .library-item__actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .library-context-menu {
@@ -955,6 +962,7 @@ onBeforeUnmount(() => {
 .library-collection--list .library-item__actions {
   inset-block-start: 50%;
   opacity: 1;
+  pointer-events: auto;
   translate: 0 -50%;
 }
 
@@ -1010,6 +1018,7 @@ onBeforeUnmount(() => {
 @media (hover: none), (pointer: coarse) {
   .library-item__actions {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 

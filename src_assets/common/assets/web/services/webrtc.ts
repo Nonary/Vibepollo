@@ -91,6 +91,19 @@ const defaultLimits: WebRtcStreamLimits = {
   max_bitrate_kbps: 500000,
 };
 
+type PeerConnectionConstructor = new (configuration?: RTCConfiguration) => RTCPeerConnection;
+
+function peerConnectionConstructor(): PeerConnectionConstructor | null {
+  const rtcGlobal = globalThis as typeof globalThis & {
+    webkitRTCPeerConnection?: PeerConnectionConstructor;
+  };
+  if (typeof rtcGlobal.RTCPeerConnection === 'function') return rtcGlobal.RTCPeerConnection;
+  if (typeof rtcGlobal.webkitRTCPeerConnection === 'function') {
+    return rtcGlobal.webkitRTCPeerConnection;
+  }
+  return null;
+}
+
 export const unavailableHostCapabilities: WebRtcHostCapabilities = {
   enabled: false,
   availability: { state: 'unverified', reason: 'WebRTC capabilities are unavailable.' },
@@ -105,40 +118,50 @@ export const unavailableHostCapabilities: WebRtcHostCapabilities = {
 };
 
 function browserSupportsWebRtc(): boolean {
-  return typeof RTCPeerConnection === 'function' && typeof MediaStream === 'function';
+  return peerConnectionConstructor() !== null;
 }
 
 function videoRtpCapabilities(): RTCRtpCapabilities | null {
   try {
     const receiver =
       typeof RTCRtpReceiver !== 'undefined' ? RTCRtpReceiver.getCapabilities?.('video') : null;
-    if (receiver?.codecs?.length) return receiver;
+    if (Array.isArray(receiver?.codecs) && receiver.codecs.length) return receiver;
   } catch {
     // Browsers are allowed to omit capability reporting.
   }
   try {
     const sender =
       typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video') : null;
-    if (sender?.codecs?.length) return sender;
+    if (Array.isArray(sender?.codecs) && sender.codecs.length) return sender;
   } catch {
     // Browsers are allowed to omit capability reporting.
   }
   return null;
 }
 
+function codecMimeType(codec: unknown): string {
+  if (!codec || typeof codec !== 'object') return '';
+  const mimeType = (codec as { mimeType?: unknown }).mimeType;
+  return typeof mimeType === 'string' ? mimeType.toLocaleLowerCase() : '';
+}
+
 function supportsEncoding(
   capabilities: RTCRtpCapabilities | null,
   encoding: EncodingType,
 ): boolean {
-  if (!capabilities?.codecs?.length) return encoding === 'h264';
+  // H.264 Constrained Baseline is mandatory for WebRTC browsers. In
+  // particular, WebKit has shipped versions where getCapabilities() was
+  // unavailable or incomplete even though H.264 negotiation worked. Treat
+  // the standard codec as the compatibility floor and use capability
+  // reporting only for optional codecs.
+  if (encoding === 'h264') return true;
+  if (!capabilities?.codecs?.length) return false;
   const mimeTypes = videoMimeTypes[encoding];
-  return capabilities.codecs.some((codec) =>
-    mimeTypes.includes(codec.mimeType.toLocaleLowerCase()),
-  );
+  return capabilities.codecs.some((codec) => mimeTypes.includes(codecMimeType(codec)));
 }
 
 function parseFmtpValue(fmtp: string | undefined, key: string): string | null {
-  if (!fmtp) return null;
+  if (typeof fmtp !== 'string' || !fmtp) return null;
   const entry = fmtp
     .split(';')
     .map((value) => value.trim())
@@ -162,7 +185,7 @@ function isHevcMain10Profile(profileId: string | null, profileSpace: string | nu
 function hasHevcMain10Capability(capabilities: RTCRtpCapabilities | null): boolean {
   if (!capabilities?.codecs?.length) return false;
   return capabilities.codecs.some((codec) => {
-    if (!videoMimeTypes.hevc.includes(codec.mimeType.toLocaleLowerCase())) return false;
+    if (!videoMimeTypes.hevc.includes(codecMimeType(codec))) return false;
     const profileId = parseFmtpValue(codec.sdpFmtpLine, 'profile-id');
     const profileSpace = parseFmtpValue(codec.sdpFmtpLine, 'profile-space');
     return isHevcMain10Profile(profileId, profileSpace);
@@ -236,27 +259,58 @@ export async function browserSupportsHdrStream(config: StreamConfig): Promise<bo
 }
 
 export async function detectBrowserVideoCapabilities(): Promise<BrowserVideoCapabilities> {
-  if (!browserSupportsWebRtc()) {
+  const PeerConnection = peerConnectionConstructor();
+  if (!PeerConnection) {
     return {
       h264: { supported: false, hdr: false },
       hevc: { supported: false, hdr: false },
       av1: { supported: false, hdr: false },
     };
   }
-  const capabilities = videoRtpCapabilities();
-  const h264 = supportsEncoding(capabilities, 'h264');
-  const hevc = supportsEncoding(capabilities, 'hevc');
-  const av1 = supportsEncoding(capabilities, 'av1');
-  const [hevcDecode, av1Decode] = await Promise.all([
-    hevc ? supportsTenBitDecode('video/mp4; codecs="hvc1.2.4.L153.B0"') : Promise.resolve(false),
-    av1 ? supportsTenBitDecode('video/webm; codecs="av01.0.08M.10"') : Promise.resolve(false),
-  ]);
 
-  return {
-    h264: { supported: h264, hdr: false },
-    hevc: { supported: hevc, hdr: hevcDecode && hasHevcMain10Capability(capabilities) },
-    av1: { supported: av1, hdr: av1Decode },
-  };
+  let probe: RTCPeerConnection | null = null;
+  try {
+    // WebKit has shipped getCapabilities() returning null until its WebRTC
+    // backend is initialized by a peer connection. Warm it up first, then use
+    // the actual receive-only offer as the authoritative SDR codec list.
+    probe = new PeerConnection();
+    probe.addTransceiver('video', { direction: 'recvonly' });
+    const capabilities = videoRtpCapabilities();
+    let offerSdp = '';
+    try {
+      offerSdp = (await probe.createOffer({ offerToReceiveVideo: true })).sdp ?? '';
+    } catch {
+      // Capability inspection is still useful when an isolated offer probe is
+      // unavailable. Normal connection negotiation remains the final test.
+    }
+
+    const offered = (encoding: EncodingType): boolean | null =>
+      offerSdp ? encodingOfferedInSdp(offerSdp, encoding) : null;
+    const hevc = offered('hevc') ?? supportsEncoding(capabilities, 'hevc');
+    const av1 = offered('av1') ?? supportsEncoding(capabilities, 'av1');
+    const [hevcDecode, av1Decode] = await Promise.all([
+      hevc ? supportsTenBitDecode('video/mp4; codecs="hvc1.2.4.L153.B0"') : Promise.resolve(false),
+      av1 ? supportsTenBitDecode('video/webm; codecs="av01.0.08M.10"') : Promise.resolve(false),
+    ]);
+
+    return {
+      // H.264 Constrained Baseline is mandatory for WebRTC browsers. Treat a
+      // missing Safari introspection result as unknown, never unsupported.
+      h264: { supported: true, hdr: false },
+      hevc: { supported: hevc, hdr: hevcDecode && hasHevcMain10Capability(capabilities) },
+      av1: { supported: av1, hdr: av1Decode },
+    };
+  } catch {
+    // Optional codec introspection must never disable the mandatory H.264
+    // path. Safari has shipped partial capability objects across releases.
+    return {
+      h264: { supported: true, hdr: false },
+      hevc: { supported: false, hdr: false },
+      av1: { supported: false, hdr: false },
+    };
+  } finally {
+    probe?.close();
+  }
 }
 
 export async function fetchWebRtcHostCapabilities(): Promise<WebRtcHostCapabilities> {
@@ -315,11 +369,11 @@ function encodingOfferedInSdp(sdp: string, encoding: EncodingType): boolean {
   return false;
 }
 
-function preferredCodecs(encoding: EncodingType, hdr: boolean): RTCRtpCodecCapability[] {
+function preferredCodecs(encoding: EncodingType, hdr: boolean): RTCRtpCodec[] {
   const capabilities = videoRtpCapabilities();
   if (!capabilities?.codecs?.length) return [];
   let preferred = capabilities.codecs.filter((codec) =>
-    videoMimeTypes[encoding].includes(codec.mimeType.toLocaleLowerCase()),
+    videoMimeTypes[encoding].includes(codecMimeType(codec)),
   );
   if (hdr && encoding === 'hevc') {
     preferred = preferred.filter((codec) => {
@@ -440,26 +494,11 @@ export class BrowserWebRtcSession {
     await this.disposeCurrentSession();
     this.throwIfCanceled(generation);
 
-    if (!browserSupportsWebRtc()) {
+    const PeerConnection = peerConnectionConstructor();
+    if (!PeerConnection) {
       throw new Error(
         'This browser does not provide the WebRTC APIs required for browser streaming.',
       );
-    }
-
-    const codecs = preferredCodecs(config.encoding, config.hdr === true);
-    if (!codecs.length && config.encoding !== 'h264') {
-      throw new Error(
-        `This browser cannot negotiate ${config.hdr ? 'HDR ' : ''}${config.encoding.toUpperCase()} video.`,
-      );
-    }
-    if (config.hdr) {
-      const supportsHdr = await browserSupportsHdrStream(config);
-      this.throwIfCanceled(generation);
-      if (!supportsHdr) {
-        throw new Error(
-          `This browser cannot confirm HDR ${config.encoding.toUpperCase()} decoding at the selected stream settings.`,
-        );
-      }
     }
 
     const session = await createSession(config);
@@ -470,18 +509,28 @@ export class BrowserWebRtcSession {
     this.sessionId = session.id;
     this.activeGeneration = generation;
     try {
-      const remoteStream = new MediaStream();
+      const remoteStream = typeof MediaStream === 'function' ? new MediaStream() : null;
       this.remoteStream = remoteStream;
-      const connection = new RTCPeerConnection({ iceServers: session.iceServers });
+      const connection = new PeerConnection({ iceServers: session.iceServers });
       this.peerConnection = connection;
       const video = connection.addTransceiver('video', { direction: 'recvonly' });
       connection.addTransceiver('audio', { direction: 'recvonly' });
+      const codecs = preferredCodecs(config.encoding, config.hdr === true);
       if (codecs.length) {
         try {
           video.setCodecPreferences(codecs);
         } catch {
+          // Safari versions with partial setCodecPreferences support can still
+          // negotiate their default receive codecs. The SDP offer below is the
+          // authoritative check, so do not reject before it exists.
+        }
+      }
+      if (config.hdr) {
+        const supportsHdr = await browserSupportsHdrStream(config);
+        this.throwIfCanceled(generation);
+        if (!supportsHdr) {
           throw new Error(
-            `This browser cannot select ${config.encoding.toUpperCase()} for the stream.`,
+            `This browser cannot confirm HDR ${config.encoding.toUpperCase()} decoding at the selected stream settings.`,
           );
         }
       }
@@ -506,11 +555,14 @@ export class BrowserWebRtcSession {
       };
       connection.ontrack = (event) => {
         if (!this.isActiveGeneration(generation)) return;
-        for (const track of remoteStream.getTracks()) {
-          if (track.kind === event.track.kind) remoteStream.removeTrack(track);
+        const stream = event.streams[0] ?? remoteStream;
+        if (!stream) return;
+        this.remoteStream = stream;
+        for (const track of stream.getTracks()) {
+          if (track.kind === event.track.kind) stream.removeTrack(track);
         }
-        remoteStream.addTrack(event.track);
-        callbacks.onRemoteStream?.(remoteStream);
+        stream.addTrack(event.track);
+        callbacks.onRemoteStream?.(stream);
       };
       connection.onicecandidate = (event) => {
         if (event.candidate && this.isActiveGeneration(generation)) {

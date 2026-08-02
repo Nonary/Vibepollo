@@ -194,6 +194,13 @@ namespace nvhttp {
     std::string pkey;
   } conf_intern;
 
+  struct http_encoder_capabilities_t {
+    // Keep verification paired with the advertised values. On Windows, the
+    // helper may use a temporary adapter identity that is cleared on return.
+    video::advertised_encoder_capabilities_t advertised;
+    bool probe_complete;
+  };
+
 #ifdef _WIN32
   namespace {
     bool display_helper_session_available() {
@@ -258,7 +265,7 @@ namespace nvhttp {
     bool has_stream_session_activity();
     bool has_active_or_stopping_stream_session();
 
-    video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+    http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
       std::optional<video::encoder_probe_adapter_hint_lease_t> idle_virtual_adapter_hint;
       if (config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
           !has_stream_session_activity()) {
@@ -278,13 +285,18 @@ namespace nvhttp {
       });
 
       const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
+        const bool probe_complete = video::has_successful_encoder_probe();
         BOOST_LOG(debug)
-          << "HTTP encoder capabilities: hdr="
+          << "HTTP encoder capabilities: probe_complete=" << probe_complete
+          << ", hdr="
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
           << ", source=" << reason << '.';
-        return caps;
+        return http_encoder_capabilities_t {
+          .advertised = std::move(caps),
+          .probe_complete = probe_complete,
+        };
       };
 
       if (video::has_successful_encoder_probe()) {
@@ -1086,15 +1098,20 @@ namespace nvhttp {
              webrtc_stream::has_teardown_in_progress();
     }
 
-    video::advertised_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
+    http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
       const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
+        const bool probe_complete = video::has_successful_encoder_probe();
         BOOST_LOG(debug)
-          << "HTTP encoder capabilities: hdr="
+          << "HTTP encoder capabilities: probe_complete=" << probe_complete
+          << ", hdr="
           << (caps.hevc_mode == 3 || caps.av1_mode == 3)
           << ", hevc_mode=" << caps.hevc_mode
           << ", av1_mode=" << caps.av1_mode
           << ", source=" << reason << '.';
-        return caps;
+        return http_encoder_capabilities_t {
+          .advertised = std::move(caps),
+          .probe_complete = probe_complete,
+        };
       };
 
       if (video::has_successful_encoder_probe()) {
@@ -1120,8 +1137,9 @@ namespace nvhttp {
 #endif
 
   web_stream_capabilities_t get_web_stream_capabilities() {
-    const auto caps = advertised_encoder_capabilities_for_http();
-    const bool probe_complete = video::has_successful_encoder_probe();
+    const auto snapshot = advertised_encoder_capabilities_for_http();
+    const auto &caps = snapshot.advertised;
+    const bool probe_complete = snapshot.probe_complete;
     return {
       .probe_complete = probe_complete,
       .h264 = probe_complete,
@@ -2699,7 +2717,7 @@ namespace nvhttp {
       }
 
 #ifdef _WIN32
-      const auto advertised_video = advertised_encoder_capabilities_for_http();
+      const auto advertised_video = advertised_encoder_capabilities_for_http().advertised;
 #else
       const auto advertised_video = video::advertised_encoder_capabilities(true);
 #endif
@@ -2937,7 +2955,7 @@ namespace nvhttp {
         }
 
 #ifdef _WIN32
-        const auto advertised_video = advertised_encoder_capabilities_for_http();
+        const auto advertised_video = advertised_encoder_capabilities_for_http().advertised;
 #else
         const auto advertised_video = video::advertised_encoder_capabilities(true);
 #endif
