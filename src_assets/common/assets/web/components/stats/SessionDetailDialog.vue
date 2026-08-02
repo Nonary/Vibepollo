@@ -297,7 +297,7 @@ onBeforeUnmount(() => {
                   :values="sampleValues('host_vram_percent')"
                   unit="%"
                   :ceiling="100"
-                  color="#d946ef"
+                  color="var(--vs-color-data-accent)"
                 />
               </div>
             </section>

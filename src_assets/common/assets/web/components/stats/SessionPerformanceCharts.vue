@@ -62,7 +62,7 @@ function decimal(value: number | null | undefined, suffix: string, digits = 1): 
       :value="decimal(latest?.fps, ' fps')"
       :values="frameRate"
       unit=" fps"
-      color="#d946ef"
+      color="var(--vs-color-data-accent)"
       :target="targetFps || undefined"
     />
     <MetricChart

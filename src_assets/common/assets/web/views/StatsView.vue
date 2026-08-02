@@ -486,7 +486,7 @@ onBeforeUnmount(() => {
             :label="t('ui.stats.host_vram')"
             :value="hostStats.vram_percent"
             :detail="`${formatBytes(hostStats.vram_used_bytes, locale)} / ${formatBytes(hostStats.vram_total_bytes, locale)}`"
-            color="#d946ef"
+            color="var(--vs-color-data-accent)"
           />
         </div>
       </section>
@@ -528,7 +528,7 @@ onBeforeUnmount(() => {
             :values="encoderHistory"
             unit="%"
             :ceiling="100"
-            color="#d946ef"
+            color="var(--vs-color-data-accent)"
           />
           <MetricChart
             :title="t('sessions.chart_host_net_tx')"

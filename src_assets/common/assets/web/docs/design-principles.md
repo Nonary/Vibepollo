@@ -17,7 +17,7 @@ These principles define the Vibepollo interface. **Must** indicates release acce
 
 ## Non-negotiable release checks
 
-- Both dark and light themes use the same semantic contracts; the blue accent is functional, not a final brand commitment.
+- Both themes use the same semantic contracts: dark keeps the lunar indigo/cyan identity, while light uses a restrained solar amber treatment. Brand color never weakens text, control, or focus contrast.
 - Default density is medium. Compact variants are limited to data-heavy or expert surfaces until a global mode is validated.
 - Every page has loading, empty, error, disabled/unavailable, and narrow-layout behavior where those states apply.
 - WCAG 2.2 AA, visible keyboard focus, forced-colors resilience, reduced motion, 200% text resize, and 400% zoom are implementation requirements rather than later polish.

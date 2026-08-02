@@ -65,6 +65,85 @@ function resolveToken(tokenPath, stack = []) {
   throw new Error(`Unsupported value for token: ${tokenPath}`);
 }
 
+const themeBackgrounds = ["canvas", "surface", "subtle", "raised"];
+const themeTextColors = [
+  "textPrimary",
+  "textSecondary",
+  "textMuted",
+  "accentDefault",
+  "accentHover",
+  "success",
+  "warning",
+  "danger",
+  "info",
+  "dataAccent",
+];
+const minimumTextContrast = 4.5;
+const minimumNonTextContrast = 3;
+
+function parseHexColor(value, tokenPath) {
+  const match = /^#([\dA-F]{2})([\dA-F]{2})([\dA-F]{2})$/i.exec(value);
+  if (!match) {
+    throw new Error(`${tokenPath} must be a six-digit hex color for contrast validation`);
+  }
+  return match.slice(1).map((channel) => Number.parseInt(channel, 16) / 255);
+}
+
+function relativeLuminance(value, tokenPath) {
+  const [red, green, blue] = parseHexColor(value, tokenPath).map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(foreground, background, foregroundPath, backgroundPath) {
+  const lighter = Math.max(
+    relativeLuminance(foreground, foregroundPath),
+    relativeLuminance(background, backgroundPath),
+  );
+  const darker = Math.min(
+    relativeLuminance(foreground, foregroundPath),
+    relativeLuminance(background, backgroundPath),
+  );
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function assertContrast(themeName, foregroundName, backgroundName, minimum) {
+  const foregroundPath = `primitive.color.${themeName}.${foregroundName}`;
+  const backgroundPath = `primitive.color.${themeName}.${backgroundName}`;
+  const foreground = resolveToken(foregroundPath);
+  const background = resolveToken(backgroundPath);
+  const ratio = contrastRatio(foreground, background, foregroundPath, backgroundPath);
+  if (ratio + Number.EPSILON < minimum) {
+    throw new Error(
+      `${foregroundPath} on ${backgroundPath} has ${ratio.toFixed(2)}:1 contrast; expected at least ${minimum}:1`,
+    );
+  }
+}
+
+function validateThemeContrast() {
+  // WCAG 2.2 SC 1.4.3 and 1.4.11. Subtle borders are decorative; essential
+  // control boundaries use borderStrong and are validated here.
+  for (const themeName of ["dark", "light"]) {
+    for (const foregroundName of themeTextColors) {
+      for (const backgroundName of themeBackgrounds) {
+        assertContrast(themeName, foregroundName, backgroundName, minimumTextContrast);
+      }
+    }
+
+    for (const accentName of ["accentDefault", "accentHover"]) {
+      assertContrast(themeName, "onAccent", accentName, minimumTextContrast);
+    }
+
+    for (const backgroundName of themeBackgrounds) {
+      assertContrast(themeName, "borderStrong", backgroundName, minimumNonTextContrast);
+      assertContrast(themeName, "focus", backgroundName, minimumNonTextContrast);
+    }
+  }
+}
+
+validateThemeContrast();
+
 function collect(node, sourcePath, outputPath = [], inheritedType, output = []) {
   if (!node || typeof node !== "object" || Array.isArray(node)) {
     return output;
