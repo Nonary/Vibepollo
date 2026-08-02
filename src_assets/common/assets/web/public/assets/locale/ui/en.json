@@ -221,6 +221,40 @@
         "editDescription": "Edit how this application launches and streams.",
         "fallbackTitle": "Application"
       },
+      "rtxHdr": {
+        "calibration": {
+          "description": "Tune the HDR output for this app instead of inheriting NVIDIA's profile or the host defaults.",
+          "overrideDescription": "Use the controls below for this app. Leave this off to inherit the detected NVIDIA profile or host defaults.",
+          "overrideLabel": "Use app-specific calibration",
+          "reset": "Reset calibration",
+          "title": "Direct calibration"
+        },
+        "description": "Choose how this app participates in RTX HDR and fine-tune its tone mapping without changing other applications.",
+        "live": {
+          "applied": "Applied to active stream",
+          "applying": "Applying live",
+          "error": "Live update failed",
+          "failureTitle": "Live calibration update failed",
+          "hint": "When this application is streaming, calibration changes are applied live after a short pause. Save to keep them for future sessions.",
+          "queued": "Waiting to apply"
+        },
+        "modeLabel": "RTX HDR behavior for this app",
+        "modes": {
+          "disabled": {
+            "description": "Keep RTX HDR off for this app, even when the host or client enables it.",
+            "label": "Disable for this app"
+          },
+          "enabled": {
+            "description": "Convert this app's SDR output to HDR and keep the source display in SDR.",
+            "label": "Enable for this app"
+          },
+          "inherit": {
+            "description": "Follow the host and client runtime policy for this app.",
+            "label": "Use host default"
+          }
+        },
+        "title": "RTX HDR calibration"
+      },
       "playnite": {
         "browse": "Browse Playnite games",
         "empty": "No installed Playnite games match this name.",

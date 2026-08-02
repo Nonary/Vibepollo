@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
-import { ApiError, apiGet } from '@/api/client';
+import { ApiError, apiGet, apiPost } from '@/api/client';
 import {
   AppButton,
   ConfirmDialog,
@@ -13,6 +13,8 @@ import {
   SettingRow,
   StatusBadge,
   UiIcon,
+  type StatusTone,
+  type UiIconName,
 } from '@/components/ui';
 import {
   appCoverUrl,
@@ -68,10 +70,36 @@ interface EditorForm {
   losslessScalingRtssLimit: string;
   losslessScalingProfile: string;
   losslessScalingLaunchDelay: string;
+  rtxHdrMode: RtxHdrMode;
+  rtxHdrValuesOverride: boolean;
+  rtxHdrSdrBrightness: number;
+  rtxHdrPeakBrightness: number;
+  rtxHdrMiddleGray: number;
+  rtxHdrContrast: number;
+  rtxHdrSaturation: number;
   prepCmd: PrepEntry[];
   detachedText: string;
   configOverridesJson: string;
   advancedJson: string;
+}
+
+type RtxHdrMode = 'inherit' | 'enabled' | 'disabled';
+type RtxHdrLiveStatus = 'idle' | 'queued' | 'applying' | 'applied' | 'error';
+type RtxHdrCalibrationKey =
+  | 'rtxHdrSdrBrightness'
+  | 'rtxHdrPeakBrightness'
+  | 'rtxHdrMiddleGray'
+  | 'rtxHdrContrast'
+  | 'rtxHdrSaturation';
+
+interface RtxHdrCalibrationField {
+  key: RtxHdrCalibrationKey;
+  labelKey: string;
+  descriptionKey: string;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
 }
 
 interface SelectOption {
@@ -100,7 +128,9 @@ interface FrameGenMetadata {
   gpus?: Array<{
     description?: string;
     pnp_id?: string;
+    vendor_id?: number | string;
   }>;
+  has_nvidia_gpu?: boolean;
   platform?: unknown;
   windows_build_number?: unknown;
 }
@@ -141,7 +171,28 @@ interface VirtualDisplayResolution {
   hasAppOutput: boolean;
 }
 
+interface RtxHdrOverrideState {
+  rest: Record<string, unknown>;
+  mode: RtxHdrMode;
+  valuesOverride: boolean;
+  sdrBrightness: number;
+  peakBrightness: number;
+  middleGray: number;
+  contrast: number;
+  saturation: number;
+}
+
 type FrameGenRequirementStatus = 'pass' | 'configured' | 'warn' | 'fail' | 'unknown';
+
+const RTX_HDR_OVERRIDE_KEYS = [
+  'rtx_hdr',
+  'rtx_hdr_sdr_brightness',
+  'rtx_hdr_peak_brightness',
+  'rtx_hdr_middle_gray',
+  'rtx_hdr_contrast',
+  'rtx_hdr_saturation',
+] as const;
+const RTX_HDR_LIVE_DEBOUNCE_MS = 200;
 
 interface FrameGenHealth {
   checkedAt: number;
@@ -201,6 +252,13 @@ let formHydrationEpoch = 0;
 let playniteCloseTimer: number | null = null;
 const form = reactive<EditorForm>(emptyForm());
 const overrideMetadata = ref<FrameGenMetadata>({});
+const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
+const liveRtxHdrStatus = ref<RtxHdrLiveStatus>('idle');
+const liveRtxHdrError = ref('');
+let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
+let liveRtxHdrSuppress = false;
+let liveRtxHdrLastSentKey = '';
+let liveRtxHdrQueue: Promise<void> = Promise.resolve();
 
 const frameGenerationModes = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
@@ -234,6 +292,71 @@ const displayConfigurationOptions = computed<SelectOption[]>(() => [
   { value: 'ensure_primary', label: t('ui.application.options.displayAction.ensurePrimary') },
   { value: 'ensure_only_display', label: t('ui.application.options.displayAction.ensureOnly') },
 ]);
+const rtxHdrModeOptions = computed<
+  Array<{ value: RtxHdrMode; label: string; description: string; icon: UiIconName }>
+>(() => [
+  {
+    value: 'inherit',
+    label: t('ui.application.rtxHdr.modes.inherit.label'),
+    description: t('ui.application.rtxHdr.modes.inherit.description'),
+    icon: 'settings',
+  },
+  {
+    value: 'enabled',
+    label: t('ui.application.rtxHdr.modes.enabled.label'),
+    description: t('ui.application.rtxHdr.modes.enabled.description'),
+    icon: 'check-circle',
+  },
+  {
+    value: 'disabled',
+    label: t('ui.application.rtxHdr.modes.disabled.label'),
+    description: t('ui.application.rtxHdr.modes.disabled.description'),
+    icon: 'x-circle',
+  },
+]);
+const rtxHdrCalibrationFields = computed<RtxHdrCalibrationField[]>(() => [
+  {
+    key: 'rtxHdrPeakBrightness',
+    labelKey: 'config.rtx_hdr_peak_brightness',
+    descriptionKey: 'config.rtx_hdr_peak_brightness_desc',
+    min: 400,
+    max: 2000,
+    step: 1,
+    unit: 'nits',
+  },
+  {
+    key: 'rtxHdrSdrBrightness',
+    labelKey: 'config.rtx_hdr_sdr_brightness',
+    descriptionKey: 'config.rtx_hdr_sdr_brightness_desc',
+    min: 0,
+    max: 100,
+    step: 1,
+  },
+  {
+    key: 'rtxHdrMiddleGray',
+    labelKey: 'config.rtx_hdr_middle_gray',
+    descriptionKey: 'config.rtx_hdr_middle_gray_desc',
+    min: 10,
+    max: 100,
+    step: 1,
+  },
+  {
+    key: 'rtxHdrContrast',
+    labelKey: 'config.rtx_hdr_contrast',
+    descriptionKey: 'config.rtx_hdr_contrast_desc',
+    min: -100,
+    max: 100,
+    step: 1,
+  },
+  {
+    key: 'rtxHdrSaturation',
+    labelKey: 'config.rtx_hdr_saturation',
+    descriptionKey: 'config.rtx_hdr_saturation_desc',
+    min: -100,
+    max: 100,
+    step: 1,
+  },
+]);
 const isPlayniteLinked = computed(() => Boolean(form.playniteId.trim()));
 const filteredPlayniteGames = computed(() => {
   const query = form.name.trim().toLocaleLowerCase();
@@ -243,6 +366,58 @@ const filteredPlayniteGames = computed(() => {
 const frameGenerationEnabled = computed(() => {
   if (form.frameGenerationMode === 'off') return false;
   return Boolean(form.frameGenerationMode);
+});
+const isWindowsHost = computed(() =>
+  asString(overrideMetadata.value.platform).toLocaleLowerCase().includes('windows'),
+);
+const hasNvidiaGpu = computed(() => {
+  if (typeof overrideMetadata.value.has_nvidia_gpu === 'boolean') {
+    return overrideMetadata.value.has_nvidia_gpu;
+  }
+  const gpus = overrideMetadata.value.gpus ?? [];
+  if (gpus.length) {
+    return gpus.some((gpu) => Number(gpu.vendor_id) === 0x10de);
+  }
+  // Keep the feature visible if metadata was unavailable; the host still owns the
+  // final capability decision and will reject unsupported runtime updates.
+  return true;
+});
+const showRtxHdrSection = computed(() => isWindowsHost.value && hasNvidiaGpu.value);
+const rtxHdrModeLabel = computed(() => {
+  const option = rtxHdrModeOptions.value.find((candidate) => candidate.value === form.rtxHdrMode);
+  return option?.label ?? t('ui.application.rtxHdr.modes.inherit.label');
+});
+const rtxHdrModeTone = computed<StatusTone>(() => {
+  if (form.rtxHdrMode === 'enabled') return 'success';
+  if (form.rtxHdrMode === 'disabled') return 'warning';
+  return 'neutral';
+});
+const rtxHdrLiveStatusLabel = computed(() => {
+  switch (liveRtxHdrStatus.value) {
+    case 'queued':
+      return t('ui.application.rtxHdr.live.queued');
+    case 'applying':
+      return t('ui.application.rtxHdr.live.applying');
+    case 'applied':
+      return t('ui.application.rtxHdr.live.applied');
+    case 'error':
+      return t('ui.application.rtxHdr.live.error');
+    default:
+      return '';
+  }
+});
+const rtxHdrLiveStatusTone = computed<StatusTone>(() => {
+  switch (liveRtxHdrStatus.value) {
+    case 'queued':
+    case 'applying':
+      return 'info';
+    case 'applied':
+      return 'success';
+    case 'error':
+      return 'danger';
+    default:
+      return 'neutral';
+  }
 });
 const frameGenHealthRows = computed(() => {
   if (!frameGenHealth.value) return [];
@@ -358,6 +533,197 @@ function readConfigOverrides(): Record<string, unknown> {
 
 function writeConfigOverrides(value: Record<string, unknown>): void {
   form.configOverridesJson = JSON.stringify(value, null, 2);
+}
+
+function buildRtxHdrConfigOverrides(overrides: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...overrides };
+  for (const key of RTX_HDR_OVERRIDE_KEYS) delete next[key];
+
+  if (form.rtxHdrMode === 'enabled') {
+    next.rtx_hdr = true;
+    if (form.rtxHdrValuesOverride) {
+      next.rtx_hdr_sdr_brightness = form.rtxHdrSdrBrightness;
+      next.rtx_hdr_peak_brightness = form.rtxHdrPeakBrightness;
+      next.rtx_hdr_middle_gray = form.rtxHdrMiddleGray;
+      next.rtx_hdr_contrast = form.rtxHdrContrast;
+      next.rtx_hdr_saturation = form.rtxHdrSaturation;
+    }
+  } else if (form.rtxHdrMode === 'disabled') {
+    next.rtx_hdr = false;
+  }
+
+  return Object.fromEntries(
+    Object.entries(next).filter(
+      ([key, value]) => key.length > 0 && value !== undefined && value !== null,
+    ),
+  );
+}
+
+function buildRtxHdrLiveOverridesPayload(): Record<string, unknown> {
+  if (form.rtxHdrMode === 'inherit') return {};
+  if (form.rtxHdrMode === 'disabled') return { rtx_hdr: false };
+
+  const overrides: Record<string, unknown> = { rtx_hdr: true };
+  if (form.rtxHdrValuesOverride) {
+    overrides.rtx_hdr_sdr_brightness = form.rtxHdrSdrBrightness;
+    overrides.rtx_hdr_peak_brightness = form.rtxHdrPeakBrightness;
+    overrides.rtx_hdr_middle_gray = form.rtxHdrMiddleGray;
+    overrides.rtx_hdr_contrast = form.rtxHdrContrast;
+    overrides.rtx_hdr_saturation = form.rtxHdrSaturation;
+  }
+  return overrides;
+}
+
+function stableStringify(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return JSON.stringify(value) ?? String(value);
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return JSON.stringify(Object.fromEntries(entries));
+}
+
+function extractRtxHdrLiveOverrides(app: AppRecord | null): Record<string, unknown> {
+  const source = clonePlainRecord(app?.['config-overrides']);
+  return Object.fromEntries(
+    RTX_HDR_OVERRIDE_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(source, key)).map(
+      (key) => [key, source[key]],
+    ),
+  );
+}
+
+function clearLiveRtxHdrTimer(): void {
+  if (liveRtxHdrTimer === null) return;
+  clearTimeout(liveRtxHdrTimer);
+  liveRtxHdrTimer = null;
+}
+
+function primeLiveRtxHdrState(app: AppRecord | null): void {
+  originalRtxHdrLiveOverrides.value = extractRtxHdrLiveOverrides(app);
+  liveRtxHdrLastSentKey = stableStringify(buildRtxHdrLiveOverridesPayload());
+  liveRtxHdrStatus.value = 'idle';
+  liveRtxHdrError.value = '';
+  clearLiveRtxHdrTimer();
+}
+
+function apiErrorMessage(cause: unknown, fallbackKey: string): string {
+  if (cause instanceof ApiError) {
+    const payload = cause.payload;
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const message = (payload as { error?: unknown }).error;
+      if (typeof message === 'string' && message.trim()) return message;
+    }
+  }
+  return cause instanceof Error && cause.message ? cause.message : t(fallbackKey);
+}
+
+async function postRtxHdrLiveOverrides(
+  overrides: Record<string, unknown>,
+  key: string,
+): Promise<void> {
+  if (isNew.value || !form.uuid) return;
+
+  liveRtxHdrStatus.value = 'applying';
+  liveRtxHdrError.value = '';
+  const response = await apiPost<{ status?: boolean; applied?: boolean }>(
+    '/api/apps/rtx_hdr/live',
+    {
+      uuid: form.uuid,
+      'config-overrides': overrides,
+    },
+  );
+  if (response?.status === false) {
+    throw new Error(t('rtx_hdr_live_update_failed'));
+  }
+  liveRtxHdrLastSentKey = key;
+  liveRtxHdrStatus.value = 'applied';
+}
+
+function enqueueRtxHdrLivePost(overrides: Record<string, unknown>, key: string): Promise<void> {
+  liveRtxHdrQueue = liveRtxHdrQueue
+    .catch(() => {})
+    .then(() => postRtxHdrLiveOverrides(overrides, key))
+    .catch((cause) => {
+      liveRtxHdrStatus.value = 'error';
+      liveRtxHdrError.value = apiErrorMessage(cause, 'rtx_hdr_live_update_failed');
+    });
+  return liveRtxHdrQueue;
+}
+
+function scheduleRtxHdrLiveUpdate(): void {
+  if (
+    liveRtxHdrSuppress ||
+    formHydrating ||
+    loading.value ||
+    isNew.value ||
+    !form.uuid ||
+    !showRtxHdrSection.value
+  ) {
+    return;
+  }
+
+  const key = stableStringify(buildRtxHdrLiveOverridesPayload());
+  if (key === liveRtxHdrLastSentKey) {
+    clearLiveRtxHdrTimer();
+    if (liveRtxHdrStatus.value === 'queued') liveRtxHdrStatus.value = 'idle';
+    return;
+  }
+
+  clearLiveRtxHdrTimer();
+  liveRtxHdrStatus.value = 'queued';
+  liveRtxHdrError.value = '';
+  liveRtxHdrTimer = setTimeout(() => {
+    liveRtxHdrTimer = null;
+    const overrides = buildRtxHdrLiveOverridesPayload();
+    void enqueueRtxHdrLivePost(overrides, stableStringify(overrides));
+  }, RTX_HDR_LIVE_DEBOUNCE_MS);
+}
+
+async function restoreOriginalRtxHdrLiveOverrides(): Promise<void> {
+  clearLiveRtxHdrTimer();
+  if (isNew.value || !form.uuid || !sourceApp.value) return;
+
+  await liveRtxHdrQueue.catch(() => {});
+  const original = clonePlainRecord(originalRtxHdrLiveOverrides.value);
+  const originalKey = stableStringify(original);
+  if (originalKey === liveRtxHdrLastSentKey) return;
+  await enqueueRtxHdrLivePost(original, originalKey);
+}
+
+function commitRtxHdrLiveState(): void {
+  clearLiveRtxHdrTimer();
+  const current = buildRtxHdrLiveOverridesPayload();
+  originalRtxHdrLiveOverrides.value = clonePlainRecord(current);
+  liveRtxHdrLastSentKey = stableStringify(current);
+  liveRtxHdrStatus.value = 'idle';
+  liveRtxHdrError.value = '';
+}
+
+function rtxHdrCalibrationValue(key: RtxHdrCalibrationKey): number {
+  return form[key];
+}
+
+function rtxHdrBoundary(value: number, field: RtxHdrCalibrationField): string {
+  return field.unit ? `${value} ${field.unit}` : String(value);
+}
+
+function updateRtxHdrCalibrationValue(
+  key: RtxHdrCalibrationKey,
+  field: RtxHdrCalibrationField,
+  event: Event,
+): void {
+  const raw = Number((event.target as HTMLInputElement).value);
+  if (!Number.isFinite(raw)) return;
+  form[key] = Math.min(field.max, Math.max(field.min, Math.round(raw)));
+}
+
+function resetRtxHdrCalibration(): void {
+  form.rtxHdrSdrBrightness = 0;
+  form.rtxHdrPeakBrightness = 1000;
+  form.rtxHdrMiddleGray = 50;
+  form.rtxHdrContrast = 0;
+  form.rtxHdrSaturation = 0;
 }
 
 function overrideField(key: string): SettingsField | undefined {
@@ -668,6 +1034,13 @@ function emptyForm(): EditorForm {
     losslessScalingRtssLimit: '',
     losslessScalingProfile: '',
     losslessScalingLaunchDelay: '',
+    rtxHdrMode: 'inherit',
+    rtxHdrValuesOverride: false,
+    rtxHdrSdrBrightness: 0,
+    rtxHdrPeakBrightness: 1000,
+    rtxHdrMiddleGray: 50,
+    rtxHdrContrast: 0,
+    rtxHdrSaturation: 0,
     prepCmd: [],
     detachedText: '',
     configOverridesJson: '{}',
@@ -713,6 +1086,65 @@ function localizedError(cause: unknown, fallbackKey: string): string {
 
 function jsonText(value: unknown): string {
   return JSON.stringify(value && typeof value === 'object' ? value : {}, null, 2);
+}
+
+function clonePlainRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  try {
+    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  } catch {
+    return { ...(value as Record<string, unknown>) };
+  }
+}
+
+function parseBooleanOverride(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const normalized = String(value ?? '')
+    .trim()
+    .toLocaleLowerCase();
+  if (['true', '1', 'enabled', 'enable', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'disabled', 'disable', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseNumberOverride(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function extractRtxHdrOverrides(overrides: Record<string, unknown>): RtxHdrOverrideState {
+  const rest = { ...overrides };
+  const hasRtxHdrOverride = RTX_HDR_OVERRIDE_KEYS.some((key) =>
+    Object.prototype.hasOwnProperty.call(rest, key),
+  );
+  const hasRtxHdrValueOverride = RTX_HDR_OVERRIDE_KEYS.filter((key) => key !== 'rtx_hdr').some(
+    (key) => Object.prototype.hasOwnProperty.call(rest, key),
+  );
+  const mode: RtxHdrMode = !hasRtxHdrOverride
+    ? 'inherit'
+    : parseBooleanOverride(rest.rtx_hdr, true)
+      ? 'enabled'
+      : 'disabled';
+  const sdrBrightness = parseNumberOverride(rest.rtx_hdr_sdr_brightness, 0, 0, 100);
+  const peakBrightness = parseNumberOverride(rest.rtx_hdr_peak_brightness, 1000, 400, 2000);
+  const middleGray = parseNumberOverride(rest.rtx_hdr_middle_gray, 50, 10, 100);
+  const contrast = parseNumberOverride(rest.rtx_hdr_contrast, 0, -100, 100);
+  const saturation = parseNumberOverride(rest.rtx_hdr_saturation, 0, -100, 100);
+
+  for (const key of RTX_HDR_OVERRIDE_KEYS) delete rest[key];
+
+  return {
+    rest,
+    mode,
+    valuesOverride: hasRtxHdrValueOverride,
+    sdrBrightness,
+    peakBrightness,
+    middleGray,
+    contrast,
+    saturation,
+  };
 }
 
 function optionIsCustom(options: SelectOption[], value: string): boolean {
@@ -787,6 +1219,7 @@ function hydrate(app: AppRecord): void {
   const unknown = Object.fromEntries(
     Object.entries(app).filter(([key]) => !editableKeys.has(key) && !transientKeys.has(key)),
   );
+  const rtxHdrOverrides = extractRtxHdrOverrides(clonePlainRecord(app['config-overrides']));
 
   Object.assign(form, {
     uuid: appUuid(app),
@@ -819,11 +1252,18 @@ function hydrate(app: AppRecord): void {
     losslessScalingRtssLimit: asNumberText(app['lossless-scaling-rtss-limit']),
     losslessScalingProfile: asString(app['lossless-scaling-profile']),
     losslessScalingLaunchDelay: asNumberText(app['lossless-scaling-launch-delay']),
+    rtxHdrMode: rtxHdrOverrides.mode,
+    rtxHdrValuesOverride: rtxHdrOverrides.valuesOverride,
+    rtxHdrSdrBrightness: rtxHdrOverrides.sdrBrightness,
+    rtxHdrPeakBrightness: rtxHdrOverrides.peakBrightness,
+    rtxHdrMiddleGray: rtxHdrOverrides.middleGray,
+    rtxHdrContrast: rtxHdrOverrides.contrast,
+    rtxHdrSaturation: rtxHdrOverrides.saturation,
     prepCmd: Array.isArray(app['prep-cmd']) ? app['prep-cmd'].map(prepEntry) : [],
     detachedText: Array.isArray(app.detached)
       ? app.detached.filter((value): value is string => typeof value === 'string').join('\n')
       : '',
-    configOverridesJson: jsonText(app['config-overrides']),
+    configOverridesJson: jsonText(rtxHdrOverrides.rest),
     advancedJson: jsonText(unknown),
   } satisfies EditorForm);
   coverFailed.value = false;
@@ -833,7 +1273,12 @@ function hydrate(app: AppRecord): void {
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
   clearFrameGenHealth();
+  liveRtxHdrSuppress = true;
+  primeLiveRtxHdrState(app);
   endFormSynchronizationDeferral(synchronizationEpoch);
+  void nextTick(() => {
+    liveRtxHdrSuppress = false;
+  });
 }
 
 function hydrateNew(): void {
@@ -849,7 +1294,12 @@ function hydrateNew(): void {
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
   clearFrameGenHealth();
+  liveRtxHdrSuppress = true;
+  primeLiveRtxHdrState(null);
   endFormSynchronizationDeferral(synchronizationEpoch);
+  void nextTick(() => {
+    liveRtxHdrSuppress = false;
+  });
 }
 
 async function load(): Promise<void> {
@@ -912,7 +1362,9 @@ function setOptionalInteger(payload: AppRecord, key: string, value: string): voi
 
 function buildPayload(): AppRecord {
   const advanced = JSON.parse(form.advancedJson || '{}') as Record<string, unknown>;
-  const configOverrides = JSON.parse(form.configOverridesJson || '{}') as Record<string, unknown>;
+  const configOverrides = buildRtxHdrConfigOverrides(
+    JSON.parse(form.configOverridesJson || '{}') as Record<string, unknown>,
+  );
   const payload: AppRecord = {
     ...advanced,
     uuid: form.uuid,
@@ -1515,6 +1967,7 @@ async function submit(): Promise<void> {
   try {
     const payload = buildPayload();
     await saveApp(payload);
+    commitRtxHdrLiveState();
     await fetchApps().catch(() => []);
     await router.push({ name: 'library' });
   } catch (cause) {
@@ -1524,7 +1977,8 @@ async function submit(): Promise<void> {
   }
 }
 
-function cancel(): void {
+async function cancel(): Promise<void> {
+  await restoreOriginalRtxHdrLiveOverrides();
   void router.push({ name: 'library' });
 }
 
@@ -1545,6 +1999,7 @@ async function confirmDelete(): Promise<void> {
   loadError.value = '';
   deleteError.value = '';
   try {
+    await restoreOriginalRtxHdrLiveOverrides();
     await deleteApp(form.uuid);
     await fetchApps().catch(() => []);
     deleteOpen.value = false;
@@ -1589,7 +2044,25 @@ watch(
   },
 );
 
+watch(
+  () => [
+    form.rtxHdrMode,
+    form.rtxHdrValuesOverride,
+    form.rtxHdrSdrBrightness,
+    form.rtxHdrPeakBrightness,
+    form.rtxHdrMiddleGray,
+    form.rtxHdrContrast,
+    form.rtxHdrSaturation,
+  ],
+  () => scheduleRtxHdrLiveUpdate(),
+);
+
 watch([routeId, () => route.name], () => void load(), { immediate: true });
+
+onBeforeUnmount(() => {
+  liveRtxHdrSuppress = true;
+  void restoreOriginalRtxHdrLiveOverrides();
+});
 </script>
 
 <template>
@@ -2000,6 +2473,138 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
               />
             </div>
           </div>
+        </div>
+      </section>
+
+      <section v-if="showRtxHdrSection" class="editor-section" aria-labelledby="rtx-hdr-heading">
+        <div class="editor-section__heading editor-section__heading--rtx-hdr">
+          <div>
+            <h2 id="rtx-hdr-heading">{{ t('ui.application.rtxHdr.title') }}</h2>
+            <p>{{ t('ui.application.rtxHdr.description') }}</p>
+          </div>
+          <div class="rtx-hdr__heading-meta">
+            <StatusBadge :label="rtxHdrModeLabel" :tone="rtxHdrModeTone" compact />
+            <StatusBadge
+              v-if="liveRtxHdrStatus !== 'idle'"
+              :label="rtxHdrLiveStatusLabel"
+              :tone="rtxHdrLiveStatusTone"
+              compact
+              announce="polite"
+            />
+          </div>
+        </div>
+
+        <div class="editor-group rtx-hdr-panel">
+          <fieldset class="rtx-hdr__mode-fieldset">
+            <legend>{{ t('ui.application.rtxHdr.modeLabel') }}</legend>
+            <div class="rtx-hdr__mode-grid">
+              <label
+                v-for="option in rtxHdrModeOptions"
+                :key="option.value"
+                class="rtx-hdr__mode"
+                :class="{ 'rtx-hdr__mode--active': form.rtxHdrMode === option.value }"
+              >
+                <input v-model="form.rtxHdrMode" type="radio" :value="option.value" />
+                <span class="rtx-hdr__mode-icon" aria-hidden="true">
+                  <UiIcon :name="option.icon" :size="18" />
+                </span>
+                <span class="rtx-hdr__mode-copy">
+                  <strong>{{ option.label }}</strong>
+                  <span>{{ option.description }}</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div v-if="form.rtxHdrMode === 'enabled'" class="rtx-hdr__calibration">
+            <div class="rtx-hdr__calibration-heading">
+              <div>
+                <h3>{{ t('ui.application.rtxHdr.calibration.title') }}</h3>
+                <p>{{ t('ui.application.rtxHdr.calibration.description') }}</p>
+              </div>
+              <AppButton
+                size="compact"
+                variant="tertiary"
+                icon="refresh"
+                :label="t('ui.application.rtxHdr.calibration.reset')"
+                @click="resetRtxHdrCalibration"
+              />
+            </div>
+
+            <SettingRow
+              :label="t('ui.application.rtxHdr.calibration.overrideLabel')"
+              :description="t('ui.application.rtxHdr.calibration.overrideDescription')"
+              control-id="app-rtx-hdr-values"
+            >
+              <label class="vs-switch">
+                <input
+                  id="app-rtx-hdr-values"
+                  v-model="form.rtxHdrValuesOverride"
+                  type="checkbox"
+                />
+                <span class="vs-switch__track" aria-hidden="true" />
+                <span class="vs-sr-only">{{
+                  t('ui.application.rtxHdr.calibration.overrideLabel')
+                }}</span>
+              </label>
+            </SettingRow>
+
+            <div v-if="form.rtxHdrValuesOverride" class="rtx-hdr__dials">
+              <article
+                v-for="field in rtxHdrCalibrationFields"
+                :key="field.key"
+                class="rtx-hdr__dial"
+              >
+                <div class="rtx-hdr__dial-heading">
+                  <label :for="`app-rtx-hdr-${field.key}`">{{ t(field.labelKey) }}</label>
+                  <output :for="`app-rtx-hdr-${field.key}`">
+                    {{ rtxHdrCalibrationValue(field.key) }}
+                    <span v-if="field.unit">{{ field.unit }}</span>
+                  </output>
+                </div>
+                <input
+                  :id="`app-rtx-hdr-${field.key}`"
+                  class="rtx-hdr__range"
+                  type="range"
+                  :min="field.min"
+                  :max="field.max"
+                  :step="field.step"
+                  :value="rtxHdrCalibrationValue(field.key)"
+                  :aria-label="t(field.labelKey)"
+                  @input="updateRtxHdrCalibrationValue(field.key, field, $event)"
+                />
+                <div class="rtx-hdr__dial-footer">
+                  <span>{{ rtxHdrBoundary(field.min, field) }}</span>
+                  <input
+                    class="vs-input rtx-hdr__number"
+                    type="number"
+                    :min="field.min"
+                    :max="field.max"
+                    :step="field.step"
+                    :value="rtxHdrCalibrationValue(field.key)"
+                    :aria-label="t(field.labelKey)"
+                    @input="updateRtxHdrCalibrationValue(field.key, field, $event)"
+                  />
+                  <span>{{ rtxHdrBoundary(field.max, field) }}</span>
+                </div>
+                <p>{{ t(field.descriptionKey) }}</p>
+              </article>
+            </div>
+          </div>
+
+          <InlineAlert
+            v-if="liveRtxHdrStatus === 'error'"
+            tone="danger"
+            :title="t('ui.application.rtxHdr.live.failureTitle')"
+            announce="assertive"
+          >
+            {{ liveRtxHdrError || t('rtx_hdr_live_update_failed') }}
+          </InlineAlert>
+
+          <p class="rtx-hdr__live-note">
+            <UiIcon name="activity" :size="16" aria-hidden="true" />
+            {{ t('ui.application.rtxHdr.liveHint') }}
+          </p>
         </div>
       </section>
 
@@ -2703,6 +3308,229 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
   color: var(--vs-color-text-primary);
 }
 
+.editor-section__heading--rtx-hdr {
+  align-items: flex-start;
+}
+
+.rtx-hdr__heading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vs-space-8);
+}
+
+.rtx-hdr-panel {
+  display: grid;
+  gap: var(--vs-space-20);
+}
+
+.rtx-hdr__mode-fieldset {
+  min-inline-size: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.rtx-hdr__mode-fieldset legend {
+  margin-block-end: var(--vs-space-12);
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.rtx-hdr__mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--vs-space-12);
+}
+
+.rtx-hdr__mode {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--vs-space-12);
+  min-inline-size: 0;
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-raised);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.rtx-hdr__mode:hover {
+  border-color: var(--vs-color-border-strong);
+}
+
+.rtx-hdr__mode--active {
+  border-color: var(--vs-color-accent-default);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 8%, var(--vs-color-bg-raised));
+  box-shadow: inset 0 0 0 var(--vs-border-width) var(--vs-color-accent-default);
+}
+
+.rtx-hdr__mode input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+}
+
+.rtx-hdr__mode input:focus-visible + .rtx-hdr__mode-icon {
+  outline: var(--vs-focus-width) solid var(--vs-color-focus);
+  outline-offset: var(--vs-space-4);
+}
+
+.rtx-hdr__mode-icon {
+  display: grid;
+  inline-size: 2rem;
+  block-size: 2rem;
+  place-items: center;
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+  color: var(--vs-color-text-muted);
+}
+
+.rtx-hdr__mode--active .rtx-hdr__mode-icon {
+  background: color-mix(in srgb, var(--vs-color-accent-default) 16%, transparent);
+  color: var(--vs-color-accent-default);
+}
+
+.rtx-hdr__mode-copy {
+  display: grid;
+  min-inline-size: 0;
+  gap: var(--vs-space-4);
+}
+
+.rtx-hdr__mode-copy strong {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  line-height: var(--vs-type-line-height-control);
+}
+
+.rtx-hdr__mode-copy span {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: var(--vs-type-line-height-helper);
+}
+
+.rtx-hdr__calibration {
+  display: grid;
+  gap: var(--vs-space-20);
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+}
+
+.rtx-hdr__calibration-heading,
+.rtx-hdr__dial-heading,
+.rtx-hdr__dial-footer {
+  display: flex;
+  align-items: center;
+}
+
+.rtx-hdr__calibration-heading {
+  justify-content: space-between;
+  gap: var(--vs-space-16);
+}
+
+.rtx-hdr__calibration-heading h3 {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  line-height: var(--vs-type-line-height-control);
+}
+
+.rtx-hdr__calibration-heading p {
+  margin-block-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
+.rtx-hdr__dials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vs-space-12);
+}
+
+.rtx-hdr__dial {
+  display: grid;
+  gap: var(--vs-space-10);
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-surface);
+}
+
+.rtx-hdr__dial-heading {
+  justify-content: space-between;
+  gap: var(--vs-space-12);
+}
+
+.rtx-hdr__dial-heading label {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.rtx-hdr__dial-heading output {
+  color: var(--vs-color-accent-default);
+  font-size: var(--vs-type-size-control);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vs-type-weight-semibold);
+  white-space: nowrap;
+}
+
+.rtx-hdr__dial-heading output span {
+  margin-inline-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  font-weight: var(--vs-type-weight-regular);
+}
+
+.rtx-hdr__range {
+  inline-size: 100%;
+  margin: var(--vs-space-4) 0;
+  accent-color: var(--vs-color-accent-default);
+}
+
+.rtx-hdr__dial-footer {
+  justify-content: space-between;
+  gap: var(--vs-space-8);
+  color: var(--vs-color-text-muted);
+  font-size: var(--vs-type-size-metadata);
+  font-variant-numeric: tabular-nums;
+}
+
+.rtx-hdr__number {
+  inline-size: 5.5rem;
+  text-align: end;
+}
+
+.rtx-hdr__dial p {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  line-height: var(--vs-type-line-height-helper);
+}
+
+.rtx-hdr__live-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vs-space-8);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
+.rtx-hdr__live-note > svg {
+  flex: 0 0 auto;
+  margin-block-start: 0.1rem;
+  color: var(--vs-color-accent-default);
+}
+
 .prep-list {
   display: grid;
   gap: var(--vs-space-12);
@@ -3062,6 +3890,10 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .rtx-hdr__mode-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .application-overrides__catalog {
     border-inline-end: 0;
     border-block-end: var(--vs-border-width) solid var(--vs-color-border-subtle);
@@ -3088,11 +3920,16 @@ watch([routeId, () => route.name], () => void load(), { immediate: true });
     inline-size: min(100%, 11rem);
   }
 
+  .rtx-hdr__dials {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .editor-section__heading--actions,
   .editor-danger,
   .editor-save-bar,
   .editor-name-control,
-  .framegen-health__heading {
+  .framegen-health__heading,
+  .rtx-hdr__calibration-heading {
     align-items: stretch;
     flex-direction: column;
   }
