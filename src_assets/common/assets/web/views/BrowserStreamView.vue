@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import { apiGet, apiPost } from '@/api/client';
 import {
   AppButton,
+  ConfirmDialog,
   InlineAlert,
   LoadingSkeleton,
   PageHeader,
@@ -11,7 +13,7 @@ import {
   UiIcon,
   type StatusTone,
 } from '@/components/ui';
-import { appName, fetchApps, type AppRecord } from '@/services/apps';
+import { appCoverUrl, appName, fetchApps, type AppRecord } from '@/services/apps';
 import {
   BrowserWebRtcSession,
   detectBrowserVideoCapabilities,
@@ -21,9 +23,11 @@ import {
   type BrowserVideoCapabilities,
   type WebRtcHostCapabilities,
 } from '@/services/webrtc';
+import type { SessionStatus } from '@/types/sessions';
 import type { EncodingType, StreamConfig } from '@/types/webrtc';
 
 interface LaunchableApp {
+  coverUrl: string;
   id: number;
   name: string;
 }
@@ -52,10 +56,46 @@ interface PressedKey {
   modifiers: Record<string, boolean>;
 }
 
+interface PointerPosition {
+  x: number;
+  y: number;
+}
+
+interface TouchPointerGesture {
+  dragging: boolean;
+  lastPosition: PointerPosition;
+  startClientX: number;
+  startClientY: number;
+  startPosition: PointerPosition;
+}
+
+interface MutationResponse {
+  error?: string;
+  status?: boolean;
+}
+
+interface WebKitFullscreenElement extends HTMLElement {
+  webkitRequestFullScreen?: () => Promise<void> | void;
+  webkitRequestFullscreen?: () => Promise<void> | void;
+}
+
+interface WebKitFullscreenVideoElement extends HTMLVideoElement {
+  webkitEnterFullScreen?: () => void;
+  webkitEnterFullscreen?: () => void;
+}
+
+interface KeyboardLockNavigator extends Navigator {
+  keyboard?: {
+    lock?: (keys?: string[]) => Promise<void>;
+    unlock?: () => void;
+  };
+}
+
 const { t } = useI18n();
 const codecs: EncodingType[] = ['h264', 'hevc', 'av1'];
 const browserSession = new BrowserWebRtcSession();
 
+const appSearch = ref('');
 const apps = ref<AppRecord[]>([]);
 const browserCapabilities = ref<BrowserVideoCapabilities>({
   h264: { supported: false, hdr: false },
@@ -69,12 +109,27 @@ const inputForwarding = ref(true);
 const isConnecting = ref(false);
 const loading = ref(true);
 const playbackBlocked = ref(false);
+const pseudoFullscreen = ref(false);
 const refreshError = ref('');
+const sessionActionError = ref('');
+const sessionActionPending = ref(false);
+const sessionStatus = ref<SessionStatus | null>(null);
+const startAfterTerminate = ref(false);
 const streamError = ref('');
 const streamSurface = ref<HTMLElement | null>(null);
+const terminateOpen = ref(false);
+const audioEl = ref<HTMLAudioElement | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
+const failedAppCovers = ref(new Set<number>());
 const pressedKeys = new Map<string, PressedKey>();
 const pressedMouseButtons = new Map<number, PressedMouseButton>();
+const touchPointerGestures = new Map<number, TouchPointerGesture>();
+const touchClickJitterPx = 10;
+let audioPlaybackStream: MediaStream | null = null;
+let fullscreenKeyboardLockRequest = 0;
+let pageOverflowBeforePseudoFullscreen: { body: string; root: string } | null = null;
+let sessionStatusTimer: number | undefined;
+let videoPlaybackStream: MediaStream | null = null;
 
 const form = reactive<StreamLaunchForm>({
   appId: '',
@@ -108,9 +163,21 @@ const launchableApps = computed<LaunchableApp[]>(() =>
   apps.value.flatMap((app) => {
     const id = appIdFor(app);
     if (id === null) return [];
-    return [{ id, name: appName(app) || t('ui.browser_stream.unnamed_application') }];
+    return [
+      {
+        coverUrl: appCoverUrl(app),
+        id,
+        name: appName(app) || t('ui.browser_stream.unnamed_application'),
+      },
+    ];
   }),
 );
+
+const filteredLaunchableApps = computed(() => {
+  const query = appSearch.value.trim().toLocaleLowerCase();
+  if (!query) return launchableApps.value;
+  return launchableApps.value.filter((app) => app.name.toLocaleLowerCase().includes(query));
+});
 
 const selectedAppId = computed(() => {
   const id = Number(form.appId);
@@ -119,8 +186,54 @@ const selectedAppId = computed(() => {
 
 const selectedAppName = computed(() => {
   const selected = launchableApps.value.find((app) => app.id === selectedAppId.value);
-  return selected?.name || t('ui.browser_stream.desktop');
+  if (selected?.name) return selected.name;
+  if (sessionStatus.value?.appName && hasRunningSession.value) return sessionStatus.value.appName;
+  return t('ui.browser_stream.desktop');
 });
+
+const hasRunningSession = computed(
+  () =>
+    Boolean(sessionStatus.value?.appRunning) ||
+    Number(sessionStatus.value?.activeSessions ?? 0) > 0,
+);
+
+const resumeAvailable = computed(
+  () =>
+    selectedAppId.value === undefined &&
+    (Number(sessionStatus.value?.activeSessions ?? 0) > 0 || sessionStatus.value?.paused === true),
+);
+
+const primaryActionLabel = computed(() =>
+  resumeAvailable.value ? t('webrtc.resume') : t('ui.browser_stream.start'),
+);
+
+const terminateDescription = computed(() =>
+  startAfterTerminate.value
+    ? t('webrtc.terminate_confirm_message', {
+        app: selectedAppName.value || t('webrtc.terminate_confirm_app_fallback'),
+      })
+    : t('webrtc.terminate_desc'),
+);
+
+const terminateConfirmLabel = computed(() =>
+  startAfterTerminate.value ? t('webrtc.terminate_confirm_action') : t('webrtc.terminate'),
+);
+
+function selectApp(appId?: number): void {
+  form.appId = appId === undefined ? '' : String(appId);
+}
+
+function appSelected(appId?: number): boolean {
+  return selectedAppId.value === appId;
+}
+
+function appCoverFailed(appId: number): boolean {
+  return failedAppCovers.value.has(appId);
+}
+
+function markAppCoverFailed(appId: number): void {
+  failedAppCovers.value = new Set(failedAppCovers.value).add(appId);
+}
 
 const hostReady = computed(
   () => hostCapabilities.value.enabled && hostCapabilities.value.availability.state === 'ready',
@@ -280,11 +393,38 @@ const validationError = computed(() => {
 
 const startDisabled = computed(
   () =>
-    loading.value || connectionPending.value || isConnected.value || Boolean(validationError.value),
+    loading.value ||
+    connectionPending.value ||
+    isConnected.value ||
+    sessionActionPending.value ||
+    Boolean(validationError.value),
 );
 
 function messageFromError(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function stopSessionStatusPolling(): void {
+  if (sessionStatusTimer === undefined) return;
+  window.clearInterval(sessionStatusTimer);
+  sessionStatusTimer = undefined;
+}
+
+async function fetchSessionStatus(): Promise<void> {
+  if (connectionPending.value || isConnected.value) return;
+  try {
+    const status = await apiGet<SessionStatus>('/api/session/status');
+    sessionStatus.value = status.status ? status : null;
+  } catch {
+    sessionStatus.value = null;
+  }
+}
+
+function startSessionStatusPolling(): void {
+  stopSessionStatusPolling();
+  if (connectionPending.value || isConnected.value) return;
+  void fetchSessionStatus();
+  sessionStatusTimer = window.setInterval(fetchSessionStatus, 5000);
 }
 
 async function refresh(): Promise<void> {
@@ -326,6 +466,7 @@ async function refresh(): Promise<void> {
   if (browserResult.status === 'rejected' && !refreshError.value) {
     refreshError.value = t('ui.browser_stream.errors.inspect_browser');
   }
+  await fetchSessionStatus();
   loading.value = false;
 }
 
@@ -337,12 +478,70 @@ function setHdr(event: Event): void {
   form.hdr = (event.target as HTMLInputElement).checked;
 }
 
-async function connect(): Promise<void> {
+function replaceTracks(
+  current: MediaStream | null,
+  tracks: MediaStreamTrack[],
+): MediaStream | null {
+  if (!tracks.length || typeof MediaStream !== 'function') return current;
+  const target = current ?? new MediaStream();
+  for (const kind of new Set(tracks.map((track) => track.kind))) {
+    const incoming = tracks.filter((track) => track.kind === kind);
+    const existing = target.getTracks().filter((track) => track.kind === kind);
+    if (
+      existing.length === incoming.length &&
+      incoming.every((track) => existing.some((currentTrack) => currentTrack.id === track.id))
+    ) {
+      continue;
+    }
+    for (const track of existing) target.removeTrack(track);
+    for (const track of incoming) target.addTrack(track);
+  }
+  return target;
+}
+
+async function playAttachedMedia(): Promise<void> {
+  const attempts: Promise<void>[] = [];
+  if (videoEl.value?.srcObject) attempts.push(videoEl.value.play());
+  if (audioEl.value?.srcObject) attempts.push(audioEl.value.play());
+  const results = await Promise.allSettled(attempts);
+  playbackBlocked.value = results.some((result) => result.status === 'rejected');
+}
+
+function attachRemoteStream(stream: MediaStream): void {
+  const player = videoEl.value;
+  if (!player) return;
+
+  if (typeof MediaStream !== 'function') {
+    player.muted = false;
+    player.srcObject = stream;
+    void playAttachedMedia();
+    return;
+  }
+
+  const videoTracks = stream.getVideoTracks();
+  if (videoTracks.length) {
+    videoPlaybackStream = replaceTracks(videoPlaybackStream, videoTracks);
+    player.muted = true;
+    player.srcObject = videoPlaybackStream;
+  }
+
+  const audioTracks = stream.getAudioTracks();
+  if (audioTracks.length && audioEl.value) {
+    audioPlaybackStream = replaceTracks(audioPlaybackStream, audioTracks);
+    audioEl.value.srcObject = audioPlaybackStream;
+  }
+
+  void playAttachedMedia();
+}
+
+async function connect(resume: boolean): Promise<void> {
   if (startDisabled.value) {
     streamError.value = validationError.value || t('ui.browser_stream.errors.unavailable');
     return;
   }
 
+  stopSessionStatusPolling();
+  sessionActionError.value = '';
   streamError.value = '';
   playbackBlocked.value = false;
   isConnecting.value = true;
@@ -357,6 +556,7 @@ async function connect(): Promise<void> {
     hdr: effectiveHdr.value,
     height: form.height,
     muteHostAudio: form.muteHostAudio,
+    resume,
     width: form.width,
   };
 
@@ -364,25 +564,19 @@ async function connect(): Promise<void> {
     await browserSession.connect(config, {
       onConnectionState: (state) => {
         connectionState.value = state;
-        if (state === 'failed') streamError.value = t('ui.browser_stream.errors.connection_failed');
+        if (state === 'connected') stopSessionStatusPolling();
+        if (state === 'failed') {
+          streamError.value = t('ui.browser_stream.errors.connection_failed');
+        }
+        if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+          startSessionStatusPolling();
+        }
       },
       onInputState: (state) => {
         if (state !== 'open') releaseForwardedInput();
         inputChannelState.value = state;
       },
-      onRemoteStream: (stream) => {
-        const player = videoEl.value;
-        if (!player) return;
-        player.srcObject = stream;
-        void player.play().then(
-          () => {
-            playbackBlocked.value = false;
-          },
-          () => {
-            playbackBlocked.value = true;
-          },
-        );
-      },
+      onRemoteStream: attachRemoteStream,
     });
   } catch (error) {
     if (error instanceof WebRtcConnectionCanceledError) {
@@ -393,30 +587,66 @@ async function connect(): Promise<void> {
     streamError.value = messageFromError(error, t('ui.browser_stream.errors.connect'));
   } finally {
     isConnecting.value = false;
+    if (!isConnected.value) startSessionStatusPolling();
   }
 }
 
-async function disconnect(): Promise<void> {
+async function requestPrimaryAction(): Promise<void> {
+  if (selectedAppId.value !== undefined && hasRunningSession.value) {
+    startAfterTerminate.value = true;
+    terminateOpen.value = true;
+    return;
+  }
+  await connect(resumeAvailable.value);
+}
+
+function requestTerminate(): void {
+  startAfterTerminate.value = false;
+  sessionActionError.value = '';
+  terminateOpen.value = true;
+}
+
+async function confirmTerminate(): Promise<void> {
+  if (sessionActionPending.value) return;
+  sessionActionPending.value = true;
+  sessionActionError.value = '';
+  const shouldStart = startAfterTerminate.value;
+  try {
+    const response = await apiPost<MutationResponse>('/api/apps/close', {});
+    if (response.status !== true) {
+      throw new Error(response.error || t('webrtc.termination_failed_desc'));
+    }
+    terminateOpen.value = false;
+    startAfterTerminate.value = false;
+    await disconnect();
+    await fetchSessionStatus();
+    if (shouldStart) {
+      sessionActionPending.value = false;
+      await connect(false);
+    }
+  } catch (error) {
+    sessionActionError.value = messageFromError(error, t('webrtc.termination_failed_desc'));
+  } finally {
+    sessionActionPending.value = false;
+  }
+}
+
+async function disconnect(restartStatusPolling = true): Promise<void> {
   releaseForwardedInput();
   isConnecting.value = false;
   inputChannelState.value = 'closed';
   await browserSession.disconnect();
   if (videoEl.value) videoEl.value.srcObject = null;
+  if (audioEl.value) audioEl.value.srcObject = null;
+  videoPlaybackStream = null;
+  audioPlaybackStream = null;
   playbackBlocked.value = false;
   connectionState.value = 'idle';
+  if (restartStatusPolling) startSessionStatusPolling();
 }
 
 function resumePlayback(): void {
-  const player = videoEl.value;
-  if (!player) return;
-  void player.play().then(
-    () => {
-      playbackBlocked.value = false;
-    },
-    () => {
-      playbackBlocked.value = true;
-    },
-  );
+  void playAttachedMedia();
 }
 
 function modifiers(event: KeyboardEvent | MouseEvent | WheelEvent): Record<string, boolean> {
@@ -428,27 +658,58 @@ function modifiers(event: KeyboardEvent | MouseEvent | WheelEvent): Record<strin
   };
 }
 
-function pointerPosition(event: PointerEvent | WheelEvent): { x: number; y: number } {
+function pointerPosition(
+  event: PointerEvent | WheelEvent,
+  clampOutside = false,
+): PointerPosition | null {
+  const video = videoEl.value;
   const surface = streamSurface.value;
-  if (!surface) return { x: 0, y: 0 };
+  if (!video || !surface) return null;
 
-  const bounds = surface.getBoundingClientRect();
-  const sourceWidth = videoEl.value?.videoWidth || bounds.width;
-  const sourceHeight = videoEl.value?.videoHeight || bounds.height;
+  const bounds = video.getBoundingClientRect();
+  const sourceWidth = video.videoWidth || bounds.width;
+  const sourceHeight = video.videoHeight || bounds.height;
+  if (bounds.width <= 0 || bounds.height <= 0 || sourceWidth <= 0 || sourceHeight <= 0) {
+    return null;
+  }
   const scale = Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
   const contentWidth = sourceWidth * scale;
   const contentHeight = sourceHeight * scale;
   const left = bounds.left + (bounds.width - contentWidth) / 2;
   const top = bounds.top + (bounds.height - contentHeight) / 2;
+  const normalizedX = (event.clientX - left) / contentWidth;
+  const normalizedY = (event.clientY - top) / contentHeight;
+  if (!clampOutside && (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1)) {
+    return null;
+  }
   return {
-    x: Math.min(1, Math.max(0, (event.clientX - left) / contentWidth)),
-    y: Math.min(1, Math.max(0, (event.clientY - top) / contentHeight)),
+    x: Math.min(1, Math.max(0, normalizedX)),
+    y: Math.min(1, Math.max(0, normalizedY)),
   };
 }
 
 function sendPointerMove(event: PointerEvent): void {
   if (!inputReady.value) return;
-  const position = pointerPosition(event);
+  const touchGesture = touchPointerGestures.get(event.pointerId);
+  if (touchGesture) {
+    event.preventDefault();
+    if (!touchGesture.dragging) {
+      const distance = Math.hypot(
+        event.clientX - touchGesture.startClientX,
+        event.clientY - touchGesture.startClientY,
+      );
+      if (distance < touchClickJitterPx) return;
+      touchGesture.dragging = true;
+    }
+  }
+
+  const position = pointerPosition(event, event.buttons !== 0);
+  if (!position) return;
+  if (touchGesture) touchGesture.lastPosition = position;
+  for (const pressed of pressedMouseButtons.values()) {
+    pressed.x = position.x;
+    pressed.y = position.y;
+  }
   browserSession.sendInput({
     ...position,
     buttons: event.buttons,
@@ -460,20 +721,45 @@ function sendPointerMove(event: PointerEvent): void {
 function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up'): void {
   if (!inputReady.value) return;
   const surface = streamSurface.value;
-  surface?.focus();
-  if (type === 'mouse_down') surface?.setPointerCapture(event.pointerId);
-  if (type === 'mouse_up' && surface?.hasPointerCapture(event.pointerId)) {
-    surface.releasePointerCapture(event.pointerId);
+  const touchLike = event.pointerType === 'touch' || event.pointerType === 'pen';
+  if (touchLike) event.preventDefault();
+  try {
+    surface?.focus({ preventScroll: true });
+  } catch {
+    surface?.focus();
   }
-  const position = pointerPosition(event);
+
+  const touchGesture = touchPointerGestures.get(event.pointerId);
+  const position =
+    type === 'mouse_up' && touchGesture && !touchGesture.dragging
+      ? touchGesture.startPosition
+      : (pointerPosition(event, type === 'mouse_up' && pressedMouseButtons.has(event.button)) ??
+        touchGesture?.lastPosition);
+  if (!position) return;
+
   if (type === 'mouse_down') {
+    if (touchLike) {
+      touchPointerGestures.set(event.pointerId, {
+        dragging: false,
+        lastPosition: position,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startPosition: position,
+      });
+    }
     pressedMouseButtons.set(event.button, {
       button: event.button,
       modifiers: modifiers(event),
       ...position,
     });
+    try {
+      surface?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is an optimization; the button event is still valid.
+    }
   } else {
     pressedMouseButtons.delete(event.button);
+    touchPointerGestures.delete(event.pointerId);
   }
   browserSession.sendInput({
     ...position,
@@ -485,8 +771,9 @@ function sendPointerButton(event: PointerEvent, type: 'mouse_down' | 'mouse_up')
 
 function sendWheel(event: WheelEvent): void {
   if (!inputReady.value) return;
-  event.preventDefault();
   const position = pointerPosition(event);
+  if (!position) return;
+  event.preventDefault();
   browserSession.sendInput({
     ...position,
     dx: event.deltaX / 100,
@@ -518,6 +805,7 @@ function releaseForwardedInput(): void {
     browserSession.sendInput({ ...pressed, type: 'mouse_up' });
   }
   pressedMouseButtons.clear();
+  touchPointerGestures.clear();
 
   for (const pressed of pressedKeys.values()) {
     browserSession.sendInput({ ...pressed, repeat: false, type: 'key_up' });
@@ -534,11 +822,108 @@ function onVisibilityChange(): void {
 }
 
 async function enterFullscreen(): Promise<void> {
-  try {
-    await streamSurface.value?.requestFullscreen();
-  } catch {
-    // Fullscreen is an optional browser affordance.
+  const surface = streamSurface.value;
+  const video = videoEl.value;
+  if (!surface) return;
+
+  if (await requestElementFullscreen(surface)) {
+    surface.focus();
+    return;
   }
+  if (video && (await requestElementFullscreen(video))) return;
+  if (video && enterNativeVideoFullscreen(video)) return;
+
+  enterPseudoFullscreen();
+  surface.focus();
+}
+
+async function requestElementFullscreen(element: HTMLElement): Promise<boolean> {
+  try {
+    if (typeof element.requestFullscreen === 'function') {
+      await element.requestFullscreen({ keyboardLock: 'browser' } as FullscreenOptions);
+      void requestFullscreenKeyboardLock();
+      return true;
+    }
+  } catch {
+    // Try WebKit's prefixed API before falling back to video fullscreen.
+  }
+
+  const webkitElement = element as WebKitFullscreenElement;
+  const request = webkitElement.webkitRequestFullscreen ?? webkitElement.webkitRequestFullScreen;
+  if (typeof request !== 'function') return false;
+  try {
+    await request.call(webkitElement);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function currentFullscreenElement(): Element | null {
+  const webkitDocument = document as Document & { webkitFullscreenElement?: Element | null };
+  return document.fullscreenElement ?? webkitDocument.webkitFullscreenElement ?? null;
+}
+
+async function requestFullscreenKeyboardLock(): Promise<void> {
+  const keyboard = (navigator as KeyboardLockNavigator).keyboard;
+  if (typeof keyboard?.lock !== 'function' || !window.isSecureContext) return;
+  const request = ++fullscreenKeyboardLockRequest;
+  try {
+    await keyboard.lock();
+    if (request !== fullscreenKeyboardLockRequest || !currentFullscreenElement()) {
+      keyboard.unlock?.();
+    }
+  } catch {
+    // Safari's fullscreen keyboardLock option remains the primary lock path.
+  }
+}
+
+function releaseFullscreenKeyboardLock(): void {
+  fullscreenKeyboardLockRequest += 1;
+  try {
+    (navigator as KeyboardLockNavigator).keyboard?.unlock?.();
+  } catch {
+    // Browsers also release keyboard lock automatically when fullscreen ends.
+  }
+}
+
+function onFullscreenChange(): void {
+  if (currentFullscreenElement()) {
+    void requestFullscreenKeyboardLock();
+  } else {
+    releaseFullscreenKeyboardLock();
+  }
+}
+
+function enterNativeVideoFullscreen(video: HTMLVideoElement): boolean {
+  const webkitVideo = video as WebKitFullscreenVideoElement;
+  const enter = webkitVideo.webkitEnterFullscreen ?? webkitVideo.webkitEnterFullScreen;
+  if (typeof enter !== 'function') return false;
+  try {
+    enter.call(webkitVideo);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enterPseudoFullscreen(): void {
+  if (pseudoFullscreen.value) return;
+  pageOverflowBeforePseudoFullscreen = {
+    body: document.body.style.overflow,
+    root: document.documentElement.style.overflow,
+  };
+  document.body.style.overflow = 'hidden';
+  document.documentElement.style.overflow = 'hidden';
+  pseudoFullscreen.value = true;
+}
+
+function exitPseudoFullscreen(): void {
+  if (!pseudoFullscreen.value) return;
+  pseudoFullscreen.value = false;
+  document.body.style.overflow = pageOverflowBeforePseudoFullscreen?.body ?? '';
+  document.documentElement.style.overflow = pageOverflowBeforePseudoFullscreen?.root ?? '';
+  pageOverflowBeforePseudoFullscreen = null;
 }
 
 watch(inputForwarding, (enabled, wasEnabled) => {
@@ -547,14 +932,22 @@ watch(inputForwarding, (enabled, wasEnabled) => {
 
 onMounted(() => {
   void refresh();
+  startSessionStatusPolling();
   window.addEventListener('blur', onWindowBlur);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.addEventListener('visibilitychange', onVisibilityChange);
 });
 onBeforeUnmount(() => {
+  stopSessionStatusPolling();
+  exitPseudoFullscreen();
+  releaseFullscreenKeyboardLock();
   window.removeEventListener('blur', onWindowBlur);
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
+  document.removeEventListener('webkitfullscreenchange', onFullscreenChange as EventListener);
   document.removeEventListener('visibilitychange', onVisibilityChange);
   releaseForwardedInput();
-  void disconnect();
+  void disconnect(false);
 });
 </script>
 
@@ -603,6 +996,15 @@ onBeforeUnmount(() => {
     </InlineAlert>
 
     <InlineAlert
+      v-if="sessionActionError"
+      tone="danger"
+      :title="t('webrtc.termination_failed')"
+      announce="assertive"
+    >
+      {{ sessionActionError }}
+    </InlineAlert>
+
+    <InlineAlert
       v-if="playbackBlocked"
       tone="warning"
       :title="t('ui.browser_stream.errors.playback')"
@@ -619,6 +1021,103 @@ onBeforeUnmount(() => {
       </template>
     </InlineAlert>
 
+    <section class="app-picker panel" aria-labelledby="browser-stream-app-picker-title">
+      <div class="panel__heading app-picker__heading">
+        <div>
+          <h2 id="browser-stream-app-picker-title">
+            {{ t('ui.browser_stream.settings.application') }}
+          </h2>
+          <p>{{ t('ui.browser_stream.settings.application_help') }}</p>
+        </div>
+        <label v-if="launchableApps.length" class="app-picker__search">
+          <span class="vs-sr-only">{{ t('webrtc.search_placeholder') }}</span>
+          <UiIcon name="search" :size="17" />
+          <input
+            v-model="appSearch"
+            class="vs-input"
+            type="search"
+            :placeholder="t('webrtc.search_placeholder')"
+            :disabled="connectionPending || isConnected"
+          />
+        </label>
+      </div>
+
+      <LoadingSkeleton v-if="loading" variant="block" height="250px" aria-hidden="true" />
+      <template v-else>
+        <div
+          class="app-picker__grid"
+          role="listbox"
+          :aria-label="t('ui.browser_stream.settings.application')"
+        >
+          <button
+            class="app-picker__card app-picker__card--desktop"
+            :class="{ 'app-picker__card--selected': appSelected() }"
+            type="button"
+            role="option"
+            :aria-selected="appSelected()"
+            :disabled="connectionPending || isConnected"
+            @click="selectApp()"
+          >
+            <span class="app-picker__artwork app-picker__artwork--desktop">
+              <UiIcon name="devices" :size="42" />
+              <span v-if="appSelected()" class="app-picker__selected-mark">
+                <UiIcon name="check" :size="16" />
+              </span>
+            </span>
+            <span class="app-picker__copy">
+              <strong>{{ t('ui.browser_stream.desktop') }}</strong>
+              <small>
+                {{
+                  resumeAvailable
+                    ? t('webrtc.no_selection')
+                    : t('ui.browser_stream.picker.desktop_detail')
+                }}
+              </small>
+            </span>
+          </button>
+
+          <button
+            v-for="app in filteredLaunchableApps"
+            :key="app.id"
+            class="app-picker__card"
+            :class="{ 'app-picker__card--selected': appSelected(app.id) }"
+            type="button"
+            role="option"
+            :aria-selected="appSelected(app.id)"
+            :aria-label="app.name"
+            :disabled="connectionPending || isConnected"
+            @click="selectApp(app.id)"
+          >
+            <span class="app-picker__artwork">
+              <img
+                v-if="app.coverUrl && !appCoverFailed(app.id)"
+                :src="app.coverUrl"
+                :alt="t('ui.browser_stream.picker.cover_alt', { name: app.name })"
+                loading="lazy"
+                @error="markAppCoverFailed(app.id)"
+              />
+              <span v-else class="app-picker__artwork-fallback" aria-hidden="true">
+                <UiIcon name="gamepad" :size="34" />
+              </span>
+              <span v-if="appSelected(app.id)" class="app-picker__selected-mark">
+                <UiIcon name="check" :size="16" />
+              </span>
+            </span>
+            <span class="app-picker__copy">
+              <strong>{{ app.name }}</strong>
+            </span>
+          </button>
+        </div>
+
+        <p v-if="!launchableApps.length" class="app-picker__empty">
+          {{ t('webrtc.no_applications_hint') }}
+        </p>
+        <p v-else-if="!filteredLaunchableApps.length" class="app-picker__empty">
+          {{ t('webrtc.no_applications_match', { query: appSearch.trim() }) }}
+        </p>
+      </template>
+    </section>
+
     <section class="stream-stage panel" aria-labelledby="browser-stream-stage-title">
       <div class="panel__heading stream-stage__heading">
         <div>
@@ -631,7 +1130,10 @@ onBeforeUnmount(() => {
       <div
         ref="streamSurface"
         class="stream-surface"
-        :class="{ 'stream-surface--interactive': inputReady }"
+        :class="{
+          'stream-surface--interactive': inputReady,
+          'stream-surface--pseudo-fullscreen': pseudoFullscreen,
+        }"
         tabindex="0"
         :aria-label="t('ui.browser_stream.stream_surface')"
         @keydown="sendKey($event, 'key_down')"
@@ -644,7 +1146,16 @@ onBeforeUnmount(() => {
         @blur="releaseForwardedInput"
         @wheel="sendWheel"
       >
-        <video ref="videoEl" autoplay playsinline disablepictureinpicture />
+        <video ref="videoEl" autoplay muted playsinline disablepictureinpicture />
+        <audio ref="audioEl" autoplay hidden />
+        <AppButton
+          v-if="pseudoFullscreen"
+          class="stream-surface__exit-fullscreen"
+          icon="x"
+          :label="t('_common.close')"
+          variant="secondary"
+          @click.stop="exitPseudoFullscreen"
+        />
         <div v-if="!isConnected && !connectionPending" class="stream-surface__empty">
           <span class="stream-surface__empty-icon" aria-hidden="true"
             ><UiIcon name="play" :size="28"
@@ -665,22 +1176,30 @@ onBeforeUnmount(() => {
           icon="stop"
           :label="t('ui.browser_stream.cancel')"
           variant="secondary"
-          @click="disconnect"
+          @click="disconnect()"
         />
         <AppButton
           v-else-if="!isConnected"
           icon="play"
-          :label="t('ui.browser_stream.start')"
+          :label="primaryActionLabel"
           variant="primary"
           :disabled="startDisabled"
-          @click="connect"
+          @click="requestPrimaryAction"
         />
         <AppButton
           v-else
           icon="stop"
           :label="t('ui.browser_stream.disconnect')"
           variant="danger"
-          @click="disconnect"
+          @click="disconnect()"
+        />
+        <AppButton
+          v-if="!isConnected && !connectionPending && hasRunningSession"
+          icon="stop"
+          :label="t('webrtc.terminate')"
+          variant="danger"
+          :disabled="sessionActionPending"
+          @click="requestTerminate"
         />
         <AppButton
           icon="external-link"
@@ -714,25 +1233,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <form class="stream-form" @submit.prevent="connect">
-          <label class="vs-field" for="browser-stream-app">
-            <span class="vs-field__label">{{ t('ui.browser_stream.settings.application') }}</span>
-            <select
-              id="browser-stream-app"
-              v-model="form.appId"
-              class="vs-select"
-              :disabled="connectionPending || isConnected"
-            >
-              <option value="">{{ t('ui.browser_stream.desktop') }}</option>
-              <option v-for="app in launchableApps" :key="app.id" :value="String(app.id)">
-                {{ app.name }}
-              </option>
-            </select>
-            <span class="vs-field__help">{{
-              t('ui.browser_stream.settings.application_help')
-            }}</span>
-          </label>
-
+        <form class="stream-form" @submit.prevent="requestPrimaryAction">
           <fieldset class="stream-form__group" :disabled="connectionPending || isConnected">
             <legend>{{ t('ui.browser_stream.settings.video') }}</legend>
             <label class="vs-field" for="browser-stream-codec">
@@ -898,6 +1399,19 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </div>
+
+    <ConfirmDialog
+      v-model:open="terminateOpen"
+      :title="t('webrtc.terminate_confirm_title')"
+      :description="terminateDescription"
+      :confirm-label="terminateConfirmLabel"
+      :cancel-label="t('_common.cancel')"
+      tone="danger"
+      :busy="sessionActionPending"
+      :busy-label="terminateConfirmLabel"
+      :close-on-confirm="false"
+      @confirm="confirmTerminate"
+    />
   </div>
 </template>
 
@@ -905,6 +1419,149 @@ onBeforeUnmount(() => {
 .browser-stream-page {
   display: grid;
   gap: var(--vs-space-24);
+}
+
+.app-picker {
+  display: grid;
+  gap: var(--vs-space-16);
+}
+
+.app-picker__heading {
+  align-items: end;
+  margin-bottom: 0;
+}
+
+.app-picker__search {
+  position: relative;
+  display: flex;
+  min-width: min(22rem, 100%);
+  align-items: center;
+}
+
+.app-picker__search > .vs-icon {
+  position: absolute;
+  left: var(--vs-space-12);
+  z-index: 1;
+  color: var(--vs-color-text-muted);
+  pointer-events: none;
+}
+
+.app-picker__search .vs-input {
+  width: 100%;
+  padding-left: 2.35rem;
+}
+
+.app-picker__grid {
+  display: grid;
+  max-height: 34rem;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-2);
+  overflow-y: auto;
+}
+
+.app-picker__card {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  padding: 0;
+  overflow: hidden;
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+  color: var(--vs-color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--vs-motion-duration-control) var(--vs-motion-easing-standard),
+    transform var(--vs-motion-duration-control) var(--vs-motion-easing-standard);
+}
+
+.app-picker__card:hover:not(:disabled),
+.app-picker__card:focus-visible,
+.app-picker__card--selected {
+  border-color: var(--vs-color-accent-default);
+}
+
+.app-picker__card:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.app-picker__card--selected {
+  box-shadow: inset 0 0 0 var(--vs-border-width) var(--vs-color-accent-default);
+}
+
+.app-picker__card:disabled {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.app-picker__artwork {
+  position: relative;
+  display: grid;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  place-items: stretch;
+  background: var(--vs-color-bg-subtle);
+}
+
+.app-picker__artwork img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.app-picker__artwork--desktop,
+.app-picker__artwork-fallback {
+  place-items: center;
+  color: var(--vs-color-text-muted);
+}
+
+.app-picker__artwork--desktop {
+  background:
+    radial-gradient(
+      circle at 50% 30%,
+      color-mix(in srgb, var(--vs-color-accent-default) 24%, transparent),
+      transparent 55%
+    ),
+    var(--vs-color-bg-subtle);
+}
+
+.app-picker__selected-mark {
+  position: absolute;
+  top: var(--vs-space-8);
+  right: var(--vs-space-8);
+  display: grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  place-items: center;
+  border-radius: var(--vs-radius-pill);
+  background: var(--vs-color-accent-default);
+  color: var(--vs-color-text-on-accent);
+  box-shadow: 0 0 0 2px var(--vs-color-bg-surface);
+}
+
+.app-picker__copy {
+  display: grid;
+  gap: var(--vs-space-2);
+  padding: var(--vs-space-12);
+}
+
+.app-picker__copy strong {
+  overflow: hidden;
+  font-size: var(--vs-type-size-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-picker__copy small,
+.app-picker__empty {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
+.app-picker__empty {
+  margin: 0;
 }
 
 .stream-stage {
@@ -934,6 +1591,7 @@ onBeforeUnmount(() => {
 
 .stream-surface--interactive {
   cursor: none;
+  touch-action: none;
 }
 
 .stream-surface video {
@@ -942,6 +1600,48 @@ onBeforeUnmount(() => {
   height: 100%;
   max-height: 42rem;
   object-fit: contain;
+}
+
+.stream-surface:fullscreen,
+.stream-surface:-webkit-full-screen,
+.stream-surface--pseudo-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+}
+
+.stream-surface--pseudo-fullscreen {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+}
+
+.stream-surface:fullscreen video,
+.stream-surface:-webkit-full-screen video,
+.stream-surface--pseudo-fullscreen video,
+.stream-surface video:fullscreen,
+.stream-surface video:-webkit-full-screen {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+
+.stream-surface__exit-fullscreen {
+  position: absolute;
+  z-index: 1;
+  top: max(var(--vs-space-12), env(safe-area-inset-top));
+  right: max(var(--vs-space-12), env(safe-area-inset-right));
+  opacity: 0.78;
+}
+
+.stream-surface__exit-fullscreen:hover,
+.stream-surface__exit-fullscreen:focus-visible {
+  opacity: 1;
 }
 
 .stream-surface__empty {
@@ -1122,6 +1822,18 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 767px) {
+  .app-picker__heading {
+    align-items: stretch;
+  }
+
+  .app-picker__search {
+    min-width: 0;
+  }
+
+  .app-picker__grid {
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+  }
+
   .stream-surface {
     min-height: 15rem;
   }

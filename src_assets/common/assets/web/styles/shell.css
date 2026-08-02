@@ -222,13 +222,24 @@
 }
 
 .app-shell--collapsed .theme-picker {
+  box-sizing: border-box;
+  width: 100%;
   grid-template-columns: 1fr;
   justify-items: stretch;
+  overflow: hidden;
   padding-inline: 0;
 }
 
 .app-shell--collapsed .theme-picker > svg {
   display: none;
+}
+
+.app-shell--collapsed .theme-picker__select {
+  width: 40px;
+  justify-self: center;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .boot-screen {

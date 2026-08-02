@@ -555,13 +555,15 @@ export class BrowserWebRtcSession {
       };
       connection.ontrack = (event) => {
         if (!this.isActiveGeneration(generation)) return;
-        const stream = event.streams[0] ?? remoteStream;
+        const stream = remoteStream ?? event.streams[0];
         if (!stream) return;
         this.remoteStream = stream;
-        for (const track of stream.getTracks()) {
-          if (track.kind === event.track.kind) stream.removeTrack(track);
+        if (remoteStream) {
+          for (const track of stream.getTracks()) {
+            if (track.kind === event.track.kind) stream.removeTrack(track);
+          }
+          stream.addTrack(event.track);
         }
-        stream.addTrack(event.track);
         callbacks.onRemoteStream?.(stream);
       };
       connection.onicecandidate = (event) => {

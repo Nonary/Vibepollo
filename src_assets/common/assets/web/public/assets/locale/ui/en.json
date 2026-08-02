@@ -829,6 +829,10 @@
       "host_not_ready": "Browser streaming is not ready yet",
       "input_ready": "Input forwarding is ready",
       "input_unavailable": "Input forwarding is unavailable",
+      "picker": {
+        "cover_alt": "Box art for {name}",
+        "desktop_detail": "Stream the host desktop"
+      },
       "ready_to_start": "Ready to stream in this browser",
       "ready_to_start_detail": "Choose an application and video settings, then start the browser stream.",
       "resume_playback": "Play stream",
