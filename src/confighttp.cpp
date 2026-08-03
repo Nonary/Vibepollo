@@ -5712,6 +5712,7 @@ namespace confighttp {
     // passes through the existing authentication and CSRF gates.
     server.resource["^/(assets|images)/.+$"]["GET"] = getWebAsset;
     server.resource["^/v2/(assets|images)/.+$"]["GET"] = getWebAsset;
+    server.resource["^/v2/[^/]+\\.webmanifest$"]["GET"] = getWebAsset;
     server.default_resource["GET"] = getWebUi;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
