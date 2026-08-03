@@ -14,7 +14,31 @@
           </n-button>
         </div>
       </template>
-      <div class="min-h-[160px]">
+      <div class="min-h-[160px] space-y-4">
+        <form class="flex flex-col sm:flex-row gap-2" @submit.prevent="emit('search')">
+          <n-input
+            :value="searchQuery"
+            clearable
+            :disabled="coverBusy"
+            :placeholder="$t('apps.cover_search_placeholder')"
+            @update:value="(value) => emit('update:searchQuery', value)"
+          />
+          <n-button
+            attr-type="submit"
+            type="primary"
+            strong
+            :loading="coverSearching"
+            :disabled="coverBusy || !searchQuery.trim()"
+          >
+            <i class="fas fa-search" /> {{ $t('apps.cover_search_action') }}
+          </n-button>
+        </form>
+        <n-alert v-if="playniteManaged" type="warning" :show-icon="true">
+          {{ $t('apps.playnite_cover_replace_warning') }}
+        </n-alert>
+        <n-alert v-if="coverError" type="error" :show-icon="true">
+          {{ coverError }}
+        </n-alert>
         <div v-if="coverSearching" class="flex items-center justify-center py-10">
           <n-spin size="large">{{ $t('_common.loading') }}</n-spin>
         </div>
@@ -53,7 +77,7 @@
 
 <script setup lang="ts">
 import { toRefs } from 'vue';
-import { NModal, NCard, NButton, NSpin } from 'naive-ui';
+import { NAlert, NButton, NCard, NInput, NModal, NSpin } from 'naive-ui';
 
 export interface CoverCandidate {
   name: string;
@@ -67,12 +91,25 @@ const rawProps = defineProps<{
   coverSearching: boolean;
   coverBusy: boolean;
   coverCandidates: CoverCandidate[];
+  searchQuery: string;
+  playniteManaged: boolean;
+  coverError: string;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void;
+  (e: 'update:searchQuery', value: string): void;
+  (e: 'search'): void;
   (e: 'pick', cover: CoverCandidate): void;
 }>();
 
-const { visible, coverSearching, coverBusy, coverCandidates } = toRefs(rawProps);
+const {
+  visible,
+  coverSearching,
+  coverBusy,
+  coverCandidates,
+  searchQuery,
+  playniteManaged,
+  coverError,
+} = toRefs(rawProps);
 </script>

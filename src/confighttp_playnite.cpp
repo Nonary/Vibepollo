@@ -34,6 +34,7 @@
   // local includes
   #include "config_playnite.h"
   #include "confighttp.h"
+  #include "httpcommon.h"
   #include "logging.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
@@ -409,6 +410,52 @@ namespace confighttp {
     bool ok = platf::playnite::force_sync();
     out["status"] = ok;
     send_response(response, out);
+  }
+
+  void postPlayniteCover(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    try {
+      std::stringstream stream;
+      stream << request->content.rdbuf();
+      const auto input = nlohmann::json::parse(stream);
+      const auto playnite_id = input.value("playnite_id", "");
+      const auto cover_key = input.value("cover_key", "");
+      if (playnite_id.empty() || cover_key.empty()) {
+        bad_request(response, request, "Playnite game ID and cover key are required");
+        return;
+      }
+
+      const auto cover_path = platf::appdata() / "covers" / (http::url_escape(cover_key) + ".png");
+      std::error_code error;
+      if (!std::filesystem::is_regular_file(cover_path, error) || error) {
+        bad_request(response, request, "Uploaded cover was not found");
+        return;
+      }
+      if (!platf::playnite::set_game_cover(playnite_id, cover_path.generic_string())) {
+        bad_request(response, request, "Playnite did not confirm the cover metadata update");
+        return;
+      }
+      if (!platf::playnite::force_sync()) {
+        bad_request(response, request, "Playnite did not confirm a refreshed metadata snapshot");
+        return;
+      }
+
+      const nlohmann::json output {
+        {"status", true},
+        {"path", cover_path.generic_string()}
+      };
+      send_response(response, output);
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "SetPlayniteCover: " << e.what();
+      bad_request(response, request, e.what());
+    }
   }
 
   void postPlayniteLaunch(resp_https_t response, req_https_t request) {

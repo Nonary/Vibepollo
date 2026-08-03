@@ -30,6 +30,22 @@
         "unavailable": "Cover preview unavailable",
         "unavailableLabel": "{name} cover unavailable"
       },
+      "coverPicker": {
+        "action": "Find cover",
+        "description": "Choose artwork from the matching IGDB results.",
+        "empty": "No matching covers were found. Try adjusting the application name.",
+        "errorTitle": "Cover selection unavailable",
+        "playniteTitle": "This changes Playnite metadata",
+        "playniteUpdateError": "Vibepollo downloaded the cover but could not replace this game's cover metadata in Playnite.",
+        "playniteWarning": "Choosing a cover here replaces this game's cover metadata in Playnite.",
+        "searchAction": "Search",
+        "searchError": "Vibepollo could not search for cover artwork.",
+        "searchLabel": "Search for cover artwork",
+        "searchPlaceholder": "Search for a game cover",
+        "select": "Use the {name} cover",
+        "title": "Choose cover artwork",
+        "uploadError": "Vibepollo could not download and prepare that cover."
+      },
       "delete": {
         "action": "Delete application",
         "busy": "Deleting",
@@ -113,7 +129,9 @@
           "label": "Client icon path"
         },
         "imagePath": {
-          "label": "Cover image path"
+          "help": "Enter a local PNG path or find matching cover artwork online.",
+          "label": "Cover image path",
+          "placeholder": "C:/path/to/cover.png"
         },
         "limiterFix": {
           "description": "Apply the application-specific limiter workaround.",

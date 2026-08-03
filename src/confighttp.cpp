@@ -541,6 +541,7 @@ namespace confighttp {
   void getPlayniteGames(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void getPlayniteCategories(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteForceSync(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
+  void postPlayniteCover(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   void postPlayniteLaunch(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
   // Helper to keep confighttp.cpp free of Playnite details
   void enhance_app_with_playnite_cover(nlohmann::json &input_tree);
@@ -1466,8 +1467,8 @@ namespace confighttp {
       headers.emplace("Content-Type", std::string {content_type});
       headers.emplace("Cache-Control", cache_immutable ? "public, max-age=31536000, immutable" : "no-cache");
       headers.emplace("Content-Security-Policy",
-                      "default-src 'self'; base-uri 'self'; connect-src 'self' wss:; font-src 'self'; "
-                      "form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; media-src 'self' blob:; "
+                      "default-src 'self'; base-uri 'self'; connect-src 'self' https://raw.githubusercontent.com wss:; font-src 'self'; "
+                      "form-action 'self'; frame-ancestors 'none'; img-src 'self' https://images.igdb.com data: blob:; media-src 'self' blob:; "
                       "object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:");
       headers.emplace("Referrer-Policy", "no-referrer");
       headers.emplace("X-Content-Type-Options", "nosniff");
@@ -5835,6 +5836,7 @@ namespace confighttp {
     register_api_route("^/api/playnite/games$", "GET", getPlayniteGames);
     register_api_route("^/api/playnite/categories$", "GET", getPlayniteCategories);
     register_api_route("^/api/playnite/force_sync$", "POST", postPlayniteForceSync);
+    register_blocking_api_route("^/api/playnite/cover$", "POST", postPlayniteCover);
     register_api_route("^/api/playnite/launch$", "POST", postPlayniteLaunch);
     // Export logs bundle (Windows only)
     register_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);

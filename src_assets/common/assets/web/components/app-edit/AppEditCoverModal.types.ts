@@ -1,6 +1,4 @@
-/**
- * Public data contract formerly shared by the cover-search modal.
- */
+/** Public data contract shared by cover search and selection. */
 export interface CoverCandidate {
   name: string;
   key: string;

@@ -393,6 +393,43 @@ namespace platf::playnite {
       return stats.success;
     }
 
+    bool set_game_cover(const std::string &playnite_id, const std::string &image_path) {
+      const auto request_id = "cover-" + std::to_string(++command_request_counter_);
+      nlohmann::json request;
+      request["type"] = "command";
+      request["command"] = "set-cover";
+      request["requestId"] = request_id;
+      request["id"] = playnite_id;
+      request["path"] = image_path;
+      {
+        std::scoped_lock lock(command_result_mutex_);
+        pending_command_requests_.insert(request_id);
+      }
+      if (!send_cmd_json_line(request.dump())) {
+        std::scoped_lock lock(command_result_mutex_);
+        pending_command_requests_.erase(request_id);
+        return false;
+      }
+
+      std::unique_lock lock(command_result_mutex_);
+      const bool received = command_result_cv_.wait_for(lock, kCommandResultWait, [&]() {
+        return command_results_.contains(request_id);
+      });
+      if (!received) {
+        pending_command_requests_.erase(request_id);
+        BOOST_LOG(warning) << "Playnite: timed out waiting for set-cover result";
+        return false;
+      }
+      const bool success = command_results_[request_id];
+      if (!success) {
+        BOOST_LOG(warning) << "Playnite: set-cover failed: " << command_errors_[request_id];
+      }
+      command_results_.erase(request_id);
+      command_errors_.erase(request_id);
+      pending_command_requests_.erase(request_id);
+      return success;
+    }
+
     void snapshot_games(std::vector<platf::playnite::Game> &out) {
       std::scoped_lock lk(mutex_);
       out = last_games_;
@@ -829,6 +866,25 @@ namespace platf::playnite {
           line << " auto_sync disabled";
         }
         BOOST_LOG(info) << line.str();
+      } else if (msg.type == MT::CommandResult) {
+        if (msg.command_name != "set-cover") {
+          BOOST_LOG(warning) << "Playnite: ignoring result for unexpected command '" << msg.command_name << "'";
+          return;
+        }
+        if (msg.command_request_id.empty()) {
+          BOOST_LOG(warning) << "Playnite: command result omitted its request ID";
+          return;
+        }
+        {
+          std::scoped_lock lock(command_result_mutex_);
+          if (!pending_command_requests_.contains(msg.command_request_id)) {
+            BOOST_LOG(debug) << "Playnite: ignoring late command result for request '" << msg.command_request_id << "'";
+            return;
+          }
+          command_results_[msg.command_request_id] = msg.command_success;
+          command_errors_[msg.command_request_id] = msg.command_error;
+        }
+        command_result_cv_.notify_all();
       } else if (msg.type == MT::Status) {
         BOOST_LOG(debug) << "Playnite: status '" << msg.status_name
                          << "' id='" << msg.status_game_id
@@ -992,6 +1048,12 @@ namespace platf::playnite {
     bool snapshot_markers_supported_ = false;  // Plugin sends snapshotStart/snapshotComplete (reset per connection)
     uint64_t snapshot_generation_ = 0;  // Incremented on every completed snapshot
     std::condition_variable snapshot_cv_;  // Signals snapshot completion (paired with mutex_)
+    std::atomic<uint64_t> command_request_counter_ {0};
+    std::mutex command_result_mutex_;
+    std::condition_variable command_result_cv_;
+    std::unordered_set<std::string> pending_command_requests_;
+    std::unordered_map<std::string, bool> command_results_;
+    std::unordered_map<std::string, std::string> command_errors_;
     std::unordered_set<std::string> game_ids_;  // Track unique IDs during accumulation
     std::vector<platf::playnite::Category> last_categories_;  // Last known categories (id+name)
     SnapshotProgress snapshot_progress_;
@@ -1004,6 +1066,7 @@ namespace platf::playnite {
     static constexpr auto kInactivityCheckInterval = std::chrono::seconds(5);
     // How long a manual sync waits for a requested library snapshot to complete
     static constexpr auto kManualSyncSnapshotWait = std::chrono::seconds(10);
+    static constexpr auto kCommandResultWait = std::chrono::seconds(10);
 
     std::atomic<bool> api_started_ {false};  // True if client was started for API (not session)
     std::atomic<bool> session_active_ {false};  // True if a game session is active (overrides API timeout)
@@ -1551,6 +1614,18 @@ namespace platf::playnite {
     }
     inst->ensure_started_for_api();
     return inst->trigger_sync(wait_for_snapshot);
+  }
+
+  bool set_game_cover(const std::string &playnite_id, const std::string &image_path) {
+    if (playnite_id.empty() || image_path.empty() || !is_plugin_installed()) {
+      return false;
+    }
+    auto inst = g_instance.load(std::memory_order_acquire);
+    if (!inst) {
+      return false;
+    }
+    inst->ensure_started_for_api();
+    return inst->set_game_cover(playnite_id, image_path);
   }
 
   bool get_cover_png_for_playnite_game(const std::string &playnite_id, std::string &out_path) {

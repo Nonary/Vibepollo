@@ -482,9 +482,13 @@
 
       <AppEditCoverModal
         v-model:visible="showCoverModal"
+        v-model:search-query="coverSearchQuery"
         :cover-searching="coverSearching"
         :cover-busy="coverBusy"
         :cover-candidates="coverCandidates"
+        :playnite-managed="isPlayniteManaged"
+        :cover-error="coverError"
+        @search="runCoverSearch"
         @pick="useCover"
       />
 
@@ -1777,11 +1781,13 @@ function addState() {
 const saving = ref(false);
 const showDeleteConfirm = ref(false);
 
-// Cover finder state (disabled for Playnite-managed apps)
+// Cover finder state
 const showCoverModal = ref(false);
 const coverSearching = ref(false);
 const coverBusy = ref(false);
 const coverCandidates = ref<CoverCandidate[]>([]);
+const coverSearchQuery = ref('');
+const coverError = ref('');
 
 function getSearchBucket(name: string) {
   const prefix = (name || '')
@@ -1834,12 +1840,22 @@ async function searchCovers(name: string): Promise<CoverCandidate[]> {
 }
 
 async function openCoverFinder() {
-  if (isPlayniteManaged.value) return;
+  coverSearchQuery.value = String(form.value.name || '');
   coverCandidates.value = [];
+  coverError.value = '';
   showCoverModal.value = true;
+  await runCoverSearch();
+}
+
+async function runCoverSearch() {
+  if (coverSearching.value || !coverSearchQuery.value.trim()) return;
   coverSearching.value = true;
+  coverError.value = '';
   try {
-    coverCandidates.value = await searchCovers(String(form.value.name || ''));
+    coverCandidates.value = await searchCovers(coverSearchQuery.value.trim());
+  } catch {
+    coverCandidates.value = [];
+    coverError.value = t('apps.cover_search_error');
   } finally {
     coverSearching.value = false;
   }
@@ -1848,6 +1864,7 @@ async function openCoverFinder() {
 async function useCover(cover: CoverCandidate) {
   if (!cover || coverBusy.value) return;
   coverBusy.value = true;
+  coverError.value = '';
   try {
     const r = await http.post(
       './api/covers/upload',
@@ -1855,9 +1872,21 @@ async function useCover(cover: CoverCandidate) {
       { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
     );
     if (r.status >= 200 && r.status < 300 && r.data && r.data.path) {
+      if (isPlayniteManaged.value) {
+        const playniteResult = await http.post(
+          '/api/playnite/cover',
+          { playnite_id: form.value.playniteId, cover_key: cover.key },
+          { headers: { 'Content-Type': 'application/json' }, validateStatus: () => true },
+        );
+        if (playniteResult.status < 200 || playniteResult.status >= 300) {
+          throw new Error('playnite-cover-update-failed');
+        }
+      }
       form.value.imagePath = String(r.data.path || '');
       showCoverModal.value = false;
     }
+  } catch {
+    coverError.value = t('apps.cover_update_error');
   } finally {
     coverBusy.value = false;
   }

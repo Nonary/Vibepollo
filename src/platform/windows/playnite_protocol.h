@@ -21,7 +21,8 @@ namespace platf::playnite {
     Games,  ///< Message contains a list of games.
     Status,  ///< Message contains a status update for a specific game / session.
     SnapshotStart,  ///< A full library snapshot (plugins/categories/games batches) begins.
-    SnapshotComplete  ///< The library snapshot is fully delivered.
+    SnapshotComplete,  ///< The library snapshot is fully delivered.
+    CommandResult  ///< Result of a command sent from Sunshine to Playnite.
   };
 
   /**
@@ -78,6 +79,10 @@ namespace platf::playnite {
     std::string status_game_id;  ///< Associated game id.
     std::string status_install_dir;  ///< Install directory provided by status update.
     std::string status_exe;  ///< Executable path from status update.
+    std::string command_name;  ///< Command associated with a command-result message.
+    std::string command_request_id;  ///< Correlation ID for a command-result message.
+    bool command_success = false;  ///< Whether the connector completed the command.
+    std::string command_error;  ///< Optional connector error detail.
   };
 
   /**

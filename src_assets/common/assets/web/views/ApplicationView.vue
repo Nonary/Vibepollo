@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
 import { ApiError, apiGet, apiPost } from '@/api/client';
+import AppEditCoverModal from '@/components/app-edit/AppEditCoverModal.vue';
+import type { CoverCandidate } from '@/components/app-edit/AppEditCoverModal.types';
 import {
   AppButton,
   ConfirmDialog,
@@ -25,6 +27,7 @@ import {
   saveApp,
   type AppRecord,
 } from '@/services/apps';
+import { searchCovers, updatePlayniteCover, uploadCover } from '@/services/covers';
 import {
   settingsCategories,
   settingsDefaults,
@@ -232,6 +235,13 @@ const initialSnapshot = ref('');
 const sourceApp = ref<AppRecord | null>(null);
 const commandWasArray = ref(false);
 const coverFailed = ref(false);
+const selectedCoverPreview = ref('');
+const coverPickerOpen = ref(false);
+const coverSearching = ref(false);
+const coverBusy = ref(false);
+const coverCandidates = ref<CoverCandidate[]>([]);
+const coverError = ref('');
+const coverSearchQuery = ref('');
 const deleteOpen = ref(false);
 const deleteError = ref('');
 const errors = reactive<Record<string, string>>({});
@@ -1062,6 +1072,7 @@ const isDirty = computed(
 );
 const errorMessages = computed(() => Object.values(errors));
 const sourceCoverUrl = computed(() => (sourceApp.value ? appCoverUrl(sourceApp.value) : ''));
+const editorCoverUrl = computed(() => selectedCoverPreview.value || sourceCoverUrl.value);
 
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
@@ -1267,6 +1278,8 @@ function hydrate(app: AppRecord): void {
     advancedJson: jsonText(unknown),
   } satisfies EditorForm);
   coverFailed.value = false;
+  selectedCoverPreview.value = '';
+  coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
   cancelPlayniteClose();
@@ -1288,6 +1301,8 @@ function hydrateNew(): void {
   sourceApp.value = null;
   commandWasArray.value = false;
   coverFailed.value = true;
+  selectedCoverPreview.value = '';
+  coverPickerOpen.value = false;
   clearErrors();
   initialSnapshot.value = JSON.stringify(form);
   cancelPlayniteClose();
@@ -1506,9 +1521,58 @@ function selectPlayniteGame(game: PlayniteGame): void {
   form.cmd = '';
   form.workingDir = '';
   form.imagePath = '';
+  selectedCoverPreview.value = '';
+  coverPickerOpen.value = false;
   form.playniteIconPath = '';
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
+}
+
+async function openCoverPicker(): Promise<void> {
+  if (!form.name.trim() || coverSearching.value) return;
+  coverSearchQuery.value = form.name;
+  coverCandidates.value = [];
+  coverError.value = '';
+  coverPickerOpen.value = true;
+  await runCoverSearch();
+}
+
+async function runCoverSearch(): Promise<void> {
+  if (!coverSearchQuery.value.trim() || coverSearching.value) return;
+  coverSearching.value = true;
+  coverError.value = '';
+  try {
+    coverCandidates.value = await searchCovers(coverSearchQuery.value);
+  } catch {
+    coverCandidates.value = [];
+    coverError.value = t('ui.application.coverPicker.searchError');
+  } finally {
+    coverSearching.value = false;
+  }
+}
+
+async function chooseCover(cover: CoverCandidate): Promise<void> {
+  if (coverBusy.value) return;
+  coverError.value = '';
+  coverBusy.value = true;
+  try {
+    const imagePath = await uploadCover(cover);
+    if (isPlayniteLinked.value) {
+      await updatePlayniteCover(form.playniteId, cover);
+    }
+    form.imagePath = imagePath;
+    selectedCoverPreview.value = cover.url;
+    coverFailed.value = false;
+    coverPickerOpen.value = false;
+  } catch {
+    coverError.value = t(
+      isPlayniteLinked.value
+        ? 'ui.application.coverPicker.playniteUpdateError'
+        : 'ui.application.coverPicker.uploadError',
+    );
+  } finally {
+    coverBusy.value = false;
+  }
 }
 
 function useCustomApplication(): void {
@@ -2293,16 +2357,16 @@ onBeforeUnmount(() => {
         </div>
         <div
           class="editor-group editor-execution-layout"
-          :class="{ 'editor-execution-layout--simple': isNew && !sourceCoverUrl }"
+          :class="{ 'editor-execution-layout--simple': isNew && !editorCoverUrl }"
         >
           <div
-            v-if="!isNew || sourceCoverUrl"
+            v-if="!isNew || editorCoverUrl"
             class="editor-artwork"
-            :class="{ 'editor-artwork--empty': coverFailed || !sourceCoverUrl }"
+            :class="{ 'editor-artwork--empty': coverFailed || !editorCoverUrl }"
           >
             <img
-              v-if="sourceCoverUrl && !coverFailed"
-              :src="sourceCoverUrl"
+              v-if="editorCoverUrl && !coverFailed"
+              :src="editorCoverUrl"
               :alt="
                 t('ui.application.cover.alt', {
                   name: form.name || t('ui.application.page.fallbackTitle'),
@@ -2358,6 +2422,41 @@ onBeforeUnmount(() => {
                 type="text"
               />
             </label>
+
+            <div class="vs-field editor-field editor-field--full">
+              <label v-if="!isPlayniteLinked" class="vs-field__label" for="app-image-path">
+                {{ t('ui.application.fields.imagePath.label') }}
+              </label>
+              <span v-else class="vs-field__label">
+                {{ t('ui.application.fields.imagePath.label') }}
+              </span>
+              <div class="editor-cover-control">
+                <input
+                  v-if="!isPlayniteLinked"
+                  id="app-image-path"
+                  v-model="form.imagePath"
+                  class="vs-input vs-monospace"
+                  type="text"
+                  :placeholder="t('ui.application.fields.imagePath.placeholder')"
+                />
+                <AppButton
+                  variant="secondary"
+                  icon="search"
+                  :label="t('ui.application.coverPicker.action')"
+                  :disabled="!form.name.trim()"
+                  @click="openCoverPicker"
+                />
+              </div>
+              <span class="vs-field__helper">
+                {{
+                  t(
+                    isPlayniteLinked
+                      ? 'ui.application.coverPicker.playniteWarning'
+                      : 'ui.application.fields.imagePath.help',
+                  )
+                }}
+              </span>
+            </div>
 
             <InlineAlert
               v-if="isPlayniteLinked"
@@ -3029,6 +3128,18 @@ onBeforeUnmount(() => {
       </div>
     </form>
 
+    <AppEditCoverModal
+      v-model:open="coverPickerOpen"
+      v-model:query="coverSearchQuery"
+      :searching="coverSearching"
+      :busy="coverBusy"
+      :candidates="coverCandidates"
+      :error="coverError"
+      :playnite-managed="isPlayniteLinked"
+      @search="runCoverSearch"
+      @pick="chooseCover"
+    />
+
     <ConfirmDialog
       v-model:open="deleteOpen"
       :title="
@@ -3128,6 +3239,7 @@ onBeforeUnmount(() => {
 }
 
 .editor-name-control,
+.editor-cover-control,
 .editor-playnite-link,
 .framegen-health__heading,
 .framegen-health__row-title,
@@ -3140,9 +3252,14 @@ onBeforeUnmount(() => {
   gap: var(--vs-space-8);
 }
 
-.editor-name-control .vs-input {
+.editor-name-control .vs-input,
+.editor-cover-control .vs-input {
   min-inline-size: 0;
   flex: 1;
+}
+
+.editor-cover-control {
+  gap: var(--vs-space-8);
 }
 
 .editor-playnite-picker {
@@ -3928,6 +4045,7 @@ onBeforeUnmount(() => {
   .editor-danger,
   .editor-save-bar,
   .editor-name-control,
+  .editor-cover-control,
   .framegen-health__heading,
   .rtx-hdr__calibration-heading {
     align-items: stretch;
@@ -3937,6 +4055,7 @@ onBeforeUnmount(() => {
   .editor-section__heading--actions .vs-button,
   .editor-danger .vs-button,
   .editor-name-control .vs-button,
+  .editor-cover-control .vs-button,
   .framegen-health__heading .vs-button {
     align-self: flex-start;
   }

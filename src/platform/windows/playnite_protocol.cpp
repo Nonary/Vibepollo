@@ -122,6 +122,12 @@ namespace platf::playnite {
         m.type = MessageType::SnapshotStart;
       } else if (type == "snapshotComplete") {
         m.type = MessageType::SnapshotComplete;
+      } else if (type == "commandResult") {
+        m.type = MessageType::CommandResult;
+        m.command_name = j.value("command", "");
+        m.command_request_id = j.value("requestId", "");
+        m.command_success = j.value("success", false);
+        m.command_error = j.value("error", "");
       } else if (type == "status") {
         m.type = MessageType::Status;
         const auto &st = j.value("status", json::object());

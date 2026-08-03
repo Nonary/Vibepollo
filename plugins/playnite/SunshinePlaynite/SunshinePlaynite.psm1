@@ -584,19 +584,140 @@ public static class SunshinePlayniteUIBridgeV2
 }
 catch { Write-Log "Failed to load SunshinePlayniteUIBridgeV2: $($_.Exception.Message)" }
 
+try {
+  if (-not ([System.Management.Automation.PSTypeName]'SunshinePlayniteMetadataBridgeV1').Type) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Collections;
+using System.IO;
+using System.Reflection;
+using System.Windows.Threading;
+
+public static class SunshinePlayniteMetadataBridgeV1
+{
+    public static Dispatcher Dispatcher;
+    public static object Api;
+
+    public static void Init(Dispatcher dispatcher, object api)
+    {
+        Dispatcher = dispatcher;
+        Api = api;
+    }
+
+    private static MethodInfo FindMethod(object target, string name, int parameterCount)
+    {
+        if (target == null) return null;
+        foreach (var method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (method.Name == name && method.GetParameters().Length == parameterCount) return method;
+        }
+        return null;
+    }
+
+    private static MethodInfo FindCompatibleSingleArgumentMethod(object target, string name, object argument)
+    {
+        if (target == null || argument == null) return null;
+        foreach (var method in target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+        {
+            var parameters = method.GetParameters();
+            if (method.Name == name && parameters.Length == 1 && parameters[0].ParameterType.IsInstanceOfType(argument)) return method;
+        }
+        return null;
+    }
+
+    private static bool SetGameCoverByGuidString(string guidString, string sourcePath)
+    {
+        Guid gameId;
+        if (!Guid.TryParse(guidString, out gameId) || string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath)) return false;
+        var api = Api;
+        if (api == null) return false;
+
+        var databaseProperty = api.GetType().GetProperty("Database");
+        var database = databaseProperty != null ? databaseProperty.GetValue(api, null) : null;
+        if (database == null) return false;
+        var gamesProperty = database.GetType().GetProperty("Games");
+        var games = gamesProperty != null ? gamesProperty.GetValue(database, null) : null;
+        var enumerable = games as IEnumerable;
+        if (games == null || enumerable == null) return false;
+
+        object game = null;
+        foreach (var candidate in enumerable)
+        {
+            if (candidate == null) continue;
+            var idProperty = candidate.GetType().GetProperty("Id");
+            var value = idProperty != null ? idProperty.GetValue(candidate, null) : null;
+            if (value is Guid && ((Guid)value).Equals(gameId))
+            {
+                game = candidate;
+                break;
+            }
+        }
+        if (game == null) return false;
+
+        var addFile = FindMethod(database, "AddFile", 2);
+        var update = FindCompatibleSingleArgumentMethod(games, "Update", game);
+        var coverProperty = game.GetType().GetProperty("CoverImage");
+        if (addFile == null || update == null || coverProperty == null || !coverProperty.CanWrite) return false;
+
+        string importedPath = null;
+        var previousPath = coverProperty.GetValue(game, null) as string;
+        try
+        {
+            importedPath = addFile.Invoke(database, new object[] { sourcePath, gameId }) as string;
+            if (string.IsNullOrWhiteSpace(importedPath)) return false;
+            coverProperty.SetValue(game, importedPath, null);
+            update.Invoke(games, new object[] { game });
+            return true;
+        }
+        catch
+        {
+            try { coverProperty.SetValue(game, previousPath, null); } catch { }
+            if (!string.IsNullOrWhiteSpace(importedPath))
+            {
+                try
+                {
+                    var removeFile = FindMethod(database, "RemoveFile", 1);
+                    if (removeFile != null) removeFile.Invoke(database, new object[] { importedPath });
+                }
+                catch { }
+            }
+            return false;
+        }
+    }
+
+    public static bool SetGameCoverByGuidStringOnUIThread(string guidString, string sourcePath)
+    {
+        var dispatcher = Dispatcher;
+        if (dispatcher != null && !dispatcher.CheckAccess())
+        {
+            return dispatcher.Invoke(new Func<bool>(() => SetGameCoverByGuidString(guidString, sourcePath)));
+        }
+        return SetGameCoverByGuidString(guidString, sourcePath);
+    }
+}
+"@ -ReferencedAssemblies @('WindowsBase')
+    Write-Log "Loaded SunshinePlayniteMetadataBridgeV1"
+  }
+}
+catch { Write-Log "Failed to load SunshinePlayniteMetadataBridgeV1: $($_.Exception.Message)" }
+
 function Initialize-PlayniteUIBridgeV2FromLegacy {
   # A script-extension update can import this module in a background runspace
   # after the original UIBridge has already been initialized in Playnite's UI
   # runspace. Reuse those process-wide references so the new bridge can launch
   # games without requiring a Playnite restart.
   try {
-    if ([SunshinePlayniteUIBridgeV2]::Api) { return }
+    if ([SunshinePlayniteUIBridgeV2]::Api) {
+      [SunshinePlayniteMetadataBridgeV1]::Init([SunshinePlayniteUIBridgeV2]::Dispatcher, [SunshinePlayniteUIBridgeV2]::Api)
+      return
+    }
     $legacyType = ([System.Management.Automation.PSTypeName]'UIBridge').Type
     if (-not $legacyType) { return }
     $legacyDispatcher = $legacyType.GetField('Dispatcher').GetValue($null)
     $legacyApi = $legacyType.GetField('Api').GetValue($null)
     if (-not $legacyDispatcher -or -not $legacyApi) { return }
     [SunshinePlayniteUIBridgeV2]::Init($legacyDispatcher, $legacyApi)
+    [SunshinePlayniteMetadataBridgeV1]::Init($legacyDispatcher, $legacyApi)
     Write-Log 'Initialized SunshinePlayniteUIBridgeV2 from the legacy bridge'
   } catch {
     Write-DebugLog "Could not initialize SunshinePlayniteUIBridgeV2 from the legacy bridge: $($_.Exception.Message)"
@@ -1589,6 +1710,28 @@ function Start-ConnectorLoop {
             Write-Log "Library snapshot requested by Sunshine"
             Send-InitialSnapshot
           } catch { Write-Log "Failed to send requested snapshot: $($_.Exception.Message)" }
+        } elseif ($obj.type -eq 'command' -and $obj.command -eq 'set-cover' -and $obj.id -and $obj.path) {
+          $coverUpdated = $false
+          $coverError = ''
+          try {
+            Initialize-PlayniteUIBridgeV2FromLegacy
+            $coverUpdated = [SunshinePlayniteMetadataBridgeV1]::SetGameCoverByGuidStringOnUIThread([string]$obj.id, [string]$obj.path)
+            if (-not $coverUpdated) { throw 'Playnite rejected the cover metadata update' }
+            Write-Log "Replaced Playnite cover metadata for $($obj.id)"
+          } catch {
+            $coverError = [string]$_.Exception.Message
+            Write-Log "Failed to replace Playnite cover metadata: $coverError"
+          }
+          try {
+            $result = @{
+              type = 'commandResult'
+              command = 'set-cover'
+              requestId = [string]$obj.requestId
+              success = [bool]$coverUpdated
+              error = $coverError
+            } | ConvertTo-Json -Compress
+            Send-JsonMessage -Json $result
+          } catch { Write-Log "Failed to send cover update result: $($_.Exception.Message)" }
         } else {
           try { Write-DebugLog ("Connector loop: unhandled message type={0} cmd={1}" -f ([string]$obj.type), ([string]$obj.command)) } catch {}
         }
@@ -1625,6 +1768,7 @@ function OnApplicationStarted() {
         try { $dispatcher = [System.Windows.Threading.Dispatcher]::CurrentDispatcher } catch {}
       }
       [SunshinePlayniteUIBridgeV2]::Init($dispatcher, $PlayniteApi)
+      [SunshinePlayniteMetadataBridgeV1]::Init($dispatcher, $PlayniteApi)
       $hasDisp = ([bool][SunshinePlayniteUIBridgeV2]::Dispatcher)
       $hasApi = ([bool][SunshinePlayniteUIBridgeV2]::Api)
       Write-Log ("SunshinePlayniteUIBridgeV2 initialized: Dispatcher={0} Api={1}" -f $hasDisp, $hasApi)

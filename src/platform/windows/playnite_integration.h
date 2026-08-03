@@ -130,6 +130,14 @@ namespace platf::playnite {
   bool force_sync(bool wait_for_snapshot = true);
 
   /**
+   * @brief Replace a Playnite game's cover image with a local image file.
+   * @param[in] playnite_id The Playnite identifier of the game to update.
+   * @param[in] image_path Absolute path to the image Playnite should import.
+   * @return `true` if the Playnite connector confirmed the metadata update.
+   */
+  bool set_game_cover(const std::string &playnite_id, const std::string &image_path);
+
+  /**
    * @brief Retrieve or generate a cover PNG for a Playnite game and return its path.
    * @param[in] playnite_id The Playnite identifier of the game.
    * @param[out] out_path Receives the filesystem path to the PNG on success.

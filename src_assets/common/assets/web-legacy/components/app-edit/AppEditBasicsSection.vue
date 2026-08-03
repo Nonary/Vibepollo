@@ -148,12 +148,13 @@
       </div>
     </div>
 
-    <div v-if="!isPlaynite" class="space-y-1 md:col-span-2">
+    <div class="space-y-1 md:col-span-2">
       <label class="text-xs font-semibold uppercase tracking-wide opacity-70">{{
         $t('apps.image')
       }}</label>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-col sm:flex-row sm:items-center gap-2">
         <n-input
+          v-if="!isPlaynite"
           v-model:value="form.imagePath"
           class="font-mono flex-1"
           placeholder="/path/to/image.png"
@@ -162,7 +163,10 @@
           <i class="fas fa-image" /> {{ $t('apps.find_cover') }}
         </n-button>
       </div>
-      <p class="text-[11px] opacity-60">{{ $t('apps.image_storage_desc') }}</p>
+      <p v-if="isPlaynite" class="text-[11px] text-warning">
+        {{ $t('apps.playnite_cover_replace_warning') }}
+      </p>
+      <p v-else class="text-[11px] opacity-60">{{ $t('apps.image_storage_desc') }}</p>
     </div>
   </div>
 </template>
