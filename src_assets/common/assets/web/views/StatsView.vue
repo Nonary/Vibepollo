@@ -76,6 +76,9 @@ const selectedHistory = ref<SessionSummary | null>(null);
 const detailOpen = ref(false);
 const stopConfirmOpen = ref(false);
 const pendingStop = ref<ActiveVisualSession | null>(null);
+const historyDeleteOpen = ref(false);
+const pendingHistoryDelete = ref<SessionSummary | null>(null);
+const deletingHistoryUuid = ref('');
 const ready = ref(false);
 const refreshing = ref(false);
 const error = ref('');
@@ -274,7 +277,7 @@ async function refresh(silent = false): Promise<void> {
   const requests: Promise<unknown>[] = [
     apiGet<SessionsPayload<RTSPSession>>('/api/rtsp/sessions'),
     apiGet<SessionsPayload<WebRTCSession>>('/api/webrtc/sessions'),
-    apiGet<SessionsPayload<SessionSummary>>('/api/history/sessions?limit=12&offset=0'),
+    apiGet<SessionsPayload<SessionSummary>>('/api/history/sessions?limit=50&offset=0'),
   ];
   if (statsEnabled.value) {
     requests.push(apiGet<HostStatsSnapshot>('/api/host/stats'), apiGet<HostInfo>('/api/host/info'));
@@ -317,6 +320,49 @@ async function refresh(silent = false): Promise<void> {
 function openHistory(history: SessionSummary): void {
   selectedHistory.value = history;
   detailOpen.value = true;
+}
+
+function requestHistoryDelete(history: SessionSummary): void {
+  pendingHistoryDelete.value = history;
+  historyDeleteOpen.value = true;
+}
+
+function clearPendingHistoryDelete(): void {
+  if (!deletingHistoryUuid.value) pendingHistoryDelete.value = null;
+}
+
+async function confirmHistoryDelete(): Promise<void> {
+  const history = pendingHistoryDelete.value;
+  if (!history) return;
+
+  error.value = '';
+  notice.value = '';
+  deletingHistoryUuid.value = history.uuid;
+  try {
+    const response = await apiDelete<MutationResponse>(
+      `/api/history/sessions/${encodeURIComponent(history.uuid)}`,
+    );
+    if (response.status !== true && response.status !== 'true' && response.status !== 'ok') {
+      throw new Error(response.error || t('ui.sessions.error.action'));
+    }
+    sessionHistory.value = sessionHistory.value.filter((row) => row.uuid !== history.uuid);
+    if (selectedHistory.value?.uuid === history.uuid) {
+      detailOpen.value = false;
+      selectedHistory.value = null;
+    }
+    notice.value = t('ui.sessions.notice.history_deleted');
+    historyDeleteOpen.value = false;
+    pendingHistoryDelete.value = null;
+  } catch (cause) {
+    error.value =
+      cause instanceof ApiError
+        ? t('ui.sessions.error.action')
+        : cause instanceof Error
+          ? cause.message
+          : t('ui.sessions.error.action');
+  } finally {
+    deletingHistoryUuid.value = '';
+  }
 }
 
 function requestStop(session: ActiveVisualSession): void {
@@ -679,7 +725,11 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
-    <SessionDetailDialog v-model:open="detailOpen" :summary="selectedHistory" />
+    <SessionDetailDialog
+      v-model:open="detailOpen"
+      :summary="selectedHistory"
+      @delete="requestHistoryDelete"
+    />
     <ConfirmDialog
       v-model:open="stopConfirmOpen"
       :title="stopConfirmTitle"
@@ -691,6 +741,19 @@ onBeforeUnmount(() => {
       :close-on-confirm="false"
       @confirm="confirmStop"
       @cancel="clearPendingStop"
+    />
+    <ConfirmDialog
+      v-model:open="historyDeleteOpen"
+      :title="t('ui.sessions.confirm.delete_title')"
+      :description="t('sessions.history_delete_confirm')"
+      :confirm-label="t('ui.sessions.action.delete_record')"
+      :cancel-label="t('_common.cancel')"
+      tone="danger"
+      :busy="Boolean(pendingHistoryDelete && deletingHistoryUuid === pendingHistoryDelete.uuid)"
+      :busy-label="t('ui.sessions.action.working')"
+      :close-on-confirm="false"
+      @confirm="confirmHistoryDelete"
+      @cancel="clearPendingHistoryDelete"
     />
   </div>
 </template>

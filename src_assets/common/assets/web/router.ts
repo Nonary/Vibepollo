@@ -69,6 +69,10 @@ const router = createRouter({
       meta: { titleKey: 'ui.nav.stats' },
     },
     {
+      path: '/sessions',
+      redirect: '/stats',
+    },
+    {
       path: '/integrations',
       name: 'integrations',
       component: IntegrationsView,

@@ -347,12 +347,14 @@
         "no_displays": "No displays were reported by this host",
         "no_hdr_profiles": "No installed HDR color profiles",
         "physical_display_description": "Choose the host display for this client. Inactive dummy plugs remain available.",
+        "permissions_description": "Choose exactly what this paired Artemis client may do on the host. Removing both View stream and Launch applications blocks streaming while keeping the device paired.",
+        "permissions_title": "Client permissions",
         "prefer_10bit_description": "When this client requests HDR, send a 10-bit SDR stream instead. HEVC or AV1 Main10 is required.",
         "route_target": "Route this client to",
         "sections": {
           "display": "Display routing",
           "hdr": "HDR and presentation",
-          "identity": "Identity and access"
+          "identity": "Identity and permissions"
         },
         "title": "Edit device",
         "use_common_value": "Use common setting: {value}"

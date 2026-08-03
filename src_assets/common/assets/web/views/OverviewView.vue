@@ -385,7 +385,7 @@ onBeforeUnmount(() => {
               <h2 id="host-metrics-title">{{ t('ui.overview.hostLoad.title') }}</h2>
               <p>{{ t('ui.overview.hostLoad.description') }}</p>
             </div>
-            <RouterLink to="/sessions">{{ t('ui.overview.sessions') }}</RouterLink>
+            <RouterLink to="/stats">{{ t('ui.overview.sessions') }}</RouterLink>
           </div>
           <dl v-if="hostStats" class="metric-grid">
             <div>

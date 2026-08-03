@@ -28,8 +28,12 @@ const { locale, t } = useI18n();
 interface PairedDevice {
   name: string;
   uuid: string;
-  enabled: boolean;
   connected: boolean;
+  perm?: number | string;
+  enable_legacy_ordering?: boolean;
+  allow_client_commands?: boolean;
+  do?: Array<{ cmd?: string; elevated?: boolean }>;
+  undo?: Array<{ cmd?: string; elevated?: boolean }>;
   last_seen?: number | string;
   hdr_profile?: string | null;
   display_mode?: string;
@@ -49,7 +53,11 @@ interface ClientsResponse {
 
 interface MutationResponse {
   status?: boolean;
-  enabled_updated?: boolean;
+}
+
+interface ClientCommandEntry {
+  command: string;
+  elevated?: boolean;
 }
 
 interface PendingAction {
@@ -93,10 +101,23 @@ const filteredDevices = computed(() => {
   );
 });
 
+const PERMISSION_VIEW = 0x02000000;
+const PERMISSION_LAUNCH = 0x04000000;
+const PERMISSION_ALL = 0x071f1f00;
+
+function permissionMask(device: PairedDevice): number {
+  const parsed = Number(device.perm ?? 0);
+  return Number.isFinite(parsed) ? parsed & PERMISSION_ALL : 0;
+}
+
+function canViewStream(device: PairedDevice): boolean {
+  return Boolean(permissionMask(device) & (PERMISSION_VIEW | PERMISSION_LAUNCH));
+}
+
 const deviceCounts = computed(() => ({
-  streaming: devices.value.filter((device) => device.connected && device.enabled).length,
-  blocked: devices.value.filter((device) => !device.enabled).length,
-  offline: devices.value.filter((device) => !device.connected && device.enabled).length,
+  streaming: devices.value.filter((device) => device.connected && canViewStream(device)).length,
+  blocked: devices.value.filter((device) => !canViewStream(device)).length,
+  offline: devices.value.filter((device) => !device.connected && canViewStream(device)).length,
 }));
 
 const confirmTitle = computed(() => {
@@ -128,7 +149,19 @@ function cloneDraft(value: ClientDeviceDraft): ClientDeviceDraft {
   return {
     ...value,
     configOverrides: structuredClone(toRaw(value.configOverrides ?? {})),
+    doCommands: structuredClone(toRaw(value.doCommands ?? [])),
+    undoCommands: structuredClone(toRaw(value.undoCommands ?? [])),
   };
+}
+
+function normalizeCommands(value: unknown): ClientCommandEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const command = String((entry as Record<string, unknown>).cmd ?? '').trim();
+    if (!command) return [];
+    return [{ command, elevated: Boolean((entry as Record<string, unknown>).elevated) }];
+  });
 }
 
 function normalizeVirtualMode(value: unknown): ClientDeviceDraft['virtualDisplayMode'] {
@@ -172,7 +205,11 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
 
   return {
     name: device.name,
-    enabled: device.enabled,
+    permissions: permissionMask(device),
+    enableLegacyOrdering: device.enable_legacy_ordering !== false,
+    allowClientCommands: device.allow_client_commands !== false,
+    doCommands: normalizeCommands(device.do),
+    undoCommands: normalizeCommands(device.undo),
     displayMode: device.display_mode ?? '',
     displayOverrideEnabled,
     displaySelection,
@@ -310,7 +347,7 @@ async function loadDevices(silent = false): Promise<void> {
 }
 
 function statusFor(device: PairedDevice): { label: string; tone: StatusTone } {
-  if (!device.enabled) return { label: t('ui.devices.status.blocked'), tone: 'danger' };
+  if (!canViewStream(device)) return { label: t('ui.devices.status.blocked'), tone: 'danger' };
   if (device.connected) return { label: t('ui.devices.status.streaming'), tone: 'success' };
   return { label: t('clients.offline'), tone: 'neutral' };
 }
@@ -376,7 +413,11 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
   const payload: Record<string, unknown> = {
     uuid: device.uuid,
     name: draft.name.trim(),
-    enabled: draft.enabled,
+    perm: draft.permissions & PERMISSION_ALL,
+    enable_legacy_ordering: draft.enableLegacyOrdering,
+    allow_client_commands: draft.allowClientCommands,
+    do: draft.doCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
+    undo: draft.undoCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
     display_mode: draft.displayMode.trim(),
     output_name_override: outputName,
     always_use_virtual_display:
@@ -400,7 +441,9 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
 
 const draftScalarKeys = [
   'name',
-  'enabled',
+  'permissions',
+  'enableLegacyOrdering',
+  'allowClientCommands',
   'displayMode',
   'displayOverrideEnabled',
   'displaySelection',
@@ -492,7 +535,7 @@ async function saveDevice(device: PairedDevice): Promise<void> {
       '/api/clients/update',
       updatePayload(device, saveDraft),
     );
-    if (response.status !== true || response.enabled_updated === false) {
+    if (response.status !== true) {
       throw new Error(t('ui.devices.error.partial_update'));
     }
     drafts.value[device.uuid] = cloneDraft(saveDraft);

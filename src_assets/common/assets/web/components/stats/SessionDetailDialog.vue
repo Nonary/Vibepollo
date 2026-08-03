@@ -18,6 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:open': [value: boolean];
+  delete: [summary: SessionSummary];
 }>();
 
 const { locale, t } = useI18n();
@@ -69,6 +70,10 @@ function latestValue(field: keyof SessionSample, suffix = '%'): string {
 
 function close(): void {
   emit('update:open', false);
+}
+
+function requestDelete(): void {
+  if (props.summary) emit('delete', props.summary);
 }
 
 function onCancel(event: Event): void {
@@ -169,14 +174,24 @@ onBeforeUnmount(() => {
               }}
             </p>
           </div>
-          <AppButton
-            :label="t('_common.close')"
-            :aria-label="t('ui.stats.close_detail')"
-            icon="x"
-            icon-only
-            variant="tertiary"
-            @click="close"
-          />
+          <div class="stats-detail-dialog__actions">
+            <AppButton
+              :label="t('ui.sessions.action.delete_record')"
+              icon="trash"
+              variant="tertiary"
+              size="compact"
+              :disabled="!summary"
+              @click="requestDelete"
+            />
+            <AppButton
+              :label="t('_common.close')"
+              :aria-label="t('ui.stats.close_detail')"
+              icon="x"
+              icon-only
+              variant="tertiary"
+              @click="close"
+            />
+          </div>
         </header>
 
         <div class="stats-detail-dialog__body">
@@ -380,6 +395,12 @@ onBeforeUnmount(() => {
 
 .stats-detail-dialog__eyebrow {
   display: flex;
+  gap: var(--vs-space-8);
+}
+
+.stats-detail-dialog__actions {
+  display: flex;
+  align-items: center;
   gap: var(--vs-space-8);
 }
 

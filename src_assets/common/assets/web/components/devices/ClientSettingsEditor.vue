@@ -15,9 +15,18 @@ export type ClientVirtualDisplayLayout =
   | 'extended_primary_isolated'
   | null;
 
+export interface ClientCommandDraft {
+  command: string;
+  elevated?: boolean;
+}
+
 export interface ClientDeviceDraft {
   name: string;
-  enabled: boolean;
+  permissions: number;
+  enableLegacyOrdering: boolean;
+  allowClientCommands: boolean;
+  doCommands: ClientCommandDraft[];
+  undoCommands: ClientCommandDraft[];
   displayMode: string;
   displayOverrideEnabled: boolean;
   displaySelection: ClientDisplaySelection;
@@ -76,6 +85,8 @@ function cloneDraft(value: ClientDeviceDraft): ClientDeviceDraft {
   return {
     ...value,
     configOverrides: structuredClone(toRaw(value.configOverrides ?? {})),
+    doCommands: structuredClone(toRaw(value.doCommands ?? [])),
+    undoCommands: structuredClone(toRaw(value.undoCommands ?? [])),
   };
 }
 
@@ -120,6 +131,29 @@ const isWindows = computed(() =>
     .toLocaleLowerCase()
     .includes('windows'),
 );
+
+const permissionOptions = [
+  { key: 'list', mask: 0x01000000 },
+  { key: 'view', mask: 0x02000000 },
+  { key: 'launch', mask: 0x04000000 },
+  { key: 'clipboard_set', mask: 0x00010000 },
+  { key: 'clipboard_read', mask: 0x00020000 },
+  { key: 'server_cmd', mask: 0x00100000 },
+  { key: 'input_controller', mask: 0x00000100 },
+  { key: 'input_touch', mask: 0x00000200 },
+  { key: 'input_pen', mask: 0x00000400 },
+  { key: 'input_mouse', mask: 0x00000800 },
+  { key: 'input_kbd', mask: 0x00001000 },
+] as const;
+
+function hasPermission(mask: number): boolean {
+  return Boolean(draft.permissions & mask);
+}
+
+function updatePermission(mask: number, event: Event): void {
+  const enabled = (event.target as HTMLInputElement).checked;
+  draft.permissions = enabled ? draft.permissions | mask : draft.permissions & ~mask;
+}
 
 function normalizeVirtualMode(value: unknown): ClientVirtualDisplayMode {
   const mode = String(value ?? '')
@@ -363,22 +397,21 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
             :disabled="busy"
           />
         </SettingRow>
-        <SettingRow
-          class="client-setting-row--switch"
-          :label="t('ui.devices.editor.allow_stream')"
-          :control-id="`${controlIdPrefix}-enabled`"
-        >
-          <label class="vs-switch">
-            <input
-              :id="`${controlIdPrefix}-enabled`"
-              v-model="draft.enabled"
-              type="checkbox"
-              :disabled="busy"
-            />
-            <span class="vs-switch__track" aria-hidden="true" />
-            <span class="vs-sr-only">{{ t('ui.devices.editor.allow_stream') }}</span>
-          </label>
-        </SettingRow>
+        <fieldset class="client-permissions">
+          <legend>{{ t('ui.devices.editor.permissions_title') }}</legend>
+          <p>{{ t('ui.devices.editor.permissions_description') }}</p>
+          <div class="client-permissions__grid">
+            <label v-for="permission in permissionOptions" :key="permission.key">
+              <input
+                type="checkbox"
+                :checked="hasPermission(permission.mask)"
+                :disabled="busy"
+                @change="updatePermission(permission.mask, $event)"
+              />
+              <span>{{ t(`permissions.${permission.key}`) }}</span>
+            </label>
+          </div>
+        </fieldset>
       </div>
     </section>
 
@@ -835,6 +868,40 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
 .client-settings-section :deep(.client-setting-row--switch .vs-setting-row__control) {
   min-inline-size: 0;
   justify-content: flex-end;
+}
+
+.client-permissions {
+  display: grid;
+  gap: var(--vs-space-12);
+  padding: var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+}
+
+.client-permissions legend {
+  padding-inline: var(--vs-space-4);
+  color: var(--vs-color-text-primary);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.client-permissions p {
+  margin: 0;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.client-permissions__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--vs-space-8) var(--vs-space-16);
+}
+
+.client-permissions__grid label {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-8);
+  min-block-size: 32px;
+  cursor: pointer;
 }
 
 .client-settings-error {
