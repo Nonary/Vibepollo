@@ -353,7 +353,7 @@ onBeforeUnmount(() => {
           </div>
           <a
             class="button button--secondary button--compact"
-            href="https://github.com/Nonary/vibeshine/issues/new/choose"
+            href="https://github.com/Nonary/Vibepollo/issues/new/choose"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
           </div>
           <a
             class="button button--secondary button--compact"
-            href="https://github.com/Nonary/vibeshine/releases/latest"
+            href="https://github.com/Nonary/Vibepollo/releases/latest"
             target="_blank"
             rel="noopener noreferrer"
           >
