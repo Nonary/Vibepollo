@@ -1568,6 +1568,139 @@ namespace platf::dxgi {
 }  // namespace platf::dxgi
 
 namespace platf {
+  namespace {
+    std::vector<dxgi::capture_output_identity_t> enumerate_capture_outputs(
+      const bool log_details,
+      const bool stop_after_first,
+      const std::optional<adapter_id_t> &required_adapter
+    ) {
+      std::vector<dxgi::capture_output_identity_t> outputs;
+
+      HRESULT status;
+
+      if (log_details) {
+        BOOST_LOG(debug) << "Detecting monitors..."sv;
+      }
+
+      // We sync the thread desktop once before we start the enumeration process
+      // to ensure test_dxgi_duplication() returns consistent results for all GPUs
+      // even if the current desktop changes during our enumeration process.
+      // It is critical that we either fully succeed in enumeration or fully fail,
+      // otherwise it can lead to the capture code switching monitors unexpectedly.
+      syncThreadDesktop();
+
+      dxgi::factory1_t factory;
+      status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+        return {};
+      }
+
+      dxgi::adapter_t::pointer adapter_p;
+      for (int x = 0;; ++x) {
+        adapter_p = nullptr;
+        const auto adapter_status = factory->EnumAdapters1(x, &adapter_p);
+        if (adapter_status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(adapter_status) || !adapter_p) {
+          BOOST_LOG(error) << "Failed to enumerate DXGI adapter " << x
+                           << " [0x" << util::hex(adapter_status).to_string_view() << ']';
+          return {};
+        }
+        dxgi::adapter_t adapter {adapter_p};
+        DXGI_ADAPTER_DESC1 adapter_desc {};
+        const auto adapter_desc_status = adapter->GetDesc1(&adapter_desc);
+        if (FAILED(adapter_desc_status)) {
+          BOOST_LOG(error) << "Failed to describe DXGI adapter " << x
+                           << " [0x" << util::hex(adapter_desc_status).to_string_view() << ']';
+          return {};
+        }
+
+        const adapter_id_t adapter_id {
+          .high_part = adapter_desc.AdapterLuid.HighPart,
+          .low_part = adapter_desc.AdapterLuid.LowPart,
+        };
+        if (required_adapter && adapter_id != *required_adapter) {
+          continue;
+        }
+
+        if (log_details) {
+          BOOST_LOG(debug)
+            << std::endl
+            << "====== ADAPTER ====="sv << std::endl
+            << "Device Name      : "sv << utf_utils::to_utf8(adapter_desc.Description) << std::endl
+            << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
+            << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
+            << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
+            << "Device Sys Mem   : "sv << adapter_desc.DedicatedSystemMemory / 1048576 << " MiB"sv << std::endl
+            << "Share Sys Mem    : "sv << adapter_desc.SharedSystemMemory / 1048576 << " MiB"sv << std::endl
+            << std::endl
+            << "    ====== OUTPUT ======"sv << std::endl;
+        }
+
+        dxgi::output_t::pointer output_p;
+        for (int y = 0;; ++y) {
+          output_p = nullptr;
+          const auto output_status = adapter->EnumOutputs(y, &output_p);
+          if (output_status == DXGI_ERROR_NOT_FOUND) {
+            break;
+          }
+          if (FAILED(output_status) || !output_p) {
+            BOOST_LOG(error) << "Failed to enumerate DXGI output " << y
+                             << " [0x" << util::hex(output_status).to_string_view() << ']';
+            return {};
+          }
+          dxgi::output_t output {output_p};
+
+          DXGI_OUTPUT_DESC desc {};
+          const auto output_desc_status = output->GetDesc(&desc);
+          if (FAILED(output_desc_status)) {
+            BOOST_LOG(error) << "Failed to describe DXGI output " << y
+                             << " [0x" << util::hex(output_desc_status).to_string_view() << ']';
+            return {};
+          }
+
+          auto device_name = utf_utils::to_utf8(desc.DeviceName);
+
+          if (log_details) {
+            const auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+            const auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+            BOOST_LOG(debug)
+              << "    Output Name       : "sv << device_name << std::endl
+              << "    AttachedToDesktop : "sv << (desc.AttachedToDesktop ? "yes"sv : "no"sv) << std::endl
+              << "    Resolution        : "sv << width << 'x' << height << std::endl
+              << std::endl;
+          }
+
+          // Don't include the display in the list if we can't actually capture it.
+          if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
+            outputs.emplace_back(dxgi::capture_output_identity_t {
+              .output_name = std::move(device_name),
+              .adapter_id = adapter_id,
+            });
+            if (stop_after_first) {
+              return outputs;
+            }
+          }
+        }
+      }
+
+      return outputs;
+    }
+  }  // namespace
+
+  std::optional<dxgi::capture_output_identity_t> dxgi::resolve_automatic_capture_output(
+    mem_type_e,
+    const std::optional<adapter_id_t> &required_adapter
+  ) {
+    auto outputs = enumerate_capture_outputs(false, true, required_adapter);
+    if (outputs.empty()) {
+      return std::nullopt;
+    }
+    return std::move(outputs.front());
+  }
+
   std::shared_ptr<display_t> display(
     mem_type_e hwdevice_type,
     const std::string &display_name,
@@ -1620,65 +1753,9 @@ namespace platf {
   std::vector<std::string> display_names(mem_type_e) {
     std::vector<std::string> display_names;
 
-    HRESULT status;
-
-    BOOST_LOG(debug) << "Detecting monitors..."sv;
-
-    // We sync the thread desktop once before we start the enumeration process
-    // to ensure test_dxgi_duplication() returns consistent results for all GPUs
-    // even if the current desktop changes during our enumeration process.
-    // It is critical that we either fully succeed in enumeration or fully fail,
-    // otherwise it can lead to the capture code switching monitors unexpectedly.
-    syncThreadDesktop();
-
-    dxgi::factory1_t factory;
-    status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
-    if (FAILED(status)) {
-      BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
-      return {};
-    }
-
-    dxgi::adapter_t::pointer adapter_p;
-    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
-      dxgi::adapter_t adapter {adapter_p};
-      DXGI_ADAPTER_DESC1 adapter_desc;
-      adapter->GetDesc1(&adapter_desc);
-
-      BOOST_LOG(debug)
-        << std::endl
-        << "====== ADAPTER ====="sv << std::endl
-        << "Device Name      : "sv << utf_utils::to_utf8(adapter_desc.Description) << std::endl
-        << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
-        << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
-        << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
-        << "Device Sys Mem   : "sv << adapter_desc.DedicatedSystemMemory / 1048576 << " MiB"sv << std::endl
-        << "Share Sys Mem    : "sv << adapter_desc.SharedSystemMemory / 1048576 << " MiB"sv << std::endl
-        << std::endl
-        << "    ====== OUTPUT ======"sv << std::endl;
-
-      dxgi::output_t::pointer output_p {};
-      for (int y = 0; adapter->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
-        dxgi::output_t output {output_p};
-
-        DXGI_OUTPUT_DESC desc;
-        output->GetDesc(&desc);
-
-        auto device_name = utf_utils::to_utf8(desc.DeviceName);
-
-        auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-        auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-
-        BOOST_LOG(debug)
-          << "    Output Name       : "sv << device_name << std::endl
-          << "    AttachedToDesktop : "sv << (desc.AttachedToDesktop ? "yes"sv : "no"sv) << std::endl
-          << "    Resolution        : "sv << width << 'x' << height << std::endl
-          << std::endl;
-
-        // Don't include the display in the list if we can't actually capture it
-        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
-          display_names.emplace_back(std::move(device_name));
-        }
-      }
+    auto capture_outputs = enumerate_capture_outputs(true, false, std::nullopt);
+    for (auto &capture_output : capture_outputs) {
+      display_names.emplace_back(std::move(capture_output.output_name));
     }
 
     return display_names;

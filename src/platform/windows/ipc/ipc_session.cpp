@@ -589,7 +589,7 @@ namespace platf::dxgi {
     }
 
     luid_out = desc.AdapterLuid;
-    set_last_wgc_adapter_luid(luid_out, config::get_active_output_name());
+    set_last_wgc_adapter_luid(luid_out, _display_name);
     return true;
   }
 

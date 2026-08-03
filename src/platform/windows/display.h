@@ -57,6 +57,21 @@ namespace platf::dxgi {
     std::string output_name;
   };
 
+  struct capture_output_identity_t {
+    std::string output_name;
+    adapter_id_t adapter_id;
+  };
+
+  /**
+   * Resolve Automatic display selection to the first output normal capture
+   * enumeration would use, together with the exact adapter that owns it. When
+   * required_adapter is present, consider outputs on that adapter only.
+   */
+  std::optional<capture_output_identity_t> resolve_automatic_capture_output(
+    mem_type_e hwdevice_type,
+    const std::optional<adapter_id_t> &required_adapter = std::nullopt
+  );
+
   void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name = {});
   std::optional<LUID> get_last_wgc_adapter_luid();
   std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity();

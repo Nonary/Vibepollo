@@ -286,8 +286,11 @@ namespace nvhttp {
         }
       });
 
-      const auto publish = [](video::advertised_encoder_capabilities_t caps, const std::string_view reason) {
-        const bool probe_complete = video::has_successful_encoder_probe();
+      const auto publish = [](
+                             video::advertised_encoder_capabilities_t caps,
+                             const bool probe_complete,
+                             const std::string_view reason
+                           ) {
         BOOST_LOG(debug)
           << "HTTP encoder capabilities: probe_complete=" << probe_complete
           << ", hdr="
@@ -301,8 +304,10 @@ namespace nvhttp {
         };
       };
 
-      if (video::has_successful_encoder_probe()) {
-        return publish(video::advertised_encoder_capabilities(false), "matching-cache");
+      bool probe_complete = false;
+      auto caps = video::advertised_encoder_capabilities(false, &probe_complete);
+      if (probe_complete) {
+        return publish(std::move(caps), true, "matching-cache");
       }
 
       // Session starts publish their pending owner while holding this gate.
@@ -314,28 +319,29 @@ namespace nvhttp {
       );
       if (!lifecycle_lock.owns_lock()) {
         BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while stream lifecycle work owns the gate.";
-        return publish(video::advertised_encoder_capabilities(false), "lifecycle-gate");
+        return publish(std::move(caps), false, "lifecycle-gate");
       }
-      if (video::has_successful_encoder_probe()) {
-        return publish(video::advertised_encoder_capabilities(false), "matching-cache-after-gate");
+      caps = video::advertised_encoder_capabilities(false, &probe_complete);
+      if (probe_complete) {
+        return publish(std::move(caps), true, "matching-cache-after-gate");
       }
 
       if (has_active_or_stopping_stream_session()) {
         BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
-        return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
+        return publish(std::move(caps), false, "active-or-stopping-session");
       }
 
       auto ensure_result = VDISPLAY::ensure_display(idle_virtual_required_adapter);
       if (!ensure_result.ready_for_probe()) {
         BOOST_LOG(info)
           << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
-        return publish(video::advertised_encoder_capabilities(false), "target-pending");
+        return publish(std::move(caps), false, "target-pending");
       }
-      const auto caps = video::advertised_encoder_capabilities(true);
+      caps = video::advertised_encoder_capabilities(true, &probe_complete);
       if (ensure_result.tracks_temporary_for_probe) {
         BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
       }
-      return publish(caps, "idle-probe");
+      return publish(std::move(caps), probe_complete, "idle-probe");
     }
 
     void cleanup_virtual_display_state() {

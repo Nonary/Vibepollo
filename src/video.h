@@ -425,7 +425,10 @@ namespace video {
     std::array<bool, 3> yuv444_for_codec {};
   };
 
-  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative = false);
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(
+    bool probe_before_negative = false,
+    bool *probe_complete = nullptr
+  );
 
 #ifdef _WIN32
   // Bridge the interval between selecting a virtual-display render adapter and
@@ -449,7 +452,8 @@ namespace video {
     encoder_t &encoder,
     bool expect_failure,
     const std::optional<platf::adapter_id_t> &required_adapter = std::nullopt,
-    std::optional<platf::adapter_id_t> *actual_adapter = nullptr
+    std::optional<platf::adapter_id_t> *actual_adapter = nullptr,
+    const std::string &probe_display_name = std::string {}
   );
 
   /**

@@ -423,6 +423,12 @@ namespace video {
       bool resolved = false;
     };
 
+    struct probe_target_t {
+      std::string display_name;
+      std::optional<platf::adapter_id_t> required_adapter;
+      probe_adapter_identity_t adapter_identity;
+    };
+
     struct EncoderProbeCacheState {
       std::mutex mutex;
       std::optional<probe_cache_key_t> cache_key;
@@ -433,6 +439,7 @@ namespace video {
       bool hevc_hdr_supported = false;
       bool av1_passed = false;
       bool av1_hdr_supported = false;
+      advertised_encoder_capabilities_t advertised_capabilities;
 #ifdef _WIN32
       std::optional<LUID> pending_virtual_display_adapter_hint;
       std::uint64_t pending_virtual_display_adapter_hint_lease = 0;
@@ -468,41 +475,17 @@ namespace video {
       return adapter_cache_identity(adapter_id_from_luid(luid));
     }
 
-    std::optional<platf::adapter_id_t> required_probe_adapter() {
-      {
-        auto &state = encoder_probe_cache_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        if (state.pending_virtual_display_adapter_hint) {
-          return adapter_id_from_luid(*state.pending_virtual_display_adapter_hint);
-        }
-      }
-
-      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
-        const auto configured_adapter = platf::resolve_adapter(
-          config::video.adapter_name,
-          config::video.adapter_pnp_id
-        );
-        if (configured_adapter) {
-          return adapter_id_from_luid(*configured_adapter.luid);
-        }
-      }
-
-      return std::nullopt;
-    }
-#else
-    std::optional<platf::adapter_id_t> required_probe_adapter() {
-      return std::nullopt;
-    }
 #endif
 
-    probe_adapter_identity_t resolve_probe_adapter_identity() {
+    probe_target_t resolve_probe_target() {
 #ifdef _WIN32
       const auto active_output = config::get_active_output_name();
+      const auto mapped_output = display_device::map_output_name(active_output);
       const auto current_wgc_identity = [&]() -> std::optional<platf::dxgi::wgc_adapter_identity_t> {
         const auto identity = platf::dxgi::get_last_wgc_adapter_identity();
         if (!identity ||
-            active_output.empty() ||
-            !boost::iequals(identity->output_name, active_output)) {
+            mapped_output.empty() ||
+            !boost::iequals(identity->output_name, mapped_output)) {
           return std::nullopt;
         }
         return identity;
@@ -519,13 +502,13 @@ namespace video {
           state.pending_virtual_display_adapter_hint_ready_for_verification;
       }
       if (pending_virtual_display_adapter_hint) {
+        const auto pending_adapter = adapter_id_from_luid(*pending_virtual_display_adapter_hint);
         std::optional<LUID> observed_adapter;
         std::string_view observed_source;
         if (current_wgc_identity) {
           observed_adapter = current_wgc_identity->luid;
           observed_source = "wgc";
         } else {
-          const auto mapped_output = display_device::map_output_name(active_output);
           const auto output_adapter = platf::resolve_output_adapter(mapped_output);
           if (output_adapter) {
             observed_adapter = *output_adapter.luid;
@@ -542,24 +525,48 @@ namespace video {
             *pending_virtual_display_adapter_hint,
             *observed_adapter
           );
-          return probe_adapter_identity_t {
-            .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
-            .source =
-              "pending-virtual-display-lookup-" + std::string(observed_source) +
-              (matches_pending ? "-match" : "-mismatch"),
-            .resolved = true,
+          std::string probe_output;
+          if (matches_pending) {
+            probe_output = mapped_output;
+          } else if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
+                       platf::mem_type_e::dxgi,
+                       pending_adapter
+                     )) {
+            probe_output = scoped_output->output_name;
+          }
+          return probe_target_t {
+            .display_name = std::move(probe_output),
+            .required_adapter = pending_adapter,
+            .adapter_identity = probe_adapter_identity_t {
+              .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+              .source =
+                "pending-virtual-display-lookup-" + std::string(observed_source) +
+                (matches_pending ? "-match" : "-mismatch"),
+              .resolved = true,
+            },
           };
         }
 
         // This identity is an expectation for cache lookup only. Successful
         // producers replace it with the adapter returned by the initialized
         // probe display before update_probe_cache() is called.
-        return probe_adapter_identity_t {
-          .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
-          .source = pending_virtual_display_adapter_hint_ready_for_verification ?
-                      "pending-virtual-display-adapter-awaiting-observation" :
-                      "pending-virtual-display-adapter-before-publication",
-          .resolved = true,
+        std::string probe_output;
+        if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
+              platf::mem_type_e::dxgi,
+              pending_adapter
+            )) {
+          probe_output = scoped_output->output_name;
+        }
+        return probe_target_t {
+          .display_name = std::move(probe_output),
+          .required_adapter = pending_adapter,
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+            .source = pending_virtual_display_adapter_hint_ready_for_verification ?
+                        "pending-virtual-display-adapter-awaiting-observation" :
+                        "pending-virtual-display-adapter-before-publication",
+            .resolved = true,
+          },
         };
       }
 
@@ -572,71 +579,127 @@ namespace video {
           config::video.adapter_pnp_id
         );
         if (configured_adapter) {
+          const auto configured_adapter_id = adapter_id_from_luid(*configured_adapter.luid);
           if (current_wgc_identity &&
               !platf::adapter_luid_equal(*configured_adapter.luid, current_wgc_identity->luid)) {
-            return probe_adapter_identity_t {
-              .identity =
-                "configured-actual-mismatch=" +
-                luid_cache_identity(*configured_adapter.luid) + ':' +
-                luid_cache_identity(current_wgc_identity->luid),
-              .source = "configured-wgc-mismatch",
-              .resolved = false,
+            return probe_target_t {
+              .display_name = mapped_output,
+              .required_adapter = configured_adapter_id,
+              .adapter_identity = probe_adapter_identity_t {
+                .identity =
+                  "configured-actual-mismatch=" +
+                  luid_cache_identity(*configured_adapter.luid) + ':' +
+                  luid_cache_identity(current_wgc_identity->luid),
+                .source = "configured-wgc-mismatch",
+                .resolved = false,
+              },
             };
           }
-          return probe_adapter_identity_t {
-            .identity = luid_cache_identity(*configured_adapter.luid),
-            .source = current_wgc_identity ?
-                        "configured-adapter-confirmed-by-wgc" :
-                        "configured-adapter",
-            .resolved = true,
+          std::string probe_output = mapped_output;
+          if (probe_output.empty()) {
+            if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
+                  platf::mem_type_e::dxgi,
+                  configured_adapter_id
+                )) {
+              probe_output = scoped_output->output_name;
+            }
+          }
+          return probe_target_t {
+            .display_name = std::move(probe_output),
+            .required_adapter = configured_adapter_id,
+            .adapter_identity = probe_adapter_identity_t {
+              .identity = luid_cache_identity(*configured_adapter.luid),
+              .source = current_wgc_identity ?
+                          "configured-adapter-confirmed-by-wgc" :
+                          "configured-adapter",
+              .resolved = true,
+            },
           };
         }
-        return probe_adapter_identity_t {
-          .identity = "unresolved-configured-adapter=" +
-                      std::string(platf::adapter_resolution_status_name(configured_adapter.status)),
-          .source = "configured-adapter-unresolved",
-          .resolved = false,
+        return probe_target_t {
+          .display_name = mapped_output,
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = "unresolved-configured-adapter=" +
+                        std::string(platf::adapter_resolution_status_name(configured_adapter.status)),
+            .source = "configured-adapter-unresolved",
+            .resolved = false,
+          },
         };
       }
 
       if (current_wgc_identity) {
-        return probe_adapter_identity_t {
-          .identity = luid_cache_identity(current_wgc_identity->luid),
-          .source = "current-output-wgc",
-          .resolved = true,
+        return probe_target_t {
+          .display_name = mapped_output,
+          .required_adapter = adapter_id_from_luid(current_wgc_identity->luid),
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = luid_cache_identity(current_wgc_identity->luid),
+            .source = "current-output-wgc",
+            .resolved = true,
+          },
         };
       }
 
-      const auto mapped_output = display_device::map_output_name(active_output);
-      const auto output_adapter = platf::resolve_output_adapter(mapped_output);
-      if (output_adapter) {
-        return probe_adapter_identity_t {
-          .identity = luid_cache_identity(*output_adapter.luid),
-          .source = "current-output-dxgi",
-          .resolved = true,
+      if (!mapped_output.empty()) {
+        const auto output_adapter = platf::resolve_output_adapter(mapped_output);
+        if (output_adapter) {
+          return probe_target_t {
+            .display_name = mapped_output,
+            .required_adapter = adapter_id_from_luid(*output_adapter.luid),
+            .adapter_identity = probe_adapter_identity_t {
+              .identity = luid_cache_identity(*output_adapter.luid),
+              .source = "current-output-dxgi",
+              .resolved = true,
+            },
+          };
+        }
+
+        return probe_target_t {
+          .display_name = mapped_output,
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = "unresolved-output-adapter=" +
+                        std::string(platf::adapter_resolution_status_name(output_adapter.status)) +
+                        "|output=" + active_output,
+            .source = "output-adapter-unresolved",
+            .resolved = false,
+          },
         };
       }
 
-      // An unresolved automatic selection must not share a positive result
-      // across output transitions. The output token is used only in this
-      // fail-closed fallback; resolved keys never contain display identity.
-      return probe_adapter_identity_t {
-        .identity = "unresolved-automatic-adapter=" +
-                    std::string(platf::adapter_resolution_status_name(output_adapter.status)) +
-                    "|output=" + active_output,
-        .source = "automatic-adapter-unresolved",
-        .resolved = false,
+      // Materialize Automatic using the same ordered, compatibility-tested
+      // output enumeration used by normal capture. Passing both values into
+      // the probe prevents WGC and DDX from choosing different monitors.
+      const auto automatic_output = platf::dxgi::resolve_automatic_capture_output(platf::mem_type_e::dxgi);
+      if (automatic_output) {
+        return probe_target_t {
+          .display_name = automatic_output->output_name,
+          .required_adapter = automatic_output->adapter_id,
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = adapter_cache_identity(automatic_output->adapter_id),
+            .source = "automatic-output-dxgi",
+            .resolved = true,
+          },
+        };
+      }
+
+      return probe_target_t {
+        .adapter_identity = probe_adapter_identity_t {
+          .identity = "unresolved-automatic-adapter=not-found|output=",
+          .source = "automatic-adapter-unresolved",
+          .resolved = false,
+        },
       };
 #else
-      return probe_adapter_identity_t {
-        .identity = "platform-default",
-        .source = "platform-default",
-        .resolved = true,
+      return probe_target_t {
+        .adapter_identity = probe_adapter_identity_t {
+          .identity = "platform-default",
+          .source = "platform-default",
+          .resolved = true,
+        },
       };
 #endif
     }
 
-    probe_cache_key_t build_probe_cache_key() {
+    probe_cache_key_t build_probe_cache_key(const probe_target_t *probe_target = nullptr) {
       std::ostringstream oss;
       // Keep encoder configuration separate from the exact selected adapter.
       // Output identifiers and the whole-machine GPU inventory are deliberately
@@ -680,7 +743,9 @@ namespace video {
       // though the software encoder would have validated. Re-key so the next
       // probe re-runs and selection can degrade to software as designed.
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
-      auto adapter_identity = resolve_probe_adapter_identity();
+      const auto adapter_identity = probe_target ?
+                                      probe_target->adapter_identity :
+                                      resolve_probe_target().adapter_identity;
       return probe_cache_key_t {
         .encoder_configuration = oss.str(),
         .adapter_identity = adapter_identity.identity,
@@ -715,12 +780,13 @@ namespace video {
 
     void update_probe_cache(
       const probe_cache_key_t &key,
-      bool success,
-      bool hdr_supported,
-      bool hevc_passed,
-      bool hevc_hdr_supported,
-      bool av1_passed,
-      bool av1_hdr_supported
+      const bool success,
+      const bool hdr_supported,
+      const bool hevc_passed,
+      const bool hevc_hdr_supported,
+      const bool av1_passed,
+      const bool av1_hdr_supported,
+      const advertised_encoder_capabilities_t &advertised_capabilities = {}
     ) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
@@ -733,6 +799,7 @@ namespace video {
           state.hevc_hdr_supported = false;
           state.av1_passed = false;
           state.av1_hdr_supported = false;
+          state.advertised_capabilities = {};
           BOOST_LOG(warning)
             << "Encoder probe succeeded but its effective adapter identity is unresolved; "
                "refusing to cache positive capabilities (identity='"
@@ -747,6 +814,7 @@ namespace video {
         state.hevc_hdr_supported = hevc_hdr_supported;
         state.av1_passed = av1_passed;
         state.av1_hdr_supported = av1_hdr_supported;
+        state.advertised_capabilities = advertised_capabilities;
         // Clear failure tracking on success
         state.failure_cache_key.reset();
         state.failure_count = 0;
@@ -758,6 +826,7 @@ namespace video {
         state.hevc_hdr_supported = false;
         state.av1_passed = false;
         state.av1_hdr_supported = false;
+        state.advertised_capabilities = {};
 
         // Track failures, but never permanently lock out future probes.
         if (state.failure_cache_key && *state.failure_cache_key == key) {
@@ -2284,27 +2353,34 @@ namespace video {
   std::mutex encoder_probe_mutex;
 
   namespace {
-    advertised_encoder_capabilities_t current_advertised_capabilities_snapshot() {
-      return advertised_encoder_capabilities_t {
-        .hevc_mode = active_hevc_mode,
-        .av1_mode = active_av1_mode,
-        .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+    struct encoder_probe_status_t {
+      bool attempted = false;
+      bool successful = false;
+      advertised_encoder_capabilities_t advertised_capabilities;
+    };
+
+    encoder_probe_status_t encoder_probe_status_for_key(const probe_cache_key_t &key) {
+      auto &state = encoder_probe_cache_state();
+      std::lock_guard<std::mutex> lock(state.mutex);
+      const bool successful = state.valid && state.cache_key && *state.cache_key == key;
+      return encoder_probe_status_t {
+        .attempted = state.attempted_cache_key && *state.attempted_cache_key == key,
+        .successful = successful,
+        .advertised_capabilities = successful ?
+                                     state.advertised_capabilities :
+                                     advertised_encoder_capabilities_t {},
       };
     }
   }  // namespace
 
   bool has_attempted_encoder_probe() {
     const auto current_key = build_probe_cache_key();
-    auto &state = encoder_probe_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    return state.attempted_cache_key && *state.attempted_cache_key == current_key;
+    return encoder_probe_status_for_key(current_key).attempted;
   }
 
   bool has_successful_encoder_probe() {
     const auto current_key = build_probe_cache_key();
-    auto &state = encoder_probe_cache_state();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    return state.valid && state.cache_key && *state.cache_key == current_key;
+    return encoder_probe_status_for_key(current_key).successful;
   }
 
 #ifdef _WIN32
@@ -2353,15 +2429,24 @@ namespace video {
   }
 #endif
 
-  advertised_encoder_capabilities_t advertised_encoder_capabilities(bool probe_before_negative) {
-    auto caps = current_advertised_capabilities_snapshot();
-    if (probe_before_negative && !has_successful_encoder_probe() && !has_attempted_encoder_probe()) {
+  advertised_encoder_capabilities_t advertised_encoder_capabilities(
+    const bool probe_before_negative,
+    bool *probe_complete
+  ) {
+    auto current_key = build_probe_cache_key();
+    auto probe_status = encoder_probe_status_for_key(current_key);
+    const auto refresh_probe_status = [&]() {
+      current_key = build_probe_cache_key();
+      probe_status = encoder_probe_status_for_key(current_key);
+    };
+
+    if (probe_before_negative && !probe_status.successful && !probe_status.attempted) {
       BOOST_LOG(info) << "Encoder capabilities are unprobed for the current adapter identity; probing encoders now.";
       if (probe_encoders()) {
         BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
       }
-      caps = current_advertised_capabilities_snapshot();
-    } else if (probe_before_negative && !has_successful_encoder_probe() && has_attempted_encoder_probe()) {
+      refresh_probe_status();
+    } else if (probe_before_negative && !probe_status.successful && probe_status.attempted) {
       const auto now = std::chrono::steady_clock::now();
       const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
       const auto last_ns = last_negative_hdr_advertisement_probe_ns.load(std::memory_order_acquire);
@@ -2372,18 +2457,21 @@ namespace video {
         if (probe_encoders()) {
           BOOST_LOG(warning) << "Encoder re-probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
         }
-        caps = current_advertised_capabilities_snapshot();
+        refresh_probe_status();
       }
     }
 
     // Capability globals describe the last successful probe, which may belong
     // to a different adapter key. Never publish those stale positive values
     // when the current identity has not produced a successful probe.
-    if (!has_successful_encoder_probe()) {
-      log_probe_cache_miss(build_probe_cache_key());
+    if (probe_complete) {
+      *probe_complete = probe_status.successful;
+    }
+    if (!probe_status.successful) {
+      log_probe_cache_miss(current_key);
       return {};
     }
-    return caps;
+    return probe_status.advertised_capabilities;
   }
 
   void reset_display(
@@ -5812,16 +5900,12 @@ namespace video {
     encoder_t &encoder,
     const bool expect_failure,
     const std::optional<platf::adapter_id_t> &required_adapter,
-    std::optional<platf::adapter_id_t> *actual_adapter
+    std::optional<platf::adapter_id_t> *actual_adapter,
+    const std::string &probe_display_name
   ) {
     if (actual_adapter) {
       actual_adapter->reset();
     }
-    // During encoder probing, always use the current active display and do not
-    // attempt to select/swap displays based on configured output_name. Display
-    // swaps are now handled externally when a stream starts.
-    const std::string probe_display_name;  // empty selects the current active display
-
     std::shared_ptr<platf::display_t> disp;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
@@ -6048,15 +6132,16 @@ namespace video {
 
   int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
-    const auto required_adapter = required_probe_adapter();
-    const auto cache_key = build_probe_cache_key();
+    const auto probe_target = resolve_probe_target();
+    const auto &required_adapter = probe_target.required_adapter;
+    const auto cache_key = build_probe_cache_key(&probe_target);
     mark_probe_attempted(cache_key);
-    // WGC learns its adapter while a probe is in progress. Record the final
-    // effective key on every exit so a pre-WGC attempt cannot masquerade as an
-    // unattempted post-WGC configuration.
-    auto final_attempt_key_guard = util::fail_guard([]() {
+    // Attempt ownership is frozen with the target selected at probe start.
+    // A topology/configuration change during validation must remain unattempted
+    // under its new key so the next request can probe it immediately.
+    auto final_attempt_key_guard = util::fail_guard([cache_key]() {
       try {
-        mark_probe_attempted(build_probe_cache_key());
+        mark_probe_attempted(cache_key);
       } catch (...) {
         BOOST_LOG(warning) << "Unable to record the final encoder probe adapter key.";
       }
@@ -6074,7 +6159,8 @@ namespace video {
         << "', resolution=" << platf::adapter_resolution_status_name(adapter_resolution.status)
         << ", resolved_name='" << adapter_resolution.description
         << "', resolved_pnp_id='" << adapter_resolution.pnp_id
-        << "', output='" << config::get_active_output_name()
+        << "', configured_output='" << config::get_active_output_name()
+        << "', probe_output='" << probe_target.display_name
         << "', wgc_luid="
         << (wgc_adapter_luid ?
               std::to_string(wgc_adapter_luid->HighPart) + ":" + std::to_string(wgc_adapter_luid->LowPart) :
@@ -6096,6 +6182,15 @@ namespace video {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
     }
+
+#ifdef _WIN32
+    if (required_adapter && probe_target.display_name.empty()) {
+      BOOST_LOG(info)
+        << "Encoder probe deferred because the required adapter has no compatible capture output.";
+      update_probe_cache(cache_key, false, false, false, false, false, false);
+      return -1;
+    }
+#endif
 
     if (!allow_encoder_probing()) {
       // Error already logged
@@ -6136,7 +6231,8 @@ namespace video {
         encoder,
         expect_failure,
         required_adapter,
-        &candidate_probe_adapter
+        &candidate_probe_adapter,
+        probe_target.display_name
       );
     };
     active_hevc_mode = config::video.hevc_mode;
@@ -6341,7 +6437,7 @@ namespace video {
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
     // A pending or configured adapter may select an existing truthful entry,
     // but only the display that performed validation can own a new positive.
-    auto successful_cache_key = build_probe_cache_key();
+    auto successful_cache_key = cache_key;
 #ifdef _WIN32
     if (successful_probe_adapter) {
       successful_cache_key.adapter_identity = adapter_cache_identity(*successful_probe_adapter);
@@ -6361,7 +6457,21 @@ namespace video {
       return -1;
     }
 #endif
-    update_probe_cache(successful_cache_key, true, cache_hdr_supported, hevc_passed, hevc_hdr_supported, av1_passed, av1_hdr_supported);
+    const advertised_encoder_capabilities_t successful_capabilities {
+      .hevc_mode = active_hevc_mode,
+      .av1_mode = active_av1_mode,
+      .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+    };
+    update_probe_cache(
+      successful_cache_key,
+      true,
+      cache_hdr_supported,
+      hevc_passed,
+      hevc_hdr_supported,
+      av1_passed,
+      av1_hdr_supported,
+      successful_capabilities
+    );
     // Publish the new encoder only after the probe has fully succeeded,
     // so concurrent capture threads never observe a null chosen_encoder.
     chosen_encoder = new_encoder;
