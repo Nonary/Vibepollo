@@ -142,7 +142,7 @@ namespace VDISPLAY_SUNSHINE {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
   bool has_retained_ensure_display();
-  ensure_display_result ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
 
   enum class RestartCooldownBehavior {
@@ -7410,15 +7410,32 @@ namespace {
   }
 }  // namespace
 
-VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display() {
+VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
+  const std::optional<LUID> &required_adapter_luid
+) {
   ensure_display_result result;
 
-  if (has_active_physical_display()) {
+  if (!required_adapter_luid && has_active_physical_display()) {
     result.readiness = ensure_display_readiness_e::existing_display;
     return result;
   }
 
-  if (!should_auto_enable_virtual_display()) {
+  if (required_adapter_luid) {
+    const auto configured_adapter = platf::resolve_preferred_render_adapter(
+      config::video.adapter_name,
+      config::video.adapter_pnp_id
+    );
+    if (!configured_adapter ||
+        !platf::adapter_luid_equal(*required_adapter_luid, *configured_adapter.luid)) {
+      BOOST_LOG(error)
+        << "Owned Sunshine encoder-probe display request no longer matches the preferred render adapter.";
+      return result;
+    }
+    if (!isVirtualDisplayDriverInstalled()) {
+      BOOST_LOG(warning) << "Virtual display driver not available for owned encoder probing.";
+      return result;
+    }
+  } else if (!should_auto_enable_virtual_display()) {
     BOOST_LOG(debug) << "No active physical displays and virtual display auto-enable is disabled.";
     return result;
   }

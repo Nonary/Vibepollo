@@ -250,7 +250,7 @@ namespace VDISPLAY {
    * If no active physical displays exist, automatically creates a temporary virtual display.
    * @return Ownership, exact target identity, and readiness for encoder probing.
    */
-  ensure_display_result ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt);
 
   /**
    * @brief Resolve an exact Windows device id to a usable GDI display name.

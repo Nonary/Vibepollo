@@ -534,7 +534,7 @@ namespace VDISPLAY_SUNSHINE {
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
-  ensure_display_result ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
   bool has_retained_ensure_display();
 }  // namespace VDISPLAY_SUNSHINE
@@ -601,7 +601,7 @@ namespace VDISPLAY_SUDOVDA {
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
-  ensure_display_result ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
   bool has_retained_ensure_display();
 }  // namespace VDISPLAY_SUDOVDA
@@ -893,8 +893,10 @@ namespace VDISPLAY {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() : VDISPLAY_SUDOVDA::should_auto_enable_virtual_display();
   }
 
-  ensure_display_result ensure_display() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::ensure_display() : VDISPLAY_SUDOVDA::ensure_display();
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid) {
+    return use_sunshine_driver() ?
+             VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid) :
+             VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid);
   }
 
   std::optional<std::string> resolveUsableDisplayName(const std::string &device_id) {

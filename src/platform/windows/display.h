@@ -193,10 +193,16 @@ namespace platf::dxgi {
       structural_change,
     };
 
-    int init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test = false);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      bool skip_dd_test = false,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
+    std::optional<adapter_id_t> capture_adapter_id() const override;
     output_refresh_e refresh_output_after_nonstructural_change();
 
     factory1_t factory;
@@ -352,7 +358,11 @@ namespace platf::dxgi {
    */
   class display_ddup_ram_t: public display_ram_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
 
@@ -365,7 +375,11 @@ namespace platf::dxgi {
    */
   class display_ddup_vram_t: public display_vram_t {
   public:
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
     capture_e release_snapshot() override;
 
@@ -449,7 +463,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return Instance of the display backend, using WGC IPC if available, or a secure desktop fallback if not.
      */
-    static std::shared_ptr<display_t> create(const ::video::config_t &config, const std::string &display_name);
+    static std::shared_ptr<display_t> create(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Initializes the WGC IPC VRAM display backend.
@@ -458,7 +476,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return 0 on success, negative on failure.
      */
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Captures a snapshot of the display.
@@ -526,7 +548,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return Instance of the display backend.
      */
-    static std::shared_ptr<display_t> create(const ::video::config_t &config, const std::string &display_name);
+    static std::shared_ptr<display_t> create(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Initializes the WGC IPC RAM display backend.
@@ -534,7 +560,11 @@ namespace platf::dxgi {
      * @param display_name Name of the display to capture.
      * @return 0 on success, negative on failure.
      */
-    int init(const ::video::config_t &config, const std::string &display_name);
+    int init(
+      const ::video::config_t &config,
+      const std::string &display_name,
+      const std::optional<LUID> &required_adapter_luid = std::nullopt
+    );
 
     /**
      * @brief Captures a snapshot of the display.

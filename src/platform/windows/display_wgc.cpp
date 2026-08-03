@@ -169,11 +169,19 @@ namespace platf::dxgi {
     }
   }
 
-  int display_wgc_ipc_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
+  int display_wgc_ipc_vram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     _config = config;
     _display_name = display_name;
 
-    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
+    if (display_base_t::init(
+          config,
+          display_name,
+          true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
+          required_adapter_luid)) {
       return -1;
     }
 
@@ -381,19 +389,23 @@ namespace platf::dxgi {
     return complete_img(img_base, true);
   }
 
-  std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(const ::video::config_t &config, const std::string &display_name) {
+  std::shared_ptr<display_t> display_wgc_ipc_vram_t::create(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
       log_wgc_dxgi_fallback_reason("VRAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else {
       // Secure desktop not active, use WGC IPC
       BOOST_LOG(debug) << "Using WGC IPC implementation (VRAM)";
       auto disp = std::make_shared<display_wgc_ipc_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }
@@ -405,13 +417,21 @@ namespace platf::dxgi {
 
   display_wgc_ipc_ram_t::~display_wgc_ipc_ram_t() = default;
 
-  int display_wgc_ipc_ram_t::init(const ::video::config_t &config, const std::string &display_name) {
+  int display_wgc_ipc_ram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     // Save config for later use
     _config = config;
     _display_name = display_name;
 
     // Initialize the base display class
-    if (display_base_t::init(config, display_name, true /* skip_dd_test: WGC doesn't use Desktop Duplication */)) {
+    if (display_base_t::init(
+          config,
+          display_name,
+          true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
+          required_adapter_luid)) {
       return -1;
     }
 
@@ -594,19 +614,23 @@ namespace platf::dxgi {
     return display_ram_t::dummy_img(img_base);
   }
 
-  std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(const ::video::config_t &config, const std::string &display_name) {
+  std::shared_ptr<display_t> display_wgc_ipc_ram_t::create(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
       log_wgc_dxgi_fallback_reason("RAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else {
       // Secure desktop not active, use WGC IPC
       BOOST_LOG(debug) << "Using WGC IPC implementation (RAM)";
       auto disp = std::make_shared<display_wgc_ipc_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }

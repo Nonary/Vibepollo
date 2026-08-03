@@ -833,7 +833,12 @@ namespace platf::dxgi {
     }
   }
 
-  int display_base_t::init(const ::video::config_t &config, const std::string &display_name, bool skip_dd_test) {
+  int display_base_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const bool skip_dd_test,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
     static std::once_flag windows_cpp_once_flag;
 
     std::call_once(windows_cpp_once_flag, []() {
@@ -900,6 +905,13 @@ namespace platf::dxgi {
         return -1;
       }
       selected_adapter_luid = configured_adapter->luid;
+      if (required_adapter_luid &&
+          !platf::adapter_luid_equal(*required_adapter_luid, *configured_adapter->luid)) {
+        BOOST_LOG(error)
+          << "Required encoder-probe adapter does not match configured persistent PnP identity '"
+          << configured_adapter->pnp_id << "'. Capture will not switch adapters.";
+        return -1;
+      }
       if (adapter_luid_override &&
           !platf::adapter_luid_equal(
             *adapter_luid_override,
@@ -912,6 +924,8 @@ namespace platf::dxgi {
       BOOST_LOG(info)
         << "Resolved configured capture adapter '" << configured_adapter->description
         << "' by persistent PnP identity '" << configured_adapter->pnp_id << "'.";
+    } else if (required_adapter_luid) {
+      selected_adapter_luid = required_adapter_luid;
     } else {
       // WGC's runtime handoff is authoritative only when no exact persistent
       // identity is configured. With a PnP identity, the handoff may be stale
@@ -1039,6 +1053,10 @@ namespace platf::dxgi {
                    "has no display attached to the desktop") :
                 "disappeared before capture initialization")
           << ". Capture will not switch adapters.";
+      } else if (required_adapter_luid) {
+        BOOST_LOG(error)
+          << "Required encoder-probe adapter did not provide capture output '"
+          << display_name << "'; probe will not switch adapters.";
       } else if (adapter_luid_override) {
         BOOST_LOG(error)
           << "WGC-selected DXGI adapter did not provide capture output '"
@@ -1284,6 +1302,13 @@ namespace platf::dxgi {
     }
 
     return 0;
+  }
+
+  std::optional<adapter_id_t> display_base_t::capture_adapter_id() const {
+    return adapter_id_t {
+      .high_part = captured_adapter_luid.HighPart,
+      .low_part = captured_adapter_luid.LowPart,
+    };
   }
 
   bool display_base_t::is_hdr() {
@@ -1575,7 +1600,20 @@ namespace platf::dxgi {
 }  // namespace platf::dxgi
 
 namespace platf {
-  std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
+  std::shared_ptr<display_t> display(
+    mem_type_e hwdevice_type,
+    const std::string &display_name,
+    const video::config_t &config,
+    const std::optional<adapter_id_t> &required_adapter
+  ) {
+    std::optional<LUID> required_adapter_luid;
+    if (required_adapter) {
+      required_adapter_luid = LUID {
+        .LowPart = required_adapter->low_part,
+        .HighPart = required_adapter->high_part,
+      };
+    }
+
     const auto &capture_mode = config::video.capture;
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
@@ -1584,26 +1622,26 @@ namespace platf {
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
-        auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name);
+        auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested) {
           return disp;
         }
       }
 
       auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
-        auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name);
+        auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested) {
           return disp;
         }
       }
 
       auto disp = std::make_shared<dxgi::display_ddup_ram_t>();
-      if (!disp->init(config, display_name)) {
+      if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     }

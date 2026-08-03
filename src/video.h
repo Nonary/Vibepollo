@@ -445,7 +445,12 @@ namespace video {
     void *channel_data
   );
 
-  bool validate_encoder(encoder_t &encoder, bool expect_failure);
+  bool validate_encoder(
+    encoder_t &encoder,
+    bool expect_failure,
+    const std::optional<platf::adapter_id_t> &required_adapter = std::nullopt,
+    std::optional<platf::adapter_id_t> *actual_adapter = nullptr
+  );
 
   /**
    * @brief Check if we can allow probing for the encoders.

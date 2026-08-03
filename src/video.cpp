@@ -451,10 +451,47 @@ namespace video {
     }
 
 #ifdef _WIN32
-    std::string luid_cache_identity(const LUID &luid) {
+    platf::adapter_id_t adapter_id_from_luid(const LUID &luid) {
+      return platf::adapter_id_t {
+        .high_part = luid.HighPart,
+        .low_part = luid.LowPart,
+      };
+    }
+
+    std::string adapter_cache_identity(const platf::adapter_id_t &adapter_id) {
       std::ostringstream oss;
-      oss << "luid=" << luid.HighPart << ':' << luid.LowPart;
+      oss << "luid=" << adapter_id.high_part << ':' << adapter_id.low_part;
       return oss.str();
+    }
+
+    std::string luid_cache_identity(const LUID &luid) {
+      return adapter_cache_identity(adapter_id_from_luid(luid));
+    }
+
+    std::optional<platf::adapter_id_t> required_probe_adapter() {
+      {
+        auto &state = encoder_probe_cache_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (state.pending_virtual_display_adapter_hint) {
+          return adapter_id_from_luid(*state.pending_virtual_display_adapter_hint);
+        }
+      }
+
+      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+        const auto configured_adapter = platf::resolve_adapter(
+          config::video.adapter_name,
+          config::video.adapter_pnp_id
+        );
+        if (configured_adapter) {
+          return adapter_id_from_luid(*configured_adapter.luid);
+        }
+      }
+
+      return std::nullopt;
+    }
+#else
+    std::optional<platf::adapter_id_t> required_probe_adapter() {
+      return std::nullopt;
     }
 #endif
 
@@ -496,23 +533,27 @@ namespace video {
           }
         }
 
-        // The GPU actually backing the current output always owns the cache
-        // entry. A pending replacement LUID is only a bridge while Windows has
-        // not exposed any current adapter identity.
+        // A pending virtual-display adapter is a lookup expectation. It may
+        // reuse only a positive entry that was previously produced by an
+        // actual probe on that adapter. The observed output remains diagnostic
+        // here because it may still be the physical display being replaced.
         if (observed_adapter) {
           const bool matches_pending = platf::adapter_luid_equal(
             *pending_virtual_display_adapter_hint,
             *observed_adapter
           );
           return probe_adapter_identity_t {
-            .identity = luid_cache_identity(*observed_adapter),
+            .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
             .source =
-              "pending-virtual-display-actual-" + std::string(observed_source) +
+              "pending-virtual-display-lookup-" + std::string(observed_source) +
               (matches_pending ? "-match" : "-mismatch"),
             .resolved = true,
           };
         }
 
+        // This identity is an expectation for cache lookup only. Successful
+        // producers replace it with the adapter returned by the initialized
+        // probe display before update_probe_cache() is called.
         return probe_adapter_identity_t {
           .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
           .source = pending_virtual_display_adapter_hint_ready_for_verification ?
@@ -2345,7 +2386,13 @@ namespace video {
     return caps;
   }
 
-  void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
+  void reset_display(
+    std::shared_ptr<platf::display_t> &disp,
+    const platf::mem_type_e &type,
+    const std::string &display_name,
+    const config_t &config,
+    const std::optional<platf::adapter_id_t> &required_adapter = std::nullopt
+  ) {
     // After a recent display-helper APPLY (topology change), the display subsystem
     // may need time to settle. Use more retries with progressive delays.
     int max_attempts = 2;
@@ -2370,7 +2417,7 @@ namespace video {
 
     for (int x = 0; x < max_attempts; ++x) {
       disp.reset();
-      disp = platf::display(type, display_name, config);
+      disp = platf::display(type, display_name, config, required_adapter);
       if (disp) {
         break;
       }
@@ -5761,7 +5808,15 @@ namespace video {
   static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
   static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
 
-  bool validate_encoder(encoder_t &encoder, bool expect_failure) {
+  bool validate_encoder(
+    encoder_t &encoder,
+    const bool expect_failure,
+    const std::optional<platf::adapter_id_t> &required_adapter,
+    std::optional<platf::adapter_id_t> *actual_adapter
+  ) {
+    if (actual_adapter) {
+      actual_adapter->reset();
+    }
     // During encoder probing, always use the current active display and do not
     // attempt to select/swap displays based on configured output_name. Display
     // swaps are now handled externally when a stream starts.
@@ -5793,16 +5848,28 @@ namespace video {
 
     // If the encoder isn't supported at all (not even H.264), bail early
     // Try to reuse cached display if same device type
-    if (cached_probe_display && cached_display_type == encoder.platform_formats->dev_type) {
+    const auto cached_adapter = cached_probe_display ? cached_probe_display->capture_adapter_id() : std::nullopt;
+    const bool cached_display_matches_required =
+      !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
+    if (cached_probe_display &&
+        cached_display_type == encoder.platform_formats->dev_type &&
+        cached_display_matches_required) {
       disp = cached_probe_display;
     } else {
-      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect, required_adapter);
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
     }
 
     if (!disp) {
       clear_capabilities();
+      return false;
+    }
+    const auto initial_probe_adapter = disp->capture_adapter_id();
+    if (required_adapter && (!initial_probe_adapter || *initial_probe_adapter != *required_adapter)) {
+      clear_capabilities();
+      BOOST_LOG(error)
+        << "Encoder probe display did not initialize on its required adapter; refusing cross-adapter validation.";
       return false;
     }
     if (!disp->is_codec_supported(encoder.h264.name, config_autoselect)) {
@@ -5910,8 +5977,14 @@ namespace video {
       // current active display without attempting a display swap.
       // Clear the cache since we need a fresh display for HDR testing
       cached_probe_display.reset();
-      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
+      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config, required_adapter);
       if (!disp) {
+        return false;
+      }
+      const auto hdr_probe_adapter = disp->capture_adapter_id();
+      if (required_adapter && (!hdr_probe_adapter || *hdr_probe_adapter != *required_adapter)) {
+        BOOST_LOG(error)
+          << "HDR encoder probe display did not initialize on its required adapter; refusing cross-adapter validation.";
         return false;
       }
 
@@ -5966,12 +6039,16 @@ namespace video {
       BOOST_LOG(warning) << encoder.name << ": hevc missing sps->vui parameters"sv;
     }
 
+    if (actual_adapter) {
+      *actual_adapter = disp->capture_adapter_id();
+    }
     fg.disable();
     return true;
   }
 
   int probe_encoders() {
     std::lock_guard<std::mutex> lock(encoder_probe_mutex);
+    const auto required_adapter = required_probe_adapter();
     const auto cache_key = build_probe_cache_key();
     mark_probe_attempted(cache_key);
     // WGC learns its adapter while a probe is in progress. Record the final
@@ -6051,6 +6128,17 @@ namespace video {
     // Use a local variable for encoder selection during probing so that
     // chosen_encoder is never null while concurrent capture threads may read it.
     encoder_t *new_encoder = nullptr;
+    std::optional<platf::adapter_id_t> candidate_probe_adapter;
+    std::optional<platf::adapter_id_t> successful_probe_adapter;
+    const auto validate_probe_encoder = [&](encoder_t &encoder, const bool expect_failure) {
+      candidate_probe_adapter.reset();
+      return validate_encoder(
+        encoder,
+        expect_failure,
+        required_adapter,
+        &candidate_probe_adapter
+      );
+    };
     active_hevc_mode = config::video.hevc_mode;
     active_av1_mode = config::video.av1_mode;
     last_encoder_probe_supported_ref_frames_invalidation = false;
@@ -6085,7 +6173,7 @@ namespace video {
 
         if (encoder->name == config::video.encoder) {
           // Remove the encoder from the list entirely if it fails validation
-          if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+          if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
             pos = encoder_list.erase(pos);
             break;
           }
@@ -6093,6 +6181,7 @@ namespace video {
           // We will return an encoder here even if it fails one of the codec requirements specified by the user
           adjust_encoder_constraints(encoder);
 
+          successful_probe_adapter = candidate_probe_adapter;
           new_encoder = encoder;
           break;
         }
@@ -6119,7 +6208,7 @@ namespace video {
         auto encoder = *pos;
 
         // Remove the encoder from the list entirely if it fails validation
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+        if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
           pos = encoder_list.erase(pos);
           continue;
         }
@@ -6138,6 +6227,7 @@ namespace video {
           continue;
         }
 
+        successful_probe_adapter = candidate_probe_adapter;
         new_encoder = encoder;
         break;
       });
@@ -6156,7 +6246,7 @@ namespace video {
         // If we've used a previous encoder and it's not this one, we expect this encoder to
         // fail to validate. It will use a slightly different order of checks to more quickly
         // eliminate failing encoders.
-        if (!validate_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+        if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
           pos = encoder_list.erase(pos);
           continue;
         }
@@ -6164,6 +6254,7 @@ namespace video {
         // We will return an encoder here even if it fails one of the codec requirements specified by the user
         adjust_encoder_constraints(encoder);
 
+        successful_probe_adapter = candidate_probe_adapter;
         new_encoder = encoder;
         break;
       });
@@ -6248,10 +6339,28 @@ namespace video {
     const bool av1_passed = encoder.av1[encoder_t::PASSED];
     const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
-    // Bind success to the adapter/output identity observed after capture
-    // initialization. The first WGC probe commonly transitions from no runtime
-    // LUID to the helper-reported LUID while validation is running.
-    const auto successful_cache_key = build_probe_cache_key();
+    // A pending or configured adapter may select an existing truthful entry,
+    // but only the display that performed validation can own a new positive.
+    auto successful_cache_key = build_probe_cache_key();
+#ifdef _WIN32
+    if (successful_probe_adapter) {
+      successful_cache_key.adapter_identity = adapter_cache_identity(*successful_probe_adapter);
+      successful_cache_key.adapter_identity_source = "actual-probe-display";
+      successful_cache_key.adapter_identity_resolved = true;
+    } else {
+      successful_cache_key.adapter_identity = "unresolved-actual-probe-adapter";
+      successful_cache_key.adapter_identity_source = "actual-probe-display-unavailable";
+      successful_cache_key.adapter_identity_resolved = false;
+    }
+
+    if (required_adapter &&
+        (!successful_probe_adapter || *successful_probe_adapter != *required_adapter)) {
+      BOOST_LOG(error)
+        << "Encoder validation did not complete on the required adapter; refusing to publish or cache its selection.";
+      update_probe_cache(cache_key, false, false, false, false, false, false);
+      return -1;
+    }
+#endif
     update_probe_cache(successful_cache_key, true, cache_hdr_supported, hevc_passed, hevc_hdr_supported, av1_passed, av1_hdr_supported);
     // Publish the new encoder only after the probe has fully succeeded,
     // so concurrent capture threads never observe a null chosen_encoder.

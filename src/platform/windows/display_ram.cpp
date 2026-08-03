@@ -375,8 +375,12 @@ namespace platf::dxgi {
     return {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8X8_UNORM};
   }
 
-  int display_ddup_ram_t::init(const ::video::config_t &config, const std::string &display_name) {
-    if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+  int display_ddup_ram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
+    if (display_base_t::init(config, display_name, false, required_adapter_luid) || dup.init(this, config)) {
       return -1;
     }
 

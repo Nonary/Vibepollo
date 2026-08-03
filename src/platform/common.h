@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 // lib includes
@@ -54,6 +55,13 @@ namespace amf {
 
 namespace platf {
   class display_t;
+
+  struct adapter_id_t {
+    std::int32_t high_part = 0;
+    std::uint32_t low_part = 0;
+
+    bool operator==(const adapter_id_t &) const = default;
+  };
 
   // Limited by bits in activeGamepadMask
   constexpr auto MAX_GAMEPADS = 16;
@@ -591,6 +599,15 @@ namespace platf {
       return true;
     }
 
+    /**
+     * @brief Return the adapter that owns this initialized capture display.
+     * @details Platforms without a stable adapter identity leave this empty;
+     * callers must preserve their established platform-level cache identity.
+     */
+    virtual std::optional<adapter_id_t> capture_adapter_id() const {
+      return std::nullopt;
+    }
+
     virtual ~display_t() = default;
 
     // Offsets for when streaming a specific monitor. By default, they are 0.
@@ -675,7 +692,12 @@ namespace platf {
    * @param config Stream configuration
    * @return The display_t instance based on hwdevice_type.
    */
-  std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
+  std::shared_ptr<display_t> display(
+    mem_type_e hwdevice_type,
+    const std::string &display_name,
+    const video::config_t &config,
+    const std::optional<adapter_id_t> &required_adapter = std::nullopt
+  );
 
   // A list of names of displays accepted as display_name with the mem_type_e
   std::vector<std::string> display_names(mem_type_e hwdevice_type);

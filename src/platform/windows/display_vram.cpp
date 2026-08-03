@@ -2852,8 +2852,12 @@ namespace platf::dxgi {
     return dup.release_frame();
   }
 
-  int display_ddup_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
-    if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+  int display_ddup_vram_t::init(
+    const ::video::config_t &config,
+    const std::string &display_name,
+    const std::optional<LUID> &required_adapter_luid
+  ) {
+    if (display_base_t::init(config, display_name, false, required_adapter_luid) || dup.init(this, config)) {
       return -1;
     }
 

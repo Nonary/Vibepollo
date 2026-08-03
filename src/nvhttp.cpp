@@ -267,6 +267,7 @@ namespace nvhttp {
 
     http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
       std::optional<video::encoder_probe_adapter_hint_lease_t> idle_virtual_adapter_hint;
+      std::optional<LUID> idle_virtual_required_adapter;
       if (config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
           !has_stream_session_activity()) {
         const auto intended_adapter = platf::resolve_preferred_render_adapter(
@@ -274,6 +275,7 @@ namespace nvhttp {
           config::video.adapter_pnp_id
         );
         if (intended_adapter) {
+          idle_virtual_required_adapter = *intended_adapter.luid;
           idle_virtual_adapter_hint =
             video::set_pending_virtual_display_adapter_hint(*intended_adapter.luid);
         }
@@ -323,7 +325,7 @@ namespace nvhttp {
         return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
       }
 
-      auto ensure_result = VDISPLAY::ensure_display();
+      auto ensure_result = VDISPLAY::ensure_display(idle_virtual_required_adapter);
       if (!ensure_result.ready_for_probe()) {
         BOOST_LOG(info)
           << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
