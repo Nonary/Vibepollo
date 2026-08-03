@@ -517,7 +517,7 @@
     "dd_snapshot_exclude_placeholder": "Choose devices (e.g., physical dummy plug) to exclude",
     "dd_snapshot_exclude_warning": "Keep at least one display unexcluded.",
     "dd_always_restore_from_golden": "Always restore from snapshot",
-    "dd_always_restore_from_golden_desc": "Use the saved recovery snapshot first whenever Vibeshine restores the desktop. If the snapshot is unavailable or cannot be restored, Vibeshine falls back to the session snapshot. Recommended when a recovery snapshot exists.",
+    "dd_always_restore_from_golden_desc": "Use the saved recovery snapshot first whenever Vibepollo restores the desktop. If the snapshot is unavailable or cannot be restored, Vibepollo falls back to the session snapshot. Recommended when a recovery snapshot exists.",
     "dd_display_helper_engine": "Display restore engine",
     "dd_display_helper_engine_desc": "Engine used to apply and restore display settings. Automatic runs the new engine on pre-release builds only; stable releases keep the proven legacy engine unless you opt in.",
     "dd_display_helper_engine_auto": "Automatic (new engine on pre-release builds)",
