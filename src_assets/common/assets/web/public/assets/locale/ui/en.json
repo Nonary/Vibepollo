@@ -1613,7 +1613,7 @@
           "required": "Required"
         },
         "frame_generation": {
-          "automatic": "Automatic — fixed 4× display; 2× desktop / 4× game capture (recommended)",
+          "automatic": "Automatic — always 4× display; desktop WGC capped at 2× / games at 4× (recommended)",
           "compatibility": "Compatibility — fixed 2× display and capture",
           "off": "Off — no automatic virtual refresh or WGC admission limit"
         },
@@ -1807,8 +1807,8 @@
       "selected_category": "Selected category",
       "summary": {
         "display": "Streaming display",
-        "automatic_pacing": "Automatic · fixed 4× display / 2× desktop / 4× games",
-        "automatic_pacing_limiter_off": "Automatic · fixed 4× display / 2× desktop / 4× games · limiter off",
+        "automatic_pacing": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4×",
+        "automatic_pacing_limiter_off": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4× · limiter off",
         "compatibility_pacing": "Compatibility · fixed 2× display and capture",
         "compatibility_pacing_limiter_off": "Compatibility · fixed 2× display and capture · limiter off",
         "capture": "Capture",
