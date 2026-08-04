@@ -58,6 +58,15 @@ interface GpuOption extends SettingsOption {
   pnpId: string;
 }
 
+interface DisplayDevice {
+  device_id?: unknown;
+  display_name?: unknown;
+  friendly_name?: unknown;
+  info?: {
+    active?: unknown;
+  };
+}
+
 const loading = ref(true);
 const saving = ref(false);
 const restarting = ref(false);
@@ -70,6 +79,10 @@ const activeCategory = ref(settingsCategories[0].id);
 const hostMetadata = ref<MetadataResponse>({});
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
+const displayDevices = ref<DisplayDevice[]>([]);
+const displayDevicesLoading = ref(false);
+const displayDevicesLoaded = ref(false);
+const displayDevicesError = ref('');
 
 function cloneSettings(value: Record<string, unknown>): Record<string, unknown> {
   return structuredClone(toRaw(value));
@@ -159,6 +172,54 @@ const automaticEncoderLabel = computed(() => {
     encoder: t(encoderKey),
     name: gpuName,
   });
+});
+
+const isWindowsHost = computed(() =>
+  String(hostMetadata.value.platform ?? '')
+    .toLocaleLowerCase()
+    .includes('windows'),
+);
+
+const physicalDisplaySelected = computed(
+  () => String(values.virtual_display_mode ?? '') === 'disabled',
+);
+
+const physicalDisplayDescription = computed(() =>
+  t(isWindowsHost.value ? 'config.output_name_desc_windows' : 'config.output_name_desc_unix'),
+);
+
+const physicalDisplayConfigurationOptions = computed(() => {
+  const field = fieldByKey('dd_configuration_option');
+  return field ? optionsFor(field) : [];
+});
+
+const displayDeviceOptions = computed(() => {
+  const seen = new Set<string>();
+  const options = displayDevices.value.flatMap((device) => {
+    const value = String(device.device_id ?? device.display_name ?? '').trim();
+    if (!value || seen.has(value)) return [];
+    seen.add(value);
+    const friendly =
+      String(device.friendly_name ?? '').trim() ||
+      String(device.display_name ?? '').trim() ||
+      t('config.output_name');
+    const active = typeof device.info?.active === 'boolean' ? device.info.active : null;
+    const suffix =
+      active === null
+        ? ''
+        : active
+          ? ` (${t('config.app_display_status_active')})`
+          : ` (${t('config.app_display_status_inactive')})`;
+    return [{ label: `${friendly} - ${value}${suffix}`, value }];
+  });
+  const current = String(values.output_name ?? '').trim();
+  if (current && !seen.has(current)) {
+    options.unshift({
+      label: t('ui.application.options.currentValue', { value: current }),
+      value: current,
+    });
+  }
+  return options;
 });
 
 function comparableValue(value: unknown): string {
@@ -556,6 +617,23 @@ async function load(): Promise<void> {
   }
 }
 
+async function loadDisplayDevices(force = false): Promise<void> {
+  if (displayDevicesLoading.value || (displayDevicesLoaded.value && !force)) return;
+  displayDevicesLoading.value = true;
+  displayDevicesError.value = '';
+  try {
+    const response = await apiGet<unknown>('/api/display-devices?detail=full');
+    if (!Array.isArray(response)) throw new Error('invalid-display-device-response');
+    displayDevices.value = response as DisplayDevice[];
+    displayDevicesLoaded.value = true;
+  } catch {
+    displayDevices.value = [];
+    displayDevicesError.value = t('config.display_devices_load_failed');
+  } finally {
+    displayDevicesLoading.value = false;
+  }
+}
+
 async function save(): Promise<void> {
   if (!isDirty.value || saving.value || !saveAllowed.value) return;
   saving.value = true;
@@ -843,6 +921,105 @@ onMounted(() => void load());
                     :placeholder="field.placeholderKey ? t(field.placeholderKey) : undefined"
                     @input="updateValue(field.key, $event, field)"
                   />
+                </div>
+              </div>
+              <div
+                v-if="
+                  activeCategory === 'everyday' &&
+                  !isSearching &&
+                  group.id === 'everyday_display' &&
+                  physicalDisplaySelected
+                "
+                class="settings-physical-display"
+              >
+                <div class="settings-physical-display__heading">
+                  <h4>{{ groupTitle('display_target') }}</h4>
+                  <p>{{ groupDescription('display_target') }}</p>
+                </div>
+                <div class="settings-group">
+                  <div class="settings-row settings-physical-display__row">
+                    <label class="settings-row__copy" for="setting-output_name">
+                      <span class="settings-row__label">{{ t('config.output_name') }}</span>
+                      <span class="settings-row__description">
+                        {{ physicalDisplayDescription }}
+                      </span>
+                    </label>
+                    <div class="settings-physical-display__control">
+                      <select
+                        v-if="isWindowsHost"
+                        id="setting-output_name"
+                        class="vs-select"
+                        :value="String(values.output_name ?? '')"
+                        @focus="loadDisplayDevices()"
+                        @change="updateValue('output_name', $event)"
+                      >
+                        <option value="">{{ t('config.output_name_default') }}</option>
+                        <option v-if="displayDevicesLoading" disabled value="__loading">
+                          {{ t('_common.loading') }}
+                        </option>
+                        <option
+                          v-if="displayDevicesLoaded && !displayDeviceOptions.length"
+                          disabled
+                          value="__empty"
+                        >
+                          {{ t('ui.devices.editor.no_displays') }}
+                        </option>
+                        <option
+                          v-for="option in displayDeviceOptions"
+                          :key="option.value"
+                          :value="option.value"
+                        >
+                          {{ option.label }}
+                        </option>
+                      </select>
+                      <input
+                        v-else
+                        id="setting-output_name"
+                        class="vs-input monospace"
+                        type="text"
+                        :value="String(values.output_name ?? '')"
+                        @input="updateValue('output_name', $event)"
+                      />
+                      <button
+                        v-if="isWindowsHost"
+                        class="button button--secondary button--compact"
+                        type="button"
+                        :disabled="displayDevicesLoading"
+                        :aria-label="t('_common.refresh')"
+                        @click="loadDisplayDevices(true)"
+                      >
+                        <UiIcon name="refresh" />
+                        {{ t('_common.refresh') }}
+                      </button>
+                      <span v-if="displayDevicesError" class="settings-physical-display__error">
+                        {{ displayDevicesError }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="settings-row settings-physical-display__row">
+                    <div class="settings-row__copy">
+                      <span class="settings-row__label">
+                        {{ t('config.dd_configuration_option') }}
+                      </span>
+                      <span class="settings-row__description">
+                        {{ t('ui.settings.fields.dd_configuration_option.description') }}
+                      </span>
+                    </div>
+                    <select
+                      id="setting-dd_configuration_option"
+                      class="vs-select"
+                      :value="String(values.dd_configuration_option ?? '')"
+                      @change="updateValue('dd_configuration_option', $event)"
+                    >
+                      <option
+                        v-for="option in physicalDisplayConfigurationOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ optionText(option, 'dd_configuration_option') }}
+                      </option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </component>
@@ -1184,6 +1361,45 @@ onMounted(() => void load());
 
 .settings-row > .vs-switch {
   justify-self: end;
+}
+
+.settings-physical-display {
+  margin-top: var(--vs-space-16);
+}
+
+.settings-physical-display__heading {
+  margin-bottom: var(--vs-space-12);
+}
+
+.settings-physical-display__heading h4 {
+  margin: 0;
+  color: var(--vs-color-text-primary);
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.settings-physical-display__heading p {
+  margin: var(--vs-space-4) 0 0;
+  color: var(--vs-color-text-secondary);
+}
+
+.settings-physical-display__control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--vs-space-8);
+}
+
+.settings-physical-display__control > .vs-input,
+.settings-physical-display__control > .vs-select {
+  min-width: 0;
+}
+
+.settings-physical-display__error {
+  grid-column: 1 / -1;
+  color: var(--vs-color-status-danger);
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .settings-group--advanced {
