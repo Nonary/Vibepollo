@@ -12,6 +12,7 @@
 #include "src/config_playnite.h"
 #include "src/confighttp.h"
 #include "src/file_handler.h"
+#include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/windows/frame_limiter.h"
 #include "src/platform/windows/image_convert.h"
@@ -42,6 +43,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <UserEnv.h>
 #include <vector>
 #include <Windows.h>
@@ -926,8 +928,24 @@ namespace platf::playnite {
             BOOST_LOG(debug) << "Playnite: ignoring gameStopped within session guard window";
             return;
           }
-          BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
-          proc::proc.terminate();
+          // This callback runs on the IPC pipe worker. Terminating the active
+          // process stops that same pipe and would make its worker join itself.
+          // Keep the session identity so a queued stale stop cannot terminate a
+          // game that was launched after this status message was received.
+          task_pool.push([expected_guard = std::move(guard)]() {
+            const auto current_guard = proc::proc.active_session_guard();
+            if (!current_guard.has_active_app ||
+                !current_guard.uses_playnite ||
+                current_guard.playnite_id != expected_guard.playnite_id ||
+                current_guard.client_uuid != expected_guard.client_uuid ||
+                current_guard.launch_started_at != expected_guard.launch_started_at) {
+              BOOST_LOG(debug) << "Playnite: ignoring queued gameStopped for a stale session";
+              return;
+            }
+
+            BOOST_LOG(debug) << "Playnite: received gameStopped; terminating active process";
+            proc::proc.terminate();
+          });
         }
       } else {
         // Truncate and log a preview of the raw message for diagnostics
