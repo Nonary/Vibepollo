@@ -113,6 +113,10 @@ namespace VDISPLAY {
     std::optional<std::wstring> monitor_device_path;
     bool reused_existing;
     bool confirmed_active = false;
+    // Set only when an HDR request reached a confirmed-active target. `false`
+    // means the target remained effectively SDR; an unset value means HDR was
+    // not requested or activation was deferred to the display helper.
+    std::optional<bool> hdr_enabled;
     // Set only when this exact target was observed active. Consumers treat it as
     // an activation hint and skip their own activation wait, so publishing it for
     // a merely-enumerated target lets them skip a wait that was never satisfied.

@@ -109,6 +109,7 @@ namespace rtsp_stream {
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    std::optional<bool> virtual_display_hdr_enabled;
     bool virtual_display_recreated_on_demand = false;
     bool virtual_display_needs_resume_apply = false;
     std::optional<std::vector<std::vector<std::string>>> virtual_display_topology_snapshot;

@@ -84,6 +84,7 @@ namespace {
     bool virtual_display = false;
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
+    std::optional<bool> virtual_display_hdr_enabled;
     std::optional<int> framegen_refresh_rate;
     std::optional<std::uint32_t> framegen_refresh_millihz;
     int framegen_refresh_multiplier = 1;
@@ -161,6 +162,7 @@ namespace {
       state.session_snapshot.virtual_display = request.session->virtual_display;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
+      state.session_snapshot.virtual_display_hdr_enabled = request.session->virtual_display_hdr_enabled;
       state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
       state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
       state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
@@ -2345,6 +2347,7 @@ namespace display_helper_integration {
       snapshot.virtual_display = pending.session_snapshot.virtual_display;
       snapshot.virtual_display_device_id = pending.session_snapshot.virtual_display_device_id;
       snapshot.virtual_display_ready_since = pending.session_snapshot.virtual_display_ready_since;
+      snapshot.virtual_display_hdr_enabled = pending.session_snapshot.virtual_display_hdr_enabled;
       snapshot.framegen_refresh_rate = pending.session_snapshot.framegen_refresh_rate;
       snapshot.framegen_refresh_millihz = pending.session_snapshot.framegen_refresh_millihz;
       snapshot.framegen_refresh_multiplier = pending.session_snapshot.framegen_refresh_multiplier;

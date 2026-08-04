@@ -760,6 +760,7 @@ namespace display_helper::v2 {
     system_.arm_heartbeat();
 
     apply_attempt_ = 1;
+    virtual_hdr_fallback_attempted_ = false;
     apply_result_sent_ = false;
     verification_result_sent_ = false;
     session_was_verified_ = false;
@@ -1196,6 +1197,22 @@ namespace display_helper::v2 {
         dispatch_apply_worker(current_request_, delay, false);
         return;
       }
+    }
+
+    const bool can_fallback_virtual_hdr =
+      !virtual_hdr_fallback_attempted_ &&
+      completed.virtual_display_requested &&
+      current_request_.configuration &&
+      current_request_.configuration->m_hdr_state == display_device::HdrState::Enabled &&
+      (completed.status == ApplyStatus::Retryable || completed.status == ApplyStatus::VerificationFailed);
+    if (can_fallback_virtual_hdr) {
+      virtual_hdr_fallback_attempted_ = true;
+      current_request_.configuration->m_hdr_state = display_device::HdrState::Disabled;
+      apply_attempt_ = 1;
+      BOOST_LOG(warning) << "Display helper: virtual-display HDR remained unavailable after bounded retries; applying topology and mode with effective SDR.";
+      transition(State::InProgress, ApplyAction::Apply, completed.status);
+      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      return;
     }
 
     send_apply_result(completed.status);

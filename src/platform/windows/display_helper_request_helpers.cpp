@@ -106,6 +106,7 @@ namespace display_helper_integration::helpers {
       snapshot.output_name_override = session.output_name_override;
       snapshot.virtual_display_device_id = session.virtual_display_device_id;
       snapshot.virtual_display_ready_since = session.virtual_display_ready_since;
+      snapshot.virtual_display_hdr_enabled = session.virtual_display_hdr_enabled;
       snapshot.virtual_display_topology_snapshot = session.virtual_display_topology_snapshot;
       snapshot.pre_virtual_display_refresh_rates = session.pre_virtual_display_refresh_rates;
       snapshot.gen1_framegen_fix = session.gen1_framegen_fix;
@@ -423,6 +424,10 @@ namespace display_helper_integration::helpers {
   ) const {
     const bool dummy_plug_mode = effective_video_config_.dd.wa.dummy_plug_hdr10;
     const bool rtx_hdr_enabled = rtsp_stream::rtx_hdr_enabled(effective_video_config_);
+    const bool virtual_display_effective_sdr =
+      session_.virtual_display &&
+      session_.virtual_display_hdr_enabled.has_value() &&
+      !*session_.virtual_display_hdr_enabled;
     const bool desktop_session = session_targets_desktop(session_);
     const bool gen1_framegen_fix = session_.gen1_framegen_fix;
     const bool gen2_framegen_fix = session_.gen2_framegen_fix;
@@ -455,6 +460,11 @@ namespace display_helper_integration::helpers {
         cfg_effective.m_hdr_state = display_device::HdrState::Enabled;
       }
       if (rtx_hdr_enabled) {
+        cfg_effective.m_hdr_state = display_device::HdrState::Disabled;
+      }
+      if (virtual_display_effective_sdr &&
+          cfg_effective.m_hdr_state == display_device::HdrState::Enabled) {
+        BOOST_LOG(warning) << "Display helper apply: virtual target did not confirm HDR activation; requesting effective SDR while preserving topology and mode changes.";
         cfg_effective.m_hdr_state = display_device::HdrState::Disabled;
       }
       const bool resolution_disabled = effective_video_config_.dd.resolution_option == config::video_t::dd_t::resolution_option_e::disabled;
@@ -491,6 +501,9 @@ namespace display_helper_integration::helpers {
         }
         cfg_override.m_refresh_rate = display_device::Rational {30u, 1u};
         cfg_override.m_hdr_state = rtx_hdr_enabled ? display_device::HdrState::Disabled : display_device::HdrState::Enabled;
+        if (virtual_display_effective_sdr) {
+          cfg_override.m_hdr_state = display_device::HdrState::Disabled;
+        }
         builder.set_configuration(cfg_override);
         builder.set_action(DisplayApplyAction::Apply);
         return true;

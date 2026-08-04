@@ -406,7 +406,13 @@ namespace display_helper::v2 {
         auto hdr_states = display_device_->getCurrentHdrStates(refresh_hdr_device_ids);
         for (const auto &device_id : refresh_hdr_device_ids) {
           const auto it = hdr_states.find(device_id);
-          if (it == hdr_states.end() || !it->second || *it->second != *config.m_hdr_state) {
+          if (it == hdr_states.end() || !it->second) {
+            if (*config.m_hdr_state == display_device::HdrState::Disabled) {
+              continue;
+            }
+            return false;
+          }
+          if (*it->second != *config.m_hdr_state) {
             return false;
           }
         }

@@ -449,6 +449,7 @@ namespace display_helper::v2 {
     // controls only whether a disconnected live session begins a recovery.
     bool explicit_recovery_required_ = false;
     int apply_attempt_ = 0;
+    bool virtual_hdr_fallback_attempted_ = false;
     bool apply_result_sent_ = false;
     bool verification_result_sent_ = false;
     // A result may have been sent for an initial failure. Keep successful

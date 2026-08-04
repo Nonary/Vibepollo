@@ -316,6 +316,7 @@ namespace webrtc_stream {
               session->virtual_display_failed = false;
               session->virtual_display_device_id = *existing_device;
               session->virtual_display_ready_since = std::chrono::steady_clock::now();
+              session->virtual_display_hdr_enabled.reset();
               session->virtual_display_needs_resume_apply = true;
               publish_output_override(session->virtual_display_device_id);
               apply_framegen_refresh_policy(true);
@@ -327,6 +328,7 @@ namespace webrtc_stream {
               session->virtual_display_failed = true;
               session->virtual_display_device_id.clear();
               session->virtual_display_ready_since.reset();
+              session->virtual_display_hdr_enabled.reset();
               BOOST_LOG(error) << "Existing WebRTC virtual display does not match the configured capture adapter; refusing shared-session reuse.";
             }
             return;
@@ -527,6 +529,7 @@ namespace webrtc_stream {
           session->virtual_display_device_id.clear();
         }
         session->virtual_display_ready_since = display_info->ready_since;
+        session->virtual_display_hdr_enabled = display_info->hdr_enabled;
         if (!session->virtual_display_device_id.empty()) {
           publish_output_override(session->virtual_display_device_id);
         }
@@ -599,6 +602,7 @@ namespace webrtc_stream {
               return {};
             }
             recovery_session->virtual_display_ready_since = result.ready_since;
+            recovery_session->virtual_display_hdr_enabled = result.hdr_enabled;
             if (recovery_session->virtual_display) {
               constexpr int kMaxApplyAttempts = 5;
               bool applied = false;
@@ -678,6 +682,7 @@ namespace webrtc_stream {
       session->virtual_display_guid_bytes.fill(0);
       session->virtual_display_device_id.clear();
       session->virtual_display_ready_since.reset();
+      session->virtual_display_hdr_enabled.reset();
       session->framegen_refresh_rate.reset();
       session->framegen_refresh_millihz.reset();
       session->framegen_refresh_multiplier = 1;
@@ -2820,6 +2825,7 @@ namespace webrtc_stream {
       launch_session->virtual_display_guid_bytes.fill(0);
       launch_session->virtual_display_device_id.clear();
       launch_session->virtual_display_ready_since.reset();
+      launch_session->virtual_display_hdr_enabled.reset();
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->framegen_refresh_rate.reset();
       launch_session->framegen_refresh_millihz.reset();

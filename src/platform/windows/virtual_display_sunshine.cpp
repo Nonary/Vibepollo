@@ -6313,10 +6313,15 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
-      if (hdr_requested && !request_hdr10_advanced_color(output, stop_token) && !stop_token.stop_requested()) {
-        if (confirmed_active) {
+      std::optional<bool> effective_hdr_enabled;
+      if (hdr_requested) {
+        const bool hdr_enabled = request_hdr10_advanced_color(output, stop_token);
+        if (hdr_enabled) {
+          effective_hdr_enabled = true;
+        } else if (!stop_token.stop_requested() && confirmed_active) {
+          effective_hdr_enabled = false;
           BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
-        } else {
+        } else if (!stop_token.stop_requested()) {
           // The target is enumerated but the helper has not activated it yet, so a
           // direct HDR request cannot stick. This is not a failure: the helper's
           // APPLY carries the same HDR request and the capture gate waits for it.
@@ -6389,6 +6394,7 @@ namespace VDISPLAY_SUNSHINE {
       }
       result.reused_existing = false;
       result.confirmed_active = confirmed_active;
+      result.hdr_enabled = effective_hdr_enabled;
       if (confirmed_active) {
         result.ready_since = ready_since;
       }
