@@ -2794,15 +2794,19 @@ namespace stream {
 #else
       constexpr bool deferred_app_revert = false;
 #endif
-      const bool revert_display_config =
+      // A restore is an asynchronous helper operation. It must keep the
+      // virtual display alive while the helper restores the physical topology;
+      // virtual_display_cleanup::run() removes it before dispatching REVERT,
+      // which turns a restore request into a forced teardown.
+      const bool display_restore_requested =
         config::video.dd.config_revert_on_disconnect ||
         deferred_app_revert ||
         (!is_paused && shared_runtime_force_display_revert_when_idle);
       const int paused_timeout_secs = std::max(0, config::video.dd.paused_virtual_display_timeout_secs);
       const bool delay_virtual_display_cleanup_due_to_pause =
-        is_paused && !revert_display_config && paused_timeout_secs > 0;
+        is_paused && !display_restore_requested && paused_timeout_secs > 0;
       const bool keep_virtual_display_due_to_pause =
-        is_paused && !revert_display_config && paused_timeout_secs == 0;
+        is_paused && !display_restore_requested && paused_timeout_secs == 0;
 
 #ifdef _WIN32
       if (delay_virtual_display_cleanup_due_to_pause) {
@@ -2817,22 +2821,23 @@ namespace stream {
       } else if (keep_virtual_display_due_to_pause) {
         BOOST_LOG(debug) << "Display cleanup: shared stream runtime is paused; keeping virtual display alive "
                             "(config_revert_on_disconnect=false, paused timeout disabled).";
+      } else if (display_restore_requested) {
+        BOOST_LOG(info) << "Display restore: final stream ended; dispatching restore while keeping virtual display alive.";
+        if (!display_helper_integration::revert(true)) {
+          BOOST_LOG(debug) << "Display helper: restore dispatch failed after final stream; virtual display remains active.";
+        }
       } else {
         g_paused_display_cleanup_generation.fetch_add(1, std::memory_order_acq_rel);
         const auto cleanup_reason =
-          is_paused && !revert_display_config ? "shared_runtime_paused" : reason;
-        const auto cleanup = platf::virtual_display_cleanup::run(
+          is_paused ? "shared_runtime_paused" : reason;
+        (void) platf::virtual_display_cleanup::run(
           cleanup_reason,
-          revert_display_config,
+          false,
           platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
           true,
           shared_runtime_virtual_display_guid_bytes
         );
-        if (cleanup.helper_revert_dispatched) {
-          display_helper_integration::stop_watchdog();
-        } else if (revert_display_config) {
-          BOOST_LOG(debug) << "Display helper: revert dispatch failed during final shared stream cleanup.";
-        } else if (is_paused) {
+        if (is_paused) {
           BOOST_LOG(info) << "Display cleanup: shared stream runtime paused with revert-on-disconnect disabled; "
                           << "removed virtual display(s) without restoring physical display configuration.";
         }
@@ -2841,7 +2846,7 @@ namespace stream {
       VDISPLAY::restorePhysicalHdrProfiles();
       platf::rtss_set_sync_limiter_override(std::nullopt);
 #else
-      if (revert_display_config) {
+      if (display_restore_requested) {
         (void) display_helper_integration::revert();
       }
 #endif
