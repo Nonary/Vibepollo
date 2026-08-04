@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, toRaw } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { apiGet, apiPatch, apiPost } from '@/api/client';
@@ -70,6 +70,10 @@ const activeCategory = ref(settingsCategories[0].id);
 const hostMetadata = ref<MetadataResponse>({});
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
+
+function cloneSettings(value: Record<string, unknown>): Record<string, unknown> {
+  return structuredClone(toRaw(value));
+}
 
 function numericMetadataValue(value: unknown): number {
   const parsed = Number(value ?? 0);
@@ -544,7 +548,7 @@ async function load(): Promise<void> {
     const normalized = { ...defaults, ...configured };
     Object.keys(values).forEach((key) => delete values[key]);
     Object.assign(values, normalized);
-    original.value = structuredClone(normalized);
+    original.value = cloneSettings(normalized);
   } catch {
     error.value = t('ui.settings.errors.load');
   } finally {
@@ -562,7 +566,7 @@ async function save(): Promise<void> {
       dirtyKeys.value.map((key) => [key, values[key] === '' ? null : values[key]]),
     );
     const result = await apiPatch<SaveResult>('/api/config', patch);
-    original.value = structuredClone({ ...values });
+    original.value = cloneSettings(values);
     restartAvailable.value = Boolean(result.restartRequired);
     notice.value = result.restartRequired
       ? t('ui.settings.notices.saved_restart')
@@ -577,8 +581,11 @@ async function save(): Promise<void> {
 }
 
 function discard(): void {
-  Object.keys(values).forEach((key) => delete values[key]);
-  Object.assign(values, structuredClone(original.value));
+  const restored = cloneSettings(original.value);
+  for (const key of Object.keys(values)) {
+    if (!(key in restored)) delete values[key];
+  }
+  Object.assign(values, restored);
   notice.value = '';
   restartAvailable.value = false;
 }
