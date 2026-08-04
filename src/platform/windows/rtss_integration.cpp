@@ -48,6 +48,9 @@ namespace platf {
     // RTSS' profile SDK declares load/save as void. Treating their undefined
     // return registers as BOOL makes successful operations look like failures.
     using fn_LoadProfile = VOID(__cdecl *)(LPCSTR profileName);
+    using fn_SaveProfile = VOID(__cdecl *)(LPCSTR profileName);
+    using fn_GetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
+    using fn_SetProfileProperty = BOOL(__cdecl *)(LPCSTR name, LPVOID pBuf, DWORD size);
     using fn_UpdateProfiles = VOID(__cdecl *)();
     using fn_GetFlags = DWORD(__cdecl *)();
     using fn_SetFlags = DWORD(__cdecl *)(DWORD, DWORD);
@@ -55,6 +58,9 @@ namespace platf {
     struct hooks_t {
       HMODULE module = nullptr;
       fn_LoadProfile LoadProfile = nullptr;
+      fn_SaveProfile SaveProfile = nullptr;
+      fn_GetProfileProperty GetProfileProperty = nullptr;
+      fn_SetProfileProperty SetProfileProperty = nullptr;
       fn_UpdateProfiles UpdateProfiles = nullptr;
       fn_GetFlags GetFlags = nullptr;
       fn_SetFlags SetFlags = nullptr;
@@ -227,6 +233,10 @@ namespace platf {
 
     bool hooks_available() {
       return static_cast<bool>(g_hooks) && !g_hooks_failed && g_hook_call_state->active_calls.load(std::memory_order_acquire) == 0;
+    }
+
+    bool profile_hooks_available() {
+      return hooks_available() && g_hooks.SaveProfile && g_hooks.GetProfileProperty && g_hooks.SetProfileProperty;
     }
 
     std::optional<DWORD> get_hook_flags() {
@@ -839,6 +849,77 @@ namespace platf {
       }
     }
 
+    std::optional<bool> write_framerate_values_via_hooks(
+      const std::optional<int> *limit,
+      const std::optional<int> *denominator,
+      const std::optional<int> *sync_limiter
+    ) {
+      // The SDK cannot remove a property. Use the file path for restoration of
+      // a profile key that was absent before the stream.
+      if (!profile_hooks_available() ||
+          (limit && !*limit) ||
+          (denominator && !*denominator) ||
+          (sync_limiter && !*sync_limiter)) {
+        return std::nullopt;
+      }
+
+      const auto load_profile = g_hooks.LoadProfile;
+      const auto save_profile = g_hooks.SaveProfile;
+      const auto get_property = g_hooks.GetProfileProperty;
+      const auto set_property = g_hooks.SetProfileProperty;
+      const auto update_profiles = g_hooks.UpdateProfiles;
+      const bool has_limit = limit != nullptr;
+      const bool has_denominator = denominator != nullptr;
+      const bool has_sync_limiter = sync_limiter != nullptr;
+      const auto limit_value = has_limit ? *limit : std::optional<int> {};
+      const auto denominator_value = has_denominator ? *denominator : std::optional<int> {};
+      const auto sync_limiter_value = has_sync_limiter ? *sync_limiter : std::optional<int> {};
+      return call_rtss_hooks<bool>(
+        "LoadProfile/SetProfileProperty/SaveProfile/UpdateProfiles",
+        [load_profile,
+         save_profile,
+         get_property,
+         set_property,
+         update_profiles,
+         has_limit,
+         has_denominator,
+         has_sync_limiter,
+         limit_value,
+         denominator_value,
+         sync_limiter_value]() {
+          load_profile("");
+
+          auto set_value = [set_property](const char *name, bool enabled, const std::optional<int> &value) {
+            if (!enabled) {
+              return true;
+            }
+            int raw_value = *value;
+            return set_property(name, &raw_value, sizeof(raw_value)) != FALSE;
+          };
+          if (!set_value("FramerateLimit", has_limit, limit_value) ||
+              !set_value("FramerateLimitDenominator", has_denominator, denominator_value) ||
+              !set_value("SyncLimiter", has_sync_limiter, sync_limiter_value)) {
+            return false;
+          }
+
+          save_profile("");
+          update_profiles();
+
+          auto get_value = [get_property](const char *name, bool enabled, const std::optional<int> &value) {
+            if (!enabled) {
+              return true;
+            }
+            int actual_value = 0;
+            return get_property(name, &actual_value, sizeof(actual_value)) != FALSE && actual_value == *value;
+          };
+          return get_value("FramerateLimit", has_limit, limit_value) &&
+                 get_value("FramerateLimitDenominator", has_denominator, denominator_value) &&
+                 get_value("SyncLimiter", has_sync_limiter, sync_limiter_value);
+        },
+        true
+      );
+    }
+
     bool write_framerate_values(
       const fs::path &root,
       const std::optional<int> *limit,
@@ -846,6 +927,14 @@ namespace platf {
       const std::optional<int> *sync_limiter
     ) {
       try {
+        if (const auto sdk_result = write_framerate_values_via_hooks(limit, denominator, sync_limiter)) {
+          if (*sdk_result) {
+            BOOST_LOG(info) << "Updated RTSS Global profile through RTSSHooks profile SDK.";
+            return true;
+          }
+          BOOST_LOG(warning) << "RTSSHooks profile SDK rejected the requested profile update; falling back to the profile file.";
+        }
+
         if (!ensure_profile_exists(root)) {
           return false;
         }
@@ -1211,6 +1300,9 @@ namespace platf {
         }
         g_hooks.module = m;
         g_hooks.LoadProfile = (fn_LoadProfile) GetProcAddress(m, "LoadProfile");
+        g_hooks.SaveProfile = (fn_SaveProfile) GetProcAddress(m, "SaveProfile");
+        g_hooks.GetProfileProperty = (fn_GetProfileProperty) GetProcAddress(m, "GetProfileProperty");
+        g_hooks.SetProfileProperty = (fn_SetProfileProperty) GetProcAddress(m, "SetProfileProperty");
         g_hooks.UpdateProfiles = (fn_UpdateProfiles) GetProcAddress(m, "UpdateProfiles");
         g_hooks.GetFlags = (fn_GetFlags) GetProcAddress(m, "GetFlags");
         g_hooks.SetFlags = (fn_SetFlags) GetProcAddress(m, "SetFlags");
