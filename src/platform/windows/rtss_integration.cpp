@@ -9,15 +9,16 @@
   #include <array>
   #include <atomic>
   #include <chrono>
+  #include <cstdio>
   #include <cwchar>
   #include <filesystem>
   #include <fstream>
   #include <future>
   #include <limits>
   #include <memory>
+  #include <mutex>
   #include <nlohmann/json.hpp>
   #include <optional>
-  #include <mutex>
   #include <string>
   #include <string_view>
   #include <system_error>
@@ -237,6 +238,30 @@ namespace platf {
 
     bool profile_hooks_available() {
       return hooks_available() && g_hooks.SaveProfile && g_hooks.GetProfileProperty && g_hooks.SetProfileProperty;
+    }
+
+    bool profile_hooks_support_fractional_limits(const fs::path &root) {
+      std::string version;
+      if (!getFileVersionInfo(root / "RTSS.exe", version)) {
+        BOOST_LOG(warning) << "Could not determine RTSS version; using the profile file instead of the RTSSHooks profile SDK.";
+        return false;
+      }
+
+      unsigned int major = 0;
+      unsigned int minor = 0;
+      unsigned int build = 0;
+      unsigned int revision = 0;
+      if (std::sscanf(version.c_str(), "%u.%u.%u.%u", &major, &minor, &build, &revision) != 4) {
+        BOOST_LOG(warning) << "Could not parse RTSS version '" << version << "'; using the profile file instead of the RTSSHooks profile SDK.";
+        return false;
+      }
+
+      const bool supported = major > 7 ||
+                             (major == 7 && (minor > 3 || (minor == 3 && build >= 7)));
+      if (!supported) {
+        BOOST_LOG(info) << "RTSS " << version << " predates fractional profile SDK support in 7.3.7; using the profile file.";
+      }
+      return supported;
     }
 
     std::optional<DWORD> get_hook_flags() {
@@ -850,6 +875,7 @@ namespace platf {
     }
 
     std::optional<bool> write_framerate_values_via_hooks(
+      const fs::path &root,
       const std::optional<int> *limit,
       const std::optional<int> *denominator,
       const std::optional<int> *sync_limiter
@@ -857,6 +883,7 @@ namespace platf {
       // The SDK cannot remove a property. Use the file path for restoration of
       // a profile key that was absent before the stream.
       if (!profile_hooks_available() ||
+          !profile_hooks_support_fractional_limits(root) ||
           (limit && !*limit) ||
           (denominator && !*denominator) ||
           (sync_limiter && !*sync_limiter)) {
@@ -927,7 +954,7 @@ namespace platf {
       const std::optional<int> *sync_limiter
     ) {
       try {
-        if (const auto sdk_result = write_framerate_values_via_hooks(limit, denominator, sync_limiter)) {
+        if (const auto sdk_result = write_framerate_values_via_hooks(root, limit, denominator, sync_limiter)) {
           if (*sdk_result) {
             BOOST_LOG(info) << "Updated RTSS Global profile through RTSSHooks profile SDK.";
             return true;
