@@ -26,6 +26,8 @@
  *                 4) NVML @c nvmlDeviceGetMemoryInfo (NVIDIA only), but only
  *                    until D3DKMT delivers its first sample; see below.
  * VRAM total  : DXGI @c IDXGIAdapter::GetDesc.
+ * CPU temp    : PDH @c "\\Thermal Zone Information(*)\\Temperature" in
+ *               degrees Kelvin, using the hottest reported thermal zone.
  * GPU temp    : D3DKMT @c KMTQAITYPE_ADAPTERPERFDATA (same source Task
  *               Manager uses, deci-Celsius), NVML as a fallback.
  *
@@ -202,6 +204,93 @@ namespace {
         total = max_value;
       }
       return static_cast<float>(total);
+    }
+
+  private:
+    std::wstring _path;
+    PDH_HQUERY _query {};
+    PDH_HCOUNTER _counter {};
+  };
+
+  /**
+   * @brief Open a PDH query and return the hottest matching instance.
+   *
+   * Thermal zones are exposed as separate instances. Summing them would
+   * produce a meaningless temperature, so host CPU temperature uses the
+   * hottest valid zone instead.
+   */
+  class pdh_wildcard_max_t {
+  public:
+    explicit pdh_wildcard_max_t(std::wstring path):
+        _path(std::move(path)) {
+    }
+
+    ~pdh_wildcard_max_t() {
+      if (_query) {
+        PdhCloseQuery(_query);
+      }
+    }
+
+    pdh_wildcard_max_t(const pdh_wildcard_max_t &) = delete;
+    pdh_wildcard_max_t &operator=(const pdh_wildcard_max_t &) = delete;
+
+    bool
+      open() {
+      if (PdhOpenQueryW(nullptr, 0, &_query) != ERROR_SUCCESS) {
+        _query = nullptr;
+        return false;
+      }
+      if (PdhAddEnglishCounterW(_query, _path.c_str(), 0, &_counter) != ERROR_SUCCESS) {
+        // fall back to localized counter name
+        if (PdhAddCounterW(_query, _path.c_str(), 0, &_counter) != ERROR_SUCCESS) {
+          PdhCloseQuery(_query);
+          _query = nullptr;
+          return false;
+        }
+      }
+      // first collect seeds the rate counters; the value is undefined.
+      PdhCollectQueryData(_query);
+      return true;
+    }
+
+    /**
+     * @brief Collect and return the maximum value across valid instances.
+     * @return -1.f on failure or when no instance has valid data.
+     */
+    float
+      collect() {
+      if (!_query) {
+        return -1.f;
+      }
+      if (PdhCollectQueryData(_query) != ERROR_SUCCESS) {
+        return -1.f;
+      }
+      DWORD buf_size = 0;
+      DWORD item_count = 0;
+      PDH_STATUS rc = PdhGetFormattedCounterArrayW(
+        _counter, PDH_FMT_DOUBLE, &buf_size, &item_count, nullptr);
+      if (rc != PDH_MORE_DATA) {
+        return -1.f;
+      }
+      std::vector<std::uint8_t> buf(buf_size);
+      auto *items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W *>(buf.data());
+      if (PdhGetFormattedCounterArrayW(_counter, PDH_FMT_DOUBLE, &buf_size,
+                                       &item_count, items) != ERROR_SUCCESS) {
+        return -1.f;
+      }
+
+      double maximum = -1.0;
+      bool have_value = false;
+      for (DWORD i = 0; i < item_count; ++i) {
+        if (items[i].FmtValue.CStatus == ERROR_SUCCESS ||
+            items[i].FmtValue.CStatus == PDH_CSTATUS_NEW_DATA ||
+            items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA) {
+          maximum = have_value ? std::max(maximum, items[i].FmtValue.doubleValue)
+                               : items[i].FmtValue.doubleValue;
+          have_value = true;
+        }
+      }
+      return have_value ? static_cast<float>(maximum) : -1.f;
     }
 
   private:
@@ -819,6 +908,11 @@ namespace {
       } else {
         BOOST_LOG(::info) << "host_stats(win): \\GPU Engine(*engtype_VideoEncode) counter unavailable";
       }
+      if (_thermal_zone_temperature.open()) {
+        _have_thermal_zone_temperature = true;
+      } else {
+        BOOST_LOG(::info) << "host_stats(win): \\Thermal Zone Information(*)\\Temperature counter unavailable";
+      }
       // static info — DXGI + registry
       query_dxgi(_vram_total_cached, _vram_adapter_luid, _gpu_model_cached);
       if (_vram_total_cached > 0) {
@@ -899,6 +993,19 @@ namespace {
       if (_have_gpu_enc) {
         s.gpu_encoder_percent = _gpu_enc.collect(100.f);
       }
+
+      // Windows reports thermal-zone temperatures in Kelvin. There is no
+      // universal CPU-core sensor API, so use the hottest valid ACPI thermal
+      // zone and leave the documented sentinel when the platform has none.
+      if (_have_thermal_zone_temperature) {
+        const auto temperature_kelvin = _thermal_zone_temperature.collect();
+        constexpr double kelvin_offset = 273.15;
+        const auto temperature_celsius = static_cast<double>(temperature_kelvin) - kelvin_offset;
+        if (temperature_celsius > 0.0 && temperature_celsius <= 150.0) {
+          s.cpu_temp_c = static_cast<float>(temperature_celsius);
+        }
+      }
+
       s.vram_total_bytes = _vram_total_cached;
       const char *vram_source = nullptr;
 
@@ -1169,10 +1276,12 @@ namespace {
     pdh_wildcard_sum_t _gpu_enc {L"\\GPU Engine(*engtype_VideoEncode)\\Utilization Percentage"};
     pdh_wildcard_sum_t _gpu_adapter_mem {L"\\GPU Adapter Memory(*)\\Dedicated Usage"};
     pdh_wildcard_sum_t _gpu_mem {L"\\GPU Process Memory(*)\\Dedicated Usage"};
+    pdh_wildcard_max_t _thermal_zone_temperature {L"\\Thermal Zone Information(*)\\Temperature"};
     bool _have_gpu_3d = false;
     bool _have_gpu_enc = false;
     bool _have_gpu_adapter_mem = false;
     bool _have_gpu_mem = false;
+    bool _have_thermal_zone_temperature = false;
     bool _logged_vram_source = false;
     std::string _last_vram_source;
 
