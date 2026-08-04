@@ -1,6 +1,18 @@
 /**
  * @file src/amf/amf_config.h
  * @brief Declarations for AMF encoder configuration.
+ *
+ * Portions of the AMD aggressive-default handling in this file, specifically the
+ * opt-in treatment of LOWLATENCY_MODE, INPUT_QUEUE_SIZE and the AV1 encoding
+ * latency mode together with the rationale documented in the surrounding
+ * comments, are derived from Foundation Sunshine:
+ *
+ *   AlkaidLab/foundation-sunshine commit 3340d28 ("feat(amf): align AMD
+ *   aggressive defaults with FFmpeg amfenc", AlkaidLab/foundation-sunshine#666),
+ *   by qiin2333.
+ *
+ * Modified for Vibepollo by Ramazan Kara. Both projects are licensed under
+ * GPLv3 and that license is preserved here.
  */
 #pragma once
 
