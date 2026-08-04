@@ -254,6 +254,10 @@ async function loadTokens(): Promise<void> {
   }
 }
 
+async function refresh(): Promise<void> {
+  await Promise.all([loadRouteCatalog(), loadTokens()]);
+}
+
 function addScope(): void {
   if (!canAddScope.value) return;
   const methods = orderMethods(draft.methods);
@@ -379,7 +383,7 @@ watch(showTokenDialog, (open) => {
 });
 
 onMounted(() => {
-  void Promise.all([loadRouteCatalog(), loadTokens()]);
+  void refresh();
 });
 
 onBeforeUnmount(() => {
@@ -410,7 +414,7 @@ onBeforeUnmount(() => {
           icon="refresh"
           :busy="routeCatalogLoading || tokensLoading"
           :busy-label="t('ui.api_tokens.actions.refreshing')"
-          @click="Promise.all([loadRouteCatalog(), loadTokens()])"
+          @click="refresh"
         />
       </template>
     </PageHeader>
