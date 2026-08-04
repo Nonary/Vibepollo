@@ -149,6 +149,7 @@ interface DisplayDevice {
   display_name?: unknown;
   friendly_name?: unknown;
   info?: {
+    active?: unknown;
     refresh_rate?: unknown;
     refreshRate?: unknown;
   };
@@ -184,6 +185,8 @@ interface RtxHdrOverrideState {
   contrast: number;
   saturation: number;
 }
+
+type AppDisplaySelection = 'physical' | 'virtual';
 
 type FrameGenRequirementStatus = 'pass' | 'configured' | 'warn' | 'fail' | 'unknown';
 
@@ -269,6 +272,10 @@ let liveRtxHdrTimer: ReturnType<typeof setTimeout> | null = null;
 let liveRtxHdrSuppress = false;
 let liveRtxHdrLastSentKey = '';
 let liveRtxHdrQueue: Promise<void> = Promise.resolve();
+const displayDevices = ref<DisplayDevice[]>([]);
+const displayDevicesLoading = ref(false);
+const displayDevicesLoaded = ref(false);
+const displayDevicesError = ref('');
 
 const frameGenerationModes = computed<SelectOption[]>(() => [
   { value: '', label: t('ui.application.options.hostDefault') },
@@ -302,6 +309,59 @@ const displayConfigurationOptions = computed<SelectOption[]>(() => [
   { value: 'ensure_primary', label: t('ui.application.options.displayAction.ensurePrimary') },
   { value: 'ensure_only_display', label: t('ui.application.options.displayAction.ensureOnly') },
 ]);
+
+const displaySelection = computed<AppDisplaySelection>({
+  get: () => {
+    const output = effectiveAppOutput();
+    if (isVirtualDisplaySelection(output)) return 'virtual';
+    if (output) return 'physical';
+    return form.virtualScreen || virtualDisplayModeUsesVirtual(form.virtualDisplayMode) === true
+      ? 'virtual'
+      : 'physical';
+  },
+  set: (selection) => applyDisplaySelection(selection),
+});
+
+const physicalDisplayOutput = computed<string>({
+  get: () => form.displayOutput.trim() || form.output.trim(),
+  set: (value) => {
+    const normalized = value.trim();
+    form.displayOutput = normalized;
+    form.output = '';
+    form.virtualScreen = false;
+    form.virtualDisplayMode = 'disabled';
+    form.virtualDisplayLayout = '';
+  },
+});
+
+const displayDeviceOptions = computed(() => {
+  const seen = new Set<string>();
+  const options = displayDevices.value.flatMap((device) => {
+    const value = asString(device.device_id).trim() || asString(device.display_name).trim();
+    if (!value || seen.has(value)) return [];
+    seen.add(value);
+    const friendly =
+      asString(device.friendly_name).trim() ||
+      asString(device.display_name).trim() ||
+      t('config.app_display_physical_label');
+    const active = typeof device.info?.active === 'boolean' ? device.info.active : null;
+    const suffix =
+      active === null
+        ? ''
+        : active
+          ? ` (${t('config.app_display_status_active')})`
+          : ` (${t('config.app_display_status_inactive')})`;
+    return [{ label: `${friendly} - ${value}${suffix}`, value }];
+  });
+  const current = physicalDisplayOutput.value;
+  if (current && !seen.has(current)) {
+    options.unshift({
+      label: t('ui.application.options.currentValue', { value: current }),
+      value: current,
+    });
+  }
+  return options;
+});
 const rtxHdrModeOptions = computed<
   Array<{ value: RtxHdrMode; label: string; description: string; icon: UiIconName }>
 >(() => [
@@ -463,11 +523,25 @@ const overrideFieldsByKey = computed(() => {
   }
   return fields;
 });
+const virtualDisplayOnlyOverrideKeys = new Set([
+  'virtual_display_mode',
+  'virtual_display_layout',
+  'dd_virtual_display_scale',
+  'dd_activate_virtual_display',
+  'dd_virtual_display_permanent_count',
+  'dd_paused_virtual_display_timeout_secs',
+  'frame_limiter_auto_virtual_framegen',
+  'dd_use_sunshine_virtual_display_driver',
+  'vulkan_hdr_layer',
+]);
+function overrideVisibleForDisplay(key: string): boolean {
+  return displaySelection.value !== 'physical' || !virtualDisplayOnlyOverrideKeys.has(key);
+}
 const overrideSearch = ref('');
 const overrideAnnouncement = ref('');
 const overrideKeys = computed(() =>
   Object.keys(readConfigOverrides())
-    .filter((key) => key !== 'adapter_pnp_id')
+    .filter((key) => key !== 'adapter_pnp_id' && overrideVisibleForDisplay(key))
     .sort(),
 );
 const overrideCatalogGroups = computed(() => {
@@ -481,7 +555,12 @@ const overrideCatalogGroups = computed(() => {
       fields: category.groups
         .flatMap((group) => group.fields)
         .filter((field) => {
-          if (field.key === 'adapter_pnp_id' || seen.has(field.key)) return false;
+          if (
+            !overrideVisibleForDisplay(field.key) ||
+            field.key === 'adapter_pnp_id' ||
+            seen.has(field.key)
+          )
+            return false;
           seen.add(field.key);
           return true;
         })
@@ -2014,6 +2093,45 @@ async function refreshFrameGenHealth(): Promise<void> {
   return promise;
 }
 
+async function loadDisplayDevices(force = false): Promise<void> {
+  if (displayDevicesLoading.value || (displayDevicesLoaded.value && !force)) return;
+  displayDevicesLoading.value = true;
+  displayDevicesError.value = '';
+  try {
+    const response = await apiGet<unknown>('/api/display-devices?detail=full');
+    if (!Array.isArray(response)) throw new Error('invalid-display-device-response');
+    displayDevices.value = response as DisplayDevice[];
+    displayDevicesLoaded.value = true;
+  } catch {
+    displayDevices.value = [];
+    displayDevicesError.value = t('config.display_devices_load_failed');
+  } finally {
+    displayDevicesLoading.value = false;
+  }
+}
+
+function applyDisplaySelection(selection: AppDisplaySelection): void {
+  if (selection === 'physical') {
+    const output = effectiveAppOutput();
+    form.virtualScreen = false;
+    form.virtualDisplayMode = 'disabled';
+    form.virtualDisplayLayout = '';
+    if (isVirtualDisplaySelection(output)) {
+      form.output = '';
+      form.displayOutput = '';
+    }
+    return;
+  }
+
+  form.output = '';
+  form.displayOutput = '';
+  form.virtualScreen = true;
+  if (!['per_client', 'shared'].includes(form.virtualDisplayMode)) {
+    form.virtualDisplayMode = 'per_client';
+  }
+  form.ddConfigurationOption = '';
+}
+
 function enableVirtualDisplayForFrameGen(): void {
   if (effectiveAppOutput() && !isVirtualDisplaySelection(effectiveAppOutput())) {
     form.output = '';
@@ -2713,86 +2831,158 @@ onBeforeUnmount(() => {
           <p>{{ t('ui.application.sections.display.description') }}</p>
         </div>
         <div class="vs-settings-group">
-          <SettingRow
-            :label="t('ui.application.fields.virtualScreen.label')"
-            :description="t('ui.application.fields.virtualScreen.description')"
-            control-id="app-virtual-screen"
-          >
-            <label class="vs-switch">
-              <input id="app-virtual-screen" v-model="form.virtualScreen" type="checkbox" />
-              <span class="vs-switch__track" aria-hidden="true" />
-              <span class="vs-sr-only">{{ t('ui.application.fields.virtualScreen.label') }}</span>
-            </label>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.displayMode.label')"
-            :description="t('ui.application.fields.displayMode.description')"
-            control-id="app-display-mode"
-          >
-            <select id="app-display-mode" v-model="form.virtualDisplayMode" class="vs-select">
-              <option
-                v-if="optionIsCustom(virtualDisplayModes, form.virtualDisplayMode)"
-                :value="form.virtualDisplayMode"
+          <fieldset class="app-display-routing">
+            <legend>{{ t('config.app_display_override_label') }}</legend>
+            <p>{{ t('config.app_display_override_hint') }}</p>
+            <div class="app-display-routing__choices">
+              <label
+                class="app-display-routing__choice"
+                :class="{ 'app-display-routing__choice--active': displaySelection === 'physical' }"
               >
-                {{ t('ui.application.options.currentValue', { value: form.virtualDisplayMode }) }}
-              </option>
-              <option
-                v-for="option in virtualDisplayModes"
-                :key="option.value"
-                :value="option.value"
+                <input
+                  v-model="displaySelection"
+                  name="app-display-selection"
+                  type="radio"
+                  value="physical"
+                />
+                <span>{{ t('config.app_display_override_physical') }}</span>
+              </label>
+              <label
+                class="app-display-routing__choice"
+                :class="{ 'app-display-routing__choice--active': displaySelection === 'virtual' }"
               >
-                {{ option.label }}
-              </option>
-            </select>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.displayLayout.label')"
-            :description="t('ui.application.fields.displayLayout.description')"
-            control-id="app-display-layout"
-          >
-            <select id="app-display-layout" v-model="form.virtualDisplayLayout" class="vs-select">
-              <option
-                v-if="optionIsCustom(virtualDisplayLayouts, form.virtualDisplayLayout)"
-                :value="form.virtualDisplayLayout"
-              >
-                {{ t('ui.application.options.currentValue', { value: form.virtualDisplayLayout }) }}
-              </option>
-              <option
-                v-for="option in virtualDisplayLayouts"
-                :key="option.value"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </SettingRow>
-          <SettingRow
-            :label="t('ui.application.fields.displayAction.label')"
-            :description="t('ui.application.fields.displayAction.description')"
-            control-id="app-display-configuration"
-          >
-            <select
-              id="app-display-configuration"
-              v-model="form.ddConfigurationOption"
-              class="vs-select"
+                <input
+                  v-model="displaySelection"
+                  name="app-display-selection"
+                  type="radio"
+                  value="virtual"
+                />
+                <span>{{ t('config.app_display_override_virtual') }}</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <template v-if="displaySelection === 'physical'">
+            <SettingRow
+              :label="t('config.app_display_physical_label')"
+              :description="t('config.app_display_physical_hint')"
+              control-id="app-physical-display"
             >
-              <option
-                v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)"
-                :value="form.ddConfigurationOption"
+              <div class="app-display-control-stack">
+                <select
+                  id="app-physical-display"
+                  v-model="physicalDisplayOutput"
+                  class="vs-select"
+                  @focus="loadDisplayDevices()"
+                >
+                  <option value="">{{ t('config.app_display_physical_placeholder') }}</option>
+                  <option v-if="displayDevicesLoading" disabled value="__loading">
+                    {{ t('_common.loading') }}
+                  </option>
+                  <option
+                    v-if="displayDevicesLoaded && !displayDeviceOptions.length"
+                    disabled
+                    value="__empty"
+                  >
+                    {{ t('ui.devices.editor.no_displays') }}
+                  </option>
+                  <option
+                    v-for="option in displayDeviceOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+                <AppButton
+                  variant="tertiary"
+                  size="compact"
+                  icon="refresh"
+                  icon-only
+                  :label="t('_common.refresh')"
+                  :busy="displayDevicesLoading"
+                  @click="loadDisplayDevices(true)"
+                />
+                <span v-if="displayDevicesError" class="app-display-control-stack__error">
+                  {{ displayDevicesError }}
+                </span>
+              </div>
+            </SettingRow>
+            <SettingRow
+              :label="t('ui.application.fields.displayAction.label')"
+              :description="t('ui.application.fields.displayAction.description')"
+              control-id="app-display-configuration"
+            >
+              <select
+                id="app-display-configuration"
+                v-model="form.ddConfigurationOption"
+                class="vs-select"
               >
-                {{
-                  t('ui.application.options.currentValue', { value: form.ddConfigurationOption })
-                }}
-              </option>
-              <option
-                v-for="option in displayConfigurationOptions"
-                :key="option.value"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </SettingRow>
+                <option
+                  v-if="optionIsCustom(displayConfigurationOptions, form.ddConfigurationOption)"
+                  :value="form.ddConfigurationOption"
+                >
+                  {{
+                    t('ui.application.options.currentValue', { value: form.ddConfigurationOption })
+                  }}
+                </option>
+                <option
+                  v-for="option in displayConfigurationOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </SettingRow>
+          </template>
+
+          <template v-else>
+            <SettingRow
+              :label="t('ui.application.fields.displayMode.label')"
+              :description="t('ui.application.fields.displayMode.description')"
+              control-id="app-display-mode"
+            >
+              <select id="app-display-mode" v-model="form.virtualDisplayMode" class="vs-select">
+                <option
+                  v-if="optionIsCustom(virtualDisplayModes, form.virtualDisplayMode)"
+                  :value="form.virtualDisplayMode"
+                >
+                  {{ t('ui.application.options.currentValue', { value: form.virtualDisplayMode }) }}
+                </option>
+                <option
+                  v-for="option in virtualDisplayModes"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </SettingRow>
+            <SettingRow
+              :label="t('ui.application.fields.displayLayout.label')"
+              :description="t('ui.application.fields.displayLayout.description')"
+              control-id="app-display-layout"
+            >
+              <select id="app-display-layout" v-model="form.virtualDisplayLayout" class="vs-select">
+                <option
+                  v-if="optionIsCustom(virtualDisplayLayouts, form.virtualDisplayLayout)"
+                  :value="form.virtualDisplayLayout"
+                >
+                  {{
+                    t('ui.application.options.currentValue', { value: form.virtualDisplayLayout })
+                  }}
+                </option>
+                <option
+                  v-for="option in virtualDisplayLayouts"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </SettingRow>
+          </template>
         </div>
       </section>
 
@@ -3193,6 +3383,66 @@ onBeforeUnmount(() => {
 
 .editor-section {
   gap: var(--vs-space-12);
+}
+
+.app-display-routing {
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
+}
+
+.app-display-routing legend {
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.app-display-routing p {
+  margin-block-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+}
+
+.app-display-routing__choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vs-space-12);
+  margin-block-start: var(--vs-space-12);
+}
+
+.app-display-routing__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--vs-space-8);
+  min-block-size: 3rem;
+  padding: var(--vs-space-12) var(--vs-space-16);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-raised);
+  cursor: pointer;
+}
+
+.app-display-routing__choice--active {
+  border-color: var(--vs-color-accent-default);
+  background: color-mix(in srgb, var(--vs-color-accent-default) 8%, var(--vs-color-bg-raised));
+}
+
+.app-display-control-stack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vs-space-8);
+}
+
+.app-display-control-stack > .vs-select {
+  flex: 1 1 16rem;
+  min-inline-size: 0;
+}
+
+.app-display-control-stack__error {
+  flex-basis: 100%;
+  color: var(--vs-color-status-danger);
+  font-size: var(--vs-type-size-helper);
 }
 
 .editor-section__heading {
@@ -4029,7 +4279,8 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .editor-grid,
   .prep-entry,
-  .editor-execution-layout {
+  .editor-execution-layout,
+  .app-display-routing__choices {
     grid-template-columns: minmax(0, 1fr);
   }
 

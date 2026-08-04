@@ -22,6 +22,8 @@ const props = withDefaults(
     baseValues?: Record<string, unknown>;
     metadata?: OverrideMetadata;
     scope?: 'application' | 'client';
+    displaySelection?: 'physical' | 'virtual';
+    hiddenKeys?: string[];
     controlIdPrefix?: string;
   }>(),
   {
@@ -29,6 +31,7 @@ const props = withDefaults(
     baseValues: () => ({}),
     metadata: () => ({}),
     scope: 'client',
+    hiddenKeys: () => [],
     controlIdPrefix: 'settings-override',
   },
 );
@@ -152,9 +155,28 @@ function inheritedDisplayValue(key: string): string {
   return selected?.label ?? displayValue(value);
 }
 
+const virtualDisplayOnlyKeys = new Set([
+  'virtual_display_mode',
+  'virtual_display_layout',
+  'dd_virtual_display_scale',
+  'dd_activate_virtual_display',
+  'dd_virtual_display_permanent_count',
+  'dd_paused_virtual_display_timeout_secs',
+  'frame_limiter_auto_virtual_framegen',
+  'dd_use_sunshine_virtual_display_driver',
+  'vulkan_hdr_layer',
+]);
+
+function isHiddenForDisplay(key: string): boolean {
+  return (
+    props.hiddenKeys.includes(key) ||
+    (props.displaySelection === 'physical' && virtualDisplayOnlyKeys.has(key))
+  );
+}
+
 const overrideKeys = computed(() =>
   Object.keys(props.modelValue)
-    .filter((key) => key !== 'adapter_pnp_id')
+    .filter((key) => key !== 'adapter_pnp_id' && !isHiddenForDisplay(key))
     .sort((a, b) => labelFor(a).localeCompare(labelFor(b))),
 );
 
@@ -169,7 +191,12 @@ const catalogGroups = computed(() => {
       fields: category.groups
         .flatMap((group) => group.fields)
         .filter((field) => {
-          if (!isAllowed(field.key) || field.key === 'adapter_pnp_id' || seen.has(field.key)) {
+          if (
+            !isAllowed(field.key) ||
+            isHiddenForDisplay(field.key) ||
+            field.key === 'adapter_pnp_id' ||
+            seen.has(field.key)
+          ) {
             return false;
           }
           seen.add(field.key);

@@ -272,6 +272,43 @@ const virtualDisplayLayoutOptions = computed(() =>
   ].map((value) => ({ label: t(`config.virtual_display_layout_${value}`), value })),
 );
 
+const displayConfigurationOptions = computed(() => [
+  { label: t('_common.disabled'), value: 'disabled' },
+  { label: t('ui.settings.options.display_preparation.verify_only'), value: 'verify_only' },
+  { label: t('ui.settings.options.display_preparation.ensure_active'), value: 'ensure_active' },
+  { label: t('ui.settings.options.display_preparation.ensure_primary'), value: 'ensure_primary' },
+  {
+    label: t('ui.settings.options.display_preparation.ensure_only'),
+    value: 'ensure_only_display',
+  },
+]);
+
+const displayConfigurationOption = computed<string>({
+  get: () => String(draft.configOverrides.dd_configuration_option ?? ''),
+  set: (value) => {
+    if (!value) delete draft.configOverrides.dd_configuration_option;
+    else draft.configOverrides.dd_configuration_option = value;
+  },
+});
+
+const commonDisplayConfigurationLabel = computed(() => {
+  const value = String(props.commonSettings.dd_configuration_option ?? 'verify_only');
+  return (
+    displayConfigurationOptions.value.find((option) => option.value === value)?.label ??
+    t('ui.application.options.currentValue', { value })
+  );
+});
+
+const visibleOverrideDisplaySelection = computed<ClientDisplaySelection | undefined>(() =>
+  draft.displayOverrideEnabled ? draft.displaySelection : undefined,
+);
+
+const hiddenOverrideKeys = computed(() =>
+  draft.displayOverrideEnabled && draft.displaySelection === 'physical'
+    ? ['dd_configuration_option']
+    : [],
+);
+
 const sharedVirtualDisplay = computed(() => {
   if (!draft.displayOverrideEnabled || draft.displaySelection !== 'virtual') {
     return globalVirtualDisplayMode.value === 'shared';
@@ -540,6 +577,35 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
           </div>
         </SettingRow>
 
+        <SettingRow
+          v-if="draft.displaySelection === 'physical'"
+          :label="t('config.dd_config_label')"
+          :description="t('config.dd_config_hint')"
+          :control-id="`${controlIdPrefix}-display-configuration`"
+        >
+          <select
+            :id="`${controlIdPrefix}-display-configuration`"
+            v-model="displayConfigurationOption"
+            class="vs-select"
+            :disabled="busy"
+          >
+            <option value="">
+              {{
+                t('ui.devices.editor.use_common_value', {
+                  value: commonDisplayConfigurationLabel,
+                })
+              }}
+            </option>
+            <option
+              v-for="option in displayConfigurationOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+        </SettingRow>
+
         <template v-else>
           <SettingRow
             :label="t('config.virtual_display_mode_label')"
@@ -715,6 +781,8 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
       :base-values="commonSettings"
       :metadata="metadata"
       scope="client"
+      :display-selection="visibleOverrideDisplaySelection"
+      :hidden-keys="hiddenOverrideKeys"
       :control-id-prefix="`${controlIdPrefix}-override`"
     />
 
