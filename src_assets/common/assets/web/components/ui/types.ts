@@ -16,6 +16,7 @@ export type UiIconName =
   | 'help'
   | 'info'
   | 'integrations'
+  | 'key'
   | 'library'
   | 'logs'
   | 'menu'

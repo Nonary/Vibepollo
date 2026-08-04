@@ -856,6 +856,7 @@
       }
     },
     "nav": {
+      "api_tokens": "API tokens",
       "browser_stream": "Browser stream",
       "devices": "Devices",
       "integrations": "Integrations",
@@ -1829,6 +1830,97 @@
       "unsaved_one": "1 unsaved change",
       "unsaved_region": "Unsaved settings",
       "unsaved_short": "{count} unsaved"
+    },
+    "api_tokens": {
+      "active": {
+        "active": "Active",
+        "created": "Created {date}",
+        "description": "Review the tokens currently authorized to call this host.",
+        "empty_description": "Create a token above when you need a scoped integration or automation.",
+        "empty_title": "No active API tokens",
+        "eyebrow": "Access inventory",
+        "filtered_empty_description": "Try a different token hash or route.",
+        "filtered_empty_title": "No matching tokens",
+        "result_count": "Showing {shown} of {total} tokens",
+        "search_label": "Find a token",
+        "search_placeholder": "Search by hash or route",
+        "title": "Active tokens",
+        "token_label": "Token {hash}"
+      },
+      "active_count": "{count} active tokens",
+      "actions": {
+        "add_scope": "Add scope",
+        "copied": "Copied",
+        "copy": "Copy token",
+        "generate": "Generate API token",
+        "generating": "Generating",
+        "refresh_tokens": "Refresh tokens",
+        "refreshing": "Refreshing",
+        "remove_scope": "Remove scope",
+        "remove_scope_named": "Remove {path} scope",
+        "revoke": "Revoke",
+        "revoke_named": "Revoke token {hash}",
+        "revoking": "Revoking"
+      },
+      "alert": {
+        "action_failed": "Token action failed",
+        "create_failed": "Token creation failed",
+        "no_routes_description": "No token-eligible API routes were returned by the host.",
+        "no_routes_title": "Route catalog unavailable",
+        "routes_unavailable": "Routes could not be loaded",
+        "success_title": "Token access updated",
+        "tokens_unavailable": "Active tokens could not be loaded"
+      },
+      "builder": {
+        "description": "Create a token that can do only what your integration needs.",
+        "empty_description": "Choose a route and method above to add the first scope.",
+        "empty_title": "No scopes yet",
+        "eyebrow": "Create access",
+        "generate_hint": "The full token is shown once. Store it somewhere secure before dismissing this dialog.",
+        "least_privilege": "Least privilege",
+        "methods_available": "{count} available",
+        "methods_description": "Select only the HTTP methods this integration needs.",
+        "methods_label": "Allowed methods",
+        "no_methods": "This route has no token-eligible methods.",
+        "route_count": "{count} matching routes",
+        "route_description": "Find an API route, then choose its allowed methods.",
+        "route_label": "API route",
+        "route_placeholder": "Select a route",
+        "route_title": "Choose a route",
+        "search_label": "Filter routes",
+        "search_placeholder": "Search /api/...",
+        "summary_description": "Review exactly what this token will be allowed to do.",
+        "summary_methods": "allowed methods",
+        "summary_routes": "scoped routes",
+        "summary_title": "Review access",
+        "title": "Build a scoped token"
+      },
+      "description": "Generate narrow API credentials for scripts, integrations, and trusted tools.",
+      "errors": {
+        "create": "Unable to generate this token",
+        "revoke": "Unable to revoke this token",
+        "routes_load": "Unable to load the API route catalog",
+        "scope_required": "Add at least one route and method before generating a token.",
+        "token_missing": "The host did not return a token.",
+        "tokens_load": "Unable to load active API tokens"
+      },
+      "notices": {
+        "created": "The token was created. Copy it now; it cannot be viewed again.",
+        "revoked": "The API token was revoked."
+      },
+      "reveal": {
+        "description": "This credential is displayed only after creation.",
+        "title": "Your API token is ready",
+        "warning": "Copy this token now. Vibeshine stores only a hash and cannot show the full token again.",
+        "warning_title": "Save it securely"
+      },
+      "revoke": {
+        "description": "Revoke token {hash}? Any integration using it will stop working immediately.",
+        "title": "Revoke API token?"
+      },
+      "scope_count": "{count} selected scopes",
+      "title": "API tokens",
+      "unknown_date": "Creation date unavailable"
     },
     "shell": {
       "appearance": "Appearance",

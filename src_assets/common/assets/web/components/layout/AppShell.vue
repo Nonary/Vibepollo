@@ -21,6 +21,7 @@ const primaryNavigation = [
 ] as const;
 
 const secondaryNavigation = [
+  { labelKey: 'ui.nav.api_tokens', icon: 'key', to: '/api-tokens' },
   { labelKey: 'ui.nav.settings', icon: 'settings', to: '/settings' },
   { labelKey: 'ui.nav.maintenance', icon: 'help', to: '/maintenance' },
 ] as const;
