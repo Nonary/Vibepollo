@@ -159,8 +159,9 @@ namespace framegen {
     policy.physical_framegen_capture = policy.frame_generation_enabled && !policy.uses_virtual_display;
 
     // Virtual displays can apply a matching stream-start frame cap independently from their
-    // refresh policy. The default dynamic policy starts at 1x and is promoted by game activity;
-    // legacy mode instead supplies a fixed 2x multiplier here.
+    // refresh policy. The default automatic policy holds a fixed 4x display refresh; WGC
+    // changes its latest-frame admission between 2x desktop and 4x game activity. Legacy
+    // mode instead supplies a fixed 2x multiplier here.
     if (policy.uses_virtual_display) {
       policy.auto_virtual_framegen_limiter = input.auto_virtual_framegen_limiter;
       policy.refresh_multiplier = std::max(1, input.virtual_display_refresh_multiplier);

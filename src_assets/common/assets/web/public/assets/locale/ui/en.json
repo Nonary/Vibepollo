@@ -1385,7 +1385,7 @@
           "label": "Always limit rendered frames"
         },
         "frame_limiter_auto_virtual_framegen": {
-          "description": "Automatic uses the stream rate on the desktop, switches the virtual screen to 4× while gaming, and caps the game through the selected limiter. Selecting no limiter keeps refresh switching but disables the matching cap. Compatibility keeps the older fixed 2× behavior. A manual refresh rate disables automatic switching.",
+          "description": "Automatic keeps the virtual screen at 4× refresh and changes only WGC's latest-frame admission: 2× on the desktop and 4× for a confirmed game. This avoids display-mode changes while retaining high-rate game capture. Compatibility keeps the older fixed 2× behavior.",
           "label": "Virtual-screen game smoothness"
         },
         "frame_limiter_provider": {

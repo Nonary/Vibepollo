@@ -132,9 +132,11 @@ const int INITIAL_LOG_LEVEL = 2;
 constexpr uint32_t DEFAULT_WGC_IPC_FLAGS =
   platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST |
   platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
-static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS};
+static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS, 120};
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
+static std::atomic<int32_t> g_activity_admission_fps {120};
+static std::atomic<uint32_t> g_activity_admission_generation {0};
 
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
@@ -1086,6 +1088,7 @@ private:
   std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
+  std::atomic<uint64_t> _activity_rate_limited_frames {0};
   uint64_t _last_diagnostics_captured_frames = 0;
   uint64_t _last_diagnostics_published_frames = 0;
   uint64_t _last_diagnostics_empty_drops = 0;
@@ -1096,6 +1099,9 @@ private:
   uint64_t _last_diagnostics_slow_mutex = 0;
   uint64_t _last_diagnostics_slow_hold = 0;
   uint64_t _last_diagnostics_slow_copy = 0;
+  uint64_t _last_diagnostics_activity_rate_limited = 0;
+  uint32_t _activity_admission_generation = 0;
+  std::chrono::steady_clock::time_point _last_activity_admitted {};
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1345,7 +1351,9 @@ public:
         // Get frame timing information from the WGC frame
         uint64_t frame_qpc = frame.SystemRelativeTime().count();
         record_frame_arrival(drained_frames);
-        queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+        if (admit_activity_frame()) {
+          queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+        }
       } catch (const winrt::hresult_error &ex) {
         // Log error
         BOOST_LOG(error) << "WinRT error in frame processing: " << ex.code() << " - " << winrt::to_string(ex.message());
@@ -1435,6 +1443,7 @@ private:
       const auto slow_mutex = _slow_mutex_waits.load(std::memory_order_relaxed);
       const auto slow_hold = _slow_shared_mutex_holds.load(std::memory_order_relaxed);
       const auto slow_copy = _slow_copy_submissions.load(std::memory_order_relaxed);
+      const auto activity_rate_limited = _activity_rate_limited_frames.load(std::memory_order_relaxed);
 
       const auto captured_delta = captured - _last_diagnostics_captured_frames;
       const auto published_delta = published - _last_diagnostics_published_frames;
@@ -1446,6 +1455,7 @@ private:
       const auto slow_mutex_delta = slow_mutex - _last_diagnostics_slow_mutex;
       const auto slow_hold_delta = slow_hold - _last_diagnostics_slow_hold;
       const auto slow_copy_delta = slow_copy - _last_diagnostics_slow_copy;
+      const auto activity_rate_limited_delta = activity_rate_limited - _last_diagnostics_activity_rate_limited;
 
       _last_diagnostics_captured_frames = captured;
       _last_diagnostics_published_frames = published;
@@ -1457,6 +1467,7 @@ private:
       _last_diagnostics_slow_mutex = slow_mutex;
       _last_diagnostics_slow_hold = slow_hold;
       _last_diagnostics_slow_copy = slow_copy;
+      _last_diagnostics_activity_rate_limited = activity_rate_limited;
 
       BOOST_LOG(info) << "WGC capture diagnostics: interval_s=" << interval_s
                       << " buffer=" << _current_buffer_size << "/" << _max_buffer_size
@@ -1464,6 +1475,7 @@ private:
                       << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
                       << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
                       << " drained=" << drained_delta
+                      << " activity_rate_limited=" << activity_rate_limited_delta
                       << " empty_drops=" << empty_drop_delta
                       << " delivery_replaced=" << replaced_delta
                       << " scratch_dropped=" << scratch_dropped_delta
@@ -1473,6 +1485,30 @@ private:
                       << " slow_copy=" << slow_copy_delta;
       return;
     }
+  }
+
+  bool admit_activity_frame() {
+    const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
+    if (generation != _activity_admission_generation) {
+      _activity_admission_generation = generation;
+      _last_activity_admitted = {};
+    }
+
+    const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
+    if (admission_fps <= 0) {
+      return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto minimum_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / admission_fps;
+    if (_last_activity_admitted.time_since_epoch().count() != 0 &&
+        now - _last_activity_admitted < minimum_interval) {
+      _activity_rate_limited_frames.fetch_add(1, std::memory_order_relaxed);
+      return false;
+    }
+
+    _last_activity_admitted = now;
+    return true;
   }
 
   /**
@@ -2092,6 +2128,20 @@ std::string get_temp_log_path() {
  *
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
+  if (message.size() == sizeof(platf::dxgi::activity_admission_data_t)) {
+    platf::dxgi::activity_admission_data_t update {};
+    memcpy(&update, message.data(), sizeof(update));
+    if (update.magic != platf::dxgi::WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC || update.admission_fps <= 0) {
+      BOOST_LOG(warning) << "Ignoring invalid WGC activity admission update";
+      return;
+    }
+
+    g_activity_admission_fps.store(update.admission_fps, std::memory_order_release);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    BOOST_LOG(info) << "WGC activity admission updated to " << update.admission_fps << "fps";
+    return;
+  }
+
   // Handle config data message
   if (message.size() == sizeof(platf::dxgi::config_data_t)) {
     std::lock_guard lock(g_config_mutex);
@@ -2101,6 +2151,8 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
+    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_release);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
     // If log_level in config differs from current, update log filter
     if (INITIAL_LOG_LEVEL != g_config.log_level) {
       // Update log filter to new log level
@@ -2114,6 +2166,7 @@ void handle_ipc_message(std::span<const uint8_t> message) {
                     << ", adapter LUID: " << std::hex << g_config.adapter_luid.HighPart
                     << ":" << g_config.adapter_luid.LowPart << std::dec
                     << ", target_fps: " << g_config.target_fps
+                    << ", activity_admission_fps: " << g_config.activity_admission_fps
                     << ", min_update_interval_100ns: " << g_config.min_update_interval_100ns
                     << ", initial_buffers: " << g_config.initial_frame_buffer_size
                     << ", max_buffers: " << g_config.max_frame_buffer_size

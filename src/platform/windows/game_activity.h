@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -69,6 +70,10 @@ namespace platf::game_activity {
     std::uint32_t high_refresh_numerator {0};
     std::uint32_t high_refresh_denominator {1};
     bool initial_high {false};
+    // When supplied, update capture admission instead of changing the display mode.
+    // It must not touch display-mode or capture-device state; it runs on the
+    // activity worker.
+    std::function<bool(bool)> apply_activity_state;
   };
 
   class refresh_target_t {

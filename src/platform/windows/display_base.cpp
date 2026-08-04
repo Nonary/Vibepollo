@@ -41,7 +41,6 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
-#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
 
@@ -1269,37 +1268,6 @@ namespace platf::dxgi {
     }
 
     refresh_only_changes_supported = skip_dd_test;
-    if (config::frame_limiter.game_aware_virtual_display_refresh_enabled() &&
-        config::video.dd.refresh_rate_option != config::video_t::dd_t::refresh_rate_option_e::manual &&
-        config.framerate > 0 && VDISPLAY::is_virtual_display_output(display_name)) {
-      if (const auto device_id = VDISPLAY::resolveVirtualDisplayDeviceId(captured_output_desc.DeviceName)) {
-        const auto base_refresh = static_cast<std::uint32_t>(config.framerate);
-        const auto high_refresh = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-          static_cast<std::uint64_t>(base_refresh) * 4ull,
-          (std::numeric_limits<std::uint32_t>::max)()
-        ));
-
-        DEVMODEW current_mode {};
-        current_mode.dmSize = sizeof(current_mode);
-        const bool has_current_mode = EnumDisplaySettingsExW(
-          captured_output_desc.DeviceName,
-          ENUM_CURRENT_SETTINGS,
-          &current_mode,
-          0
-        ) != FALSE;
-        const bool initial_high = has_current_mode && current_mode.dmDisplayFrequency > base_refresh;
-        game_refresh_target = platf::game_activity::make_refresh_target({
-          .display_name = display_name,
-          .device_id = *device_id,
-          .capture_rect = captured_output_desc.DesktopCoordinates,
-          .base_refresh_numerator = base_refresh,
-          .base_refresh_denominator = 1,
-          .high_refresh_numerator = high_refresh,
-          .high_refresh_denominator = 1,
-          .initial_high = initial_high,
-        });
-      }
-    }
 
     return 0;
   }

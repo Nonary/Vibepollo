@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -63,6 +64,13 @@ namespace platf::dxgi {
       }
 
       return 60;
+    }
+
+    int wgc_initial_activity_admission_fps(const ::video::config_t &config) {
+      const auto target_fps = wgc_target_fps(config);
+      return target_fps > (std::numeric_limits<int>::max)() / 2 ?
+               (std::numeric_limits<int>::max)() :
+               target_fps * 2;
     }
 
     std::int64_t wgc_min_update_interval_100ns(const ::video::config_t & /*config*/) {
@@ -199,6 +207,7 @@ namespace platf::dxgi {
     _display_name = display_name;
     _device.copy_from(device);
     _advanced_color_capture = advanced_color_capture;
+    _activity_admission_fps = wgc_initial_activity_admission_fps(_config);
     return 0;
   }
 
@@ -335,6 +344,7 @@ namespace platf::dxgi {
     config_data.flags = wgc_ipc_flags(_config);
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
     config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
+    config_data.activity_admission_fps = _activity_admission_fps.load(std::memory_order_relaxed);
 
     // Convert display_name (std::string) to wchar_t[32]
     if (!_display_name.empty()) {
@@ -469,6 +479,29 @@ namespace platf::dxgi {
 
     cleanup_on_failure.disable();
     _initialized = true;
+    if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
+      (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
+    }
+  }
+
+  bool ipc_session_t::set_activity_admission_fps(const int fps) {
+    if (fps <= 0) {
+      return false;
+    }
+    _activity_admission_fps.store(fps, std::memory_order_relaxed);
+    if (!_pipe || !_initialized) {
+      return true;
+    }
+    if (!_pipe->is_connected()) {
+      return false;
+    }
+
+    const activity_admission_data_t update {
+      .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
+      .admission_fps = fps,
+    };
+    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)));
+    return true;
   }
 
   capture_e ipc_session_t::wait_for_frame(std::chrono::milliseconds timeout) {

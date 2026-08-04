@@ -136,6 +136,12 @@ namespace platf::dxgi {
     }
 
     /**
+     * Update the helper's latest-frame admission budget without reinitializing
+     * WGC or changing the display mode. This is safe from the activity worker.
+     */
+    bool set_activity_admission_fps(int fps);
+
+    /**
      * @brief Read the static descriptor of the shared texture without acquiring the keyed mutex.
      * The shared texture is created once at session setup and its descriptor never changes for
      * the lifetime of the session, so it is safe to read at any time.
@@ -199,6 +205,7 @@ namespace platf::dxgi {
     ::video::config_t _config;  ///< Cached video config.
     std::string _display_name;  ///< Display name copy.
     bool _advanced_color_capture = false;  ///< True when target display is already Advanced Color/HDR.
+    std::atomic<int> _activity_admission_fps {0};  ///< Latest desired helper admission rate, retained across helper restarts.
     std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
   };
 

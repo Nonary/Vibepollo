@@ -344,9 +344,9 @@ namespace config {
     // Restores the previous VSYNC state when streaming stops.
     bool disable_vsync {false};
 
-    // Virtual-display capture policy. Enabled dynamically switches between 1x desktop and
-    // 4x game refresh with a matching limiter; legacy uses a fixed 2x refresh; disabled
-    // leaves both automatic refresh adjustment and the virtual-display limiter off.
+    // Virtual-display capture policy. Enabled keeps the virtual display at a fixed 4x
+    // refresh and lets WGC admit 2x desktop / 4x game frames without changing the mode.
+    // Legacy uses a fixed 2x refresh; disabled leaves the automatic policy off.
     virtual_display_capture_mode_e virtual_display_capture_mode {
       virtual_display_capture_mode_e::enabled
     };
@@ -360,7 +360,10 @@ namespace config {
     }
 
     [[nodiscard]] int fixed_virtual_display_refresh_multiplier() const {
-      return virtual_display_capture_mode == virtual_display_capture_mode_e::legacy ? 2 : 1;
+      if (virtual_display_capture_mode == virtual_display_capture_mode_e::legacy) {
+        return 2;
+      }
+      return virtual_display_capture_mode == virtual_display_capture_mode_e::enabled ? 4 : 1;
     }
   };
 

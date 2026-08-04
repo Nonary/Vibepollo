@@ -514,27 +514,41 @@ namespace platf::game_activity {
             now >= retry_after) {
           const auto numerator = candidate_high ? options.high_refresh_numerator : options.base_refresh_numerator;
           const auto denominator = candidate_high ? options.high_refresh_denominator : options.base_refresh_denominator;
-          begin_mode_change();
-          const bool applied = display_helper_client::send_refresh_rate(options.device_id, numerator, denominator);
-          finish_mode_change();
+          const bool changes_display_mode = !options.apply_activity_state;
+          if (changes_display_mode) {
+            begin_mode_change();
+          }
+          const bool applied = options.apply_activity_state ?
+                                 options.apply_activity_state(candidate_high) :
+                                 display_helper_client::send_refresh_rate(options.device_id, numerator, denominator);
+          if (changes_display_mode) {
+            finish_mode_change();
+          }
           if (applied) {
             applied_high = candidate_high;
             const auto applied_at = std::chrono::steady_clock::now();
             ++flap_count;
-            hold_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
-            if (candidate_high) {
-              display_transition_minimum_hold_until = applied_at + DISPLAY_TRANSITION_MINIMUM_HOLD;
-              display_transition_settle_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+            if (changes_display_mode) {
+              hold_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+              if (candidate_high) {
+                display_transition_minimum_hold_until = applied_at + DISPLAY_TRANSITION_MINIMUM_HOLD;
+                display_transition_settle_until = applied_at + DISPLAY_TRANSITION_SETTLE_TIME;
+              }
             }
-            BOOST_LOG(info) << "Virtual display refresh: display='" << options.display_name
+            BOOST_LOG(info) << (changes_display_mode ? "Virtual display refresh: display='" : "WGC activity admission: display='")
+                            << options.display_name
                             << "' source=" << source_name(resolved.source)
                             << " detector=" << fullscreen_detector::source_name(detection.source)
                             << " visibility=" << foreground.source
                             << " rate=" << numerator << '/' << denominator;
           } else {
             retry_after = now + RETRY_DELAY;
-            BOOST_LOG(warning) << "Virtual display refresh: failed to apply " << numerator << '/' << denominator
-                               << " to device='" << options.device_id << "'";
+            if (changes_display_mode) {
+              BOOST_LOG(warning) << "Virtual display refresh: failed to apply " << numerator << '/' << denominator
+                                 << " to device='" << options.device_id << "'";
+            } else {
+              BOOST_LOG(warning) << "WGC activity admission: failed to apply " << numerator << '/' << denominator;
+            }
           }
         }
 
@@ -577,13 +591,14 @@ namespace platf::game_activity {
   }
 
   std::shared_ptr<refresh_target_t> make_refresh_target(refresh_target_options_t options) {
-    if (options.device_id.empty() || options.base_refresh_numerator == 0 ||
+    const auto target_identity = options.apply_activity_state ? options.display_name : options.device_id;
+    if (target_identity.empty() || options.base_refresh_numerator == 0 ||
         options.base_refresh_denominator == 0 || options.high_refresh_numerator == 0 ||
         options.high_refresh_denominator == 0) {
       return {};
     }
 
-    const auto target_key = refresh_target_key(options.device_id);
+    const auto target_key = refresh_target_key(target_identity);
     std::scoped_lock lock {g_refresh_targets_mutex};
     std::erase_if(g_refresh_targets, [](const auto &entry) {
       return entry.second.expired();
@@ -592,7 +607,7 @@ namespace platf::game_activity {
         existing != g_refresh_targets.end()) {
       if (auto target = existing->second.lock()) {
         BOOST_LOG(debug) << "Virtual display refresh: display='" << options.display_name
-                         << "' reusing active controller for device='" << options.device_id
+                         << "' reusing active controller for target='" << target_identity
                          << "'; original stream retains refresh policy ownership";
         return target;
       }

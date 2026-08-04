@@ -92,6 +92,16 @@ namespace platf::dxgi {
     uint32_t initial_frame_buffer_size;
     uint32_t max_frame_buffer_size;
     uint32_t flags;
+    int32_t activity_admission_fps;
+  };
+
+  constexpr uint32_t WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC = 0x57474341;  // "WGCA"
+
+  // Runtime-only update. This intentionally contains no display state: switching
+  // activity policy must not recreate WGC resources or change the monitor mode.
+  struct activity_admission_data_t {
+    uint32_t magic;
+    int32_t admission_fps;
   };
 
   /**
