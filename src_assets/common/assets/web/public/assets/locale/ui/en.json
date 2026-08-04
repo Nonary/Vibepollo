@@ -1613,9 +1613,9 @@
           "required": "Required"
         },
         "frame_generation": {
-          "automatic": "Automatic — 1× desktop / 4× games (recommended)",
-          "compatibility": "Compatibility — fixed 2× refresh",
-          "off": "Off — no automatic virtual refresh or matching limiter"
+          "automatic": "Automatic — fixed 4× display; 2× desktop / 4× game capture (recommended)",
+          "compatibility": "Compatibility — fixed 2× display and capture",
+          "off": "Off — no automatic virtual refresh or WGC admission limit"
         },
         "frame_limiter_provider": {
           "none": "None",
