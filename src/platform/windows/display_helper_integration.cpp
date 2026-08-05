@@ -79,9 +79,11 @@ namespace {
     int fps = 0;
     bool client_display_mode_override = false;
     std::uint32_t client_display_refresh_millihz = 0;
+    std::optional<bool> client_virtual_display_override;
     bool enable_hdr = false;
     bool enable_sops = false;
     bool virtual_display = false;
+    std::optional<rtsp_stream::launch_session_t::resolution_override_t> resolution_override;
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<bool> virtual_display_hdr_enabled;
@@ -157,9 +159,11 @@ namespace {
       state.session_snapshot.fps = request.session->fps;
       state.session_snapshot.client_display_mode_override = request.session->client_display_mode_override;
       state.session_snapshot.client_display_refresh_millihz = request.session->client_display_refresh_millihz;
+      state.session_snapshot.client_virtual_display_override = request.session->client_virtual_display_override;
       state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
       state.session_snapshot.enable_sops = request.session->enable_sops;
       state.session_snapshot.virtual_display = request.session->virtual_display;
+      state.session_snapshot.resolution_override = request.session->resolution_override;
       state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
       state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
       state.session_snapshot.virtual_display_hdr_enabled = request.session->virtual_display_hdr_enabled;
