@@ -2342,9 +2342,11 @@ namespace display_helper_integration {
       snapshot.fps = pending.session_snapshot.fps;
       snapshot.client_display_mode_override = pending.session_snapshot.client_display_mode_override;
       snapshot.client_display_refresh_millihz = pending.session_snapshot.client_display_refresh_millihz;
+      snapshot.client_virtual_display_override = pending.session_snapshot.client_virtual_display_override;
       snapshot.enable_hdr = pending.session_snapshot.enable_hdr;
       snapshot.enable_sops = pending.session_snapshot.enable_sops;
       snapshot.virtual_display = pending.session_snapshot.virtual_display;
+      snapshot.resolution_override = pending.session_snapshot.resolution_override;
       snapshot.virtual_display_device_id = pending.session_snapshot.virtual_display_device_id;
       snapshot.virtual_display_ready_since = pending.session_snapshot.virtual_display_ready_since;
       snapshot.virtual_display_hdr_enabled = pending.session_snapshot.virtual_display_hdr_enabled;

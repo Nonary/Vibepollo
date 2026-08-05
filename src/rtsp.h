@@ -39,6 +39,11 @@ namespace rtsp_stream {
   constexpr auto RTSP_SETUP_PORT = 21;
 
   struct launch_session_t {
+    struct resolution_override_t {
+      int width;
+      int height;
+    };
+
     uint32_t id;
 
     crypto::aes_t gcm_key;
@@ -94,8 +99,13 @@ namespace rtsp_stream {
     // in millihertz. The existing fps field remains the legacy stream cadence.
     std::uint32_t client_display_refresh_millihz = 0;
     bool client_requests_virtual_display;
+    // Present only when the client explicitly selected a virtual or physical display.
+    std::optional<bool> client_virtual_display_override;
     bool virtual_display;
-    uint32_t scale_factor;
+    uint32_t scale_factor = 100;
+    // Host/display resolution derived from a launch-time client override. The RTSP
+    // negotiated viewport remains in width/height.
+    std::optional<resolution_override_t> resolution_override;
     bool virtual_display_failed;
     bool virtual_display_detach_with_app;
     // True only after the NVHTTP display-preparation path has resolved the

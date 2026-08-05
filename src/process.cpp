@@ -1319,8 +1319,13 @@ namespace proc {
     _app_prep_begin = std::begin(_app.prep_cmds);
     _app_prep_it = _app_prep_begin;
 
-    uint32_t client_width = launch_session->width ? launch_session->width : 1920;
-    uint32_t client_height = launch_session->height ? launch_session->height : 1080;
+    const bool has_resolution_override = launch_session->resolution_override.has_value();
+    uint32_t client_width = has_resolution_override ?
+                              static_cast<uint32_t>(launch_session->resolution_override->width) :
+                              (launch_session->width ? launch_session->width : 1920);
+    uint32_t client_height = has_resolution_override ?
+                               static_cast<uint32_t>(launch_session->resolution_override->height) :
+                               (launch_session->height ? launch_session->height : 1080);
 
     uint32_t render_width = client_width;
     uint32_t render_height = client_height;
@@ -1334,7 +1339,7 @@ namespace proc {
       scale_factor = 100;
     }
 
-    if (scale_factor != 100) {
+    if (!has_resolution_override && scale_factor != 100) {
       render_width *= ((float) scale_factor / 100);
       render_height *= ((float) scale_factor / 100);
 

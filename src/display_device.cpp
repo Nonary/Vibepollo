@@ -218,7 +218,24 @@ namespace display_device {
     bool parse_resolution_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using resolution_option_e = config::video_t::dd_t::resolution_option_e;
 
-      // Client display_mode override takes highest priority
+      // An explicit launch resolution override takes highest priority.
+      if (session.resolution_override) {
+        if (session.resolution_override->width > 0 && session.resolution_override->height > 0) {
+          config.m_resolution = Resolution {
+            static_cast<unsigned int>(session.resolution_override->width),
+            static_cast<unsigned int>(session.resolution_override->height)
+          };
+          BOOST_LOG(debug) << "Using launch resolution override for resolution: "
+                           << session.resolution_override->width << "x" << session.resolution_override->height;
+        } else {
+          BOOST_LOG(error) << "Launch resolution override is invalid: "
+                           << session.resolution_override->width << "x" << session.resolution_override->height;
+          return false;
+        }
+        return true;
+      }
+
+      // Client display_mode override takes highest priority after launch overrides.
       if (session.client_display_mode_override) {
         if (session.width >= 0 && session.height >= 0) {
           config.m_resolution = Resolution {
