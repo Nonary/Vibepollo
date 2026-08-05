@@ -2,8 +2,6 @@
  * @file tests/unit/test_nvenc_api.cpp
  * @brief Test NVENC API version helpers.
  */
-#include "../tests_common.h"
-
 #include <gmock/gmock.h>
 
 #include "src/nvenc/nvenc_api.h"

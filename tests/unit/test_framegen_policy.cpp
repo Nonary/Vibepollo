@@ -1,11 +1,12 @@
 /**
  * @file tests/unit/test_framegen_policy.cpp
  */
-#include "../tests_common.h"
+#include <gtest/gtest.h>
 
 #include <src/framegen_policy.h>
 
 #include <string>
+#include <utility>
 
 namespace {
 

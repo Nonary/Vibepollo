@@ -6,7 +6,7 @@ extern "C" {
 #include <src/rswrapper.h>
 }
 
-#include "../tests_common.h"
+#include <gtest/gtest.h>
 
 TEST(ReedSolomonWrapperTests, InitTest) {
   reed_solomon_init();

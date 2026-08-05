@@ -3,7 +3,8 @@
  * @brief Test src/thread_safe.h
  */
 
-#include "../tests_common.h"
+#include <gtest/gtest.h>
+
 #include "src/thread_safe.h"
 
 TEST(MailRegistryTests, QueueLookupReplacesExpiredPost) {

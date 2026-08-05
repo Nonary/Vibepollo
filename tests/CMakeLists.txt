@@ -54,3 +54,76 @@ sunshine_add_test_target(
     LINK_LIBRARIES GTest::gtest
     DEPENDENCIES
 )
+
+sunshine_add_test_target(
+    NAME test_fast_thread_safe
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_thread_safe.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
+sunshine_add_test_target(
+    NAME test_fast_version_compare
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_version_compare.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
+sunshine_add_test_target(
+    NAME test_fast_nvenc_api
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvenc_api.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gmock GTest::gtest
+    DEPENDENCIES
+)
+if(TARGET test_fast_nvenc_api)
+    # nvenc_api.h directly includes the Video Codec SDK public header.
+    target_include_directories(test_fast_nvenc_api PRIVATE
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nv-codec-headers/include"
+    )
+endif()
+
+sunshine_add_test_target(
+    NAME test_fast_framegen_policy
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_framegen_policy.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
+# rswrapper.c includes the vendored nanors Reed-Solomon implementation directly,
+# so no separate library or server source is required by this target.
+set_source_files_properties(
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rswrapper.c"
+    PROPERTIES COMPILE_OPTIONS "-ftree-vectorize;-funroll-loops"
+)
+sunshine_add_test_target(
+    NAME test_fast_rswrapper
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_rswrapper.cpp"
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rswrapper.c"
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
