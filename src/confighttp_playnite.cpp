@@ -17,6 +17,7 @@
   #include <limits>
   #include <mutex>
   #include <optional>
+  #include <regex>
   #include <sstream>
   #include <string>
   #include <string_view>
@@ -44,6 +45,7 @@
   #include <KnownFolders.h>
   #include <ShlObj.h>
   #include <windows.h>
+  #include <ws2tcpip.h>
 
   // boost
   #include <boost/crc.hpp>
@@ -545,6 +547,125 @@ namespace confighttp {
     std::optional<std::filesystem::file_time_type> write_time;
   };
 
+  class export_log_sanitizer_t {
+  public:
+    std::string sanitize(const std::string &input) {
+      struct replacement_t {
+        std::size_t begin;
+        std::size_t end;
+        int priority;
+        std::string value;
+      };
+
+      std::vector<replacement_t> replacements;
+      const auto add_matches = [&](const std::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
+        for (std::sregex_iterator it(input.begin(), input.end(), pattern), end; it != end; ++it) {
+          const auto &match = *it;
+          if (capture >= match.size() || !match[capture].matched) {
+            continue;
+          }
+          const std::string value = match.str(capture);
+          if (validate_ipv6 && !is_ipv6(value)) {
+            continue;
+          }
+          if (preserve_service_identity && kind == "USER" && is_service_identity(value)) {
+            continue;
+          }
+          replacements.push_back(replacement_t {
+            static_cast<std::size_t>(match.position(capture)),
+            static_cast<std::size_t>(match.position(capture) + match.length(capture)),
+            priority,
+            placeholder(kind, value),
+          });
+        }
+      };
+
+      // Match only user components of conventional home-directory paths.
+      add_matches(std::regex {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
+      add_matches(std::regex {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
+
+      // Explicit fields are safer to redact than arbitrary words that happen to look like names.
+      add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase}, 1, 0, "USER", false, true);
+      add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase}, 1, 0, "USER", false, true);
+
+      add_matches(std::regex {R"((?:^|[^0-9A-Za-z:.])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z:.]|$))"}, 1, 20, "IP");
+      add_matches(std::regex {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"}, 1, 20, "IP", true);
+      add_matches(std::regex {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"}, 1, 30, "MAC");
+      add_matches(std::regex {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"}, 0, 40, "EMAIL");
+
+      std::sort(replacements.begin(), replacements.end(), [](const auto &a, const auto &b) {
+        if (a.begin != b.begin) {
+          return a.begin < b.begin;
+        }
+        if (a.end != b.end) {
+          return a.end > b.end;
+        }
+        return a.priority < b.priority;
+      });
+
+      std::string output;
+      output.reserve(input.size());
+      std::size_t cursor = 0;
+      for (const auto &replacement : replacements) {
+        if (replacement.begin < cursor || replacement.end > input.size()) {
+          continue;
+        }
+        output.append(input, cursor, replacement.begin - cursor);
+        output.append(replacement.value);
+        cursor = replacement.end;
+      }
+      output.append(input, cursor, std::string::npos);
+      return output;
+    }
+
+  private:
+    static bool is_service_identity(const std::string &value) {
+      std::string normalized;
+      normalized.reserve(value.size());
+      for (const unsigned char ch : value) {
+        if (std::isspace(ch)) {
+          continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(ch)));
+      }
+      return normalized == "system" || normalized == "localsystem" || normalized == "root" || normalized == "daemon" || normalized == "unknown" ||
+             normalized == "nobody" || normalized == "networkservice" || normalized == "localservice" || normalized == "www-data";
+    }
+
+    static bool is_ipv6(const std::string &value) {
+      IN6_ADDR address {};
+      return InetPtonA(AF_INET6, value.c_str(), &address) == 1;
+    }
+
+    static std::string key_for(const std::string &kind, const std::string &value) {
+      std::string key = kind + ":" + value;
+      if (kind == "IP" || kind == "MAC" || kind == "EMAIL") {
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
+      }
+      return key;
+    }
+
+    std::string placeholder(const std::string &kind, const std::string &value) {
+      const std::string key = key_for(kind, value);
+      const auto it = placeholders.find(key);
+      if (it != placeholders.end()) {
+        return it->second;
+      }
+      const std::string result = "<" + kind + "_" + std::to_string(next_id++) + ">";
+      placeholders.emplace(key, result);
+      return result;
+    }
+
+    std::unordered_map<std::string, std::string> placeholders;
+    std::size_t next_id = 1;
+  };
+
+  static ZipDataEntry make_export_log_entry(export_log_sanitizer_t &sanitizer, std::string name, std::string data, std::optional<std::filesystem::file_time_type> write_time) {
+    return ZipDataEntry {std::move(name), sanitizer.sanitize(data), write_time};
+  }
+
   static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;
 
@@ -888,6 +1009,7 @@ namespace confighttp {
 
   static std::vector<ZipDataEntry> collect_support_logs() {
     std::vector<ZipDataEntry> entries;
+    export_log_sanitizer_t sanitizer;
 
     auto add_recent_logs = [&](const std::filesystem::path &dir, const std::string &prefix, const std::string &suffix, std::size_t limit, const std::string &zip_prefix) {
       std::vector<log_candidate_t> candidates;
@@ -922,7 +1044,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(candidate.path, data, &mtime)) {
-          entries.push_back(ZipDataEntry {zip_prefix + candidate.path.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, zip_prefix + candidate.path.filename().string(), std::move(data), mtime));
         }
       }
     };
@@ -943,7 +1065,7 @@ namespace confighttp {
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
           if (read_file_if_exists(it->path(), data, &mtime)) {
-            entries.push_back(ZipDataEntry {it->path().filename().string(), std::move(data), mtime});
+            entries.push_back(make_export_log_entry(sanitizer, it->path().filename().string(), std::move(data), mtime));
             collected_directory = true;
           }
         }
@@ -954,7 +1076,7 @@ namespace confighttp {
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
           if (read_file_if_exists(current_log, data, &mtime)) {
-            entries.push_back(ZipDataEntry {current_log.filename().string(), std::move(data), mtime});
+            entries.push_back(make_export_log_entry(sanitizer, current_log.filename().string(), std::move(data), mtime));
           }
         }
       }
@@ -971,7 +1093,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -987,7 +1109,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -999,7 +1121,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
     } catch (...) {}
@@ -1011,7 +1133,7 @@ namespace confighttp {
         auto p = base / L"playnite.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -1020,7 +1142,7 @@ namespace confighttp {
         auto p = base / L"extensions.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -1029,7 +1151,7 @@ namespace confighttp {
         auto p = base / L"launcher.log";
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
           any = true;
         }
       }
@@ -1086,7 +1208,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(it->path(), data, &mtime)) {
-          entries.push_back(ZipDataEntry {filename, std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, filename, std::move(data), mtime));
         }
       }
     };
@@ -1098,7 +1220,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1106,7 +1228,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1114,7 +1236,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1122,7 +1244,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
       {
@@ -1130,7 +1252,7 @@ namespace confighttp {
         std::string data;
         std::optional<std::filesystem::file_time_type> mtime;
         if (read_file_if_exists(p, data, &mtime)) {
-          entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+          entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
         }
       }
 
@@ -1176,7 +1298,7 @@ namespace confighttp {
       std::string data;
       std::optional<std::filesystem::file_time_type> mtime;
       if (read_file_if_exists(p, data, &mtime)) {
-        entries.push_back(ZipDataEntry {p.filename().string(), std::move(data), mtime});
+        entries.push_back(make_export_log_entry(sanitizer, p.filename().string(), std::move(data), mtime));
       }
     } catch (...) {}
 
