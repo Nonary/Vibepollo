@@ -1,201 +1,56 @@
-cmake_minimum_required(VERSION 3.13)
-# https://github.com/google/oss-policies-info/blob/main/foundational-cxx-support-matrix.md#foundational-c-support
+cmake_minimum_required(VERSION 3.20)
 
-project(test_sunshine)
+# This is deliberately a standalone entry point. Normal Sunshine configuration
+# continues to force BUILD_TESTS=OFF and does not add this directory.
+project(VibeshineTests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if(NOT DEFINED CMAKE_CUDA_STANDARD)
-    set(CMAKE_CUDA_STANDARD 17)
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(SUNSHINE_TEST_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
+
+# Test categories make the dependency scope of a target visible at configuration
+# time. Every target must declare the smallest sources and libraries that
+# preserve the behavior it exercises; tests with former runtime dependencies
+# belong in a component target after adding a deterministic seam, not a broad
+# runtime or integration target.
+option(SUNSHINE_TEST_ENABLE_FAST "Configure fast, self-contained test targets" ON)
+option(SUNSHINE_TEST_ENABLE_COMPONENT "Configure narrowly scoped component test targets" ON)
+
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/SunshineTestTargets.cmake")
+
+set(GTEST_SOURCE_DIR "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/googletest")
+if(NOT EXISTS "${GTEST_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "GoogleTest is required for the standalone test configuration. "
+        "Initialize third-party/googletest before configuring this entry point.")
 endif()
 
-include_directories("${CMAKE_SOURCE_DIR}")
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+set(INSTALL_GMOCK OFF CACHE BOOL "" FORCE)
+if(WIN32)
+    # Keep the Windows CRT choice local to the standalone test configuration.
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)  # cmake-lint: disable=C0103
+endif()
+add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
 enable_testing()
 
-# Add GoogleTest directory to the project
-set(GTEST_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/googletest")
-set(INSTALL_GTEST OFF)
-set(INSTALL_GMOCK OFF)
-add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
-include_directories("${GTEST_SOURCE_DIR}/googletest/include" "${GTEST_SOURCE_DIR}")
-
-# coverage
-# https://gcovr.com/en/stable/guide/compiling.html#compiler-options
-set(CMAKE_CXX_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
-set(CMAKE_C_FLAGS "-fprofile-arcs -ftest-coverage -ggdb -O0")
-
-if(WIN32)
-    # gcc 15 + MinGW ld: this huge asio TU at -O0 emits COMDAT debug/typeinfo
-    # references the linker cannot resolve ("undefined reference to `...::loc'").
-    # Building it at -O1 collapses the template bloat below the breaking point;
-    # the file is not a coverage/debugging target for unit tests.
-    set_source_files_properties("${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
-        PROPERTIES COMPILE_OPTIONS "-O1;-g1")
-endif()
-
-# Find the correct libgcov library path matching the gcc compiler version
-# This ensures the test executable links against the same libgcov version used during compilation
-if(UNIX AND NOT APPLE)
-    # Get the gcc compiler version
-    execute_process(
-        COMMAND ${CMAKE_C_COMPILER} -dumpversion
-        OUTPUT_VARIABLE GCC_VERSION
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-
-    # Extract major version
-    string(REGEX MATCH "^[0-9]+" GCC_MAJOR_VERSION "${GCC_VERSION}")
-
-    # Search for the gcc library directory matching this version
-    file(GLOB GCC_LIB_DIRS "/usr/lib/gcc/*/*${GCC_MAJOR_VERSION}.*")
-
-    if(GCC_LIB_DIRS)
-        list(GET GCC_LIB_DIRS 0 GCC_LIB_DIR)
-        message(STATUS "Found GCC library directory: ${GCC_LIB_DIR}")
-
-        # Look for libgcov.a in the gcc library directory
-        find_library(LIBGCOV_LIBRARY
-            NAMES gcov
-            PATHS ${GCC_LIB_DIR}
-            NO_DEFAULT_PATH
-        )
-
-        if(LIBGCOV_LIBRARY)
-            message(STATUS "Found libgcov: ${LIBGCOV_LIBRARY}")
-            # Store this to link against later
-            set(GCOV_LINK_LIBRARY ${LIBGCOV_LIBRARY})
-        else()
-            message(WARNING "Could not find libgcov in ${GCC_LIB_DIR}")
-        endif()
-    else()
-        message(WARNING "Could not find GCC library directory for version ${GCC_VERSION}")
-    endif()
-endif()
-
-# if windows
-if (WIN32)
-    # For Windows: Prevent overriding the parent project's compiler/linker settings
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)  # cmake-lint: disable=C0103
-endif ()
-
-# modify SUNSHINE_DEFINITIONS
-if (WIN32)
-    list(APPEND
-            SUNSHINE_DEFINITIONS SUNSHINE_SHADERS_DIR="${CMAKE_SOURCE_DIR}/src_assets/windows/assets/shaders/directx")
-elseif (NOT APPLE)
-    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_SHADERS_DIR="${CMAKE_SOURCE_DIR}/src_assets/linux/assets/shaders/opengl")
-endif ()
-
-set(TEST_DEFINITIONS)  # list will be appended as needed
-
-# this indicates we're building tests in case sunshine needs to adjust some code or add private tests
-list(APPEND TEST_DEFINITIONS SUNSHINE_TESTS)
-list(APPEND TEST_DEFINITIONS SUNSHINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-list(APPEND TEST_DEFINITIONS SUNSHINE_TEST_BIN_DIR="${CMAKE_CURRENT_BINARY_DIR}")
-
-# Override SUNSHINE_ASSETS_DIR to use a writable temp directory for tests
-# Remove the existing definition from SUNSHINE_DEFINITIONS to avoid redefinition error
-list(FILTER SUNSHINE_DEFINITIONS EXCLUDE REGEX "^SUNSHINE_ASSETS_DIR=")
-list(APPEND TEST_DEFINITIONS SUNSHINE_ASSETS_DIR="${CMAKE_CURRENT_BINARY_DIR}/test_assets")
-
-if(NOT WIN32)
-    find_package(Udev 255)  # we need 255+ for udevadm verify
-    message(STATUS "UDEV_FOUND: ${UDEV_FOUND}")
-    if(UDEV_FOUND)
-        list(APPEND TEST_DEFINITIONS UDEVADM_EXECUTABLE="${UDEVADM_EXECUTABLE}")
-    endif()
-endif()
-
-file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS
-        ${CMAKE_SOURCE_DIR}/tests/*.h
-        ${CMAKE_SOURCE_DIR}/tests/*.cpp)
-# Add macOS-specific test files only when building tests for macOS
-if (APPLE)
-    file(GLOB_RECURSE MACOS_TEST_SOURCES CONFIGURE_DEPENDS
-            ${CMAKE_SOURCE_DIR}/tests/*.mm)
-    list(APPEND TEST_SOURCES ${MACOS_TEST_SOURCES})
-endif ()
-
-set(SUNSHINE_SOURCES
-        ${SUNSHINE_TARGET_FILES})
-
-# remove main.cpp from the list of sources
-list(REMOVE_ITEM SUNSHINE_SOURCES ${CMAKE_SOURCE_DIR}/src/main.cpp)
-
-add_executable(${PROJECT_NAME}
-        ${TEST_SOURCES}
-        ${SUNSHINE_SOURCES})
-
-# Copy files needed for config consistency tests to build directory
-# This ensures both CLI and CLion can access the same files relative to the test executable
-# Using configure_file ensures files are copied when they change between builds
-set(INTEGRATION_TEST_FILES
-    "src/config.cpp"
-    "docs/configuration.md"
-    "src_assets/common/assets/web/public/assets/locale/en.json"
-    "src_assets/linux/misc/60-sunshine.rules"
+# The foundation target proves that the fast path needs only GTest and the
+# universal test entry. Registrations use the test_fast_ and test_component_
+# naming convention and must declare their exact sources, definitions, and link
+# libraries. None may link the full application source inventory.
+set(SUNSHINE_TEST_FAST_FOUNDATION_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
 )
 
-foreach(file ${INTEGRATION_TEST_FILES})
-    configure_file(
-        "${CMAKE_SOURCE_DIR}/${file}"
-        "${CMAKE_CURRENT_BINARY_DIR}/${file}"
-        COPYONLY
-    )
-endforeach()
-
-# Copy all locale files for locale consistency tests
-# Use a custom command to properly handle both adding and removing files
-set(LOCALE_SRC_DIR "${CMAKE_SOURCE_DIR}/src_assets/common/assets/web/public/assets/locale")
-set(LOCALE_DST_DIR "${CMAKE_CURRENT_BINARY_DIR}/src_assets/common/assets/web/public/assets/locale")
-add_custom_target(sync_locale_files ALL
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${LOCALE_DST_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${LOCALE_DST_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${LOCALE_SRC_DIR}" "${LOCALE_DST_DIR}"
-    COMMENT "Synchronizing locale files for tests"
-    VERBATIM
+sunshine_add_test_target(
+    NAME test_fast_foundation
+    CATEGORY fast
+    TEST_SOURCES ${SUNSHINE_TEST_FAST_FOUNDATION_SOURCES}
+    PRODUCT_SOURCES
+    DEFINITIONS
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
 )
-
-foreach(dep ${SUNSHINE_TARGET_DEPENDENCIES})
-    add_dependencies(${PROJECT_NAME} ${dep})  # compile these before sunshine
-endforeach()
-
-# Ensure locale files are synchronized before building the test executable
-add_dependencies(${PROJECT_NAME} sync_locale_files)
-
-# Build the list of libraries to link
-set(TEST_LINK_LIBRARIES
-    ${SUNSHINE_EXTERNAL_LIBRARIES}
-    gtest
-    gmock
-    ${PLATFORM_LIBRARIES}
-)
-
-# Add the specific libgcov library if found
-if(GCOV_LINK_LIBRARY)
-    list(APPEND TEST_LINK_LIBRARIES ${GCOV_LINK_LIBRARY})
-endif()
-
-target_link_libraries(${PROJECT_NAME} ${TEST_LINK_LIBRARIES})
-target_compile_definitions(${PROJECT_NAME} PUBLIC ${SUNSHINE_DEFINITIONS} ${TEST_DEFINITIONS})
-target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>;$<$<COMPILE_LANGUAGE:CUDA>:${SUNSHINE_COMPILE_OPTIONS_CUDA};-std=c++17>)  # cmake-lint: disable=C0301
-target_link_options(${PROJECT_NAME} PRIVATE)
-
-if (WIN32)
-    # prefer static libraries since we're linking statically
-    # this fixes libcurl linking errors when using non MSYS2 version of CMake
-    set_target_properties(${PROJECT_NAME} PROPERTIES LINK_SEARCH_START_STATIC 1)
-
-    # Copy minhook-detours DLL to test binary directory for ARM64
-    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64" AND DEFINED _MINHOOK_DLL)
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${_MINHOOK_DLL}"
-                "${CMAKE_CURRENT_BINARY_DIR}"
-            COMMENT "Copying minhook-detours DLL to test binary directory"
-            VERBATIM
-        )
-    endif()
-endif ()
