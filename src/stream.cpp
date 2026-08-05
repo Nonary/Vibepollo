@@ -724,30 +724,6 @@ namespace stream {
 
   static auto broadcast = safe::make_shared<broadcast_ctx_t>(start_broadcast, end_broadcast);
 
-  std::optional<control_packet_view_t> decode_control_packet(std::string_view packet_bytes) {
-    if (packet_bytes.size() < sizeof(std::uint16_t)) {
-      return std::nullopt;
-    }
-
-    const auto type = util::packet::read_u16_le(packet_bytes, 0);
-    const auto payload = util::packet::slice(
-      packet_bytes,
-      sizeof(std::uint16_t),
-      packet_bytes.size() - sizeof(std::uint16_t)
-    );
-    if (!type || !payload) {
-      return std::nullopt;
-    }
-
-    return control_packet_view_t {*type, *payload};
-  }
-
-#ifdef SUNSHINE_TESTS
-  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes) {
-    return decode_control_packet(packet_bytes);
-  }
-#endif
-
   void request_idr_for_all_sessions() {
     auto ref = broadcast.ref();
     if (!ref) {
@@ -1196,44 +1172,6 @@ namespace stream {
    * @param data1 The first data buffer.
    * @param data2 The second data buffer.
    */
-  std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2) {
-    auto data_size = data1.size() + data2.size();
-    auto pad = data_size % slice_size != 0;
-    auto elements = data_size / slice_size + (pad ? 1 : 0);
-
-    std::vector<uint8_t> result;
-    result.resize(elements * insert_size + data_size);
-
-    auto next = std::begin(data1);
-    auto end = std::end(data1);
-    for (auto x = 0; x < elements; ++x) {
-      void *p = &result[x * (insert_size + slice_size)];
-
-      // For the last iteration, only copy to the end of the data
-      if (x == elements - 1) {
-        slice_size = data_size - (x * slice_size);
-      }
-
-      // Test if this slice will extend into the next buffer
-      if (next + slice_size > end) {
-        // Copy the first portion from the first buffer
-        auto copy_len = end - next;
-        std::copy(next, end, (char *) p + insert_size);
-
-        // Copy the remaining portion from the second buffer
-        next = std::begin(data2);
-        end = std::end(data2);
-        std::copy(next, next + (slice_size - copy_len), (char *) p + copy_len + insert_size);
-        next += slice_size - copy_len;
-      } else {
-        std::copy(next, next + slice_size, (char *) p + insert_size);
-        next += slice_size;
-      }
-    }
-
-    return result;
-  }
-
   std::vector<uint8_t> replace(const std::string_view &original, const std::string_view &old, const std::string_view &_new) {
     std::vector<uint8_t> replaced;
     replaced.reserve(original.size() + _new.size() - old.size());

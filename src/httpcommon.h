@@ -9,18 +9,13 @@
 
 // local includes
 #include "network.h"
+#include "http_policy.h"
 #include "thread_safe.h"
 #include "uuid.h"
 
 namespace http {
 
-  enum class creds_state {
-    missing_file,
-    missing_fields,
-    unreadable,
-    malformed,
-    configured
-  };
+  using creds_state = policy::creds_state;
 
   int init();
   int create_creds(const std::string &pkey, const std::string &cert);

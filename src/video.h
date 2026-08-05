@@ -7,6 +7,7 @@
 // local includes
 #include "input.h"
 #include "platform/common.h"
+#include "video_policy.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
 
@@ -479,18 +480,7 @@ namespace video {
   // support for 23.976 film in case someone wants to stream a film at the perfect
   // framerate.
   inline AVRational framerateX100_to_rational(const int framerateX100) {
-    if (framerateX100 % 2997 == 0) {
-      // Multiples of NTSC 29.97 e.g. 59.94, 119.88
-      return AVRational {(framerateX100 / 2997) * 30000, 1001};
-    }
-    switch (framerateX100) {
-      case 2397:  // the other weird NTSC framerate, assume these want 23.976 film
-      case 2398:
-        return AVRational {24000, 1001};
-      default:
-        // any other fractional rate can be reduced by ffmpeg. Max is set to 1 << 26 based on docs:
-        // "rational numbers with |num| <= 1<<26 && |den| <= 1<<26 can be recovered exactly from their double representation"
-        return av_d2q((double) framerateX100 / 100.0f, 1 << 26);
-    }
+    const auto rational = policy::framerate_x100_to_rational(framerateX100);
+    return AVRational {rational.numerator, rational.denominator};
   }
 }  // namespace video

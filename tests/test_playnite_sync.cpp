@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 
 using namespace platf::playnite;
@@ -109,8 +110,11 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
 }
 
 TEST(PlayniteSync_Metadata, KeepsBoxArtWhenGameIconMissing) {
-  const auto cover_path = std::filesystem::path {SUNSHINE_SOURCE_DIR} / "sunshine.png";
-  ASSERT_TRUE(std::filesystem::exists(cover_path));
+  const auto dir = std::filesystem::temp_directory_path() / "vibeshine_playnite_metadata_test";
+  std::filesystem::create_directories(dir);
+  const auto cover_path = dir / "cover.png";
+  const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,8,215,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
+  std::ofstream(cover_path, std::ios::binary).write(reinterpret_cast<const char *>(png), sizeof(png));
 
   Game game;
   game.id = "fallback-icon";
@@ -119,27 +123,24 @@ TEST(PlayniteSync_Metadata, KeepsBoxArtWhenGameIconMissing) {
   game.icon_path.clear();
 
   nlohmann::json app = nlohmann::json::object();
-  apply_game_metadata_to_app(game, app);
+  apply_game_metadata_to_app(game, app, dir);
 
   ASSERT_TRUE(app.contains("image-path"));
   EXPECT_FALSE(app.contains("playnite-icon-path"));
   EXPECT_NE(app["image-path"].get<std::string>().find("playnite_fallback-icon.png"), std::string::npos);
 
   std::error_code ec;
-  std::filesystem::remove(platf::appdata() / "covers" / "playnite_fallback-icon.png", ec);
-  std::filesystem::remove(platf::appdata() / "covers" / "playnite_icon_fallback-icon.png", ec);
+  std::filesystem::remove_all(dir, ec);
 }
 
 TEST(PlayniteSync_Art, ReconvertsWhenSourceChangesEvenWithOlderMtime) {
   const auto dir = std::filesystem::temp_directory_path() / "vibeshine_playnite_art_test";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
-  const auto real_png = std::filesystem::path {SUNSHINE_SOURCE_DIR} / "sunshine.png";
-  ASSERT_TRUE(std::filesystem::exists(real_png));
-
   const auto src1 = dir / "cover1.png";
   const auto dst = dir / "converted.png";
-  std::filesystem::copy_file(real_png, src1);
+  const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,8,215,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
+  std::ofstream(src1, std::ios::binary).write(reinterpret_cast<const char *>(png), sizeof(png));
 
   // Initial conversion writes dst and a source-signature sidecar
   ASSERT_TRUE(convert_playnite_image_to_png(src1.string(), dst));

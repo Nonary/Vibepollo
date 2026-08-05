@@ -58,6 +58,7 @@ namespace platf::playnite::sync {
   // Art conversion cache: identity of the source image (path+size+mtime) that produced a converted PNG.
   std::string image_source_signature(const std::filesystem::path &src);
   bool convert_playnite_image_to_png(const std::string &src_path, const std::filesystem::path &dst);
+  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app, const std::filesystem::path &covers_root);
   void apply_game_metadata_to_app(const Game &g, nlohmann::json &app);
   void mark_app_as_playnite_auto(nlohmann::json &app, int flags);
   bool should_ttl_delete(const nlohmann::json &app, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map);

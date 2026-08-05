@@ -497,7 +497,7 @@ namespace platf::playnite::sync {
     return true;
   }
 
-  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app) {
+  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app, const std::filesystem::path &covers_root) {
     try {
       if (!g.name.empty()) {
         app["name"] = g.name;
@@ -505,14 +505,14 @@ namespace platf::playnite::sync {
     } catch (...) {}
     try {
       if (!g.box_art_path.empty()) {
-        auto dst = platf::appdata() / "covers" / ("playnite_" + g.id + ".png");
+        auto dst = covers_root / ("playnite_" + g.id + ".png");
         if (convert_playnite_image_to_png(g.box_art_path, dst)) {
           app["image-path"] = dst.generic_string();
         }
       }
     } catch (...) {}
     try {
-      auto dst = platf::appdata() / "covers" / ("playnite_icon_" + g.id + ".png");
+      auto dst = covers_root / ("playnite_icon_" + g.id + ".png");
       // Resolve the install dir from the plugin's explicit field, the library working dir, or the
       // dir cached from a prior "gameStarted" status message (Steam/URL games expose none in the
       // snapshot). This lets us pull the high-resolution icon embedded in the game executable
@@ -562,6 +562,10 @@ namespace platf::playnite::sync {
         app.erase("playnite-plugin-name");
       }
     } catch (...) {}
+  }
+
+  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app) {
+    apply_game_metadata_to_app(g, app, platf::appdata() / "covers");
   }
 
   void mark_app_as_playnite_auto(nlohmann::json &app, int flags) {

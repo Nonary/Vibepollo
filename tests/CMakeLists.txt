@@ -127,3 +127,140 @@ sunshine_add_test_target(
     LINK_LIBRARIES GTest::gtest
     DEPENDENCIES
 )
+
+# Every remaining translation unit is registered independently.  This wrapper
+# adds only the universal GTest main; callers still spell out every production
+# source and library so there is no hidden component bundle.
+function(sunshine_register_component)
+    cmake_parse_arguments(COMPONENT "" "NAME;TEST_SOURCE" "PRODUCT_SOURCES;LINK_LIBRARIES;DEFINITIONS" ${ARGN})
+    sunshine_add_test_target(
+        NAME "${COMPONENT_NAME}"
+        CATEGORY component
+        TEST_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/${COMPONENT_TEST_SOURCE}"
+        PRODUCT_SOURCES ${COMPONENT_PRODUCT_SOURCES}
+        DEFINITIONS SUNSHINE_TESTS ${COMPONENT_DEFINITIONS}
+        LINK_LIBRARIES GTest::gtest ${COMPONENT_LINK_LIBRARIES}
+        DEPENDENCIES
+    )
+endfunction()
+
+sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit/test_stream.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp")
+sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
+    PRODUCT_SOURCES)
+sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite.cpp")
+sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler.cpp")
+sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp")
+sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp")
+sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
+sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network.cpp")
+sunshine_register_component(NAME test_component_input_validation TEST_SOURCE unit/test_input.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input.cpp")
+sunshine_register_component(NAME test_component_display_device_policy TEST_SOURCE unit/test_display_device.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device.cpp")
+sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/process.cpp")
+sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/process.cpp")
+sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_sampler.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_writer.cpp")
+sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats.cpp")
+sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio.cpp")
+sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/test_mouse.cpp)
+sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit/platform/test_common.cpp)
+sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp")
+sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_handler.cpp")
+sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_confighttp.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/confighttp.cpp"
+    LINK_LIBRARIES GTest::gmock)
+sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp")
+sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp")
+sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE integration/test_config_consistency.cpp)
+sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp)
+sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)
+sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp)
+
+if(WIN32)
+    sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_protocol.cpp")
+    foreach(_playnite_test IN ITEMS
+            test_playnite_autosync_reconcile.cpp
+            test_playnite_sync.cpp
+            test_playnite_sync_autosync.cpp)
+        get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
+        sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
+            PRODUCT_SOURCES
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/uuid.cpp")
+    endforeach()
+    sunshine_register_component(NAME test_component_display_helper_watchdog TEST_SOURCE unit/test_display_helper_watchdog.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_watchdog.cpp")
+    sunshine_register_component(NAME test_component_display_helper_session_deferral TEST_SOURCE unit/test_display_helper_session_deferral.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_request_helpers.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_session_deferral.cpp")
+    sunshine_register_component(NAME test_component_display_helper_v2_async_dispatcher TEST_SOURCE unit/test_display_helper_v2_async_dispatcher.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp")
+    sunshine_register_component(NAME test_component_display_helper_v2_core TEST_SOURCE unit/test_display_helper_v2_core.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp")
+    sunshine_register_component(NAME test_component_display_helper_v2_restore_engine TEST_SOURCE unit/test_display_helper_v2_restore_engine.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp")
+    sunshine_register_component(NAME test_component_display_helper_v2_state_machine TEST_SOURCE unit/test_display_helper_v2_state_machine.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/state_machine.cpp")
+    sunshine_register_component(NAME test_component_utf_utils TEST_SOURCE unit/platform/windows/test_utf_utils.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/utf_utils.cpp")
+    sunshine_register_component(NAME test_component_game_activity TEST_SOURCE unit/platform/windows/test_game_activity.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp")
+    sunshine_register_component(NAME test_component_native_amf_policy TEST_SOURCE unit/platform/windows/test_native_amf_review.cpp)
+    sunshine_register_component(NAME test_component_rtx_hdr_policy TEST_SOURCE unit/platform/windows/test_rtx_hdr_runtime.cpp
+        PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_profile.cpp"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_runtime.cpp")
+    sunshine_register_component(NAME test_component_virtual_display_policy TEST_SOURCE unit/platform/windows/test_virtual_display_sunshine.cpp)
+    sunshine_register_component(NAME test_component_lossless_scaling_policy TEST_SOURCE unit/test_lossless_scaling.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/playnite_launcher/lossless_scaling.cpp")
+endif()
+
+if(APPLE)
+    sunshine_register_component(NAME test_component_av_audio_policy TEST_SOURCE unit/platform/macos/test_av_audio.mm
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio.mm")
+endif()

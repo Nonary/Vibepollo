@@ -23,6 +23,7 @@
 #include "crypto.h"
 #include "thread_safe.h"
 #include "video.h"
+#include "stream_protocol.h"
 
 namespace rtsp_stream {
   struct launch_session_t;
@@ -44,34 +45,6 @@ namespace stream {
       default:
         return "Unknown";
     }
-  }
-
-  inline std::string canonical_codec_name(std::string_view codec) {
-    if (codec.empty()) {
-      return {};
-    }
-
-    std::string lowered;
-    lowered.reserve(codec.size());
-    for (char ch : codec) {
-      if (ch >= 'A' && ch <= 'Z') {
-        lowered.push_back(static_cast<char>(ch - 'A' + 'a'));
-      } else {
-        lowered.push_back(ch);
-      }
-    }
-
-    if (lowered == "h264" || lowered == "h.264") {
-      return "H.264";
-    }
-    if (lowered == "h265" || lowered == "hevc") {
-      return "HEVC";
-    }
-    if (lowered == "av1") {
-      return "AV1";
-    }
-
-    return std::string(codec);
   }
 
   struct session_t;
@@ -184,15 +157,6 @@ namespace stream {
     std::int64_t last_frame_index;
     double uptime_seconds;
   };
-
-  struct control_packet_view_t {
-    std::uint16_t type = 0;
-    std::string_view payload;
-  };
-
-#ifdef SUNSHINE_TESTS
-  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes);
-#endif
 
   std::vector<session_info_t> get_all_session_info();
 

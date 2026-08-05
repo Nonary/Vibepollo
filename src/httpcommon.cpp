@@ -28,6 +28,7 @@
 #include "crypto.h"
 #include "file_handler.h"
 #include "httpcommon.h"
+#include "http_policy.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"

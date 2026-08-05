@@ -3,25 +3,8 @@
  * @brief Test src/stream.*
  */
 
-#include <cstdint>
-#include <functional>
-#include <optional>
-#include <string>
-#include <string_view>
-#include <vector>
-
-namespace stream {
-  struct control_packet_view_t {
-    std::uint16_t type = 0;
-    std::string_view payload;
-  };
-
-  std::vector<uint8_t> concat_and_insert(uint64_t insert_size, uint64_t slice_size, const std::string_view &data1, const std::string_view &data2);
-  std::string canonical_codec_name(std::string_view codec);
-  std::optional<control_packet_view_t> decode_control_packet_for_tests(std::string_view packet_bytes);
-}
-
 #include "../tests_common.h"
+#include "src/stream_protocol.h"
 
 TEST(VideoFormatNameTests, CanonicalCodecNameNormalizesKnownAliases) {
   EXPECT_EQ(stream::canonical_codec_name("h264"), "H.264");
@@ -61,16 +44,16 @@ TEST(ConcatAndInsertTests, ConcatSmallStrideTest) {
 }
 
 TEST(ControlPacketParsing, RejectsRuntPacketsBeforeReadingType) {
-  EXPECT_FALSE(stream::decode_control_packet_for_tests({}));
+  EXPECT_FALSE(stream::decode_control_packet({}));
 
   const char one_byte[] = {'\x34'};
-  EXPECT_FALSE(stream::decode_control_packet_for_tests(std::string_view {one_byte, sizeof(one_byte)}));
+  EXPECT_FALSE(stream::decode_control_packet(std::string_view {one_byte, sizeof(one_byte)}));
 }
 
 TEST(ControlPacketParsing, DecodesTypeAndPayloadSafely) {
   const char packet[] = {'\x34', '\x12', 'a', 'b'};
 
-  const auto decoded = stream::decode_control_packet_for_tests(std::string_view {packet, sizeof(packet)});
+  const auto decoded = stream::decode_control_packet(std::string_view {packet, sizeof(packet)});
 
   ASSERT_TRUE(decoded);
   EXPECT_EQ(decoded->type, 0x1234);
@@ -80,7 +63,7 @@ TEST(ControlPacketParsing, DecodesTypeAndPayloadSafely) {
 TEST(ControlPacketParsing, AllowsTypeOnlyPacketWithoutPayloadUnderflow) {
   const char packet[] = {'\x34', '\x12'};
 
-  const auto decoded = stream::decode_control_packet_for_tests(std::string_view {packet, sizeof(packet)});
+  const auto decoded = stream::decode_control_packet(std::string_view {packet, sizeof(packet)});
 
   ASSERT_TRUE(decoded);
   EXPECT_EQ(decoded->type, 0x1234);
