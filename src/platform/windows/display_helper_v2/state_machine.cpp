@@ -1289,7 +1289,6 @@ namespace display_helper::v2 {
         const bool initial_verification = !verification_result_sent_;
         const bool disconnected_settlement = transient_disconnect_settlement_requested_;
         if (initial_verification) {
-          send_verification_result(true);
           session_was_verified_ = true;
           activate_recovery_lease();
           unconfirmed_cancelled_mutation_ = false;
@@ -1300,6 +1299,10 @@ namespace display_helper::v2 {
             system_.arm_heartbeat();
           }
           system_.refresh_shell();
+          // Verification is also the host's capture-start gate. Publish it
+          // only after dispatching the shell display-change refresh so the
+          // repaint request cannot lag behind capture startup.
+          send_verification_result(true);
           // wa_hdr_toggle is an explicitly requested workaround. Running it on
           // every successful APPLY was an unnecessary monitor off/on cycle.
           if (current_request_.hdr_blank) {
