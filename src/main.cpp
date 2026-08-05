@@ -296,7 +296,7 @@ int main(int argc, char *argv[]) {
                   << ", display_version=" << windows_version.display_version
                   << ", build=" << windows_version.current_build;
   if (windows_version.build_number.has_value() && *windows_version.build_number < 22000) {
-    BOOST_LOG(warning) << "Windows 10 detected; HDR will not work on the Sunshine Virtual Display.";
+    BOOST_LOG(warning) << "Windows 10 detected; HDR will not work on the Vibepollo Virtual Display.";
   }
 #endif
   if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
