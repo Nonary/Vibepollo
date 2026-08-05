@@ -31,6 +31,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/ipc/pipes.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"  // For RAII utilities
 
 // platform includes
@@ -1556,9 +1557,13 @@ private:
     const auto quiet_period_us = std::chrono::duration_cast<std::chrono::microseconds>(quiet_period).count();
     const bool recent_pool_pressure = last_pressure_us > 0 &&
                                       steady_time_us(now) - last_pressure_us < quiet_period_us;
-    bool is_quiet = _drop_timestamps.empty() &&
-                    !recent_pool_pressure &&
-                    _peak_outstanding.load() <= static_cast<int>(_current_buffer_size) - 1;
+    const bool is_quiet = platf::dxgi::wgc_policy::buffer_pool_is_quiet(
+      allow_buffer_decrease(),
+      !_drop_timestamps.empty(),
+      recent_pool_pressure,
+      _peak_outstanding.load(),
+      _current_buffer_size
+    );
 
     if (!is_quiet) {
       _last_quiet_start = now;  // Reset quiet timer
@@ -2386,13 +2391,19 @@ int main(int argc, char *argv[]) {
   // Use FP16 whenever the stream is HDR or the target output is already in
   // Advanced Color, except when the main process asks for SDR-compatible
   // capture so RTX HDR/TrueHDR can synthesize the HDR frame itself.
-  DXGI_FORMAT capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
   const bool force_sdr_capture =
     g_config_received &&
     ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT) != 0);
-  if (g_config_received && !force_sdr_capture && (g_config.dynamic_range || g_config.advanced_color_capture)) {
-    capture_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-  }
+  const auto capture_surface_format = platf::dxgi::wgc_policy::select_capture_surface_format(
+    g_config_received,
+    force_sdr_capture,
+    g_config.dynamic_range,
+    g_config.advanced_color_capture
+  );
+  const DXGI_FORMAT capture_format =
+    capture_surface_format == platf::dxgi::wgc_policy::capture_surface_format::rgba16_float ?
+      DXGI_FORMAT_R16G16B16A16_FLOAT :
+      DXGI_FORMAT_B8G8R8A8_UNORM;
 
   // Create shared resource manager for texture, keyed mutex, and metadata
   SharedResourceManager shared_resource_manager;

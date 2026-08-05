@@ -85,8 +85,6 @@ namespace VDISPLAY_SUDOVDA {
   extern HANDLE SUDOVDA_DRIVER_HANDLE;
   using SudaVDADisplayInfo = VDISPLAY::VirtualDisplayInfo;
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = VDISPLAY::VIRTUAL_DISPLAY_SELECTION;
-  inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
-
   void closeVDisplayDevice();
   DRIVER_STATUS openVDisplayDevice();
   bool ensure_driver_is_ready();
@@ -4056,7 +4054,9 @@ namespace VDISPLAY_SUDOVDA {
       // Conflict removal may have reopened a stale SudoVDA handle. The render
       // adapter preference belongs to that handle, so apply it only after all
       // teardown/recovery work and immediately before the create request.
-      if (!apply_configured_render_adapter_preference("virtual display creation")) {
+      if (!VDISPLAY::policy::adapter_preference_allows_creation(
+            apply_configured_render_adapter_preference("virtual display creation")
+          )) {
         return std::nullopt;
       }
       const auto creation_render_request = current_render_adapter_request();
@@ -4653,7 +4653,7 @@ namespace VDISPLAY_SUDOVDA {
 
   bool isSudaVDADriverInstalled() {
     std::lock_guard<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex);
-    return is_sudovda_driver_installed_passive();
+    return VDISPLAY::policy::passive_install_status(is_sudovda_driver_installed_passive());
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
@@ -4953,8 +4953,7 @@ namespace VDISPLAY_SUDOVDA {
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {
-    return equals_ci(output_identifier, VIRTUAL_DISPLAY_SELECTION) ||
-           equals_ci(output_identifier, SUDOVDA_VIRTUAL_DISPLAY_SELECTION);
+    return VDISPLAY::policy::is_virtual_display_selection(output_identifier, true);
   }
 
   uint64_t client_uuid_to_vdd_display_id(const GUID &client_guid) {

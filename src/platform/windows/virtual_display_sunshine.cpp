@@ -1163,7 +1163,10 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(error) << "Unable to generate a cryptographic virtual display lease identifier.";
         return std::nullopt;
       }
-      return lease_id | sunshine_driver::kMinOpaqueLeaseId;
+      return VDISPLAY::policy::normalize_opaque_lease_id(
+        lease_id,
+        sunshine_driver::kMinOpaqueLeaseId
+      );
     }
 
     bool is_missing_lease_error(DWORD error_code) {
@@ -1223,7 +1226,7 @@ namespace VDISPLAY_SUNSHINE {
       if (stop_token.stop_requested()) {
         return false;
       }
-      if (is_ensure_display_client(client_uid)) {
+      if (!VDISPLAY::policy::should_release_retained_probe_display(is_ensure_display_client(client_uid))) {
         return true;
       }
 
@@ -2638,7 +2641,7 @@ namespace VDISPLAY_SUNSHINE {
         return false;
       }
 
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      const auto deadline = std::chrono::steady_clock::now() + VDISPLAY::policy::hdr_activation_timeout;
       do {
         if (stop_token.stop_requested()) {
           return false;
@@ -2653,8 +2656,13 @@ namespace VDISPLAY_SUNSHINE {
                            << " active_color_mode=" << info->active_color_mode
                            << " color_encoding=" << static_cast<unsigned int>(info->color_encoding)
                            << " bits_per_color_channel=" << info->bits_per_color_channel;
-          const bool ten_bit_or_better = info->bits_per_color_channel >= 10;
-          if (info->supported && info->hdr_supported && info->hdr_enabled && !info->limited_by_policy && ten_bit_or_better) {
+          if (VDISPLAY::policy::hdr_target_ready({
+                info->supported,
+                info->hdr_supported,
+                info->hdr_enabled,
+                info->limited_by_policy,
+                info->bits_per_color_channel,
+              })) {
             return true;
           }
         }
@@ -4744,7 +4752,11 @@ namespace VDISPLAY_SUNSHINE {
       return false;
     }
     auto transport = control_transport_snapshot();
-    if (driver_transport_responsive(transport.get())) {
+    const bool transport_responsive = driver_transport_responsive(transport.get());
+    if (!VDISPLAY::policy::should_reopen_control_transport(
+          transport && transport->valid(),
+          transport_responsive
+        )) {
       return true;
     }
 
@@ -4829,9 +4841,13 @@ namespace VDISPLAY_SUNSHINE {
              sunshine_driver::to_string(version.status),
              static_cast<unsigned long>(version.native_error));
       closeVDisplayDevice();
-      const bool incompatible_protocol = version.status == sunshine_driver::ControlStatus::ProtocolIncompatible;
-      const auto failed_status = incompatible_protocol ? DRIVER_STATUS::VERSION_INCOMPATIBLE : DRIVER_STATUS::FAILED;
-      return failed_status;
+      const auto status_class = VDISPLAY::policy::classify_protocol_query(
+        false,
+        version.status == sunshine_driver::ControlStatus::ProtocolIncompatible
+      );
+      return status_class == VDISPLAY::policy::driver_status_class::version_incompatible ?
+               DRIVER_STATUS::VERSION_INCOMPATIBLE :
+               DRIVER_STATUS::FAILED;
     }
 
     if (!query_driver(client)) {
@@ -5473,9 +5489,8 @@ namespace VDISPLAY_SUNSHINE {
 
     const auto start = std::chrono::steady_clock::now();
     std::optional<std::chrono::steady_clock::time_point> enumerated_at;
-    const auto enumeration_timeout = std::chrono::seconds(2);
-    const auto activation_grace = std::chrono::milliseconds(500);
-    const auto poll_interval = std::chrono::milliseconds(50);
+    const auto enumeration_timeout = VDISPLAY::policy::enumeration_timeout;
+    const auto poll_interval = VDISPLAY::policy::readiness_poll_interval;
     const bool has_dynamic_hints =
       (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
 
@@ -5488,7 +5503,7 @@ namespace VDISPLAY_SUNSHINE {
         BOOST_LOG(warning) << "Timed out waiting for Windows to enumerate virtual display.";
         return false;
       }
-      if (enumerated_at && now - *enumerated_at >= activation_grace) {
+      if (enumerated_at && VDISPLAY::policy::accept_enumerated_target(now - *enumerated_at)) {
         BOOST_LOG(debug) << "Virtual display was enumerated before final activation/mode details settled; continuing so the display helper can apply the session mode.";
         return true;
       }
@@ -5526,14 +5541,19 @@ namespace VDISPLAY_SUNSHINE {
                            << " is active at " << candidate.m_info->m_resolution.m_width << 'x'
                            << candidate.m_info->m_resolution.m_height << "; waiting for "
                            << width << 'x' << height << '.';
-          if (enumerated_at && now - *enumerated_at >= activation_grace) {
+          if (enumerated_at && VDISPLAY::policy::accept_enumerated_target(now - *enumerated_at)) {
             BOOST_LOG(debug) << "Virtual display is active before the requested mode settled; continuing so the display helper can apply the session mode.";
             return true;
           }
           return false;
         }
 
-        if (enumerated_at && now - *enumerated_at >= activation_grace) {
+        if (exact_target) {
+          BOOST_LOG(debug) << "Virtual display target is enumerated but not active yet; continuing immediately so the display helper can activate it.";
+          return true;
+        }
+
+        if (enumerated_at && VDISPLAY::policy::accept_enumerated_target(now - *enumerated_at)) {
           BOOST_LOG(debug) << "Virtual display is enumerated but not active yet; continuing so the display helper can apply the session mode.";
           return true;
         }
@@ -5818,7 +5838,9 @@ namespace VDISPLAY_SUNSHINE {
       // on the previous transport, while a restarted driver returns to its default request.
       // Submit it again on the refreshed transport before creating the display below. This
       // is a no-op when teardown left the transport alone.
-      if (!apply_configured_render_adapter_preference("virtual display creation (post-teardown)")) {
+      if (!VDISPLAY::policy::adapter_preference_allows_creation(
+            apply_configured_render_adapter_preference("virtual display creation (post-teardown)")
+          )) {
         return std::nullopt;
       }
       const auto creation_render_request = current_render_adapter_request();
@@ -6316,16 +6338,24 @@ namespace VDISPLAY_SUNSHINE {
       std::optional<bool> effective_hdr_enabled;
       if (hdr_requested) {
         const bool hdr_enabled = request_hdr10_advanced_color(output, stop_token);
-        if (hdr_enabled) {
-          effective_hdr_enabled = true;
-        } else if (!stop_token.stop_requested() && confirmed_active) {
-          effective_hdr_enabled = false;
-          BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
-        } else if (!stop_token.stop_requested()) {
-          // The target is enumerated but the helper has not activated it yet, so a
-          // direct HDR request cannot stick. This is not a failure: the helper's
-          // APPLY carries the same HDR request and the capture gate waits for it.
-          BOOST_LOG(debug) << "Sunshine virtual display HDR: target is not active yet, so the direct HDR request was not applied; deferring to the display helper's APPLY.";
+        switch (VDISPLAY::policy::hdr_failure_action(hdr_requested, hdr_enabled, confirmed_active)) {
+          case VDISPLAY::policy::hdr_activation_failure_action::none:
+            effective_hdr_enabled = true;
+            break;
+          case VDISPLAY::policy::hdr_activation_failure_action::continue_sdr:
+            if (!stop_token.stop_requested()) {
+              effective_hdr_enabled = false;
+              BOOST_LOG(warning) << "Sunshine virtual display HDR: requested HDR display did not become HDR-capable; continuing with SDR capture.";
+            }
+            break;
+          case VDISPLAY::policy::hdr_activation_failure_action::defer_to_display_helper:
+            if (!stop_token.stop_requested()) {
+              // The target is enumerated but the helper has not activated it yet, so a
+              // direct HDR request cannot stick. This is not a failure: the helper's
+              // APPLY carries the same HDR request and the capture gate waits for it.
+              BOOST_LOG(debug) << "Sunshine virtual display HDR: target is not active yet, so the direct HDR request was not applied; deferring to the display helper's APPLY.";
+            }
+            break;
         }
       }
 
@@ -6954,7 +6984,7 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool isVirtualDisplayDriverInstalled() {
-    return is_sunshine_driver_installed_passive();
+    return VDISPLAY::policy::passive_install_status(is_sunshine_driver_installed_passive());
   }
 
   std::optional<std::string> resolveVirtualDisplayDeviceId(const std::wstring &display_name) {
@@ -7252,7 +7282,7 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {
-    return equals_ci(output_identifier, VIRTUAL_DISPLAY_SELECTION);
+    return VDISPLAY::policy::is_virtual_display_selection(output_identifier, false);
   }
 
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {
@@ -7345,7 +7375,7 @@ uuid_util::uuid_t VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid() {
   // "sunshine-ensure" sentinel (the same client_uid used to create the temp display) keeps it
   // stable across runs and immune to the state-file contamination that previously let
   // root.virtual_display_guid hold a real client's display GUID.
-  return virtualDisplayUuidFromStableId("sunshine-ensure");
+  return virtualDisplayUuidFromStableId(std::string {VDISPLAY::policy::ensure_display_stable_id});
 }
 
 namespace {

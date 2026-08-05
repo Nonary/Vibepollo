@@ -1,4 +1,6 @@
 # windows specific packaging
+include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_virtual_display_contract.cmake")
+
 install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
@@ -23,9 +25,12 @@ endif()
 # used.
 option(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME "Fail Windows packaging when the TrueHDR runtime DLLs are missing." OFF)
 set(SUNSHINE_TRUEHDR_RUNTIME_DIR "${CMAKE_BINARY_DIR}" CACHE PATH "Directory containing vibeshine_truehdr.dll and the NVIDIA NGX TrueHDR runtime DLL")
-set(SUNSHINE_TRUEHDR_RUNTIME_FILES
-        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/vibeshine_truehdr.dll"
-        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/nvngx_truehdr.dll")
+set(SUNSHINE_TRUEHDR_RUNTIME_FILES "")
+foreach(_truehdr_runtime_name IN LISTS SUNSHINE_VDD_TRUEHDR_FILES)
+    list(APPEND SUNSHINE_TRUEHDR_RUNTIME_FILES
+        "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/${_truehdr_runtime_name}")
+endforeach()
+unset(_truehdr_runtime_name)
 if(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME)
     foreach(_truehdr_runtime_file IN LISTS SUNSHINE_TRUEHDR_RUNTIME_FILES)
         if(NOT EXISTS "${_truehdr_runtime_file}")
@@ -112,30 +117,33 @@ if(SUNSHINE_LIBVIRTUALDISPLAY_PREBUILT_DIR AND NOT "$ENV{GITHUB_ACTIONS}" STREQU
     set(SUNSHINE_EFFECTIVE_LIBVIRTUALDISPLAY_PREBUILT_DIR "")
 endif()
 set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SIGNING_ARGS "")
-set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/install.ps1"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.inf"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.dll"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cat"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/nefconc.exe"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/virtualdisplay_probe.exe"
-)
-set(SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.dll"
-    "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/vulkan-layer/VkLayer_sunshine_hdr.json"
-)
+set(SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES "")
+foreach(_sunshine_driver_relative_file IN LISTS SUNSHINE_VDD_DRIVER_REQUIRED_FILES)
+    list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES
+        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/${_sunshine_driver_relative_file}")
+endforeach()
+unset(_sunshine_driver_relative_file)
+
+set(SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES "")
+foreach(_sunshine_vulkan_relative_file IN LISTS SUNSHINE_VDD_VULKAN_LAYER_FILES)
+    list(APPEND SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES
+        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/${_sunshine_vulkan_relative_file}")
+endforeach()
+unset(_sunshine_vulkan_relative_file)
 set(SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES
     ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
     ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}
 )
-foreach(_sunshine_driver_optional_file IN ITEMS
-        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/SunshineVirtualDisplayDriver.cer")
+foreach(_sunshine_driver_optional_name IN LISTS SUNSHINE_VDD_DRIVER_OPTIONAL_FILES)
+    set(_sunshine_driver_optional_file
+        "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_SOURCE_DIR}/${_sunshine_driver_optional_name}")
     if(EXISTS "${_sunshine_driver_optional_file}")
         list(APPEND SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES "${_sunshine_driver_optional_file}")
         list(APPEND SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES "${_sunshine_driver_optional_file}")
     endif()
 endforeach()
 unset(_sunshine_driver_optional_file)
+unset(_sunshine_driver_optional_name)
 
 foreach(_sunshine_driver_file IN LISTS SUNSHINE_VIRTUAL_DISPLAY_PACKAGE_FILES)
     if (NOT EXISTS "${_sunshine_driver_file}")
@@ -174,16 +182,16 @@ if(EXISTS "${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_REFRESH_SCRIPT}")
         COMMENT "Building and refreshing Vibepollo Display Driver package assets"
         VERBATIM)
 
-    if(TARGET package_msi)
+    if(TARGET package_msi AND SUNSHINE_VDD_REFRESH_BEFORE_MSI)
         add_dependencies(package_msi refresh_sunshine_virtual_display_driver_assets)
     endif()
 endif()
 
 install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_DRIVER_FILES}
-        DESTINATION "drivers/sunshine"
+        DESTINATION "${SUNSHINE_VDD_DRIVER_DESTINATION}"
         COMPONENT virtual_display_driver)
 install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}
-        DESTINATION "drivers/sunshine/vulkan-layer"
+        DESTINATION "${SUNSHINE_VDD_VULKAN_LAYER_DESTINATION}"
         COMPONENT virtual_display_driver)
 
 # Mandatory scripts

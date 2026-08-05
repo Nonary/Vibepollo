@@ -2,6 +2,7 @@
 
 #include "src/utility.h"
 #include "src/uuid.h"
+#include "src/platform/windows/virtual_display_policy.h"
 
 #include <chrono>
 #include <cstdint>

@@ -548,7 +548,7 @@ namespace nvhttp {
                        << "' app_output_override='" << (app_output_override ? *app_output_override : std::string {})
                        << "'.";
 
-      if (!no_active_sessions) {
+      if (!VDISPLAY::policy::should_prepare_display_for_new_session(no_active_sessions)) {
         const auto previous_virtual_display_device_id = launch_session->virtual_display_device_id;
         launch_session->virtual_display = false;
         launch_session->virtual_display_failed = request_virtual_display;
@@ -564,7 +564,7 @@ namespace nvhttp {
               virtual_display_stable_id,
               previous_virtual_display_device_id,
               launch_session->client_name,
-              false
+              VDISPLAY::policy::allow_generic_resume_fallback()
             );
           if (existing_device &&
               VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(
@@ -604,7 +604,12 @@ namespace nvhttp {
       if (!allow_display_changes) {
         if (request_virtual_display) {
           if (auto existing_device =
-                VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(virtual_display_stable_id, launch_session->virtual_display_device_id, launch_session->client_name, false)) {
+                VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(
+                  virtual_display_stable_id,
+                  launch_session->virtual_display_device_id,
+                  launch_session->client_name,
+                  VDISPLAY::policy::allow_generic_resume_fallback()
+                )) {
             if (VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(
                   virtual_display_stable_guid,
                   "RTSP resume virtual display reuse"
@@ -895,7 +900,12 @@ namespace nvhttp {
             launch_session->virtual_display_failed = false;
             if (display_info->device_id && !display_info->device_id->empty()) {
               launch_session->virtual_display_device_id = *display_info->device_id;
-            } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(display_uuid_source, launch_session->virtual_display_device_id, client_label, false)) {
+            } else if (auto resolved_device = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(
+                         display_uuid_source,
+                         launch_session->virtual_display_device_id,
+                         client_label,
+                         VDISPLAY::policy::allow_generic_resume_fallback()
+                       )) {
               launch_session->virtual_display_device_id = *resolved_device;
             } else {
               launch_session->virtual_display_device_id.clear();
@@ -3432,7 +3442,7 @@ namespace nvhttp {
       bool probe_display_unavailable = false;
       VDISPLAY::ensure_display_result ensure_result {};
       if (!video::has_successful_encoder_probe()) {
-        if (launch_session->virtual_display) {
+        if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
           // Let APPLY settle when possible, but capability probing remains
           // adapter-scoped and does not turn a soft display gate into a 503.
           wait_for_probe_helper_settle(launch_session, display_startup_deadline);
@@ -3957,7 +3967,7 @@ namespace nvhttp {
       bool probe_display_unavailable = false;
       VDISPLAY::ensure_display_result ensure_result {};
       if (!video::has_successful_encoder_probe()) {
-        if (launch_session->virtual_display) {
+        if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
           wait_for_probe_helper_settle(launch_session, display_startup_deadline);
         } else {
           ensure_result = VDISPLAY::ensure_display();

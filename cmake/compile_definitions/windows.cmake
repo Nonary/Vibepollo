@@ -42,6 +42,7 @@ include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include"
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party")
 set(SUNSHINE_WINDOWS_VDISPLAY_SOURCES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_identity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sunshine.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_sudovda.cpp")
 

@@ -219,30 +219,6 @@ namespace {
 namespace VDISPLAY {
   HANDLE VIRTUAL_DISPLAY_DRIVER_HANDLE = INVALID_HANDLE_VALUE;
 
-  std::uint32_t effective_virtual_display_scale_percent(
-    const int configured_scale_percent,
-    const std::uint32_t width,
-    const std::uint32_t height
-  ) {
-    if (configured_scale_percent >= 0) {
-      return static_cast<std::uint32_t>(configured_scale_percent);
-    }
-
-    // Keep the shorter effective desktop edge near 864 logical pixels. This
-    // makes common modes comfortable without over-scaling below 4K:
-    // 1080p -> 125%, 1440p -> 175%, 2160p -> 250%.
-    const auto short_edge = (std::min)(width, height);
-    const auto ideal_scale = static_cast<double>(short_edge) * 100.0 / 864.0;
-    const auto closest = std::ranges::min_element(
-      kWindowsScalePercentages,
-      [ideal_scale](const auto lhs, const auto rhs) {
-        return std::abs(static_cast<double>(lhs) - ideal_scale) <
-               std::abs(static_cast<double>(rhs) - ideal_scale);
-      }
-    );
-    return closest != kWindowsScalePercentages.end() ? *closest : 100u;
-  }
-
   std::optional<std::wstring> get_advanced_color_profile(
     const std::wstring &monitor_device_path,
     const bool system_wide
@@ -839,25 +815,8 @@ namespace VDISPLAY {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_selection(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_selection(output_identifier);
   }
 
-  uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid) {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::client_uuid_to_virtual_display_id(client_guid) : VDISPLAY_SUDOVDA::client_uuid_to_vdd_display_id(client_guid);
-  }
-
-  uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id) {
-    return VDISPLAY_SUNSHINE::virtualDisplayUuidFromStableId(stable_id);
-  }
-
   GUID sharedVirtualDisplayGuid() {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::sharedVirtualDisplayGuid() : VDISPLAY_SUDOVDA::sharedVirtualDisplayGuid();
-  }
-
-  bool is_sunshine_virtual_display_identity(
-    const std::string &device_path,
-    const std::string &friendly_name,
-    const std::string &edid_manufacturer_id,
-    const std::string &edid_product_code
-  ) {
-    return VDISPLAY_SUNSHINE::is_sunshine_virtual_display_identity(device_path, friendly_name, edid_manufacturer_id, edid_product_code);
   }
 
   std::vector<std::wstring> matchDisplay(std::wstring sMatch) {

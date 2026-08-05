@@ -23,6 +23,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/display.h"
 #include "src/platform/windows/misc.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"
 
 // platform includes
@@ -38,8 +39,6 @@ namespace platf::dxgi {
     constexpr auto kHelperHandleWaitTimeout = std::chrono::seconds(15);
     constexpr auto kHelperHandleProgressInterval = std::chrono::seconds(3);
     constexpr std::int64_t kWgcMinUpdateInterval100ns = 10000;  // 1 ms
-    constexpr uint32_t kWgcLowLatencyInitialBufferSize = 1;
-    constexpr uint32_t kWgcAdaptiveMaxBufferSize = 2;
     constexpr uint32_t kWgcAdaptiveFramePoolFlags =
       WGC_IPC_FLAG_DRAIN_TO_LATEST |
       WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
@@ -96,14 +95,13 @@ namespace platf::dxgi {
     }
 
     uint32_t wgc_initial_frame_buffer_size() {
-      return kWgcLowLatencyInitialBufferSize;
+      return wgc_policy::low_latency_initial_buffer_size;
     }
 
     uint32_t wgc_max_frame_buffer_size(const ::video::config_t &config) {
       // A launch-qualified VRR session explicitly trades burst resilience for
       // newest-frame latency. Other sessions retain adaptive growth to two.
-      return config.vrr_low_latency ?
-        kWgcLowLatencyInitialBufferSize : kWgcAdaptiveMaxBufferSize;
+      return wgc_policy::maximum_buffer_size(config.vrr_low_latency);
     }
 
     struct frame_metadata_snapshot_t {
@@ -836,8 +834,9 @@ namespace platf::dxgi {
 
     DWORD exit_code = 0;
     _process_helper->terminate();  // best effort
-    if (!_process_helper->wait_for(exit_code, 3000)) {
-      BOOST_LOG(warning) << "WGC helper did not exit within 3000ms after termination request; continuing teardown.";
+    if (!_process_helper->wait_for(exit_code, wgc_policy::helper_stop_timeout_ms)) {
+      BOOST_LOG(warning) << "WGC helper did not exit within " << wgc_policy::helper_stop_timeout_ms
+                         << "ms after termination request; continuing teardown.";
       _process_helper = std::make_unique<ProcessHandler>();
     }
     _last_helper_stop = std::chrono::steady_clock::now();

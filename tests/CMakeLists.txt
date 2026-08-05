@@ -20,6 +20,65 @@ option(SUNSHINE_TEST_ENABLE_COMPONENT "Configure narrowly scoped component test 
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/SunshineTestTargets.cmake")
 
+include("${SUNSHINE_TEST_REPOSITORY_ROOT}/cmake/packaging/windows_virtual_display_contract.cmake")
+
+function(sunshine_contract_cpp_list input_variable output_variable)
+    set(_contract_cpp_items "")
+    foreach(_contract_item IN LISTS ${input_variable})
+        string(REPLACE "\\" "\\\\" _contract_item "${_contract_item}")
+        string(REPLACE "\"" "\\\"" _contract_item "${_contract_item}")
+        list(APPEND _contract_cpp_items "\"${_contract_item}\"")
+    endforeach()
+    string(JOIN ", " _contract_cpp_list ${_contract_cpp_items})
+    set(${output_variable} "${_contract_cpp_list}" PARENT_SCOPE)
+endfunction()
+
+function(sunshine_contract_cpp_bool input_variable output_variable)
+    if(${input_variable})
+        set(${output_variable} true PARENT_SCOPE)
+    else()
+        set(${output_variable} false PARENT_SCOPE)
+    endif()
+endfunction()
+
+foreach(_contract_list IN ITEMS
+        SUNSHINE_VDD_DRIVER_REQUIRED_FILES
+        SUNSHINE_VDD_DRIVER_OPTIONAL_FILES
+        SUNSHINE_VDD_VULKAN_LAYER_FILES
+        SUNSHINE_VDD_TRUEHDR_FILES
+        SUNSHINE_VDD_HEALTH_RECOVERY_SEQUENCE
+        SUNSHINE_VDD_INSTALL_SEQUENCE
+        SUNSHINE_VDD_UNINSTALL_SEQUENCE)
+    sunshine_contract_cpp_list(${_contract_list} "${_contract_list}_CPP")
+endforeach()
+
+foreach(_contract_bool IN ITEMS
+        SUNSHINE_VDD_REFRESH_BEFORE_MSI
+        SUNSHINE_VDD_INSTALLER_BEST_EFFORT
+        SUNSHINE_VDD_FORCE_KILL_UMDF
+        SUNSHINE_VDD_REMOVE_LEGACY_DRIVERS
+        SUNSHINE_VDD_REPLACE_ONLY_CHANGED_PACKAGE
+        SUNSHINE_VDD_REQUIRE_VALID_CATALOG_SIGNATURE
+        SUNSHINE_VDD_MSI_TRANSACTIONAL_REPLACEMENT
+        SUNSHINE_VDD_MSI_ALLOW_DOWNGRADES
+        SUNSHINE_VDD_CONFLICT_NAMES_EXACT
+        SUNSHINE_VDD_FACTORY_RESET_REQUIRES_INSTALL_SENTINEL
+        SUNSHINE_VDD_CI_REQUIRES_VALID_RELEASE_SIGNATURES
+        SUNSHINE_VDD_CI_SELF_SIGN_WITHOUT_PERSISTENT_SECRET
+        SUNSHINE_VDD_UPGRADE_SHOWS_DRIVER_CHOICE
+        SUNSHINE_VDD_INSTALL_SELECTION_SEEDS_RUNTIME_FLAG
+        SUNSHINE_VDD_CLI_PRESERVES_DRIVER_SELECTION
+        SUNSHINE_VDD_UNINSTALL_PASSES_REMOVAL_CHOICE)
+    sunshine_contract_cpp_bool(${_contract_bool} "${_contract_bool}_CPP")
+endforeach()
+
+set(SUNSHINE_TEST_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
+configure_file(
+    "${CMAKE_CURRENT_LIST_DIR}/support/virtual_display_package_contract.h.in"
+    "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}/virtual_display_package_contract.generated.h"
+    @ONLY)
+
 set(GTEST_SOURCE_DIR "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/googletest")
 if(NOT EXISTS "${GTEST_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
@@ -197,6 +256,10 @@ sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOU
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp)
 sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)
 sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp)
+if(TARGET test_component_virtual_display_manifest)
+    target_include_directories(test_component_virtual_display_manifest PRIVATE
+        "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
+endif()
 
 if(WIN32)
     sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
@@ -255,7 +318,8 @@ if(WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_profile.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_runtime.cpp")
-    sunshine_register_component(NAME test_component_virtual_display_policy TEST_SOURCE unit/platform/windows/test_virtual_display_sunshine.cpp)
+    sunshine_register_component(NAME test_component_virtual_display_policy TEST_SOURCE unit/platform/windows/test_virtual_display_sunshine.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/virtual_display_identity.cpp")
     sunshine_register_component(NAME test_component_lossless_scaling_policy TEST_SOURCE unit/test_lossless_scaling.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/playnite_launcher/lossless_scaling.cpp")
 endif()
