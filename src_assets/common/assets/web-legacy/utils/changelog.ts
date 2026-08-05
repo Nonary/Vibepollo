@@ -213,7 +213,13 @@ export function githubReleaseToChangelogEntry(release: GitHubReleaseLike): Chang
   const tag = normalizeChangelogTag(release.tag_name);
   if (!/^\d+\.\d+(?:\.\d+)?(?:[-+].*)?$/i.test(tag)) return null;
   const info = parseChangelogVersion(tag);
-  const body = (release.body ?? '').trim();
+  const releaseBody = (release.body ?? '').trim();
+  const changelogBody = releaseBody.match(
+    /<!--\s*vibeshine-changelog:begin\s*-->\s*([\s\S]*?)\s*<!--\s*vibeshine-changelog:end\s*-->/i,
+  )?.[1];
+  // Public release pages are cumulative, while the embedded payload remains
+  // scoped to this one tag for the in-app changelog.
+  const body = (changelogBody ?? releaseBody).trim();
   const entry: ChangelogEntry = {
     tag,
     name: (release.name || `Vibepollo ${tag}`).trim(),

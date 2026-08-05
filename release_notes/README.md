@@ -1,6 +1,8 @@
 # Release notes
 
-Create one Markdown file per release tag before pushing the tag.
+Create one Markdown file per release tag before pushing the tag. Each file is
+the version-scoped changelog entry: include only changes introduced by that
+tag, not a copy of earlier entries.
 
 Examples:
 
@@ -19,3 +21,9 @@ as `v1.15.4`.
 
 If no exact matching notes file exists for the release tag, the release flow
 skips instead of publishing generic generated notes.
+
+The release workflow composes the public GitHub Release body automatically.
+It includes every version-scoped entry in the same `major.minor.patch` release
+line through the tagged version, so a release page is self-contained without
+manually repeating prior line items. The Web UI changelog continues to show
+each tag's individual file only.
