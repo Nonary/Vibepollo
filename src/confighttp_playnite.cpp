@@ -14,6 +14,7 @@
   #include <cwctype>
   #include <filesystem>
   #include <fstream>
+  #include <iterator>
   #include <limits>
   #include <mutex>
   #include <optional>
@@ -559,36 +560,42 @@ namespace confighttp {
 
       std::vector<replacement_t> replacements;
       const auto add_matches = [&](const std::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
-        for (std::sregex_iterator it(input.begin(), input.end(), pattern), end; it != end; ++it) {
-          const auto &match = *it;
+        std::match_results<std::string::const_iterator> match;
+        auto search_start = input.cbegin();
+        while (std::regex_search(search_start, input.cend(), match, pattern)) {
           if (capture >= match.size() || !match[capture].matched) {
-            continue;
+            break;
           }
           const std::string value = match.str(capture);
           if (validate_ipv6 && !is_ipv6(value)) {
+            search_start += match.position(capture) + std::max<std::ptrdiff_t>(match.length(capture), 1);
             continue;
           }
-          if (preserve_service_identity && kind == "USER" && is_service_identity(value)) {
-            continue;
+          if (!(preserve_service_identity && kind == "USER" && is_service_identity(value))) {
+            const auto offset = static_cast<std::size_t>(std::distance(input.cbegin(), search_start));
+            replacements.push_back(replacement_t {
+              offset + static_cast<std::size_t>(match.position(capture)),
+              offset + static_cast<std::size_t>(match.position(capture) + match.length(capture)),
+              priority,
+              placeholder(kind, value),
+            });
           }
-          replacements.push_back(replacement_t {
-            static_cast<std::size_t>(match.position(capture)),
-            static_cast<std::size_t>(match.position(capture) + match.length(capture)),
-            priority,
-            placeholder(kind, value),
-          });
+          // Resume after the captured value, not the whole match. Boundary-based
+          // patterns consume punctuation, which must remain available to find the
+          // following address in a comma- or space-separated list.
+          search_start += match.position(capture) + std::max<std::ptrdiff_t>(match.length(capture), 1);
         }
       };
 
       // Match only user components of conventional home-directory paths.
-      add_matches(std::regex {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
+      add_matches(std::regex {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
       add_matches(std::regex {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
 
       // Explicit fields are safer to redact than arbitrary words that happen to look like names.
       add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase}, 1, 0, "USER", false, true);
       add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase}, 1, 0, "USER", false, true);
 
-      add_matches(std::regex {R"((?:^|[^0-9A-Za-z:.])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z:.]|$))"}, 1, 20, "IP");
+      add_matches(std::regex {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))"}, 1, 20, "IP");
       add_matches(std::regex {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"}, 1, 20, "IP", true);
       add_matches(std::regex {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"}, 1, 30, "MAC");
       add_matches(std::regex {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"}, 0, 40, "EMAIL");
