@@ -591,11 +591,19 @@ namespace platf::game_activity {
   }
 
   std::shared_ptr<refresh_target_t> make_refresh_target(refresh_target_options_t options) {
-    const auto target_identity = options.apply_activity_state ? options.display_name : options.device_id;
+    const bool session_bound_admission = static_cast<bool>(options.apply_activity_state);
+    const auto target_identity = session_bound_admission ? options.display_name : options.device_id;
     if (target_identity.empty() || options.base_refresh_numerator == 0 ||
         options.base_refresh_denominator == 0 || options.high_refresh_numerator == 0 ||
         options.high_refresh_denominator == 0) {
       return {};
+    }
+
+    // WGC admission callbacks close over one ipc_session_t. Reusing a controller
+    // by display name would retain the original session after a second capture
+    // instance takes over that display, so keep those controllers session-bound.
+    if (session_bound_admission) {
+      return std::shared_ptr<refresh_target_t>(new refresh_target_t(std::move(options)));
     }
 
     const auto target_key = refresh_target_key(target_identity);
