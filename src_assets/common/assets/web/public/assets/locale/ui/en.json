@@ -1911,7 +1911,7 @@
       "reveal": {
         "description": "This credential is displayed only after creation.",
         "title": "Your API token is ready",
-        "warning": "Copy this token now. Vibeshine stores only a hash and cannot show the full token again.",
+        "warning": "Copy this token now. Vibepollo stores only a hash and cannot show the full token again.",
         "warning_title": "Save it securely"
       },
       "revoke": {
