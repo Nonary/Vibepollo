@@ -18,7 +18,7 @@ namespace platf::playnite::sync {
   constexpr int kSourceInstalled = 1 << 3;
 
   static std::string playnite_id_key(std::string_view playnite_id) {
-    return to_lower_copy(std::string(playnite_id));
+    return policy::to_lower_copy(std::string(playnite_id));
   }
 
   std::string canonical_playnite_app_uuid(std::string_view playnite_id) {
