@@ -313,14 +313,16 @@ if(WIN32)
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_protocol.cpp")
     foreach(_playnite_test IN ITEMS
             test_playnite_autosync_reconcile.cpp
-            test_playnite_sync.cpp
             test_playnite_sync_autosync.cpp)
         get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
         sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
             PRODUCT_SOURCES
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp"
             LINK_LIBRARIES sunshine_test_simple_web_headers)
     endforeach()
+    sunshine_register_component(NAME test_component_test_playnite_sync TEST_SOURCE test_playnite_sync.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp")
     sunshine_register_component(NAME test_component_display_helper_watchdog TEST_SOURCE unit/test_display_helper_watchdog.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_watchdog.cpp")
     sunshine_register_component(NAME test_component_display_helper_session_deferral TEST_SOURCE unit/test_display_helper_session_deferral.cpp

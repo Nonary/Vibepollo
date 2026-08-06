@@ -1,12 +1,9 @@
-#include "src/platform/windows/playnite_sync.h"
+#include "src/platform/windows/playnite_sync_policy.h"
 
-#include <chrono>
-#include <filesystem>
-#include <fstream>
 #include <gtest/gtest.h>
 
 using namespace platf::playnite;
-using namespace platf::playnite::sync;
+using namespace platf::playnite::sync::policy;
 
 TEST(PlayniteSync_TimeParse, ParsesZuluAndOffset) {
   std::time_t t1 = 0, t2 = 0, t3 = 0;
@@ -29,46 +26,43 @@ static Game make_game(std::string id, std::string last, bool installed = true, s
 
 TEST(PlayniteSync_Select, RecentSelectionHonorsAgeAndExclude) {
   // Two games, one recent, one old; exclude the recent by id
-  auto now_iso = now_iso8601_utc();
   std::vector<Game> installed {
-    make_game("A", now_iso, true),
+    make_game("A", "2024-08-19T12:34:56Z", true),
     make_game("B", "2020-01-01T00:00:00Z", true)
   };
   std::unordered_set<std::string> excl {to_lower_copy(std::string("a"))};
   std::unordered_set<std::string> excl_categories;
   std::unordered_set<std::string> excl_plugins;
   std::unordered_map<std::string, int> flags;
-  auto sel = select_recent_installed_games(installed, 1, 30, excl, excl_categories, excl_plugins, flags);
+  auto sel = select_recent_installed_games(installed, 1, 30, 1724070896, excl, excl_categories, excl_plugins, flags);
   ASSERT_EQ(sel.size(), 0u);  // recent candidate excluded; no fallback
 }
 
 TEST(PlayniteSync_Select, RecentSelectionSkipsExcludedCategories) {
-  auto now_iso = now_iso8601_utc();
   std::vector<Game> installed {
-    make_game("A", now_iso, true, {"Steam"}),
-    make_game("B", now_iso, true, {"Indie"})
+    make_game("A", "2024-08-19T12:34:56Z", true, {"Steam"}),
+    make_game("B", "2024-08-19T12:34:56Z", true, {"Indie"})
   };
   std::unordered_set<std::string> excl_ids;
   std::unordered_set<std::string> excl_categories {to_lower_copy(std::string("steam"))};
   std::unordered_set<std::string> excl_plugins;
   std::unordered_map<std::string, int> flags;
-  auto sel = select_recent_installed_games(installed, 2, 0, excl_ids, excl_categories, excl_plugins, flags);
+  auto sel = select_recent_installed_games(installed, 2, 0, 1724070896, excl_ids, excl_categories, excl_plugins, flags);
   ASSERT_EQ(sel.size(), 1u);
   EXPECT_EQ(sel[0].id, "B");
   EXPECT_EQ(flags["B"] & 0x1, 0x1);
 }
 
 TEST(PlayniteSync_Select, RecentSelectionSkipsExcludedPlugins) {
-  auto now_iso = now_iso8601_utc();
   std::vector<Game> installed {
-    make_game("A", now_iso, true, {}, "cb91dfc9-b977-43bf-8e70-55f46e410fab"),
-    make_game("B", now_iso, true, {}, "83dd83a4-0cf7-49fb-9138-8547f6b60c18")
+    make_game("A", "2024-08-19T12:34:56Z", true, {}, "cb91dfc9-b977-43bf-8e70-55f46e410fab"),
+    make_game("B", "2024-08-19T12:34:56Z", true, {}, "83dd83a4-0cf7-49fb-9138-8547f6b60c18")
   };
   std::unordered_set<std::string> excl_ids;
   std::unordered_set<std::string> excl_categories;
   std::unordered_set<std::string> excl_plugins {to_lower_copy(std::string("cb91dfc9-b977-43bf-8e70-55f46e410fab"))};
   std::unordered_map<std::string, int> flags;
-  auto sel = select_recent_installed_games(installed, 2, 0, excl_ids, excl_categories, excl_plugins, flags);
+  auto sel = select_recent_installed_games(installed, 2, 0, 1724070896, excl_ids, excl_categories, excl_plugins, flags);
   ASSERT_EQ(sel.size(), 1u);
   EXPECT_EQ(sel[0].id, "B");
 }
@@ -100,7 +94,7 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
   app["playnite-added-at"] = "2000-01-01T00:00:00Z";
   root["apps"].push_back(app);
   std::unordered_set<std::string> uninstalled;  // not uninstalled
-  auto now = std::time(nullptr);
+  constexpr std::time_t now = 1724070896;
   std::unordered_map<std::string, std::time_t> last_played;  // empty => never played
   std::unordered_set<std::string> selected_ids;  // not selected
   bool changed = false;
@@ -109,58 +103,22 @@ TEST(PlayniteSync_Purge, TTLAndReplacementPolicy) {
   EXPECT_EQ(root["apps"].size(), 0);
 }
 
-TEST(PlayniteSync_Metadata, KeepsBoxArtWhenGameIconMissing) {
-  const auto dir = std::filesystem::temp_directory_path() / "vibeshine_playnite_metadata_test";
-  std::filesystem::create_directories(dir);
-  const auto cover_path = dir / "cover.png";
-  const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,8,215,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
-  std::ofstream(cover_path, std::ios::binary).write(reinterpret_cast<const char *>(png), sizeof(png));
+TEST(PlayniteSync_MetadataPolicy, KeepsBoxArtWhenIconResolutionFails) {
+  nlohmann::json app = {
+    {"playnite-icon-path", "previous-icon.png"}
+  };
 
-  Game game;
-  game.id = "fallback-icon";
-  game.name = "Fallback Icon";
-  game.box_art_path = cover_path.string();
-  game.icon_path.clear();
+  apply_box_art_path(app, "covers/playnite_fallback-icon.png");
+  apply_icon_path(app, {});
 
-  nlohmann::json app = nlohmann::json::object();
-  apply_game_metadata_to_app(game, app, dir);
-
-  ASSERT_TRUE(app.contains("image-path"));
+  EXPECT_EQ(app["image-path"].get<std::string>(), "covers/playnite_fallback-icon.png");
   EXPECT_FALSE(app.contains("playnite-icon-path"));
-  EXPECT_NE(app["image-path"].get<std::string>().find("playnite_fallback-icon.png"), std::string::npos);
-
-  std::error_code ec;
-  std::filesystem::remove_all(dir, ec);
 }
 
-TEST(PlayniteSync_Art, ReconvertsWhenSourceChangesEvenWithOlderMtime) {
-  const auto dir = std::filesystem::temp_directory_path() / "vibeshine_playnite_art_test";
-  std::filesystem::remove_all(dir);
-  std::filesystem::create_directories(dir);
-  const auto src1 = dir / "cover1.png";
-  const auto dst = dir / "converted.png";
-  const unsigned char png[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,8,215,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
-  std::ofstream(src1, std::ios::binary).write(reinterpret_cast<const char *>(png), sizeof(png));
-
-  // Initial conversion writes dst and a source-signature sidecar
-  ASSERT_TRUE(convert_playnite_image_to_png(src1.string(), dst));
-  ASSERT_TRUE(std::filesystem::exists(dst));
-  const auto sidecar = dst.string() + ".src";
-  EXPECT_EQ(file_handler::read_file(sidecar.c_str()), image_source_signature(src1));
-
-  // Unchanged source: conversion is skipped (sentinel content survives)
-  file_handler::write_file(dst.string().c_str(), "SENTINEL");
-  ASSERT_TRUE(convert_playnite_image_to_png(src1.string(), dst));
-  EXPECT_EQ(file_handler::read_file(dst.string().c_str()), "SENTINEL");
-
-  // New cover at a different path but with an mtime OLDER than dst (Playnite preserves the
-  // original file's mtime when copying art into its library) must still reconvert
-  const auto src2 = dir / "cover2.png";
-  std::filesystem::copy_file(real_png, src2);
-  std::filesystem::last_write_time(src2, std::filesystem::last_write_time(dst) - std::chrono::hours(24 * 365));
-  ASSERT_TRUE(convert_playnite_image_to_png(src2.string(), dst));
-  EXPECT_NE(file_handler::read_file(dst.string().c_str()), "SENTINEL");
-  EXPECT_EQ(file_handler::read_file(sidecar.c_str()), image_source_signature(src2));
-
-  std::filesystem::remove_all(dir);
+TEST(PlayniteSync_ArtPolicy, ReconvertOnlyWhenCacheDoesNotDescribeSource) {
+  EXPECT_FALSE(should_reconvert_playnite_image(true, "cover-a|12|100", "cover-a|12|100"));
+  EXPECT_TRUE(should_reconvert_playnite_image(false, "cover-a|12|100", "cover-a|12|100"));
+  // A different source path forces reconversion even if its source mtime is older.
+  EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", "cover-b|12|1"));
+  EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", ""));
 }

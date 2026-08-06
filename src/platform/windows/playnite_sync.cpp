@@ -485,7 +485,10 @@ namespace platf::playnite::sync {
     const auto signature = image_source_signature(src);
     const std::string sidecar = dst.string() + ".src";
     std::error_code exists_ec;
-    if (!signature.empty() && std::filesystem::exists(dst, exists_ec) && file_handler::read_file(sidecar.c_str()) == signature) {
+    if (!policy::should_reconvert_playnite_image(
+          std::filesystem::exists(dst, exists_ec),
+          file_handler::read_file(sidecar.c_str()),
+          signature)) {
       return true;
     }
     if (!platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring())) {
@@ -507,7 +510,7 @@ namespace platf::playnite::sync {
       if (!g.box_art_path.empty()) {
         auto dst = covers_root / ("playnite_" + g.id + ".png");
         if (convert_playnite_image_to_png(g.box_art_path, dst)) {
-          app["image-path"] = dst.generic_string();
+          policy::apply_box_art_path(app, dst.generic_string());
         }
       }
     } catch (...) {}
@@ -531,12 +534,12 @@ namespace platf::playnite::sync {
             std::filesystem::path(install_dir).wstring(),
             dst.wstring(),
             &diag)) {
-        app["playnite-icon-path"] = dst.generic_string();
+        policy::apply_icon_path(app, dst.generic_string());
         BOOST_LOG(debug) << "Playnite sync icon: name='" << g.name << "' installDir='" << install_dir
                          << "' exeIcon=" << diag.exe_size << " playniteIcon=" << diag.icon_size
                          << " -> width=" << platf::img::image_pixel_width(dst.wstring());
-      } else if (app.contains("playnite-icon-path")) {
-        app.erase("playnite-icon-path");
+      } else {
+        policy::apply_icon_path(app, {});
       }
     } catch (...) {}
     try {
@@ -799,10 +802,10 @@ namespace platf::playnite::sync {
     std::unordered_map<std::string, int> source_flags;
     std::vector<Game> sel_recent, sel_cats, sel_plugins, sel_all;
     if (recentN > 0) {
-      sel_recent = select_recent_installed_games(installed, recentN, recentAgeDays, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+      sel_recent = policy::select_recent_installed_games(installed, recentN, recentAgeDays, std::time(nullptr), excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
     if (!categories.empty()) {
-      sel_cats = select_category_games(installed, categories, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+      sel_cats = policy::select_category_games(installed, categories, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
     std::unordered_set<std::string> include_plugins_lower;
     for (auto id : include_plugins) {
@@ -812,10 +815,10 @@ namespace platf::playnite::sync {
       }
     }
     if (!include_plugins_lower.empty()) {
-      sel_plugins = select_plugin_games(installed, include_plugins_lower, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+      sel_plugins = policy::select_plugin_games(installed, include_plugins_lower, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
     if (sync_all_installed) {
-      sel_all = select_all_installed_games(installed, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
+      sel_all = policy::select_all_installed_games(installed, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
     }
 
     // Merge selections by id, preserving first instance
