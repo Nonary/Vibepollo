@@ -4,24 +4,24 @@
  */
 #include "../tests_common.h"
 
+#include <cmath>
 #include <format>
-#include <unordered_map>
-#include <src/config.h>
-#include <src/display_device.h>
-#include <src/rtsp.h>
+#include <src/display_device_policy.h>
 
 namespace {
-  using config_option_e = config::video_t::dd_t::config_option_e;
-  using device_prep_t = display_device::SingleDisplayConfiguration::DevicePreparation;
+  using namespace std::string_literals;
+  namespace policy = display_device::policy;
+  using config_option_e = policy::video_config_t::dd_t::config_option_e;
+  using device_prep_t = policy::device_preparation_e;
 
-  using hdr_option_e = config::video_t::dd_t::hdr_option_e;
-  using hdr_state_e = display_device::HdrState;
+  using hdr_option_e = policy::video_config_t::dd_t::hdr_option_e;
+  using hdr_state_e = policy::hdr_state_e;
 
-  using resolution_option_e = config::video_t::dd_t::resolution_option_e;
-  using resolution_t = display_device::Resolution;
+  using resolution_option_e = policy::video_config_t::dd_t::resolution_option_e;
+  using resolution_t = policy::resolution_t;
 
-  using refresh_rate_option_e = config::video_t::dd_t::refresh_rate_option_e;
-  using rational_t = display_device::Rational;
+  using refresh_rate_option_e = policy::video_config_t::dd_t::refresh_rate_option_e;
+  using rational_t = policy::rational_t;
 
   struct failed_to_parse_resolution_tag_t {};
 
@@ -30,16 +30,6 @@ namespace {
   struct no_refresh_rate_tag_t {};
 
   struct no_resolution_tag_t {};
-
-  struct runtime_config_overrides_guard_t {
-    runtime_config_overrides_guard_t() {
-      config::clear_runtime_config_overrides();
-    }
-
-    ~runtime_config_overrides_guard_t() {
-      config::clear_runtime_config_overrides();
-    }
-  };
 
   struct client_resolution_t {
     int width;
@@ -71,12 +61,12 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(ParseDeviceId, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
 
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.output_name = input_value;
 
-  const auto result {display_device::parse_configuration(video_config, {})};
-  EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_device_id, expected_value);
+  const auto result {policy::parse_configuration(video_config, {})};
+  EXPECT_EQ(std::get<policy::configuration_t>(result).m_device_id, expected_value);
 }
 
 using ParseConfigOption = DisplayDeviceConfigTest<std::pair<config_option_e, std::optional<device_prep_t>>>;
@@ -95,14 +85,14 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(ParseConfigOption, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
 
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = input_value;
 
-  const auto result {display_device::parse_configuration(video_config, {})};
-  if (const auto *parsed_config {std::get_if<display_device::SingleDisplayConfiguration>(&result)}; parsed_config) {
+  const auto result {policy::parse_configuration(video_config, {})};
+  if (const auto *parsed_config {std::get_if<policy::configuration_t>(&result)}; parsed_config) {
     ASSERT_EQ(parsed_config->m_device_prep, expected_value);
   } else {
-    ASSERT_EQ(std::get_if<display_device::configuration_disabled_tag_t>(&result) != nullptr, !expected_value);
+    ASSERT_EQ(std::get_if<policy::configuration_disabled_tag_t>(&result) != nullptr, !expected_value);
   }
 }
 
@@ -122,147 +112,130 @@ TEST_P(ParseHdrOption, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
   const auto &[input_hdr_option, input_enable_hdr] = input_value;
 
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = input_hdr_option;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = input_enable_hdr;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state, expected_value);
+  const auto result {policy::parse_configuration(video_config, session)};
+  EXPECT_EQ(std::get<policy::configuration_t>(result).m_hdr_state, expected_value);
 }
 
 TEST(HdrRequestPolicy, ExplicitClientHdrWinsOver10BitSdrPreference) {
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
   session.prefer_sdr_10bit = true;
 
-  EXPECT_TRUE(rtsp_stream::effective_hdr_requested(session));
-  EXPECT_FALSE(rtsp_stream::effective_10bit_sdr_requested(session));
+  EXPECT_TRUE(policy::effective_hdr_requested(session));
+  EXPECT_FALSE(policy::effective_10bit_sdr_requested(session));
 }
 
 TEST(HdrRequestPolicy, SdrClientUses10BitSdrPreference) {
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = false;
   session.prefer_sdr_10bit = true;
 
-  EXPECT_FALSE(rtsp_stream::effective_hdr_requested(session));
-  EXPECT_TRUE(rtsp_stream::effective_10bit_sdr_requested(session));
+  EXPECT_FALSE(policy::effective_hdr_requested(session));
+  EXPECT_TRUE(policy::effective_10bit_sdr_requested(session));
 }
 
 TEST(HdrRequestPolicy, ExplicitForceSdrOverridesClientHdrAndKeeps10BitPreference) {
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
   session.prefer_sdr_10bit = true;
   session.force_sdr = true;
 
-  EXPECT_FALSE(rtsp_stream::effective_hdr_requested(session));
-  EXPECT_TRUE(rtsp_stream::effective_10bit_sdr_requested(session));
+  EXPECT_FALSE(policy::effective_hdr_requested(session));
+  EXPECT_TRUE(policy::effective_10bit_sdr_requested(session));
 }
 
 TEST(DisplayDeviceConfig, ExplicitClientHdrEnablesDisplayDespite10BitSdrPreference) {
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
   session.prefer_sdr_10bit = true;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  const auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  const auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
 
 TEST(DisplayDeviceConfig, ExplicitForceSdrDisablesDisplayDespiteClientHdr) {
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
   session.prefer_sdr_10bit = true;
   session.force_sdr = true;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  const auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  const auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
 }
 
 TEST(DisplayDeviceConfig, DummyPlugHdrWorkaroundForcesHdrEnabled) {
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::disabled;
   video_config.dd.wa.dummy_plug_hdr10 = true;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = false;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
 
 TEST(DisplayDeviceConfig, RtxHdrAppOverrideKeepsSourceDisplaySdr) {
-  runtime_config_overrides_guard_t overrides_guard;
-  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
-    {"rtx_hdr", "true"},
-  });
-
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
-  video_config.rtx_hdr.enabled = true;
-  video_config.rtx_hdr.force_sdr = false;
+  video_config.rtx_hdr_enabled = true;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Disabled);
 }
 
 TEST(DisplayDeviceConfig, RtxHdrDisabledAppOverrideAllowsHdrDisplay) {
-  runtime_config_overrides_guard_t overrides_guard;
-  config::set_runtime_config_overrides(std::unordered_map<std::string, std::string> {
-    {"rtx_hdr", "false"},
-  });
-
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
-  video_config.rtx_hdr.enabled = true;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
 
 TEST(DisplayDeviceConfig, RtxHdrGlobalTuningDoesNotKeepSourceDisplaySdr) {
-  runtime_config_overrides_guard_t overrides_guard;
-
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.hdr_option = hdr_option_e::automatic;
-  video_config.rtx_hdr.enabled = true;
-  video_config.rtx_hdr.force_sdr = true;
-  video_config.rtx_hdr.peak_brightness = 1400;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_hdr = true;
 
-  const auto result {display_device::parse_configuration(video_config, session)};
-  auto hdr_state = std::get<display_device::SingleDisplayConfiguration>(result).m_hdr_state;
+  const auto result {policy::parse_configuration(video_config, session)};
+  auto hdr_state = std::get<policy::configuration_t>(result).m_hdr_state;
   ASSERT_TRUE(hdr_state.has_value());
   EXPECT_EQ(*hdr_state, hdr_state_e::Enabled);
 }
@@ -323,11 +296,11 @@ TEST_P(ParseResolutionOption, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
   const auto &[input_resolution_option, input_enable_sops, input_resolution] = input_value;
 
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.resolution_option = input_resolution_option;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   session.enable_sops = input_enable_sops;
 
   if (const auto *client_res {std::get_if<client_resolution_t>(&input_resolution)}; client_res) {
@@ -340,16 +313,16 @@ TEST_P(ParseResolutionOption, IntegrationTest) {
     session.height = {};
   }
 
-  const auto result {display_device::parse_configuration(video_config, session)};
+  const auto result {policy::parse_configuration(video_config, session)};
   if (const auto *failed_option {std::get_if<failed_to_parse_resolution_tag_t>(&expected_value)}; failed_option) {
-    EXPECT_NO_THROW((void) std::get<display_device::failed_to_parse_tag_t>(result));
+    EXPECT_NO_THROW((void) std::get<policy::failed_to_parse_tag_t>(result));
   } else {
     std::optional<resolution_t> expected_resolution;
     if (const auto *valid_resolution_option {std::get_if<resolution_t>(&expected_value)}; valid_resolution_option) {
       expected_resolution = *valid_resolution_option;
     }
 
-    EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_resolution, expected_resolution);
+    EXPECT_EQ(std::get<policy::configuration_t>(result).m_resolution, expected_resolution);
   }
 }
 
@@ -407,11 +380,11 @@ TEST_P(ParseRefreshRateOption, IntegrationTest) {
   const auto &[input_value, expected_value] = GetParam();
   const auto &[input_refresh_rate_option, input_refresh_rate] = input_value;
 
-  config::video_t video_config {};
+  policy::video_config_t video_config {};
   video_config.dd.configuration_option = config_option_e::verify_only;
   video_config.dd.refresh_rate_option = input_refresh_rate_option;
 
-  rtsp_stream::launch_session_t session {};
+  policy::session_t session {};
   if (const auto *client_refresh_rate {std::get_if<client_fps_t>(&input_refresh_rate)}; client_refresh_rate) {
     video_config.dd.manual_refresh_rate = {};
     session.fps = *client_refresh_rate;
@@ -420,23 +393,23 @@ TEST_P(ParseRefreshRateOption, IntegrationTest) {
     session.fps = {};
   }
 
-  const auto result {display_device::parse_configuration(video_config, session)};
+  const auto result {policy::parse_configuration(video_config, session)};
   if (const auto *failed_option {std::get_if<failed_to_parse_refresh_rate_tag_t>(&expected_value)}; failed_option) {
-    EXPECT_NO_THROW((void) std::get<display_device::failed_to_parse_tag_t>(result));
+    EXPECT_NO_THROW((void) std::get<policy::failed_to_parse_tag_t>(result));
   } else {
-    std::optional<display_device::FloatingPoint> expected_refresh_rate;
+    std::optional<rational_t> expected_refresh_rate;
     if (const auto *valid_refresh_rate_option {std::get_if<rational_t>(&expected_value)}; valid_refresh_rate_option) {
       expected_refresh_rate = *valid_refresh_rate_option;
     }
 
-    EXPECT_EQ(std::get<display_device::SingleDisplayConfiguration>(result).m_refresh_rate, expected_refresh_rate);
+    EXPECT_EQ(std::get<policy::configuration_t>(result).m_refresh_rate, expected_refresh_rate);
   }
 }
 
 namespace {
   using res_t = resolution_t;
   using fps_t = client_fps_t;
-  using remap_entries_t = config::video_t::dd_t::mode_remapping_t;
+  using remap_entries_t = policy::video_config_t::dd_t::mode_remapping_t;
 
   struct no_value_t {};
 
@@ -605,8 +578,8 @@ namespace {
     const auto &[input_value, expected_value] = GetParam();
     const auto &[input_res, input_fps, input_enable_sops, input_entries] = input_value;
 
-    config::video_t video_config {};
-    rtsp_stream::launch_session_t session {};
+    policy::video_config_t video_config {};
+    policy::session_t session {};
 
     {  // resolution
       using enum resolution_option_e;
@@ -643,15 +616,15 @@ namespace {
     video_config.dd.mode_remapping = input_entries;
     session.enable_sops = input_enable_sops;
 
-    const auto result {display_device::parse_configuration(video_config, session)};
+    const auto result {policy::parse_configuration(video_config, session)};
     if (const auto *failed_option {std::get_if<failed_to_remap_t>(&expected_value)}; failed_option) {
-      EXPECT_NO_THROW((void) std::get<display_device::failed_to_parse_tag_t>(result));
+      EXPECT_NO_THROW((void) std::get<policy::failed_to_parse_tag_t>(result));
     } else {
       const auto &[expected_resolution, expected_refresh_rate] = std::get<final_values_t>(expected_value);
-      const auto &parsed_config = std::get<display_device::SingleDisplayConfiguration>(result);
+      const auto &parsed_config = std::get<policy::configuration_t>(result);
 
       EXPECT_EQ(parsed_config.m_resolution, expected_resolution);
-      EXPECT_EQ(parsed_config.m_refresh_rate, expected_refresh_rate ? std::make_optional(display_device::FloatingPoint {*expected_refresh_rate}) : std::nullopt);
+      EXPECT_EQ(parsed_config.m_refresh_rate, expected_refresh_rate);
     }
   }
 }  // namespace

@@ -269,8 +269,7 @@ sunshine_register_component(NAME test_component_input_validation TEST_SOURCE uni
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input.cpp"
     LINK_LIBRARIES sunshine_test_moonlight_headers)
 sunshine_register_component(NAME test_component_display_device_policy TEST_SOURCE unit/test_display_device.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device.cpp"
-    LINK_LIBRARIES sunshine_test_displaydevice_headers)
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device_policy.cpp")
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp")
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
