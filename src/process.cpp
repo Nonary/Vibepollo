@@ -42,7 +42,6 @@
 #include <openssl/sha.h>
 
 // local includes
-#include "app_framegen_config.h"
 #include "app_catalog_policy.h"
 #include "config.h"
 #include "crypto.h"
@@ -3692,102 +3691,6 @@ namespace proc {
         }
         if (auto it = app_node.find("lossless-scaling-custom"); it != app_node.end()) {
           populate_lossless_overrides(*it, ctx.lossless_scaling_custom);
-        }
-        if (display_output) {
-          ctx.output_name_override = parse_env_val(this_env, *display_output);
-        } else if (!ctx.output.empty()) {
-          // Backward compatibility for apps saved before display output received its own field.
-          ctx.output_name_override = ctx.output;
-        }
-
-        if (cmd) {
-          ctx.cmd = parse_env_val(this_env, *cmd);
-        }
-
-        if (working_dir) {
-          ctx.working_dir = parse_env_val(this_env, *working_dir);
-#ifdef _WIN32
-          // The working directory, unlike the command itself, should not be quoted
-          // when it contains spaces. Unlike POSIX, Windows forbids quotes in paths,
-          // so we can safely strip them all out here to avoid confusing the user.
-          boost::erase_all(ctx.working_dir, "\"");
-#endif
-        }
-
-        if (image_path) {
-          ctx.image_path = parse_env_val(this_env, *image_path);
-        }
-
-        if (uuid) {
-          ctx.uuid = parse_env_val(this_env, *uuid);
-        }
-
-        if (playnite_id) {
-          ctx.playnite_id = parse_env_val(this_env, *playnite_id);
-        }
-        // Optional Playnite fullscreen launcher flag
-        try {
-          auto pfs = app_node.get_optional<bool>("playnite-fullscreen"s);
-          ctx.playnite_fullscreen = pfs.value_or(false);
-        } catch (...) {
-          ctx.playnite_fullscreen = false;
-        }
-
-        try {
-          auto fgfix = app_node.get_optional<bool>("frame-gen-limiter-fix"s);
-          ctx.frame_gen_limiter_fix = fgfix.value_or(false);
-        } catch (...) {
-          ctx.frame_gen_limiter_fix = false;
-        }
-
-        ctx.elevated = elevated.value_or(false);
-        ctx.virtual_screen = app_node.get_optional<bool>("virtual-screen"s).value_or(false);
-        if (virtual_display_mode) {
-          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_mode);
-          if (normalized == "disabled") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
-          } else if (normalized == "per_client") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
-          } else if (normalized == "shared") {
-            ctx.virtual_display_mode_override = config::video_t::virtual_display_mode_e::shared;
-          }
-        }
-        if (virtual_display_layout) {
-          auto normalized = boost::algorithm::to_lower_copy(*virtual_display_layout);
-          if (normalized == "exclusive") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::exclusive;
-          } else if (normalized == "extended") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended;
-          } else if (normalized == "extended_primary") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary;
-          } else if (normalized == "extended_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_isolated;
-          } else if (normalized == "extended_primary_isolated") {
-            ctx.virtual_display_layout_override = config::video_t::virtual_display_layout_e::extended_primary_isolated;
-          }
-        }
-        ctx.auto_detach = auto_detach.value_or(true);
-        ctx.wait_all = wait_all.value_or(true);
-        // Default graceful-exit timeout: 10s (Playnite-managed apps are written with this value)
-        ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(10)};
-        bool used_pure_framegen_parser = false;
-        if (json_tree.is_object() && json_tree.contains("apps") && json_tree["apps"].is_array()) {
-          const auto &json_apps = json_tree["apps"];
-          if (json_index >= 0 && json_index < static_cast<int>(json_apps.size())) {
-            if (const auto parsed_framegen = app_config::parse_framegen_json(json_apps[json_index].dump())) {
-              ctx.frame_generation_enabled = parsed_framegen->enabled;
-              ctx.gen1_framegen_fix = parsed_framegen->gen1_capture_fix;
-              ctx.gen2_framegen_fix = parsed_framegen->gen2_capture_fix;
-              ctx.lossless_scaling_framegen = parsed_framegen->lossless_scaling_framegen;
-              ctx.frame_generation_provider = parsed_framegen->provider;
-              used_pure_framegen_parser = true;
-            }
-          }
-        }
-        if (!used_pure_framegen_parser) {
-          ctx.gen1_framegen_fix =
-            !frame_generation_explicitly_off && (gen1_framegen_fix.value_or(false) || gen2_framegen_fix.value_or(false));
-          ctx.gen2_framegen_fix = false;
         }
         if (!ctx.lossless_scaling_framegen) {
           ctx.lossless_scaling_target_fps.reset();
