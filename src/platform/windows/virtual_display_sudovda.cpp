@@ -2462,7 +2462,7 @@ namespace VDISPLAY_SUDOVDA {
       }
     }
 
-    uuid_util::uuid_t ensure_persistent_guid() {
+    [[maybe_unused]] uuid_util::uuid_t ensure_persistent_guid() {
       static std::mutex guid_mutex;
       static std::optional<uuid_util::uuid_t> cached;
 
@@ -4971,7 +4971,7 @@ namespace VDISPLAY_SUDOVDA {
   }
 
   GUID sharedVirtualDisplayGuid() {
-    return uuid_to_guid(ensure_persistent_guid());
+    return VDISPLAY::sharedVirtualDisplayGuid();
   }
 
   bool is_vdd_virtual_display_identity(
@@ -5096,7 +5096,7 @@ bool VDISPLAY_SUDOVDA::should_auto_enable_virtual_display() {
 }
 
 uuid_util::uuid_t VDISPLAY_SUDOVDA::persistentVirtualDisplayUuid() {
-  return ensure_persistent_guid();
+  return VDISPLAY::persistentVirtualDisplayUuid();
 }
 
 namespace {

@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include <ranges>
 
 namespace {
@@ -103,6 +104,19 @@ namespace VDISPLAY {
       uuid.b8[15] = 1;
     }
     return uuid;
+  }
+
+  uuid_util::uuid_t persistentVirtualDisplayUuid() {
+    // The shared encoder-probe display needs a stable identity that cannot be
+    // inherited from a paired client's persisted state.
+    return virtualDisplayUuidFromStableId(std::string {policy::ensure_display_stable_id});
+  }
+
+  GUID sharedVirtualDisplayGuid() {
+    const auto uuid = persistentVirtualDisplayUuid();
+    GUID guid {};
+    std::memcpy(&guid, uuid.b8, sizeof(guid));
+    return guid;
   }
 
   bool is_sunshine_virtual_display_identity(

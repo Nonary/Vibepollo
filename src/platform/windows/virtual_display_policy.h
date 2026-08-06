@@ -13,16 +13,6 @@ namespace VDISPLAY::policy {
   inline constexpr auto activation_grace = std::chrono::milliseconds {500};
   inline constexpr auto readiness_poll_interval = std::chrono::milliseconds {50};
 
-  enum class display_identity_role : std::uint8_t {
-    persistent_shared,
-    per_client,
-    encoder_probe,
-  };
-
-  constexpr bool persists_identity(const display_identity_role role) noexcept {
-    return role == display_identity_role::persistent_shared;
-  }
-
   constexpr bool should_ensure_probe_display(const bool session_uses_virtual_display) noexcept {
     return !session_uses_virtual_display;
   }

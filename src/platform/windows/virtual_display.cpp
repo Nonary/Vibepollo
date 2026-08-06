@@ -825,10 +825,6 @@ namespace VDISPLAY {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_selection(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_selection(output_identifier);
   }
 
-  GUID sharedVirtualDisplayGuid() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::sharedVirtualDisplayGuid() : VDISPLAY_SUDOVDA::sharedVirtualDisplayGuid();
-  }
-
   std::vector<std::wstring> matchDisplay(std::wstring sMatch) {
     const auto displays = enumerateVirtualDisplays();
     std::vector<std::wstring> matches;
@@ -848,10 +844,6 @@ namespace VDISPLAY {
 
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays() {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::enumerateVirtualDisplays() : VDISPLAY_SUDOVDA::enumerateSudaVDADisplays();
-  }
-
-  uuid_util::uuid_t persistentVirtualDisplayUuid() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid() : VDISPLAY_SUDOVDA::persistentVirtualDisplayUuid();
   }
 
   bool has_active_physical_display() {

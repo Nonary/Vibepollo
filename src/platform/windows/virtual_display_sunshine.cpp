@@ -3841,7 +3841,7 @@ namespace VDISPLAY_SUNSHINE {
       }
     }
 
-    uuid_util::uuid_t ensure_persistent_guid() {
+    [[maybe_unused]] uuid_util::uuid_t ensure_persistent_guid() {
       static std::mutex guid_mutex;
       static std::optional<uuid_util::uuid_t> cached;
 
@@ -4679,7 +4679,7 @@ namespace VDISPLAY_SUNSHINE {
   }
 
   GUID sharedVirtualDisplayGuid() {
-    return uuid_to_guid(ensure_persistent_guid());
+    return VDISPLAY::sharedVirtualDisplayGuid();
   }
 
   bool is_sunshine_virtual_display_identity(
@@ -7420,7 +7420,7 @@ uuid_util::uuid_t VDISPLAY_SUNSHINE::persistentVirtualDisplayUuid() {
   // "sunshine-ensure" sentinel (the same client_uid used to create the temp display) keeps it
   // stable across runs and immune to the state-file contamination that previously let
   // root.virtual_display_guid hold a real client's display GUID.
-  return virtualDisplayUuidFromStableId(std::string {VDISPLAY::policy::ensure_display_stable_id});
+  return VDISPLAY::persistentVirtualDisplayUuid();
 }
 
 namespace {

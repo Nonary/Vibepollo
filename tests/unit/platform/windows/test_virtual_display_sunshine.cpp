@@ -82,16 +82,24 @@ TEST(SunshineVirtualDisplay, StableVirtualDisplayUuidDerivesNonCanonicalClientId
   EXPECT_NE(VDISPLAY::client_uuid_to_virtual_display_id(first_guid), 0u);
 }
 
-TEST(SunshineVirtualDisplay, TemporaryCreationDoesNotPersistSessionGuidAsSharedIdentity) {
-  EXPECT_TRUE(VDISPLAY::policy::persists_identity(
-    VDISPLAY::policy::display_identity_role::persistent_shared
-  ));
-  EXPECT_FALSE(VDISPLAY::policy::persists_identity(
-    VDISPLAY::policy::display_identity_role::per_client
-  ));
-  EXPECT_FALSE(VDISPLAY::policy::persists_identity(
-    VDISPLAY::policy::display_identity_role::encoder_probe
-  ));
+TEST(SunshineVirtualDisplay, PersistentIdentityUsesTheReservedEnsureStableId) {
+  const auto persistent = VDISPLAY::persistentVirtualDisplayUuid();
+  EXPECT_EQ(
+    persistent,
+    VDISPLAY::virtualDisplayUuidFromStableId(std::string {VDISPLAY::policy::ensure_display_stable_id})
+  );
+  EXPECT_NE(persistent, VDISPLAY::virtualDisplayUuidFromStableId("C19912B3-2432-D020-368E-65EC0EDD3C72"));
+}
+
+TEST(SunshineVirtualDisplay, SharedPersistentGuidUsesTheReservedUuidBytes) {
+  const auto persistent = VDISPLAY::persistentVirtualDisplayUuid();
+  GUID expected {};
+  std::memcpy(&expected, persistent.b8, sizeof(expected));
+
+  const auto shared = VDISPLAY::sharedVirtualDisplayGuid();
+  const auto repeated = VDISPLAY::sharedVirtualDisplayGuid();
+  EXPECT_EQ(0, std::memcmp(&shared, &expected, sizeof(shared)));
+  EXPECT_EQ(0, std::memcmp(&shared, &repeated, sizeof(shared)));
 }
 
 TEST(SunshineVirtualDisplay, EnsureDisplayReservedIdentityNeverCollidesWithClients) {
