@@ -292,8 +292,7 @@ sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp")
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_handler.cpp"
-    LINK_LIBRARIES sunshine_test_moonlight_headers sunshine_test_enet_headers sunshine_test_simple_web_headers)
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_confighttp.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/confighttp.cpp"
     LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)

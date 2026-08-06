@@ -13,6 +13,7 @@
 #include "config.h"
 #include "confighttp.h"
 #include "entry_handler.h"
+#include "entry_metadata.h"
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
@@ -97,9 +98,14 @@ namespace lifetime {
 }  // namespace lifetime
 
 void log_publisher_data() {
-  BOOST_LOG(info) << "Package Publisher: "sv << SUNSHINE_PUBLISHER_NAME;
-  BOOST_LOG(info) << "Publisher Website: "sv << SUNSHINE_PUBLISHER_WEBSITE;
-  BOOST_LOG(info) << "Get support: "sv << SUNSHINE_PUBLISHER_ISSUE_URL;
+  const auto log_lines = entry_metadata::publisher_log_lines({
+    SUNSHINE_PUBLISHER_NAME,
+    SUNSHINE_PUBLISHER_WEBSITE,
+    SUNSHINE_PUBLISHER_ISSUE_URL,
+  });
+  for (const auto &line : log_lines) {
+    BOOST_LOG(info) << line;
+  }
 }
 
 #ifdef _WIN32
