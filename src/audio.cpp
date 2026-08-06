@@ -2,7 +2,7 @@
  * @file src/audio.cpp
  * @brief Definitions for audio capture and encoding.
  */
-// standard includes
+#include <algorithm>
 #include <thread>
 
 // lib includes
@@ -10,6 +10,7 @@
 
 // local includes
 #include "audio.h"
+#include "audio_policy.h"
 #include "config.h"
 #include "globals.h"
 #include "logging.h"
@@ -167,35 +168,27 @@ namespace audio {
     // 1. Virtual sink
     // 2. Audio sink
     // 3. Host
-    std::string *sink = &ref->sink.host;
-    if (!config::audio.sink.empty()) {
-      sink = &config::audio.sink;
+    policy::sink_catalog_t sinks {ref->sink.host, std::nullopt, std::nullopt, std::nullopt};
+    if (ref->sink.null) {
+      sinks.stereo = ref->sink.null->stereo;
+      sinks.surround51 = ref->sink.null->surround51;
+      sinks.surround71 = ref->sink.null->surround71;
     }
+    const auto sink = policy::select_sink(
+      sinks,
+      config::audio.sink,
+      stream.channelCount,
+      config.flags[config_t::HOST_AUDIO]
+    );
 
-    // Prefer the virtual sink if host playback is disabled or there's no other sink
-    if (ref->sink.null && (!config.flags[config_t::HOST_AUDIO] || sink->empty())) {
-      auto &null = *ref->sink.null;
-      switch (stream.channelCount) {
-        case 2:
-          sink = &null.stereo;
-          break;
-        case 6:
-          sink = &null.surround51;
-          break;
-        case 8:
-          sink = &null.surround71;
-          break;
-      }
-    }
-
-    BOOST_LOG(info) << "Selected audio sink: "sv << *sink;
+    BOOST_LOG(info) << "Selected audio sink: "sv << sink;
 
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
       // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != *sink;
+      ref->restore_sink = ref->sink.host != sink;
       if (ref->restore_sink) {
-        if (control->set_sink(*sink)) {
+        if (control->set_sink(sink)) {
           return;
         }
       }
@@ -240,25 +233,43 @@ namespace audio {
       sample_buffer.resize(samples_per_frame);
 
       auto status = mic->sample(sample_buffer);
+      policy::sample_status_e policy_status;
       switch (status) {
         case platf::capture_e::ok:
+          policy_status = policy::sample_status_e::ok;
           break;
         case platf::capture_e::timeout:
-          continue;
+          policy_status = policy::sample_status_e::timeout;
+          break;
         case platf::capture_e::reinit:
-          if (config::audio.auto_capture) {
-            BOOST_LOG(info) << "Reinitializing audio capture"sv;
-            mic.reset();
-            do {
-              mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
-              if (!mic) {
-                BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
-              }
-            } while (!mic && !shutdown_event->view(5s));
-          }
-
+          policy_status = config::audio.auto_capture ?
+                            policy::sample_status_e::reinitialize :
+                            policy::sample_status_e::timeout;
+          break;
+        case platf::capture_e::interrupted:
+          policy_status = policy::sample_status_e::interrupted;
+          break;
+        case platf::capture_e::error:
+          policy_status = policy::sample_status_e::error;
+          break;
+      }
+      const auto action = policy::sample_action(policy_status);
+      switch (action) {
+        case policy::sample_action_e::emit:
+          break;
+        case policy::sample_action_e::retry:
           continue;
-        default:
+        case policy::sample_action_e::reacquire:
+          BOOST_LOG(info) << "Reinitializing audio capture"sv;
+          mic.reset();
+          do {
+            mic = control->microphone(stream.mapping, stream.channelCount, stream.sampleRate, frame_size, continuous_audio, host_audio);
+            if (!mic) {
+              BOOST_LOG(warning) << "Couldn't re-initialize audio input"sv;
+            }
+          } while (!mic && !shutdown_event->view(5s));
+          continue;
+        case policy::sample_action_e::stop:
           return;
       }
 
@@ -291,16 +302,7 @@ namespace audio {
   }
 
   int map_stream(int channels, bool quality) {
-    int shift = quality ? 1 : 0;
-    switch (channels) {
-      case 2:
-        return STEREO + shift;
-      case 6:
-        return SURROUND51 + shift;
-      case 8:
-        return SURROUND71 + shift;
-    }
-    return STEREO;
+    return policy::stream_index(channels, quality);
   }
 
   int start_audio_control(audio_ctx_t &ctx) {
@@ -353,9 +355,23 @@ namespace audio {
   }
 
   void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params) {
-    stream.channelCount = params.channelCount;
-    stream.streams = params.streams;
-    stream.coupledStreams = params.coupledStreams;
+    policy::stream_layout_t base {
+      stream.channelCount,
+      stream.streams,
+      stream.coupledStreams,
+      {}
+    };
+    policy::stream_layout_t custom {
+      params.channelCount,
+      params.streams,
+      params.coupledStreams,
+      {}
+    };
+    std::copy_n(params.mapping, custom.mapping.size(), custom.mapping.begin());
+    const auto selected = policy::apply_custom_layout(base, custom);
+    stream.channelCount = selected.channels;
+    stream.streams = selected.streams;
+    stream.coupledStreams = selected.coupled_streams;
     stream.mapping = params.mapping;
   }
 }  // namespace audio

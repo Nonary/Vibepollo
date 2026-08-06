@@ -25,6 +25,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "mouse_input.h"
 #include "platform/common.h"
 #include "thread_pool.h"
 #include "utility.h"
@@ -114,6 +115,31 @@ namespace input {
   static std::array<std::uint8_t, 5> mouse_press {};
 
   static platf::input_t platf_input;
+  class platform_mouse_backend_t: public mouse_input::backend_t {
+  public:
+    explicit platform_mouse_backend_t(platf::input_t &input):
+        _input(input) {}
+
+    mouse_input::point_t position() const override {
+      auto &input = const_cast<platf::input_t &>(_input);
+      const auto position = platf::get_mouse_loc(input);
+      return {position.x, position.y};
+    }
+
+    void move_relative(mouse_input::point_t delta) override {
+      platf::move_mouse(_input, delta.x, delta.y);
+    }
+
+    void move_absolute(const mouse_input::viewport_t &viewport, mouse_input::absolute_position_t position) override {
+      const platf::touch_port_t port {viewport.offset_x, viewport.offset_y, viewport.width, viewport.height};
+      platf::abs_mouse(_input, port, position.x, position.y);
+    }
+
+  private:
+    platf::input_t &_input;
+  };
+  static std::unique_ptr<platform_mouse_backend_t> mouse_backend;
+  static std::unique_ptr<mouse_input::controller_t> mouse_controller;
   static std::bitset<platf::MAX_GAMEPADS> gamepadMask {};
 
   void free_gamepad(platf::input_t &platf_input, int id) {
@@ -535,7 +561,7 @@ namespace input {
     }
 
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
-    platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
+    mouse_controller->move_relative({util::endian::big(packet->deltaX), util::endian::big(packet->deltaY)});
   }
 
   /**
@@ -681,7 +707,10 @@ namespace input {
       touch_port_dim_y
     };
 
-    platf::abs_mouse(platf_input, abs_port, tpcoords->first, tpcoords->second);
+    mouse_controller->move_absolute(
+      {abs_port.offset_x, abs_port.offset_y, abs_port.width, abs_port.height},
+      {tpcoords->first, tpcoords->second}
+    );
   }
 
   void passthrough(std::shared_ptr<input_t> &input, PNV_MOUSE_BUTTON_PACKET packet) {
@@ -1853,12 +1882,16 @@ namespace input {
   class deinit_t: public platf::deinit_t {
   public:
     ~deinit_t() override {
+      mouse_controller.reset();
+      mouse_backend.reset();
       platf_input.reset();
     }
   };
 
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init() {
     platf_input = platf::input();
+    mouse_backend = std::make_unique<platform_mouse_backend_t>(platf_input);
+    mouse_controller = std::make_unique<mouse_input::controller_t>(*mouse_backend);
 
     return std::make_unique<deinit_t>();
   }
@@ -1882,8 +1915,10 @@ namespace input {
 
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {
-      platf::move_mouse(platf_input, 1, 1);
-      platf::move_mouse(platf_input, -1, -1);
+      if (mouse_controller) {
+        mouse_controller->move_relative({1, 1});
+        mouse_controller->move_relative({-1, -1});
+      }
     },
                           100ms);
 

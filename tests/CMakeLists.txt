@@ -212,7 +212,7 @@ sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite.cpp")
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp")
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
@@ -236,11 +236,13 @@ sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_writer.cpp")
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio.cpp")
-sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/test_mouse.cpp)
-sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit/platform/test_common.cpp)
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_policy.cpp")
+sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/test_mouse.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/mouse_input.cpp")
+sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit/platform/test_common.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/common_services.cpp")
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp")
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
@@ -325,6 +327,11 @@ if(WIN32)
 endif()
 
 if(APPLE)
+    # This file intentionally contains only portable C++ policy tests. Compile
+    # it as C++ so this target does not enable or link Objective-C frameworks.
+    set_source_files_properties(
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/macos/test_av_audio.mm"
+        PROPERTIES LANGUAGE CXX)
     sunshine_register_component(NAME test_component_av_audio_policy TEST_SOURCE unit/platform/macos/test_av_audio.mm
-        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio.mm")
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio_policy.cpp")
 endif()

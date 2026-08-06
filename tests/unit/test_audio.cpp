@@ -1,68 +1,103 @@
 /**
  * @file tests/unit/test_audio.cpp
- * @brief Test src/audio.*.
+ * @brief Deterministic tests for audio stream, sink, and capture policy.
  */
 #include "../tests_common.h"
 
-#include <src/audio.h>
+#include <src/audio_policy.h>
 
-using namespace audio;
+#include <deque>
 
-struct AudioTest: PlatformTestSuite, testing::WithParamInterface<std::tuple<std::basic_string_view<char>, config_t>> {
-  void SetUp() override {
-    m_config = std::get<1>(GetParam());
-    m_mail = std::make_shared<safe::mail_raw_t>();
-  }
+using namespace audio::policy;
 
-  config_t m_config;
-  safe::mail_t m_mail;
-};
-
-constexpr std::bitset<config_t::MAX_FLAGS> config_flags(const int flag = -1) {
-  auto result = std::bitset<config_t::MAX_FLAGS>();
-  if (flag >= 0) {
-    result.set(flag);
-  }
-  return result;
+TEST(AudioStreamPolicy, SelectsChannelAndQualityVariant) {
+  EXPECT_EQ(stream_index(2, false), 0);
+  EXPECT_EQ(stream_index(2, true), 1);
+  EXPECT_EQ(stream_index(6, false), 2);
+  EXPECT_EQ(stream_index(6, true), 3);
+  EXPECT_EQ(stream_index(8, false), 4);
+  EXPECT_EQ(stream_index(8, true), 5);
+  EXPECT_EQ(stream_index(3, true), 0);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-  Configurations,
-  AudioTest,
-  testing::Values(
-    std::make_tuple("HIGH_STEREO", config_t {5, 2, 0x3, false, {0}, config_flags(config_t::HIGH_QUALITY)}),
-    std::make_tuple("SURROUND51", config_t {5, 6, 0x3F, false, {0}, config_flags()}),
-    std::make_tuple("SURROUND71", config_t {5, 8, 0x63F, false, {0}, config_flags()}),
-    std::make_tuple("SURROUND51_CUSTOM", config_t {5, 6, 0x3F, false, {6, 4, 2, {0, 1, 4, 5, 2, 3}}, config_flags(config_t::CUSTOM_SURROUND_PARAMS)})
-  ),
-  [](const auto &info) {
-    return std::string(std::get<0>(info.param));
-  }
-);
+TEST(AudioStreamPolicy, AppliesCustomSurroundLayoutWithoutMutatingDefault) {
+  const stream_layout_t base {6, 4, 2, {0, 1, 4, 5, 2, 3, 0, 0}};
+  const stream_layout_t custom {6, 6, 0, {0, 1, 4, 5, 2, 3, 0, 0}};
 
-TEST_P(AudioTest, TestEncode) {
-  std::thread timer([&] {
-    // Terminate the audio capture after 100 ms
-    std::this_thread::sleep_for(100ms);
-    const auto shutdown_event = m_mail->event<bool>(mail::shutdown);
-    const auto audio_packets = m_mail->queue<packet_t>(mail::audio_packets);
-    shutdown_event->raise(true);
-    audio_packets->stop();
-  });
-  std::thread capture([&] {
-    const auto packets = m_mail->queue<packet_t>(mail::audio_packets);
-    const auto shutdown_event = m_mail->event<bool>(mail::shutdown);
-    while (const auto packet = packets->pop()) {
-      if (shutdown_event->peek()) {
-        break;
+  EXPECT_EQ(apply_custom_layout(base, std::nullopt).streams, 4);
+  const auto selected = apply_custom_layout(base, custom);
+  EXPECT_EQ(selected.streams, 6);
+  EXPECT_EQ(selected.coupled_streams, 0);
+  EXPECT_EQ(base.streams, 4);
+}
+
+TEST(AudioSinkPolicy, PreservesPriorityAndEmptyFallbacks) {
+  const sink_catalog_t sinks {
+    "host",
+    "virtual-stereo",
+    "virtual-51",
+    "virtual-71"
+  };
+
+  EXPECT_EQ(select_sink(sinks, "configured", 2, true), "configured");
+  EXPECT_EQ(select_sink(sinks, "configured", 6, false), "virtual-51");
+  EXPECT_EQ(select_sink(sinks, "", 8, true), "host");
+
+  const sink_catalog_t no_virtual {"", std::nullopt, std::nullopt, std::nullopt};
+  EXPECT_TRUE(select_sink(no_virtual, "", 2, false).empty());
+}
+
+namespace {
+  class fake_source_t: public sample_source_t {
+  public:
+    std::deque<sample_status_e> statuses;
+    std::deque<bool> reacquire_results;
+
+    sample_status_e sample() override {
+      if (statuses.empty()) {
+        return sample_status_e::interrupted;
       }
-      if (auto packet_data = packet->second; packet_data.size() == 0) {
-        FAIL() << "Empty packet data";
-      }
+      const auto status = statuses.front();
+      statuses.pop_front();
+      return status;
     }
-  });
-  audio::capture(m_mail, m_config, nullptr);
 
-  timer.join();
-  capture.join();
+    bool reacquire() override {
+      if (reacquire_results.empty()) {
+        return false;
+      }
+      const bool result = reacquire_results.front();
+      reacquire_results.pop_front();
+      return result;
+    }
+  };
+}  // namespace
+
+TEST(AudioCapturePolicy, RetainsSuccessTimeoutReinitializeAndStopLifecycle) {
+  fake_source_t source;
+  source.statuses = {
+    sample_status_e::ok,
+    sample_status_e::timeout,
+    sample_status_e::reinitialize,
+    sample_status_e::ok,
+    sample_status_e::interrupted,
+  };
+  source.reacquire_results = {true};
+
+  const auto summary = drive_capture(source, 10);
+  EXPECT_EQ(summary.emitted, 2u);
+  EXPECT_EQ(summary.timeouts, 1u);
+  EXPECT_EQ(summary.reacquisitions, 1u);
+  EXPECT_TRUE(summary.stopped);
+}
+
+TEST(AudioCapturePolicy, FailedReinitializeStopsWithoutEmitting) {
+  fake_source_t source;
+  source.statuses = {sample_status_e::reinitialize, sample_status_e::ok};
+  source.reacquire_results = {false};
+
+  const auto summary = drive_capture(source, 10);
+  EXPECT_EQ(summary.emitted, 0u);
+  EXPECT_EQ(summary.reacquisitions, 1u);
+  EXPECT_TRUE(summary.stopped);
 }

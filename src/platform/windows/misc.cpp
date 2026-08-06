@@ -49,6 +49,7 @@
 
 // local includes
 #include "misc.h"
+#include "src/platform/common_services.h"
 #include "nvprefs/nvprefs_interface.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
@@ -1698,11 +1699,11 @@ namespace platf {
   }
 
   int set_env(const std::string &name, const std::string &value) {
-    return _putenv_s(name.c_str(), value.c_str());
+    return services::process_environment().set(name, value);
   }
 
   int unset_env(const std::string &name) {
-    return _putenv_s(name.c_str(), "");
+    return services::process_environment().unset(name);
   }
 
   struct enum_wnd_context_t {
@@ -2170,12 +2171,15 @@ namespace platf {
   }
 
   std::string get_host_name() {
-    WCHAR hostname[256];
-    if (GetHostNameW(hostname, ARRAYSIZE(hostname)) == SOCKET_ERROR) {
-      BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
-      return "Apollo"s;
-    }
-    return utf_utils::to_utf8(hostname);
+    services::function_host_name_provider_t provider {[]() -> std::optional<std::string> {
+      WCHAR hostname[256];
+      if (GetHostNameW(hostname, ARRAYSIZE(hostname)) == SOCKET_ERROR) {
+        BOOST_LOG(error) << "GetHostNameW() failed: "sv << WSAGetLastError();
+        return std::nullopt;
+      }
+      return utf_utils::to_utf8(hostname);
+    }};
+    return services::host_name_or(provider, "Apollo");
   }
 
   namespace {

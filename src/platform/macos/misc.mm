@@ -29,6 +29,7 @@
 
 // local includes
 #include "misc.h"
+#include "src/platform/common_services.h"
 #include "src/boost_process_shim.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
@@ -95,7 +96,7 @@ namespace platf {
       homedir = getpwuid(geteuid())->pw_dir;
     }
 
-    return fs::path {homedir} / ".config/sunshine"sv;
+    return services::home_config_root(std::optional<fs::path> {fs::path {homedir}}, fs::path {homedir});
   }
 
   using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;
@@ -339,11 +340,11 @@ namespace platf {
   }
 
   int set_env(const std::string &name, const std::string &value) {
-    return setenv(name.c_str(), value.c_str(), 1);
+    return services::process_environment().set(name, value);
   }
 
   int unset_env(const std::string &name) {
-    return unsetenv(name.c_str());
+    return services::process_environment().unset(name);
   }
 
   bool request_process_group_exit(std::uintptr_t native_handle) {
@@ -597,12 +598,15 @@ namespace platf {
   }
 
   std::string get_host_name() {
-    try {
-      return boost::asio::ip::host_name();
-    } catch (boost::system::system_error &err) {
-      BOOST_LOG(error) << "Failed to get hostname: "sv << err.what();
-      return "Sunshine"s;
-    }
+    services::function_host_name_provider_t provider {[]() -> std::optional<std::string> {
+      try {
+        return boost::asio::ip::host_name();
+      } catch (boost::system::system_error &err) {
+        BOOST_LOG(error) << "Failed to get hostname: "sv << err.what();
+        return std::nullopt;
+      }
+    }};
+    return services::host_name_or(provider);
   }
 
   class macos_high_precision_timer: public high_precision_timer {

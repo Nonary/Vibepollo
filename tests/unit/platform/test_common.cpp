@@ -1,55 +1,104 @@
 /**
  * @file tests/unit/platform/test_common.cpp
- * @brief Test src/platform/common.*.
+ * @brief Deterministic tests for common platform service contracts.
  */
 #include "../../tests_common.h"
 
-#include <boost/asio/ip/host_name.hpp>
-#include <src/platform/common.h>
+#include <src/platform/common_services.h>
 
-struct SetEnvTest: ::testing::TestWithParam<std::tuple<std::string, std::string, int>> {
-protected:
-  void TearDown() override {
-    // Clean up environment variable after each test
-    const auto &[name, value, expected] = GetParam();
-    platf::unset_env(name);
-  }
-};
+#include <map>
+#include <stdexcept>
 
-TEST_P(SetEnvTest, SetEnvironmentVariableTests) {
-  const auto &[name, value, expected] = GetParam();
-  platf::set_env(name, value);
+namespace {
+  class fake_environment_provider_t: public platf::services::environment_provider_t {
+  public:
+    int set(const std::string &name, const std::string &value) override {
+      if (fail_writes) {
+        return 5;
+      }
+      values[name] = value;
+      return 0;
+    }
 
-  const char *env_value = std::getenv(name.c_str());
-  if (expected == 0 && !value.empty()) {
-    ASSERT_NE(env_value, nullptr);
-    ASSERT_EQ(std::string(env_value), value);
-  } else {
-    ASSERT_EQ(env_value, nullptr);
-  }
+    int unset(const std::string &name) override {
+      if (fail_writes) {
+        return 5;
+      }
+      values.erase(name);
+      return 0;
+    }
+
+    std::optional<std::string> get(const std::string &name) const override {
+      const auto value = values.find(name);
+      return value == values.end() ? std::nullopt : std::optional<std::string> {value->second};
+    }
+
+    std::map<std::string, std::string> values;
+    bool fail_writes = false;
+  };
+
+  class fake_host_name_provider_t: public platf::services::host_name_provider_t {
+  public:
+    std::optional<std::string> value;
+    bool throws = false;
+
+    std::optional<std::string> read() const override {
+      if (throws) {
+        throw std::runtime_error("host name unavailable");
+      }
+      return value;
+    }
+  };
+}  // namespace
+
+TEST(EnvironmentService, SetGetAndUnsetUseOnlyInjectedProvider) {
+  fake_environment_provider_t provider;
+  platf::services::environment_t environment {provider};
+
+  EXPECT_EQ(environment.set("SUNSHINE_UNIT_TEST_ENV_VAR", "test_value"), 0);
+  EXPECT_EQ(environment.get("SUNSHINE_UNIT_TEST_ENV_VAR"), "test_value");
+  EXPECT_EQ(environment.unset("SUNSHINE_UNIT_TEST_ENV_VAR"), 0);
+  EXPECT_EQ(environment.get("SUNSHINE_UNIT_TEST_ENV_VAR"), std::nullopt);
 }
 
-TEST_P(SetEnvTest, UnsetEnvironmentVariableTests) {
-  const auto &[name, value, expected] = GetParam();
-  platf::unset_env(name);
+TEST(EnvironmentService, EmptyNameIsRejectedWithoutCallingProvider) {
+  fake_environment_provider_t provider;
+  platf::services::environment_t environment {provider};
 
-  const char *env_value = std::getenv(name.c_str());
-  if (expected == 0) {
-    ASSERT_EQ(env_value, nullptr);
-  }
+  EXPECT_EQ(environment.set("", "value"), -1);
+  EXPECT_EQ(environment.unset(""), -1);
+  EXPECT_EQ(environment.get(""), std::nullopt);
+  EXPECT_TRUE(provider.values.empty());
 }
 
-INSTANTIATE_TEST_SUITE_P(
-  SetEnvTests,
-  SetEnvTest,
-  ::testing::Values(
-    std::make_tuple("SUNSHINE_UNIT_TEST_ENV_VAR", "test_value_0", 0),
-    std::make_tuple("SUNSHINE_UNIT_TEST_ENV_VAR", "test_value_1", 0),
-    std::make_tuple("", "test_value", -1)
-  )
-);
+TEST(EnvironmentService, ProviderFailuresArePreserved) {
+  fake_environment_provider_t provider;
+  provider.fail_writes = true;
+  platf::services::environment_t environment {provider};
 
-TEST(HostnameTests, TestAsioEquality) {
-  // These should be equivalent on all platforms for ASCII hostnames
-  ASSERT_EQ(platf::get_host_name(), boost::asio::ip::host_name());
+  EXPECT_EQ(environment.set("NAME", "value"), 5);
+  EXPECT_EQ(environment.unset("NAME"), 5);
+}
+
+TEST(HostNameService, UsesValueAndFallsBackForEmptyOrFailure) {
+  fake_host_name_provider_t provider;
+  provider.value = "deterministic-host";
+  EXPECT_EQ(platf::services::host_name_or(provider), "deterministic-host");
+
+  provider.value = "";
+  EXPECT_EQ(platf::services::host_name_or(provider), "Sunshine");
+
+  provider.throws = true;
+  EXPECT_EQ(platf::services::host_name_or(provider, "fallback"), "fallback");
+}
+
+TEST(AppDataRootPolicy, PrefersProvidedHomeAndUsesFallbackWhenMissing) {
+  EXPECT_EQ(
+    platf::services::home_config_root(std::filesystem::path {"/provided"}, "/fallback"),
+    std::filesystem::path {"/provided/.config/sunshine"}
+  );
+  EXPECT_EQ(
+    platf::services::home_config_root(std::nullopt, "/fallback"),
+    std::filesystem::path {"/fallback/.config/sunshine"}
+  );
 }

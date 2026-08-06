@@ -4,13 +4,53 @@
  */
 #pragma once
 
-// standard includes
+#include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 
 /**
  * @brief Responsible for file handling functions.
  */
 namespace file_handler {
+  enum class replace_result_e {
+    success,
+    access_denied,
+    error,
+  };
+
+  class filesystem_t {
+  public:
+    virtual ~filesystem_t() = default;
+    virtual bool exists(const std::filesystem::path &path) const = 0;
+    virtual bool create_directories(const std::filesystem::path &path) = 0;
+    virtual std::string read(const std::filesystem::path &path) const = 0;
+    virtual bool write(const std::filesystem::path &path, std::string_view contents) = 0;
+    virtual replace_result_e replace(const std::filesystem::path &temporary,
+                                     const std::filesystem::path &target) = 0;
+    virtual std::optional<bool> read_only(const std::filesystem::path &path) const = 0;
+    virtual bool set_read_only(const std::filesystem::path &path, bool read_only) = 0;
+    virtual void remove(const std::filesystem::path &path) = 0;
+    virtual std::filesystem::path temporary_path(const std::filesystem::path &target) = 0;
+  };
+
+  class handler_t {
+  public:
+    using diagnostic_t = std::function<void(std::string_view)>;
+
+    explicit handler_t(filesystem_t &filesystem, diagnostic_t diagnostic = {});
+    std::string get_parent_directory(const std::string &path) const;
+    bool make_directory(const std::string &path);
+    std::string read_file(const std::filesystem::path &path) const;
+    int write_file(const std::filesystem::path &path, std::string_view contents);
+
+  private:
+    filesystem_t &_filesystem;
+    diagnostic_t _diagnostic;
+    void report(std::string_view message) const;
+  };
+
   /**
    * @brief Get the parent directory of a file or directory.
    * @param path The path of the file or directory.

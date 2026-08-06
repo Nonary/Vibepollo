@@ -1,19 +1,16 @@
 /**
- * @file file_handler.cpp
- * @brief Definitions for file handling functions.
+ * @file src/file_handler.cpp
+ * @brief Default operating-system adapter for file handling policy.
  */
+#include "file_handler.h"
 
-// standard includes
+#include "logging.h"
+
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <system_error>
 #include <thread>
-
-// local includes
-#include "file_handler.h"
-#include "logging.h"
 
 #ifdef _WIN32
   #include <Windows.h>
@@ -21,140 +18,120 @@
 
 namespace file_handler {
   namespace {
-    std::filesystem::path make_temp_path(const std::filesystem::path &target) {
-      const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-      const auto tid = std::hash<std::thread::id> {}(std::this_thread::get_id());
-      std::filesystem::path tmp = target;
-      tmp += ".tmp.";
-      tmp += std::to_string(stamp);
-      tmp += ".";
-      tmp += std::to_string(tid);
-      return tmp;
-    }
-
-    bool replace_file(const std::filesystem::path &tmp, const std::filesystem::path &target) {
-#ifdef _WIN32
-      const auto tmp_w = tmp.wstring();
-      const auto target_w = target.wstring();
-      const auto try_move = [&]() {
-        return MoveFileExW(
-                 tmp_w.c_str(),
-                 target_w.c_str(),
-                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-               ) != 0;
-      };
-
-      if (try_move()) {
-        return true;
+    class native_filesystem_t: public filesystem_t {
+    public:
+      bool exists(const std::filesystem::path &path) const override {
+        std::error_code error;
+        return std::filesystem::exists(path, error);
       }
 
-      // A read-only attribute on the existing target makes MoveFileEx replace fail
-      // with ERROR_ACCESS_DENIED even for SYSTEM. Clearing it (it is not an ACL) and
-      // retrying recovers config/state files left read-only by a botched upgrade or
-      // a backup-restore, instead of permanently failing every write.
-      if (GetLastError() == ERROR_ACCESS_DENIED) {
-        const DWORD attrs = GetFileAttributesW(target_w.c_str());
-        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
-          if (SetFileAttributesW(target_w.c_str(), attrs & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY))) {
-            BOOST_LOG(warning) << "Cleared read-only attribute on " << target.string() << " to allow update";
-            if (try_move()) {
-              return true;
-            }
-            // Replace still failed for another reason; restore the attribute we
-            // cleared so a failed write does not silently weaken the file.
-            SetFileAttributesW(target_w.c_str(), attrs);
-          }
+      bool create_directories(const std::filesystem::path &path) override {
+        std::error_code error;
+        const bool created = std::filesystem::create_directories(path, error);
+        return !error && (created || std::filesystem::exists(path));
+      }
+
+      std::string read(const std::filesystem::path &path) const override {
+        std::ifstream input(path);
+        return std::string {(std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()};
+      }
+
+      bool write(const std::filesystem::path &path, std::string_view contents) override {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) {
+          return false;
         }
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        output.flush();
+        output.close();
+        return static_cast<bool>(output);
       }
 
-      BOOST_LOG(error) << "Failed to replace " << target.string() << " with " << tmp.string() << ": " << GetLastError();
-      return false;
+      replace_result_e replace(const std::filesystem::path &temporary,
+                               const std::filesystem::path &target) override {
+#ifdef _WIN32
+        if (MoveFileExW(
+              temporary.c_str(),
+              target.c_str(),
+              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+            )) {
+          return replace_result_e::success;
+        }
+        return GetLastError() == ERROR_ACCESS_DENIED ? replace_result_e::access_denied : replace_result_e::error;
 #else
-      std::error_code ec;
-      std::filesystem::rename(tmp, target, ec);
-      if (ec) {
-        BOOST_LOG(error) << "Failed to replace " << target.string() << " with " << tmp.string() << ": " << ec.message();
-        return false;
-      }
-      return true;
+        std::error_code error;
+        std::filesystem::rename(temporary, target, error);
+        if (!error) {
+          return replace_result_e::success;
+        }
+        return error == std::errc::permission_denied ? replace_result_e::access_denied : replace_result_e::error;
 #endif
+      }
+
+      std::optional<bool> read_only(const std::filesystem::path &path) const override {
+#ifdef _WIN32
+        const auto attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+          return std::nullopt;
+        }
+        return (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+#else
+        (void) path;
+        return false;
+#endif
+      }
+
+      bool set_read_only(const std::filesystem::path &path, bool value) override {
+#ifdef _WIN32
+        const auto attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+          return false;
+        }
+        const auto updated = value ? attributes | FILE_ATTRIBUTE_READONLY : attributes & ~FILE_ATTRIBUTE_READONLY;
+        return SetFileAttributesW(path.c_str(), updated) != 0;
+#else
+        (void) path;
+        (void) value;
+        return false;
+#endif
+      }
+
+      void remove(const std::filesystem::path &path) override {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+      }
+
+      std::filesystem::path temporary_path(const std::filesystem::path &target) override {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto tid = std::hash<std::thread::id> {}(std::this_thread::get_id());
+        auto temporary = target;
+        temporary += ".tmp." + std::to_string(stamp) + "." + std::to_string(tid);
+        return temporary;
+      }
+    };
+
+    handler_t &default_handler() {
+      static native_filesystem_t filesystem;
+      static handler_t handler {filesystem, [](std::string_view message) {
+        BOOST_LOG(error) << message;
+      }};
+      return handler;
     }
   }  // namespace
 
   std::string get_parent_directory(const std::string &path) {
-    // remove any trailing path separators
-    std::string trimmed_path = path;
-    while (!trimmed_path.empty() && trimmed_path.back() == '/') {
-      trimmed_path.pop_back();
-    }
-
-    std::filesystem::path p(trimmed_path);
-    return p.parent_path().string();
+    return default_handler().get_parent_directory(path);
   }
 
   bool make_directory(const std::string &path) {
-    // first, check if the directory already exists
-    if (std::filesystem::exists(path)) {
-      return true;
-    }
-
-    return std::filesystem::create_directories(path);
+    return default_handler().make_directory(path);
   }
 
   std::string read_file(const char *path) {
-    if (!std::filesystem::exists(path)) {
-      BOOST_LOG(debug) << "Missing file: " << path;
-      return {};
-    }
-
-    std::ifstream in(path);
-    return std::string {(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()};
+    return default_handler().read_file(path);
   }
 
   int write_file(const char *path, const std::string_view &contents) {
-    const std::filesystem::path target(path);
-    const auto parent = target.parent_path();
-    try {
-      if (!parent.empty() && !std::filesystem::exists(parent)) {
-        std::filesystem::create_directories(parent);
-      }
-    } catch (const std::exception &e) {
-      BOOST_LOG(error) << "Failed to create parent directory for " << target.string() << ": " << e.what();
-      return -1;
-    }
-
-    const auto tmp = make_temp_path(target);
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-
-    if (!out.is_open()) {
-      return -1;
-    }
-
-    if (!contents.empty()) {
-      out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-    }
-    out.flush();
-    if (!out.good()) {
-      BOOST_LOG(error) << "Failed to write temporary file " << tmp.string();
-      out.close();
-      std::error_code ec;
-      std::filesystem::remove(tmp, ec);
-      return -1;
-    }
-    out.close();
-    if (!out) {
-      BOOST_LOG(error) << "Failed to close temporary file " << tmp.string();
-      std::error_code ec;
-      std::filesystem::remove(tmp, ec);
-      return -1;
-    }
-
-    if (!replace_file(tmp, target)) {
-      std::error_code ec;
-      std::filesystem::remove(tmp, ec);
-      return -1;
-    }
-
-    return 0;
+    return default_handler().write_file(path, contents);
   }
 }  // namespace file_handler

@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include "host_stats_types.h"
 #include "platform/common.h"
 
 #include <memory>

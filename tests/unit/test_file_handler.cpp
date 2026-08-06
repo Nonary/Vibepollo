@@ -1,22 +1,104 @@
 /**
  * @file tests/unit/test_file_handler.cpp
- * @brief Test src/file_handler.*.
+ * @brief Deterministic file-handler policy tests.
  */
 #include "../tests_common.h"
 
-#include <format>
 #include <src/file_handler.h>
 
-#ifdef _WIN32
-  #include <Windows.h>
-  #include <filesystem>
-#endif
+#include <map>
+#include <set>
 
-struct FileHandlerParentDirectoryTest: testing::TestWithParam<std::tuple<std::string, std::string>> {};
+namespace {
+  class fake_filesystem_t: public file_handler::filesystem_t {
+  public:
+    bool exists(const std::filesystem::path &path) const override {
+      const auto key = path.generic_string();
+      return files.contains(key) || directories.contains(key);
+    }
 
-TEST_P(FileHandlerParentDirectoryTest, Run) {
-  auto [input, expected] = GetParam();
-  EXPECT_EQ(file_handler::get_parent_directory(input), expected);
+    bool create_directories(const std::filesystem::path &path) override {
+      if (fail_create_directories) {
+        return false;
+      }
+      directories.insert(path.generic_string());
+      return true;
+    }
+
+    std::string read(const std::filesystem::path &path) const override {
+      const auto entry = files.find(path.generic_string());
+      return entry == files.end() ? std::string {} : entry->second;
+    }
+
+    bool write(const std::filesystem::path &path, std::string_view contents) override {
+      if (fail_write) {
+        return false;
+      }
+      files[path.generic_string()] = std::string(contents);
+      return true;
+    }
+
+    file_handler::replace_result_e replace(const std::filesystem::path &temporary,
+                                           const std::filesystem::path &target) override {
+      ++replace_calls;
+      const auto target_key = target.generic_string();
+      if (read_only_files.contains(target_key)) {
+        return file_handler::replace_result_e::access_denied;
+      }
+      if (fail_replace) {
+        return file_handler::replace_result_e::error;
+      }
+      files[target_key] = files[temporary.generic_string()];
+      files.erase(temporary.generic_string());
+      return file_handler::replace_result_e::success;
+    }
+
+    std::optional<bool> read_only(const std::filesystem::path &path) const override {
+      return read_only_files.contains(path.generic_string());
+    }
+
+    bool set_read_only(const std::filesystem::path &path, bool read_only) override {
+      ++attribute_writes;
+      if (fail_attribute_write) {
+        return false;
+      }
+      if (read_only) {
+        read_only_files.insert(path.generic_string());
+      } else {
+        read_only_files.erase(path.generic_string());
+      }
+      return true;
+    }
+
+    void remove(const std::filesystem::path &path) override {
+      files.erase(path.generic_string());
+      removed.insert(path.generic_string());
+    }
+
+    std::filesystem::path temporary_path(const std::filesystem::path &target) override {
+      return target.generic_string() + ".tmp";
+    }
+
+    std::map<std::string, std::string> files;
+    std::set<std::string> directories;
+    std::set<std::string> read_only_files;
+    std::set<std::string> removed;
+    bool fail_create_directories = false;
+    bool fail_write = false;
+    bool fail_replace = false;
+    bool fail_attribute_write = false;
+    int replace_calls = 0;
+    int attribute_writes = 0;
+  };
+}  // namespace
+
+class FileHandlerParentDirectoryTest: public testing::TestWithParam<std::tuple<std::string, std::string>> {};
+
+TEST_P(FileHandlerParentDirectoryTest, ReturnsTrimmedParent) {
+  fake_filesystem_t filesystem;
+  const file_handler::handler_t handler {filesystem};
+  const auto &[input, expected] = GetParam();
+  EXPECT_EQ(handler.get_parent_directory(input), expected);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -29,91 +111,76 @@ INSTANTIATE_TEST_SUITE_P(
   )
 );
 
-struct FileHandlerMakeDirectoryTest: testing::TestWithParam<std::tuple<std::string, bool, bool>> {};
+TEST(FileHandlerPolicy, CreatesMissingDirectoryAndAcceptsExistingDirectory) {
+  fake_filesystem_t filesystem;
+  file_handler::handler_t handler {filesystem};
 
-TEST_P(FileHandlerMakeDirectoryTest, Run) {
-  auto [input, expected, remove] = GetParam();
-  const std::string test_dir = platf::appdata().string() + "/tests/path/";
-  input = test_dir + input;
+  EXPECT_TRUE(handler.make_directory("sandbox/path"));
+  EXPECT_TRUE(filesystem.directories.contains("sandbox/path"));
+  EXPECT_TRUE(handler.make_directory("sandbox/path"));
+}
 
-  EXPECT_EQ(file_handler::make_directory(input), expected);
-  EXPECT_TRUE(std::filesystem::exists(input));
+class FileHandlerContentTest: public testing::TestWithParam<std::string> {};
 
-  // remove test directory
-  if (remove) {
-    std::filesystem::remove_all(test_dir);
-    EXPECT_FALSE(std::filesystem::exists(test_dir));
-  }
+TEST_P(FileHandlerContentTest, WritesAtomicallyAndReadsBackContent) {
+  fake_filesystem_t filesystem;
+  file_handler::handler_t handler {filesystem};
+
+  ASSERT_EQ(handler.write_file("sandbox/value.txt", GetParam()), 0);
+  EXPECT_EQ(handler.read_file("sandbox/value.txt"), GetParam());
+  EXPECT_FALSE(filesystem.files.contains("sandbox/value.txt.tmp"));
 }
 
 INSTANTIATE_TEST_SUITE_P(
   FileHandlerTests,
-  FileHandlerMakeDirectoryTest,
+  FileHandlerContentTest,
   testing::Values(
-    std::make_tuple("dir_123", true, false),
-    std::make_tuple("dir_123", true, true),
-    std::make_tuple("dir_123/abc", true, false),
-    std::make_tuple("dir_123/abc", true, true)
+    std::string {},
+    std::string {"a"},
+    std::string {"Mr. Blue Sky - Electric Light Orchestra"},
+    std::string {"first line\nsecond line\n"}
   )
 );
 
-struct FileHandlerTests: testing::TestWithParam<std::tuple<int, std::string>> {};
-
-INSTANTIATE_TEST_SUITE_P(
-  TestFiles,
-  FileHandlerTests,
-  testing::Values(
-    std::make_tuple(0, ""),  // empty file
-    std::make_tuple(1, "a"),  // single character
-    std::make_tuple(2, "Mr. Blue Sky - Electric Light Orchestra"),  // single line
-    std::make_tuple(3, R"(
-Morning! Today's forecast calls for blue skies
-The sun is shining in the sky
-There ain't a cloud in sight
-It's stopped raining
-Everybody's in the play
-And don't you know, it's a beautiful new day
-Hey, hey, hey!
-Running down the avenue
-See how the sun shines brightly in the city
-All the streets where once was pity
-Mr. Blue Sky is living here today!
-Hey, hey, hey!
-    )")  // multi-line
-  )
-);
-
-TEST_P(FileHandlerTests, WriteFileTest) {
-  auto [fileNum, content] = GetParam();
-  const std::string fileName = std::format("write_file_test_{}.txt", fileNum);
-  EXPECT_EQ(file_handler::write_file(fileName.c_str(), content), 0);
+TEST(FileHandlerPolicy, MissingFileReturnsEmpty) {
+  fake_filesystem_t filesystem;
+  const file_handler::handler_t handler {filesystem};
+  EXPECT_TRUE(handler.read_file("missing.txt").empty());
 }
 
-TEST_P(FileHandlerTests, ReadFileTest) {
-  auto [fileNum, content] = GetParam();
-  const std::string fileName = std::format("write_file_test_{}.txt", fileNum);
-  EXPECT_EQ(file_handler::read_file(fileName.c_str()), content);
+TEST(FileHandlerPolicy, WriteFailureRemovesTemporaryFile) {
+  fake_filesystem_t filesystem;
+  filesystem.fail_write = true;
+  file_handler::handler_t handler {filesystem};
+
+  EXPECT_EQ(handler.write_file("value.txt", "content"), -1);
+  EXPECT_TRUE(filesystem.removed.contains("value.txt.tmp"));
 }
 
-TEST(FileHandlerTests, ReadMissingFileTest) {
-  // read missing file
-  EXPECT_EQ(file_handler::read_file("non-existing-file.txt"), "");
+TEST(FileHandlerPolicy, ReadOnlyTargetIsClearedAndRetried) {
+  fake_filesystem_t filesystem;
+  filesystem.files["value.txt"] = "original";
+  filesystem.read_only_files.insert("value.txt");
+  file_handler::handler_t handler {filesystem};
+
+  EXPECT_EQ(handler.write_file("value.txt", "updated"), 0);
+  EXPECT_EQ(handler.read_file("value.txt"), "updated");
+  EXPECT_FALSE(filesystem.read_only_files.contains("value.txt"));
+  EXPECT_EQ(filesystem.replace_calls, 2);
+  EXPECT_EQ(filesystem.attribute_writes, 1);
 }
 
-#ifdef _WIN32
-TEST(FileHandlerReadOnlyTest, OverwriteReadOnlyTarget) {
-  const std::string fileName = "readonly_overwrite_test.txt";
-  ASSERT_EQ(file_handler::write_file(fileName.c_str(), "original"), 0);
+TEST(FileHandlerPolicy, FailedRetryRestoresReadOnlyAttributeAndCleansTemporary) {
+  fake_filesystem_t filesystem;
+  filesystem.files["value.txt"] = "original";
+  filesystem.read_only_files.insert("value.txt");
+  file_handler::handler_t handler {filesystem};
 
-  // A read-only attribute on the existing target makes the atomic MoveFileEx
-  // replace fail with ERROR_ACCESS_DENIED. write_file must clear it and retry.
-  ASSERT_NE(SetFileAttributesA(fileName.c_str(), FILE_ATTRIBUTE_READONLY), 0);
-
-  EXPECT_EQ(file_handler::write_file(fileName.c_str(), "updated"), 0);
-  EXPECT_EQ(file_handler::read_file(fileName.c_str()), "updated");
-
-  SetFileAttributesA(fileName.c_str(), FILE_ATTRIBUTE_NORMAL);
-  std::error_code ec;
-  std::filesystem::remove(fileName, ec);
+  // First replacement is denied by the attribute. After it is cleared, make
+  // every subsequent replacement fail to exercise rollback.
+  filesystem.fail_replace = true;
+  EXPECT_EQ(handler.write_file("value.txt", "updated"), -1);
+  EXPECT_TRUE(filesystem.read_only_files.contains("value.txt"));
+  EXPECT_TRUE(filesystem.removed.contains("value.txt.tmp"));
+  EXPECT_EQ(handler.read_file("value.txt"), "original");
 }
-#endif

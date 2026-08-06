@@ -77,6 +77,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/entry_handler.cpp"
         "${CMAKE_SOURCE_DIR}/src/entry_handler.h"
         "${CMAKE_SOURCE_DIR}/src/file_handler.cpp"
+        "${CMAKE_SOURCE_DIR}/src/file_handler_core.cpp"
         "${CMAKE_SOURCE_DIR}/src/file_handler.h"
         "${CMAKE_SOURCE_DIR}/src/globals.cpp"
         "${CMAKE_SOURCE_DIR}/src/globals.h"
@@ -111,9 +112,15 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.h"
         "${CMAKE_SOURCE_DIR}/src/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/input.h"
+        "${CMAKE_SOURCE_DIR}/src/mouse_input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/mouse_input.h"
         "${CMAKE_SOURCE_DIR}/src/audio.cpp"
         "${CMAKE_SOURCE_DIR}/src/audio.h"
+        "${CMAKE_SOURCE_DIR}/src/audio_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/audio_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/common.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/common_services.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/common_services.h"
         "${CMAKE_SOURCE_DIR}/src/process.cpp"
         "${CMAKE_SOURCE_DIR}/src/process.h"
         "${CMAKE_SOURCE_DIR}/src/boost_process_shim.cpp"
@@ -145,6 +152,9 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/session_history_writer.h"
         "${CMAKE_SOURCE_DIR}/src/host_stats.cpp"
         "${CMAKE_SOURCE_DIR}/src/host_stats.h"
+        "${CMAKE_SOURCE_DIR}/src/host_stats_service.cpp"
+        "${CMAKE_SOURCE_DIR}/src/host_stats_service.h"
+        "${CMAKE_SOURCE_DIR}/src/host_stats_types.h"
         ${PLATFORM_TARGET_FILES})
 
 if(NOT SUNSHINE_ASSETS_DIR_DEF)
