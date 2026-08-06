@@ -276,8 +276,7 @@ if(WIN32)
         get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
         sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
             PRODUCT_SOURCES
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/uuid.cpp")
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp")
     endforeach()
     sunshine_register_component(NAME test_component_display_helper_watchdog TEST_SOURCE unit/test_display_helper_watchdog.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_watchdog.cpp")
