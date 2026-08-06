@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/address_v4.hpp>
+#include <boost/system/error_code.hpp>
 #include <stdexcept>
 
 namespace confighttp::policy {
