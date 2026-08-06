@@ -3112,6 +3112,10 @@ namespace VDISPLAY_SUDOVDA {
     }
   }
 
+  void cancel_all_virtual_display_recovery_monitors() {
+    abort_all_recovery_monitors();
+  }
+
   void request_virtual_display_recovery_shutdown() {
     recovery_monitors().request_shutdown();
     watchdog_failure_callbacks().request_shutdown();

@@ -2760,6 +2760,11 @@ namespace stream {
         BOOST_LOG(debug) << "Display cleanup: shared stream runtime is paused; keeping virtual display alive "
                             "(config_revert_on_disconnect=false, paused timeout disabled).";
       } else if (display_restore_requested) {
+        // The final owner is gone, so no recovery worker may legitimately
+        // recreate or reapply this ended session while REVERT intentionally
+        // deactivates its retained virtual display. Cancellation does not
+        // remove the VDD or latch shutdown; a later session arms fresh workers.
+        VDISPLAY::cancel_all_virtual_display_recovery_monitors();
         BOOST_LOG(info) << "Display restore: final stream ended; dispatching restore while keeping virtual display alive.";
         if (!display_helper_integration::revert(true)) {
           BOOST_LOG(debug) << "Display helper: restore dispatch failed after final stream; virtual display remains active.";

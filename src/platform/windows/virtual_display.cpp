@@ -486,6 +486,7 @@ namespace VDISPLAY_SUNSHINE {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
@@ -555,6 +556,7 @@ namespace VDISPLAY_SUDOVDA {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
   bool is_virtual_display_guid_tracked(const GUID &guid);
@@ -758,6 +760,14 @@ namespace VDISPLAY {
     } else {
       VDISPLAY_SUDOVDA::schedule_virtual_display_recovery_monitor(params);
     }
+  }
+
+  void cancel_all_virtual_display_recovery_monitors() {
+    // A retained display may have been created by either backend before a
+    // configuration change. Cancellation is non-destructive and non-latching,
+    // so cover both registries and allow the next session to arm fresh workers.
+    VDISPLAY_SUNSHINE::cancel_all_virtual_display_recovery_monitors();
+    VDISPLAY_SUDOVDA::cancel_all_virtual_display_recovery_monitors();
   }
 
   void request_virtual_display_recovery_shutdown() {
