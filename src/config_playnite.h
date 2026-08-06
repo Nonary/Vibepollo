@@ -73,6 +73,10 @@ namespace config {
 
   extern playnite_t playnite;
 
+  // Parse and consume Playnite-related values without touching process-global
+  // configuration or external Playnite/application state.
+  playnite_t parse_playnite(std::unordered_map<std::string, std::string> &vars);
+
   // Consume Playnite-related config vars from the provided map.
   void apply_playnite(std::unordered_map<std::string, std::string> &vars);
 }  // namespace config

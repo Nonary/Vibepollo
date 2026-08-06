@@ -580,6 +580,16 @@ namespace session_history::storage {
     return true;
   }
 
+  bool open_memory_db(db_ptr &out_db) {
+    sqlite3 *raw = nullptr;
+    if (sqlite3_open(":memory:", &raw) != SQLITE_OK) {
+      sqlite3_close(raw);
+      return false;
+    }
+    out_db.reset(raw);
+    return exec(out_db.get(), "PRAGMA foreign_keys = ON");
+  }
+
   bool apply_schema_and_migrations(sqlite3 *db, int schema_version) {
     const bool had_existing_history_tables =
       table_exists(db, "sessions") ||
@@ -758,6 +768,10 @@ namespace session_history::storage {
   }
 
   bool process_begin(sqlite3 *db, const session_metadata_t &metadata) {
+    return process_begin_at(db, metadata, now_unix());
+  }
+
+  bool process_begin_at(sqlite3 *db, const session_metadata_t &metadata, double start_time_unix) {
     auto stmt = prepare(db,
       "INSERT OR IGNORE INTO sessions "
       "(uuid, protocol, client_name, device_name, app_name, "
@@ -780,7 +794,7 @@ namespace session_history::storage {
     sqlite3_bind_int(stmt.get(), 12, metadata.hdr ? 1 : 0);
     sqlite3_bind_int(stmt.get(), 13, metadata.yuv444 ? 1 : 0);
     sqlite3_bind_int(stmt.get(), 14, metadata.audio_channels);
-    sqlite3_bind_double(stmt.get(), 15, now_unix());
+    sqlite3_bind_double(stmt.get(), 15, start_time_unix);
     sqlite3_bind_text(stmt.get(), 16, metadata.server_version.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 17, metadata.host_cpu_model.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 18, metadata.host_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
@@ -801,7 +815,10 @@ namespace session_history::storage {
   }
 
   bool process_end(sqlite3 *db, const std::string &uuid) {
-    double end_time = now_unix();
+    return process_end_at(db, uuid, now_unix());
+  }
+
+  bool process_end_at(sqlite3 *db, const std::string &uuid, double end_time) {
 
     std::string verdict = "unknown";
     {

@@ -1,509 +1,136 @@
 /**
  * @file tests/unit/test_process.cpp
- * @brief Test src/process.* functions.
+ * @brief Deterministic application catalog, artwork, and lifecycle policy tests.
  */
-// test imports
 #include "../tests_common.h"
 
-// standard imports
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
+#include <src/app_catalog_policy.h>
+#include <src/deferred_action.h>
+
 #include <algorithm>
-#include <filesystem>
-#include <fstream>
+#include <map>
 
-// local imports
-#include <src/config.h>
-#include <src/process.h>
+namespace {
+  using proc::catalog::alias_state_t;
+  using proc::catalog::app_identity_t;
 
-namespace fs = std::filesystem;
-namespace pt = boost::property_tree;
-
-#ifdef _WIN32
-class DeferredDisplayRevertTest: public ::testing::Test {
-protected:
-  void SetUp() override {
-    proc::clear_deferred_display_revert();
+  proc::catalog::byte_buffer_t png(std::uint8_t payload = 0) {
+    return {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, payload};
   }
 
-  void TearDown() override {
-    proc::clear_deferred_display_revert();
-  }
-};
+  struct fake_images_t {
+    std::map<std::string, proc::catalog::byte_buffer_t> files;
 
-TEST_F(DeferredDisplayRevertTest, PersistsUntilFinalSessionConsumesIt) {
-  proc::defer_display_revert();
-
-  EXPECT_TRUE(proc::consume_deferred_display_revert());
-  EXPECT_FALSE(proc::consume_deferred_display_revert());
-}
-
-TEST_F(DeferredDisplayRevertTest, ReplacementAppCancelsPendingRestore) {
-  proc::defer_display_revert();
-
-  proc::clear_deferred_display_revert();
-
-  EXPECT_FALSE(proc::consume_deferred_display_revert());
-}
-#endif
-
-class ProcessPNGTest: public ::testing::Test {
-protected:
-  void SetUp() override {
-    // Create test directory
-    test_dir = fs::temp_directory_path() / "sunshine_process_png_test";  // NOSONAR(cpp:S5443) - safe for tests
-    fs::create_directories(test_dir);
-  }
-
-  void TearDown() override {
-    // Clean up test directory
-    if (fs::exists(test_dir)) {
-      fs::remove_all(test_dir);
+    std::optional<proc::catalog::byte_buffer_t> read(const std::string &path) const {
+      const auto found = files.find(path);
+      return found == files.end() ? std::nullopt : std::optional {found->second};
     }
+  };
+
+  TEST(ProcessLifecycle, DeferredActionPersistsUntilConsumedOrCleared) {
+    lifecycle::deferred_action_t action;
+    action.defer();
+    EXPECT_TRUE(action.consume());
+    EXPECT_FALSE(action.consume());
+
+    action.defer();
+    action.clear();
+    EXPECT_FALSE(action.consume());
   }
 
-  // Helper function to create a file with specific content
-  void createTestFile(const fs::path &path, const std::vector<unsigned char> &content) const {
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char *>(content.data()), content.size());
-    file.close();
+  TEST(ProcessArtwork, PngSignatureRequiresAllEightBytes) {
+    EXPECT_TRUE(proc::catalog::has_png_signature(png()));
+    EXPECT_FALSE(proc::catalog::has_png_signature({}));
+    EXPECT_FALSE(proc::catalog::has_png_signature(proc::catalog::byte_buffer_t {0x89, 0x50, 0x4e, 0x47}));
+    EXPECT_FALSE(proc::catalog::has_png_signature(proc::catalog::byte_buffer_t(8, 0)));
   }
 
-  fs::path test_dir;
-};
+  TEST(ProcessArtwork, ValidationUsesInjectedAssetsAndNeverTouchesDisk) {
+    const std::string assets = "virtual-assets";
+    const std::string fallback = "virtual-assets/box.png";
+    const auto asset_cover = proc::catalog::asset_path(assets, "cover.png");
+    fake_images_t images {{{asset_cover, png(1)}, {"custom.PNG", png(2)}, {"bad.png", {1, 2, 3}}}};
+    const auto read = [&](const std::string &path) { return images.read(path); };
 
-class ProcessAppIdCompatibilityTest: public ::testing::Test {
-protected:
-  void SetUp() override {
-    test_dir = fs::temp_directory_path() / "sunshine_process_app_id_compat_test";  // NOSONAR(cpp:S5443) - safe for tests
-    fs::remove_all(test_dir);
-    fs::create_directories(test_dir);
-
-    original_file_state = config::nvhttp.file_state;
-    original_vibeshine_file_state = config::nvhttp.vibeshine_file_state;
-    config::nvhttp.file_state = (test_dir / "sunshine_state.json").string();
-    config::nvhttp.vibeshine_file_state = (test_dir / "vibeshine_state.json").string();
+    EXPECT_EQ(proc::catalog::validate_image_path("", assets, fallback, read), fallback);
+    EXPECT_EQ(proc::catalog::validate_image_path("cover.jpg", assets, fallback, read), fallback);
+    EXPECT_EQ(proc::catalog::validate_image_path("missing.png", assets, fallback, read), fallback);
+    EXPECT_EQ(proc::catalog::validate_image_path("bad.png", assets, fallback, read), fallback);
+    EXPECT_EQ(proc::catalog::validate_image_path("cover.png", assets, fallback, read), asset_cover);
+    EXPECT_EQ(proc::catalog::validate_image_path("custom.PNG", assets, fallback, read), "custom.PNG");
+    EXPECT_EQ(
+      proc::catalog::validate_image_path("./assets/steam.png", assets, fallback, read),
+      proc::catalog::asset_path(assets, "steam.png"));
   }
 
-  void TearDown() override {
-    config::nvhttp.file_state = original_file_state;
-    config::nvhttp.vibeshine_file_state = original_vibeshine_file_state;
-    std::error_code ec;
-    fs::remove_all(test_dir, ec);
+  TEST(ProcessCatalog, FirstSeenUuidSeedsStableUuidOnlyId) {
+    app_identity_t app {"Game", "11111111-1111-1111-1111-111111111111", "ignored-cover", "sha256:first"};
+    std::set<std::string> ids;
+    std::set<std::string> active;
+    std::map<std::string, alias_state_t> state;
+    bool changed = false;
+
+    proc::catalog::assign_compatible_id(app, 0, ids, state, active, changed);
+    EXPECT_EQ(app.id, std::get<0>(proc::catalog::calculate_ids(app.name, app.uuid, {}, 0)));
+    EXPECT_EQ(app.art_version, "sha256:first");
+    EXPECT_TRUE(app.aliases.empty());
+    EXPECT_TRUE(changed);
   }
 
-  fs::path writeAppsJson(const std::string &name, const std::string &apps_json) const {
-    const auto path = test_dir / name;
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out << apps_json;
-    return path;
+  TEST(ProcessCatalog, CoverChangeRotatesCurrentIdAndRetainsOldAlias) {
+    const std::string uuid = "22222222-2222-2222-2222-222222222222";
+    std::map<std::string, alias_state_t> state;
+    std::set<std::string> ids;
+    std::set<std::string> active;
+    bool changed = false;
+    app_identity_t first {"Game", uuid, {}, "sha256:first"};
+    proc::catalog::assign_compatible_id(first, 0, ids, state, active, changed);
+
+    ids.clear();
+    active.clear();
+    changed = false;
+    app_identity_t second {"Game", uuid, {}, "sha256:second"};
+    proc::catalog::assign_compatible_id(second, 0, ids, state, active, changed);
+    EXPECT_NE(second.id, first.id);
+    EXPECT_NE(std::find(second.aliases.begin(), second.aliases.end(), first.id), second.aliases.end());
+    EXPECT_TRUE(changed);
   }
 
-  fs::path writePng(const std::string &name, unsigned char payload) const {
-    const auto path = test_dir / name;
-    const std::vector<unsigned char> png_data = {
-      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-      payload, static_cast<unsigned char>(payload + 1), static_cast<unsigned char>(payload + 2)
+  TEST(ProcessCatalog, DeletedAppsAndConflictingAliasesArePruned) {
+    std::map<std::string, alias_state_t> state {
+      {"active-a", {"101", "a", {"202", "999"}}},
+      {"active-b", {"202", "b", {"999"}}},
+      {"deleted", {"303", "c", {"404"}}}
     };
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char *>(png_data.data()), png_data.size());
-    return path;
+    std::vector<app_identity_t> apps {
+      {"A", "active-a", {}, "a", "101", {"202", "999"}},
+      {"B", "active-b", {}, "b", "202", {"999"}}
+    };
+    bool changed = false;
+    proc::catalog::prune_and_filter_aliases(apps, state, {"active-a", "active-b"}, changed);
+
+    EXPECT_FALSE(state.contains("deleted"));
+    EXPECT_TRUE(apps[0].aliases.empty());
+    EXPECT_TRUE(apps[1].aliases.empty());
+    EXPECT_TRUE(changed);
   }
 
-  pt::ptree readState() const {
-    pt::ptree tree;
-    pt::read_json(config::nvhttp.vibeshine_file_state, tree);
-    return tree;
+  TEST(ProcessCatalog, ResolverPrefersUuidAndRejectsAmbiguousAliases) {
+    const std::vector<app_identity_t> apps {
+      {"A", "uuid-a", {}, "a", "101", {"999"}},
+      {"B", "uuid-b", {}, "b", "202", {"999"}}
+    };
+    EXPECT_EQ(proc::catalog::resolve_app(apps, "101"), 0u);
+    EXPECT_EQ(proc::catalog::resolve_app(apps, "bad", "uuid-b"), 1u);
+    EXPECT_FALSE(proc::catalog::resolve_app(apps, "999").has_value());
+    EXPECT_FALSE(proc::catalog::resolve_app(apps, "0").has_value());
   }
 
-  fs::path test_dir;
-  std::string original_file_state;
-  std::string original_vibeshine_file_state;
-};
-
-TEST_F(ProcessAppIdCompatibilityTest, FirstSeenUuidAppSeedsOldUuidOnlyId) {
-  const std::string uuid = "11111111-1111-1111-1111-111111111111";
-  const auto cover = writePng("cover-a.png", 0x10);
-  const auto apps_path = writeAppsJson(
-    "apps-first-seen.json",
-    std::string(R"json({"env":{},"apps":[{"name":"Game","uuid":")json") + uuid + R"json(","cmd":"","image-path":")json" + cover.generic_string() + R"json("}]})json"
-  );
-
-  auto parsed = proc::parse(apps_path.string());
-  ASSERT_TRUE(parsed.has_value());
-  const auto apps = parsed->get_apps();
-  ASSERT_GE(apps.size(), 1u);
-
-  const auto baseline_ids = proc::calculate_app_id("Game", uuid, cover.generic_string(), 0);
-  EXPECT_EQ(apps[0].id, std::get<0>(baseline_ids));
-  EXPECT_EQ(apps[0].art_version, proc::calculate_app_cover_fingerprint(cover.generic_string()));
-  EXPECT_TRUE(apps[0].id_aliases.empty());
-}
-
-TEST_F(ProcessAppIdCompatibilityTest, CoverChangeRotatesCurrentIdAndKeepsOldAlias) {
-  const std::string uuid = "22222222-2222-2222-2222-222222222222";
-  const auto cover_a = writePng("cover-a.png", 0x20);
-  const auto cover_b = writePng("cover-b.png", 0x30);
-  const auto apps_path = test_dir / "apps-rotate.json";
-
-  writeAppsJson(
-    apps_path.filename().string(),
-    std::string(R"json({"env":{},"apps":[{"name":"Game","uuid":")json") + uuid + R"json(","cmd":"","image-path":")json" + cover_a.generic_string() + R"json("}]})json"
-  );
-  auto first = proc::parse(apps_path.string());
-  ASSERT_TRUE(first.has_value());
-  const auto old_id = first->get_apps()[0].id;
-
-  writeAppsJson(
-    apps_path.filename().string(),
-    std::string(R"json({"env":{},"apps":[{"name":"Game","uuid":")json") + uuid + R"json(","cmd":"","image-path":")json" + cover_b.generic_string() + R"json("}]})json"
-  );
-  auto second = proc::parse(apps_path.string());
-  ASSERT_TRUE(second.has_value());
-  const auto apps = second->get_apps();
-  ASSERT_GE(apps.size(), 1u);
-
-  EXPECT_NE(apps[0].id, old_id);
-  EXPECT_NE(std::find(apps[0].id_aliases.begin(), apps[0].id_aliases.end(), old_id), apps[0].id_aliases.end());
-
-  auto resolved = second->resolve_app(old_id);
-  ASSERT_TRUE(resolved.has_value());
-  EXPECT_EQ(resolved->uuid, uuid);
-  EXPECT_EQ(second->get_app_image(std::stoi(old_id)), cover_b.generic_string());
-}
-
-TEST_F(ProcessAppIdCompatibilityTest, AppDeletionPrunesPersistedAliasState) {
-  const std::string uuid = "33333333-3333-3333-3333-333333333333";
-  const auto apps_path = test_dir / "apps-prune.json";
-
-  writeAppsJson(
-    apps_path.filename().string(),
-    std::string(R"json({"env":{},"apps":[{"name":"Game","uuid":")json") + uuid + R"json(","cmd":""}]})json"
-  );
-  ASSERT_TRUE(proc::parse(apps_path.string()).has_value());
-
-  writeAppsJson(apps_path.filename().string(), R"json({"env":{},"apps":[]})json");
-  ASSERT_TRUE(proc::parse(apps_path.string()).has_value());
-
-  const auto state = readState();
-  const auto aliases = state.get_child_optional("root.app_id_aliases");
-  ASSERT_TRUE(aliases.has_value());
-  EXPECT_FALSE(aliases->get_child_optional(uuid).has_value());
-}
-
-TEST_F(ProcessAppIdCompatibilityTest, AliasConflictsWithCurrentIdIsDropped) {
-  const std::string uuid_a = "44444444-4444-4444-4444-444444444444";
-  const std::string uuid_b = "55555555-5555-5555-5555-555555555555";
-
-  pt::ptree state;
-  pt::ptree aliases_root;
-  pt::ptree app_a;
-  app_a.put("current_id", "111");
-  app_a.put("cover_fingerprint", "default");
-  pt::ptree app_a_aliases;
-  pt::ptree alias_node;
-  alias_node.put_value("222");
-  app_a_aliases.push_back(std::make_pair("", alias_node));
-  app_a.put_child("aliases", app_a_aliases);
-  aliases_root.push_back(std::make_pair(uuid_a, app_a));
-
-  pt::ptree app_b;
-  app_b.put("current_id", "222");
-  app_b.put("cover_fingerprint", "default");
-  app_b.put_child("aliases", pt::ptree {});
-  aliases_root.push_back(std::make_pair(uuid_b, app_b));
-  state.put_child("root.app_id_aliases", aliases_root);
-  pt::write_json(config::nvhttp.vibeshine_file_state, state);
-
-  const auto apps_path = writeAppsJson(
-    "apps-collision.json",
-    std::string(R"json({"env":{},"apps":[{"name":"A","uuid":")json") + uuid_a + R"json(","cmd":""},{"name":"B","uuid":")json" + uuid_b + R"json(","cmd":""}]})json"
-  );
-  auto parsed = proc::parse(apps_path.string());
-  ASSERT_TRUE(parsed.has_value());
-
-  auto resolved = parsed->resolve_app("222");
-  ASSERT_TRUE(resolved.has_value());
-  EXPECT_EQ(resolved->uuid, uuid_b);
-  const auto apps = parsed->get_apps();
-  const auto app_a_it = std::find_if(apps.begin(), apps.end(), [&](const proc::ctx_t &app) {
-    return app.uuid == uuid_a;
-  });
-  ASSERT_NE(app_a_it, apps.end());
-  EXPECT_TRUE(app_a_it->id_aliases.empty());
-}
-
-TEST_F(ProcessAppIdCompatibilityTest, DuplicateAliasesAreDroppedInsteadOfResolvedAmbiguously) {
-  const std::string uuid_a = "66666666-6666-6666-6666-666666666666";
-  const std::string uuid_b = "77777777-7777-7777-7777-777777777777";
-
-  pt::ptree state;
-  pt::ptree aliases_root;
-  for (const auto &[uuid, current_id] : std::vector<std::pair<std::string, std::string>> {{uuid_a, "301"}, {uuid_b, "302"}}) {
-    pt::ptree app;
-    app.put("current_id", current_id);
-    app.put("cover_fingerprint", "default");
-    pt::ptree aliases;
-    pt::ptree alias_node;
-    alias_node.put_value("999");
-    aliases.push_back(std::make_pair("", alias_node));
-    app.put_child("aliases", aliases);
-    aliases_root.push_back(std::make_pair(uuid, app));
+  TEST(ProcessCatalog, LegacyAppsIncludeImageIdentityAndIndexFallback) {
+    const auto first = proc::catalog::calculate_ids("Legacy", "", "cover-a", 0);
+    const auto second = proc::catalog::calculate_ids("Legacy", "", "cover-b", 0);
+    const auto indexed = proc::catalog::calculate_ids("Legacy", "", "cover-a", 1);
+    EXPECT_NE(std::get<0>(first), std::get<0>(second));
+    EXPECT_NE(std::get<1>(first), std::get<1>(indexed));
   }
-  state.put_child("root.app_id_aliases", aliases_root);
-  pt::write_json(config::nvhttp.vibeshine_file_state, state);
-
-  const auto apps_path = writeAppsJson(
-    "apps-duplicate-alias.json",
-    std::string(R"json({"env":{},"apps":[{"name":"A","uuid":")json") + uuid_a + R"json(","cmd":""},{"name":"B","uuid":")json" + uuid_b + R"json(","cmd":""}]})json"
-  );
-  auto parsed = proc::parse(apps_path.string());
-  ASSERT_TRUE(parsed.has_value());
-
-  EXPECT_FALSE(parsed->resolve_app("999").has_value());
-  for (const auto &app : parsed->get_apps()) {
-    if (app.uuid == uuid_a || app.uuid == uuid_b) {
-      EXPECT_TRUE(app.id_aliases.empty());
-    }
-  }
-}
-
-TEST_F(ProcessAppIdCompatibilityTest, NoUuidIdCalculationStillUsesNameImageAndIndex) {
-  const auto cover_a = writePng("legacy-a.png", 0x40);
-  const auto cover_b = writePng("legacy-b.png", 0x50);
-
-  const auto first = proc::calculate_app_id("Legacy", "", cover_a.string(), 0);
-  const auto second = proc::calculate_app_id("Legacy", "", cover_b.string(), 0);
-  const auto indexed = proc::calculate_app_id("Legacy", "", cover_a.string(), 1);
-
-  EXPECT_NE(std::get<0>(first), std::get<0>(second));
-  EXPECT_NE(std::get<1>(first), std::get<1>(indexed));
-}
-
-// Tests for check_valid_png function
-TEST_F(ProcessPNGTest, CheckValidPNG_ValidSignature) {
-  // Valid PNG signature
-  const std::vector<unsigned char> valid_png_data = {
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x0D,
-    0x0A,
-    0x1A,
-    0x0A,  // PNG signature
-    // Add some dummy data to make it more realistic
-    0x00,
-    0x00,
-    0x00,
-    0x0D,
-    0x49,
-    0x48,
-    0x44,
-    0x52
-  };
-
-  const fs::path test_file = test_dir / "valid.png";
-  createTestFile(test_file, valid_png_data);
-
-  EXPECT_TRUE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_WrongSignature) {
-  // Invalid PNG signature (wrong magic bytes)
-  const std::vector<unsigned char> invalid_png_data = {
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00
-  };
-
-  const fs::path test_file = test_dir / "invalid.png";
-  createTestFile(test_file, invalid_png_data);
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_TooShort) {
-  // File too short (less than 8 bytes)
-  const std::vector<unsigned char> short_data = {
-    0x89,
-    0x50,
-    0x4E,
-    0x47
-  };
-
-  const fs::path test_file = test_dir / "short.png";
-  createTestFile(test_file, short_data);
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_EmptyFile) {
-  // Empty file
-  const std::vector<unsigned char> empty_data = {};
-
-  const fs::path test_file = test_dir / "empty.png";
-  createTestFile(test_file, empty_data);
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_NonExistentFile) {
-  // File doesn't exist
-  const fs::path test_file = test_dir / "nonexistent.png";
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_RealFile) {
-  const std::vector<unsigned char> complete_png = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,6,0,0,0,31,21,196,137,0,0,0,13,73,68,65,84,8,215,99,248,207,192,240,31,0,5,0,1,255,137,153,61,29,0,0,0,0,73,69,78,68,174,66,96,130};
-  const auto path = test_dir / "complete.png";
-  createTestFile(path, complete_png);
-  EXPECT_TRUE(proc::check_valid_png(path));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_JPEGFile) {
-  // JPEG signature (not PNG)
-  const std::vector<unsigned char> jpeg_data = {
-    0xFF,
-    0xD8,
-    0xFF,
-    0xE0,
-    0x00,
-    0x10,
-    0x4A,
-    0x46
-  };
-
-  const fs::path test_file = test_dir / "fake.png";
-  createTestFile(test_file, jpeg_data);
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-TEST_F(ProcessPNGTest, CheckValidPNG_PartialSignature) {
-  // Partial PNG signature (first 4 bytes correct, rest wrong)
-  const std::vector<unsigned char> partial_png_data = {
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x00,
-    0x00,
-    0x00,
-    0x00
-  };
-
-  const fs::path test_file = test_dir / "partial.png";
-  createTestFile(test_file, partial_png_data);
-
-  EXPECT_FALSE(proc::check_valid_png(test_file));
-}
-
-// Tests for validate_app_image_path function
-TEST_F(ProcessPNGTest, ValidateAppImagePath_EmptyPath) {
-  // Empty path should return default
-  const std::string result = proc::validate_app_image_path("");
-  EXPECT_EQ(result, DEFAULT_APP_IMAGE_PATH);
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_NonPNGExtension) {
-  // Non-PNG extension should return default
-  const std::string result = proc::validate_app_image_path("image.jpg");
-  EXPECT_EQ(result, DEFAULT_APP_IMAGE_PATH);
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_CaseInsensitiveExtension) {
-  // Test that .PNG (uppercase) is recognized
-  // Create a valid PNG file
-  const std::vector<unsigned char> valid_png_data = {
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x0D,
-    0x0A,
-    0x1A,
-    0x0A,
-    0x00,
-    0x00,
-    0x00,
-    0x0D,
-    0x49,
-    0x48,
-    0x44,
-    0x52
-  };
-
-  const fs::path test_file = test_dir / "test.PNG";
-  createTestFile(test_file, valid_png_data);
-
-  const std::string result = proc::validate_app_image_path(test_file.string());
-  // Should accept uppercase .PNG extension
-  EXPECT_NE(result, DEFAULT_APP_IMAGE_PATH);
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_NonExistentFile) {
-  // Non-existent PNG file should return default
-  const std::string result = proc::validate_app_image_path("/nonexistent/path/image.png");
-  EXPECT_EQ(result, DEFAULT_APP_IMAGE_PATH);
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_InvalidPNGSignature) {
-  // File with .png extension but invalid signature should return default
-  const std::vector<unsigned char> invalid_data = {
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00,
-    0x00
-  };
-
-  const fs::path test_file = test_dir / "invalid.png";
-  createTestFile(test_file, invalid_data);
-
-  const std::string result = proc::validate_app_image_path(test_file.string());
-  EXPECT_EQ(result, DEFAULT_APP_IMAGE_PATH);
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_ValidPNG) {
-  // Valid PNG file should return the path
-  const std::vector<unsigned char> valid_png_data = {
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x0D,
-    0x0A,
-    0x1A,
-    0x0A,
-    0x00,
-    0x00,
-    0x00,
-    0x0D,
-    0x49,
-    0x48,
-    0x44,
-    0x52
-  };
-
-  const fs::path test_file = test_dir / "valid.png";
-  createTestFile(test_file, valid_png_data);
-
-  const std::string result = proc::validate_app_image_path(test_file.string());
-  EXPECT_EQ(result, test_file.string());
-}
-
-TEST_F(ProcessPNGTest, ValidateAppImagePath_OldSteamDefault) {
-  // Test the special case for old steam image path
-  const std::string result = proc::validate_app_image_path("./assets/steam.png");
-  EXPECT_EQ(result, SUNSHINE_ASSETS_DIR "/steam.png");
-}
+}  // namespace

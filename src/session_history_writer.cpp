@@ -19,6 +19,7 @@
 // local includes
 #include "session_history_writer.h"
 #include "session_history_storage.h"
+#include "session_history_policy.h"
 #include "logging.h"
 
 using namespace std::literals;
@@ -140,10 +141,7 @@ namespace session_history::writer {
 
       storage::prune_options_t options;
       options.max_history_sessions = MAX_HISTORY_SESSIONS;
-      if (settings.ttl_days > 0) {
-        options.prune_sessions_ended_before_unix =
-          storage::now_unix() - (static_cast<double>(settings.ttl_days) * 24.0 * 60.0 * 60.0);
-      }
+      options.prune_sessions_ended_before_unix = policy::retention_cutoff_unix(settings.ttl_days, storage::now_unix());
       options.max_db_size_bytes = settings.max_db_size_bytes;
       return options;
     }
@@ -181,7 +179,12 @@ namespace session_history::writer {
       }
 
       for (auto it = g_sample_queue.begin(); it != g_sample_queue.end();) {
-        if (it->sample.session_uuid == barrier.uuid && it->sequence < barrier.sequence) {
+        if (policy::flushes_before_barrier(
+              policy::queue_kind_e::sample,
+              it->sample.session_uuid,
+              it->sequence,
+              barrier.uuid,
+              barrier.sequence)) {
           batch.push_back(std::move(*it));
           it = g_sample_queue.erase(it);
           continue;
@@ -197,7 +200,13 @@ namespace session_history::writer {
       }
 
       for (auto it = g_priority_queue.begin(); it != g_priority_queue.end();) {
-        if (it->type == cmd_type::insert_event && it->event.session_uuid == barrier.uuid && it->sequence < barrier.sequence) {
+        if (it->type == cmd_type::insert_event &&
+            policy::flushes_before_barrier(
+              policy::queue_kind_e::priority,
+              it->event.session_uuid,
+              it->sequence,
+              barrier.uuid,
+              barrier.sequence)) {
           batch.push_back(std::move(*it));
           it = g_priority_queue.erase(it);
           continue;
@@ -214,14 +223,20 @@ namespace session_history::writer {
         }
         cmd.sequence = g_next_sequence.fetch_add(1, std::memory_order_relaxed);
         const auto limits = current_queue_limits();
+        const policy::queue_limits_t policy_limits {
+          .control = limits.control_limit,
+          .priority = limits.priority_limit,
+          .regular = limits.regular_limit,
+          .sample = limits.sample_limit
+        };
         if (is_control_cmd(cmd.type)) {
-          if (g_control_queue.size() >= limits.control_limit) {
+          if (policy::accept(policy::queue_kind_e::control, g_control_queue.size(), policy_limits) == policy::enqueue_result_e::queue_full) {
             BOOST_LOG(error) << "session_history: control writer queue is full; rejecting command";
             return false;
           }
           g_control_queue.push_back(std::move(cmd));
         } else if (cmd.type == cmd_type::insert_sample) {
-          if (g_sample_queue.size() >= limits.sample_limit) {
+          if (policy::accept(policy::queue_kind_e::sample, g_sample_queue.size(), policy_limits) == policy::enqueue_result_e::queue_full) {
             g_dropped_sample_count.fetch_add(1, std::memory_order_relaxed);
             g_writer_degraded.store(true, std::memory_order_relaxed);
             BOOST_LOG(warning) << "session_history: dropping sample because writer sample queue is full";
@@ -229,13 +244,13 @@ namespace session_history::writer {
           }
           g_sample_queue.push_back(std::move(cmd));
         } else if (cmd.type == cmd_type::insert_event) {
-          if (g_priority_queue.size() >= limits.priority_limit) {
+          if (policy::accept(policy::queue_kind_e::priority, g_priority_queue.size(), policy_limits) == policy::enqueue_result_e::queue_full) {
             BOOST_LOG(error) << "session_history: priority writer queue is full; rejecting command";
             return false;
           }
           g_priority_queue.push_back(std::move(cmd));
         } else {
-          if (g_priority_queue.size() >= limits.priority_limit) {
+          if (policy::accept(policy::queue_kind_e::priority, g_priority_queue.size(), policy_limits) == policy::enqueue_result_e::queue_full) {
             BOOST_LOG(error) << "session_history: priority writer queue is full; rejecting command";
             return false;
           }

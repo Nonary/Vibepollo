@@ -94,6 +94,10 @@ if(WIN32)
 endif()
 add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+find_package(Boost CONFIG REQUIRED COMPONENTS log log_setup)
+
 enable_testing()
 
 # The foundation target proves that the fast path needs only GTest and the
@@ -210,7 +214,7 @@ sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp")
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
@@ -226,15 +230,14 @@ sunshine_register_component(NAME test_component_input_validation TEST_SOURCE uni
 sunshine_register_component(NAME test_component_display_device_policy TEST_SOURCE unit/test_display_device.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device.cpp")
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/process.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp")
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/process.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp")
 sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
     PRODUCT_SOURCES
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history.cpp"
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_sampler.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_writer.cpp")
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
+    LINK_LIBRARIES PkgConfig::SQLITE3 Boost::log Boost::log_setup)
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp
