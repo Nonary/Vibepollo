@@ -123,7 +123,10 @@ namespace input {
     mouse_input::point_t position() const override {
       auto &input = const_cast<platf::input_t &>(_input);
       const auto position = platf::get_mouse_loc(input);
-      return {position.x, position.y};
+      return {
+        static_cast<int>(position.x),
+        static_cast<int>(position.y),
+      };
     }
 
     void move_relative(mouse_input::point_t delta) override {
