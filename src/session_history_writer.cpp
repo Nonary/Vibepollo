@@ -668,22 +668,23 @@ namespace session_history::writer {
   }
 
   history_status_t get_status() {
-    history_status_t status;
+    policy::status_inputs_t inputs;
     {
       std::lock_guard lk {g_db_mutex};
-      status.available = g_running.load(std::memory_order_acquire) && static_cast<bool>(g_write_db);
+      inputs.running = g_running.load(std::memory_order_acquire);
+      inputs.has_write_db = static_cast<bool>(g_write_db);
     }
     {
       std::lock_guard lk {g_queue_mutex};
-      status.pending_control_commands = g_control_queue.size();
-      status.pending_priority_commands = g_priority_queue.size();
-      status.pending_regular_commands = g_regular_queue.size();
-      status.pending_samples = g_sample_queue.size();
+      inputs.pending_control_commands = g_control_queue.size();
+      inputs.pending_priority_commands = g_priority_queue.size();
+      inputs.pending_regular_commands = g_regular_queue.size();
+      inputs.pending_samples = g_sample_queue.size();
     }
-    status.degraded = g_writer_degraded.load(std::memory_order_relaxed);
-    status.dropped_samples = g_dropped_sample_count.load(std::memory_order_relaxed);
-    status.failed_writes = g_failed_write_count.load(std::memory_order_relaxed);
-    return status;
+    inputs.degraded = g_writer_degraded.load(std::memory_order_relaxed);
+    inputs.dropped_samples = g_dropped_sample_count.load(std::memory_order_relaxed);
+    inputs.failed_writes = g_failed_write_count.load(std::memory_order_relaxed);
+    return policy::make_status(inputs);
   }
 
 #ifdef SUNSHINE_TESTS
