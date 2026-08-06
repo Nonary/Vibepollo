@@ -4,7 +4,9 @@
 
 #include "playnite_protocol.h"
 
-#include "src/logging.h"
+#ifndef SUNSHINE_TESTS
+  #include "src/logging.h"
+#endif
 
 #include <nlohmann/json.hpp>
 #include <string>
@@ -42,12 +44,16 @@ namespace platf::playnite {
     try {
       json j = json::parse(trimmed.begin(), trimmed.end());
       const std::string type = j.value("type", "");
-      // Verbose protocol tracing: use debug to reduce noise in normal operation
+#ifndef SUNSHINE_TESTS
+      // Verbose protocol tracing: use debug to reduce noise in normal operation.
       BOOST_LOG(debug) << "Playnite protocol: parsing message type='" << type << "'";
+#endif
       if (type == "categories") {
         m.type = MessageType::Categories;
         auto arr = j.value("payload", json::array());
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(debug) << "Playnite protocol: categories count=" << arr.size();
+#endif
         for (auto &c : arr) {
           Category cat;
           cat.id = c.value("id", "");
@@ -59,7 +65,9 @@ namespace platf::playnite {
       } else if (type == "plugins") {
         m.type = MessageType::Plugins;
         auto arr = j.value("payload", json::array());
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(debug) << "Playnite protocol: plugins count=" << arr.size();
+#endif
         for (auto &p : arr) {
           Plugin plug;
           plug.id = p.value("id", "");
@@ -71,7 +79,9 @@ namespace platf::playnite {
       } else if (type == "games") {
         m.type = MessageType::Games;
         auto arr = j.value("payload", json::array());
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(debug) << "Playnite protocol: games count=" << arr.size();
+#endif
         for (auto &g : arr) {
           Game game;
           game.id = g.value("id", "");
@@ -135,10 +145,14 @@ namespace platf::playnite {
         m.status_game_id = st.value("id", "");
         m.status_install_dir = st.value("installDir", "");
         m.status_exe = st.value("exe", "");
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(debug) << "Playnite protocol: status name='" << m.status_name << "' id='" << m.status_game_id << "'";
+#endif
       }
     } catch (...) {
+#ifndef SUNSHINE_TESTS
       BOOST_LOG(warning) << "Playnite protocol: failed to parse message";
+#endif
       // fallthrough unknown
     }
     return m;

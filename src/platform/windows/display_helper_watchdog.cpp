@@ -1,6 +1,8 @@
 #include "src/platform/windows/display_helper_watchdog.h"
 
-#include "src/logging.h"
+#ifndef SUNSHINE_TESTS
+  #include "src/logging.h"
+#endif
 
 #include <utility>
 
@@ -18,7 +20,9 @@ namespace display_helper_integration {
 
     if (hooks_.feature_enabled && !hooks_.feature_enabled()) {
       if (helper_ready_) {
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(info) << "Display helper watchdog: feature disabled, releasing helper connection.";
+#endif
         if (hooks_.reset_connection) {
           hooks_.reset_connection();
         }
@@ -40,19 +44,27 @@ namespace display_helper_integration {
     }
 
     if (hooks_.send_ping && !hooks_.send_ping()) {
+#ifndef SUNSHINE_TESTS
       BOOST_LOG(warning) << "Display helper watchdog: ping failed, helper may have crashed or become unresponsive.";
+#endif
       if (hooks_.reset_connection) {
         hooks_.reset_connection();
       }
       if (hooks_.ensure_helper_started && hooks_.ensure_helper_started()) {
         helper_ready_ = hooks_.send_ping ? hooks_.send_ping() : true;
         if (helper_ready_) {
+#ifndef SUNSHINE_TESTS
           BOOST_LOG(info) << "Display helper watchdog: successfully restarted helper after ping failure.";
+#endif
         } else {
+#ifndef SUNSHINE_TESTS
           BOOST_LOG(warning) << "Display helper watchdog: helper restarted but ping still failing.";
+#endif
         }
       } else {
+#ifndef SUNSHINE_TESTS
         BOOST_LOG(error) << "Display helper watchdog: failed to restart helper after ping failure.";
+#endif
         helper_ready_ = false;
       }
     }

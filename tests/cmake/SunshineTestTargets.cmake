@@ -3,7 +3,7 @@ include_guard(GLOBAL)
 function(sunshine_add_test_target)
     set(options)
     set(one_value_args NAME CATEGORY)
-    set(multi_value_args TEST_SOURCES PRODUCT_SOURCES DEFINITIONS LINK_LIBRARIES DEPENDENCIES)
+    set(multi_value_args TEST_SOURCES SUPPORT_SOURCES PRODUCT_SOURCES INCLUDE_DIRECTORIES DEFINITIONS LINK_LIBRARIES DEPENDENCIES)
     cmake_parse_arguments(SUNSHINE_TEST "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
     if(NOT SUNSHINE_TEST_NAME)
@@ -37,9 +37,16 @@ function(sunshine_add_test_target)
 
     add_executable(${SUNSHINE_TEST_NAME}
         ${SUNSHINE_TEST_TEST_SOURCES}
+        ${SUNSHINE_TEST_SUPPORT_SOURCES}
         ${SUNSHINE_TEST_PRODUCT_SOURCES}
     )
-    target_include_directories(${SUNSHINE_TEST_NAME} PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    # Keep the repository root universal for the established <src/...> test
+    # includes.  Every non-repository include directory is supplied by the
+    # registration that needs it; this prevents an unrelated SDK header from
+    # becoming a recompilation dependency of every component target.
+    target_include_directories(${SUNSHINE_TEST_NAME} PRIVATE
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+        ${SUNSHINE_TEST_INCLUDE_DIRECTORIES})
     target_compile_definitions(${SUNSHINE_TEST_NAME} PRIVATE ${SUNSHINE_TEST_DEFINITIONS})
     target_link_libraries(${SUNSHINE_TEST_NAME} PRIVATE ${SUNSHINE_TEST_LINK_LIBRARIES})
     target_link_options(${SUNSHINE_TEST_NAME} PRIVATE)

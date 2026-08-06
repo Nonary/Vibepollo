@@ -4,7 +4,9 @@
  */
 #include "utf_utils.h"
 
-#include "src/logging.h"
+#ifndef SUNSHINE_TESTS
+  #include "src/logging.h"
+#endif
 
 #include <string>
 #include <Windows.h>
@@ -21,8 +23,10 @@ namespace utf_utils {
     // Get the output size required to store the string
     auto output_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(), string.size(), nullptr, 0);
     if (output_size == 0) {
+#ifndef SUNSHINE_TESTS
       auto winerr = GetLastError();
       BOOST_LOG(error) << "Failed to get UTF-16 buffer size: "sv << winerr;
+#endif
       return {};
     }
 
@@ -30,8 +34,10 @@ namespace utf_utils {
     std::wstring output(output_size, L'\0');
     output_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(), string.size(), output.data(), output.size());
     if (output_size == 0) {
+#ifndef SUNSHINE_TESTS
       auto winerr = GetLastError();
       BOOST_LOG(error) << "Failed to convert string to UTF-16: "sv << winerr;
+#endif
       return {};
     }
 
@@ -47,8 +53,10 @@ namespace utf_utils {
     // Get the output size required to store the string
     auto output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(), nullptr, 0, nullptr, nullptr);
     if (output_size == 0) {
+#ifndef SUNSHINE_TESTS
       auto winerr = GetLastError();
       BOOST_LOG(error) << "Failed to get UTF-8 buffer size: "sv << winerr;
+#endif
       return {};
     }
 
@@ -56,8 +64,10 @@ namespace utf_utils {
     std::string output(output_size, '\0');
     output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(), output.data(), output.size(), nullptr, nullptr);
     if (output_size == 0) {
+#ifndef SUNSHINE_TESTS
       auto winerr = GetLastError();
       BOOST_LOG(error) << "Failed to convert string to UTF-8: "sv << winerr;
+#endif
       return {};
     }
 

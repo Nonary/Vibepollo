@@ -106,6 +106,37 @@ add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 find_package(Boost CONFIG REQUIRED COMPONENTS log log_setup)
+find_package(OpenSSL REQUIRED)
+
+# Header-only SDK boundaries are named targets rather than process-wide include
+# paths.  A component explicitly opts in to the one external surface it uses;
+# this keeps edits in a vendored SDK from rebuilding unrelated test targets.
+add_library(sunshine_test_simple_web_headers INTERFACE)
+target_include_directories(sunshine_test_simple_web_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party")
+target_link_libraries(sunshine_test_simple_web_headers INTERFACE
+    OpenSSL::SSL OpenSSL::Crypto)
+
+add_library(sunshine_test_moonlight_headers INTERFACE)
+target_include_directories(sunshine_test_moonlight_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party")
+
+add_library(sunshine_test_enet_headers INTERFACE)
+target_include_directories(sunshine_test_enet_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/moonlight-common-c/enet/include")
+
+add_library(sunshine_test_displaydevice_headers INTERFACE)
+target_include_directories(sunshine_test_displaydevice_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/include")
+
+add_library(sunshine_test_nvapi_headers INTERFACE)
+target_include_directories(sunshine_test_nvapi_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nvapi")
+
+add_library(sunshine_test_nanors_headers INTERFACE)
+target_include_directories(sunshine_test_nanors_headers SYSTEM INTERFACE
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nanors"
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nanors/deps/obl")
 
 enable_testing()
 
@@ -159,15 +190,11 @@ sunshine_add_test_target(
         "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvenc_api.cpp"
     PRODUCT_SOURCES
     DEFINITIONS
+    INCLUDE_DIRECTORIES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nv-codec-headers/include"
     LINK_LIBRARIES GTest::gmock GTest::gtest
     DEPENDENCIES
 )
-if(TARGET test_fast_nvenc_api)
-    # nvenc_api.h directly includes the Video Codec SDK public header.
-    target_include_directories(test_fast_nvenc_api PRIVATE
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nv-codec-headers/include"
-    )
-endif()
 
 sunshine_add_test_target(
     NAME test_fast_framegen_policy
@@ -196,7 +223,7 @@ sunshine_add_test_target(
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rswrapper.c"
     DEFINITIONS
-    LINK_LIBRARIES GTest::gtest
+    LINK_LIBRARIES GTest::gtest sunshine_test_nanors_headers
     DEPENDENCIES
 )
 
@@ -204,14 +231,16 @@ sunshine_add_test_target(
 # adds only the universal GTest main; callers still spell out every production
 # source and library so there is no hidden component bundle.
 function(sunshine_register_component)
-    cmake_parse_arguments(COMPONENT "" "NAME;TEST_SOURCE" "PRODUCT_SOURCES;LINK_LIBRARIES;DEFINITIONS" ${ARGN})
+    cmake_parse_arguments(COMPONENT "" "NAME;TEST_SOURCE" "SUPPORT_SOURCES;PRODUCT_SOURCES;INCLUDE_DIRECTORIES;LINK_LIBRARIES;DEFINITIONS" ${ARGN})
     sunshine_add_test_target(
         NAME "${COMPONENT_NAME}"
         CATEGORY component
         TEST_SOURCES
             "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/${COMPONENT_TEST_SOURCE}"
+        SUPPORT_SOURCES ${COMPONENT_SUPPORT_SOURCES}
         PRODUCT_SOURCES ${COMPONENT_PRODUCT_SOURCES}
+        INCLUDE_DIRECTORIES ${COMPONENT_INCLUDE_DIRECTORIES}
         DEFINITIONS SUNSHINE_TESTS ${COMPONENT_DEFINITIONS}
         LINK_LIBRARIES GTest::gtest ${COMPONENT_LINK_LIBRARIES}
         DEPENDENCIES
@@ -229,15 +258,19 @@ sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp")
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp"
+    LINK_LIBRARIES sunshine_test_simple_web_headers)
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network.cpp"
+    LINK_LIBRARIES sunshine_test_enet_headers)
 sunshine_register_component(NAME test_component_input_validation TEST_SOURCE unit/test_input.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input.cpp"
+    LINK_LIBRARIES sunshine_test_moonlight_headers)
 sunshine_register_component(NAME test_component_display_device_policy TEST_SOURCE unit/test_display_device.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device.cpp"
+    LINK_LIBRARIES sunshine_test_displaydevice_headers)
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp")
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
@@ -258,22 +291,23 @@ sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp")
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_handler.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_handler.cpp"
+    LINK_LIBRARIES sunshine_test_moonlight_headers sunshine_test_enet_headers sunshine_test_simple_web_headers)
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_confighttp.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/confighttp.cpp"
-    LINK_LIBRARIES GTest::gmock)
+    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
+    LINK_LIBRARIES sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
 sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp")
-sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE integration/test_config_consistency.cpp)
-sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp)
+sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE integration/test_config_consistency.cpp
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp")
+sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp")
 sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)
-sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp)
-if(TARGET test_component_virtual_display_manifest)
-    target_include_directories(test_component_virtual_display_manifest PRIVATE
-        "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
-endif()
+sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp
+    INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 
 if(WIN32)
     sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp
@@ -285,32 +319,37 @@ if(WIN32)
         get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
         sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
             PRODUCT_SOURCES
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp")
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp"
+            LINK_LIBRARIES sunshine_test_simple_web_headers)
     endforeach()
     sunshine_register_component(NAME test_component_display_helper_watchdog TEST_SOURCE unit/test_display_helper_watchdog.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_watchdog.cpp")
     sunshine_register_component(NAME test_component_display_helper_session_deferral TEST_SOURCE unit/test_display_helper_session_deferral.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_request_helpers.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_session_deferral.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_session_deferral.cpp"
+        LINK_LIBRARIES sunshine_test_displaydevice_headers)
     sunshine_register_component(NAME test_component_display_helper_v2_async_dispatcher TEST_SOURCE unit/test_display_helper_v2_async_dispatcher.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
+        LINK_LIBRARIES sunshine_test_displaydevice_headers)
     sunshine_register_component(NAME test_component_display_helper_v2_core TEST_SOURCE unit/test_display_helper_v2_core.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
+        LINK_LIBRARIES sunshine_test_displaydevice_headers)
     sunshine_register_component(NAME test_component_display_helper_v2_restore_engine TEST_SOURCE unit/test_display_helper_v2_restore_engine.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
+        LINK_LIBRARIES sunshine_test_displaydevice_headers)
     sunshine_register_component(NAME test_component_display_helper_v2_state_machine TEST_SOURCE unit/test_display_helper_v2_state_machine.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
@@ -318,23 +357,27 @@ if(WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/state_machine.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/state_machine.cpp"
+        LINK_LIBRARIES sunshine_test_displaydevice_headers)
     sunshine_register_component(NAME test_component_utf_utils TEST_SOURCE unit/platform/windows/test_utf_utils.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/utf_utils.cpp")
     sunshine_register_component(NAME test_component_game_activity TEST_SOURCE unit/platform/windows/test_game_activity.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
+        LINK_LIBRARIES sunshine_test_moonlight_headers)
     sunshine_register_component(NAME test_component_native_amf_policy TEST_SOURCE unit/platform/windows/test_native_amf_review.cpp)
     sunshine_register_component(NAME test_component_rtx_hdr_policy TEST_SOURCE unit/platform/windows/test_rtx_hdr_runtime.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_profile.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_runtime.cpp")
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_runtime.cpp"
+        LINK_LIBRARIES sunshine_test_moonlight_headers sunshine_test_nvapi_headers)
     sunshine_register_component(NAME test_component_virtual_display_policy TEST_SOURCE unit/platform/windows/test_virtual_display_sunshine.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/virtual_display_identity.cpp")
     sunshine_register_component(NAME test_component_lossless_scaling_policy TEST_SOURCE unit/test_lossless_scaling.cpp
-        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/playnite_launcher/lossless_scaling.cpp")
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/tools/playnite_launcher/lossless_scaling.cpp"
+        LINK_LIBRARIES Boost::log Boost::log_setup)
 endif()
 
 if(APPLE)
