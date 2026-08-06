@@ -3,96 +3,64 @@
  */
 #include "../tests_common.h"
 
-#ifdef _WIN32
-  #include <tools/playnite_launcher/lossless_scaling.h>
-  #include <filesystem>
-  #include <fstream>
+#include <tools/playnite_launcher/lossless_scaling_policy.h>
 
 namespace {
 
-  using playnite_launcher::lossless::lossless_scaling_runtime_state;
-  namespace fs = std::filesystem;
+  using playnite_launcher::lossless::policy::restart_state;
 
   TEST(LosslessScalingRestart, LaunchesWhenNoHelperRunning) {
-    lossless_scaling_runtime_state state;
-    state.running_pids.clear();
+    restart_state state;
     state.stopped = false;
-    EXPECT_TRUE(playnite_launcher::lossless::should_launch_new_instance_for_tests(state, false));
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_launch_new_instance(state, false));
   }
 
   TEST(LosslessScalingRestart, SkipsWhenExistingHelperRunning) {
-    lossless_scaling_runtime_state state;
-    state.running_pids.push_back(1234);
+    restart_state state {.running_process_count = 1};
     state.stopped = false;
-    EXPECT_FALSE(playnite_launcher::lossless::should_launch_new_instance_for_tests(state, false));
+    EXPECT_FALSE(playnite_launcher::lossless::policy::should_launch_new_instance(state, false));
   }
 
   TEST(LosslessScalingRestart, LaunchesAfterStop) {
-    lossless_scaling_runtime_state state;
-    state.running_pids.push_back(1234);
+    restart_state state {.running_process_count = 1};
     state.stopped = true;
-    EXPECT_TRUE(playnite_launcher::lossless::should_launch_new_instance_for_tests(state, false));
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_launch_new_instance(state, false));
   }
 
   TEST(LosslessScalingRestart, ForceLaunchOverridesState) {
-    lossless_scaling_runtime_state state;
-    state.running_pids.push_back(1234);
+    restart_state state {.running_process_count = 1};
     state.stopped = false;
-    EXPECT_TRUE(playnite_launcher::lossless::should_launch_new_instance_for_tests(state, true));
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_launch_new_instance(state, true));
   }
 
   TEST(LosslessScalingFocusCandidate, FilteredCandidateRequiresWindow) {
-    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, true, false));
+    EXPECT_FALSE(playnite_launcher::lossless::policy::should_accept_focus_candidate(true, true, false));
   }
 
   TEST(LosslessScalingFocusCandidate, FilteredCandidateAcceptsMatchingWindowedProcess) {
-    EXPECT_TRUE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, true, true));
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_accept_focus_candidate(true, true, true));
   }
 
   TEST(LosslessScalingFocusCandidate, FilteredCandidateRejectsPathMismatch) {
-    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(true, false, true));
+    EXPECT_FALSE(playnite_launcher::lossless::policy::should_accept_focus_candidate(true, false, true));
   }
 
   TEST(LosslessScalingFocusCandidate, UnfilteredCandidateStillRequiresWindow) {
-    EXPECT_FALSE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, false));
-    EXPECT_TRUE(playnite_launcher::lossless::should_accept_focus_candidate_for_tests(false, false, true));
+    EXPECT_FALSE(playnite_launcher::lossless::policy::should_accept_focus_candidate(false, false, false));
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_accept_focus_candidate(false, false, true));
   }
 
-  TEST(LosslessScalingFilter, ExplicitExeOverridesDirectoryScan) {
-    auto temp_dir = fs::temp_directory_path() / ("sunshine-lossless-filter-" + std::to_string(GetCurrentProcessId()));
-    fs::create_directories(temp_dir);
-
-    std::ofstream(temp_dir / "crashreport.exe").put('\n');
-    std::ofstream(temp_dir / "installermessage.exe").put('\n');
-    auto explicit_exe = temp_dir / "re9.exe";
-    std::ofstream(explicit_exe).put('\n');
-
-    auto filter = playnite_launcher::lossless::build_executable_filter_for_tests(temp_dir, explicit_exe);
-    EXPECT_EQ(filter, "re9.exe");
-
-    std::error_code ec;
-    fs::remove_all(temp_dir, ec);
+  TEST(LosslessScalingFilter, NormalizesAndJoinsExecutableNames) {
+    EXPECT_EQ(
+      playnite_launcher::lossless::policy::build_executable_filter({L"Re9.exe", L"helper.EXE"}),
+      L"re9.exe;helper.exe"
+    );
   }
 
   TEST(LosslessScalingLaunchExe, ExplicitPathOverridesRuntimePath) {
-    auto temp_dir = fs::temp_directory_path() / ("sunshine-lossless-launch-" + std::to_string(GetCurrentProcessId()));
-    fs::create_directories(temp_dir);
-
-    auto explicit_exe = temp_dir / "custom-lossless.exe";
-    auto runtime_exe = temp_dir / "runtime-lossless.exe";
-    std::ofstream(explicit_exe).put('\n');
-    std::ofstream(runtime_exe).put('\n');
-
-    lossless_scaling_runtime_state state;
-    state.exe_path = runtime_exe.wstring();
-
-    auto selected = playnite_launcher::lossless::select_lossless_launch_exe_for_tests(state, explicit_exe.string());
+    auto selected = playnite_launcher::lossless::policy::select_launch_executable(L"custom-lossless.exe", L"runtime-lossless.exe");
     ASSERT_TRUE(selected.has_value());
-    EXPECT_EQ(fs::path(*selected).filename().wstring(), explicit_exe.filename().wstring());
-
-    std::error_code ec;
-    fs::remove_all(temp_dir, ec);
+    EXPECT_EQ(*selected, L"custom-lossless.exe");
   }
 
 }  // namespace
-#endif

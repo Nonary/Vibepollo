@@ -56,6 +56,7 @@ add_executable(playnite-launcher
         playnite_launcher/cleanup.cpp
         playnite_launcher/focus_utils.cpp
         playnite_launcher/lossless_scaling.cpp
+        playnite_launcher/lossless_scaling_policy.cpp
         playnite_launcher/playnite_process.cpp)
 set_target_properties(playnite-launcher PROPERTIES CXX_STANDARD 23)
 set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
