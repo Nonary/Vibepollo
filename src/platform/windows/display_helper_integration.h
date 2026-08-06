@@ -94,6 +94,11 @@ namespace display_helper_integration {
   // Capture the currently active topology before applying changes.
   std::optional<std::vector<std::vector<std::string>>> capture_current_topology();
 
+  // Capture a stream baseline containing only physical displays. Capability
+  // discovery can retain a temporary virtual display that stream creation
+  // replaces, so its identity must never enter a session topology snapshot.
+  std::optional<std::vector<std::vector<std::string>>> capture_physical_topology();
+
 #ifdef _WIN32
   enum class ApplyVerificationStatus {
     Verified,

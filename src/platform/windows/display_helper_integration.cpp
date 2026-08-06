@@ -2695,6 +2695,37 @@ namespace display_helper_integration {
     }
   }
 
+  std::optional<std::vector<std::vector<std::string>>> capture_physical_topology() {
+    auto topology = capture_current_topology();
+    if (!topology) {
+      return std::nullopt;
+    }
+
+    size_t removed_virtual_devices = 0;
+    for (auto &group : *topology) {
+      const auto new_end = std::remove_if(group.begin(), group.end(), [&](const std::string &device_id) {
+        if (!VDISPLAY::is_virtual_display_output(device_id)) {
+          return false;
+        }
+        ++removed_virtual_devices;
+        return true;
+      });
+      group.erase(new_end, group.end());
+    }
+    topology->erase(
+      std::remove_if(topology->begin(), topology->end(), [](const auto &group) {
+        return group.empty();
+      }),
+      topology->end()
+    );
+
+    if (removed_virtual_devices != 0) {
+      BOOST_LOG(info) << "Display helper: removed " << removed_virtual_devices
+                      << " existing virtual display identity from the stream topology baseline.";
+    }
+    return topology;
+  }
+
   std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail) {
     auto devices = enumerate_devices(detail);
     if (!devices) {

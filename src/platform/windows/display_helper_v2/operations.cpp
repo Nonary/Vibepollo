@@ -64,12 +64,6 @@ namespace display_helper::v2 {
     std::optional<std::string> missing_topology_device(
       const ActiveTopology &topology,
       const EnumeratedDeviceList &devices) {
-      if (devices.empty()) {
-        // Enumeration failure cannot prove that a device is absent. Let the
-        // normal retry path handle a transient display-service failure.
-        return std::nullopt;
-      }
-
       for (const auto &group : topology) {
         for (const auto &requested_id : group) {
           if (requested_id.empty()) {
@@ -245,10 +239,13 @@ namespace display_helper::v2 {
       outcome.status = ApplyStatus::InvalidRequest;
       return outcome;
     }
-    if (const auto missing_device = missing_topology_device(
-          topology,
-          display_.enumerate(display_device::DeviceEnumerationDetail::Minimal)
-        )) {
+    const auto enumerated_devices = display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
+    if (enumerated_devices.empty()) {
+      BOOST_LOG(warning) << "Display helper v2: device enumeration is unavailable; retrying topology transition without recovery.";
+      outcome.status = ApplyStatus::Retryable;
+      return outcome;
+    }
+    if (const auto missing_device = missing_topology_device(topology, enumerated_devices)) {
       BOOST_LOG(warning) << "Display helper v2: requested topology references unavailable device '"
                          << *missing_device << "'; skipping global display-stack recovery.";
       outcome.status = ApplyStatus::InvalidRequest;

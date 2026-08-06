@@ -421,7 +421,7 @@ namespace webrtc_stream {
       const bool wants_extended_layout =
         desired_layout != config::video_t::virtual_display_layout_e::exclusive;
       if (wants_extended_layout) {
-        if (auto topology_snapshot = display_helper_integration::capture_current_topology()) {
+        if (auto topology_snapshot = display_helper_integration::capture_physical_topology()) {
           session->virtual_display_topology_snapshot = *topology_snapshot;
         } else {
           session->virtual_display_topology_snapshot.reset();
@@ -433,7 +433,10 @@ namespace webrtc_stream {
         if (auto pre_vd_devices = display_helper_integration::enumerate_devices()) {
           std::map<std::string, std::pair<unsigned int, unsigned int>> rates;
           for (const auto &device : *pre_vd_devices) {
-            if (device.m_device_id.empty() || !device.m_info) continue;
+            if (device.m_device_id.empty() || !device.m_info ||
+                VDISPLAY::is_virtual_display_output(device.m_device_id)) {
+              continue;
+            }
             if (const auto *rat = std::get_if<display_device::Rational>(&device.m_info->m_refresh_rate)) {
               rates[device.m_device_id] = {rat->m_numerator, rat->m_denominator};
             } else if (const auto *dbl = std::get_if<double>(&device.m_info->m_refresh_rate)) {
