@@ -5937,14 +5937,8 @@ namespace confighttp {
    * @return TokenScope The corresponding TokenScope enum value.
    * @throws std::invalid_argument If the input string does not match any known scope.
    */
-  TokenScope scope_from_string(std::string_view s) {
-    if (s == "Read" || s == "read") {
-      return TokenScope::Read;
-    }
-    if (s == "Write" || s == "write") {
-      return TokenScope::Write;
-    }
-    throw std::invalid_argument("Unknown TokenScope: " + std::string(s));
+  TokenScope scope_from_string(std::string_view scope) {
+    return policy::scope_from_string(scope);
   }
 
   /**
@@ -5953,14 +5947,7 @@ namespace confighttp {
    * @return The string representation of the scope.
    */
   std::string scope_to_string(TokenScope scope) {
-    switch (scope) {
-      case TokenScope::Read:
-        return "Read";
-      case TokenScope::Write:
-        return "Write";
-      default:
-        throw std::invalid_argument("Unknown TokenScope enum value");
-    }
+    return policy::scope_to_string(scope);
   }
 
   /**

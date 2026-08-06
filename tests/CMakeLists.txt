@@ -232,13 +232,14 @@ sunshine_add_test_target(
 # adds only the universal GTest main; callers still spell out every production
 # source and library so there is no hidden component bundle.
 function(sunshine_register_component)
-    cmake_parse_arguments(COMPONENT "" "NAME;TEST_SOURCE" "SUPPORT_SOURCES;PRODUCT_SOURCES;INCLUDE_DIRECTORIES;LINK_LIBRARIES;DEFINITIONS" ${ARGN})
+    cmake_parse_arguments(COMPONENT "" "NAME;TEST_SOURCE" "EXTRA_TEST_SOURCES;SUPPORT_SOURCES;PRODUCT_SOURCES;INCLUDE_DIRECTORIES;LINK_LIBRARIES;DEFINITIONS" ${ARGN})
     sunshine_add_test_target(
         NAME "${COMPONENT_NAME}"
         CATEGORY component
         TEST_SOURCES
             "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
             "${CMAKE_CURRENT_LIST_DIR}/${COMPONENT_TEST_SOURCE}"
+            ${COMPONENT_EXTRA_TEST_SOURCES}
         SUPPORT_SOURCES ${COMPONENT_SUPPORT_SOURCES}
         PRODUCT_SOURCES ${COMPONENT_PRODUCT_SOURCES}
         INCLUDE_DIRECTORIES ${COMPONENT_INCLUDE_DIRECTORIES}
@@ -259,7 +260,10 @@ sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp")
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp"
+    EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_confighttp.cpp"
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
     LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers sunshine_test_enet_headers)
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
@@ -291,9 +295,8 @@ sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp")
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
-sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_confighttp.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/confighttp.cpp"
-    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
+sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_config_http_policy.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp")
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
     LINK_LIBRARIES sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
