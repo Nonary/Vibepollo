@@ -5488,11 +5488,14 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     const auto start = std::chrono::steady_clock::now();
+    const auto requested_device_id = device_id;
     std::optional<std::chrono::steady_clock::time_point> enumerated_at;
     const auto enumeration_timeout = VDISPLAY::policy::enumeration_timeout;
     const auto poll_interval = VDISPLAY::policy::readiness_poll_interval;
     const bool has_dynamic_hints =
       (device_id && !device_id->empty()) || normalized_name || monitor_path_hint || gdi_name_hint || friendly_name_hint;
+    const bool has_strong_identity_hints =
+      (requested_device_id && !requested_device_id->empty()) || monitor_path_hint || gdi_name_hint;
 
     while (true) {
       if (stop_token.stop_requested()) {
@@ -5508,8 +5511,8 @@ namespace VDISPLAY_SUNSHINE {
         return true;
       }
 
-      auto attempt_candidate = [&](const display_device::EnumeratedDevice &candidate) -> bool {
-        if (!candidate.m_device_id.empty()) {
+      auto attempt_candidate = [&](const display_device::EnumeratedDevice &candidate, bool exact_target, bool adopt_identity) -> bool {
+        if (adopt_identity && !candidate.m_device_id.empty()) {
           if (!device_id || !equals_ci(candidate.m_device_id, *device_id)) {
             device_id = candidate.m_device_id;
           }
@@ -5520,6 +5523,10 @@ namespace VDISPLAY_SUNSHINE {
         }
 
         if (candidate.m_info && candidate.m_display_name.empty()) {
+          if (exact_target) {
+            BOOST_LOG(debug) << "Virtual display target is enumerated without a usable GDI name; continuing so the display helper can activate it.";
+            return true;
+          }
           return false;
         }
 
@@ -5529,6 +5536,14 @@ namespace VDISPLAY_SUNSHINE {
             if (confirmed_active) {
               *confirmed_active = true;
             }
+            return true;
+          }
+
+          if (exact_target) {
+            if (confirmed_active) {
+              *confirmed_active = true;
+            }
+            BOOST_LOG(debug) << "Virtual display target is enumerated and active; continuing immediately so the display helper can apply the requested mode.";
             return true;
           }
 
@@ -5564,7 +5579,9 @@ namespace VDISPLAY_SUNSHINE {
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (devices) {
         std::optional<display_device::EnumeratedDevice> unique_resolution_candidate;
+        std::optional<display_device::EnumeratedDevice> unique_weak_identity_candidate;
         bool resolution_conflict = false;
+        bool weak_identity_conflict = false;
 
         for (const auto &candidate : *devices) {
           const bool is_virtual = is_virtual_display_device(candidate);
@@ -5584,55 +5601,79 @@ namespace VDISPLAY_SUNSHINE {
             }
           }
 
-          bool matches = false;
-          if (device_id && !device_id->empty() && !candidate.m_device_id.empty()) {
-            matches = equals_ci(candidate.m_device_id, *device_id);
+          bool strong_identity_match = false;
+          bool weak_identity_match = false;
+          if (requested_device_id && !requested_device_id->empty() && !candidate.m_device_id.empty()) {
+            strong_identity_match = equals_ci(candidate.m_device_id, *requested_device_id);
           }
 
           const auto candidate_display_name = !candidate.m_display_name.empty() ? std::make_optional(normalize_display_name(candidate.m_display_name)) : std::nullopt;
           const auto candidate_friendly_name = !candidate.m_friendly_name.empty() ? std::make_optional(normalize_display_name(candidate.m_friendly_name)) : std::nullopt;
 
-          if (!matches && monitor_path_hint && !candidate.m_device_id.empty()) {
-            matches = equals_ci(candidate.m_device_id, *monitor_path_hint);
+          if (!strong_identity_match && monitor_path_hint && !candidate.m_monitor_device_path.empty()) {
+            strong_identity_match = equals_ci(candidate.m_monitor_device_path, *monitor_path_hint);
           }
 
-          if (!matches && gdi_name_hint) {
+          if (!strong_identity_match && gdi_name_hint) {
             if (candidate_display_name && *candidate_display_name == *gdi_name_hint) {
-              matches = true;
+              strong_identity_match = true;
             }
           }
 
-          if (!matches && friendly_name_hint) {
+          if (!strong_identity_match && friendly_name_hint) {
             if (candidate_friendly_name && *candidate_friendly_name == *friendly_name_hint) {
-              matches = true;
+              weak_identity_match = true;
             }
           }
 
-          if (!matches && normalized_name) {
+          if (!strong_identity_match && normalized_name) {
             if (!candidate.m_display_name.empty() &&
                 candidate_display_name && *candidate_display_name == *normalized_name) {
-              matches = true;
+              strong_identity_match = true;
             } else if (!candidate.m_friendly_name.empty() &&
                        candidate_friendly_name && *candidate_friendly_name == *normalized_name) {
-              matches = true;
+              weak_identity_match = true;
             }
           }
 
-          if (!matches && !has_dynamic_hints) {
-            matches = true;
-          }
-
-          if (!matches) {
+          if (!strong_identity_match && weak_identity_match) {
+            if (has_strong_identity_hints || !is_virtual) {
+              continue;
+            }
+            if (!weak_identity_conflict) {
+              if (!unique_weak_identity_candidate) {
+                unique_weak_identity_candidate = candidate;
+              } else {
+                weak_identity_conflict = true;
+                unique_weak_identity_candidate.reset();
+              }
+            }
             continue;
           }
 
-          if (attempt_candidate(candidate)) {
+          if (!strong_identity_match && has_dynamic_hints) {
+            continue;
+          }
+
+          if (!has_dynamic_hints) {
+            // No identity is available, so defer selection until the complete
+            // enumeration proves there is exactly one virtual resolution match.
+            continue;
+          }
+
+          if (attempt_candidate(candidate, strong_identity_match, strong_identity_match || !has_dynamic_hints)) {
             return true;
           }
         }
 
-        if (!resolution_conflict && unique_resolution_candidate) {
-          if (attempt_candidate(*unique_resolution_candidate)) {
+        if (!has_strong_identity_hints && !weak_identity_conflict && unique_weak_identity_candidate) {
+          if (attempt_candidate(*unique_weak_identity_candidate, false, true)) {
+            return true;
+          }
+        }
+
+        if (!has_strong_identity_hints && !resolution_conflict && unique_resolution_candidate) {
+          if (attempt_candidate(*unique_resolution_candidate, false, true)) {
             return true;
           }
         }
