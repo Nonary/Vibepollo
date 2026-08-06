@@ -259,7 +259,7 @@ sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/t
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage.cpp")
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp"
-    LINK_LIBRARIES sunshine_test_simple_web_headers)
+    LINK_LIBRARIES sunshine_test_simple_web_headers sunshine_test_enet_headers)
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
