@@ -6,9 +6,6 @@
 #include <algorithm>
 #include <sstream>
 
-// lib includes
-#include <boost/algorithm/string/trim.hpp>
-
 // local includes
 #include "config.h"
 #include "logging.h"
@@ -96,45 +93,8 @@ namespace net {
     return "wan"sv;
   }
 
-  af_e af_from_enum_string(const std::string_view &view) {
-    if (view == "ipv4") {
-      return IPV4;
-    }
-    if (view == "both") {
-      return BOTH;
-    }
-
-    // avoid warning
-    return BOTH;
-  }
-
-  std::string_view af_to_any_address_string(const af_e af) {
-    switch (af) {
-      case IPV4:
-        return "0.0.0.0"sv;
-      case BOTH:
-        return "::"sv;
-    }
-
-    // avoid warning
-    return "::"sv;
-  }
-
   std::string get_bind_address(const af_e af) {
-    // If bind_address is configured, use it
-    if (!config::sunshine.bind_address.empty()) {
-      const auto configured = boost::algorithm::trim_copy(config::sunshine.bind_address);
-      if (!configured.empty()) {
-        return configured;
-      }
-    }
-
-    // Otherwise use the wildcard address for the given address family
-    return std::string(af_to_any_address_string(af));
-  }
-
-  boost::asio::ip::tcp tcp_protocol_for_address(const boost::asio::ip::address &address) {
-    return address.is_v6() ? boost::asio::ip::tcp::v6() : boost::asio::ip::tcp::v4();
+    return select_bind_address(config::sunshine.bind_address, af);
   }
 
   boost::asio::ip::udp udp_protocol_for_address(const boost::asio::ip::address &address) {
@@ -144,7 +104,7 @@ namespace net {
   boost::asio::ip::address normalize_address(boost::asio::ip::address address) {
     // Convert IPv6-mapped IPv4 addresses into regular IPv4 addresses
     if (address.is_v6()) {
-      auto v6 = address.to_v6();
+      const auto v6 = address.to_v6();
       if (v6.is_v4_mapped()) {
         return boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, v6);
       }
@@ -232,31 +192,4 @@ namespace net {
     return mapped_port;
   }
 
-  /**
-   * @brief Returns a string for use as the instance name for mDNS.
-   * @param hostname The hostname to use for instance name generation.
-   * @return Hostname-based instance name or "Sunshine" if hostname is invalid.
-   */
-  std::string mdns_instance_name(const std::string_view &hostname) {
-    // Start with the unmodified hostname
-    std::string instancename {hostname.data(), hostname.size()};
-
-    // Truncate to 63 characters per RFC 6763 section 7.2.
-    if (instancename.size() > 63) {
-      instancename.resize(63);
-    }
-
-    for (auto i = 0; i < instancename.size(); i++) {
-      // Replace any spaces with dashes
-      if (instancename[i] == ' ') {
-        instancename[i] = '-';
-      } else if (!std::isalnum(instancename[i]) && instancename[i] != '-') {
-        // Stop at the first invalid character
-        instancename.resize(i);
-        break;
-      }
-    }
-
-    return !instancename.empty() ? instancename : "Apollo";
-  }
 }  // namespace net
