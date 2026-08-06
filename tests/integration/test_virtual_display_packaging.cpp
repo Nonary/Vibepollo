@@ -9,6 +9,7 @@
 
   #include <algorithm>
   #include <array>
+  #include <ranges>
   #include <string_view>
 
 namespace contract = sunshine::virtual_display_package_contract;
@@ -96,6 +97,68 @@ TEST(SunshineVirtualDisplayPackaging, MsiReplacementAndConflictPoliciesAreTransa
   EXPECT_TRUE(contract::msi_allow_downgrades);
   EXPECT_TRUE(contract::conflict_names_exact);
   EXPECT_TRUE(contract::factory_reset_requires_install_sentinel);
+}
+
+TEST(SunshineVirtualDisplayPackaging, BootstrapperForwardsArgumentsWithWindowsQuoteEscaping) {
+  EXPECT_TRUE(contract::forward_quoted_cli_arguments);
+  EXPECT_EQ(contract::command_line_quoting, "windows_backslash_quote");
+}
+
+TEST(SunshineVirtualDisplayPackaging, ConflictProductsUseExactDisplayNames) {
+  EXPECT_TRUE(contract::conflict_names_exact);
+  EXPECT_EQ(contract::conflict_product_names, std::to_array<std::string_view>({
+    "Sunshine", "Apollo", "Vibepollo", "Vibeshine"
+  }));
+}
+
+TEST(SunshineVirtualDisplayPackaging, DirectMsiConflictHandlingBlocksInsteadOfRemovingProducts) {
+  EXPECT_TRUE(contract::direct_msi_conflicts_block);
+}
+
+TEST(SunshineVirtualDisplayPackaging, PreUninstallIsLimitedToInstallOperations) {
+  EXPECT_EQ(contract::msi_install_operations, std::to_array<std::string_view>({"/i", "/package"}));
+}
+
+TEST(SunshineVirtualDisplayPackaging, AdministrativeInstallNeverPreUninstallsProducts) {
+  EXPECT_FALSE(contract::admin_install_preuninstall);
+}
+
+TEST(SunshineVirtualDisplayPackaging, DriverRestartWarningsHaveExplicitMarkers) {
+  EXPECT_EQ(contract::driver_reboot_markers, std::to_array<std::string_view>({
+    "VIRTUAL_DISPLAY_RESTART_REQUIRED",
+    "[SunshineVirtualDisplay] A reboot is required",
+    "[SudoVDA] A reboot is required"
+  }));
+}
+
+TEST(SunshineVirtualDisplayPackaging, DriverRestartWarningUsesMsiRebootExitCode) {
+  EXPECT_TRUE(contract::driver_reboot_returns_3010);
+}
+
+TEST(SunshineVirtualDisplayPackaging, RuntimeOffersSudoVdaAsTheExplicitFallbackBackend) {
+  EXPECT_TRUE(contract::runtime_sudovda_fallback_enabled);
+  EXPECT_EQ(contract::rollback_backend, "sudovda");
+}
+
+TEST(SunshineVirtualDisplayPackaging, RenderAdapterSelectionUsesConfiguredThenDedicatedHardware) {
+  EXPECT_EQ(contract::render_adapter_selection_order, std::to_array<std::string_view>({
+    "configured_adapter", "highest_dedicated_memory", "exclude_software_adapters"
+  }));
+}
+
+TEST(SunshineVirtualDisplayPackaging, DriverRefreshConsumesPinnedLibvirtualdisplayRelease) {
+  EXPECT_EQ(contract::libvirtualdisplay_repository, "Nonary/libvirtualdisplay");
+  EXPECT_EQ(contract::libvirtualdisplay_release_tag, "v1.6.3");
+}
+
+TEST(SunshineVirtualDisplayPackaging, DriverRefreshUsesPrebuiltPayloadOnlyInGithubActions) {
+  EXPECT_EQ(contract::prebuilt_scope, "github_actions_only");
+  EXPECT_TRUE(contract::refresh_before_msi);
+}
+
+TEST(SunshineVirtualDisplayPackaging, RuntimeDriverChoiceSeedsTheInstallerPreference) {
+  EXPECT_TRUE(contract::install_selection_seeds_runtime_flag);
+  EXPECT_TRUE(contract::cli_preserves_driver_selection);
 }
 
 TEST(SunshineVirtualDisplayPackaging, CiSigningPolicyAllowsEphemeralDriverCertificateOnly) {
