@@ -127,7 +127,8 @@ target_include_directories(sunshine_test_enet_headers SYSTEM INTERFACE
 
 add_library(sunshine_test_displaydevice_headers INTERFACE)
 target_include_directories(sunshine_test_displaydevice_headers SYSTEM INTERFACE
-    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/include")
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/include"
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/windows/include")
 
 add_library(sunshine_test_nvapi_headers INTERFACE)
 target_include_directories(sunshine_test_nvapi_headers SYSTEM INTERFACE
