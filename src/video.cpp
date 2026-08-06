@@ -481,15 +481,24 @@ namespace video {
 #ifdef _WIN32
       const auto active_output = config::get_active_output_name();
       const auto mapped_output = display_device::map_output_name(active_output);
+      const bool mapped_output_is_active =
+        !mapped_output.empty() && display_device::output_is_active(mapped_output);
       const auto current_wgc_identity = [&]() -> std::optional<platf::dxgi::wgc_adapter_identity_t> {
         const auto identity = platf::dxgi::get_last_wgc_adapter_identity();
         if (!identity ||
-            mapped_output.empty() ||
+            !mapped_output_is_active ||
             !boost::iequals(identity->output_name, mapped_output)) {
           return std::nullopt;
         }
         return identity;
       }();
+      const auto mapped_output_matches_adapter = [&](const LUID &adapter_luid) {
+        if (!mapped_output_is_active) {
+          return false;
+        }
+        const auto output_adapter = platf::resolve_output_adapter(mapped_output);
+        return output_adapter && platf::adapter_luid_equal(*output_adapter.luid, adapter_luid);
+      };
 
       std::optional<LUID> pending_virtual_display_adapter_hint;
       bool pending_virtual_display_adapter_hint_ready_for_verification = false;
@@ -525,8 +534,10 @@ namespace video {
             *pending_virtual_display_adapter_hint,
             *observed_adapter
           );
+          const bool reuse_observed_output =
+            matches_pending && mapped_output_matches_adapter(*pending_virtual_display_adapter_hint);
           std::string probe_output;
-          if (matches_pending) {
+          if (reuse_observed_output) {
             probe_output = mapped_output;
           } else if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
                        platf::mem_type_e::dxgi,
@@ -541,7 +552,7 @@ namespace video {
               .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
               .source =
                 "pending-virtual-display-lookup-" + std::string(observed_source) +
-                (matches_pending ? "-match" : "-mismatch"),
+                (reuse_observed_output ? "-active-match" : "-automatic-output"),
               .resolved = true,
             },
           };
@@ -580,22 +591,12 @@ namespace video {
         );
         if (configured_adapter) {
           const auto configured_adapter_id = adapter_id_from_luid(*configured_adapter.luid);
-          if (current_wgc_identity &&
-              !platf::adapter_luid_equal(*configured_adapter.luid, current_wgc_identity->luid)) {
-            return probe_target_t {
-              .display_name = mapped_output,
-              .required_adapter = configured_adapter_id,
-              .adapter_identity = probe_adapter_identity_t {
-                .identity =
-                  "configured-actual-mismatch=" +
-                  luid_cache_identity(*configured_adapter.luid) + ':' +
-                  luid_cache_identity(current_wgc_identity->luid),
-                .source = "configured-wgc-mismatch",
-                .resolved = false,
-              },
-            };
-          }
-          std::string probe_output = mapped_output;
+          const bool preferred_output_matches_adapter =
+            mapped_output_matches_adapter(*configured_adapter.luid);
+          const bool wgc_mismatches_configured_adapter =
+            current_wgc_identity &&
+            !platf::adapter_luid_equal(*configured_adapter.luid, current_wgc_identity->luid);
+          std::string probe_output = preferred_output_matches_adapter ? mapped_output : std::string {};
           if (probe_output.empty()) {
             if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
                   platf::mem_type_e::dxgi,
@@ -609,9 +610,13 @@ namespace video {
             .required_adapter = configured_adapter_id,
             .adapter_identity = probe_adapter_identity_t {
               .identity = luid_cache_identity(*configured_adapter.luid),
-              .source = current_wgc_identity ?
-                          "configured-adapter-confirmed-by-wgc" :
-                          "configured-adapter",
+              .source = preferred_output_matches_adapter ?
+                          (wgc_mismatches_configured_adapter ?
+                             "configured-adapter-active-output-wgc-mismatch" :
+                             "configured-adapter-active-output") :
+                          (wgc_mismatches_configured_adapter ?
+                             "configured-adapter-automatic-output-wgc-mismatch" :
+                             "configured-adapter-automatic-output"),
               .resolved = true,
             },
           };
@@ -641,7 +646,7 @@ namespace video {
 
       if (!mapped_output.empty()) {
         const auto output_adapter = platf::resolve_output_adapter(mapped_output);
-        if (output_adapter) {
+        if (mapped_output_is_active && output_adapter) {
           return probe_target_t {
             .display_name = mapped_output,
             .required_adapter = adapter_id_from_luid(*output_adapter.luid),
@@ -652,17 +657,6 @@ namespace video {
             },
           };
         }
-
-        return probe_target_t {
-          .display_name = mapped_output,
-          .adapter_identity = probe_adapter_identity_t {
-            .identity = "unresolved-output-adapter=" +
-                        std::string(platf::adapter_resolution_status_name(output_adapter.status)) +
-                        "|output=" + active_output,
-            .source = "output-adapter-unresolved",
-            .resolved = false,
-          },
-        };
       }
 
       // Materialize Automatic using the same ordered, compatibility-tested
@@ -2381,6 +2375,12 @@ namespace video {
   bool has_successful_encoder_probe() {
     const auto current_key = build_probe_cache_key();
     return encoder_probe_status_for_key(current_key).successful;
+  }
+
+  bool last_encoder_probe_failed() {
+    auto &state = encoder_probe_cache_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return state.failure_cache_key.has_value() && state.failure_count > 0;
   }
 
 #ifdef _WIN32

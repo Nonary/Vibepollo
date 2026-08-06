@@ -418,6 +418,7 @@ namespace video {
 
   bool has_attempted_encoder_probe();
   bool has_successful_encoder_probe();
+  bool last_encoder_probe_failed();
 
   struct advertised_encoder_capabilities_t {
     int hevc_mode = 0;

@@ -236,6 +236,37 @@ namespace nvhttp {
       return has_active_virtual_display();
     }
 
+    std::optional<std::vector<std::vector<std::string>>> capture_physical_topology() {
+      auto topology = display_helper_integration::capture_current_topology();
+      if (!topology) {
+        return std::nullopt;
+      }
+
+      size_t removed_virtual_devices = 0;
+      for (auto &group : *topology) {
+        const auto new_end = std::remove_if(group.begin(), group.end(), [&](const std::string &device_id) {
+          if (!VDISPLAY::is_virtual_display_output(device_id)) {
+            return false;
+          }
+          ++removed_virtual_devices;
+          return true;
+        });
+        group.erase(new_end, group.end());
+      }
+      topology->erase(
+        std::remove_if(topology->begin(), topology->end(), [](const auto &group) {
+          return group.empty();
+        }),
+        topology->end()
+      );
+
+      if (removed_virtual_devices != 0) {
+        BOOST_LOG(info) << "Display helper: removed " << removed_virtual_devices
+                        << " existing virtual display identity from the stream topology baseline.";
+      }
+      return topology;
+    }
+
     void wait_for_probe_helper_settle(
       const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
       const std::chrono::steady_clock::time_point deadline
@@ -836,7 +867,11 @@ namespace nvhttp {
           const auto desired_layout = launch_session->virtual_display_layout_override.value_or(config::video.virtual_display_layout);
           const bool wants_extended_layout = desired_layout != config::video_t::virtual_display_layout_e::exclusive;
           if (wants_extended_layout) {
-            auto topology_snapshot = display_helper_integration::capture_current_topology();
+            // HTTP capability discovery can retain a temporary virtual display. The
+            // stream creation path removes that probe before it creates the session
+            // display, so never carry any existing virtual identity into the stream
+            // baseline. The request helper adds exactly the new session display.
+            auto topology_snapshot = capture_physical_topology();
             if (topology_snapshot) {
               launch_session->virtual_display_topology_snapshot = *topology_snapshot;
             } else {

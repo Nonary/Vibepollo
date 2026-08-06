@@ -3,6 +3,7 @@ export interface SessionStatus {
   appRunning: boolean;
   appName: string;
   paused: boolean;
+  lastEncoderProbeFailed: boolean;
   status: boolean;
 }
 

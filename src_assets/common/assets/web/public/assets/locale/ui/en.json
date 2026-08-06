@@ -1066,6 +1066,10 @@
           "detail": "CPU or GPU utilization is above {threshold}%. Stream quality may be affected.",
           "title": "Host load is very high"
         },
+        "encoderProbe": {
+          "detail": "The last encoder capability check failed. Streaming may still recover with an available display, but review the logs before relying on it.",
+          "title": "Encoder capability check failed"
+        },
         "noDevices": {
           "detail": "Pair a client before starting a remote stream.",
           "title": "No devices are paired"

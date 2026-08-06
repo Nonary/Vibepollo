@@ -66,6 +66,7 @@
 #include "session_history.h"
 #include "stream.h"
 #include "host_stats.h"
+#include "video.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -3242,6 +3243,7 @@ namespace confighttp {
     output_tree["appRunning"] = app_running;
     output_tree["appName"] = app_running ? proc::proc.get_last_run_app_name() : "";
     output_tree["paused"] = app_running && active == 0;
+    output_tree["lastEncoderProbeFailed"] = video::last_encoder_probe_failed();
     output_tree["status"] = true;
     send_response(response, output_tree);
   }

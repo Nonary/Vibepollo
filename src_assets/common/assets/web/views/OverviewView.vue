@@ -105,6 +105,15 @@ const warnings = computed<OverviewWarning[]>(() => {
       action: t('ui.overview.actions.openStats'),
     });
   }
+  if (session.value?.lastEncoderProbeFailed) {
+    result.push({
+      key: 'encoder-probe-failed',
+      title: t('ui.overview.warnings.encoderProbe.title'),
+      detail: t('ui.overview.warnings.encoderProbe.detail'),
+      to: '/logs',
+      action: t('ui.overview.actions.openLogs'),
+    });
+  }
   const hottest = Math.max(hostStats.value?.cpu_percent ?? 0, hostStats.value?.gpu_percent ?? 0);
   if (hottest >= 95) {
     result.push({
