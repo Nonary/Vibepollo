@@ -104,7 +104,7 @@ unset(_sudovda_file_size)
 unset(_sudovda_file)
 
 install(FILES ${SUDOVDA_DRIVER_FILES}
-        DESTINATION "drivers/sudovda"
+        DESTINATION "${SUNSHINE_VDD_SUDOVDA_DESTINATION}"
         COMPONENT sudovda)
 
 # Drivers (Vibepollo Display Driver)
