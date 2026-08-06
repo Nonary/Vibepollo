@@ -1933,7 +1933,7 @@ namespace confighttp {
         if (input_tree.contains("playnite-id") && input_tree["playnite-id"].is_string()) {
           const auto playnite_id = input_tree["playnite-id"].get<std::string>();
           if (!playnite_id.empty()) {
-            input_tree["uuid"] = platf::playnite::sync::canonical_playnite_app_uuid(playnite_id);
+            input_tree["uuid"] = platf::playnite::sync::policy::canonical_playnite_app_uuid(playnite_id);
           }
         }
       } catch (...) {}
@@ -3258,7 +3258,7 @@ namespace confighttp {
     send_response(response, host_stats_to_json(host_stats::latest()));
   }
 
-  // Static host info — model strings + total RAM/VRAM, sampled once.
+  // Static host info â€” model strings + total RAM/VRAM, sampled once.
   void getHostInfo(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
       return;
@@ -3295,7 +3295,7 @@ namespace confighttp {
     send_response(response, output);
   }
 
-  // ── Session History endpoints ────────────────────────────────────
+  // â”€â”€ Session History endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   void listSessionHistory(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -4213,7 +4213,7 @@ namespace confighttp {
         }
       }
 #else
-      // Non-Windows: we can’t transcode here; accept only already-PNG data
+      // Non-Windows: we canâ€™t transcode here; accept only already-PNG data
       if (file_is_png(src_tmp)) {
         std::error_code ec {};
 
