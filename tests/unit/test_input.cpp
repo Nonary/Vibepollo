@@ -11,8 +11,7 @@ extern "C" {
 #include <moonlight-common-c/src/Input.h>
 }
 
-#include <src/input.h>
-#include <src/utility.h>
+#include <src/input_validation_policy.h>
 
 namespace {
 
@@ -23,66 +22,68 @@ namespace {
     return bytes;
   }
 
+  void write_u32_be(std::vector<std::uint8_t> &bytes, const std::size_t offset, const std::uint32_t value) {
+    bytes[offset] = static_cast<std::uint8_t>(value >> 24);
+    bytes[offset + 1] = static_cast<std::uint8_t>(value >> 16);
+    bytes[offset + 2] = static_cast<std::uint8_t>(value >> 8);
+    bytes[offset + 3] = static_cast<std::uint8_t>(value);
+  }
+
+  void write_u32_le(std::vector<std::uint8_t> &bytes, const std::size_t offset, const std::uint32_t value) {
+    bytes[offset] = static_cast<std::uint8_t>(value);
+    bytes[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+    bytes[offset + 2] = static_cast<std::uint8_t>(value >> 16);
+    bytes[offset + 3] = static_cast<std::uint8_t>(value >> 24);
+  }
+
 }  // namespace
 
 TEST(InputValidation, RejectsShortPacketHeader) {
-  EXPECT_FALSE(input::validate_packet_for_tests(std::vector<std::uint8_t> {0x00, 0x01, 0x02}));
+  EXPECT_FALSE(input::validation::validate_packet(std::vector<std::uint8_t> {0x00, 0x01, 0x02}));
 }
 
 TEST(InputValidation, RejectsDeclaredSizeMismatch) {
   NV_KEYBOARD_PACKET packet {};
-  packet.header.size = util::endian::big<std::uint32_t>(sizeof(NV_KEYBOARD_PACKET) - sizeof(packet.header.size));
-  packet.header.magic = util::endian::little<std::uint32_t>(KEY_DOWN_EVENT_MAGIC);
-
   auto bytes = packet_bytes(packet, sizeof(packet) - 1);
-  EXPECT_FALSE(input::validate_packet_for_tests(bytes));
+  write_u32_be(bytes, 0, sizeof(NV_KEYBOARD_PACKET) - sizeof(packet.header.size));
+  write_u32_le(bytes, sizeof(packet.header.size), KEY_DOWN_EVENT_MAGIC);
+  EXPECT_FALSE(input::validation::validate_packet(bytes));
 }
 
 TEST(InputValidation, AcceptsBoundedUnicodePayloadAndRejectsOversizedOne) {
   NV_UNICODE_PACKET packet {};
-  packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet.header.magic) + 5);
-  packet.header.magic = util::endian::little<std::uint32_t>(UTF8_TEXT_EVENT_MAGIC);
-  std::memcpy(packet.text, "hello", 5);
-
   auto valid = packet_bytes(packet, sizeof(packet.header) + 5);
-  EXPECT_TRUE(input::validate_packet_for_tests(valid));
+  write_u32_be(valid, 0, sizeof(packet.header.magic) + 5);
+  write_u32_le(valid, sizeof(packet.header.size), UTF8_TEXT_EVENT_MAGIC);
+  std::memcpy(valid.data() + sizeof(packet.header), "hello", 5);
+  EXPECT_TRUE(input::validation::validate_packet(valid));
 
-  packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet.header.magic) + UTF8_TEXT_EVENT_MAX_COUNT + 1);
   auto invalid = packet_bytes(packet, sizeof(packet));
-  EXPECT_FALSE(input::validate_packet_for_tests(invalid));
+  write_u32_be(invalid, 0, sizeof(packet.header.magic) + UTF8_TEXT_EVENT_MAX_COUNT + 1);
+  write_u32_le(invalid, sizeof(packet.header.size), UTF8_TEXT_EVENT_MAGIC);
+  EXPECT_FALSE(input::validation::validate_packet(invalid));
 }
 
 TEST(InputValidation, RejectsUnknownMagic) {
   NV_INPUT_HEADER packet {};
-  packet.size = util::endian::big<std::uint32_t>(sizeof(packet.magic));
-  packet.magic = util::endian::little<std::uint32_t>(0xDEADBEEF);
-
   auto bytes = packet_bytes(packet);
-  EXPECT_FALSE(input::validate_packet_for_tests(bytes));
+  write_u32_be(bytes, 0, sizeof(packet.magic));
+  write_u32_le(bytes, sizeof(packet.size), 0xDEADBEEF);
+  EXPECT_FALSE(input::validation::validate_packet(bytes));
 }
 
 TEST(InputTouchMapping, NormalizesUsingPlatformOffsetContract) {
-  input::touch_port_t touch_port {
-    {
-      1920,
-      0,
-      1920,
-      1080,
-      1920,
-      1080,
-    },
+  input::validation::touch_port_t touch_port {
+    1920,
+    0,
     3840,
     1080,
-    0.0f,
-    0.0f,
     1.0f,
     1.0f,
-    3840,
-    1080,
   };
   std::pair<float, float> coords {960.0f, 540.0f};
 
-  auto monitor_port = input::monitor_touch_port_for_tests(touch_port, coords);
+  auto monitor_port = input::validation::normalize_touch_port(touch_port, coords);
 
   ASSERT_TRUE(monitor_port.has_value());
   EXPECT_EQ(monitor_port->offset_x, 1920);

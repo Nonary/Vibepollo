@@ -27,11 +27,6 @@ namespace input {
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
 #endif
 
-#ifdef SUNSHINE_TESTS
-  bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
-  std::optional<platf::touch_port_t> monitor_touch_port_for_tests(const input::touch_port_t &touch_port, std::pair<float, float> &coords);
-#endif
-
   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
 
   bool probe_gamepads();
