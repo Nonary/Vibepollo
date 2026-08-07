@@ -59,4 +59,43 @@ namespace platf::rtx_hdr::policy {
     if ((!status.empty() && foreground == status) || (!basename(foreground).empty() && basename(foreground) == basename(status))) return true;
     return !directory.empty() && foreground.size() > directory.size() && foreground.compare(0, directory.size(), directory) == 0 && foreground[directory.size()] == '\\';
   }
+
+  void scheduler_t::apply(const runtime_values_t &values) {
+    frame_.enabled = values.enabled; frame_.contrast = values.contrast; frame_.saturation = values.saturation;
+    frame_.middle_gray = values.middle_gray; frame_.sdr_brightness = values.sdr_brightness;
+    frame_.peak_brightness = values.peak_brightness; frame_.source = values.source;
+  }
+
+  void scheduler_t::observe_foreground(const foreground_state_t &foreground, std::chrono::milliseconds now, const runtime_values_t &config, const overrides_t &overrides) {
+    frame_.has_active_app = foreground.has_active_app; frame_.foreground_matches = foreground.matches_active_app;
+    frame_.foreground_exe = foreground.foreground_exe; frame_.active_app_exe = foreground.active_app_exe;
+    if (!foreground.has_active_app || !foreground.matches_active_app) {
+      apply(desktop_values(config, overrides.enable)); frame_.lookup_available = false; pending_ = false;
+      if (!foreground.has_active_app) { identity_.clear(); last_profile_.reset(); refresh_interval_ = std::chrono::seconds(5); }
+      return;
+    }
+    const auto identity = foreground.active_app_exe + "\n" + foreground.foreground_exe + "\n" + foreground.active_app_name + "\n" + foreground.source;
+    const bool changed = identity != identity_;
+    if (changed) { identity_ = identity; ++generation_; last_profile_.reset(); refresh_interval_ = std::chrono::seconds(5); apply(materialize({}, config, overrides)); frame_.lookup_available = false; }
+    else { apply(materialize(last_profile_.value_or(resolved_profile_t{}), config, overrides)); frame_.lookup_available = last_profile_ && last_profile_->lookup_available; }
+    if (changed || now >= next_refresh_) { pending_ = true; pending_generation_ = generation_; next_refresh_ = now + refresh_interval_; }
+  }
+
+  bool scheduler_t::complete_profile_lookup(const resolved_profile_t &profile, std::chrono::milliseconds elapsed, std::chrono::milliseconds now, const runtime_values_t &config, const overrides_t &overrides) {
+    if (!pending_) return false;
+    pending_ = false;
+    if (pending_generation_ != generation_ || !frame_.foreground_matches) return true;
+    const bool failed = !profile.lookup_available; const bool slow = elapsed > std::chrono::milliseconds(100);
+    refresh_interval_ = (slow || failed) ? (refresh_interval_ < std::chrono::seconds(15) ? std::chrono::seconds(15) : std::chrono::seconds(30)) : std::chrono::seconds(5);
+    next_refresh_ = now + refresh_interval_;
+    if (failed && frame_.enabled) return true;
+    if (profile.lookup_available) last_profile_ = profile;
+    apply(materialize(profile, config, overrides)); frame_.lookup_available = profile.lookup_available;
+    return true;
+  }
+
+  void scheduler_t::refresh_live_settings(const runtime_values_t &config, const overrides_t &overrides) {
+    if (!frame_.has_active_app || !frame_.foreground_matches) apply(desktop_values(config, overrides.enable));
+    else apply(materialize(last_profile_.value_or(resolved_profile_t{}), config, overrides));
+  }
 }

@@ -62,6 +62,20 @@ namespace platf::rtx_hdr {
       return policy::desktop_values(config_runtime_values(), config::runtime_config_override_enabled("rtx_hdr"));
     }
 
+    policy::overrides_t runtime_overrides() {
+      return {
+        config::runtime_config_override_enabled("rtx_hdr"),
+        config::has_runtime_config_override("rtx_hdr_contrast"),
+        config::has_runtime_config_override("rtx_hdr_saturation"),
+        config::has_runtime_config_override("rtx_hdr_middle_gray"),
+        config::has_runtime_config_override("rtx_hdr_peak_brightness"),
+      };
+    }
+
+    policy::foreground_state_t policy_foreground(const platf::foreground_app::state_t &foreground) {
+      return {foreground.has_active_app, foreground.matches_active_app, foreground.foreground_exe, foreground.active_app_exe, foreground.active_app_name, foreground.source};
+    }
+
     std::string identity_key(const platf::foreground_app::state_t &foreground) {
       return foreground.active_app_exe + "\n" +
              foreground.foreground_exe + "\n" +
@@ -138,6 +152,7 @@ namespace platf::rtx_hdr {
     std::optional<profile_job_t> pending_profile_job;
     bool profile_lookup_in_flight {false};
     std::string in_flight_identity_key;
+    policy::scheduler_t scheduler_policy;
   };
 
   namespace {
@@ -220,6 +235,9 @@ namespace platf::rtx_hdr {
       if (state->stopping) {
         return;
       }
+
+      const auto policy_now = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+      state->scheduler_policy.observe_foreground(policy_foreground(foreground), policy_now, config_runtime_values(), runtime_overrides());
 
       if (foreground.source != state->cached_frame_state.foreground_source ||
           foreground.matches_active_app != state->cached_frame_state.foreground_matches) {
@@ -329,6 +347,9 @@ namespace platf::rtx_hdr {
         state->consecutive_slow_or_failed_lookups = 0;
         state->profile_refresh_interval = PROFILE_REFRESH_INTERVAL;
       }
+
+      state->scheduler_policy.complete_profile_lookup(resolved, elapsed, std::chrono::duration_cast<std::chrono::milliseconds>(finish.time_since_epoch()), config_runtime_values(), runtime_overrides());
+      state->profile_refresh_interval = state->scheduler_policy.refresh_interval();
 
       // A transient driver read failure (NvAPI unavailable for one refresh) should not flicker an
       // already-active conversion off and back on; keep the last-known-good state until a lookup

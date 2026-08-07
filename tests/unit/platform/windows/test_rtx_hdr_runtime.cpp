@@ -51,24 +51,28 @@ TEST(RtxHdrProfileResolution, SaturationDecodeIsRawSdkUnits) { EXPECT_EQ(policy:
 TEST(RtxHdrProfileResolution, SdrBrightnessBoostMapsZeroToNeutralWhite) { EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(-1), 100); EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(50), 150); EXPECT_FLOAT_EQ(policy::sdr_brightness_to_white_nits(101), 200); }
 TEST(RtxHdrForegroundMatching, PlayniteExecutableAndInstallDirMatch) { EXPECT_TRUE(policy::playnite_foreground_matches("id", "id", "C:/Games/Foo/foo.exe", "C:/Games/Foo", "c:/games/foo/FOO.exe")); EXPECT_TRUE(policy::playnite_foreground_matches("id", "id", "", "C:/Games/Foo", "C:/Games/Foo/Binaries/foo.exe")); EXPECT_FALSE(policy::playnite_foreground_matches("id", "other", "", "C:/Games/Foo", "C:/Games/Foo/foo.exe")); }
 
-#define RTX_RUNTIME_TEST(name) TEST(RtxHdrRuntimeScheduler, name) { expect_active_profile(); expect_desktop(); }
-RTX_RUNTIME_TEST(UpdateForFrameReturnsCachedStateWithoutInlineLookup)
-RTX_RUNTIME_TEST(ForegroundMismatchUsesDesktopBrightnessForRtxStreamWithoutProfileLookup)
-RTX_RUNTIME_TEST(ForegroundMismatchRetainsProfileForSameAppResume)
-RTX_RUNTIME_TEST(DisabledRtxHdrStillBypassesDuringForegroundMismatch)
-RTX_RUNTIME_TEST(DesktopFullscreenBypassesWithoutRtxOverride)
-RTX_RUNTIME_TEST(DesktopFullscreenUsesDesktopBrightnessForRtxStreamWithoutProfileLookup)
-RTX_RUNTIME_TEST(LiveSettingsRefreshDesktopBrightnessForRtxStream)
-RTX_RUNTIME_TEST(IdentityChangeUsesConfigUntilProfileLookupCompletes)
-RTX_RUNTIME_TEST(StaleProfileResultIgnoredAfterIdentityChange)
-RTX_RUNTIME_TEST(UnavailableOrEmptyProfileBypassesAfterLookup)
-RTX_RUNTIME_TEST(AppOverrideDoesNotRequireNvidiaProfileLookup)
-RTX_RUNTIME_TEST(SlowOrFailingLookupsBackOffAndIdentityChangeResetsInterval)
-RTX_RUNTIME_TEST(TransientLookupFailureKeepsLastKnownGood)
-RTX_RUNTIME_TEST(LiveTuningGenerationRefreshesCachedFrameWithoutLookup)
-RTX_RUNTIME_TEST(LiveSettingsCanEnableDisabledFrame)
-RTX_RUNTIME_TEST(LiveSettingsCanDisableActiveFrame)
-RTX_RUNTIME_TEST(LiveTuningRemovalFallsBackToCachedProfile)
-#undef RTX_RUNTIME_TEST
+namespace {
+  policy::foreground_state_t app(std::string exe = "C:/Games/Foo/foo.exe") { return {true, true, exe, exe, "Game", "process"}; }
+  policy::foreground_state_t mismatch() { return {true, false, "C:/Windows/explorer.exe", "C:/Games/Foo/foo.exe", "Game", "mismatch"}; }
+  policy::foreground_state_t desktop() { return {false, true, "C:/Games/Foo/foo.exe", "C:/Games/Foo/foo.exe", "", "fullscreen"}; }
+  void lookup(policy::scheduler_t &s, const resolved_profile_t &p = application_profile(), int elapsed = 0, int now = 1) { ASSERT_TRUE(s.complete_profile_lookup(p, std::chrono::milliseconds(elapsed), std::chrono::milliseconds(now), config_values(), {true})); }
+}
+TEST(RtxHdrRuntimeScheduler, UpdateForFrameReturnsCachedStateWithoutInlineLookup) { policy::scheduler_t s; EXPECT_FALSE(s.frame().enabled); EXPECT_FALSE(s.lookup_pending()); }
+TEST(RtxHdrRuntimeScheduler, ForegroundMismatchUsesDesktopBrightnessForRtxStreamWithoutProfileLookup) { policy::scheduler_t s; s.observe_foreground(mismatch(), {}, config_values(), {true}); EXPECT_FALSE(s.frame().enabled); EXPECT_EQ(s.frame().sdr_brightness, 67); EXPECT_FALSE(s.lookup_pending()); }
+TEST(RtxHdrRuntimeScheduler, ForegroundMismatchRetainsProfileForSameAppResume) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s); s.observe_foreground(mismatch(), std::chrono::milliseconds(2), config_values(), {true}); s.observe_foreground(app(), std::chrono::milliseconds(3), config_values(), {true}); EXPECT_EQ(s.frame().contrast, 150); EXPECT_TRUE(s.frame().lookup_available); }
+TEST(RtxHdrRuntimeScheduler, DisabledRtxHdrStillBypassesDuringForegroundMismatch) { policy::scheduler_t s; auto c=config_values(); c.enabled=false; s.observe_foreground(mismatch(), {}, c, {true}); EXPECT_EQ(s.frame().source, profile_source_e::none); }
+TEST(RtxHdrRuntimeScheduler, DesktopFullscreenBypassesWithoutRtxOverride) { policy::scheduler_t s; s.observe_foreground(desktop(), {}, config_values(), {}); EXPECT_EQ(s.frame().sdr_brightness, 0); EXPECT_EQ(s.frame().source, profile_source_e::none); }
+TEST(RtxHdrRuntimeScheduler, DesktopFullscreenUsesDesktopBrightnessForRtxStreamWithoutProfileLookup) { policy::scheduler_t s; s.observe_foreground(desktop(), {}, config_values(), {true}); EXPECT_EQ(s.frame().sdr_brightness, 67); EXPECT_FALSE(s.lookup_pending()); }
+TEST(RtxHdrRuntimeScheduler, LiveSettingsRefreshDesktopBrightnessForRtxStream) { policy::scheduler_t s; s.observe_foreground(mismatch(), {}, config_values(), {true}); auto c=config_values(); c.sdr_brightness=72; s.refresh_live_settings(c, {true}); EXPECT_EQ(s.frame().sdr_brightness, 72); EXPECT_EQ(s.frame().contrast, 100); }
+TEST(RtxHdrRuntimeScheduler, IdentityChangeUsesConfigUntilProfileLookupCompletes) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); EXPECT_EQ(s.frame().contrast, 125); lookup(s); EXPECT_EQ(s.frame().contrast, 150); }
+TEST(RtxHdrRuntimeScheduler, StaleProfileResultIgnoredAfterIdentityChange) { policy::scheduler_t s; s.observe_foreground(app("first.exe"), {}, config_values(), {true}); s.observe_foreground(app("second.exe"), std::chrono::milliseconds(1), config_values(), {true}); lookup(s); EXPECT_EQ(s.frame().active_app_exe, "second.exe"); EXPECT_EQ(s.frame().contrast, 150); }
+TEST(RtxHdrRuntimeScheduler, UnavailableOrEmptyProfileBypassesAfterLookup) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {}); resolved_profile_t unavailable; ASSERT_TRUE(s.complete_profile_lookup(unavailable, {}, std::chrono::milliseconds(1), config_values(), {})); EXPECT_FALSE(s.frame().enabled); EXPECT_FALSE(s.frame().lookup_available); s.observe_foreground(app("bar.exe"), std::chrono::milliseconds(2), config_values(), {}); resolved_profile_t empty; empty.lookup_available=true; ASSERT_TRUE(s.complete_profile_lookup(empty, {}, std::chrono::milliseconds(3), config_values(), {})); EXPECT_TRUE(s.frame().lookup_available); }
+TEST(RtxHdrRuntimeScheduler, AppOverrideDoesNotRequireNvidiaProfileLookup) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); resolved_profile_t unavailable; lookup(s, unavailable); EXPECT_TRUE(s.frame().enabled); EXPECT_EQ(s.frame().contrast, 125); }
+TEST(RtxHdrRuntimeScheduler, SlowOrFailingLookupsBackOffAndIdentityChangeResetsInterval) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s, {}, 101); EXPECT_EQ(s.refresh_interval(), std::chrono::seconds(15)); s.observe_foreground(app("bar.exe"), std::chrono::milliseconds(2), config_values(), {true}); EXPECT_EQ(s.refresh_interval(), std::chrono::seconds(5)); }
+TEST(RtxHdrRuntimeScheduler, TransientLookupFailureKeepsLastKnownGood) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s); s.observe_foreground(app(), std::chrono::milliseconds(7000), config_values(), {true}); lookup(s, {}, 0, 7001); EXPECT_TRUE(s.frame().enabled); EXPECT_EQ(s.frame().contrast, 150); }
+TEST(RtxHdrRuntimeScheduler, LiveTuningGenerationRefreshesCachedFrameWithoutLookup) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s); auto c=config_values(); c.contrast=180; s.refresh_live_settings(c, {true, true}); EXPECT_EQ(s.frame().contrast, 180); EXPECT_EQ(s.frame().source, profile_source_e::config); }
+TEST(RtxHdrRuntimeScheduler, LiveSettingsCanEnableDisabledFrame) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {}); ASSERT_TRUE(s.complete_profile_lookup(application_profile(), {}, std::chrono::milliseconds(1), config_values(), {})); EXPECT_FALSE(s.frame().enabled); s.refresh_live_settings(config_values(), {true}); EXPECT_TRUE(s.frame().enabled); }
+TEST(RtxHdrRuntimeScheduler, LiveSettingsCanDisableActiveFrame) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true}); lookup(s); auto c=config_values(); c.enabled=false; s.refresh_live_settings(c, {true}); EXPECT_FALSE(s.frame().enabled); }
+TEST(RtxHdrRuntimeScheduler, LiveTuningRemovalFallsBackToCachedProfile) { policy::scheduler_t s; s.observe_foreground(app(), {}, config_values(), {true, true}); ASSERT_TRUE(s.complete_profile_lookup(application_profile(), {}, std::chrono::milliseconds(1), config_values(), {true, true})); EXPECT_EQ(s.frame().contrast, 125); s.refresh_live_settings(config_values(), {true}); EXPECT_EQ(s.frame().contrast, 150); }
 
 #endif
