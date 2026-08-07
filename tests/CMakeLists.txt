@@ -384,13 +384,11 @@ if(WIN32)
     sunshine_register_component(NAME test_component_utf_utils TEST_SOURCE unit/platform/windows/test_utf_utils.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/utf_utils.cpp")
     sunshine_register_component(NAME test_component_game_activity TEST_SOURCE unit/platform/windows/test_game_activity.cpp
-        PRODUCT_SOURCES
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity.cpp"
-            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
-        LINK_LIBRARIES sunshine_test_moonlight_headers)
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity_policy.cpp")
     sunshine_register_component(NAME test_component_native_amf_policy TEST_SOURCE unit/platform/windows/test_native_amf_review.cpp)
     sunshine_register_component(NAME test_component_rtx_hdr_policy TEST_SOURCE unit/platform/windows/test_rtx_hdr_runtime.cpp
         PRODUCT_SOURCES
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/game_activity_policy.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/foreground_app.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_profile.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/rtx_hdr_runtime.cpp"

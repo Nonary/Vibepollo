@@ -107,25 +107,10 @@ namespace platf::foreground_app {
       }
     }
 
-    bool passive_compositor_style(
-      const std::uintptr_t style,
-      const std::uintptr_t ex_style
-    ) {
-      const bool borderless = (style & (WS_CAPTION | WS_THICKFRAME)) == 0;
-      if (!borderless) {
-        return false;
-      }
-      if ((ex_style & (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) != 0) {
-        return true;
-      }
-      return (ex_style & (WS_EX_LAYERED | WS_EX_TOOLWINDOW)) ==
-             (WS_EX_LAYERED | WS_EX_TOOLWINDOW);
-    }
-
     bool window_is_passive_compositor_host(HWND hwnd) {
       const auto style = static_cast<std::uintptr_t>(GetWindowLongPtrW(hwnd, GWL_STYLE));
       const auto ex_style = static_cast<std::uintptr_t>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-      if (passive_compositor_style(style, ex_style)) {
+      if (game_activity_policy::passive_compositor_style(style, ex_style)) {
         return true;
       }
       if ((ex_style & WS_EX_LAYERED) != 0) {
@@ -186,11 +171,7 @@ namespace platf::foreground_app {
       }
     }
 
-    enum class visible_stack_decision_e {
-      continue_scan,
-      select_game,
-      block,
-    };
+    using visible_stack_decision_e = game_activity_policy::visible_stack_decision_e;
 
     // Shell furniture that floats above a fullscreen game during an alt-tab is not
     // evidence that the game stopped being fullscreen. If the desktop really is
@@ -221,34 +202,7 @@ namespace platf::foreground_app {
       const visible_window_evidence_t &evidence,
       const bool require_active_app_match
     ) {
-      if (evidence.transient_shell_overlay) {
-        return visible_stack_decision_e::continue_scan;
-      }
-      if (evidence.desktop_ui) {
-        return visible_stack_decision_e::block;
-      }
-      if (evidence.passive_host) {
-        return visible_stack_decision_e::continue_scan;
-      }
-
-      if (require_active_app_match) {
-        if (evidence.belongs_to_active_app) {
-          return evidence.fullscreen_on_capture_display && evidence.opaque ?
-                   visible_stack_decision_e::select_game :
-                   visible_stack_decision_e::continue_scan;
-        }
-        return evidence.opaque ?
-                 visible_stack_decision_e::block :
-                 visible_stack_decision_e::continue_scan;
-      }
-
-      if (!evidence.opaque) {
-        return visible_stack_decision_e::continue_scan;
-      }
-
-      return evidence.fullscreen_on_capture_display ?
-               visible_stack_decision_e::select_game :
-               visible_stack_decision_e::block;
+      return game_activity_policy::evaluate_visible_window(evidence, require_active_app_match);
     }
 
     bool window_is_cloaked(HWND hwnd) {
@@ -563,36 +517,12 @@ namespace platf::foreground_app {
     return path_is_under_directory(foreground_exe, status_install_dir);
   }
 
-  bool passive_compositor_style_for_tests(
-    const std::uintptr_t style,
-    const std::uintptr_t ex_style
-  ) {
-    return passive_compositor_style(style, ex_style);
-  }
-
   bool transient_shell_overlay_for_tests(
     const std::string_view class_name,
     const bool desktop_ui,
     const bool covers_capture_display
   ) {
     return window_is_transient_shell_overlay(class_name, desktop_ui, covers_capture_display);
-  }
-
-  bool visible_fullscreen_game_selected_for_tests(
-    const std::span<const visible_window_evidence_t> evidence,
-    const bool require_active_app_match
-  ) {
-    for (const auto &window : evidence) {
-      switch (evaluate_visible_window(window, require_active_app_match)) {
-        case visible_stack_decision_e::continue_scan:
-          continue;
-        case visible_stack_decision_e::select_game:
-          return true;
-        case visible_stack_decision_e::block:
-          return false;
-      }
-    }
-    return false;
   }
 
   state_t snapshot(

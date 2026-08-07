@@ -5,6 +5,7 @@
 #pragma once
 
 #include "foreground_app.h"
+#include "game_activity_policy.h"
 
 #include <chrono>
 #include <cstdint>
@@ -19,29 +20,9 @@
 
 namespace platf::game_activity {
 
-  enum class signal_source_e : std::uint8_t {
-    none = 0,
-    // The detector middleware reported fullscreen but could not attribute the
-    // launched game, so it ranks below every identity-bearing signal.
-    shell_fullscreen = 5,
-    fullscreen_foreground = 10,
-    tracked_process = 20,
-    playnite = 30,
-  };
-
-  struct signal_t {
-    signal_source_e source {signal_source_e::none};
-    bool active {false};
-    DWORD pid {0};
-    std::string executable;
-  };
-
-  struct state_t {
-    bool active {false};
-    signal_source_e source {signal_source_e::none};
-    DWORD pid {0};
-    std::string executable;
-  };
+  using signal_source_e = game_activity_policy::signal_source_e;
+  using signal_t = game_activity_policy::signal_t;
+  using state_t = game_activity_policy::state_t;
 
   state_t reduce_signals(std::span<const signal_t> signals);
   const char *source_name(signal_source_e source);

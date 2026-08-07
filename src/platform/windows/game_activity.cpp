@@ -215,17 +215,7 @@ namespace platf::game_activity {
   }  // namespace
 
   state_t reduce_signals(std::span<const signal_t> signals) {
-    state_t result;
-    for (const auto &signal : signals) {
-      if (!signal.active || signal.source <= result.source) {
-        continue;
-      }
-      result.active = true;
-      result.source = signal.source;
-      result.pid = signal.pid;
-      result.executable = signal.executable;
-    }
-    return result;
+    return game_activity_policy::reduce_signals(signals);
   }
 
   const char *source_name(const signal_source_e source) {
@@ -249,21 +239,22 @@ namespace platf::game_activity {
     const bool transition_settling,
     const bool minimum_hold_active
   ) {
-    if (!last_confirmed.fullscreen_on_capture_display) {
-      return false;
-    }
-    if (minimum_hold_active &&
-        (sample.source == "desktop-visible" ||
-         sample.source == "visibility-unknown")) {
-      return true;
-    }
-    if (!transition_settling) {
-      return false;
-    }
-    if (sample.source == "visibility-unknown") {
-      return true;
-    }
-    return sample.source == "desktop-visible" && sample.matching_window_seen;
+    const auto policy_sample = game_activity_policy::foreground_sample_t {
+      .fullscreen_on_capture_display = sample.fullscreen_on_capture_display,
+      .matching_window_seen = sample.matching_window_seen,
+      .source = sample.source,
+    };
+    const auto policy_last_confirmed = game_activity_policy::foreground_sample_t {
+      .fullscreen_on_capture_display = last_confirmed.fullscreen_on_capture_display,
+      .matching_window_seen = last_confirmed.matching_window_seen,
+      .source = last_confirmed.source,
+    };
+    return game_activity_policy::preserve_confirmed_game_during_display_transition(
+      policy_sample,
+      policy_last_confirmed,
+      transition_settling,
+      minimum_hold_active
+    );
   }
 
   foreground_app::state_t foreground_snapshot(const std::optional<RECT> &capture_rect) {

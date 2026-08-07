@@ -212,6 +212,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/config_playnite.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.h"
