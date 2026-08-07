@@ -181,7 +181,7 @@ namespace display_device {
      * const auto device_prep_option = parse_device_prep_option(video_config);
      * @examples_end
      */
-    std::optional<SingleDisplayConfiguration::DevicePreparation> parse_device_prep_option(const config::video_t &video_config) {
+    [[maybe_unused]] std::optional<SingleDisplayConfiguration::DevicePreparation> parse_device_prep_option(const config::video_t &video_config) {
       using enum config::video_t::dd_t::config_option_e;
       using enum SingleDisplayConfiguration::DevicePreparation;
 
@@ -216,7 +216,7 @@ namespace display_device {
      * const bool success = parse_resolution_option(video_config, *launch_session, config);
      * @examples_end
      */
-    bool parse_resolution_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    [[maybe_unused]] bool parse_resolution_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using resolution_option_e = config::video_t::dd_t::resolution_option_e;
 
       // An explicit launch resolution override takes highest priority.
@@ -300,7 +300,7 @@ namespace display_device {
      * const bool success = parse_refresh_rate_option(video_config, *launch_session, config);
      * @examples_end
      */
-    bool parse_refresh_rate_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    [[maybe_unused]] bool parse_refresh_rate_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       using refresh_rate_option_e = config::video_t::dd_t::refresh_rate_option_e;
 
       // Client display_mode override takes highest priority
@@ -371,7 +371,7 @@ namespace display_device {
      * const auto hdr_option = parse_hdr_option(video_config, *launch_session);
      * @examples_end
      */
-    std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
+    [[maybe_unused]] std::optional<HdrState> parse_hdr_option(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
       using hdr_option_e = config::video_t::dd_t::hdr_option_e;
 
       if (rtsp_stream::rtx_hdr_enabled(video_config)) {
@@ -492,7 +492,7 @@ namespace display_device {
      * const bool success = remap_display_mode_if_needed(video_config, *launch_session, config);
      * @examples_end
      */
-    bool remap_display_mode_if_needed(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
+    [[maybe_unused]] bool remap_display_mode_if_needed(const config::video_t &video_config, const rtsp_stream::launch_session_t &session, SingleDisplayConfiguration &config) {
       // Client display_mode override takes highest priority - skip remapping
       if (session.client_display_mode_override) {
         BOOST_LOG(debug) << "Skipping display mode remapping because client has display mode override active.";
