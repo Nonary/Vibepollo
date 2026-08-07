@@ -95,10 +95,10 @@ TEST(PlayniteSync_TTL, NoDeleteWhenDisabledOrPlayedAfterAdded) {
   auto now = std::time(nullptr);
   std::unordered_map<std::string, std::time_t> last;
   // delete_after_days <= 0 disables TTL
-  EXPECT_FALSE(should_ttl_delete(app, 0, now, last));
+  EXPECT_FALSE(policy::should_ttl_delete(app, 0, now, last));
   // mark as played after added
   last["X"] = now;  // definitely >= added
-  EXPECT_FALSE(should_ttl_delete(app, 1, now, last));
+  EXPECT_FALSE(policy::should_ttl_delete(app, 1, now, last));
 }
 
 TEST(PlayniteSync_Purge, RemovesUninstalledAndOptionallyNonSelectedWhenReplacementAvailable) {
