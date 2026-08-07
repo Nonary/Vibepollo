@@ -1,687 +1,88 @@
 /**
  * @file src/platform/windows/playnite_sync.cpp
+ * @brief Runtime adapters for the portable Playnite sync policy.
  */
 
 #include "playnite_sync.h"
+
 #include "src/logging.h"
 #include "src/platform/windows/playnite_integration.h"
 #include "src/uuid.h"
 
-#include <iomanip>
 #include <sstream>
 
 namespace platf::playnite::sync {
-
-  constexpr int kSourceRecent = 1 << 0;
-  constexpr int kSourceCategory = 1 << 1;
-  constexpr int kSourcePlugin = 1 << 2;
-  constexpr int kSourceInstalled = 1 << 3;
-
-  static std::string playnite_id_key(std::string_view playnite_id) {
-    return policy::to_lower_copy(std::string(playnite_id));
-  }
-
-  std::string canonical_playnite_app_uuid(std::string_view playnite_id) {
-    std::string uuid(playnite_id);
-    std::transform(uuid.begin(), uuid.end(), uuid.begin(), [](unsigned char c) {
-      return static_cast<char>(std::toupper(c));
-    });
-    return uuid;
-  }
-
-  void ensure_app_uuid(nlohmann::json &app, bool &changed) {
-    try {
-      if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
-        const auto playnite_id = app["playnite-id"].get<std::string>();
-        if (!playnite_id.empty()) {
-          const auto desired_uuid = canonical_playnite_app_uuid(playnite_id);
-          const bool uuid_matches =
-            app.contains("uuid") &&
-            app["uuid"].is_string() &&
-            app["uuid"].get<std::string>() == desired_uuid;
-          if (!uuid_matches) {
-            app["uuid"] = desired_uuid;
-            changed = true;
-          }
-          return;
-        }
-      }
-
-      const bool missing_uuid =
-        !app.contains("uuid") ||
-        app["uuid"].is_null() ||
-        (app["uuid"].is_string() && app["uuid"].get<std::string>().empty());
-      if (missing_uuid) {
-        app["uuid"] = uuid_util::uuid_t::generate().string();
-        changed = true;
-      }
-    } catch (...) {
+  namespace {
+    bool ensure_runtime_app_uuid(nlohmann::json &app) {
       try {
-        app["uuid"] = uuid_util::uuid_t::generate().string();
-        changed = true;
-      } catch (...) {}
-    }
-  }
-
-  static std::string compose_source_label(int flags) {
-    if (flags == 0) {
-      return "unknown";
-    }
-    std::vector<std::string> parts;
-    if (flags & kSourceRecent) {
-      parts.emplace_back("recent");
-    }
-    if (flags & kSourceCategory) {
-      parts.emplace_back("category");
-    }
-    if (flags & kSourcePlugin) {
-      parts.emplace_back("plugin");
-    }
-    if (flags & kSourceInstalled) {
-      parts.emplace_back("installed");
-    }
-    if (parts.empty()) {
-      return "unknown";
-    }
-    std::string out;
-    for (std::size_t i = 0; i < parts.size(); ++i) {
-      if (i != 0) {
-        out.push_back('+');
-      }
-      out += parts[i];
-    }
-    return out;
-  }
-
-  std::string to_lower_copy(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-      return (char) std::tolower(c);
-    });
-    return s;
-  }
-
-  std::string normalize_path_for_match(const std::string &p) {
-    std::string s = p;
-    s.erase(std::remove(s.begin(), s.end(), '"'), s.end());
-    for (auto &c : s) {
-      if (c == '/') {
-        c = '\\';
-      }
-    }
-    return to_lower_copy(s);
-  }
-
-  std::string normalize_name_for_match(std::string_view s) {
-    std::string out;
-    out.reserve(s.size());
-    bool previous_was_space = false;
-    for (char ch: s) {
-      const auto uch = static_cast<unsigned char>(ch);
-      if (std::isspace(uch)) {
-        if (!out.empty()) {
-          previous_was_space = true;
-        }
-        continue;
-      }
-      if (previous_was_space && !out.empty()) {
-        out.push_back(' ');
-      }
-      out.push_back(static_cast<char>(std::tolower(uch)));
-      previous_was_space = false;
-    }
-    return out;
-  }
-
-  std::string extract_cmd_executable_for_match(const std::string &cmd) {
-    auto start = cmd.find_first_not_of(" \t");
-    if (start == std::string::npos) {
-      return {};
-    }
-
-    std::string exe;
-    if (cmd[start] == '"') {
-      ++start;
-      auto end = cmd.find('"', start);
-      exe = cmd.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    } else {
-      auto end = cmd.find_first_of(" \t", start);
-      exe = cmd.substr(start, end == std::string::npos ? std::string::npos : end - start);
-    }
-
-    return exe.empty() ? std::string {} : normalize_path_for_match(exe);
-  }
-
-  static bool game_has_excluded_category(const Game &g, const std::unordered_set<std::string> &exclude_categories_lower) {
-    if (exclude_categories_lower.empty()) {
-      return false;
-    }
-    for (const auto &cn : g.categories) {
-      if (exclude_categories_lower.contains(to_lower_copy(cn))) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static bool game_from_excluded_plugin(const Game &g, const std::unordered_set<std::string> &exclude_plugins_lower) {
-    if (exclude_plugins_lower.empty()) {
-      return false;
-    }
-    if (g.plugin_id.empty()) {
-      return false;
-    }
-    return exclude_plugins_lower.contains(to_lower_copy(g.plugin_id));
-  }
-
-  bool parse_iso8601_utc(const std::string &s, std::time_t &out) {
-    if (s.empty()) {
-      return false;
-    }
-    int Y = 0, M = 0, D = 0, h = 0, m = 0, sec = 0, sg = 0, oh = 0, om = 0;
-    size_t pos = 0;
-    auto rd = [&](int &d, size_t n) {
-      if (pos + n > s.size()) {
-        return false;
-      }
-      int v = 0;
-      for (size_t i = 0; i < n; ++i) {
-        char c = s[pos + i];
-        if (c < '0' || c > '9') {
+        if (app.contains("playnite-id") && app["playnite-id"].is_string() && !app["playnite-id"].get<std::string>().empty()) {
           return false;
         }
-        v = v * 10 + (c - '0');
+        const bool missing_uuid = !app.contains("uuid") || app["uuid"].is_null() || (app["uuid"].is_string() && app["uuid"].get<std::string>().empty());
+        if (missing_uuid) {
+          app["uuid"] = uuid_util::uuid_t::generate().string();
+          return true;
+        }
+      } catch (...) {
+        try {
+          app["uuid"] = uuid_util::uuid_t::generate().string();
+          return true;
+        } catch (...) {}
       }
-      pos += n;
-      d = v;
-      return true;
-    };
-    if (!rd(Y, 4) || pos >= s.size() || s[pos++] != '-' || !rd(M, 2) || pos >= s.size() || s[pos++] != '-' || !rd(D, 2) || pos >= s.size()) {
       return false;
     }
-    if (!(s[pos] == 'T' || s[pos] == 't' || s[pos] == ' ')) {
-      return false;
-    }
-    ++pos;
-    if (!rd(h, 2) || pos >= s.size() || s[pos++] != ':' || !rd(m, 2) || pos >= s.size() || s[pos++] != ':' || !rd(sec, 2)) {
-      return false;
-    }
-    if (pos < s.size() && s[pos] == '.') {
-      ++pos;
-      while (pos < s.size() && std::isdigit((unsigned char) s[pos])) {
-        ++pos;
-      }
-    }
-    if (pos < s.size()) {
-      char c = s[pos];
-      if (c == 'Z' || c == 'z') {
-        ++pos;
-      } else if (c == '+' || c == '-') {
-        sg = (c == '+') ? 1 : -1;
-        ++pos;
-        if (!rd(oh, 2) || pos >= s.size() || s[pos++] != ':' || !rd(om, 2)) {
-          return false;
-        }
-      }
-    }
-    std::tm tm {};
-    tm.tm_year = Y - 1900;
-    tm.tm_mon = M - 1;
-    tm.tm_mday = D;
-    tm.tm_hour = h;
-    tm.tm_min = m;
-    tm.tm_sec = sec;
-    std::time_t t = _mkgmtime(&tm);
-    if (t == (std::time_t) -1) {
-      return false;
-    }
-    if (sg) {
-      t -= (oh * 3600L + om * 60L) * sg;
-    }
-    out = t;
-    return true;
-  }
-
-  std::string now_iso8601_utc() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm {};
-    gmtime_s(&tm, &t);
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
-  }
-
-  std::vector<Game> select_recent_installed_games(const std::vector<Game> &installed, int recentN, int recentAgeDays, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
-    std::vector<Game> v = installed;
-    std::sort(v.begin(), v.end(), [](auto &a, auto &b) {
-      return a.last_played > b.last_played;
-    });
-    std::vector<Game> out;
-    out.reserve((size_t) std::max(0, recentN));
-    const std::time_t cutoff = std::time(nullptr) - (long long) std::max(0, recentAgeDays) * 86400LL;
-    for (const auto &g : v) {
-      if ((int) out.size() >= recentN) {
-        break;
-      }
-      auto id = to_lower_copy(g.id);
-      if (!id.empty() && exclude_lower.contains(id)) {
-        continue;
-      }
-      if (game_has_excluded_category(g, exclude_categories_lower)) {
-        continue;
-      }
-      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
-        continue;
-      }
-      if (recentAgeDays > 0) {
-        std::time_t tp = 0;
-        if (!parse_iso8601_utc(g.last_played, tp) || tp < cutoff) {
-          continue;
-        }
-      }
-      out.push_back(g);
-      out_source_flags[playnite_id_key(g.id)] |= kSourceRecent;
-    }
-    return out;
-  }
-
-  std::vector<Game> select_plugin_games(const std::vector<Game> &installed, const std::unordered_set<std::string> &plugins_lower, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
-    if (plugins_lower.empty()) {
-      return {};
-    }
-    std::vector<Game> out;
-    out.reserve(installed.size());
-    for (const auto &g : installed) {
-      auto id = to_lower_copy(g.id);
-      if (!id.empty() && exclude_lower.contains(id)) {
-        continue;
-      }
-      if (game_has_excluded_category(g, exclude_categories_lower)) {
-        continue;
-      }
-      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
-        continue;
-      }
-      if (g.plugin_id.empty()) {
-        continue;
-      }
-      if (!plugins_lower.contains(to_lower_copy(g.plugin_id))) {
-        continue;
-      }
-      out.push_back(g);
-      out_source_flags[playnite_id_key(g.id)] |= kSourcePlugin;
-    }
-    return out;
-  }
-
-  std::vector<Game> select_all_installed_games(const std::vector<Game> &installed, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
-    std::vector<Game> out;
-    out.reserve(installed.size());
-    for (const auto &g : installed) {
-      auto id = to_lower_copy(g.id);
-      if (!id.empty() && exclude_lower.contains(id)) {
-        continue;
-      }
-      if (game_has_excluded_category(g, exclude_categories_lower)) {
-        continue;
-      }
-      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
-        continue;
-      }
-      out.push_back(g);
-      if (!g.id.empty()) {
-        out_source_flags[playnite_id_key(g.id)] |= kSourceInstalled;
-      }
-    }
-    return out;
-  }
-
-  std::vector<Game> select_category_games(const std::vector<Game> &installed, const std::vector<std::string> &categories, const std::unordered_set<std::string> &exclude_lower, const std::unordered_set<std::string> &exclude_categories_lower, const std::unordered_set<std::string> &exclude_plugins_lower, std::unordered_map<std::string, int> &out_source_flags) {
-    std::unordered_set<std::string> want;
-    for (auto c : categories) {
-      want.insert(to_lower_copy(std::move(c)));
-    }
-    std::vector<Game> out;
-    out.reserve(installed.size());
-    for (const auto &g : installed) {
-      auto id = to_lower_copy(g.id);
-      if (!id.empty() && exclude_lower.contains(id)) {
-        continue;
-      }
-      if (game_has_excluded_category(g, exclude_categories_lower)) {
-        continue;
-      }
-      if (game_from_excluded_plugin(g, exclude_plugins_lower)) {
-        continue;
-      }
-      bool ok = false;
-      for (const auto &cn : g.categories) {
-        if (want.contains(to_lower_copy(cn))) {
-          ok = true;
-          break;
-        }
-      }
-      if (ok) {
-        out.push_back(g);
-        out_source_flags[playnite_id_key(g.id)] |= kSourceCategory;
-      }
-    }
-    return out;
-  }
-
-  void build_game_indexes(const std::vector<Game> &selected, std::unordered_map<std::string, GameRef> &by_exe, std::unordered_map<std::string, GameRef> &by_dir, std::unordered_map<std::string, GameRef> &by_id, std::unordered_map<std::string, GameRef> &by_unique_name) {
-    std::unordered_set<std::string> ambiguous_names;
-    for (const auto &g : selected) {
-      if (!g.exe.empty()) {
-        by_exe[normalize_path_for_match(g.exe)] = GameRef {&g};
-      }
-      if (!g.working_dir.empty()) {
-        by_dir[normalize_path_for_match(g.working_dir)] = GameRef {&g};
-      }
-      if (!g.id.empty()) {
-        by_id[playnite_id_key(g.id)] = GameRef {&g};
-      }
-      auto normalized_name = normalize_name_for_match(g.name);
-      if (!normalized_name.empty() && !ambiguous_names.contains(normalized_name)) {
-        if (auto [it, inserted] = by_unique_name.emplace(normalized_name, GameRef {&g}); !inserted) {
-          by_unique_name.erase(it);
-          ambiguous_names.insert(std::move(normalized_name));
-        }
-      }
-    }
-  }
-
-  std::unordered_set<std::string> build_exclusion_lower(const std::vector<std::string> &ids) {
-    std::unordered_set<std::string> s;
-    for (auto v : ids) {
-      s.insert(to_lower_copy(std::move(v)));
-    }
-    return s;
-  }
-
-  void snapshot_installed_and_uninstalled(const std::vector<Game> &all, std::vector<Game> &installed, std::unordered_set<std::string> &uninstalled_lower) {
-    installed = all;
-    for (auto &g : all) {
-      if (!g.installed && !g.id.empty()) {
-        uninstalled_lower.insert(to_lower_copy(g.id));
-      }
-    }
-    installed.erase(std::remove_if(installed.begin(), installed.end(), [](const auto &g) {
-                      return !g.installed;
-                    }),
-                    installed.end());
-  }
-
-  std::unordered_map<std::string, std::time_t> build_last_played_map(const std::vector<Game> &installed) {
-    std::unordered_map<std::string, std::time_t> m;
-    for (const auto &g : installed) {
-      std::time_t t = 0;
-      if (!g.id.empty() && parse_iso8601_utc(g.last_played, t)) {
-        m[playnite_id_key(g.id)] = t;
-      }
-    }
-    return m;
-  }
-
-  const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name) {
-    try {
-      if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
-        auto it = by_id.find(playnite_id_key(app["playnite-id"].get<std::string>()));
-        if (it != by_id.end()) {
-          return it->second.g;
-        }
-      }
-    } catch (...) {}
-    try {
-      if (app.contains("cmd") && app["cmd"].is_string()) {
-        auto it = by_exe.find(extract_cmd_executable_for_match(app["cmd"].get<std::string>()));
-        if (it != by_exe.end()) {
-          return it->second.g;
-        }
-      }
-    } catch (...) {}
-    try {
-      if (app.contains("working-dir") && app["working-dir"].is_string()) {
-        auto it = by_dir.find(normalize_path_for_match(app["working-dir"].get<std::string>()));
-        if (it != by_dir.end()) {
-          return it->second.g;
-        }
-      }
-    } catch (...) {}
-    try {
-      if (app.contains("name") && app["name"].is_string()) {
-        auto it = by_unique_name.find(normalize_name_for_match(app["name"].get<std::string>()));
-        if (it != by_unique_name.end()) {
-          return it->second.g;
-        }
-      }
-    } catch (...) {}
-    return nullptr;
-  }
+  }  // namespace
 
   std::string image_source_signature(const std::filesystem::path &src) {
-    std::error_code size_ec;
-    std::error_code time_ec;
-    const auto size = std::filesystem::file_size(src, size_ec);
-    const auto mtime = std::filesystem::last_write_time(src, time_ec);
-    if (size_ec || time_ec) {
-      return {};
-    }
-    std::ostringstream os;
-    os << normalize_path_for_match(src.string()) << '|' << size << '|' << mtime.time_since_epoch().count();
-    return os.str();
+    std::error_code size_error;
+    std::error_code time_error;
+    const auto size = std::filesystem::file_size(src, size_error);
+    const auto modified = std::filesystem::last_write_time(src, time_error);
+    if (size_error || time_error) return {};
+    std::ostringstream signature;
+    signature << policy::normalize_path_for_match(src.string()) << '|' << size << '|' << modified.time_since_epoch().count();
+    return signature.str();
   }
 
   bool convert_playnite_image_to_png(const std::string &src_path, const std::filesystem::path &dst) {
-    if (src_path.empty()) {
-      return false;
-    }
-
+    if (src_path.empty()) return false;
     const auto src = std::filesystem::path(src_path);
     file_handler::make_directory(dst.parent_path().string());
-
-    // A sidecar records which source produced dst. Playnite copies newly assigned art into its
-    // library preserving the original file's mtime, so "dst newer than src" cannot detect cover
-    // changes; the source path itself changes instead (new GUID filename).
     const auto signature = image_source_signature(src);
     const std::string sidecar = dst.string() + ".src";
-    std::error_code exists_ec;
-    if (!policy::should_reconvert_playnite_image(
-          std::filesystem::exists(dst, exists_ec),
-          file_handler::read_file(sidecar.c_str()),
-          signature)) {
-      return true;
-    }
-    if (!platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring())) {
-      return false;
-    }
-    if (!signature.empty()) {
-      file_handler::write_file(sidecar.c_str(), signature);
-    }
+    std::error_code exists_error;
+    if (!policy::should_reconvert_playnite_image(std::filesystem::exists(dst, exists_error), file_handler::read_file(sidecar.c_str()), signature)) return true;
+    if (!platf::img::convert_to_png_96dpi(src.wstring(), dst.wstring())) return false;
+    if (!signature.empty()) file_handler::write_file(sidecar.c_str(), signature);
     return true;
   }
 
-  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app, const std::filesystem::path &covers_root) {
+  void apply_game_metadata_to_app(const Game &game, nlohmann::json &app, const std::filesystem::path &covers_root) {
     try {
-      if (!g.name.empty()) {
-        app["name"] = g.name;
+      if (!game.box_art_path.empty()) {
+        const auto destination = covers_root / ("playnite_" + game.id + ".png");
+        if (convert_playnite_image_to_png(game.box_art_path, destination)) policy::apply_box_art_path(app, destination.generic_string());
       }
     } catch (...) {}
     try {
-      if (!g.box_art_path.empty()) {
-        auto dst = covers_root / ("playnite_" + g.id + ".png");
-        if (convert_playnite_image_to_png(g.box_art_path, dst)) {
-          policy::apply_box_art_path(app, dst.generic_string());
-        }
-      }
-    } catch (...) {}
-    try {
-      auto dst = covers_root / ("playnite_icon_" + g.id + ".png");
-      // Resolve the install dir from the plugin's explicit field, the library working dir, or the
-      // dir cached from a prior "gameStarted" status message (Steam/URL games expose none in the
-      // snapshot). This lets us pull the high-resolution icon embedded in the game executable
-      // instead of Playnite's stored icon, which is frequently a tiny 32x32 image.
-      std::string install_dir = !g.install_dir.empty() ? g.install_dir : g.working_dir;
+      const auto destination = covers_root / ("playnite_icon_" + game.id + ".png");
+      std::string install_dir = !game.install_dir.empty() ? game.install_dir : game.working_dir;
       if (install_dir.empty()) {
         std::string cached;
-        if (platf::playnite::get_cached_install_dir(g.id, cached)) {
-          install_dir = cached;
-        }
+        if (platf::playnite::get_cached_install_dir(game.id, cached)) install_dir = cached;
       }
-      platf::img::IconResolutionInfo diag;
-      if (platf::img::resolve_best_app_icon_png(
-            std::filesystem::path(g.icon_path).wstring(),
-            std::filesystem::path(g.exe).wstring(),
-            std::filesystem::path(install_dir).wstring(),
-            dst.wstring(),
-            &diag)) {
-        policy::apply_icon_path(app, dst.generic_string());
-        BOOST_LOG(debug) << "Playnite sync icon: name='" << g.name << "' installDir='" << install_dir
-                         << "' exeIcon=" << diag.exe_size << " playniteIcon=" << diag.icon_size
-                         << " -> width=" << platf::img::image_pixel_width(dst.wstring());
+      platf::img::IconResolutionInfo diagnostics;
+      if (platf::img::resolve_best_app_icon_png(std::filesystem::path(game.icon_path).wstring(), std::filesystem::path(game.exe).wstring(), std::filesystem::path(install_dir).wstring(), destination.wstring(), &diagnostics)) {
+        policy::apply_icon_path(app, destination.generic_string());
+        BOOST_LOG(debug) << "Playnite sync icon: name='" << game.name << "' installDir='" << install_dir << "' exeIcon=" << diagnostics.exe_size << " playniteIcon=" << diagnostics.icon_size << " -> width=" << platf::img::image_pixel_width(destination.wstring());
       } else {
         policy::apply_icon_path(app, {});
       }
     } catch (...) {}
-    try {
-      app["playnite-id"] = g.id;
-      if (app.contains("cmd")) {
-        app.erase("cmd");
-      }
-      if (app.contains("working-dir")) {
-        app.erase("working-dir");
-      }
-    } catch (...) {}
-    try {
-      if (!g.plugin_id.empty()) {
-        app["playnite-plugin-id"] = g.plugin_id;
-      } else if (app.contains("playnite-plugin-id")) {
-        app.erase("playnite-plugin-id");
-      }
-    } catch (...) {}
-    try {
-      if (!g.plugin_name.empty()) {
-        app["playnite-plugin-name"] = g.plugin_name;
-      } else if (app.contains("playnite-plugin-name")) {
-        app.erase("playnite-plugin-name");
-      }
-    } catch (...) {}
   }
 
-  void apply_game_metadata_to_app(const Game &g, nlohmann::json &app) {
-    apply_game_metadata_to_app(g, app, platf::appdata() / "covers");
-  }
-
-  void mark_app_as_playnite_auto(nlohmann::json &app, int flags) {
-    try {
-      app["playnite-source"] = compose_source_label(flags);
-      app["playnite-managed"] = "auto";
-    } catch (...) {}
-  }
-
-  bool should_ttl_delete(const nlohmann::json &app, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map) {
-    if (delete_after_days <= 0) {
-      return false;
-    }
-    std::string pid;
-    try {
-      if (app.contains("playnite-id")) {
-        pid = app["playnite-id"].get<std::string>();
-      }
-    } catch (...) {}
-    std::time_t added = 0;
-    bool has = false;
-    try {
-      if (app.contains("playnite-added-at")) {
-        has = parse_iso8601_utc(app["playnite-added-at"].get<std::string>(), added);
-      }
-    } catch (...) {}
-    if (!has) {
-      added = now_time;
-    }
-    auto it = last_played_map.find(playnite_id_key(pid));
-    bool played = it != last_played_map.end() && it->second >= added;
-    std::time_t deadline = added + (long long) delete_after_days * 86400LL;
-    return now_time >= deadline && !played;
-  }
-
-  static void dedupe_auto_apps_by_playnite_id(nlohmann::json &root, bool &changed) {
-    if (!root.contains("apps") || !root["apps"].is_array()) {
-      return;
-    }
-
-    nlohmann::json kept = nlohmann::json::array();
-    std::unordered_set<std::string> seen_auto_ids;
-
-    for (auto &app : root["apps"]) {
-      bool is_auto = false;
-      std::string pid;
-      try {
-        is_auto = app.contains("playnite-managed") && app["playnite-managed"].is_string() && app["playnite-managed"].get<std::string>() == "auto";
-        if (app.contains("playnite-id") && app["playnite-id"].is_string()) {
-          pid = app["playnite-id"].get<std::string>();
-        }
-      } catch (...) {}
-
-      if (!is_auto || pid.empty()) {
-        kept.push_back(app);
-        continue;
-      }
-
-      if (!seen_auto_ids.insert(playnite_id_key(pid)).second) {
-        changed = true;
-        continue;
-      }
-
-      kept.push_back(app);
-    }
-
-    if (kept.size() != root["apps"].size()) {
-      root["apps"] = std::move(kept);
-    }
-  }
-
-  void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name, const std::unordered_map<std::string, int> &source_flags, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed) {
-    for (auto &app : root["apps"]) {
-      ensure_app_uuid(app, changed);
-      auto g = match_app_against_indexes(app, by_id, by_exe, by_dir, by_unique_name);
-      if (!g) {
-        continue;
-      }
-      ++matched;
-      matched_ids.insert(playnite_id_key(g->id));
-      apply_game_metadata_to_app(*g, app);
-      if (auto it = source_flags.find(playnite_id_key(g->id)); it != source_flags.end()) {
-        mark_app_as_playnite_auto(app, it->second);
-      }
-      changed = true;
-    }
-  }
-
-  void add_missing_auto_entries(nlohmann::json &root, const std::vector<Game> &selected, const std::unordered_set<std::string> &matched_ids, const std::unordered_map<std::string, int> &source_flags, bool &changed) {
-    for (const auto &g : selected) {
-      if (matched_ids.contains(playnite_id_key(g.id))) {
-        continue;
-      }
-      nlohmann::json app = nlohmann::json::object();
-      apply_game_metadata_to_app(g, app);
-      ensure_app_uuid(app, changed);
-      int flags = 0;
-      if (auto it = source_flags.find(playnite_id_key(g.id)); it != source_flags.end()) {
-        flags = it->second;
-      }
-      mark_app_as_playnite_auto(app, flags);
-      // stamp added-at for TTL
-      try {
-        app["playnite-added-at"] = nlohmann::json(now_iso8601_utc());
-      } catch (...) {}
-      // Ensure Playnite-managed games have a sensible graceful-exit timeout
-      // Default to 10 seconds for the graceful-then-forceful shutdown recipe
-      try {
-        app["exit-timeout"] = 10;
-      } catch (...) {}
-      root["apps"].push_back(app);
-      changed = true;
-    }
+  void apply_game_metadata_to_app(const Game &game, nlohmann::json &app) {
+    apply_game_metadata_to_app(game, app, platf::appdata() / "covers");
   }
 
   void write_and_refresh_apps(nlohmann::json &root, const std::string &apps_path) {
@@ -689,207 +90,12 @@ namespace platf::playnite::sync {
     confighttp::refresh_client_apps_cache(root, false);
   }
 
-  std::unordered_set<std::string> current_auto_ids(const nlohmann::json &root) {
-    std::unordered_set<std::string> s;
-    for (auto &a : root["apps"]) {
-      try {
-        if (a.contains("playnite-managed") && a["playnite-managed"].get<std::string>() == "auto") {
-          auto pid = a.value("playnite-id", std::string());
-          if (!pid.empty()) {
-            s.insert(playnite_id_key(pid));
-          }
-        }
-      } catch (...) {}
+  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recent_count, int recent_age_days, int delete_after_days, bool require_replacement, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out, bool manage_membership) {
+    bool runtime_changed = false;
+    if (root.contains("apps") && root["apps"].is_array()) {
+      for (auto &app : root["apps"]) runtime_changed = ensure_runtime_app_uuid(app) || runtime_changed;
     }
-    return s;
-  }
-
-  std::size_t count_replacements_available(const std::unordered_set<std::string> &current_auto, const std::unordered_set<std::string> &selected_ids) {
-    std::size_t c = 0;
-    for (auto &id : selected_ids) {
-      if (!current_auto.contains(id)) {
-        ++c;
-      }
-    }
-    return c;
-  }
-
-  void purge_uninstalled_and_ttl(nlohmann::json &root, const std::unordered_set<std::string> &uninstalled_lower, int delete_after_days, std::time_t now_time, const std::unordered_map<std::string, std::time_t> &last_played_map, bool recent_mode, bool require_repl, bool remove_uninstalled, bool sync_all_installed, const std::unordered_set<std::string> &selected_ids, bool &changed) {
-    auto cur = current_auto_ids(root);
-    auto repl = count_replacements_available(cur, selected_ids);
-    nlohmann::json kept = nlohmann::json::array();
-    for (auto &app : root["apps"]) {
-      bool is_auto = false;
-      std::string pid;
-      std::string pid_key;
-      try {
-        is_auto = app.contains("playnite-managed") && app["playnite-managed"].get<std::string>() == "auto";
-        if (app.contains("playnite-id")) {
-          pid = app["playnite-id"].get<std::string>();
-          pid_key = playnite_id_key(pid);
-        }
-      } catch (...) {}
-      if (is_auto && !pid.empty()) {
-        if ((remove_uninstalled && uninstalled_lower.contains(pid_key)) || should_ttl_delete(app, delete_after_days, now_time, last_played_map)) {
-          changed = true;
-          continue;
-        }
-        // When sync_all_installed is disabled, remove apps that were added by the "installed" source
-        // and are no longer in the selected set (unless they also have other sources)
-        if (!sync_all_installed && !selected_ids.contains(pid_key)) {
-          try {
-            if (app.contains("playnite-source")) {
-              std::string source = app["playnite-source"].get<std::string>();
-              // Only remove if the app was ONLY from the "installed" source
-              // (i.e., not also selected by recent, category, or plugin criteria)
-              if (source == "installed") {
-                changed = true;
-                continue;
-              }
-            }
-          } catch (...) {}
-        }
-        if (!selected_ids.contains(pid_key) && recent_mode && require_repl && repl > 0) {
-          --repl;
-          changed = true;
-          continue;
-        }
-      }
-      kept.push_back(app);
-    }
-    if (kept.size() != root["apps"].size()) {
-      root["apps"] = std::move(kept);
-    }
-  }
-}  // namespace platf::playnite::sync
-
-namespace platf::playnite::sync {
-  void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recentAgeDays, int delete_after_days, bool require_repl, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out, bool manage_membership) {
-    if (!root.contains("apps") || !root["apps"].is_array()) {
-      root["apps"] = nlohmann::json::array();
-    }
-    changed = false;
-    matched_out = 0;
-    for (auto &app : root["apps"]) {
-      ensure_app_uuid(app, changed);
-    }
-    if (manage_membership) {
-      dedupe_auto_apps_by_playnite_id(root, changed);
-    }
-    // Build installed and uninstalled sets
-    std::vector<Game> installed;
-    std::unordered_set<std::string> uninstalled_lower;
-    snapshot_installed_and_uninstalled(all_games, installed, uninstalled_lower);
-
-    // Build exclusion sets
-    auto excl = build_exclusion_lower(exclude_ids);
-    std::unordered_set<std::string> exclude_categories_lower;
-    for (auto name : exclude_categories) {
-      auto lowered = to_lower_copy(std::move(name));
-      if (!lowered.empty()) {
-        exclude_categories_lower.insert(std::move(lowered));
-      }
-    }
-    std::unordered_set<std::string> exclude_plugins_lower;
-    for (auto id : exclude_plugins) {
-      auto lowered = to_lower_copy(std::move(id));
-      if (!lowered.empty()) {
-        exclude_plugins_lower.insert(std::move(lowered));
-      }
-    }
-
-    // Select recent/category/plugin/all-installed sources and merge with flags
-    std::unordered_map<std::string, int> source_flags;
-    std::vector<Game> sel_recent, sel_cats, sel_plugins, sel_all;
-    if (recentN > 0) {
-      sel_recent = policy::select_recent_installed_games(installed, recentN, recentAgeDays, std::time(nullptr), excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
-    }
-    if (!categories.empty()) {
-      sel_cats = policy::select_category_games(installed, categories, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
-    }
-    std::unordered_set<std::string> include_plugins_lower;
-    for (auto id : include_plugins) {
-      auto lowered = to_lower_copy(std::move(id));
-      if (!lowered.empty()) {
-        include_plugins_lower.insert(std::move(lowered));
-      }
-    }
-    if (!include_plugins_lower.empty()) {
-      sel_plugins = policy::select_plugin_games(installed, include_plugins_lower, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
-    }
-    if (sync_all_installed) {
-      sel_all = policy::select_all_installed_games(installed, excl, exclude_categories_lower, exclude_plugins_lower, source_flags);
-    }
-
-    // Merge selections by id, preserving first instance
-    std::unordered_map<std::string, const Game *> by_id;
-    for (const auto &g : sel_recent) {
-      if (!g.id.empty()) {
-        by_id.emplace(playnite_id_key(g.id), &g);
-      }
-    }
-    for (const auto &g : sel_cats) {
-      if (!g.id.empty()) {
-        auto key = playnite_id_key(g.id);
-        if (!by_id.contains(key)) {
-          by_id.emplace(std::move(key), &g);
-        }
-      }
-    }
-    for (const auto &g : sel_plugins) {
-      auto key = playnite_id_key(g.id);
-      if (!g.id.empty() && !by_id.contains(key)) {
-        by_id.emplace(std::move(key), &g);
-      }
-    }
-    for (const auto &g : sel_all) {
-      auto key = playnite_id_key(g.id);
-      if (!g.id.empty() && !by_id.contains(key)) {
-        by_id.emplace(std::move(key), &g);
-      }
-    }
-    std::vector<Game> selected;
-    selected.reserve(by_id.size());
-    for (auto &kv : by_id) {
-      selected.push_back(*kv.second);
-    }
-    if (!manage_membership) {
-      selected.clear();
-      source_flags.clear();
-    }
-
-    // Build selection indexes for automatic membership matching.
-    std::unordered_map<std::string, GameRef> by_exe, by_dir, by_id_idx, by_unique_name;
-    build_game_indexes(selected, by_exe, by_dir, by_id_idx, by_unique_name);
-
-    // Existing Playnite-linked apps must refresh metadata from any game in the complete
-    // snapshot, even when that game is outside the automatic membership selection.
-    // Keep the broader lookup ID-only so an unrelated manual app cannot be claimed by
-    // a coincidental name, executable, or working-directory match.
-    for (const auto &g : all_games) {
-      if (!g.id.empty()) {
-        by_id_idx[playnite_id_key(g.id)] = GameRef {&g};
-      }
-    }
-
-    // Update existing
-    std::unordered_set<std::string> matched_ids;
-    iterate_existing_apps(root, by_id_idx, by_exe, by_dir, by_unique_name, source_flags, matched_out, matched_ids, changed);
-
-    if (!manage_membership) {
-      return;
-    }
-
-    // Purge
-    auto last_played_map = build_last_played_map(installed);
-    std::unordered_set<std::string> selected_ids;
-    for (const auto &g : selected) {
-      selected_ids.insert(playnite_id_key(g.id));
-    }
-    const bool recent_mode = (recentN > 0);
-    purge_uninstalled_and_ttl(root, uninstalled_lower, delete_after_days, std::time(nullptr), last_played_map, recent_mode, require_repl, remove_uninstalled, sync_all_installed, selected_ids, changed);
-
-    // Add missing
-    add_missing_auto_entries(root, selected, matched_ids, source_flags, changed);
+    policy::autosync_reconcile(root, all_games, recent_count, recent_age_days, delete_after_days, require_replacement, sync_all_installed, categories, include_plugins, exclude_categories, exclude_ids, exclude_plugins, remove_uninstalled, changed, matched_out, manage_membership, static_cast<policy::MetadataUpdater>(&apply_game_metadata_to_app));
+    changed = changed || runtime_changed;
   }
 }  // namespace platf::playnite::sync

@@ -328,10 +328,7 @@ if(WIN32)
             test_playnite_sync_autosync.cpp)
         get_filename_component(_playnite_name "${_playnite_test}" NAME_WE)
         sunshine_register_component(NAME "test_component_${_playnite_name}" TEST_SOURCE "${_playnite_test}"
-            PRODUCT_SOURCES
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync.cpp"
-            LINK_LIBRARIES sunshine_test_simple_web_headers)
+            PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp")
     endforeach()
     sunshine_register_component(NAME test_component_test_playnite_sync TEST_SOURCE test_playnite_sync.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/playnite_sync_policy.cpp")

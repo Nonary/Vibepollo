@@ -1,4 +1,4 @@
-#include "src/platform/windows/playnite_sync.h"
+#include "src/platform/windows/playnite_sync_policy.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -6,6 +6,7 @@
 
 using namespace platf::playnite;
 using namespace platf::playnite::sync;
+using namespace platf::playnite::sync::policy;
 
 static Game G(std::string id, std::string last, bool installed = true, std::vector<std::string> cats = {}, std::string plugin = {}) {
   Game g;
