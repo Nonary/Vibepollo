@@ -151,6 +151,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/http_auth.cpp"
         "${CMAKE_SOURCE_DIR}/src/state_storage.cpp"
         "${CMAKE_SOURCE_DIR}/src/state_storage.h"
+        "${CMAKE_SOURCE_DIR}/src/state_storage_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/state_storage_policy.h"
         "${CMAKE_SOURCE_DIR}/src/session_history.cpp"
         "${CMAKE_SOURCE_DIR}/src/session_history.h"
         "${CMAKE_SOURCE_DIR}/src/session_history_sampler.cpp"

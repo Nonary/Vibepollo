@@ -1,147 +1,128 @@
 /**
  * @file tests/unit/test_state_storage.cpp
- * @brief Test src/state_storage.* corrupt-recovery and atomic write behavior.
+ * @brief Unit tests for JSON state recovery and atomic-write policy.
  */
 #include "../tests_common.h"
 
-#include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
-#include <filesystem>
-#include <fstream>
-#include <src/state_storage.h>
+#include <src/state_storage_policy.h>
+
+#include <map>
+#include <string>
+#include <vector>
 
 namespace {
-  namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
+  namespace policy = statefile::policy;
 
-  fs::path temp_state_dir() {
-    auto dir = fs::temp_directory_path() / "vibeshine_statefile_tests";
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    return dir;
-  }
+  struct memory_state_store_t {
+    std::map<std::string, std::string> files;
+    std::vector<std::string> quarantined;
 
-  void write_raw(const fs::path &p, const std::string &content) {
-    std::ofstream out(p, std::ios::binary | std::ios::trunc);
-    out << content;
-  }
-
-  bool has_quarantine_sibling(const fs::path &original) {
-    const std::string prefix = original.filename().string() + ".corrupt-";
-    for (const auto &entry : fs::directory_iterator(original.parent_path())) {
-      if (entry.path().filename().string().rfind(prefix, 0) == 0) {
-        return true;
-      }
+    policy::read_result_t read(const std::string &path) const {
+      const auto it = files.find(path);
+      return it == files.end() ? policy::read_result_t {policy::read_status_e::missing, {}} :
+                                 policy::read_result_t {policy::read_status_e::loaded, it->second};
     }
-    return false;
+
+    void quarantine(const std::string &path) {
+      const auto it = files.find(path);
+      if (it == files.end()) {
+        return;
+      }
+      const auto quarantine_path = path + ".corrupt-" + std::to_string(quarantined.size());
+      files.emplace(quarantine_path, it->second);
+      files.erase(it);
+      quarantined.push_back(quarantine_path);
+    }
+
+    bool write(const std::string &path, const std::string &contents) {
+      files[path] = contents;
+      return true;
+    }
+  };
+
+  bool load_for_update(memory_state_store_t &store, const std::string &path, pt::ptree &tree) {
+    return policy::load_json_for_update(
+             path,
+             tree,
+             [&store](const std::string &target) { return store.read(target); },
+             [&store](const std::string &target) { store.quarantine(target); }) != policy::load_result_e::failed;
+  }
+
+  void write_atomic(memory_state_store_t &store, const std::string &path, const pt::ptree &tree) {
+    policy::write_json_atomic(
+      path,
+      tree,
+      [&store](const std::string &target, const std::string &contents) { return store.write(target, contents); },
+      [&store](const std::string &target) { return store.read(target); });
   }
 }  // namespace
 
 TEST(StateStorageLoadForUpdate, MissingFileReturnsTrueWithEmptyTree) {
-  const auto path = temp_state_dir() / "missing.json";
-  std::error_code ec;
-  fs::remove(path, ec);
-
+  memory_state_store_t store;
   pt::ptree tree;
-  EXPECT_TRUE(statefile::load_json_for_update(path.string(), tree));
+
+  EXPECT_TRUE(load_for_update(store, "missing.json", tree));
   EXPECT_TRUE(tree.empty());
 }
 
 TEST(StateStorageLoadForUpdate, ValidFileLoads) {
-  const auto path = temp_state_dir() / "valid.json";
-  write_raw(path, R"({"root":{"k":"v"}})");
-
+  memory_state_store_t store;
+  store.files.emplace("valid.json", R"({"root":{"k":"v"}})");
   pt::ptree tree;
-  EXPECT_TRUE(statefile::load_json_for_update(path.string(), tree));
-  EXPECT_EQ(tree.get<std::string>("root.k", ""), "v");
 
-  std::error_code ec;
-  fs::remove(path, ec);
+  EXPECT_TRUE(load_for_update(store, "valid.json", tree));
+  EXPECT_EQ(tree.get<std::string>("root.k", ""), "v");
 }
 
 TEST(StateStorageLoadForUpdate, BlankFileTreatedAsMissing) {
-  const auto path = temp_state_dir() / "blank.json";
-  write_raw(path, "   \r\n\t  ");
-
+  memory_state_store_t store;
+  store.files.emplace("blank.json", "   \r\n\t  ");
   pt::ptree tree;
-  EXPECT_TRUE(statefile::load_json_for_update(path.string(), tree));
-  EXPECT_TRUE(tree.empty());
-  // A blank file is benign, not corrupt: it must NOT be quarantined.
-  EXPECT_FALSE(has_quarantine_sibling(path));
 
-  std::error_code ec;
-  fs::remove(path, ec);
+  EXPECT_TRUE(load_for_update(store, "blank.json", tree));
+  EXPECT_TRUE(tree.empty());
+  EXPECT_TRUE(store.quarantined.empty());
 }
 
 TEST(StateStorageLoadForUpdate, CorruptFileSelfHealsAndIsQuarantined) {
-  const auto path = temp_state_dir() / "corrupt.json";
-  // Clean up any quarantine files from a previous run.
-  for (const auto &entry : fs::directory_iterator(path.parent_path())) {
-    if (entry.path().filename().string().rfind("corrupt.json", 0) == 0) {
-      std::error_code ec;
-      fs::remove(entry.path(), ec);
-    }
-  }
-  write_raw(path, "{ this is : not valid json ]");
-
+  memory_state_store_t store;
+  store.files.emplace("corrupt.json", "{ this is : not valid json ]");
   pt::ptree tree;
-  // Malformed content must not wedge the writer: it returns true with an empty
-  // tree so the caller can recreate the file.
-  EXPECT_TRUE(statefile::load_json_for_update(path.string(), tree));
-  EXPECT_TRUE(tree.empty());
-  // The bad file should have been renamed aside for forensics.
-  EXPECT_TRUE(has_quarantine_sibling(path));
-  EXPECT_FALSE(fs::exists(path));
 
-  for (const auto &entry : fs::directory_iterator(path.parent_path())) {
-    if (entry.path().filename().string().rfind("corrupt.json", 0) == 0) {
-      std::error_code ec;
-      fs::remove(entry.path(), ec);
-    }
-  }
+  EXPECT_TRUE(load_for_update(store, "corrupt.json", tree));
+  EXPECT_TRUE(tree.empty());
+  ASSERT_EQ(store.quarantined.size(), 1U);
+  EXPECT_FALSE(store.files.contains("corrupt.json"));
+  EXPECT_TRUE(store.files.contains(store.quarantined.front()));
 }
 
 TEST(StateStorageWriteAtomic, RoundTrips) {
-  const auto path = temp_state_dir() / "atomic.json";
-  std::error_code ec;
-  fs::remove(path, ec);
-
+  memory_state_store_t store;
   pt::ptree tree;
   tree.put("root.hello", "world");
-  EXPECT_NO_THROW(statefile::write_json_atomic(path.string(), tree));
+
+  EXPECT_NO_THROW(write_atomic(store, "atomic.json", tree));
 
   pt::ptree readback;
-  pt::read_json(path.string(), readback);
+  EXPECT_TRUE(load_for_update(store, "atomic.json", readback));
   EXPECT_EQ(readback.get<std::string>("root.hello", ""), "world");
-
-  fs::remove(path, ec);
 }
 
 // End-to-end of the reported wedge: a corrupt state file followed by a write must
 // succeed and leave valid, re-readable JSON in place.
 TEST(StateStorageLoadForUpdate, CorruptThenWriteProducesValidFile) {
-  const auto path = temp_state_dir() / "heal_cycle.json";
-  for (const auto &entry : fs::directory_iterator(path.parent_path())) {
-    if (entry.path().filename().string().rfind("heal_cycle.json", 0) == 0) {
-      std::error_code ec;
-      fs::remove(entry.path(), ec);
-    }
-  }
-  write_raw(path, "totally not json");
-
+  memory_state_store_t store;
+  store.files.emplace("heal_cycle.json", "totally not json");
   pt::ptree tree;
-  ASSERT_TRUE(statefile::load_json_for_update(path.string(), tree));
+
+  ASSERT_TRUE(load_for_update(store, "heal_cycle.json", tree));
   tree.put("root.recovered", "yes");
-  EXPECT_NO_THROW(statefile::write_json_atomic(path.string(), tree));
+  EXPECT_NO_THROW(write_atomic(store, "heal_cycle.json", tree));
 
   pt::ptree readback;
-  EXPECT_NO_THROW(pt::read_json(path.string(), readback));
+  EXPECT_TRUE(load_for_update(store, "heal_cycle.json", readback));
   EXPECT_EQ(readback.get<std::string>("root.recovered", ""), "yes");
-
-  for (const auto &entry : fs::directory_iterator(path.parent_path())) {
-    if (entry.path().filename().string().rfind("heal_cycle.json", 0) == 0) {
-      std::error_code ec;
-      fs::remove(entry.path(), ec);
-    }
-  }
+  ASSERT_EQ(store.quarantined.size(), 1U);
 }
