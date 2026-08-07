@@ -15,6 +15,7 @@ include_directories(
 
 set(TOOL_SOURCES
         "${CMAKE_SOURCE_DIR}/src/logging.cpp"
+        "${CMAKE_SOURCE_DIR}/src/logging_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
 )
 
@@ -63,6 +64,7 @@ set_target_properties(playnite-launcher PROPERTIES WIN32_EXECUTABLE TRUE)
 target_include_directories(playnite-launcher PRIVATE ${CMAKE_SOURCE_DIR}/tools/playnite_launcher)
 target_sources(playnite-launcher PRIVATE
         ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
@@ -87,7 +89,8 @@ add_executable(sunshine_wgc_capture
         sunshine_wgc_capture.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/misc_utils.cpp
-        ${CMAKE_SOURCE_DIR}/src/logging.cpp)
+        ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp)
 set_target_properties(sunshine_wgc_capture PROPERTIES CXX_STANDARD 23)
 
 # Define helper build flag to conditionally compile logging
