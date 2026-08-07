@@ -89,5 +89,6 @@ include(${CMAKE_MODULE_PATH}/packaging/common.cmake)
 # globally guarded contracts are initialized in the project scope before test
 # targets consume them.
 if(BUILD_TESTS)
+    enable_testing()
     add_subdirectory(tests)
 endif()
