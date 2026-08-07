@@ -82,11 +82,12 @@ include(${CMAKE_MODULE_PATH}/compile_definitions/common.cmake)
 # target definitions
 include(${CMAKE_MODULE_PATH}/targets/common.cmake)
 
-# Unit tests are part of every project build. Their targets remain independent
-# from the application target so focused test builds stay available.
+# packaging
+include(${CMAKE_MODULE_PATH}/packaging/common.cmake)
+
+# Unit tests are part of every project build. Configure packaging first so its
+# globally guarded contracts are initialized in the project scope before test
+# targets consume them.
 if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
-
-# packaging
-include(${CMAKE_MODULE_PATH}/packaging/common.cmake)
