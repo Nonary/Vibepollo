@@ -1502,7 +1502,7 @@ namespace confighttp {
   }
 
   namespace {
-    std::string extract_cookie_value(const SimpleWeb::CaseInsensitiveMultimap &headers, std::string_view name) {
+    [[maybe_unused]] std::string extract_cookie_value(const SimpleWeb::CaseInsensitiveMultimap &headers, std::string_view name) {
       if (auto cookie_it = headers.find("Cookie"); cookie_it != headers.end()) {
         const std::string &cookies = cookie_it->second;
         const std::string prefix = std::string(name) + "=";
