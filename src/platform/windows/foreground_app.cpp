@@ -3,6 +3,7 @@
  */
 
 #include "foreground_app.h"
+#include "rtx_hdr_policy.h"
 
 #include "playnite_integration.h"
 #include "src/process.h"
@@ -505,16 +506,7 @@ namespace platf::foreground_app {
     std::string_view status_install_dir,
     std::string_view foreground_exe
   ) {
-    if (foreground_exe.empty() || status_id.empty()) {
-      return false;
-    }
-    if (!active_playnite_id.empty() && active_playnite_id != status_id) {
-      return false;
-    }
-    if (path_equal_or_basename_match(foreground_exe, status_exe)) {
-      return true;
-    }
-    return path_is_under_directory(foreground_exe, status_install_dir);
+    return rtx_hdr::policy::playnite_foreground_matches(active_playnite_id, status_id, status_exe, status_install_dir, foreground_exe);
   }
 
   bool transient_shell_overlay_for_tests(

@@ -59,20 +59,7 @@ namespace platf::rtx_hdr {
     }
 
     runtime_values_t desktop_runtime_values() {
-      runtime_values_t values;
-      values.contrast = 100;
-      values.saturation = 100;
-      if (!config::runtime_config_override_enabled("rtx_hdr") || !config::video.rtx_hdr.enabled) {
-        return values;
-      }
-
-      // Desktop/non-matching content should stay in the neutral SDR-to-PQ path.
-      // Carry the configured SDR brightness boost for the encoder fallback,
-      // but do not enable NVIDIA TrueHDR conversion for desktop frames.
-      values.sdr_brightness = config::video.rtx_hdr.sdr_brightness;
-      values.peak_brightness = config::video.rtx_hdr.peak_brightness;
-      values.source = profile_source_e::config;
-      return values;
+      return policy::desktop_values(config_runtime_values(), config::runtime_config_override_enabled("rtx_hdr"));
     }
 
     std::string identity_key(const platf::foreground_app::state_t &foreground) {
@@ -110,10 +97,7 @@ namespace platf::rtx_hdr {
   }  // namespace
 
   float sdr_brightness_to_white_nits(int brightness) {
-    const auto clamped_brightness = static_cast<float>(std::clamp(brightness, 0, 100));
-    const auto t = clamped_brightness / 100.0f;
-    return SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS +
-           (SDR_BRIGHTNESS_MAX_WHITE_NITS - SDR_BRIGHTNESS_NEUTRAL_WHITE_NITS) * t;
+    return policy::sdr_brightness_to_white_nits(brightness);
   }
 
   struct runtime_t::backend_t {

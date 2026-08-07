@@ -225,6 +225,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_profile.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_runtime.h"

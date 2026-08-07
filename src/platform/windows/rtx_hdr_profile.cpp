@@ -130,22 +130,6 @@ namespace platf::rtx_hdr {
       return setting.u32CurrentValue;
     }
 
-    std::optional<bool> decode_activation_state(std::optional<NvU32> driver_flags, std::optional<NvU32> profile_enable) {
-      if (driver_flags && *driver_flags != 0) {
-        return true;
-      }
-      if (profile_enable) {
-        if (*profile_enable > 1) {
-          return std::nullopt;
-        }
-        return *profile_enable != 0;
-      }
-      if (driver_flags) {
-        return false;
-      }
-      return std::nullopt;
-    }
-
     std::optional<bool> read_activation_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, const std::string &profile_name, bool application_profile) {
       const auto driver_flags = get_dword_setting(session, profile, RTX_HDR_DRIVER_FLAGS_ID, profile_name, application_profile);
       auto profile_enable = get_dword_setting(session, profile, RTX_HDR_ENABLE_ID, profile_name, application_profile);
@@ -153,7 +137,7 @@ namespace platf::rtx_hdr {
         log_invalid_once(profile_name, RTX_HDR_ENABLE_ID, *profile_enable, "enable outside 0..1");
         profile_enable = std::nullopt;
       }
-      return decode_activation_state(driver_flags, profile_enable);
+      return policy::decode_activation(driver_flags, profile_enable);
     }
 
     std::optional<int> read_int_range_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, int min_value, int max_value, const std::string &profile_name, bool application_profile) {
@@ -173,19 +157,12 @@ namespace platf::rtx_hdr {
     // RTX HDR contrast and saturation are stored in SDK percent units (0..200, 100 = neutral).
     // Live NVIDIA App profiles commonly store saturation values above 100 (for example PoE2 uses
     // 151 and the global profile may use 200), so treat both dials symmetrically.
-    std::optional<int> decode_percent_units(NvU32 raw) {
-      if (raw <= 200) {
-        return static_cast<int>(raw);
-      }
-      return std::nullopt;
-    }
-
     std::optional<int> read_contrast_setting(NvDRSSessionHandle session, NvDRSProfileHandle profile, NvU32 setting_id, const std::string &profile_name, bool application_profile) {
       auto raw = get_dword_setting(session, profile, setting_id, profile_name, application_profile);
       if (!raw) {
         return std::nullopt;
       }
-      auto decoded = decode_percent_units(*raw);
+      auto decoded = policy::decode_percent_units(*raw);
       if (!decoded) {
         log_invalid_once(profile_name, setting_id, *raw, "contrast outside 0..200");
       }
@@ -197,7 +174,7 @@ namespace platf::rtx_hdr {
       if (!raw) {
         return std::nullopt;
       }
-      auto decoded = decode_percent_units(*raw);
+      auto decoded = policy::decode_percent_units(*raw);
       if (!decoded) {
         log_invalid_once(profile_name, setting_id, *raw, "saturation outside 0..200");
       }
@@ -267,71 +244,12 @@ namespace platf::rtx_hdr {
       return config::runtime_config_override_enabled("rtx_hdr");
     }
 
-    bool has_runtime_tuning_override() {
-      return has_override("rtx_hdr_contrast") ||
-             has_override("rtx_hdr_saturation") ||
-             has_override("rtx_hdr_middle_gray") ||
-             has_override("rtx_hdr_peak_brightness");
-    }
-
-    bool has_tuning_values(const profile_values_t &values) {
-      return values.contrast || values.saturation || values.middle_gray || values.peak_brightness;
-    }
-
-    profile_source_e tuning_source(const resolved_profile_t &resolved) {
-      if (has_runtime_tuning_override()) {
-        return profile_source_e::config;
-      }
-      if (has_tuning_values(resolved.application)) {
-        return profile_source_e::application;
-      }
-      if (has_tuning_values(resolved.global)) {
-        return profile_source_e::global;
-      }
-      return profile_source_e::config;
-    }
-
-    // Build the active tuning dials with the effective precedence:
-    //   per-app Sunshine dial override > NVIDIA application profile > NVIDIA global profile >
-    //   Sunshine config default.
-    runtime_values_t active_values(
-      const resolved_profile_t &resolved,
-      const runtime_values_t &config_fallback
-    ) {
-      runtime_values_t values;
-      values.enabled = true;
-      values.contrast = has_override("rtx_hdr_contrast") ?
-                          config_fallback.contrast :
-                          resolved.application.contrast.value_or(resolved.global.contrast.value_or(config_fallback.contrast));
-      values.saturation = has_override("rtx_hdr_saturation") ?
-                            config_fallback.saturation :
-                            resolved.application.saturation.value_or(resolved.global.saturation.value_or(config_fallback.saturation));
-      values.middle_gray = has_override("rtx_hdr_middle_gray") ?
-                             config_fallback.middle_gray :
-                             resolved.application.middle_gray.value_or(resolved.global.middle_gray.value_or(config_fallback.middle_gray));
-      values.sdr_brightness = config_fallback.sdr_brightness;
-      values.peak_brightness = has_override("rtx_hdr_peak_brightness") ?
-                                 config_fallback.peak_brightness :
-                                 resolved.application.peak_brightness.value_or(resolved.global.peak_brightness.value_or(config_fallback.peak_brightness));
-      values.source = tuning_source(resolved);
-      return values;
-    }
-
     runtime_values_t merge_runtime_values(const resolved_profile_t &resolved, const runtime_values_t &config_fallback) {
-      runtime_values_t disabled;
-
-      // RTX HDR conversion is application opt-in only. NVIDIA profile enable bits are read for
-      // compatibility diagnostics, but they never activate or block conversion.
-      if (!has_runtime_enable_override()) {
-        return disabled;
-      }
-
-      if (!config_fallback.enabled) {
-        disabled.source = profile_source_e::config;
-        return disabled;
-      }
-
-      return active_values(resolved, config_fallback);
+      return policy::materialize(resolved, config_fallback, {
+        has_runtime_enable_override(),
+        has_override("rtx_hdr_contrast"), has_override("rtx_hdr_saturation"),
+        has_override("rtx_hdr_middle_gray"), has_override("rtx_hdr_peak_brightness"),
+      });
     }
 
   }  // namespace
@@ -365,15 +283,15 @@ namespace platf::rtx_hdr {
   }
 
   std::optional<bool> decode_rtx_hdr_activation_for_tests(std::optional<std::uint32_t> driver_flags, std::optional<std::uint32_t> profile_enable) {
-    return decode_activation_state(driver_flags, profile_enable);
+    return policy::decode_activation(driver_flags, profile_enable);
   }
 
   std::optional<int> decode_rtx_hdr_contrast_units_for_tests(std::uint32_t raw) {
-    return decode_percent_units(raw);
+    return policy::decode_percent_units(raw);
   }
 
   std::optional<int> decode_rtx_hdr_saturation_units_for_tests(std::uint32_t raw) {
-    return decode_percent_units(raw);
+    return policy::decode_percent_units(raw);
   }
 
   resolved_profile_t resolve_profile_for_executable(const std::string &executable) {
