@@ -41,6 +41,55 @@ function(sunshine_contract_cpp_bool input_variable output_variable)
     endif()
 endfunction()
 
+function(sunshine_extract_config_source_options output_variable)
+    file(READ "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config.cpp" _config_source)
+    set(_patterns
+        "(string_f|path_f|string_restricted_f)[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "(int_f|int_between_f)[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "bool_f[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "(double_f|double_between_f)[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "generic_f[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "list_prep_cmd_f[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\""
+        "map_int_int_f[ \\t\\r\\n]*\\([ \\t\\r\\n]*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\"")
+
+    set(_options "")
+    foreach(_pattern IN LISTS _patterns)
+        string(REGEX MATCHALL "${_pattern}" _matches "${_config_source}")
+        foreach(_match IN LISTS _matches)
+            string(REGEX REPLACE ".*vars[ \\t\\r\\n]*,[ \\t\\r\\n]*\\\"([^\\\"]+)\\\".*" "\\\\1" _option "${_match}")
+            list(APPEND _options "${_option}")
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES _options)
+    set(${output_variable} "${_options}" PARENT_SCOPE)
+endfunction()
+
+function(sunshine_extract_documented_config_options output_variable)
+    file(STRINGS "${SUNSHINE_TEST_REPOSITORY_ROOT}/docs/configuration.md" _lines REGEX "^### [^#\\r\\n]+$")
+    set(_options "")
+    foreach(_line IN LISTS _lines)
+        string(REGEX REPLACE "^### ([^#\\r\\n]+)$" "\\\\1" _option "${_line}")
+        string(STRIP "${_option}" _option)
+        list(APPEND _options "${_option}")
+    endforeach()
+    list(REMOVE_DUPLICATES _options)
+    set(${output_variable} "${_options}" PARENT_SCOPE)
+endfunction()
+
+function(sunshine_extract_translated_config_options output_variable)
+    file(READ "${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/common/assets/web/public/assets/locale/en.json" _locale)
+    string(JSON _config_length LENGTH "${_locale}" config)
+    set(_options "")
+    if(_config_length GREATER 0)
+        math(EXPR _config_last_index "${_config_length} - 1")
+        foreach(_index RANGE 0 ${_config_last_index})
+            string(JSON _option MEMBER "${_locale}" config ${_index})
+            list(APPEND _options "${_option}")
+        endforeach()
+    endif()
+    set(${output_variable} "${_options}" PARENT_SCOPE)
+endfunction()
+
 foreach(_contract_list IN ITEMS
         SUNSHINE_VDD_DRIVER_REQUIRED_FILES
         SUNSHINE_VDD_DRIVER_OPTIONAL_FILES
@@ -83,6 +132,23 @@ endforeach()
 
 set(SUNSHINE_TEST_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
+
+# Resource contracts are captured at configure time.  The resulting test has
+# no filesystem, JSON-parser, or production file-handler dependency at runtime.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config.cpp"
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/docs/configuration.md"
+    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/common/assets/web/public/assets/locale/en.json")
+sunshine_extract_config_source_options(SUNSHINE_CONFIG_SOURCE_OPTIONS)
+sunshine_extract_documented_config_options(SUNSHINE_DOCUMENTED_CONFIG_OPTIONS)
+sunshine_extract_translated_config_options(SUNSHINE_TRANSLATED_CONFIG_OPTIONS)
+sunshine_contract_cpp_list(SUNSHINE_CONFIG_SOURCE_OPTIONS SUNSHINE_CONFIG_SOURCE_OPTIONS_CPP)
+sunshine_contract_cpp_list(SUNSHINE_DOCUMENTED_CONFIG_OPTIONS SUNSHINE_DOCUMENTED_CONFIG_OPTIONS_CPP)
+sunshine_contract_cpp_list(SUNSHINE_TRANSLATED_CONFIG_OPTIONS SUNSHINE_TRANSLATED_CONFIG_OPTIONS_CPP)
+configure_file(
+    "${CMAKE_CURRENT_LIST_DIR}/support/config_catalog_contract.h.in"
+    "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}/config_catalog_contract.generated.h"
+    @ONLY)
 configure_file(
     "${CMAKE_CURRENT_LIST_DIR}/support/virtual_display_package_contract.h.in"
     "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}/virtual_display_package_contract.generated.h"
@@ -311,8 +377,8 @@ sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE 
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp")
 sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp")
-sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE integration/test_config_consistency.cpp
-    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp")
+sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE unit/test_config_catalog_contract.cpp
+    INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp
     SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/file_handler_read_only.cpp")
 sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)

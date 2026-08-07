@@ -76,7 +76,7 @@ TEST(InputTouchMapping, NormalizesUsingPlatformOffsetContract) {
   input::validation::touch_port_t touch_port {
     1920,
     0,
-    3840,
+    1920,
     1080,
     1.0f,
     1.0f,

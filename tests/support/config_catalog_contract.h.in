@@ -1,0 +1,14 @@
+/**
+ * @file config_catalog_contract.h.in
+ * @brief Configure-time resource catalogs injected into the portable unit test.
+ */
+#pragma once
+
+#include <array>
+#include <string_view>
+
+namespace sunshine::test::config_catalog_contract {
+  inline constexpr std::array source_options {@SUNSHINE_CONFIG_SOURCE_OPTIONS_CPP@};
+  inline constexpr std::array documented_options {@SUNSHINE_DOCUMENTED_CONFIG_OPTIONS_CPP@};
+  inline constexpr std::array translated_options {@SUNSHINE_TRANSLATED_CONFIG_OPTIONS_CPP@};
+}  // namespace sunshine::test::config_catalog_contract

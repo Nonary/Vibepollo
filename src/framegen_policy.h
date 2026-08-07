@@ -150,7 +150,9 @@ namespace framegen {
 
     const auto capture_mode = normalize_capture_mode(input.capture_mode);
     const bool hard_wgc_capture = policy.uses_virtual_display && game_provided_framegen;
-    const bool explicit_dxgi_capture = capture_mode == "ddx" && !hard_wgc_capture;
+    // An explicit DXGI request is a client contract.  Game-provided frame
+    // generation defaults to WGC only when the capture mode is automatic.
+    const bool explicit_dxgi_capture = capture_mode == "ddx";
     const bool explicit_wgc_capture = capture_mode == "wgc" || capture_mode == "wgcc";
     const bool auto_wgc_capture = capture_mode.empty() && input.auto_capture_uses_wgc;
     policy.effective_wgc_capture =
