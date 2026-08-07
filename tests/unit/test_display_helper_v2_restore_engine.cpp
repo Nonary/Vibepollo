@@ -12,6 +12,7 @@
   #include "src/platform/windows/display_helper_v2/operations.h"
   #include "src/platform/windows/display_helper_v2/snapshot.h"
   #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+  #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
   #include <chrono>
   #include <functional>

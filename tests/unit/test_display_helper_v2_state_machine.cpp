@@ -11,6 +11,7 @@
 #include "src/platform/windows/display_helper_v2/runtime_support.h"
 #include "src/platform/windows/display_helper_v2/snapshot.h"
 #include "src/platform/windows/display_helper_v2/state_machine.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #include <array>
 #include <deque>

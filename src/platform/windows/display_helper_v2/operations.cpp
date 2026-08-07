@@ -1,4 +1,5 @@
 #include "src/platform/windows/display_helper_v2/operations.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #include <algorithm>
 #include <sstream>
@@ -846,7 +847,7 @@ namespace display_helper::v2 {
       auto cur = display_.capture_snapshot();
       // Heuristic: treat completely empty topology+modes as transient
       const bool emptyish = cur.m_topology.empty() && cur.m_modes.empty();
-      if (have_last && !emptyish && (cur == last)) {
+      if (have_last && !emptyish && topology::equal_snapshot(cur, last)) {
         out = std::move(cur);
         return true;
       }
@@ -877,7 +878,7 @@ namespace display_helper::v2 {
       if (!read_stable_snapshot(cur, std::chrono::milliseconds(2000), std::chrono::milliseconds(150), token)) {
         return false;
       }
-      if (!(cur == base)) {
+      if (!topology::equal_snapshot(cur, base)) {
         // topology changed during quiet period
         return false;
       }
