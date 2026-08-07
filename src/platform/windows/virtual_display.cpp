@@ -518,7 +518,7 @@ namespace VDISPLAY_SUNSHINE {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
+  void cleanup_ensure_display(const ensure_display_result &result);
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
 }  // namespace VDISPLAY_SUNSHINE
@@ -587,7 +587,7 @@ namespace VDISPLAY_SUDOVDA {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
+  void cleanup_ensure_display(const ensure_display_result &result);
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
 }  // namespace VDISPLAY_SUDOVDA
@@ -863,9 +863,14 @@ namespace VDISPLAY {
   }
 
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid) {
-    return use_sunshine_driver() ?
-             VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid) :
-             VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid);
+    const bool sunshine_backend = use_sunshine_driver();
+    auto result = sunshine_backend ?
+                    VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid) :
+                    VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid);
+    result.backend = sunshine_backend ?
+                       ensure_display_backend_e::sunshine :
+                       ensure_display_backend_e::sudovda;
+    return result;
   }
 
   std::optional<std::string> resolveUsableDisplayName(const std::string &device_id) {
@@ -894,11 +899,16 @@ namespace VDISPLAY {
     return std::nullopt;
   }
 
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown) {
-    if (use_sunshine_driver()) {
-      VDISPLAY_SUNSHINE::cleanup_ensure_display(result, probe_succeeded, allow_temporary_teardown);
-    } else {
-      VDISPLAY_SUDOVDA::cleanup_ensure_display(result, probe_succeeded, allow_temporary_teardown);
+  void cleanup_ensure_display(const ensure_display_result &result) {
+    switch (result.backend) {
+      case ensure_display_backend_e::sunshine:
+        VDISPLAY_SUNSHINE::cleanup_ensure_display(result);
+        return;
+      case ensure_display_backend_e::sudovda:
+        VDISPLAY_SUDOVDA::cleanup_ensure_display(result);
+        return;
+      case ensure_display_backend_e::none:
+        return;
     }
   }
 

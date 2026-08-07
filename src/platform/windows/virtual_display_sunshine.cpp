@@ -144,7 +144,7 @@ namespace VDISPLAY_SUNSHINE {
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
+  void cleanup_ensure_display(const ensure_display_result &result);
 
   enum class RestartCooldownBehavior {
     skip,
@@ -188,7 +188,6 @@ namespace VDISPLAY_SUNSHINE {
     constexpr int DRIVER_RESTART_MAX_ATTEMPTS = 3;
     constexpr auto DEVICE_RESTART_SETTLE_DELAY = std::chrono::milliseconds(200);
     constexpr auto VIRTUAL_DISPLAY_TEARDOWN_COOLDOWN = std::chrono::milliseconds(250);
-    constexpr int ENSURE_DISPLAY_MAX_RETRY_FAILURES = 8;
     constexpr std::wstring_view SUNSHINE_DRIVER_HARDWARE_ID = L"root\\sunshinevirtualdisplay";
     constexpr std::wstring_view SUNSHINE_DRIVER_FRIENDLY_NAME_W = L"Sunshine Virtual Display Driver";
     constexpr std::uint32_t DRIVER_LEASE_TIMEOUT_MS = 30000;
@@ -214,10 +213,11 @@ namespace VDISPLAY_SUNSHINE {
     std::atomic<std::int64_t> g_last_teardown_ns {0};
     std::atomic<std::int64_t> g_last_restart_failure_ns {0};
     std::recursive_mutex g_virtual_display_operation_mutex;
+    std::mutex g_ensure_display_acquire_mutex;
     std::mutex g_ensure_display_state_mutex;
-    bool g_ensure_display_retained = false;
+    std::condition_variable g_ensure_display_state_cv;
+    VDISPLAY::policy::probe_display_lifetime_t g_ensure_display_lifetime;
     GUID g_ensure_display_guid {};
-    int g_ensure_display_failure_count = 0;
 
     vdisplay_recovery::monitor_registry_t &watchdog_failure_callbacks() {
       static vdisplay_recovery::monitor_registry_t callbacks;
@@ -1231,15 +1231,22 @@ namespace VDISPLAY_SUNSHINE {
         return true;
       }
 
+      std::unique_lock<std::mutex> acquire_lock(g_ensure_display_acquire_mutex);
       GUID guid_to_remove = uuid_to_guid(persistentVirtualDisplayUuid());
       bool should_remove = false;
+      std::uint64_t removal_generation = 0;
       {
-        std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-        if (g_ensure_display_retained) {
+        std::unique_lock<std::mutex> lock(g_ensure_display_state_mutex);
+        while (g_ensure_display_lifetime.active_probes() != 0 ||
+               g_ensure_display_lifetime.removal_in_progress()) {
+          if (stop_token.stop_requested()) {
+            return false;
+          }
+          g_ensure_display_state_cv.wait_for(lock, std::chrono::milliseconds(50));
+        }
+        if (const auto generation = g_ensure_display_lifetime.begin_idle_removal()) {
           guid_to_remove = g_ensure_display_guid;
-          g_ensure_display_retained = false;
-          g_ensure_display_failure_count = 0;
-          std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+          removal_generation = *generation;
           should_remove = true;
         }
       }
@@ -1254,7 +1261,16 @@ namespace VDISPLAY_SUNSHINE {
 
       BOOST_LOG(info) << "Removing encoder-probe virtual display before creating stream display guid="
                       << guid_to_uuid(guid).string() << '.';
-      if (!remove_virtual_display_impl(guid_to_remove, true, stop_token)) {
+      const bool removed = remove_virtual_display_impl(guid_to_remove, true, stop_token);
+      if (removal_generation != 0) {
+        std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+        g_ensure_display_lifetime.complete_removal(removal_generation, removed);
+        if (removed && !g_ensure_display_lifetime.retained()) {
+          std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+        }
+        g_ensure_display_state_cv.notify_all();
+      }
+      if (!removed) {
         if (stop_token.stop_requested()) {
           return false;
         }
@@ -4168,6 +4184,12 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     bool attempt_virtual_display_recovery(RecoveryMonitorState &state, std::stop_token stop_token) {
+      if (!release_retained_ensure_display_for_stream(
+            state.params.guid,
+            state.params.client_uid.c_str(),
+            stop_token)) {
+        return false;
+      }
       std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
       if (!lock_recovery_operation(operation_lock, state, stop_token)) {
         return false;
@@ -5946,9 +5968,6 @@ namespace VDISPLAY_SUNSHINE {
                        << " hdr_requested=" << hdr_requested
                        << " guid=" << requested_uuid.string();
 
-      if (!release_retained_ensure_display_for_stream(guid, s_client_uid, stop_token)) {
-        return std::nullopt;
-      }
       if (!teardown_conflicting_virtual_displays(requested_uuid, stop_token)) {
         return std::nullopt;
       }
@@ -6901,6 +6920,9 @@ namespace VDISPLAY_SUNSHINE {
     bool allow_pending_enumeration,
     bool replace_existing
   ) {
+    if (!release_retained_ensure_display_for_stream(guid, s_client_uid)) {
+      return std::nullopt;
+    }
     return create_virtual_display_with_stop(
       s_client_uid,
       s_client_name,
@@ -7632,6 +7654,7 @@ namespace {
 VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   const std::optional<LUID> &required_adapter_luid
 ) {
+  std::lock_guard<std::mutex> acquire_lock(g_ensure_display_acquire_mutex);
   ensure_display_result result;
 
   if (!required_adapter_luid && has_active_physical_display()) {
@@ -7671,12 +7694,18 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
 
   bool retained_ensure_display = false;
-  int retained_failure_count = 0;
   {
-    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-    if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
-      retained_ensure_display = true;
-      retained_failure_count = g_ensure_display_failure_count;
+    std::unique_lock<std::mutex> lock(g_ensure_display_state_mutex);
+    g_ensure_display_state_cv.wait(lock, []() {
+      return !g_ensure_display_lifetime.removal_in_progress();
+    });
+    if (g_ensure_display_lifetime.retained() &&
+        guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+      if (const auto generation = g_ensure_display_lifetime.acquire()) {
+        result.tracks_temporary_for_probe = true;
+        result.temporary_generation = *generation;
+        retained_ensure_display = true;
+      }
     }
   }
 
@@ -7686,10 +7715,8 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
         result.temporary_guid,
         "retained Sunshine encoder-probe display"
       )) {
-    result.tracks_temporary_for_probe = true;
     wait_for_sunshine_ensure_target(result, std::chrono::seconds(3));
-    BOOST_LOG(info) << "Reusing retained temporary virtual display for encoder probing (failure_count="
-                    << retained_failure_count << ", readiness="
+    BOOST_LOG(info) << "Reusing temporary virtual display for the active encoder probe (readiness="
                     << static_cast<int>(result.readiness)
                     << ", display_name='"
                     << (result.display_name.empty() ? std::string("<pending>") : result.display_name)
@@ -7698,16 +7725,13 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   }
 
   if (retained_ensure_display) {
-    if (is_virtual_display_guid_tracked(result.temporary_guid) &&
-        !remove_virtual_display_impl(result.temporary_guid, false)) {
+    cleanup_ensure_display(result);
+    result.tracks_temporary_for_probe = false;
+    result.temporary_generation = 0;
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (g_ensure_display_lifetime.retained()) {
       BOOST_LOG(error) << "Failed to remove stale owned Sunshine encoder-probe display.";
       return result;
-    }
-    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-    if (g_ensure_display_retained && guid_equal(g_ensure_display_guid, result.temporary_guid)) {
-      g_ensure_display_retained = false;
-      g_ensure_display_failure_count = 0;
-      std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
     }
     BOOST_LOG(debug) << "Ensure display retention state was stale; creating a fresh temporary display.";
   }
@@ -7785,11 +7809,21 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   result.created_temporary = true;
   result.tracks_temporary_for_probe = true;
   result.readiness = ensure_display_readiness_e::request_retained;
+  bool lifetime_published = false;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-    g_ensure_display_retained = true;
-    g_ensure_display_guid = result.temporary_guid;
-    g_ensure_display_failure_count = 0;
+    const auto generation = g_ensure_display_lifetime.begin_lifetime();
+    if (generation) {
+      result.temporary_generation = *generation;
+      g_ensure_display_guid = result.temporary_guid;
+      lifetime_published = true;
+    }
+  }
+  if (!lifetime_published) {
+    result.tracks_temporary_for_probe = false;
+    BOOST_LOG(error) << "Could not publish Sunshine encoder-probe display ownership.";
+    (void) removeVirtualDisplay(result.temporary_guid);
+    return result;
   }
 
   // CCD and DXGI are distinct enumeration paths. Require the exact retained
@@ -7809,60 +7843,41 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   return result;
 }
 
-void VDISPLAY_SUNSHINE::cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown) {
-  if (!result.tracks_temporary_for_probe) {
+void VDISPLAY_SUNSHINE::cleanup_ensure_display(const ensure_display_result &result) {
+  if (!VDISPLAY::policy::should_cleanup_temporary_probe(result.tracks_temporary_for_probe)) {
     return;
   }
 
   GUID guid_to_remove {};
-  bool should_remove = false;
-  int failure_count = 0;
+  VDISPLAY::policy::probe_display_release_action action =
+    VDISPLAY::policy::probe_display_release_action::ignored;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
 
-    if (!g_ensure_display_retained || !guid_equal(g_ensure_display_guid, result.temporary_guid)) {
+    if (!g_ensure_display_lifetime.retained() ||
+        !guid_equal(g_ensure_display_guid, result.temporary_guid)) {
       return;
     }
 
-    if (probe_succeeded) {
-      g_ensure_display_failure_count = 0;
-      if (allow_temporary_teardown) {
-        guid_to_remove = g_ensure_display_guid;
-        g_ensure_display_retained = false;
-        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
-        should_remove = true;
-      }
-    } else {
-      ++g_ensure_display_failure_count;
-      failure_count = g_ensure_display_failure_count;
-      if (allow_temporary_teardown && g_ensure_display_failure_count >= ENSURE_DISPLAY_MAX_RETRY_FAILURES) {
-        guid_to_remove = g_ensure_display_guid;
-        g_ensure_display_retained = false;
-        g_ensure_display_failure_count = 0;
-        std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
-        should_remove = true;
-      }
-    }
+    action = g_ensure_display_lifetime.release(result.temporary_generation);
+    guid_to_remove = g_ensure_display_guid;
   }
 
-  if (!probe_succeeded) {
-    if (should_remove) {
-      BOOST_LOG(warning) << "Encoder probe failed " << ENSURE_DISPLAY_MAX_RETRY_FAILURES
-                         << " times with retained temporary display; resetting it.";
-    } else {
-      BOOST_LOG(info) << "Keeping temporary virtual display for probe retry (failure "
-                      << failure_count << '/' << ENSURE_DISPLAY_MAX_RETRY_FAILURES << ").";
-    }
-  }
-
-  if (!should_remove) {
-    if (probe_succeeded && !allow_temporary_teardown) {
-      BOOST_LOG(debug) << "Temporary virtual display retained because teardown is currently disallowed.";
-    }
+  g_ensure_display_state_cv.notify_all();
+  if (action != VDISPLAY::policy::probe_display_release_action::remove) {
     return;
   }
 
-  if (!removeVirtualDisplay(guid_to_remove)) {
+  const bool removed = removeVirtualDisplay(guid_to_remove);
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    g_ensure_display_lifetime.complete_removal(result.temporary_generation, removed);
+    if (removed && !g_ensure_display_lifetime.retained()) {
+      std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+    }
+  }
+  g_ensure_display_state_cv.notify_all();
+  if (!removed) {
     BOOST_LOG(warning) << "Failed to remove temporary virtual display.";
   } else {
     BOOST_LOG(info) << "Removed temporary virtual display.";
@@ -7873,7 +7888,7 @@ bool VDISPLAY_SUNSHINE::has_retained_ensure_display() {
   GUID retained_guid {};
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-    if (!g_ensure_display_retained) {
+    if (!g_ensure_display_lifetime.retained()) {
       return false;
     }
     retained_guid = g_ensure_display_guid;
@@ -7885,19 +7900,30 @@ bool VDISPLAY_SUNSHINE::has_retained_ensure_display() {
 }
 
 void VDISPLAY_SUNSHINE::cleanup_retained_ensure_display() {
+  std::lock_guard<std::mutex> acquire_lock(g_ensure_display_acquire_mutex);
   GUID guid_to_remove {};
+  std::uint64_t removal_generation = 0;
   {
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-    if (!g_ensure_display_retained) {
+    const auto generation = g_ensure_display_lifetime.begin_idle_removal();
+    if (!generation) {
       return;
     }
+    removal_generation = *generation;
     guid_to_remove = g_ensure_display_guid;
-    g_ensure_display_retained = false;
-    g_ensure_display_failure_count = 0;
-    std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
   }
 
-  if (!removeVirtualDisplay(guid_to_remove)) {
+  const bool removed = removeVirtualDisplay(guid_to_remove);
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    g_ensure_display_lifetime.complete_removal(removal_generation, removed);
+    if (removed && !g_ensure_display_lifetime.retained()) {
+      std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+    }
+  }
+  g_ensure_display_state_cv.notify_all();
+  if (!removed) {
     BOOST_LOG(warning) << "Failed to remove retained Sunshine encoder-probe virtual display.";
+    return;
   }
 }

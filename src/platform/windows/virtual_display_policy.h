@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -22,19 +23,97 @@ namespace VDISPLAY::policy {
     return no_active_sessions;
   }
 
-  // An idle encoder-capability probe may retain its temporary display for
-  // reuse. Once the first stream starts, that idle ownership must be released
-  // so it cannot survive the session as an unrelated extra monitor. A physical
-  // stream that actually needs a probe display reacquires it through its own
-  // later ensure_display() call. Callers hold the stream lifecycle gate across
-  // this ownership transfer.
-  constexpr bool should_handoff_retained_probe_display(
-    const bool no_active_sessions,
-    const bool retained_probe_display,
-    const bool physical_restore_in_progress
-  ) noexcept {
-    return no_active_sessions && retained_probe_display && !physical_restore_in_progress;
+  // The temporary output created by ensure_display() is probe-scoped. Once a
+  // caller reaches any terminal probe path, it must release that output rather
+  // than cache it for an unrelated stream or later retry.
+  constexpr bool should_cleanup_temporary_probe(const bool tracks_temporary_for_probe) noexcept {
+    return tracks_temporary_for_probe;
   }
+
+  enum class probe_display_release_action : std::uint8_t {
+    ignored,
+    retained_for_other_probe,
+    remove,
+  };
+
+  // Tracks in-process users of the deterministic encoder-probe display. The
+  // display may be shared by overlapping startup/discovery probes, but only
+  // the final user is allowed to remove it. Generations fence a late cleanup
+  // from a later display that happens to reuse the same stable GUID.
+  class probe_display_lifetime_t {
+  public:
+    [[nodiscard]] std::optional<std::uint64_t> begin_lifetime() noexcept {
+      if (retained_) {
+        return std::nullopt;
+      }
+      ++generation_;
+      if (generation_ == 0) {
+        ++generation_;
+      }
+      retained_ = true;
+      removal_in_progress_ = false;
+      active_probes_ = 1;
+      return generation_;
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> acquire() noexcept {
+      if (!retained_ || removal_in_progress_) {
+        return std::nullopt;
+      }
+      ++active_probes_;
+      return generation_;
+    }
+
+    [[nodiscard]] probe_display_release_action release(const std::uint64_t generation) noexcept {
+      if (!retained_ || removal_in_progress_ || generation == 0 ||
+          generation != generation_ || active_probes_ == 0) {
+        return probe_display_release_action::ignored;
+      }
+      --active_probes_;
+      if (active_probes_ != 0) {
+        return probe_display_release_action::retained_for_other_probe;
+      }
+      removal_in_progress_ = true;
+      return probe_display_release_action::remove;
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> begin_idle_removal() noexcept {
+      if (!retained_ || removal_in_progress_ || active_probes_ != 0) {
+        return std::nullopt;
+      }
+      removal_in_progress_ = true;
+      return generation_;
+    }
+
+    void complete_removal(const std::uint64_t generation, const bool succeeded) noexcept {
+      if (!retained_ || !removal_in_progress_ || generation == 0 || generation != generation_) {
+        return;
+      }
+      removal_in_progress_ = false;
+      if (succeeded) {
+        retained_ = false;
+        active_probes_ = 0;
+      }
+    }
+
+    [[nodiscard]] bool retained() const noexcept {
+      return retained_;
+    }
+
+    [[nodiscard]] bool removal_in_progress() const noexcept {
+      return removal_in_progress_;
+    }
+
+    [[nodiscard]] std::size_t active_probes() const noexcept {
+      return active_probes_;
+    }
+
+  private:
+    std::uint64_t generation_ = 0;
+    std::size_t active_probes_ = 0;
+    bool retained_ = false;
+    bool removal_in_progress_ = false;
+  };
 
   constexpr bool allow_generic_resume_fallback() noexcept {
     return false;

@@ -3213,6 +3213,9 @@ namespace webrtc_stream {
 #ifdef _WIN32
         if (!video::has_successful_encoder_probe()) {
           VDISPLAY::ensure_display_result ensure_result {};
+          auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
+            VDISPLAY::cleanup_ensure_display(ensure_result);
+          });
 
           if (VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
             ensure_result = VDISPLAY::ensure_display();
@@ -3222,7 +3225,6 @@ namespace webrtc_stream {
           }
 
           const bool probe_failed = video::probe_encoders();
-          VDISPLAY::cleanup_ensure_display(ensure_result, !probe_failed);
           if (probe_failed) {
             return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
           }

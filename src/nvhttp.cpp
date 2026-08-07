@@ -344,20 +344,15 @@ namespace nvhttp {
 #endif
 
       auto ensure_result = VDISPLAY::ensure_display(idle_virtual_required_adapter);
+      auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
+        VDISPLAY::cleanup_ensure_display(ensure_result);
+      });
       if (!ensure_result.ready_for_probe()) {
-        // A driver-accepted target without a Windows identity must not remain
-        // indefinitely retained by an idle discovery request. Keep the
-        // existing bounded retry policy, while allowing a later request to
-        // create a fresh target after the retry budget is exhausted.
-        VDISPLAY::cleanup_ensure_display(ensure_result, false, true);
         BOOST_LOG(info)
           << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
         return publish(std::move(caps), false, "target-pending");
       }
       caps = video::advertised_encoder_capabilities(true, &probe_complete);
-      if (ensure_result.tracks_temporary_for_probe) {
-        BOOST_LOG(debug) << "Retaining temporary virtual display created for HTTP encoder capability probing.";
-      }
       return publish(std::move(caps), probe_complete, "idle-probe");
     }
 
@@ -1169,29 +1164,6 @@ namespace nvhttp {
               launch_session->virtual_display_hdr_enabled.reset();
               apply_framegen_refresh_policy(false);
               return;
-            }
-          }
-
-          const bool retained_probe_display = VDISPLAY::has_retained_ensure_display();
-          if (no_active_sessions && retained_probe_display) {
-            // Confirm the live helper state without reusing the generic stream
-            // start deadline: that deadline only bounds waiting for the helper
-            // mutex and does not itself mean a physical restore is active.
-            const bool physical_restore_in_progress =
-              display_helper_integration::restore_in_progress();
-            // Idle HTTP discovery intentionally retains its encoder-probe display
-            // while the host has no sessions. Release that idle ownership after
-            // the helper's restore/disarm admission and before this session owns a
-            // display. A physical session that needs a probe display reacquires it
-            // through its later ensure_display() call.
-            if (VDISPLAY::policy::should_handoff_retained_probe_display(
-                  no_active_sessions,
-                  retained_probe_display,
-                  physical_restore_in_progress)) {
-              BOOST_LOG(info) << "Removing retained encoder-probe virtual display before first session preparation.";
-              VDISPLAY::cleanup_retained_ensure_display();
-            } else {
-              BOOST_LOG(info) << "Deferring retained encoder-probe virtual display removal while physical display restoration is in progress.";
             }
           }
 
@@ -3529,22 +3501,26 @@ namespace nvhttp {
 #ifdef _WIN32
       bool encoder_probe_failed = false;
       bool probe_display_unavailable = false;
-      VDISPLAY::ensure_display_result ensure_result {};
       if (!video::has_successful_encoder_probe()) {
-        if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
-          // Let APPLY settle when possible, but capability probing remains
-          // adapter-scoped and does not turn a soft display gate into a 503.
-          wait_for_probe_helper_settle(launch_session, display_startup_deadline);
-        } else {
-          ensure_result = VDISPLAY::ensure_display();
-          probe_display_unavailable = !ensure_result.ready_for_probe();
-        }
+        {
+          VDISPLAY::ensure_display_result ensure_result {};
+          auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
+            VDISPLAY::cleanup_ensure_display(ensure_result);
+          });
+          if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
+            // Let APPLY settle when possible, but capability probing remains
+            // adapter-scoped and does not turn a soft display gate into a 503.
+            wait_for_probe_helper_settle(launch_session, display_startup_deadline);
+          } else {
+            ensure_result = VDISPLAY::ensure_display();
+            probe_display_unavailable = !ensure_result.ready_for_probe();
+          }
 
-        if (!probe_display_unavailable) {
-          encoder_probe_failed = video::probe_encoders();
-          VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
-        } else {
-          encoder_probe_failed = true;
+          if (!probe_display_unavailable) {
+            encoder_probe_failed = video::probe_encoders();
+          } else {
+            encoder_probe_failed = true;
+          }
         }
       } else {
         BOOST_LOG(debug) << "Launch encoder probe skipped (matching selected-GPU cache).";
@@ -4063,20 +4039,24 @@ namespace nvhttp {
 #ifdef _WIN32
       bool encoder_probe_failed = false;
       bool probe_display_unavailable = false;
-      VDISPLAY::ensure_display_result ensure_result {};
       if (!video::has_successful_encoder_probe()) {
-        if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
-          wait_for_probe_helper_settle(launch_session, display_startup_deadline);
-        } else {
-          ensure_result = VDISPLAY::ensure_display();
-          probe_display_unavailable = !ensure_result.ready_for_probe();
-        }
+        {
+          VDISPLAY::ensure_display_result ensure_result {};
+          auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
+            VDISPLAY::cleanup_ensure_display(ensure_result);
+          });
+          if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
+            wait_for_probe_helper_settle(launch_session, display_startup_deadline);
+          } else {
+            ensure_result = VDISPLAY::ensure_display();
+            probe_display_unavailable = !ensure_result.ready_for_probe();
+          }
 
-        if (!probe_display_unavailable) {
-          encoder_probe_failed = video::probe_encoders();
-          VDISPLAY::cleanup_ensure_display(ensure_result, !encoder_probe_failed, false);
-        } else {
-          encoder_probe_failed = true;
+          if (!probe_display_unavailable) {
+            encoder_probe_failed = video::probe_encoders();
+          } else {
+            encoder_probe_failed = true;
+          }
         }
       } else {
         BOOST_LOG(debug) << "Resume encoder probe skipped (matching selected-GPU cache).";

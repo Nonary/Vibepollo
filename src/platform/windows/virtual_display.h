@@ -242,10 +242,18 @@ namespace VDISPLAY {
     target_ready,
   };
 
+  enum class ensure_display_backend_e : std::uint8_t {
+    none,
+    sunshine,
+    sudovda,
+  };
+
   struct ensure_display_result {
     ensure_display_readiness_e readiness = ensure_display_readiness_e::unavailable;
+    ensure_display_backend_e backend = ensure_display_backend_e::none;
     bool created_temporary = false;
     bool tracks_temporary_for_probe = false;
+    std::uint64_t temporary_generation = 0;
     GUID temporary_guid {};
     std::string device_id;
     std::string display_name;
@@ -272,12 +280,12 @@ namespace VDISPLAY {
   std::optional<std::string> resolveUsableDisplayName(const std::string &device_id);
 
   /**
-   * @brief Cleans up temporary display created by ensure_display().
+   * @brief Removes the temporary display created by a completed ensure_display() probe.
    * @param result The result from ensure_display() call.
-   * @param probe_succeeded True when probe finished successfully.
-   * @param allow_temporary_teardown False keeps the temporary display retained.
+   * @details Probe displays have no idle owner. Call this on every terminal
+   *          probe path, including unavailable and failed probes.
    */
-  void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
+  void cleanup_ensure_display(const ensure_display_result &result);
 
   /**
    * @brief Removes the retained encoder-probe temporary display, if any.

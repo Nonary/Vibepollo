@@ -40,35 +40,65 @@ TEST(VirtualDisplayCleanupPolicy, SudoVdaAcceptedProvenanceOwnsUnenumeratedGuid)
   EXPECT_TRUE(VDISPLAY::policy::retained_target_is_owned(false, true));
 }
 
-TEST(VirtualDisplayCleanupPolicy, RetainedProbeTransfersToFirstSession) {
-  // Before the handoff policy, a successful idle HTTP probe retained
-  // "Sunshine Temporary" after a first physical or virtual session started.
-  EXPECT_TRUE(VDISPLAY::policy::should_handoff_retained_probe_display(
-    true,
-    true,
-    false
-  ));
+TEST(VirtualDisplayCleanupPolicy, CompletedProbeAlwaysReleasesItsTemporaryDisplay) {
+  EXPECT_TRUE(VDISPLAY::policy::should_cleanup_temporary_probe(true));
+  EXPECT_FALSE(VDISPLAY::policy::should_cleanup_temporary_probe(false));
 }
 
-TEST(VirtualDisplayCleanupPolicy, RetainedProbeStaysOutsideFirstSessionHandoff) {
-  // Do not remove an idle probe while another active or pending session owns
-  // the lifecycle, when no retained probe exists, or while physical restore is
-  // in progress.
-  EXPECT_FALSE(VDISPLAY::policy::should_handoff_retained_probe_display(
-    false,
-    true,
-    false
-  ));
-  EXPECT_FALSE(VDISPLAY::policy::should_handoff_retained_probe_display(
-    true,
-    false,
-    false
-  ));
-  EXPECT_FALSE(VDISPLAY::policy::should_handoff_retained_probe_display(
-    true,
-    true,
-    true
-  ));
+TEST(VirtualDisplayCleanupPolicy, SharedProbeDisplayIsRemovedByItsLastUser) {
+  VDISPLAY::policy::probe_display_lifetime_t lifetime;
+  const auto first = lifetime.begin_lifetime();
+  const auto second = lifetime.acquire();
+
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  EXPECT_EQ(*first, *second);
+  EXPECT_EQ(lifetime.active_probes(), 2u);
+  EXPECT_FALSE(lifetime.begin_idle_removal());
+  EXPECT_EQ(
+    lifetime.release(*first),
+    VDISPLAY::policy::probe_display_release_action::retained_for_other_probe
+  );
+  EXPECT_TRUE(lifetime.retained());
+  EXPECT_EQ(
+    lifetime.release(*second),
+    VDISPLAY::policy::probe_display_release_action::remove
+  );
+  EXPECT_TRUE(lifetime.removal_in_progress());
+  EXPECT_FALSE(lifetime.acquire());
+  lifetime.complete_removal(*second, true);
+  EXPECT_FALSE(lifetime.retained());
+}
+
+TEST(VirtualDisplayCleanupPolicy, FailedRemovalCanBeRetriedWithoutAcceptingStaleCleanup) {
+  VDISPLAY::policy::probe_display_lifetime_t lifetime;
+  const auto first = lifetime.begin_lifetime();
+  ASSERT_TRUE(first);
+  ASSERT_EQ(
+    lifetime.release(*first),
+    VDISPLAY::policy::probe_display_release_action::remove
+  );
+
+  lifetime.complete_removal(*first, false);
+  const auto idle_retry = lifetime.begin_idle_removal();
+  ASSERT_TRUE(idle_retry);
+  EXPECT_EQ(*idle_retry, *first);
+  lifetime.complete_removal(*idle_retry, false);
+  const auto retry = lifetime.acquire();
+  ASSERT_TRUE(retry);
+  EXPECT_EQ(*retry, *first);
+  EXPECT_EQ(lifetime.release(*first), VDISPLAY::policy::probe_display_release_action::remove);
+  lifetime.complete_removal(*first, true);
+  EXPECT_FALSE(lifetime.retained());
+
+  const auto replacement = lifetime.begin_lifetime();
+  ASSERT_TRUE(replacement);
+  EXPECT_NE(*replacement, *first);
+  EXPECT_EQ(
+    lifetime.release(*first),
+    VDISPLAY::policy::probe_display_release_action::ignored
+  );
+  EXPECT_EQ(lifetime.active_probes(), 1u);
 }
 
 TEST(VirtualDisplayCleanupPolicy, DatabaseFallbackRemainsAfterVirtualCleanup) {

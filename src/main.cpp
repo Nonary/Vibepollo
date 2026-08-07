@@ -682,19 +682,17 @@ int main(int argc, char *argv[]) {
       }
 
       // Ensure the selected adapter has a usable output before a cold probe.
-      // A driver-accepted target may need another pass while CCD/DXGI catches
-      // up, so keep the retry worker alive instead of requiring a service
-      // restart.
+      // The temporary probe target is scoped to this attempt; a later launch
+      // will create the client display it actually needs.
       auto encoder_probe_display_result = VDISPLAY::ensure_display();
       if (!encoder_probe_display_result.ready_for_probe()) {
+        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
         BOOST_LOG(info)
-          << "Startup encoder probe deferred until the exact display target has a usable name and is visible through DXGI.";
-        std::this_thread::sleep_for(250ms);
-        continue;
+          << "Startup encoder probe skipped because the exact display target did not become usable.";
+        return;
       }
-      bool encoder_probe_succeeded = false;
-      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
-        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
+      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
+        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);
       });
 
       if (shutdown_event->peek()) {
@@ -710,13 +708,15 @@ int main(int argc, char *argv[]) {
       if (encoder_probe_failed && !shutdown_event->peek()) {
         BOOST_LOG(info) << "Startup encoder probe failed; rechecking exact display readiness before retry.";
         auto retry_display_result = VDISPLAY::ensure_display();
+        auto cleanup_retry_display = util::fail_guard([&retry_display_result]() {
+          VDISPLAY::cleanup_ensure_display(retry_display_result);
+        });
         if (retry_display_result.ready_for_probe()) {
           BOOST_LOG(info) << "Exact display target became ready; retrying startup encoder probe.";
           encoder_probe_failed = video::probe_encoders();
         }
       }
 
-      encoder_probe_succeeded = !encoder_probe_failed;
 #endif
 
       if (encoder_probe_failed) {
