@@ -4203,6 +4203,104 @@ playnite_exclude_categories = ["Steam", {"id": "deck", "name": "Steam Deck"}]
     </tr>
 </table>
 
+## Advanced runtime and recovery options
+
+### amd_ltr_frames
+
+Sets the number of long-term reference frames used by the native AMD encoder. Leave this at the automatic default unless a client or driver-specific recovery workflow requires a fixed value.
+
+### amd_input_queue_size
+
+Sets the native AMD encoder input queue depth. A positive explicit value overrides automatic low-latency queue selection.
+
+### amd_smart_access_video
+
+Controls AMD SmartAccess Video when the installed AMF runtime exposes that capability. Use `auto` to leave the driver default unchanged.
+
+### amd_lowlatency_mode
+
+Controls AMD's native encoder low-latency mode. Use `auto` to leave the driver default unchanged.
+
+### amd_high_motion_quality_boost
+
+Controls AMD's high-motion quality boost. Use `auto` to leave the driver default unchanged.
+
+### dd_paused_virtual_display_timeout_secs
+
+Sets how long a paused virtual display may remain ready before the display helper releases it. Set `0` to disable the timeout.
+
+### dd_virtual_display_scale
+
+Sets the virtual-display scale override. Leave it unset or at the automatic setting to use the recommended scale for the requested display mode.
+
+### dd_wa_hdr_toggle
+
+Enables the display-helper HDR-toggle workaround for display stacks that require an explicit HDR transition.
+
+### dd_wa_hdr_toggle_delay
+
+Sets the delay, in milliseconds, used by the display-helper HDR-toggle workaround.
+
+### lossless_scaling_legacy_auto_detect
+
+Enables legacy automatic discovery of Lossless Scaling when no explicit `lossless_scaling_path` is configured.
+
+### realtime_stats_enabled
+
+Enables collection of the host and session statistics shown by the real-time statistics view.
+
+### realtime_stats_poll_interval_ms
+
+Sets the real-time statistics polling interval in milliseconds. Lower values refresh the dashboard more frequently.
+
+### rtx_hdr
+
+Enables RTX HDR processing when the active NVIDIA environment supports it.
+
+### rtx_hdr_force_sdr
+
+Forces the source display to remain SDR while RTX HDR performs the SDR-to-HDR conversion.
+
+### rtx_hdr_sdr_brightness
+
+Sets the RTX HDR SDR brightness control.
+
+### rtx_hdr_contrast
+
+Sets the RTX HDR contrast control.
+
+### rtx_hdr_saturation
+
+Sets the RTX HDR saturation control.
+
+### rtx_hdr_middle_gray
+
+Sets the RTX HDR middle-gray control.
+
+### rtx_hdr_peak_brightness
+
+Sets the RTX HDR peak-brightness control.
+
+### session_history_enabled
+
+Enables persistent session-history recording.
+
+### session_history_ttl_days
+
+Sets the number of days to retain session-history records. Set `0` to retain records until another configured limit removes them.
+
+### session_history_db_size_limit_mb
+
+Sets the maximum on-disk size, in MiB, of the session-history database before older records are pruned.
+
+### vulkan_hdr_layer
+
+Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture support is available.
+
+### wgc_pacing_smoothing
+
+Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
+
 <div class="section_buttons">
 
 | Previous          |                            Next |
