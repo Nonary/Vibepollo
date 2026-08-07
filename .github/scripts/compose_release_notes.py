@@ -46,10 +46,15 @@ def release_notes(notes_dir: Path, release_version: str) -> list[tuple[tuple[int
             key = version_key(version)
         except ValueError:
             continue
-        if key[:3] == target_line and key <= target_key:
+        is_stable_release = key[3] == 40
+        if (
+            key[:3] == target_line
+            and key <= target_key
+            and (is_stable_release if target_key[3] == 40 else version == release_version)
+        ):
             notes.append((key, version, path))
 
-    return sorted(notes, key=lambda note: note[0], reverse=True)
+    return sorted(notes, key=lambda note: note[0])
 
 
 def body_without_title(content: str) -> str:
@@ -59,10 +64,81 @@ def body_without_title(content: str) -> str:
     return "\n".join(lines).strip()
 
 
+def split_sections(body: str) -> tuple[str, list[tuple[str, str]]]:
+    preamble: list[str] = []
+    sections: list[tuple[str, str]] = []
+    heading: str | None = None
+    lines: list[str] = []
+
+    for line in body.splitlines():
+        if line.startswith("## "):
+            if heading is not None:
+                sections.append((heading, "\n".join(lines).strip()))
+            heading = line[3:].strip()
+            lines = []
+        elif heading is None:
+            preamble.append(line)
+        else:
+            lines.append(line)
+
+    if heading is not None:
+        sections.append((heading, "\n".join(lines).strip()))
+
+    return "\n".join(preamble).strip(), sections
+
+
+def content_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    prose: list[str] = []
+    bullet: list[str] = []
+
+    def flush_prose() -> None:
+        if (block := "\n".join(prose).strip()):
+            blocks.append(block)
+        prose.clear()
+
+    def flush_bullet() -> None:
+        if (block := "\n".join(bullet).strip()):
+            blocks.append(block)
+        bullet.clear()
+
+    for line in content.splitlines():
+        if line.startswith("- "):
+            flush_prose()
+            flush_bullet()
+            bullet.append(line)
+        elif bullet and (not line.strip() or line.startswith(("  ", "\t"))):
+            bullet.append(line)
+        elif bullet:
+            flush_bullet()
+            prose.append(line)
+        else:
+            prose.append(line)
+
+    flush_bullet()
+    flush_prose()
+    return blocks
+
+
+def normalized(block: str) -> str:
+    return " ".join(block.split())
+
+
+def unique_content(content: str, seen: set[str]) -> str:
+    unique_blocks: list[str] = []
+    for block in content_blocks(content):
+        key = normalized(block)
+        if key and key not in seen:
+            seen.add(key)
+            unique_blocks.append(block)
+    return "\n\n".join(unique_blocks)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release-version", required=True)
     parser.add_argument("--notes-dir", type=Path, default=Path("release_notes"))
+    parser.add_argument("--product-name", default="Vibeshine")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -72,20 +148,36 @@ def main() -> None:
     if current is None:
         raise SystemExit(f"No exact release note found for {release_version} in {args.notes_dir}.")
 
-    current_body = body_without_title(current.read_text(encoding="utf-8"))
-    sections = []
-    for _, version, path in notes:
-        body = body_without_title(path.read_text(encoding="utf-8"))
-        sections.append(f"## {version}\n\n{body}" if body else f"## {version}")
+    target_line = ".".join(str(part) for part in version_key(release_version)[:3])
+    seen: set[str] = set()
+    rendered_notes: list[str] = []
+    for index, (_, version, path) in enumerate(notes):
+        preamble, sections = split_sections(body_without_title(path.read_text(encoding="utf-8")))
+        rendered_sections: list[str] = []
+        for heading, content in sections:
+            if index == 0:
+                unique_content(content, seen)
+                rendered_content = content
+            else:
+                rendered_content = unique_content(content, seen)
+            if rendered_content:
+                rendered_sections.append(f"### {heading}\n\n{rendered_content}")
+
+        if index == 0:
+            unique_content(preamble, seen)
+            parts = [f"## {version}"]
+            if preamble:
+                parts.append(preamble)
+            parts.extend(rendered_sections)
+            rendered_notes.append("\n\n".join(parts))
+        elif rendered_sections:
+            rendered_notes.append(f"## {version}\n\n" + "\n\n".join(rendered_sections))
 
     public_body = "\n\n".join(
         (
-            "<!-- vibeshine-changelog:begin -->",
-            current_body,
-            "<!-- vibeshine-changelog:end -->",
-            f"# Vibeshine {release_version}",
-            "These release notes include every tagged change in this release line through this version.",
-            "\n\n".join(sections),
+            f"# {args.product_name} {release_version}",
+            f"These release notes cover the stable {target_line} releases, from the original stable release through this update.",
+            "\n\n".join(rendered_notes),
         )
     ).strip() + "\n"
     args.output.write_text(public_body, encoding="utf-8")
