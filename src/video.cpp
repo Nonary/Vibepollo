@@ -47,6 +47,7 @@ extern "C" {
 #include "process.h"
 #include "sync.h"
 #include "video.h"
+#include "video_encoder_probe_policy.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -752,11 +753,24 @@ namespace video {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
 
+      const auto policy_key = encoder_probe_policy::cache_key_t {
+        .encoder_configuration = key.encoder_configuration,
+        .adapter_identity = key.adapter_identity,
+        .adapter_identity_resolved = key.adapter_identity_resolved,
+      };
+      const auto policy_cached_key = state.cache_key ?
+                                       std::optional<encoder_probe_policy::cache_key_t> {
+                                         encoder_probe_policy::cache_key_t {
+                                           .encoder_configuration = state.cache_key->encoder_configuration,
+                                           .adapter_identity = state.cache_key->adapter_identity,
+                                           .adapter_identity_resolved = state.cache_key->adapter_identity_resolved,
+                                         }
+                                       } :
+                                       std::nullopt;
+
       // Check if we have a valid cached success
-      if (key.adapter_identity_resolved &&
-          state.valid &&
-          state.cache_key &&
-          *state.cache_key == key &&
+      if (state.valid &&
+          encoder_probe_policy::cache_key_matches(policy_key, policy_cached_key) &&
           (!want_hdr || state.hdr_supported)) {
         const bool hevc_supported = state.hevc_passed && (!want_hevc_hdr || state.hevc_hdr_supported);
         const bool av1_supported = state.av1_passed && (!want_av1_hdr || state.av1_hdr_supported);
@@ -6435,26 +6449,47 @@ namespace video {
     const bool av1_passed = encoder.av1[encoder_t::PASSED];
     const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
-    // A pending or configured adapter may select an existing truthful entry,
-    // but only the display that performed validation can own a new positive.
     auto successful_cache_key = cache_key;
 #ifdef _WIN32
-    if (successful_probe_adapter) {
-      successful_cache_key.adapter_identity = adapter_cache_identity(*successful_probe_adapter);
-      successful_cache_key.adapter_identity_source = "actual-probe-display";
-      successful_cache_key.adapter_identity_resolved = true;
-    } else {
+    const auto required_adapter_identity = required_adapter ?
+                                             std::optional<std::string> {
+                                               adapter_cache_identity(*required_adapter)
+                                             } :
+                                             std::nullopt;
+    const auto observed_adapter_identity = successful_probe_adapter ?
+                                             std::optional<std::string> {
+                                               adapter_cache_identity(*successful_probe_adapter)
+                                             } :
+                                             std::nullopt;
+    const auto owned_cache_key = encoder_probe_policy::own_successful_cache_key(
+      encoder_probe_policy::cache_key_t {
+        .encoder_configuration = cache_key.encoder_configuration,
+        .adapter_identity = cache_key.adapter_identity,
+        .adapter_identity_resolved = cache_key.adapter_identity_resolved,
+      },
+      encoder_probe_policy::probe_observation_t {
+        .required_adapter = required_adapter_identity,
+        .observed_adapter = observed_adapter_identity,
+      }
+    );
+    if (!owned_cache_key) {
+      // Preserve the existing retry/non-required-adapter behavior: an explicit
+      // adapter mismatch fails the probe, while an Automatic probe with no
+      // observed identity clears any positive cache entry without publishing a
+      // cache hit. Neither path may claim ownership for the pending hint.
+      if (required_adapter) {
+        BOOST_LOG(error)
+          << "Encoder validation did not produce an observed adapter matching its required adapter; refusing to publish or cache its selection.";
+        update_probe_cache(cache_key, false, false, false, false, false, false);
+        return -1;
+      }
       successful_cache_key.adapter_identity = "unresolved-actual-probe-adapter";
       successful_cache_key.adapter_identity_source = "actual-probe-display-unavailable";
       successful_cache_key.adapter_identity_resolved = false;
-    }
-
-    if (required_adapter &&
-        (!successful_probe_adapter || *successful_probe_adapter != *required_adapter)) {
-      BOOST_LOG(error)
-        << "Encoder validation did not complete on the required adapter; refusing to publish or cache its selection.";
-      update_probe_cache(cache_key, false, false, false, false, false, false);
-      return -1;
+    } else {
+      successful_cache_key.adapter_identity = owned_cache_key->adapter_identity;
+      successful_cache_key.adapter_identity_source = "actual-probe-display";
+      successful_cache_key.adapter_identity_resolved = owned_cache_key->adapter_identity_resolved;
     }
 #endif
     const advertised_encoder_capabilities_t successful_capabilities {

@@ -61,6 +61,16 @@ namespace VDISPLAY::policy {
     return !ensure_display_client;
   }
 
+  // A retained target remains owned after the driver accepts it, even when
+  // Windows has not published a monitor/tracker entry yet. Sunshine supplies
+  // a lease here; SudoVDA supplies accepted render-adapter provenance.
+  constexpr bool retained_target_is_owned(
+    const bool tracked_by_windows,
+    const bool driver_owned
+  ) noexcept {
+    return tracked_by_windows || driver_owned;
+  }
+
   constexpr bool accept_enumerated_target(
     const std::chrono::steady_clock::duration elapsed_since_enumeration
   ) noexcept {

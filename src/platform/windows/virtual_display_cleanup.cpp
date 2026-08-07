@@ -143,37 +143,48 @@ namespace platf::virtual_display_cleanup {
       }
     };
 
-    if (enforce_db_restore && revert_order == revert_order_t::restore_before_remove) {
-      try_helper_revert();
-    }
+    bool teardown_completed = false;
+    bool teardown_waited = false;
+    const auto wait_for_teardown_before_restore = [&]() {
+      if (teardown_waited || result.helper_revert_dispatched || !teardown_completed ||
+          !had_active_virtual_display || !enforce_db_restore) {
+        return;
+      }
+      constexpr auto kTeardownSettleTimeout = std::chrono::seconds(5);
+      if (wait_for_virtual_display_teardown(kTeardownSettleTimeout)) {
+        BOOST_LOG(debug) << "Virtual display cleanup: teardown settled before restore.";
+      }
+      teardown_waited = true;
+    };
 
     // Keep the retained probe display alive for restore-before-remove callers,
     // but remove it in the normal remove-before-restore order with the other
     // virtual displays. This also covers a driver-accepted target that has
     // not yet appeared in Windows enumeration.
-    VDISPLAY::cleanup_retained_ensure_display();
-
-    const bool specific_display_removed = remove_specific_virtual_display(virtual_display_guid_bytes);
-    const bool tracked_displays_removed = VDISPLAY::removeAllVirtualDisplays();
-    result.virtual_displays_removed = specific_display_removed && tracked_displays_removed;
-    const bool should_wait_for_teardown_before_restore =
-      had_active_virtual_display &&
-      enforce_db_restore &&
-      (revert_order == revert_order_t::remove_before_restore || !result.helper_revert_dispatched);
-    if (should_wait_for_teardown_before_restore) {
-      constexpr auto kTeardownSettleTimeout = std::chrono::seconds(5);
-      if (wait_for_virtual_display_teardown(kTeardownSettleTimeout)) {
-        BOOST_LOG(debug) << "Virtual display cleanup: teardown settled before restore.";
-      }
-    }
-
-    if (enforce_db_restore) {
-      if (revert_order == revert_order_t::remove_before_restore) {
-        try_helper_revert();
-      }
-
-      if (!result.helper_revert_dispatched) {
-        result.database_restore_applied = restore_windows_display_database();
+    for (const auto step : ordered_restore_steps(revert_order)) {
+      switch (step) {
+        case cleanup_step_t::helper_revert:
+          wait_for_teardown_before_restore();
+          if (enforce_db_restore) {
+            try_helper_revert();
+          }
+          break;
+        case cleanup_step_t::retained_probe_remove:
+          VDISPLAY::cleanup_retained_ensure_display();
+          break;
+        case cleanup_step_t::explicit_display_remove: {
+          const bool specific_display_removed = remove_specific_virtual_display(virtual_display_guid_bytes);
+          const bool tracked_displays_removed = VDISPLAY::removeAllVirtualDisplays();
+          result.virtual_displays_removed = specific_display_removed && tracked_displays_removed;
+          teardown_completed = true;
+          break;
+        }
+        case cleanup_step_t::database_restore:
+          wait_for_teardown_before_restore();
+          if (enforce_db_restore && !result.helper_revert_dispatched) {
+            result.database_restore_applied = restore_windows_display_database();
+          }
+          break;
       }
     }
 

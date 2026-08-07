@@ -520,6 +520,7 @@ namespace VDISPLAY_SUNSHINE {
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
   bool has_retained_ensure_display();
+  void cleanup_retained_ensure_display();
 }  // namespace VDISPLAY_SUNSHINE
 
 namespace VDISPLAY_SUDOVDA {
@@ -588,6 +589,7 @@ namespace VDISPLAY_SUDOVDA {
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown);
   bool has_retained_ensure_display();
+  void cleanup_retained_ensure_display();
 }  // namespace VDISPLAY_SUDOVDA
 
 namespace {
@@ -901,18 +903,18 @@ namespace VDISPLAY {
   }
 
   bool has_retained_ensure_display() {
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::has_retained_ensure_display() : VDISPLAY_SUDOVDA::has_retained_ensure_display();
+    // A retained display can outlive a configuration switch between
+    // backends. Query both ownership registries instead of assuming the
+    // currently selected backend owns all retained state.
+    return VDISPLAY_SUNSHINE::has_retained_ensure_display() ||
+           VDISPLAY_SUDOVDA::has_retained_ensure_display();
   }
 
   void cleanup_retained_ensure_display() {
-    if (!has_retained_ensure_display()) {
-      return;
-    }
-
-    ensure_display_result result {};
-    result.tracks_temporary_for_probe = true;
-    const auto uuid = persistentVirtualDisplayUuid();
-    std::memcpy(&result.temporary_guid, uuid.b8, sizeof(result.temporary_guid));
-    cleanup_ensure_display(result, true, true);
+    // Each backend must remove the GUID it actually retained. Do not rebuild
+    // a persistent identity here: driver-accepted state can diverge from the
+    // deterministic probe UUID and may not be visible to Windows yet.
+    VDISPLAY_SUNSHINE::cleanup_retained_ensure_display();
+    VDISPLAY_SUDOVDA::cleanup_retained_ensure_display();
   }
 }  // namespace VDISPLAY

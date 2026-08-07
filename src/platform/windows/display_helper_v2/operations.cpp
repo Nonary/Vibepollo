@@ -220,12 +220,25 @@ namespace display_helper::v2 {
       outcome.status = ApplyStatus::InvalidRequest;
       return outcome;
     }
-    if (auto ready = topology_ready(topology, activation_target, false)) {
-      outcome.status = ApplyStatus::Ok;
-      outcome.applied_topology = std::move(ready);
-      return outcome;
+
+    // An APPLY that already has the exact requested topology does not need a
+    // SetDisplayConfig mutation. Keep this structural no-op fast path free of
+    // enumeration: a newly requested path may be visible to capture before
+    // Windows publishes it to the device list. Targetless RESTORE deliberately
+    // stays on the strict post-activation path below.
+    if (validation_mode == TopologyValidationMode::StrictApply) {
+      const auto current = display_.capture_topology();
+      if (display_.topology_is_valid(current) && display_.is_topology_same(topology, current)) {
+        outcome.status = ApplyStatus::Ok;
+        outcome.applied_topology = current;
+        return outcome;
+      }
     }
 
+    // Capture can expose a requested path before Windows makes it enumerable.
+    // Readiness therefore belongs after SetDisplayConfig, not in an APPLY
+    // preflight that would turn a valid delayed-publication transition into a
+    // recovery path.
     bool mutation_boundary_reached = false;
     const auto arm_mutation_boundary = [&]() {
       if (mutation_boundary_reached) {
@@ -291,7 +304,8 @@ namespace display_helper::v2 {
       // actually landed, so readiness is the authoritative result. A successful
       // call may also yield a valid OS-adjusted topology; accept it when the
       // configured target remains active, matching WinDisplayDevice/v1.
-      const bool allow_os_adjustment = apply_status == ApplyStatus::Ok;
+      const bool allow_os_adjustment = validation_mode == TopologyValidationMode::StrictApply &&
+                                       apply_status == ApplyStatus::Ok;
       if (auto applied_topology = wait_until_ready(
             topology,
             activation_target,

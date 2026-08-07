@@ -142,6 +142,7 @@ namespace VDISPLAY_SUNSHINE {
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
   bool has_retained_ensure_display();
+  void cleanup_retained_ensure_display();
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
 
@@ -7746,10 +7747,34 @@ void VDISPLAY_SUNSHINE::cleanup_ensure_display(const ensure_display_result &resu
 }
 
 bool VDISPLAY_SUNSHINE::has_retained_ensure_display() {
-  std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
-  if (!g_ensure_display_retained) {
-    return false;
+  GUID retained_guid {};
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (!g_ensure_display_retained) {
+      return false;
+    }
+    retained_guid = g_ensure_display_guid;
   }
-  return is_virtual_display_guid_tracked(g_ensure_display_guid) ||
-         driver_lease_tracker().get(guid_to_uuid(g_ensure_display_guid)).has_value();
+  return VDISPLAY::policy::retained_target_is_owned(
+    is_virtual_display_guid_tracked(retained_guid),
+    driver_lease_tracker().get(guid_to_uuid(retained_guid)).has_value()
+  );
+}
+
+void VDISPLAY_SUNSHINE::cleanup_retained_ensure_display() {
+  GUID guid_to_remove {};
+  {
+    std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
+    if (!g_ensure_display_retained) {
+      return;
+    }
+    guid_to_remove = g_ensure_display_guid;
+    g_ensure_display_retained = false;
+    g_ensure_display_failure_count = 0;
+    std::memset(&g_ensure_display_guid, 0, sizeof(g_ensure_display_guid));
+  }
+
+  if (!removeVirtualDisplay(guid_to_remove)) {
+    BOOST_LOG(warning) << "Failed to remove retained Sunshine encoder-probe virtual display.";
+  }
 }

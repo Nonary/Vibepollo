@@ -2734,8 +2734,8 @@ namespace stream {
 #endif
       // A restore is an asynchronous helper operation. It must keep the
       // virtual display alive while the helper restores the physical topology;
-      // virtual_display_cleanup::run() removes it before dispatching REVERT,
-      // which turns a restore request into a forced teardown.
+      // the teardown-only cleanup path removes it before any optional database
+      // fallback and is not used for this final restore request.
       const bool display_restore_requested =
         config::video.dd.config_revert_on_disconnect ||
         deferred_app_revert ||
