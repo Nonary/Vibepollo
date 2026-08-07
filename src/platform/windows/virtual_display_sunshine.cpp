@@ -7787,7 +7787,7 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   }
 
   if (retained_ensure_display) {
-    cleanup_ensure_display(result);
+    VDISPLAY_SUNSHINE::cleanup_ensure_display(result);
     result.tracks_temporary_for_probe = false;
     result.temporary_generation = 0;
     std::lock_guard<std::mutex> lock(g_ensure_display_state_mutex);
