@@ -173,6 +173,10 @@ namespace display_helper::v2 {
   struct DisarmCommand {
     std::uint64_t generation = 0;
     std::uint64_t connection_epoch = 0;
+    /// A real stream start must be able to supersede even an unconfirmed
+    /// restore. Non-forced DISARM remains available for speculative probes
+    /// that must not strand a partially applied recovery.
+    bool force = false;
   };
 
   struct ExportGoldenCommand {

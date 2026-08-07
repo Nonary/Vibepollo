@@ -5742,6 +5742,89 @@ namespace VDISPLAY_SUNSHINE {
 
     constexpr auto VIRTUAL_DISPLAY_STABILITY_RECHECK_DELAY = std::chrono::milliseconds(125);
 
+    enum class ExistingVirtualDisplayPresence {
+      missing,
+      inactive,
+      active,
+    };
+
+    ExistingVirtualDisplayPresence existing_virtual_display_presence(const std::uint64_t display_id) {
+      const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Minimal
+      );
+      if (!devices) {
+        return ExistingVirtualDisplayPresence::missing;
+      }
+
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device) ||
+            !matches_virtual_display_id_edid(device, display_id)) {
+          continue;
+        }
+        return device.m_info ?
+                 ExistingVirtualDisplayPresence::active :
+                 ExistingVirtualDisplayPresence::inactive;
+      }
+      return ExistingVirtualDisplayPresence::missing;
+    }
+
+    std::optional<std::string> existing_virtual_display_device_id(const std::uint64_t display_id) {
+      const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Minimal
+      );
+      if (!devices) {
+        return std::nullopt;
+      }
+      for (const auto &device : *devices) {
+        if (is_virtual_display_device(device) &&
+            matches_virtual_display_id_edid(device, display_id) &&
+            !device.m_device_id.empty()) {
+          return device.m_device_id;
+        }
+      }
+      return std::nullopt;
+    }
+
+    bool existing_virtual_display_supports_refresh(
+      const std::uint64_t display_id,
+      const std::uint32_t requested_refresh_millihz
+    ) {
+      if (requested_refresh_millihz == 0) {
+        return false;
+      }
+      const auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(
+        display_device::DeviceEnumerationDetail::Full
+      );
+      if (!devices) {
+        return false;
+      }
+      for (const auto &device : *devices) {
+        if (!is_virtual_display_device(device) ||
+            !matches_virtual_display_id_edid(device, display_id)) {
+          continue;
+        }
+        return std::any_of(
+          device.m_supported_refresh_rates.begin(),
+          device.m_supported_refresh_rates.end(),
+          [&](const display_device::Rational &refresh) {
+            if (refresh.m_denominator == 0) {
+              return false;
+            }
+            const auto rounded_millihz =
+              (static_cast<std::uint64_t>(refresh.m_numerator) * 1000ull + refresh.m_denominator / 2ull) /
+              refresh.m_denominator;
+            const auto requested = static_cast<std::uint64_t>(requested_refresh_millihz);
+            return rounded_millihz <= std::numeric_limits<std::uint32_t>::max() &&
+                   VDISPLAY::policy::refresh_matches(
+                     static_cast<std::uint32_t>(rounded_millihz),
+                     static_cast<std::uint32_t>(requested)
+                   );
+          }
+        );
+      }
+      return false;
+    }
+
     bool is_virtual_display_present(
       const std::optional<std::wstring> &display_name,
       const std::optional<std::string> &device_id
@@ -5957,7 +6040,36 @@ namespace VDISPLAY_SUNSHINE {
                 requested_uuid,
                 "securely reclaimed Sunshine virtual display"
               );
-            if (replace_existing || !reusable_with_current_provenance) {
+            const auto existing_presence = existing_virtual_display_presence(display_id);
+            // REVERT can leave the retained target present but inactive. Departing
+            // that PnP monitor and immediately arriving the same stable connector
+            // is precisely the Windows enumeration wedge reproduced by #397.
+            // Reclaim it in place and let the session APPLY reactivate it. Its
+            // driver display_id, EDID product/serial, and connector stay stable;
+            // the helper still applies the new session resolution and refresh.
+            const bool requested_refresh_available =
+              existing_presence == ExistingVirtualDisplayPresence::inactive &&
+              existing_virtual_display_supports_refresh(display_id, requested_fps);
+            const bool resurrect_inactive =
+              replace_existing &&
+              existing_presence == ExistingVirtualDisplayPresence::inactive &&
+              requested_refresh_available;
+            const auto reclaimed_plan =
+              VDISPLAY::policy::reclaimed_display_plan_for_session(
+                replace_existing,
+                existing_presence == ExistingVirtualDisplayPresence::inactive,
+                requested_refresh_available,
+                reusable_with_current_provenance
+              );
+            if (replace_existing &&
+                existing_presence == ExistingVirtualDisplayPresence::inactive &&
+                !requested_refresh_available) {
+              BOOST_LOG(info) << "Inactive Sunshine virtual display does not advertise the requested "
+                              << requested_fps << " mHz refresh; recreating its mode descriptor"
+                              << " (guid=" << requested_uuid.string()
+                              << ", display_id=" << display_id << ").";
+            }
+            if (reclaimed_plan.action == VDISPLAY::policy::reclaimed_display_action::recreate) {
               BOOST_LOG(info)
                 << "Securely releasing the prior owned virtual display before "
                 << (replace_existing ? "replacement" : "render-adapter-safe recreation")
@@ -5971,6 +6083,11 @@ namespace VDISPLAY_SUNSHINE {
               // the replacement create on the final transport.
               return std::nullopt;
             } else {
+              if (resurrect_inactive) {
+                BOOST_LOG(info) << "Securely reclaimed inactive Sunshine virtual display in place for session reactivation"
+                                << " (guid=" << requested_uuid.string()
+                                << ", display_id=" << display_id << ").";
+              }
               owner_capability = existing_capability;
               reclaimed_for_reuse = true;
             }
@@ -6093,7 +6210,7 @@ namespace VDISPLAY_SUNSHINE {
                              << " guid=" << requested_uuid.string() << " display_id=" << display_id;
         }
 
-        if (replace_existing) {
+        if (replace_existing && !reclaimed_for_reuse) {
           BOOST_LOG(warning) << "Sunshine temporary display create could not safely replace existing state for guid="
                              << requested_uuid.string() << "; no unowned display was evicted.";
           return std::nullopt;
@@ -6110,6 +6227,12 @@ namespace VDISPLAY_SUNSHINE {
           if (s_client_name && std::strlen(s_client_name) > 0) {
             device_id = resolveVirtualDisplayDeviceIdForClient(s_client_name);
           }
+        }
+        if (!device_id && reclaimed_for_reuse) {
+          // Inactive devices have no GDI name, and Windows may omit the friendly
+          // name used by the client resolver. The stable EDID product/serial is
+          // still present and is the authoritative identity for resurrection.
+          device_id = existing_virtual_display_device_id(display_id);
         }
 
         if (dpi_snapshot) {

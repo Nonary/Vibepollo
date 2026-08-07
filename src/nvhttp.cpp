@@ -55,6 +55,7 @@
 #include "update.h"
 #ifdef _WIN32
   #include "platform/windows/display.h"
+  #include "platform/windows/display_helper_request_policy.h"
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
@@ -1137,6 +1138,63 @@ namespace nvhttp {
         }
         if (allow_display_changes) {
           apply_framegen_refresh_policy(request_virtual_display);
+
+          if (request_virtual_display) {
+            // A new virtual-display session supersedes the prior session's restore.
+            // Disarm it before any driver mutation; checking first used to return
+            // early and made the DISARM below unreachable in the exact race it was
+            // intended to prevent.
+            const bool virtual_display_mutation_allowed =
+              display_helper_integration::request_policy::supersede_restore_for_virtual_display(
+                [&] {
+                  (void) display_helper_integration::disarm_pending_restore(
+                    display_startup_cancelled,
+                    display_startup_deadline
+                  );
+                },
+                [&] {
+                  return display_helper_integration::restore_in_progress(
+                    display_startup_cancelled,
+                    display_startup_deadline
+                  );
+                }
+              );
+            if (!virtual_display_mutation_allowed) {
+              BOOST_LOG(warning) << "Display helper: virtual display creation deferred because physical display restoration is still in progress; using physical fallback for this session.";
+              launch_session->virtual_display = false;
+              launch_session->virtual_display_failed = true;
+              launch_session->virtual_display_guid_bytes.fill(0);
+              launch_session->virtual_display_device_id.clear();
+              launch_session->virtual_display_ready_since.reset();
+              launch_session->virtual_display_hdr_enabled.reset();
+              apply_framegen_refresh_policy(false);
+              return;
+            }
+          }
+
+          const bool retained_probe_display = VDISPLAY::has_retained_ensure_display();
+          if (no_active_sessions && retained_probe_display) {
+            // Confirm the live helper state without reusing the generic stream
+            // start deadline: that deadline only bounds waiting for the helper
+            // mutex and does not itself mean a physical restore is active.
+            const bool physical_restore_in_progress =
+              display_helper_integration::restore_in_progress();
+            // Idle HTTP discovery intentionally retains its encoder-probe display
+            // while the host has no sessions. Release that idle ownership after
+            // the helper's restore/disarm admission and before this session owns a
+            // display. A physical session that needs a probe display reacquires it
+            // through its later ensure_display() call.
+            if (VDISPLAY::policy::should_handoff_retained_probe_display(
+                  no_active_sessions,
+                  retained_probe_display,
+                  physical_restore_in_progress)) {
+              BOOST_LOG(info) << "Removing retained encoder-probe virtual display before first session preparation.";
+              VDISPLAY::cleanup_retained_ensure_display();
+            } else {
+              BOOST_LOG(info) << "Deferring retained encoder-probe virtual display removal while physical display restoration is in progress.";
+            }
+          }
+
           apply_virtual_display_request(request_virtual_display);
           if (launch_session->virtual_display && !launch_session->virtual_display_device_id.empty()) {
             config::set_runtime_output_name_override(launch_session->virtual_display_device_id);
@@ -3437,13 +3495,22 @@ namespace nvhttp {
       }
 
         // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
-        if (!launch_session->virtual_display) {
+        const auto physical_hdr_profile_policy = display_helper_integration::request_policy::evaluate({
+          .virtual_display = launch_session->virtual_display,
+          .virtual_display_failed = launch_session->virtual_display_failed,
+          .hdr_profile_selected = launch_session->hdr_profile && !launch_session->hdr_profile->empty(),
+        });
+        if (physical_hdr_profile_policy.apply_hdr_profile_to_physical) {
           const auto active_output = config::get_active_output_name();
           VDISPLAY::applyHdrProfileToOutput(
             launch_session->client_name.c_str(),
             launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
             active_output.empty() ? nullptr : active_output.c_str()
           );
+        } else if (launch_session->virtual_display_failed &&
+                   launch_session->hdr_profile &&
+                   !launch_session->hdr_profile->empty()) {
+          BOOST_LOG(info) << "HDR profile: virtual display initialization failed; not applying the virtual display's profile to the physical fallback target.";
         }
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;
@@ -3901,7 +3968,7 @@ namespace nvhttp {
                                                           "resume virtual-display recreation" :
                                                           "resume virtual-display refresh"))
                          << " for client '" << launch_session->client_name << "'.";
-        revert_display_configuration = allow_display_changes;
+        revert_display_configuration = allow_display_changes || launch_session->virtual_display_failed;
 
 #ifdef _WIN32
         const bool helper_session_available = display_helper_session_available();
@@ -3951,13 +4018,22 @@ namespace nvhttp {
         }
 
         // Apply a per-client HDR profile to physical displays (virtual displays are handled at creation time).
-        if (!launch_session->virtual_display) {
+        const auto physical_hdr_profile_policy = display_helper_integration::request_policy::evaluate({
+          .virtual_display = launch_session->virtual_display,
+          .virtual_display_failed = launch_session->virtual_display_failed,
+          .hdr_profile_selected = launch_session->hdr_profile && !launch_session->hdr_profile->empty(),
+        });
+        if (physical_hdr_profile_policy.apply_hdr_profile_to_physical) {
           const auto active_output = config::get_active_output_name();
           VDISPLAY::applyHdrProfileToOutput(
             launch_session->client_name.c_str(),
             launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr,
             active_output.empty() ? nullptr : active_output.c_str()
           );
+        } else if (launch_session->virtual_display_failed &&
+                   launch_session->hdr_profile &&
+                   !launch_session->hdr_profile->empty()) {
+          BOOST_LOG(info) << "HDR profile: virtual display initialization failed; not applying the virtual display's profile to the physical fallback target.";
         }
 #else
       display_helper_integration::DisplayApplyBuilder noop_builder;

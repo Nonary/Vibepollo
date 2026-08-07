@@ -43,6 +43,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "src/platform/windows/rtss_integration.h"
+  #include "src/platform/windows/startup_display_policy.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/virtual_display_cleanup.h"
 #endif
@@ -587,39 +588,6 @@ int main(int argc, char *argv[]) {
     return lifetime::desired_exit_code;
   }
 
-#ifdef _WIN32
-  // Check if virtual display should be auto-enabled due to no physical monitors
-  if (VDISPLAY::should_auto_enable_virtual_display()) {
-    BOOST_LOG(info) << "No physical monitors detected at initialization. Initializing virtual display driver.";
-    proc::initVDisplayDriver();
-  }
-
-  if (shutdown_event->peek()) {
-    return lifetime::desired_exit_code;
-  }
-
-  // Crash-recovery janitor: if Sunshine starts and finds active virtual displays before
-  // any RTSP/WebRTC sessions exist, force cleanup to prevent stuck fallback issues.
-  if (rtsp_stream::session_count() == 0 && !webrtc_stream::has_active_sessions()) {
-    const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
-    const bool has_active_virtual_display = std::any_of(
-      virtual_displays.begin(),
-      virtual_displays.end(),
-      [](const VDISPLAY::VirtualDisplayInfo &info) {
-        return info.is_active;
-      }
-    );
-    if (has_active_virtual_display) {
-      BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
-      (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
-    }
-  }
-#endif
-
-  if (shutdown_event->peek()) {
-    return lifetime::desired_exit_code;
-  }
-
   reed_solomon_init();
   auto input_deinit_guard = input::init();
 
@@ -628,61 +596,137 @@ int main(int argc, char *argv[]) {
   }
 
   auto startup_probe = [&shutdown_event]() {
-    if (video::has_attempted_encoder_probe()) {
-      BOOST_LOG(debug) << "Startup encoder probe skipped; probe already attempted.";
-      return;
-    }
-
-    if (shutdown_event->peek()) {
-      return;
-    }
-
 #ifdef _WIN32
-    if (!platf::is_default_input_desktop_active()) {
-      BOOST_LOG(info) << "Startup encoder probe deferred until the interactive desktop is ready.";
-      return;
-    }
-
-    // Ensure the selected adapter has a usable output before a cold probe.
-    auto encoder_probe_display_result = VDISPLAY::ensure_display();
-    if (!encoder_probe_display_result.ready_for_probe()) {
-      BOOST_LOG(info)
-        << "Startup encoder probe deferred until the exact display target has a usable name and is visible through DXGI.";
-      return;
-    }
-    bool encoder_probe_succeeded = false;
-    auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
-      VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
-    });
-
-    if (shutdown_event->peek()) {
-      return;
-    }
+    bool desktop_defer_logged = false;
+    bool driver_init_attempted = false;
+    bool startup_recovery_checked = false;
+    while (!shutdown_event->peek()) {
 #endif
-
-    bool encoder_probe_failed = video::probe_encoders();
-
-#ifdef _WIN32
-    // Re-resolve the exact retained target before retrying. Never let another
-    // active output satisfy readiness for the requested probe display.
-    if (encoder_probe_failed && !shutdown_event->peek()) {
-      BOOST_LOG(info) << "Startup encoder probe failed; rechecking exact display readiness before retry.";
-      auto retry_display_result = VDISPLAY::ensure_display();
-      if (retry_display_result.ready_for_probe()) {
-        BOOST_LOG(info) << "Exact display target became ready; retrying startup encoder probe.";
-        encoder_probe_failed = video::probe_encoders();
+      if (video::has_attempted_encoder_probe()) {
+        BOOST_LOG(debug) << "Startup encoder probe skipped; probe already attempted.";
+        return;
       }
-    }
 
-    encoder_probe_succeeded = !encoder_probe_failed;
+      if (shutdown_event->peek()) {
+        return;
+      }
+
+#ifdef _WIN32
+      const auto has_stream_activity = [] {
+        return rtsp_stream::has_pending_launch_or_startup() ||
+               rtsp_stream::session_count() != 0 ||
+               webrtc_stream::has_active_or_pending_sessions();
+      };
+      const platf::startup_display_policy::state startup_state {
+        .interactive_desktop = platf::is_default_input_desktop_active(),
+        .stream_active = has_stream_activity(),
+        .shutting_down = shutdown_event->peek(),
+      };
+      if (platf::startup_display_policy::should_retry(startup_state)) {
+        if (!desktop_defer_logged) {
+          BOOST_LOG(info) << "Startup display initialization deferred until the interactive desktop is ready; RTSP listener remains available.";
+          desktop_defer_logged = true;
+        }
+        std::this_thread::sleep_for(250ms);
+        continue;
+      }
+      if (!platf::startup_display_policy::should_run(startup_state)) {
+        if (startup_state.stream_active) {
+          BOOST_LOG(debug) << "Startup display initialization skipped; a streaming session owns the display lifecycle.";
+        }
+        return;
+      }
+      if (desktop_defer_logged) {
+        BOOST_LOG(info) << "Interactive desktop is ready; resuming deferred startup display initialization.";
+      }
+
+      // Keep driver recovery and the startup janitor out of the pre-listener
+      // path. Both can block while Windows restarts a virtual-display device,
+      // and the janitor must not mutate an intentional display before the
+      // user's interactive desktop exists.
+      if (!driver_init_attempted && VDISPLAY::should_auto_enable_virtual_display()) {
+        BOOST_LOG(info) << "No physical monitors detected after the interactive desktop became ready. Initializing virtual display driver.";
+        proc::initVDisplayDriver();
+        driver_init_attempted = true;
+      }
+
+      if (shutdown_event->peek() || has_stream_activity()) {
+        return;
+      }
+
+      // Crash-recovery janitor: only run after the interactive desktop is
+      // ready and while no RTSP/WebRTC session can claim the display.
+      if (!startup_recovery_checked) {
+        startup_recovery_checked = true;
+        const auto virtual_displays = VDISPLAY::enumerateVirtualDisplays();
+        const bool has_active_virtual_display = std::any_of(
+          virtual_displays.begin(),
+          virtual_displays.end(),
+          [](const VDISPLAY::VirtualDisplayInfo &info) {
+            return info.is_active;
+          }
+        );
+        if (has_active_virtual_display) {
+          BOOST_LOG(warning) << "Startup detected active virtual display(s) with no active stream session; running cleanup.";
+          (void) platf::virtual_display_cleanup::run("startup_recovery", config::video.dd.config_revert_on_disconnect);
+        }
+      }
+
+      if (shutdown_event->peek() || has_stream_activity()) {
+        return;
+      }
+
+      if (!VDISPLAY::should_auto_enable_virtual_display() && !VDISPLAY::has_active_physical_display()) {
+        BOOST_LOG(debug) << "Startup encoder probe skipped; no active display exists and virtual display auto-enable is disabled.";
+        return;
+      }
+
+      // Ensure the selected adapter has a usable output before a cold probe.
+      // A driver-accepted target may need another pass while CCD/DXGI catches
+      // up, so keep the retry worker alive instead of requiring a service
+      // restart.
+      auto encoder_probe_display_result = VDISPLAY::ensure_display();
+      if (!encoder_probe_display_result.ready_for_probe()) {
+        BOOST_LOG(info)
+          << "Startup encoder probe deferred until the exact display target has a usable name and is visible through DXGI.";
+        std::this_thread::sleep_for(250ms);
+        continue;
+      }
+      bool encoder_probe_succeeded = false;
+      auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result, &encoder_probe_succeeded]() {
+        VDISPLAY::cleanup_ensure_display(encoder_probe_display_result, encoder_probe_succeeded, true);
+      });
+
+      if (shutdown_event->peek()) {
+        return;
+      }
 #endif
 
-    if (encoder_probe_failed) {
-      BOOST_LOG(error) << "Failed to probe encoders during startup.";
-    }
-  };
+      bool encoder_probe_failed = video::probe_encoders();
 
-  startup_probe();
+#ifdef _WIN32
+      // Re-resolve the exact retained target before retrying. Never let another
+      // active output satisfy readiness for the requested probe display.
+      if (encoder_probe_failed && !shutdown_event->peek()) {
+        BOOST_LOG(info) << "Startup encoder probe failed; rechecking exact display readiness before retry.";
+        auto retry_display_result = VDISPLAY::ensure_display();
+        if (retry_display_result.ready_for_probe()) {
+          BOOST_LOG(info) << "Exact display target became ready; retrying startup encoder probe.";
+          encoder_probe_failed = video::probe_encoders();
+        }
+      }
+
+      encoder_probe_succeeded = !encoder_probe_failed;
+#endif
+
+      if (encoder_probe_failed) {
+        BOOST_LOG(error) << "Failed to probe encoders during startup.";
+      }
+      return;
+#ifdef _WIN32
+    }
+#endif
+  };
 
   // Initialize session history in its own directory so database hardening never
   // touches the shared config root that also contains credentials/pairing state.
@@ -772,6 +816,11 @@ int main(int argc, char *argv[]) {
   std::thread httpThread {nvhttp::start};
   std::thread configThread {confighttp::start};
   std::thread rtspThread {rtsp_stream::start};
+
+  // Start listeners before any display-driver recovery or cold encoder probe.
+  // A boot-time driver restart can take several bounded attempts; it must not
+  // make the service unreachable while the interactive desktop converges.
+  startup_probe();
 
 #ifdef _WIN32
   // If we're using the default port and GameStream is enabled, warn the user

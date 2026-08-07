@@ -1550,6 +1550,19 @@ TEST(DisplayHelperV2StateMachine, DisarmBeforeApplyWhileRecovering) {
   ASSERT_GE(transitions.size(), 2u);
   EXPECT_EQ(transitions[transitions.size() - 2].to, display_helper::v2::State::Waiting);
   EXPECT_EQ(transitions.back().to, display_helper::v2::State::InProgress);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.verification_result.has_value());
+  EXPECT_TRUE(*harness.verification_result);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
 }
 
 TEST(DisplayHelperV2StateMachine, EventLoopTriggersRecovery) {
@@ -1740,6 +1753,20 @@ TEST(DisplayHelperV2StateMachine, ApplyWaitsForCancelledRecoveryCompletion) {
   EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "NEXT");
   EXPECT_TRUE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.task_manager.deleted, 0);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  ASSERT_TRUE(harness.verification_result.has_value());
+  EXPECT_TRUE(*harness.verification_result);
 }
 
 TEST(DisplayHelperV2StateMachine, DisarmCancelsRecoveryBeforeMutation) {
@@ -1780,6 +1807,57 @@ TEST(DisplayHelperV2StateMachine, DisarmDoesNotInterruptUnconfirmedRecovery) {
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
   EXPECT_TRUE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.task_manager.deleted, 0);
+}
+
+TEST(DisplayHelperV2StateMachine, ForcedDisarmSupersedesUnconfirmedRecoveryForStreamStart) {
+  StateMachineHarness harness;
+  harness.seed_current_snapshot();
+  harness.state_machine.handle_message(display_helper::v2::RevertCommand {harness.cancellation.current_generation()});
+  ASSERT_TRUE(harness.dispatcher.recovery_completion);
+  harness.restore_state.restore_attempted_unconfirmed.store(true, std::memory_order_release);
+
+  harness.state_machine.handle_message(display_helper::v2::DisarmCommand {
+    .generation = harness.cancellation.current_generation(),
+    .force = true,
+  });
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
+
+  display_helper::v2::RecoveryOutcome cancelled;
+  harness.dispatcher.recovery_completion(cancelled);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_FALSE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.task_manager.deleted, 1);
+
+  // Preserve the live scenario's final contract: the replacement session's
+  // APPLY is accepted and verified after forced DISARM, and the superseded
+  // recovery cannot win afterward.
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  ASSERT_TRUE(harness.dispatcher.apply_completion);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  ASSERT_TRUE(harness.verification_result.has_value());
+  EXPECT_TRUE(*harness.verification_result);
+  EXPECT_TRUE(harness.state_machine.recovery_armed());
 }
 
 TEST(DisplayHelperV2StateMachine, DuplicateDisconnectRevertJoinsActiveRecovery) {

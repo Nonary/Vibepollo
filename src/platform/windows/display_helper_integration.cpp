@@ -251,7 +251,6 @@ namespace {
   // finish restoring or an explicit APPLY will supersede it.
   constexpr std::chrono::milliseconds kDisarmRestoreBudget {150};
   constexpr std::chrono::milliseconds kDisarmRetryThrottle {150};
-  constexpr std::chrono::milliseconds kDisarmRestoreGrace {5000};
   constexpr std::chrono::milliseconds kDeferredApplyInitialDelay {2000};
   constexpr std::chrono::milliseconds kDeferredApplyRetryBase {500};
   constexpr std::chrono::milliseconds kDeferredApplyRetryMax {10000};
@@ -1027,15 +1026,6 @@ namespace {
     const bool restore_expected = g_restore_expected.load(std::memory_order_relaxed);
     const auto now_us = now_steady_us();
     const auto last_revert_us = g_last_revert_us.load(std::memory_order_relaxed);
-    if (restore_expected && last_revert_us > 0) {
-      const auto disarm_grace_us = kDisarmRestoreGrace.count() * 1000LL;
-      if ((now_us - last_revert_us) >= disarm_grace_us) {
-        BOOST_LOG(info) << "Display helper: restore has been pending for more than "
-                        << kDisarmRestoreGrace.count()
-                        << "ms; not sending DISARM so the unconfirmed restore can complete.";
-        return false;
-      }
-    }
 
     const auto last_attempt_us = g_last_disarm_attempt_us.load(std::memory_order_relaxed);
 
@@ -2180,6 +2170,19 @@ namespace display_helper_integration {
     }
     invalidate_apply_verification();
     return disarm_helper_restore_if_running(
+      cancellation_predicate,
+      operation_deadline
+    );
+  }
+
+  bool restore_in_progress(
+    std::function<bool()> cancellation_predicate,
+    const std::chrono::steady_clock::time_point operation_deadline) {
+    if ((cancellation_predicate && cancellation_predicate()) ||
+        operation_deadline_expired(operation_deadline)) {
+      return false;
+    }
+    return restore_expected_with_live_helper(
       cancellation_predicate,
       operation_deadline
     );

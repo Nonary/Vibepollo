@@ -145,10 +145,6 @@ namespace display_helper_integration::helpers {
         return resolved;
       }
 
-      if (!video_config.output_name.empty() && !output_name_targets_virtual(video_config.output_name)) {
-        return video_config.output_name;
-      }
-
       if (session.client_name.empty()) {
         if (auto resolved = platf::display_helper::Coordinator::instance().resolve_virtual_display_device_id()) {
           return resolved;
@@ -287,8 +283,7 @@ namespace display_helper_integration::helpers {
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
     if (session_.virtual_display_failed) {
-      BOOST_LOG(error) << "Display helper: virtual display initialization failed; skipping display configuration changes to avoid disrupting active displays.";
-      return false;
+      BOOST_LOG(info) << "Display helper: virtual display initialization failed; applying the normal physical-display fallback configuration.";
     }
     builder.set_session(session_);
     BOOST_LOG(debug) << "session_.virtual_display_layout_override has_value: " << session_.virtual_display_layout_override.has_value();
@@ -392,6 +387,15 @@ namespace display_helper_integration::helpers {
     std::string target_device_id;
     if (auto resolved = resolve_virtual_device_id(effective_video_config_, session_)) {
       target_device_id = *resolved;
+    }
+    const auto target_policy = request_policy::evaluate({
+      .virtual_display = true,
+      .target_device_id = target_device_id,
+    });
+    if (!target_policy.dispatch) {
+      BOOST_LOG(warning) << "Display helper: virtual display target identity is not ready; skipping display configuration changes to avoid targeting a physical display.";
+      builder.set_action(DisplayApplyAction::Skip);
+      return false;
     }
     vd_cfg.m_device_id = target_device_id;
     const auto layout_flags = describe_layout(layout);
@@ -773,10 +777,16 @@ namespace display_helper_integration::helpers {
       .configuration_option = effective_config_option == config::video_t::dd_t::config_option_e::disabled ?
                                 request_policy::ConfigurationOption::Disabled : request_policy::ConfigurationOption::EnsureActive,
       .virtual_display = session.virtual_display,
+      .virtual_display_failed = session.virtual_display_failed,
       .physical_output_override = session_has_physical_output_override(session),
+      .target_device_id = session.virtual_display_device_id,
     });
     if (!policy.dispatch) {
-      BOOST_LOG(info) << "Display helper: physical output override with display configuration disabled; using capture target only.";
+      if (session.virtual_display && session.virtual_display_device_id.empty()) {
+        BOOST_LOG(warning) << "Display helper: virtual display target identity is not ready; deferring display configuration changes.";
+      } else {
+        BOOST_LOG(info) << "Display helper: physical output override with display configuration disabled; using capture target only.";
+      }
       return std::nullopt;
     }
 

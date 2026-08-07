@@ -15,8 +15,30 @@ namespace display_helper_integration::request_policy {
     }
   }  // namespace
 
+  bool virtual_display_mutation_allowed(const bool display_restore_in_progress) {
+    return !display_restore_in_progress;
+  }
+
+  bool supersede_restore_for_virtual_display(
+    const std::function<void()> &disarm_restore,
+    const std::function<bool()> &restore_in_progress
+  ) {
+    disarm_restore();
+    return virtual_display_mutation_allowed(restore_in_progress());
+  }
+
   Result evaluate(const Input &input) {
     Result result;
+    result.apply_hdr_profile_to_physical =
+      input.hdr_profile_selected &&
+      !input.virtual_display &&
+      !input.virtual_display_failed;
+
+    if (input.virtual_display && input.target_device_id.empty()) {
+      result.dispatch = false;
+      return result;
+    }
+
     if (!input.virtual_display &&
         input.physical_output_override &&
         input.configuration_option == ConfigurationOption::Disabled) {

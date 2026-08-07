@@ -227,6 +227,56 @@ TEST(SunshineVirtualDisplay, StreamReadinessAllowsHelperToActivateEnumeratedDisp
   EXPECT_TRUE(VDISPLAY::policy::accept_enumerated_target(std::chrono::milliseconds {500}));
 }
 
+TEST(SunshineVirtualDisplay, InactiveRetainedDisplayReusesAdvertisedSessionMode) {
+  using action = VDISPLAY::policy::reclaimed_display_action;
+  constexpr std::array advertised_refreshes {60'000u, 120'000u, 240'000u};
+
+  for (const auto requested_refresh : {60'000u, 120'000u}) {
+    ASSERT_TRUE(VDISPLAY::policy::refresh_is_advertised(advertised_refreshes, requested_refresh));
+    const auto plan = VDISPLAY::policy::reclaimed_display_plan_for_session(
+      true,
+      true,
+      true,
+      true
+    );
+    EXPECT_EQ(plan.action, action::reuse);
+    EXPECT_TRUE(plan.preserve_device_identity);
+    EXPECT_TRUE(plan.activation_apply_required);
+  }
+}
+
+TEST(SunshineVirtualDisplay, InactiveRetainedDisplayRecreatesMissingSessionMode) {
+  using action = VDISPLAY::policy::reclaimed_display_action;
+  constexpr std::array advertised_refreshes {60'000u, 120'000u, 240'000u};
+  ASSERT_FALSE(VDISPLAY::policy::refresh_is_advertised(advertised_refreshes, 83'000u));
+
+  const auto plan = VDISPLAY::policy::reclaimed_display_plan_for_session(
+    true,
+    true,
+    false,
+    true
+  );
+  EXPECT_EQ(plan.action, action::recreate);
+  EXPECT_FALSE(plan.preserve_device_identity);
+  EXPECT_FALSE(plan.activation_apply_required);
+}
+
+TEST(SunshineVirtualDisplay, ActiveReplacementStillRecreatesModeDescriptor) {
+  using action = VDISPLAY::policy::reclaimed_display_action;
+  EXPECT_EQ(
+    VDISPLAY::policy::reclaimed_display_plan_for_session(true, false, true, true).action,
+    action::recreate
+  );
+}
+
+TEST(SunshineVirtualDisplay, RenderAdapterMismatchPreventsRetainedDisplayReuse) {
+  using action = VDISPLAY::policy::reclaimed_display_action;
+  EXPECT_EQ(
+    VDISPLAY::policy::reclaimed_display_plan_for_session(true, true, true, false).action,
+    action::recreate
+  );
+}
+
 TEST(SunshineVirtualDisplay, DetectsDriverIdentityFromDriverSignals) {
   EXPECT_TRUE(VDISPLAY::is_sunshine_virtual_display_identity(
     "\\\\?\\DISPLAY#SunshineVirtualDisplay#5&1", "", "", ""

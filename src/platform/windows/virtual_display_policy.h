@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace VDISPLAY::policy {
@@ -19,6 +20,20 @@ namespace VDISPLAY::policy {
 
   constexpr bool should_prepare_display_for_new_session(const bool no_active_sessions) noexcept {
     return no_active_sessions;
+  }
+
+  // An idle encoder-capability probe may retain its temporary display for
+  // reuse. Once the first stream starts, that idle ownership must be released
+  // so it cannot survive the session as an unrelated extra monitor. A physical
+  // stream that actually needs a probe display reacquires it through its own
+  // later ensure_display() call. Callers hold the stream lifecycle gate across
+  // this ownership transfer.
+  constexpr bool should_handoff_retained_probe_display(
+    const bool no_active_sessions,
+    const bool retained_probe_display,
+    const bool physical_restore_in_progress
+  ) noexcept {
+    return no_active_sessions && retained_probe_display && !physical_restore_in_progress;
   }
 
   constexpr bool allow_generic_resume_fallback() noexcept {
@@ -69,6 +84,67 @@ namespace VDISPLAY::policy {
     const bool driver_owned
   ) noexcept {
     return tracked_by_windows || driver_owned;
+  }
+
+  enum class reclaimed_display_action : std::uint8_t {
+    reuse,
+    recreate,
+  };
+
+  struct reclaimed_display_plan {
+    reclaimed_display_action action {reclaimed_display_action::recreate};
+    bool preserve_device_identity = false;
+    bool activation_apply_required = true;
+  };
+
+  constexpr bool refresh_matches(
+    const std::uint32_t advertised_millihz,
+    const std::uint32_t requested_millihz
+  ) noexcept {
+    return advertised_millihz >= requested_millihz ?
+             advertised_millihz - requested_millihz <= 1u :
+             requested_millihz - advertised_millihz <= 1u;
+  }
+
+  constexpr bool refresh_is_advertised(
+    const std::span<const std::uint32_t> advertised_refreshes_millihz,
+    const std::uint32_t requested_millihz
+  ) noexcept {
+    if (requested_millihz == 0) {
+      return false;
+    }
+    for (const auto advertised : advertised_refreshes_millihz) {
+      if (refresh_matches(advertised, requested_millihz)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Replacing an active display still requires a fresh descriptor. A retained
+  // inactive display can instead be reactivated in place when its descriptor
+  // already advertises the requested mode, avoiding a same-connector PnP
+  // depart/arrive cycle after REVERT. Adapter provenance always wins.
+  constexpr reclaimed_display_plan reclaimed_display_plan_for_session(
+    const bool replace_existing,
+    const bool inactive,
+    const bool requested_mode_available,
+    const bool render_adapter_provenance_matches
+  ) noexcept {
+    const bool can_resurrect =
+      replace_existing && inactive && requested_mode_available;
+    const auto action =
+      ((replace_existing && !can_resurrect) ||
+       !render_adapter_provenance_matches) ?
+        reclaimed_display_action::recreate :
+        reclaimed_display_action::reuse;
+    return {
+      .action = action,
+      .preserve_device_identity = action == reclaimed_display_action::reuse,
+      // A retained inactive target is intentionally not activated by the
+      // driver operation. The session helper must apply its topology/mode.
+      .activation_apply_required = inactive && action == reclaimed_display_action::reuse,
+    };
   }
 
   constexpr bool accept_enumerated_target(

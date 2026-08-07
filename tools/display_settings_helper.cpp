@@ -5318,7 +5318,9 @@ namespace {
       state.retry_apply_on_topology.store(false, std::memory_order_release);
       state.retry_revert_on_topology.store(false, std::memory_order_release);
     } else if (type == MsgType::Disarm) {
-      if (state.restore_requested.load(std::memory_order_acquire) &&
+      const bool force = !payload.empty() && payload.front() != 0;
+      if (!force &&
+          state.restore_requested.load(std::memory_order_acquire) &&
           state.restore_attempted_unconfirmed.load(std::memory_order_acquire)) {
         BOOST_LOG(info) << "DISARM command ignored because an unconfirmed restore attempt is still pending.";
         return;

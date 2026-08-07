@@ -979,6 +979,7 @@ int run_v2_helper(int argc, char *argv[]) {
           queue.push(display_helper::v2::DisarmCommand {
             .generation = cancellation.current_generation(),
             .connection_epoch = epoch,
+            .force = !payload.empty() && payload.front() != 0,
           });
           break;
         case MsgType::ExportGolden: {

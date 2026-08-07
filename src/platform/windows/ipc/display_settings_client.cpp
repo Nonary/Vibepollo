@@ -1718,7 +1718,10 @@ namespace platf::display_helper_client {
       return false;
     }
     const auto session = cached_connected_session_within(deadline);
-    std::vector<uint8_t> payload;
+    // Stream-start DISARM is authoritative. A prior restore may already have
+    // changed topology and become unconfirmed, but it must not continue racing
+    // the next session's virtual-display initialization.
+    std::vector<uint8_t> payload {1u};
     return send_serialized_within(session, MsgType::Disarm, payload, deadline, *wait_generation);
   }
 

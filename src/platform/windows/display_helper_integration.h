@@ -69,6 +69,13 @@ namespace display_helper_integration {
     std::chrono::steady_clock::time_point operation_deadline =
       std::chrono::steady_clock::time_point::max());
 
+  // Returns true while a live helper still owns a requested REVERT. Virtual
+  // target teardown/creation must not overlap that restoration window.
+  bool restore_in_progress(
+    std::function<bool()> cancellation_predicate = {},
+    std::chrono::steady_clock::time_point operation_deadline =
+      std::chrono::steady_clock::time_point::max());
+
   // Request the helper to export current OS settings as golden restore snapshot.
   bool export_golden_restore();
 

@@ -115,6 +115,74 @@ TEST(DisplayHelperRequestPolicy, AppliesExclusiveVirtualDisplayWhenDisplayConfig
   EXPECT_EQ(*result.device_preparation, policy::DevicePreparation::EnsureOnlyDisplay);
 }
 
+TEST(DisplayHelperRequestPolicy, VirtualDisplayWithoutConfirmedTargetDoesNotDispatch) {
+  auto input = virtual_display_input();
+  input.target_device_id.clear();
+  EXPECT_FALSE(policy::evaluate(input).dispatch);
+}
+
+TEST(DisplayHelperRequestPolicy, BlocksVirtualDisplayMutationDuringPhysicalRestore) {
+  EXPECT_TRUE(policy::virtual_display_mutation_allowed(false));
+  EXPECT_FALSE(policy::virtual_display_mutation_allowed(true));
+}
+
+TEST(DisplayHelperRequestPolicy, StreamAdmissionDisarmsRestoreBeforeCheckingMutationSafety) {
+  bool restore_pending = true;
+  std::vector<std::string> operations;
+
+  const bool allowed = policy::supersede_restore_for_virtual_display(
+    [&] {
+      operations.emplace_back("disarm");
+      restore_pending = false;
+    },
+    [&] {
+      operations.emplace_back("query");
+      return restore_pending;
+    }
+  );
+
+  EXPECT_TRUE(allowed);
+  EXPECT_EQ(operations, (std::vector<std::string> {"disarm", "query"}));
+}
+
+TEST(DisplayHelperRequestPolicy, StreamAdmissionStaysBlockedWhenDisarmCannotClearRestore) {
+  bool restore_pending = true;
+  std::vector<std::string> operations;
+
+  const bool allowed = policy::supersede_restore_for_virtual_display(
+    [&] {
+      operations.emplace_back("disarm");
+      // Simulate a failed or undelivered DISARM: the authoritative query must
+      // still observe the helper restore and prevent driver mutation.
+    },
+    [&] {
+      operations.emplace_back("query");
+      return restore_pending;
+    }
+  );
+
+  EXPECT_FALSE(allowed);
+  EXPECT_EQ(operations, (std::vector<std::string> {"disarm", "query"}));
+}
+
+TEST(DisplayHelperRequestPolicy, PhysicalFallbackAfterVirtualFailureStillDispatches) {
+  policy::Input input;
+  input.configuration_option = policy::ConfigurationOption::EnsureActive;
+  input.virtual_display_failed = true;
+  input.target_device_id = "{physical-monitor-guid}";
+  EXPECT_TRUE(policy::evaluate(input).dispatch);
+}
+
+TEST(DisplayHelperRequestPolicy, VirtualFailureSuppressesPhysicalHdrProfileOnlyForFallback) {
+  policy::Input physical_input;
+  physical_input.hdr_profile_selected = true;
+  EXPECT_TRUE(policy::evaluate(physical_input).apply_hdr_profile_to_physical);
+
+  auto fallback_input = physical_input;
+  fallback_input.virtual_display_failed = true;
+  EXPECT_FALSE(policy::evaluate(fallback_input).apply_hdr_profile_to_physical);
+}
+
 TEST(DisplayHelperRequestPolicy, UsesRtxHdrSourcePolicyForInitialVirtualDisplayConfiguration) {
   auto input = virtual_display_input();
   input.rtx_hdr_source_enabled = true;

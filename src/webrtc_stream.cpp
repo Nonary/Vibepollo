@@ -72,6 +72,7 @@
 #ifdef _WIN32
   #include "src/platform/common.h"
   #include "src/platform/windows/display_helper_integration.h"
+  #include "src/platform/windows/display_helper_request_policy.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/display_vram.h"
   #include "src/platform/windows/frame_limiter.h"
@@ -367,6 +368,30 @@ namespace webrtc_stream {
         return;
       }
 
+      // Match the normal stream path: a new virtual-display session supersedes
+      // the prior restore before checking whether driver mutation is safe.
+      const bool virtual_display_mutation_allowed =
+        display_helper_integration::request_policy::supersede_restore_for_virtual_display(
+          [] {
+            (void) display_helper_integration::disarm_pending_restore();
+          },
+          [] {
+            return display_helper_integration::restore_in_progress();
+          }
+        );
+      if (!virtual_display_mutation_allowed) {
+        BOOST_LOG(warning) << "Display helper: WebRTC virtual display creation deferred because physical display restoration is still in progress; using physical fallback for this session.";
+        session->virtual_display = false;
+        session->virtual_display_failed = true;
+        session->virtual_display_guid_bytes.fill(0);
+        session->virtual_display_device_id.clear();
+        session->virtual_display_ready_since.reset();
+        session->virtual_display_hdr_enabled.reset();
+        session->framegen_refresh_rate.reset();
+        session->framegen_refresh_millihz.reset();
+        session->framegen_refresh_multiplier = 1;
+        return;
+      }
       apply_framegen_refresh_policy(true);
 
       if (proc::vDisplayDriverStatus.load(std::memory_order_acquire) != VDISPLAY::DRIVER_STATUS::OK) {

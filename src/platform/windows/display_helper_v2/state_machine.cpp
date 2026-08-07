@@ -913,7 +913,8 @@ namespace display_helper::v2 {
     // before the generic mutation fence: otherwise DISARM would cancel the
     // recovery, then be ignored after its stale completion, leaving the state
     // machine stranded in Recovery with no worker.
-    if (restore_pending() &&
+    if (!command.force &&
+        restore_pending() &&
         restore_state_.restore_attempted_unconfirmed.load(std::memory_order_acquire)) {
       BOOST_LOG(info) << "DISARM command ignored because an unconfirmed restore attempt is still pending.";
       return;
