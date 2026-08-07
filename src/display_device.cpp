@@ -597,7 +597,7 @@ namespace display_device {
     return true;
   }
 
-  static std::string resolve_device_id(const std::string &output_name) {
+  [[maybe_unused]] static std::string resolve_device_id(const std::string &output_name) {
     if (output_name.empty()) {
       return output_name;
     }
@@ -624,7 +624,7 @@ namespace display_device {
     return output_name;
   }
 #else
-  static std::string resolve_device_id(const std::string &output_name) {
+  [[maybe_unused]] static std::string resolve_device_id(const std::string &output_name) {
     return output_name;
   }
 #endif
