@@ -1,9 +1,7 @@
 #include "src/http_auth.h"
-#include "src/httpcommon.h"
 
 #include <boost/property_tree/ptree.hpp>
 #include <chrono>
-#include <filesystem>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -14,7 +12,6 @@
 using namespace confighttp;
 using namespace testing;
 namespace pt = boost::property_tree;
-namespace fs = std::filesystem;
 
 class MockApiTokenManagerDependencies {
 public:
@@ -50,9 +47,21 @@ public:
 };
 
 namespace {
-  fs::path MakeTempStatePath(const std::string &label) {
-    auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
-    return fs::temp_directory_path() / (label + "-" + std::to_string(unique) + ".json");
+  struct InMemorySessionState {
+    pt::ptree root;
+    bool exists = false;
+    std::size_t token_number = 0;
+  };
+
+  SessionTokenManagerDependencies MakeSessionDependencies(InMemorySessionState &state) {
+    SessionTokenManagerDependencies deps;
+    deps.now = [] { return std::chrono::system_clock::now(); };
+    deps.rand_alphabet = [&state](std::size_t) { return "token-" + std::to_string(++state.token_number); };
+    deps.hash = [](const std::string &input) { return input + "-hash"; };
+    deps.file_exists = [&state](const std::string &) { return state.exists; };
+    deps.read_json = [&state](const std::string &, pt::ptree &tree) { tree = state.root; };
+    deps.write_json = [&state](const std::string &, const pt::ptree &tree) { state.root = tree; state.exists = true; };
+    return deps;
   }
 
   void FillPtreeWithMalformedTokenData(pt::ptree &tree) {
@@ -222,17 +231,11 @@ TEST_F(ApiTokenManagerTest, given_valid_token_and_matching_scope_when_authentica
 }
 
 TEST(SessionTokenManagerStatefulTest, RememberMeTokenPersistsAcrossRestart) {
-  const std::string original_username = config::sunshine.username;
-  const std::chrono::seconds original_ttl = config::sunshine.session_token_ttl;
-  const std::string original_state_file = config::nvhttp.file_state;
-
-  fs::path temp_state = MakeTempStatePath("sunshine-session");
-  config::nvhttp.file_state = temp_state.string();
-  config::sunshine.username = "admin";
-  config::sunshine.session_token_ttl = std::chrono::seconds(7200);
+  InMemorySessionState state;
+  const auto deps = MakeSessionDependencies(state);
 
   {
-    SessionTokenManager manager(SessionTokenManager::make_default_dependencies());
+    SessionTokenManager manager(deps);
     auto token = manager.generate_session_token(
       "admin",
       std::chrono::seconds::zero(),
@@ -244,7 +247,7 @@ TEST(SessionTokenManagerStatefulTest, RememberMeTokenPersistsAcrossRestart) {
   }
 
   {
-    SessionTokenManager restarted(SessionTokenManager::make_default_dependencies());
+    SessionTokenManager restarted(deps);
     restarted.load_session_tokens();
     auto sessions = restarted.list_sessions("admin");
     ASSERT_EQ(sessions.size(), 1);
@@ -256,25 +259,13 @@ TEST(SessionTokenManagerStatefulTest, RememberMeTokenPersistsAcrossRestart) {
     EXPECT_EQ(entry.device_label, "UnitTestAgent");
   }
 
-  if (fs::exists(temp_state)) {
-    fs::remove(temp_state);
-  }
-  config::nvhttp.file_state = original_state_file;
-  config::sunshine.session_token_ttl = original_ttl;
-  config::sunshine.username = original_username;
 }
 
 TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
-  const std::string original_username = config::sunshine.username;
-  const std::chrono::seconds original_ttl = config::sunshine.session_token_ttl;
-  const std::string original_state_file = config::nvhttp.file_state;
+  InMemorySessionState state;
+  const auto deps = MakeSessionDependencies(state);
 
-  fs::path temp_state = MakeTempStatePath("sunshine-session-revoke");
-  config::nvhttp.file_state = temp_state.string();
-  config::sunshine.username = "admin";
-  config::sunshine.session_token_ttl = std::chrono::seconds(7200);
-
-  SessionTokenManager manager(SessionTokenManager::make_default_dependencies());
+  SessionTokenManager manager(deps);
   auto token_primary = manager.generate_session_token(
     "admin",
     std::chrono::seconds::zero(),
@@ -304,7 +295,7 @@ TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
   EXPECT_FALSE(remaining.front().device_label.empty());
 
   {
-    SessionTokenManager restarted(SessionTokenManager::make_default_dependencies());
+    SessionTokenManager restarted(deps);
     restarted.load_session_tokens();
     auto after_reload = restarted.list_sessions("admin");
     ASSERT_EQ(after_reload.size(), 1);
@@ -312,12 +303,6 @@ TEST(SessionTokenManagerStatefulTest, RevokingSessionUpdatesStoredState) {
     EXPECT_FALSE(after_reload.front().device_label.empty());
   }
 
-  if (fs::exists(temp_state)) {
-    fs::remove(temp_state);
-  }
-  config::nvhttp.file_state = original_state_file;
-  config::sunshine.session_token_ttl = original_ttl;
-  config::sunshine.username = original_username;
 }
 
 TEST(SessionTokenManagerStatefulTest, RefreshTokenRenewsExpiredAccessToken) {

@@ -18,10 +18,6 @@
 #include <vector>
 
 // local includes
-#include "config.h"
-#include "crypto.h"
-#include "utility.h"
-
 // platform includes
 #include <boost/function.hpp>
 #include <boost/property_tree/json_parser.hpp>

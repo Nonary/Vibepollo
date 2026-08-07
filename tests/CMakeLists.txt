@@ -88,7 +88,13 @@ configure_file(
     "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}/virtual_display_package_contract.generated.h"
     @ONLY)
 
-set(GTEST_SOURCE_DIR "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/googletest")
+set(SUNSHINE_TEST_GTEST_SOURCE_DIR "" CACHE PATH
+    "Optional GoogleTest source tree for an isolated test worktree")
+if(SUNSHINE_TEST_GTEST_SOURCE_DIR)
+    set(GTEST_SOURCE_DIR "${SUNSHINE_TEST_GTEST_SOURCE_DIR}")
+else()
+    set(GTEST_SOURCE_DIR "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/googletest")
+endif()
 if(NOT EXISTS "${GTEST_SOURCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "GoogleTest is required for the standalone test configuration. "
@@ -262,9 +268,10 @@ sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/t
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
     EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_confighttp.cpp"
     PRODUCT_SOURCES
-        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_policy.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_request_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers sunshine_test_enet_headers)
+    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers)
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp

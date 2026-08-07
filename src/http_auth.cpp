@@ -1,5 +1,7 @@
 #include "http_auth.h"
+#include "http_auth_request_policy.h"
 
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
 #include "config.h"
 #include "confighttp.h"
 #include "crypto.h"
@@ -9,12 +11,12 @@
 #include "nvhttp.h"
 #include "state_storage.h"
 #include "utility.h"
+#endif
 
 #include <algorithm>
 #include <boost/algorithm/string.hpp>
 #include <boost/function.hpp>
 #include <boost/property_tree/json_parser.hpp>
-#include <boost/regex.hpp>
 #include <chrono>
 #include <ctime>
 #include <exception>
@@ -25,33 +27,61 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <ranges>
+#include <regex>
 #include <set>
 #include <Simple-Web-Server/crypto.hpp>
 #include <Simple-Web-Server/server_https.hpp>
 #include <string>
 #include <utility>
 #include <vector>
+#ifdef SUNSHINE_HTTP_AUTH_POLICY_ONLY
+  #include <functional>
+  #include <random>
+#endif
 using namespace std::literals;
 namespace pt = boost::property_tree;
 namespace fs = std::filesystem;
 
 namespace confighttp {
 
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
   // Global instances for authentication
   ApiTokenManager api_token_manager;
   SessionTokenManager session_token_manager(SessionTokenManager::make_default_dependencies());
   SessionTokenAPI session_token_api(session_token_manager);
+#endif
 
   namespace {
     constexpr std::chrono::seconds default_remember_me_token_ttl {std::chrono::hours(24 * 7)};
     constexpr std::chrono::seconds default_refresh_token_ttl {std::chrono::hours(24)};
 
     std::chrono::seconds remember_me_token_ttl() {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       const auto configured = config::sunshine.remember_me_refresh_token_ttl;
       if (configured <= std::chrono::seconds::zero()) {
         return default_remember_me_token_ttl;
       }
       return configured;
+#else
+      return default_remember_me_token_ttl;
+#endif
+    }
+
+    std::chrono::seconds configured_session_token_ttl() {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
+      return config::sunshine.session_token_ttl;
+#else
+      return std::chrono::hours(1);
+#endif
+    }
+
+    std::string authentication_state_path() {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
+      statefile::migrate_recent_state_keys();
+      return statefile::vibeshine_state_path();
+#else
+      return "sunshine_state.json";
+#endif
     }
 
     std::string detect_os(const std::string &ua_lower) {
@@ -192,8 +222,8 @@ namespace confighttp {
       if (pattern.empty() || pattern.back() != '$') {
         pattern += "$";
       }
-      boost::regex re(pattern);
-      return boost::regex_match(request_path, re);
+      std::regex re(pattern);
+      return std::regex_match(request_path, re);
     };
 
     return std::ranges::any_of(it->second.path_methods, [&](const auto &pair) {
@@ -256,7 +286,9 @@ namespace confighttp {
         path_methods[path] = methods;
       }
     } catch (const InvalidScopeException &) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       BOOST_LOG(warning) << "Invalid scope detected in API token, please delete and recreate the token to resolve.";
+#endif
       return std::nullopt;
     }
     return path_methods;
@@ -299,8 +331,7 @@ namespace confighttp {
   }
 
   void ApiTokenManager::save_api_tokens() const {
-    statefile::migrate_recent_state_keys();
-    const auto &state_path = statefile::vibeshine_state_path();
+    const auto state_path = authentication_state_path();
 
     nlohmann::json j;
     {
@@ -317,17 +348,23 @@ namespace confighttp {
         j.push_back(obj);
       }
     }
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
     std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+#endif
 
     pt::ptree root;
     if (_dependencies.file_exists(state_path)) {
       try {
         _dependencies.read_json(state_path, root);
       } catch (const std::exception &e) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
         BOOST_LOG(error) << "ApiTokenManager: refusing to write state after failed read: " << e.what();
+#endif
         return;
       } catch (...) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
         BOOST_LOG(error) << "ApiTokenManager: refusing to write state after unknown read failure";
+#endif
         return;
       }
     }
@@ -384,13 +421,14 @@ namespace confighttp {
   }
 
   void ApiTokenManager::load_api_tokens() {
-    statefile::migrate_recent_state_keys();
-    const auto &state_path = statefile::vibeshine_state_path();
+    const auto state_path = authentication_state_path();
 
     pt::ptree root;
     bool have_root = false;
     {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+#endif
       if (_dependencies.file_exists(state_path)) {
         try {
           _dependencies.read_json(state_path, root);
@@ -432,16 +470,35 @@ namespace confighttp {
       boost::property_tree::json_parser::read_json(path, tree);
     };
     dependencies.write_json = [](const std::string &path, const pt::ptree &tree) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       statefile::write_json_atomic(path, tree);
+#else
+      boost::property_tree::json_parser::write_json(path, tree);
+#endif
     };
     dependencies.now = []() {
       return std::chrono::system_clock::now();
     };
     dependencies.rand_alphabet = [](std::size_t length) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       return crypto::rand_alphabet(length);
+#else
+      static constexpr char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      std::string value;
+      value.reserve(length);
+      std::random_device random;
+      for (std::size_t i = 0; i < length; ++i) {
+        value.push_back(alphabet[random() % (sizeof(alphabet) - 1)]);
+      }
+      return value;
+#endif
     };
     dependencies.hash = [](const std::string &input) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       return util::hex(crypto::hash(input)).to_string();
+#else
+      return std::to_string(std::hash<std::string> {}(input));
+#endif
     };
     return dependencies;
   }
@@ -459,11 +516,26 @@ namespace confighttp {
       return std::chrono::system_clock::now();
     };
     deps.rand_alphabet = [](std::size_t length) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       return crypto::rand_alphabet(length);
+#else
+      static constexpr char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      std::string value;
+      value.reserve(length);
+      std::random_device random;
+      for (std::size_t i = 0; i < length; ++i) {
+        value.push_back(alphabet[random() % (sizeof(alphabet) - 1)]);
+      }
+      return value;
+#endif
     };
     deps.hash = [](const std::string &input) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       auto hash_result = crypto::hash(input);
       return util::hex(hash_result).to_string();
+#else
+      return std::to_string(std::hash<std::string> {}(input));
+#endif
     };
     deps.file_exists = [](const std::string &path) {
       return fs::exists(path);
@@ -472,7 +544,11 @@ namespace confighttp {
       boost::property_tree::json_parser::read_json(path, tree);
     };
     deps.write_json = [](const std::string &path, const pt::ptree &tree) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       statefile::write_json_atomic(path, tree);
+#else
+      boost::property_tree::json_parser::write_json(path, tree);
+#endif
     };
     return deps;
   }
@@ -483,7 +559,7 @@ namespace confighttp {
 
   SessionTokenBundle SessionTokenManager::issue_session_tokens(const std::string &username, std::chrono::seconds session_ttl, std::chrono::seconds refresh_ttl, const std::string &user_agent, const std::string &remote_address, bool remember_me) {
     if (session_ttl <= std::chrono::seconds::zero()) {
-      session_ttl = config::sunshine.session_token_ttl;
+      session_ttl = configured_session_token_ttl();
     }
     if (refresh_ttl <= std::chrono::seconds::zero()) {
       refresh_ttl = remember_me ? remember_me_token_ttl() : default_refresh_token_ttl;
@@ -571,7 +647,7 @@ namespace confighttp {
           invalid = true;
         } else {
           const bool remember_me = entry.remember_me;
-          auto session_ttl = config::sunshine.session_token_ttl;
+          auto session_ttl = configured_session_token_ttl();
           auto refresh_expires_at = entry.refresh_expires_at;  // keep absolute lifetime; no sliding extension
           auto session_expires_at = std::min(now + session_ttl, refresh_expires_at);
 
@@ -781,8 +857,7 @@ namespace confighttp {
   }
 
   void SessionTokenManager::save_session_tokens() const {
-    statefile::migrate_recent_state_keys();
-    const auto &state_path = statefile::vibeshine_state_path();
+    const auto state_path = authentication_state_path();
 
     std::vector<std::pair<std::string, SessionToken>> snapshot;
     bool had_dirty = false;
@@ -801,16 +876,22 @@ namespace confighttp {
 
     bool write_failed = false;
     {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+#endif
       pt::ptree root;
       if (_dependencies.file_exists(state_path)) {
         try {
           _dependencies.read_json(state_path, root);
         } catch (const std::exception &e) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
           BOOST_LOG(error) << "SessionTokenManager: refusing to write state after failed read: " << e.what();
+#endif
           write_failed = true;
         } catch (...) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
           BOOST_LOG(error) << "SessionTokenManager: refusing to write state after unknown read failure";
+#endif
           write_failed = true;
         }
       }
@@ -851,7 +932,9 @@ namespace confighttp {
         try {
           _dependencies.write_json(state_path, root);
         } catch (const std::exception &e) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
           BOOST_LOG(error) << "SessionTokenManager: failed writing state file: " << e.what();
+#endif
           write_failed = true;
         }
       }
@@ -868,20 +951,23 @@ namespace confighttp {
   }
 
   void SessionTokenManager::load_session_tokens() {
-    statefile::migrate_recent_state_keys();
-    const auto &state_path = statefile::vibeshine_state_path();
+    const auto state_path = authentication_state_path();
 
     pt::ptree root;
     bool have_root = false;
     bool load_failed = false;
     {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
+#endif
       if (_dependencies.file_exists(state_path)) {
         try {
           _dependencies.read_json(state_path, root);
           have_root = true;
         } catch (const std::exception &e) {
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
           BOOST_LOG(warning) << "SessionTokenManager: failed loading state file: " << e.what();
+#endif
           load_failed = true;
         }
       }
@@ -978,6 +1064,7 @@ namespace confighttp {
     return out;
   }
 
+#ifndef SUNSHINE_HTTP_AUTH_POLICY_ONLY
   SessionTokenAPI::SessionTokenAPI(SessionTokenManager &session_manager):
       _session_manager(session_manager) {}
 
@@ -1181,6 +1268,21 @@ namespace confighttp {
   }
 
   namespace {
+    policy::RequestAuthPolicy make_request_auth_policy() {
+      policy::RequestAuthDependencies dependencies;
+      dependencies.remote_allowed = [](const std::string &address) { return net::from_address(address) <= http::origin_web_ui_allowed; };
+      dependencies.credentials_configured = [] { return !config::sunshine.username.empty(); };
+      dependencies.credentials_valid = [](const std::string &username, const std::string &password) {
+        return boost::iequals(username, config::sunshine.username) && util::hex(crypto::hash(password + config::sunshine.salt)).to_string() == config::sunshine.password;
+      };
+      dependencies.bearer_valid = [](const std::string &raw, const std::string &path, const std::string &method) { return api_token_manager.authenticate_bearer(raw, path, method); };
+      dependencies.session_valid = [](const std::string &token) { return session_token_api.validate_session(token).status_code == StatusCode::success_ok; };
+      dependencies.decode_base64 = [](const std::string &encoded) { return SimpleWeb::Crypto::Base64::decode(encoded); };
+      dependencies.cookie_unescape = [](const std::string &value) { return http::cookie_unescape(value); };
+      dependencies.https_port = [] { return net::map_port(confighttp::PORT_HTTPS); };
+      return policy::RequestAuthPolicy(std::move(dependencies));
+    }
+
     std::string get_cors_origin() {
       std::uint16_t https_port = net::map_port(confighttp::PORT_HTTPS);
       return std::format("https://localhost:{}", https_port);
@@ -1210,6 +1312,8 @@ namespace confighttp {
   }
 
   AuthResult make_auth_error(StatusCode code, const std::string &error) {
+    return make_request_auth_policy().make_error(code, error);
+#if 0
     AuthResult result {false, code, {}, {}};
     // Always add CORS origin header for auth errors (and redirects) to satisfy UI expectations
     {
@@ -1225,6 +1329,7 @@ namespace confighttp {
       result.headers.emplace("Content-Type", "application/json");
     }
     return result;
+#endif
   }
 
   AuthResult make_basic_auth_error(const std::string &error_message = "Unauthorized") {
@@ -1277,13 +1382,18 @@ namespace confighttp {
   }
 
   AuthResult check_bearer_auth(const std::string &raw_auth, const std::string &path, const std::string &method) {
+    return make_request_auth_policy().check_bearer(raw_auth, path, method);
+#if 0
     if (!api_token_manager.authenticate_bearer(raw_auth, path, method)) {
       return make_auth_error(StatusCode::client_error_forbidden, "Forbidden: Token does not have permission for this path/method.");
     }
     return {true, StatusCode::success_ok, {}, {}};
+#endif
   }
 
   AuthResult check_session_auth(const std::string &raw_auth) {
+    return make_request_auth_policy().check_session(raw_auth);
+#if 0
     if (raw_auth.rfind("Session ", 0) != 0) {
       return make_auth_error(StatusCode::client_error_unauthorized, "Invalid session token format");
     }
@@ -1295,9 +1405,12 @@ namespace confighttp {
     }
 
     return make_auth_error(StatusCode::client_error_unauthorized, "Invalid or expired session token");
+#endif
   }
 
   bool is_html_request(const std::string &path) {
+    return make_request_auth_policy().is_html_request(path);
+#if 0
     // API requests start with /api/
     if (path.rfind("/api/", 0) == 0) {
       return false;
@@ -1320,9 +1433,12 @@ namespace confighttp {
 
     // Everything else is likely an HTML page request
     return true;
+#endif
   }
 
   AuthResult check_auth(const std::string &remote_address, const std::string &auth_header, const std::string &path, const std::string &method) {
+    return make_request_auth_policy().check(remote_address, auth_header, path, method);
+#if 0
     // Strip query string from path for matching
     auto base_path = path;
     if (auto qpos = base_path.find('?'); qpos != std::string::npos) {
@@ -1382,6 +1498,7 @@ namespace confighttp {
 
     // Default: unauthorized
     return make_auth_error(StatusCode::client_error_unauthorized, "Unauthorized");
+#endif
   }
 
   namespace {
@@ -1402,11 +1519,12 @@ namespace confighttp {
   }  // namespace
 
   std::string extract_session_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers) {
-    return extract_cookie_value(headers, session_cookie_name);
+    return make_request_auth_policy().extract_cookie(headers, session_cookie_name);
   }
 
   std::string extract_refresh_token_from_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers) {
-    return extract_cookie_value(headers, refresh_cookie_name);
+    return make_request_auth_policy().extract_cookie(headers, refresh_cookie_name);
   }
+#endif
 
 }  // namespace confighttp

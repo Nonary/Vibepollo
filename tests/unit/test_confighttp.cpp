@@ -3,22 +3,18 @@
 #include <gtest/gtest.h>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <vector>
 
 // lib includes
-#include <boost/asio.hpp>
 #include <nlohmann/json.hpp>
-#include <Simple-Web-Server/crypto.hpp>
 
 // local includes
 #include "../tests_common.h"
-#include "src/config.h"
 #include "src/confighttp.h"
-#include "src/crypto.h"
 #include "src/http_auth.h"
-#include "src/httpcommon.h"
-#include "src/network.h"
-#include "src/utility.h"
+#include "src/http_auth_request_policy.h"
 
 using namespace testing;
 
@@ -29,38 +25,40 @@ namespace confighttp {
   class ConfigHttpAuthHelpersTest: public Test {
   protected:
     void SetUp() override {
-      // Save original config values
-      original_username = config::sunshine.username;
-      original_password = config::sunshine.password;
-      original_salt = config::sunshine.salt;
-
-      // Set test config
-      config::sunshine.username = "testuser";
-      config::sunshine.password = util::hex(crypto::hash(std::string("testpass") + "testsalt")).to_string();
-      config::sunshine.salt = "testsalt";
-    }
-
-    void TearDown() override {
-      // Restore original config values
-      config::sunshine.username = original_username;
-      config::sunshine.password = original_password;
-      config::sunshine.salt = original_salt;
+      policy::RequestAuthDependencies deps;
+      deps.remote_allowed = [](const std::string &address) { return address == "127.0.0.1"; };
+      deps.credentials_configured = [this] { return credentials_configured; };
+      deps.credentials_valid = [](const std::string &username, const std::string &password) { return username == "testuser" && password == "testpass"; };
+      deps.bearer_valid = [](const std::string &, const std::string &, const std::string &) { return false; };
+      deps.session_valid = [](const std::string &) { return false; };
+      deps.decode_base64 = [](const std::string &value) { return value; };
+      deps.cookie_unescape = [](const std::string &value) {
+        std::string decoded;
+        for (std::size_t index = 0; index < value.size(); ++index) {
+          if (value[index] == '%' && index + 2 < value.size()) {
+            const auto hex = value.substr(index + 1, 2);
+            if (hex == "20") { decoded.push_back(' '); index += 2; continue; }
+            if (hex == "25") { decoded.push_back('%'); index += 2; continue; }
+            if (hex == "3B") { decoded.push_back(';'); index += 2; continue; }
+          }
+          decoded.push_back(value[index]);
+        }
+        return decoded;
+      };
+      deps.https_port = [] { return std::uint16_t {47990}; };
+      auth = std::make_unique<policy::RequestAuthPolicy>(std::move(deps));
     }
 
     std::string createBasicAuthHeader(const std::string &username, const std::string &password) const {
-      auto credentials = username + ":" + password;
-      auto encoded = SimpleWeb::Crypto::Base64::encode(credentials);
-      return "Basic " + encoded;
+      return "Basic " + username + ":" + password;
     }
 
-  private:
-    std::string original_username;
-    std::string original_password;
-    std::string original_salt;
+    std::unique_ptr<policy::RequestAuthPolicy> auth;
+    bool credentials_configured = true;
   };
 
   TEST_F(ConfigHttpAuthHelpersTest, given_unauthorized_error_when_making_auth_error_then_should_return_proper_response) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::client_error_unauthorized, "Unauthorized");
+    auto result = auth->make_error(SimpleWeb::StatusCode::client_error_unauthorized, "Unauthorized");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
     auto json_response = nlohmann::json::parse(result.body);
@@ -70,7 +68,7 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpAuthHelpersTest, given_forbidden_error_when_making_auth_error_then_should_return_proper_response) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::client_error_forbidden, "Forbidden");
+    auto result = auth->make_error(SimpleWeb::StatusCode::client_error_forbidden, "Forbidden");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_forbidden);
     auto json_response = nlohmann::json::parse(result.body);
@@ -78,7 +76,7 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpAuthHelpersTest, given_redirect_location_when_making_auth_error_then_should_return_redirect_response) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::redirection_temporary_redirect, "");
+    auto result = auth->make_error(SimpleWeb::StatusCode::redirection_temporary_redirect, "");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::redirection_temporary_redirect);
     EXPECT_TRUE(result.body.empty());
@@ -87,20 +85,14 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpAuthHelpersTest, given_custom_error_message_when_making_auth_error_then_should_return_response_with_custom_message) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::client_error_forbidden, "Custom error message");
+    auto result = auth->make_error(SimpleWeb::StatusCode::client_error_forbidden, "Custom error message");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_forbidden);
     auto json_response = nlohmann::json::parse(result.body);
     EXPECT_EQ(json_response["error"], "Custom error message");
   }
 
-  class ConfigHttpCheckBearerAuthTest: public Test {
-  protected:
-    void SetUp() override {
-      // Bearer auth tests would require mocking the API token manager
-      // For now we just test the function signature and basic error case
-    }
-  };
+  class ConfigHttpCheckBearerAuthTest: public ConfigHttpAuthHelpersTest {};
 
   TEST_F(ConfigHttpCheckBearerAuthTest, given_invalid_bearer_token_when_checking_auth_then_should_return_forbidden) {
     // Given: Invalid bearer token for API endpoint
@@ -109,7 +101,7 @@ namespace confighttp {
     auto method = "GET";
 
     // When: Checking bearer authentication
-    auto result = check_bearer_auth(raw_auth, path, method);
+    auto result = auth->check_bearer(raw_auth, path, method);
 
     // Then: Should return forbidden error
     EXPECT_FALSE(result.ok);
@@ -119,44 +111,13 @@ namespace confighttp {
     EXPECT_EQ(json_response["error"], "Forbidden: Token does not have permission for this path/method.");
   }
 
-  class ConfigHttpCheckAuthTest: public Test {
-  protected:
-    void SetUp() override {
-      // Save original config values
-      original_username = config::sunshine.username;
-      original_password = config::sunshine.password;
-      original_salt = config::sunshine.salt;
-
-      // Set test config
-      config::sunshine.username = "testuser";
-      config::sunshine.password = util::hex(crypto::hash(std::string("testpass") + "testsalt")).to_string();
-      config::sunshine.salt = "testsalt";
-    }
-
-    void TearDown() override {
-      // Restore original config values
-      config::sunshine.username = original_username;
-      config::sunshine.password = original_password;
-      config::sunshine.salt = original_salt;
-    }
-
-    std::string createBasicAuthHeader(const std::string &username, const std::string &password) const {
-      auto credentials = username + ":" + password;
-      auto encoded = SimpleWeb::Crypto::Base64::encode(credentials);
-      return "Basic " + encoded;
-    }
-
-  private:
-    std::string original_username;
-    std::string original_password;
-    std::string original_salt;
-  };
+  class ConfigHttpCheckAuthTest: public ConfigHttpAuthHelpersTest {};
 
   TEST_F(ConfigHttpCheckAuthTest, given_missing_auth_header_when_checking_auth_then_should_return_unauthorized) {
     // Given: No authentication header provided
 
     // When: Checking authentication with empty header
-    auto result = check_auth("127.0.0.1", "", "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", "", "/api/test", "GET");
 
     // Then: Should return unauthorized error
     EXPECT_FALSE(result.ok);
@@ -167,7 +128,7 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_csrf_token_endpoint_when_checking_auth_then_should_allow_without_authentication) {
-    auto result = check_auth("127.0.0.1", "", "/api/csrf-token", "GET");
+    auto result = auth->check("127.0.0.1", "", "/api/csrf-token", "GET");
 
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
@@ -177,10 +138,10 @@ namespace confighttp {
 
   TEST_F(ConfigHttpCheckAuthTest, given_empty_username_config_when_checking_auth_then_should_return_unauthorized) {
     // Given: Empty username configuration (initial setup)
-    config::sunshine.username = "";
+    credentials_configured = false;
 
     // When: Checking authentication during initial setup for an API endpoint
-    auto result = check_auth("127.0.0.1", "Basic dGVzdDp0ZXN0", "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", "Basic test:test", "/api/test", "GET");
 
     // Then: Should return unauthorized error for API access
     EXPECT_FALSE(result.ok);
@@ -195,7 +156,7 @@ namespace confighttp {
     auto auth_header = createBasicAuthHeader("testuser", "testpass");
 
     // When: Checking authentication from external IP
-    auto result = check_auth("8.8.8.8", auth_header, "/api/test", "GET");
+    auto result = auth->check("8.8.8.8", auth_header, "/api/test", "GET");
 
     // Then: Should return forbidden error
     EXPECT_FALSE(result.ok);
@@ -208,7 +169,7 @@ namespace confighttp {
   TEST_F(ConfigHttpCheckAuthTest, given_invalid_basic_credentials_when_checking_auth_then_should_return_unauthorized) {
     auto auth_header = createBasicAuthHeader("testuser", "wrongpass");
 
-    auto result = check_auth("127.0.0.1", auth_header, "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", auth_header, "/api/test", "GET");
 
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
@@ -222,7 +183,7 @@ namespace confighttp {
   TEST_F(ConfigHttpCheckAuthTest, given_valid_basic_credentials_when_checking_auth_then_should_authorize) {
     auto auth_header = createBasicAuthHeader("testuser", "testpass");
 
-    auto result = check_auth("127.0.0.1", auth_header, "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", auth_header, "/api/test", "GET");
 
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
@@ -234,7 +195,7 @@ namespace confighttp {
     // Given: Invalid bearer token for API access
 
     // When: Checking authentication with invalid bearer token
-    auto result = check_auth("127.0.0.1", "Bearer invalid_token", "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", "Bearer invalid_token", "/api/test", "GET");
 
     // Then: Should return forbidden error
     EXPECT_FALSE(result.ok);
@@ -248,7 +209,7 @@ namespace confighttp {
     // Given: Unsupported authentication scheme (Digest)
 
     // When: Checking authentication with unsupported scheme
-    auto result = check_auth("127.0.0.1", "Digest realm=test", "/api/test", "GET");
+    auto result = auth->check("127.0.0.1", "Digest realm=test", "/api/test", "GET");
 
     // Then: Should return unauthorized error
     EXPECT_FALSE(result.ok);
@@ -258,13 +219,13 @@ namespace confighttp {
     EXPECT_EQ(json_response["error"], "Unauthorized");
   }
 
-  TEST(ConfigHttpHelpersTest, given_various_paths_when_checking_is_html_request_then_should_return_expected) {
-    EXPECT_TRUE(is_html_request("/"));
-    EXPECT_TRUE(is_html_request("/index.html"));
-    EXPECT_FALSE(is_html_request("/api/test"));
-    EXPECT_FALSE(is_html_request("/assets/style.css"));
-    EXPECT_FALSE(is_html_request("/images/logo.png"));
-    EXPECT_TRUE(is_html_request("/login"));
+  TEST_F(ConfigHttpAuthHelpersTest, given_various_paths_when_checking_is_html_request_then_should_return_expected) {
+    EXPECT_TRUE(auth->is_html_request("/"));
+    EXPECT_TRUE(auth->is_html_request("/index.html"));
+    EXPECT_FALSE(auth->is_html_request("/api/test"));
+    EXPECT_FALSE(auth->is_html_request("/assets/style.css"));
+    EXPECT_FALSE(auth->is_html_request("/images/logo.png"));
+    EXPECT_TRUE(auth->is_html_request("/login"));
   }
 
   TEST(ConfigHttpHelpersTest, given_token_scope_when_converting_to_string_then_should_return_expected) {
@@ -273,16 +234,35 @@ namespace confighttp {
     EXPECT_THROW(policy::scope_to_string(static_cast<TokenScope>(-1)), std::invalid_argument);
   }
 
-  TEST(ConfigHttpSessionAuthTest, given_invalid_session_format_then_should_return_error) {
-    auto result = check_session_auth("Invalid token");
+  TEST(ConfigHttpHelpersTest, given_api_paths_when_checking_token_route_eligibility_then_should_filter_auth_routes) {
+    EXPECT_TRUE(is_token_route_eligible("/api/clients/list"));
+    EXPECT_TRUE(is_token_route_eligible("/api/token/routes"));
+    EXPECT_FALSE(is_token_route_eligible("/api/auth/login"));
+    EXPECT_FALSE(is_token_route_eligible("/api/auth/sessions/abc123"));
+    EXPECT_FALSE(is_token_route_eligible("/clients"));
+  }
+
+  TEST(ConfigHttpHelpersTest, given_unsorted_methods_when_ordering_catalog_methods_then_should_follow_preferred_order) {
+    std::set<std::string, std::less<>> methods {"PATCH", "DELETE", "POST", "GET", "TRACE"};
+    const auto ordered = ordered_methods_for_catalog(methods);
+    ASSERT_EQ(ordered.size(), 5);
+    EXPECT_EQ(ordered[0], "GET");
+    EXPECT_EQ(ordered[1], "POST");
+    EXPECT_EQ(ordered[2], "PATCH");
+    EXPECT_EQ(ordered[3], "DELETE");
+    EXPECT_EQ(ordered[4], "TRACE");
+  }
+
+  TEST_F(ConfigHttpAuthHelpersTest, given_invalid_session_format_then_should_return_error) {
+    auto result = auth->check_session("Invalid token");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
     auto json_response = nlohmann::json::parse(result.body);
     EXPECT_EQ(json_response["error"], "Invalid session token format");
   }
 
-  TEST(ConfigHttpSessionAuthTest, given_invalid_session_token_then_should_return_error) {
-    auto result = check_session_auth("Session fake_token");
+  TEST_F(ConfigHttpAuthHelpersTest, given_invalid_session_token_then_should_return_error) {
+    auto result = auth->check_session("Session fake_token");
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_unauthorized);
     auto json_response = nlohmann::json::parse(result.body);
@@ -290,7 +270,7 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_html_page_request_without_auth_when_checking_auth_then_should_redirect_to_login_with_redirect_param) {
-    auto result = check_auth("127.0.0.1", "", "/home", "GET");
+    auto result = auth->check("127.0.0.1", "", "/home", "GET");
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
     EXPECT_TRUE(result.body.empty());
@@ -298,13 +278,13 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_login_page_path_when_checking_auth_then_should_allow_without_authentication) {
-    auto result = check_auth("127.0.0.1", "", "/login", "GET");
+    auto result = auth->check("127.0.0.1", "", "/login", "GET");
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
     EXPECT_TRUE(result.body.empty());
     EXPECT_TRUE(result.headers.empty());
 
-    auto result2 = check_auth("127.0.0.1", "", "/login/", "GET");
+    auto result2 = auth->check("127.0.0.1", "", "/login/", "GET");
     EXPECT_TRUE(result2.ok);
     EXPECT_EQ(result2.code, SimpleWeb::StatusCode::success_ok);
     EXPECT_TRUE(result2.body.empty());
@@ -312,52 +292,36 @@ namespace confighttp {
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_unknown_auth_scheme_and_html_path_when_checking_auth_then_should_redirect_to_login) {
-    auto result = check_auth("127.0.0.1", "Digest realm=foo", "/index.html", "GET");
+    auto result = auth->check("127.0.0.1", "Digest realm=foo", "/index.html", "GET");
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
     EXPECT_TRUE(result.body.empty());
     EXPECT_TRUE(result.headers.empty());
   }
 
-  class ConfigHttpCorsTest: public Test {
-  protected:
-    void SetUp() override {
-      // Save original port configuration
-      original_port = config::sunshine.port;
-      // Set a known test port
-      config::sunshine.port = 47990;
-    }
-
-    void TearDown() override {
-      // Restore original port configuration
-      config::sunshine.port = original_port;
-    }
-
-  private:
-    std::uint16_t original_port;
-  };
+  class ConfigHttpCorsTest: public ConfigHttpAuthHelpersTest {};
 
   TEST_F(ConfigHttpCorsTest, given_auth_error_response_when_creating_then_should_include_correct_cors_headers) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::client_error_unauthorized, "Unauthorized");
+    auto result = auth->make_error(SimpleWeb::StatusCode::client_error_unauthorized, "Unauthorized");
 
     auto cors_origin_it = result.headers.find("Access-Control-Allow-Origin");
     EXPECT_NE(cors_origin_it, result.headers.end());
 
     // The CORS origin should use the correct HTTPS port
-    std::uint16_t expected_port = net::map_port(PORT_HTTPS);
+    std::uint16_t expected_port = 47990;
     std::string expected_origin = std::format("https://localhost:{}", expected_port);
 
     EXPECT_EQ(cors_origin_it->second, expected_origin);
   }
 
   TEST_F(ConfigHttpCorsTest, given_different_auth_error_when_creating_then_should_include_correct_cors_headers) {
-    auto result = make_auth_error(SimpleWeb::StatusCode::client_error_forbidden, "Forbidden");
+    auto result = auth->make_error(SimpleWeb::StatusCode::client_error_forbidden, "Forbidden");
 
     auto cors_origin_it = result.headers.find("Access-Control-Allow-Origin");
     EXPECT_NE(cors_origin_it, result.headers.end());
 
     // The CORS origin should use the correct HTTPS port and be https (not http)
-    std::uint16_t expected_port = net::map_port(PORT_HTTPS);
+    std::uint16_t expected_port = 47990;
     std::string expected_origin = std::format("https://localhost:{}", expected_port);
 
     EXPECT_EQ(cors_origin_it->second, expected_origin);
@@ -366,59 +330,15 @@ namespace confighttp {
     EXPECT_THAT(cors_origin_it->second, Not(HasSubstr("http://localhost:")));
   }
 
-  class ConfigHttpUrlTest: public Test {
-  protected:
-    void SetUp() override {
-      original_port = config::sunshine.port;
-      original_bind_address = config::sunshine.bind_address;
-      original_address_family = config::sunshine.address_family;
-
-      config::sunshine.port = 47989;
-      config::sunshine.bind_address.clear();
-      config::sunshine.address_family = "both";
-    }
-
-    void TearDown() override {
-      config::sunshine.port = original_port;
-      config::sunshine.bind_address = original_bind_address;
-      config::sunshine.address_family = original_address_family;
-    }
-
-  private:
-    std::uint16_t original_port;
-    std::string original_bind_address;
-    std::string original_address_family;
-  };
-
-  TEST_F(ConfigHttpUrlTest, UsesLocalhostWhenListeningOnDualStackWildcard) {
-    EXPECT_EQ(get_web_ui_url(), "https://localhost:47990");
-  }
-
-  TEST_F(ConfigHttpUrlTest, UsesIpv4LoopbackWhenListeningOnIpv4Wildcard) {
-    config::sunshine.address_family = "ipv4";
-    EXPECT_EQ(get_web_ui_url(), "https://127.0.0.1:47990");
-
-    config::sunshine.bind_address = "0.0.0.0";
-    EXPECT_EQ(get_web_ui_url("/login"), "https://127.0.0.1:47990/login");
-  }
-
-  TEST_F(ConfigHttpUrlTest, UsesConfiguredHostWhenBoundToSpecificAddress) {
-    config::sunshine.bind_address = "192.168.1.154";
-    EXPECT_EQ(get_web_ui_url(), "https://192.168.1.154:47990");
-
-    config::sunshine.bind_address = "2001:db8::154";
-    EXPECT_EQ(get_web_ui_url(), "https://[2001:db8::154]:47990");
-  }
-
   TEST_F(ConfigHttpAuthHelpersTest, given_percent_encoded_session_token_in_cookie_when_extracting_then_should_unescape_token) {
     // Given: A percent-encoded session token in the Cookie header
     std::string raw_token = "token_with_special%3Bchars%20and%25percent";
-    std::string encoded_token = http::cookie_escape(raw_token);
+    std::string encoded_token = "token_with_special%253Bchars%2520and%2525percent";
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Cookie", std::string(session_cookie_name) + "=" + encoded_token);
 
     // When: Extracting the session token
-    std::string extracted = extract_session_token_from_cookie(headers);
+    std::string extracted = auth->extract_cookie(headers, session_cookie_name);
 
     // Then: The extracted token should match the original raw token
     EXPECT_EQ(extracted, raw_token);
@@ -430,7 +350,7 @@ namespace confighttp {
     headers.emplace("Cookie", "other_cookie=foo");
 
     // When: Extracting the session token
-    std::string extracted = extract_session_token_from_cookie(headers);
+    std::string extracted = auth->extract_cookie(headers, session_cookie_name);
 
     // Then: The extracted token should be empty
     EXPECT_TRUE(extracted.empty());
@@ -439,12 +359,12 @@ namespace confighttp {
   TEST_F(ConfigHttpAuthHelpersTest, given_percent_encoded_cookie_when_extracting_token_then_should_return_decoded_token) {
     // Given: A cookie header with a percent-encoded session token
     std::string raw_token = "token with spaces;and%percent";
-    std::string encoded_token = http::cookie_escape(raw_token);
+    std::string encoded_token = "token%20with%20spaces%3Band%25percent";
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Cookie", std::string(session_cookie_name) + "=" + encoded_token);
 
     // When: Extracting the session token
-    std::string extracted = extract_session_token_from_cookie(headers);
+    std::string extracted = auth->extract_cookie(headers, session_cookie_name);
 
     // Then: Should return the decoded token
     EXPECT_EQ(extracted, raw_token);
