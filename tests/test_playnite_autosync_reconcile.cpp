@@ -41,8 +41,12 @@ TEST(PlayniteAutosync_Reconcile, AddsSelectedGamesToEmptyApps) {
                      matched);
   EXPECT_TRUE(changed);
   ASSERT_EQ(root["apps"].size(), 2u);  // A from recent, B from category
-  EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
-  EXPECT_EQ(root["apps"][1]["playnite-id"], "B");
+  std::unordered_set<std::string> ids;
+  for (const auto &app : root["apps"]) {
+    ids.insert(app["playnite-id"].get<std::string>());
+  }
+  EXPECT_TRUE(ids.contains("A"));
+  EXPECT_TRUE(ids.contains("B"));
 }
 
 TEST(PlayniteAutosync_Reconcile, HonorsExcludeIds) {

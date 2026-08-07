@@ -4301,6 +4301,74 @@ Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture s
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
 
+### auto_capture_sink
+
+Automatically selects the audio capture sink when no explicit virtual sink is configured.
+
+### enable_discovery
+
+Controls whether Vibepollo advertises itself for local-network discovery.
+
+### enable_input_only_mode
+
+Allows clients to connect in input-only mode without starting a video stream.
+
+### enable_pairing
+
+Controls whether new clients may pair with this host.
+
+### envvar_compatibility_mode
+
+Enables compatibility handling for legacy environment-variable based integrations.
+
+### fallback_mode
+
+Sets the display mode used when the requested streaming mode cannot be applied.
+
+### forward_rumble
+
+Forwards controller rumble events to the emulated host gamepad.
+
+### global_state_cmd
+
+Configures commands that run when any application changes streaming state.
+
+### hide_tray_controls
+
+Hides the interactive controls in the system-tray menu.
+
+### ignore_encoder_probe_failure
+
+Allows streaming to continue when the encoder capability probe cannot complete.
+
+### keep_sink_default
+
+Keeps the selected audio sink as the system default while streaming.
+
+### legacy_ordering
+
+Enables legacy application ordering for clients and integrations that require it.
+
+### limit_framerate
+
+Limits capture and encoding to the requested stream frame rate.
+
+### nvenc_intra_refresh
+
+Uses NVIDIA intra refresh instead of full keyframes when supported.
+
+### nvenc_temporal_aq
+
+Enables NVIDIA temporal adaptive quantization when supported.
+
+### pacing_max_bitrate_kbps
+
+Sets the maximum bitrate, in Kbps, considered by the network pacing policy. Set `0` to use the automatic default.
+
+### packetsize
+
+Sets the maximum network packet size used for streaming. Set `0` to use the default behavior.
+
 <div class="section_buttons">
 
 | Previous          |                            Next |

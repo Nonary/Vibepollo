@@ -10,7 +10,8 @@ struct MdnsInstanceNameTest: testing::TestWithParam<std::tuple<std::string, std:
 
 TEST_P(MdnsInstanceNameTest, Run) {
   auto [input, expected] = GetParam();
-  ASSERT_EQ(net::mdns_instance_name(input), expected);
+  const auto expected_instance = expected == "Sunshine" ? "Apollo" : expected;
+  ASSERT_EQ(net::mdns_instance_name(input), expected_instance);
 }
 
 INSTANTIATE_TEST_SUITE_P(

@@ -1055,7 +1055,21 @@
     "dd_validation_mixed_final_required": "For mixed mappings, specify at least one Final field.",
     "dd_validation_resolution": "Invalid format. Use WIDTHxHEIGHT, e.g., {example} (x or ×).",
     "dd_validation_refresh_rate": "Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.",
-    "dd_manual_enforcement_notice": "Overrides below are disabled while manual resolution or refresh rate is enforced. Manual refresh rates are applied forcefully and override game-aware refresh switching on virtual displays."
+    "dd_manual_enforcement_notice": "Overrides below are disabled while manual resolution or refresh rate is enforced. Manual refresh rates are applied forcefully and override game-aware refresh switching on virtual displays.",
+    "auto_capture_sink": "Automatically select audio capture sink",
+    "enable_discovery": "Enable network discovery",
+    "enable_input_only_mode": "Enable input-only mode",
+    "enable_pairing": "Enable client pairing",
+    "envvar_compatibility_mode": "Environment variable compatibility mode",
+    "fallback_mode": "Fallback display mode",
+    "forward_rumble": "Forward controller rumble",
+    "hide_tray_controls": "Hide tray controls",
+    "ignore_encoder_probe_failure": "Ignore encoder probe failure",
+    "keep_sink_default": "Keep audio sink as default",
+    "limit_framerate": "Limit frame rate",
+    "nvenc_temporal_aq": "NVIDIA temporal adaptive quantization",
+    "pacing_max_bitrate_kbps": "Pacing maximum bitrate (Kbps)",
+    "packetsize": "Network packet size"
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
