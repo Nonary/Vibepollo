@@ -816,6 +816,7 @@ int main(int argc, char *argv[]) {
 
   // The virtual display watchdog thread also lives in static storage.
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.
+  VDISPLAY::cleanup_retained_ensure_display();
   VDISPLAY::closeVDisplayDevice();
 #endif
 

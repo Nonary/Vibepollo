@@ -280,6 +280,13 @@ namespace VDISPLAY {
   void cleanup_ensure_display(const ensure_display_result &result, bool probe_succeeded, bool allow_temporary_teardown = true);
 
   /**
+   * @brief Removes the retained encoder-probe temporary display, if any.
+   * @details Includes a display accepted by the driver before Windows publishes
+   * a monitor identity.
+   */
+  void cleanup_retained_ensure_display();
+
+  /**
    * @brief Returns true when ensure_display() is currently retaining a temporary display for probe retries.
    */
   bool has_retained_ensure_display();

@@ -7750,5 +7750,6 @@ bool VDISPLAY_SUNSHINE::has_retained_ensure_display() {
   if (!g_ensure_display_retained) {
     return false;
   }
-  return is_virtual_display_guid_tracked(g_ensure_display_guid);
+  return is_virtual_display_guid_tracked(g_ensure_display_guid) ||
+         driver_lease_tracker().get(guid_to_uuid(g_ensure_display_guid)).has_value();
 }

@@ -331,8 +331,24 @@ namespace nvhttp {
         return publish(std::move(caps), false, "active-or-stopping-session");
       }
 
+#ifdef _WIN32
+      // Startup probing already waits for the interactive desktop. Keep idle
+      // HTTP discovery on the same side of that boundary so a pre-login
+      // request cannot create a probe display that Windows cannot enumerate.
+      // Stream-initiated probing remains independent of this gate.
+      if (!platf::is_default_input_desktop_active()) {
+        BOOST_LOG(info) << "HTTP encoder capability probe deferred until the interactive desktop is ready.";
+        return publish(std::move(caps), false, "interactive-desktop");
+      }
+#endif
+
       auto ensure_result = VDISPLAY::ensure_display(idle_virtual_required_adapter);
       if (!ensure_result.ready_for_probe()) {
+        // A driver-accepted target without a Windows identity must not remain
+        // indefinitely retained by an idle discovery request. Keep the
+        // existing bounded retry policy, while allowing a later request to
+        // create a fresh target after the retry budget is exhausted.
+        VDISPLAY::cleanup_ensure_display(ensure_result, false, true);
         BOOST_LOG(info)
           << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
         return publish(std::move(caps), false, "target-pending");
@@ -346,8 +362,15 @@ namespace nvhttp {
 
     void cleanup_virtual_display_state() {
       stream::session::cleanup_reservation_t cleanup_reservation;
-      if (!has_active_virtual_display()) {
+      const bool has_active_display = has_active_virtual_display();
+      const bool has_retained_probe_display = VDISPLAY::has_retained_ensure_display();
+      if (!has_active_display && !has_retained_probe_display) {
         BOOST_LOG(debug) << "Skipping virtual display cleanup after cancel because no active virtual display exists.";
+        return;
+      }
+      if (!has_active_display) {
+        BOOST_LOG(info) << "Removing retained encoder-probe virtual display after cancel.";
+        VDISPLAY::cleanup_retained_ensure_display();
         return;
       }
 
@@ -355,7 +378,6 @@ namespace nvhttp {
       if (cleanup.helper_revert_dispatched) {
         display_helper_integration::stop_watchdog();
       }
-
     }
 
     bool has_stream_session_activity() {

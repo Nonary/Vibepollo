@@ -147,6 +147,12 @@ namespace platf::virtual_display_cleanup {
       try_helper_revert();
     }
 
+    // Keep the retained probe display alive for restore-before-remove callers,
+    // but remove it in the normal remove-before-restore order with the other
+    // virtual displays. This also covers a driver-accepted target that has
+    // not yet appeared in Windows enumeration.
+    VDISPLAY::cleanup_retained_ensure_display();
+
     const bool specific_display_removed = remove_specific_virtual_display(virtual_display_guid_bytes);
     const bool tracked_displays_removed = VDISPLAY::removeAllVirtualDisplays();
     result.virtual_displays_removed = specific_display_removed && tracked_displays_removed;
