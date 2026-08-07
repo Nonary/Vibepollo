@@ -23,6 +23,8 @@
 using namespace testing;
 
 namespace confighttp {
+  using policy::is_token_route_eligible;
+  using policy::ordered_methods_for_catalog;
 
   class ConfigHttpAuthHelpersTest: public Test {
   protected:
@@ -266,9 +268,9 @@ namespace confighttp {
   }
 
   TEST(ConfigHttpHelpersTest, given_token_scope_when_converting_to_string_then_should_return_expected) {
-    EXPECT_EQ(scope_to_string(TokenScope::Read), "Read");
-    EXPECT_EQ(scope_to_string(TokenScope::Write), "Write");
-    EXPECT_THROW(scope_to_string(static_cast<TokenScope>(-1)), std::invalid_argument);
+    EXPECT_EQ(policy::scope_to_string(TokenScope::Read), "Read");
+    EXPECT_EQ(policy::scope_to_string(TokenScope::Write), "Write");
+    EXPECT_THROW(policy::scope_to_string(static_cast<TokenScope>(-1)), std::invalid_argument);
   }
 
   TEST(ConfigHttpSessionAuthTest, given_invalid_session_format_then_should_return_error) {
