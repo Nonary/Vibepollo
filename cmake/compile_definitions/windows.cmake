@@ -254,6 +254,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/ipc_session.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/focus_utils.cpp"
         "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling.cpp"
+        "${CMAKE_SOURCE_DIR}/tools/playnite_launcher/lossless_scaling_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
