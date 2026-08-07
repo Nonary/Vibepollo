@@ -10,6 +10,10 @@
 
   #include <array>
   #include <cstring>
+  #include <filesystem>
+  #include <fstream>
+  #include <sstream>
+  #include <string>
 
 namespace {
   constexpr GUID kClientGuid {
@@ -25,6 +29,23 @@ namespace {
     0x477a,
     {0x9b, 0x7a, 0x79, 0x45, 0x0b, 0x81, 0x2d, 0x60}
   };
+
+  std::string read_source(const std::filesystem::path &relative_path) {
+    const auto path = std::filesystem::path {SUNSHINE_SOURCE_DIR} / relative_path;
+    std::ifstream file {path, std::ios::binary};
+    if (!file) {
+      ADD_FAILURE() << "Failed to open " << path.string();
+      return {};
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+  }
+
+  void expect_contains(const std::string &content, const std::string &needle) {
+    EXPECT_NE(content.find(needle), std::string::npos) << "missing: " << needle;
+  }
 }  // namespace
 
 TEST(SunshineVirtualDisplay, ClientUuidDisplayIdIsStableAndNonZero) {
@@ -145,9 +166,9 @@ TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredA
 
   const auto misc_source = read_source("src/platform/windows/misc.cpp");
   expect_contains(misc_source, "bool configured_capture_adapter_has_output(");
-  expect_contains(misc_source, "std::optional<bool> adapter_drives_any_output(");
+  expect_contains(misc_source, "adapter_output_match_e adapter_drives_any_output(");
   // Hosts without a configured adapter must keep the legacy adapter-agnostic answer.
-  expect_contains(misc_source, "if (configured.empty()) {");
+  expect_contains(misc_source, "if (config::video.adapter_name.empty()) {");
 }
 
 TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
@@ -156,29 +177,26 @@ TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
          std::string {"src/platform/windows/virtual_display_sudovda.cpp"},
        }) {
     const auto source = read_source(relative_path);
-    const auto preference_pos = source.find("void apply_configured_render_adapter_preference(");
-    ASSERT_NE(preference_pos, std::string::npos) << relative_path;
-
-    const auto branch_pos = source.find("if (!config::video.adapter_name.empty())", preference_pos);
-    ASSERT_NE(branch_pos, std::string::npos) << relative_path;
-    const auto return_pos = source.find("return;", branch_pos);
-    const auto error_pos = source.find("BOOST_LOG(error)", branch_pos);
-    const auto fallback_pos = source.find("setRenderAdapterWithMostDedicatedMemory", branch_pos);
-    ASSERT_NE(return_pos, std::string::npos) << relative_path;
-    ASSERT_NE(error_pos, std::string::npos) << relative_path;
-    ASSERT_NE(fallback_pos, std::string::npos) << relative_path;
-
-    // An unusable configured adapter must be reported loudly...
-    EXPECT_LT(error_pos, return_pos) << relative_path << " does not log an error for an unusable adapter";
-    // ...and the highest-VRAM auto-selection must stay unreachable once adapter_name is set.
-    EXPECT_LT(return_pos, fallback_pos) << relative_path << " can fall back to another GPU despite an explicit adapter_name";
+    expect_contains(source, "return VDISPLAY::applyConfiguredRenderAdapterPreference(context);");
   }
+
+  // The driver-specific wrappers delegate to the shared policy, which reports
+  // an unusable preference and never substitutes a highest-VRAM adapter.
+  const auto shared_source = read_source("src/platform/windows/virtual_display.cpp");
+  const auto preference_pos = shared_source.find("bool applyConfiguredRenderAdapterPreference(");
+  ASSERT_NE(preference_pos, std::string::npos);
+  const auto preference_end = shared_source.find("bool configuredRenderAdapterMatchesVirtualDisplay(", preference_pos);
+  ASSERT_NE(preference_end, std::string::npos);
+  const auto preference_body = shared_source.substr(preference_pos, preference_end - preference_pos);
+  expect_contains(preference_body, "BOOST_LOG(error)");
+  expect_contains(preference_body, "No fallback adapter will be used.");
+  EXPECT_EQ(preference_body.find("setRenderAdapterWithMostDedicatedMemory"), std::string::npos);
 
   // The capture path must name the exact reason a pinned adapter could not be honored.
   const auto display_base_source = read_source("src/platform/windows/display_base.cpp");
   expect_contains(display_base_source, "bool configured_adapter_present = false;");
   expect_contains(display_base_source, "bool configured_adapter_has_output = false;");
-  expect_contains(display_base_source, "does not match any GPU on this system.");
+  expect_contains(display_base_source, "does not match any GPU.");
   expect_contains(display_base_source, "has no display attached to the desktop.");
 }
 
