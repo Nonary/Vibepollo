@@ -9,7 +9,7 @@
 
   #include <nlohmann/json.hpp>
 
-  #include "src/logging.h"
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2::codec {
   namespace {

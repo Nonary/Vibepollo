@@ -179,6 +179,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_session_deferral_rtsp.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_watchdog.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics_boost.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp"

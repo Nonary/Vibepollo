@@ -5,7 +5,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <utility>
 
-#include "src/logging.h"
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2 {
   namespace {
@@ -1395,10 +1395,13 @@ namespace display_helper::v2 {
     if (completed.success) {
       staged_state_prepared_ = false;
     }
-    BOOST_LOG(completed.success ? info : warning)
-      << "Display helper: reset staged SettingsManager state result="
-      << (completed.success ? "true" : "false")
-      << (was_stale ? " (completion followed a newer cancellation generation)" : "");
+    if (completed.success) {
+      BOOST_LOG(info) << "Display helper: reset staged SettingsManager state result=true"
+                      << (was_stale ? " (completion followed a newer cancellation generation)" : "");
+    } else {
+      BOOST_LOG(warning) << "Display helper: reset staged SettingsManager state result=false"
+                         << (was_stale ? " (completion followed a newer cancellation generation)" : "");
+    }
 
     const bool deferred_followup_mutation = std::any_of(
       deferred_mutation_commands_.begin(),

@@ -1,6 +1,6 @@
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 
-#include "src/logging.h"
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2 {
   AsyncDispatcher::AsyncDispatcher(

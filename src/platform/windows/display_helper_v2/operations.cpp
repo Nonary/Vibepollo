@@ -5,7 +5,7 @@
 
 #include <boost/algorithm/string/predicate.hpp>
 
-#include "src/logging.h"
+#include "src/platform/windows/display_helper_v2/diagnostics.h"
 
 namespace display_helper::v2 {
   namespace {
@@ -710,10 +710,15 @@ namespace display_helper::v2 {
     unsigned int denominator
   ) {
     const bool success = display_.set_device_refresh_rate(device_id, numerator, denominator);
-    BOOST_LOG(success ? info : warning)
-      << "Display helper: refresh-only request device=" << device_id
-      << " rate=" << numerator << '/' << denominator
-      << " result=" << (success ? "true" : "false");
+    if (success) {
+      BOOST_LOG(info) << "Display helper: refresh-only request device=" << device_id
+                      << " rate=" << numerator << '/' << denominator
+                      << " result=true";
+    } else {
+      BOOST_LOG(warning) << "Display helper: refresh-only request device=" << device_id
+                         << " rate=" << numerator << '/' << denominator
+                         << " result=false";
+    }
     return success;
   }
 
