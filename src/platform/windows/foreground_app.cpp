@@ -199,7 +199,7 @@ namespace platf::foreground_app {
              (class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd");
     }
 
-    visible_stack_decision_e evaluate_visible_window(
+    [[maybe_unused]] visible_stack_decision_e evaluate_visible_window(
       const visible_window_evidence_t &evidence,
       const bool require_active_app_match
     ) {
