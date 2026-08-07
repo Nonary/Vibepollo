@@ -410,10 +410,12 @@ TEST(DisplayHelperV2StagedSettingsState, RebasePreservesOriginalSettings) {
     current_initial,
     current_initial.m_topology);
 
-  EXPECT_EQ(rebased.m_initial, current_initial);
+  EXPECT_TRUE(display_helper::v2::topology::equal_initial(rebased.m_initial, current_initial));
   EXPECT_EQ(rebased.m_modified.m_topology, current_initial.m_topology);
   EXPECT_EQ(rebased.m_modified.m_original_primary_device, "PHYSICAL");
-  EXPECT_EQ(rebased.m_modified.m_original_modes, previous.m_modified.m_original_modes);
+  EXPECT_TRUE(display_helper::v2::topology::equal_display_modes(
+    rebased.m_modified.m_original_modes,
+    previous.m_modified.m_original_modes));
   EXPECT_EQ(rebased.m_modified.m_original_hdr_states, previous.m_modified.m_original_hdr_states);
 }
 
@@ -433,7 +435,7 @@ TEST(DisplayHelperV2StagedSettingsState, ConsecutiveApplyUsesSessionTopologyBase
     devices);
   ASSERT_TRUE(base.has_value());
 
-  const auto [topology, target, duplicates] = display_device::win_utils::computeNewTopologyAndMetadata(
+  const auto [topology, target, duplicates] = display_helper::v2::topology::compute_new_topology_and_metadata(
     display_device::SingleDisplayConfiguration::DevicePreparation::EnsureActive,
     "NEW_VIRTUAL",
     *base);
@@ -1085,7 +1087,7 @@ TEST(DisplayHelperV2FileSnapshotStorage, SaveLoadRoundTrip) {
 
   auto loaded = storage.load(display_helper::v2::SnapshotTier::Current);
   ASSERT_TRUE(loaded.has_value());
-  EXPECT_EQ(*loaded, snapshot);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*loaded, snapshot));
 }
 
 TEST(DisplayHelperV2FileSnapshotStorage, ReportsMissingDevices) {

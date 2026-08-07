@@ -113,7 +113,7 @@ TEST(DisplayHelperV2Codec, SerializeParseRoundTrip) {
   EXPECT_TRUE(loaded.has_layout_data);
   EXPECT_EQ(loaded.layout_rotations, layouts);
   EXPECT_TRUE(codec::equal_snapshots_strict(loaded.snapshot, snap));
-  EXPECT_EQ(loaded.snapshot.m_origins, snap.m_origins);
+  EXPECT_TRUE(display_helper::v2::topology::equal_origins(loaded.snapshot.m_origins, snap.m_origins));
 }
 
 TEST(DisplayHelperV2Codec, LegacyV1SchemaParsesWithoutLayouts) {
@@ -636,7 +636,7 @@ TEST(DisplayHelperV2FileStorage, LegacyFormatRoundTripWithLayouts) {
   EXPECT_TRUE(loaded->has_layout_data);
   EXPECT_EQ(loaded->layout_rotations, layouts);
   EXPECT_TRUE(codec::equal_snapshots_strict(loaded->snapshot, snap));
-  EXPECT_EQ(loaded->snapshot.m_origins, snap.m_origins);
+  EXPECT_TRUE(display_helper::v2::topology::equal_origins(loaded->snapshot.m_origins, snap.m_origins));
 
   EXPECT_TRUE(storage.remove(display_helper::v2::SnapshotTier::Golden));
   EXPECT_FALSE(storage.exists(display_helper::v2::SnapshotTier::Golden));

@@ -1,4 +1,5 @@
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #ifdef _WIN32
 
@@ -397,12 +398,14 @@ namespace display_helper::v2::codec {
     if (canonical_topology(a.m_topology) != canonical_topology(b.m_topology)) {
       return false;
     }
-    if (!(a.m_modes == b.m_modes && a.m_hdr_states == b.m_hdr_states && a.m_primary_device == b.m_primary_device)) {
+    if (!topology::equal_display_modes(a.m_modes, b.m_modes) ||
+        a.m_hdr_states != b.m_hdr_states ||
+        a.m_primary_device != b.m_primary_device) {
       return false;
     }
     // Origins are optional for backward compatibility with older snapshots
     if (!a.m_origins.empty() && !b.m_origins.empty()) {
-      return a.m_origins == b.m_origins;
+      return topology::equal_origins(a.m_origins, b.m_origins);
     }
     return true;
   }

@@ -3,6 +3,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/staged_settings.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -616,7 +617,7 @@ namespace display_helper::v2 {
         return std::nullopt;
       }
 
-      const auto [new_topology, device_to_configure, additional_devices] = display_device::win_utils::computeNewTopologyAndMetadata(
+      const auto [new_topology, device_to_configure, additional_devices] = topology::compute_new_topology_and_metadata(
         config.m_device_prep,
         config.m_device_id,
         *initial

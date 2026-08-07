@@ -116,6 +116,7 @@ add_executable(sunshine_display_helper
         display_settings_helper_main.cpp
         display_settings_helper.cpp
         display_settings_helper_v2.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/topology_policy.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp
         ${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp

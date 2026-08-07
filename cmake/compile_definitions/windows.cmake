@@ -183,6 +183,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/diagnostics_boost.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/text_storage.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/file_text_storage.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/topology_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/async_dispatcher.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/golden_health.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/operations.cpp"

@@ -1919,11 +1919,11 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshesPreservingPrevious) {
 
   auto stored_prev = harness.storage.load(display_helper::v2::SnapshotTier::Previous);
   ASSERT_TRUE(stored_prev.has_value());
-  EXPECT_EQ(*stored_prev, previous);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*stored_prev, previous));
 
   auto stored_current = harness.storage.load(display_helper::v2::SnapshotTier::Current);
   ASSERT_TRUE(stored_current.has_value());
-  EXPECT_EQ(*stored_current, current);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*stored_current, current));
   ASSERT_TRUE(harness.snapshot_result.has_value());
   EXPECT_TRUE(*harness.snapshot_result);
 }
@@ -2298,7 +2298,7 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshFailureKeepsBaseline) {
 
   auto stored_current = harness.storage.load(display_helper::v2::SnapshotTier::Current);
   ASSERT_TRUE(stored_current.has_value());
-  EXPECT_EQ(*stored_current, previous);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*stored_current, previous));
   EXPECT_FALSE(harness.storage.load(display_helper::v2::SnapshotTier::Previous).has_value());
   ASSERT_TRUE(harness.snapshot_result.has_value());
   EXPECT_FALSE(*harness.snapshot_result);

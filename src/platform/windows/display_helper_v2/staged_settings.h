@@ -1,9 +1,8 @@
 #pragma once
 
-#include "src/platform/windows/display_helper_v2/types.h"
+#include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #include <optional>
-#include <display_device/windows/settings_utils.h>
 
 namespace display_helper::v2 {
   /**
@@ -19,9 +18,9 @@ namespace display_helper::v2 {
       const ActiveTopology &current_topology,
       const EnumeratedDeviceList &devices) {
       if (session_initial) {
-        return display_device::win_utils::stripInitialState(*session_initial, devices);
+        return topology::strip_initial_state(*session_initial, devices);
       }
-      return display_device::win_utils::computeInitialState(
+      return topology::compute_initial_state(
         std::nullopt,
         current_topology,
         devices);
@@ -40,7 +39,7 @@ namespace display_helper::v2 {
         return current;
       }
 
-      const auto retained = display_device::win_utils::stripInitialState(*session_initial, devices);
+      const auto retained = topology::strip_initial_state(*session_initial, devices);
       if (retained) {
         current->m_primary_devices = retained->m_primary_devices;
       }
