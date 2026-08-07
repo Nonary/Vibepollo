@@ -28,7 +28,6 @@ namespace display_helper_integration::request_policy {
         input.configuration_option == ConfigurationOption::Disabled &&
         is_extended(input.layout)) {
       result.dispatch = false;
-      return result;
     }
 
     if (input.virtual_display) {

@@ -62,26 +62,6 @@ namespace display_helper::v2 {
       });
     }
 
-    std::optional<std::string> missing_topology_device(
-      const ActiveTopology &topology,
-      const EnumeratedDeviceList &devices) {
-      for (const auto &group : topology) {
-        for (const auto &requested_id : group) {
-          if (requested_id.empty()) {
-            continue;
-          }
-          const auto found = std::any_of(devices.begin(), devices.end(), [&](const auto &device) {
-            return (!device.m_device_id.empty() && boost::iequals(device.m_device_id, requested_id)) ||
-                   (!device.m_display_name.empty() && boost::iequals(device.m_display_name, requested_id));
-          });
-          if (!found) {
-            return requested_id;
-          }
-        }
-      }
-      return std::nullopt;
-    }
-
     bool resolved_target_remains_active(
       const ActiveTopology &topology,
       const ResolvedConfigurationTarget &target) {
@@ -237,18 +217,6 @@ namespace display_helper::v2 {
     }
     if (!display_.topology_is_valid(topology)) {
       BOOST_LOG(error) << "Display helper v2: refusing structurally invalid topology transition.";
-      outcome.status = ApplyStatus::InvalidRequest;
-      return outcome;
-    }
-    const auto enumerated_devices = display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
-    if (enumerated_devices.empty()) {
-      BOOST_LOG(warning) << "Display helper v2: device enumeration is unavailable; retrying topology transition without recovery.";
-      outcome.status = ApplyStatus::Retryable;
-      return outcome;
-    }
-    if (const auto missing_device = missing_topology_device(topology, enumerated_devices)) {
-      BOOST_LOG(warning) << "Display helper v2: requested topology references unavailable device '"
-                         << *missing_device << "'; skipping global display-stack recovery.";
       outcome.status = ApplyStatus::InvalidRequest;
       return outcome;
     }
