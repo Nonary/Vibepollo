@@ -306,7 +306,8 @@ namespace {
     FakeTaskManager task_manager;
     display_helper::v2::HeartbeatMonitor heartbeat {clock};
     display_helper::v2::CancellationSource cancellation;
-    display_helper::v2::GoldenHealth golden_health {std::filesystem::path {}};
+    display_helper::v2::InMemoryTextStorage golden_status_storage;
+    display_helper::v2::GoldenHealth golden_health {golden_status_storage, {}};
     display_helper::v2::RestoreState restore_state;
     std::deque<display_helper::v2::Message> messages;
     std::optional<display_helper::v2::ApplyStatus> apply_result;

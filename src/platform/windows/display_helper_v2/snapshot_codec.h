@@ -2,7 +2,6 @@
 
 #include "src/platform/windows/display_helper_v2/types.h"
 
-#include <filesystem>
 #include <map>
 #include <optional>
 #include <set>
@@ -92,7 +91,4 @@ namespace display_helper::v2::codec {
     const std::vector<std::string> &exclusions,
     const std::string &source_label);
 
-  // --- file IO ---
-  bool write_text_atomically(const std::string &text, const std::filesystem::path &path);
-  std::optional<std::string> read_file_text(const std::filesystem::path &path);
 }  // namespace display_helper::v2::codec

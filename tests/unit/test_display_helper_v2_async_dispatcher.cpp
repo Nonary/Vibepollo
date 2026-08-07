@@ -135,7 +135,8 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   FakeDisplaySettings display;
   display_helper::v2::SnapshotService snapshot_service(display);
   display_helper::v2::InMemorySnapshotStorage storage;
-  display_helper::v2::GoldenHealth golden_health({});
+  display_helper::v2::InMemoryTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, {});
   display_helper::v2::RestoreState restore_state;
   int recovery_boundary_calls = 0;
   display_helper::v2::ApplyOperation apply_op(display, clock, [&] {
@@ -197,7 +198,8 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   FakeDisplaySettings display;
   display_helper::v2::SnapshotService snapshot_service(display);
   display_helper::v2::InMemorySnapshotStorage storage;
-  display_helper::v2::GoldenHealth golden_health({});
+  display_helper::v2::InMemoryTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, {});
   display_helper::v2::RestoreState restore_state;
   int recovery_boundary_calls = 0;
   display_helper::v2::ApplyOperation apply_op(display, clock, [&] {

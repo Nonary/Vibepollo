@@ -3,16 +3,15 @@
 #ifdef _WIN32
 
   #include <algorithm>
-  #include <fstream>
-
+  #include <utility>
   #include <nlohmann/json.hpp>
 
   #include "src/platform/windows/display_helper_v2/diagnostics.h"
-  #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 
 namespace display_helper::v2 {
-  GoldenHealth::GoldenHealth(std::filesystem::path status_path, NowMsProvider now_ms)
-    : status_path_(std::move(status_path)),
+  GoldenHealth::GoldenHealth(ITextStorage &status_storage, std::string status_key, NowMsProvider now_ms)
+    : status_storage_(status_storage),
+      status_key_(std::move(status_key)),
       now_ms_(std::move(now_ms)) {
     if (!now_ms_) {
       now_ms_ = []() {
@@ -26,13 +25,11 @@ namespace display_helper::v2 {
 
   void GoldenHealth::clear_status(const char *reason) {
     reset_request_tracking();
-    if (status_path_.empty()) {
+    if (status_key_.empty()) {
       return;
     }
 
-    std::error_code ec;
-    const bool removed = std::filesystem::remove(status_path_, ec);
-    if (removed && !ec) {
+    if (status_storage_.remove(status_key_)) {
       BOOST_LOG(info) << "Golden restore health reset"
                       << (reason ? std::string(" (") + reason + ")" : "") << ".";
     }
@@ -66,17 +63,13 @@ namespace display_helper::v2 {
 
     long long first_failure_ms = now_ms;
     size_t failures = 0;
-    if (!status_path_.empty()) {
-      try {
-        std::ifstream file(status_path_, std::ios::binary);
-        if (file.is_open()) {
-          auto previous = nlohmann::json::parse(file, nullptr, false);
-          if (!previous.is_discarded() && previous.is_object()) {
-            first_failure_ms = previous.value("first_failure_unix_ms", first_failure_ms);
-            failures = static_cast<size_t>(previous.value("unresolved_restore_attempts", 0ull));
-          }
+    if (!status_key_.empty()) {
+      if (const auto text = status_storage_.read(status_key_)) {
+        const auto previous = nlohmann::json::parse(*text, nullptr, false);
+        if (!previous.is_discarded() && previous.is_object()) {
+          first_failure_ms = previous.value("first_failure_unix_ms", first_failure_ms);
+          failures = static_cast<size_t>(previous.value("unresolved_restore_attempts", 0ull));
         }
-      } catch (...) {
       }
     }
 
@@ -104,7 +97,7 @@ namespace display_helper::v2 {
     status["latest_failure_unix_ms"] = now_ms;
     status["updated_at_unix_ms"] = now_ms;
 
-    if (!codec::write_text_atomically(status.dump(2) + "\n", status_path_)) {
+    if (!status_storage_.write_atomically(status_key_, status.dump(2) + "\n")) {
       BOOST_LOG(warning) << "Golden restore remained unresolved"
                          << (context ? std::string(" (") + context + ")" : "")
                          << ", but failed to write restore health marker.";

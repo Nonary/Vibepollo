@@ -12,7 +12,6 @@
 #include "src/platform/windows/display_helper_v2/staged_settings.h"
 
 #include <algorithm>
-#include <filesystem>
 #include <future>
 #include <set>
 
@@ -199,22 +198,6 @@ namespace {
     return snapshot;
   }
 
-  struct TempDir {
-    std::filesystem::path path;
-
-    TempDir() {
-      std::error_code ec;
-      const auto base = std::filesystem::temp_directory_path(ec);
-      const auto token = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-      path = (ec ? std::filesystem::path(".") : base) / ("sunshine_display_helper_v2_test_" + token);
-      std::filesystem::create_directories(path, ec);
-    }
-
-    ~TempDir() {
-      std::error_code ec;
-      std::filesystem::remove_all(path, ec);
-    }
-  };
 }  // namespace
 
 TEST(DisplayHelperV2Queue, PushPopOrder) {
@@ -1087,13 +1070,8 @@ TEST(DisplayHelperV2SnapshotService, MatchesCurrentUsesDisplayBackend) {
 }
 
 TEST(DisplayHelperV2FileSnapshotStorage, SaveLoadRoundTrip) {
-  TempDir temp;
-  display_helper::v2::SnapshotPaths paths {
-    temp.path / "current.json",
-    temp.path / "previous.json",
-    temp.path / "golden.json"
-  };
-  display_helper::v2::FileSnapshotStorage storage(paths);
+  display_helper::v2::InMemoryTextStorage text_storage;
+  display_helper::v2::TextSnapshotStorage storage({"current.json", "previous.json", "golden.json"}, text_storage);
 
   display_device::DisplaySettingsSnapshot snapshot;
   snapshot.m_topology = {{"A", "B"}};
@@ -1111,13 +1089,8 @@ TEST(DisplayHelperV2FileSnapshotStorage, SaveLoadRoundTrip) {
 }
 
 TEST(DisplayHelperV2FileSnapshotStorage, ReportsMissingDevices) {
-  TempDir temp;
-  display_helper::v2::SnapshotPaths paths {
-    temp.path / "current.json",
-    temp.path / "previous.json",
-    temp.path / "golden.json"
-  };
-  display_helper::v2::FileSnapshotStorage storage(paths);
+  display_helper::v2::InMemoryTextStorage text_storage;
+  display_helper::v2::TextSnapshotStorage storage({"current.json", "previous.json", "golden.json"}, text_storage);
 
   display_device::DisplaySettingsSnapshot snapshot;
   snapshot.m_topology = {{"A", "B"}};

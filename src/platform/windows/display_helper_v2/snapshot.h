@@ -2,22 +2,24 @@
 
 #include "src/platform/windows/display_helper_v2/interfaces.h"
 #include "src/platform/windows/display_helper_v2/runtime_support.h"
+#include "src/platform/windows/display_helper_v2/text_storage.h"
 
-#include <filesystem>
 #include <map>
 #include <set>
 #include <vector>
 
 namespace display_helper::v2 {
-  struct SnapshotPaths {
-    std::filesystem::path current;
-    std::filesystem::path previous;
-    std::filesystem::path golden;
+  struct SnapshotStorageKeys {
+    std::string current;
+    std::string previous;
+    std::string golden;
   };
 
-  class FileSnapshotStorage final : public ISnapshotStorage {
+  /// Snapshot serialization/persistence policy.  Text I/O is injected so the
+  /// recovery core remains deterministic and portable.
+  class TextSnapshotStorage final : public ISnapshotStorage {
   public:
-    explicit FileSnapshotStorage(SnapshotPaths paths);
+    TextSnapshotStorage(SnapshotStorageKeys keys, ITextStorage &text_storage);
 
     std::optional<Snapshot> load(SnapshotTier tier) override;
     std::optional<codec::ParsedSnapshot> load_with_metadata(SnapshotTier tier) override;
@@ -29,10 +31,11 @@ namespace display_helper::v2 {
       const Snapshot &snapshot,
       const std::set<std::string> &available) override;
 
-    std::filesystem::path path_for(SnapshotTier tier) const;
+    const std::string &key_for(SnapshotTier tier) const;
 
   private:
-    SnapshotPaths paths_;
+    SnapshotStorageKeys keys_;
+    ITextStorage &text_storage_;
   };
 
   class InMemorySnapshotStorage : public ISnapshotStorage {

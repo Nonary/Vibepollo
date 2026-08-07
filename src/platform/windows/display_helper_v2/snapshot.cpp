@@ -1,8 +1,8 @@
 #include "src/platform/windows/display_helper_v2/snapshot.h"
 
 #include <algorithm>
-#include <fstream>
 #include <sstream>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -38,10 +38,11 @@ namespace display_helper::v2 {
       return oss.str();
     }
   }  // namespace
-  FileSnapshotStorage::FileSnapshotStorage(SnapshotPaths paths)
-    : paths_(std::move(paths)) {}
+  TextSnapshotStorage::TextSnapshotStorage(SnapshotStorageKeys keys, ITextStorage &text_storage)
+    : keys_(std::move(keys)),
+      text_storage_(text_storage) {}
 
-  std::optional<Snapshot> FileSnapshotStorage::load(SnapshotTier tier) {
+  std::optional<Snapshot> TextSnapshotStorage::load(SnapshotTier tier) {
     auto loaded = load_with_metadata(tier);
     if (!loaded) {
       return std::nullopt;
@@ -49,9 +50,8 @@ namespace display_helper::v2 {
     return std::move(loaded->snapshot);
   }
 
-  std::optional<codec::ParsedSnapshot> FileSnapshotStorage::load_with_metadata(SnapshotTier tier) {
-    const auto path = path_for(tier);
-    const auto text = codec::read_file_text(path);
+  std::optional<codec::ParsedSnapshot> TextSnapshotStorage::load_with_metadata(SnapshotTier tier) {
+    const auto text = text_storage_.read(key_for(tier));
     if (!text) {
       return std::nullopt;
     }
@@ -63,28 +63,24 @@ namespace display_helper::v2 {
     return loaded;
   }
 
-  bool FileSnapshotStorage::save(SnapshotTier tier, const Snapshot &snapshot) {
+  bool TextSnapshotStorage::save(SnapshotTier tier, const Snapshot &snapshot) {
     return save(tier, snapshot, {});
   }
 
-  bool FileSnapshotStorage::save(SnapshotTier tier, const Snapshot &snapshot, const codec::layout_rotation_map_t &layout_rotations) {
-    const auto path = path_for(tier);
+  bool TextSnapshotStorage::save(SnapshotTier tier, const Snapshot &snapshot, const codec::layout_rotation_map_t &layout_rotations) {
     const auto text = codec::serialize_snapshot(snapshot, layout_rotations);
-    return codec::write_text_atomically(text, path);
+    return text_storage_.write_atomically(key_for(tier), text);
   }
 
-  bool FileSnapshotStorage::remove(SnapshotTier tier) {
-    const auto path = path_for(tier);
-    std::error_code ec;
-    return std::filesystem::remove(path, ec);
+  bool TextSnapshotStorage::remove(SnapshotTier tier) {
+    return text_storage_.remove(key_for(tier));
   }
 
-  bool FileSnapshotStorage::exists(SnapshotTier tier) {
-    std::error_code ec;
-    return std::filesystem::exists(path_for(tier), ec) && !ec;
+  bool TextSnapshotStorage::exists(SnapshotTier tier) {
+    return text_storage_.exists(key_for(tier));
   }
 
-  std::vector<std::string> FileSnapshotStorage::missing_devices(
+  std::vector<std::string> TextSnapshotStorage::missing_devices(
     const Snapshot &snapshot,
     const std::set<std::string> &available) {
     std::set<std::string> devices;
@@ -111,16 +107,16 @@ namespace display_helper::v2 {
     return missing;
   }
 
-  std::filesystem::path FileSnapshotStorage::path_for(SnapshotTier tier) const {
+  const std::string &TextSnapshotStorage::key_for(SnapshotTier tier) const {
     switch (tier) {
       case SnapshotTier::Current:
-        return paths_.current;
+        return keys_.current;
       case SnapshotTier::Previous:
-        return paths_.previous;
+        return keys_.previous;
       case SnapshotTier::Golden:
-        return paths_.golden;
+        return keys_.golden;
     }
-    return paths_.current;
+    return keys_.current;
   }
 
   std::optional<Snapshot> InMemorySnapshotStorage::load(SnapshotTier tier) {
