@@ -271,7 +271,7 @@ sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_request_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers)
+    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers ws2_32)
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp")
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
@@ -304,7 +304,8 @@ sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/
 sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/test_entry_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_config_http_policy.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
+    LINK_LIBRARIES ws2_32)
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
     LINK_LIBRARIES sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
