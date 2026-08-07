@@ -308,8 +308,7 @@ sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE u
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
     LINK_LIBRARIES ws2_32)
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
-    LINK_LIBRARIES sunshine_test_simple_web_headers sunshine_test_enet_headers sunshine_test_displaydevice_headers)
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp")
 sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp")
 sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE integration/test_config_consistency.cpp
