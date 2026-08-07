@@ -21,7 +21,17 @@ namespace display_device::policy {
   struct rational_t {
     unsigned int m_numerator {};
     unsigned int m_denominator {};
-    auto operator<=>(const rational_t &) const = default;
+
+    // Refresh rates may reach this policy as either Hz or millihertz.  Keep
+    // the representation supplied by the caller, but compare the numeric
+    // value so 60/1 and 60000/1000 describe the same requested mode.
+    [[nodiscard]] bool operator==(const rational_t &other) const {
+      if (m_denominator == 0 || other.m_denominator == 0) {
+        return m_numerator == other.m_numerator && m_denominator == other.m_denominator;
+      }
+      return static_cast<std::uint64_t>(m_numerator) * other.m_denominator ==
+             static_cast<std::uint64_t>(other.m_numerator) * m_denominator;
+    }
   };
 
   enum class device_preparation_e { VerifyOnly, EnsureActive, EnsurePrimary, EnsureOnlyDisplay };

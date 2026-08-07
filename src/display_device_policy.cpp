@@ -109,7 +109,15 @@ namespace display_device::policy {
       }
       using enum dd_t::refresh_rate_option_e;
       switch (video.dd.refresh_rate_option) {
-        case automatic: { const auto value = effective_refresh_millihz(session); if (!value) return false; out.m_refresh_rate = rational_t {value, 1000}; break; }
+        case automatic: {
+          const auto value = effective_refresh_millihz(session);
+          // A zero client FPS is a valid explicit value in the policy contract
+          // (and is represented as 0/1 by callers).  A negative FPS, absent a
+          // valid higher-priority rate, remains invalid.
+          if (!value && session.fps < 0) return false;
+          out.m_refresh_rate = rational_t {value, 1000};
+          break;
+        }
         case manual: if (!parse_refresh_rate(video.dd.manual_refresh_rate, out.m_refresh_rate) || !out.m_refresh_rate) return false; break;
         case prefer_highest: out.m_refresh_rate = rational_t {10000, 1}; break;
         case disabled: break;
@@ -136,7 +144,9 @@ namespace display_device::policy {
         std::optional<resolution_t> request_res, final_res;
         std::optional<rational_t> request_fps, final_fps;
         if ((map_res && (!parse_resolution(entry.requested_resolution, request_res) || !parse_resolution(entry.final_resolution, final_res))) ||
-            (map_fps && (!parse_refresh_rate(entry.requested_fps, request_fps, false) || !parse_refresh_rate(entry.final_refresh_rate, final_fps, false)))) return false;
+            // Requested FPS selects an integer client rate, while a remapped
+            // display mode may legitimately use a fractional refresh rate.
+            (map_fps && (!parse_refresh_rate(entry.requested_fps, request_fps, false) || !parse_refresh_rate(entry.final_refresh_rate, final_fps)))) return false;
         if (!final_res && !final_fps) return false;
         if ((request_res && request_res != out.m_resolution) || (request_fps && request_fps != out.m_refresh_rate)) continue;
         if (final_res) out.m_resolution = final_res;
@@ -148,7 +158,7 @@ namespace display_device::policy {
   }  // namespace
 
   bool effective_hdr_requested(const session_t &session) { return session.enable_hdr && !session.force_sdr; }
-  bool effective_10bit_sdr_requested(const session_t &session) { return session.prefer_sdr_10bit && !session.enable_hdr; }
+  bool effective_10bit_sdr_requested(const session_t &session) { return session.prefer_sdr_10bit; }
 
   std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, configuration_t> parse_configuration(const video_config_t &video, const session_t &session) {
     const auto preparation = device_preparation(video.dd.configuration_option);
