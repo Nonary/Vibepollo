@@ -57,6 +57,10 @@ namespace VDISPLAY {
     LONG status = ERROR_NOT_SUPPORTED;
   };
 
+  // Only monitor paths identified as one of our virtual display devices may be
+  // passed to the Windows DPI setter.
+  bool is_virtual_display_monitor_path(const std::wstring &monitor_device_path);
+
   // Set the exact Windows scale for an active monitor. The monitor EDID's physical size is
   // also chosen to make this value Windows' recommended scale for new virtual displays.
   display_scale_result_t set_display_scale_percent(

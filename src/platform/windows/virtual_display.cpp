@@ -326,6 +326,12 @@ namespace VDISPLAY {
     }
     const auto desired_index = static_cast<std::int32_t>(std::distance(kWindowsScalePercentages.begin(), desired));
 
+    if (!is_virtual_display_monitor_path(monitor_device_path)) {
+      BOOST_LOG(warning) << "Virtual display scale: refusing to write Windows DPI for an unverified monitor path.";
+      result.status = ERROR_NOT_FOUND;
+      return result;
+    }
+
     const auto target = advanced_color_target_for_monitor(monitor_device_path);
     result.target_found = target.has_value();
     if (!target) {

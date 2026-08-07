@@ -6187,14 +6187,18 @@ namespace VDISPLAY_SUNSHINE {
               return std::nullopt;
             }
 
-            result.monitor_device_path = resolve_monitor_device_path(
-              display_name,
-              result.device_id,
-              5,
-              std::chrono::milliseconds(100),
-              std::nullopt,
-              stop_token
-            );
+            if ((display_name && !display_name->empty()) || (result.device_id && !result.device_id->empty())) {
+              result.monitor_device_path = resolve_monitor_device_path(
+                display_name,
+                result.device_id,
+                5,
+                std::chrono::milliseconds(100),
+                std::nullopt,
+                stop_token
+              );
+            } else {
+              BOOST_LOG(debug) << "Sunshine virtual display reuse has no target identity; skipping monitor-path resolution to avoid the physical-primary fallback.";
+            }
             if (stop_token.stop_requested()) {
               return std::nullopt;
             }
@@ -6632,7 +6636,10 @@ namespace VDISPLAY_SUNSHINE {
             }
           };
 
-          if (!result->monitor_device_path) {
+          const bool has_virtual_target_identity =
+            (result->display_name && !result->display_name->empty()) ||
+            (result->device_id && !result->device_id->empty());
+          if ((!result->monitor_device_path || result->monitor_device_path->empty()) && has_virtual_target_identity) {
             result->monitor_device_path = resolve_monitor_device_path(
               result->display_name,
               result->device_id,
@@ -6649,7 +6656,9 @@ namespace VDISPLAY_SUNSHINE {
             return std::nullopt;
           }
 
-          if (result->confirmed_active && result->monitor_device_path) {
+          if ((!result->monitor_device_path || result->monitor_device_path->empty()) && !has_virtual_target_identity) {
+            BOOST_LOG(warning) << "Virtual display scale: virtual target identity was unavailable; Windows scale was not applied.";
+          } else if (result->confirmed_active && result->monitor_device_path) {
             apply_scale_to_path(*result->monitor_device_path);
           } else {
             // The target is not active yet, so its monitor path either does not
@@ -6666,6 +6675,11 @@ namespace VDISPLAY_SUNSHINE {
                 constexpr auto kActivationBudget = std::chrono::seconds(15);
                 constexpr auto kRetryInterval = std::chrono::milliseconds(250);
                 const auto deadline = std::chrono::steady_clock::now() + kActivationBudget;
+
+                if ((!display_name || display_name->empty()) && (!device_id || device_id->empty())) {
+                  BOOST_LOG(warning) << "Virtual display scale: deferred application has no virtual target identity; Windows scale was not applied.";
+                  return;
+                }
 
                 while (!worker_stop_token.stop_requested()) {
                   auto path = resolve_monitor_device_path(

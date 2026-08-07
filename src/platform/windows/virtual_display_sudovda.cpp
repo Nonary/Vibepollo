@@ -4386,7 +4386,10 @@ namespace VDISPLAY_SUDOVDA {
           height
         );
         if (scale_percent > 0) {
-          if (!result->monitor_device_path) {
+          const bool has_virtual_target_identity =
+            (result->display_name && !result->display_name->empty()) ||
+            (result->device_id && !result->device_id->empty());
+          if ((!result->monitor_device_path || result->monitor_device_path->empty()) && has_virtual_target_identity) {
             result->monitor_device_path = resolve_monitor_device_path(
               result->display_name,
               result->device_id,
@@ -4402,7 +4405,9 @@ namespace VDISPLAY_SUDOVDA {
             }
             return std::nullopt;
           }
-          if (result->monitor_device_path) {
+          if ((!result->monitor_device_path || result->monitor_device_path->empty()) && !has_virtual_target_identity) {
+            BOOST_LOG(warning) << "Virtual display scale: virtual target identity was unavailable; Windows scale was not applied.";
+          } else if (result->monitor_device_path) {
             const auto scale_result = VDISPLAY::set_display_scale_percent(
               *result->monitor_device_path,
               scale_percent
