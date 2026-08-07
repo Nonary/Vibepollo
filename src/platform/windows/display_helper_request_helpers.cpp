@@ -6,6 +6,8 @@
 
   #include "display_helper_request_helpers.h"
 
+  #include "src/platform/windows/display_helper_request_policy.h"
+
   #include "src/display_device.h"
   #include "src/globals.h"
   #include "src/logging.h"
@@ -272,7 +274,15 @@ namespace display_helper_integration::helpers {
     if (!cfg) {
       return std::nullopt;
     }
-    return *cfg;
+    auto initial_configuration = *cfg;
+    const auto policy = request_policy::evaluate({
+      .rtx_hdr_source_enabled = rtsp_stream::rtx_hdr_enabled(effective_video_config_),
+      .hdr_requested = rtsp_stream::effective_hdr_requested(session_),
+    });
+    if (policy.hdr_enabled && !*policy.hdr_enabled) {
+      initial_configuration.m_hdr_state = display_device::HdrState::Disabled;
+    }
+    return initial_configuration;
   }
 
   bool SessionDisplayConfigurationHelper::configure(DisplayApplyBuilder &builder) const {
@@ -759,9 +769,13 @@ namespace display_helper_integration::helpers {
   std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session) {
     const auto effective_config_option =
       session.dd_config_option_override.value_or(video_config.dd.configuration_option);
-    if (!session.virtual_display &&
-        session_has_physical_output_override(session) &&
-        effective_config_option == config::video_t::dd_t::config_option_e::disabled) {
+    const auto policy = request_policy::evaluate({
+      .configuration_option = effective_config_option == config::video_t::dd_t::config_option_e::disabled ?
+                                request_policy::ConfigurationOption::Disabled : request_policy::ConfigurationOption::EnsureActive,
+      .virtual_display = session.virtual_display,
+      .physical_output_override = session_has_physical_output_override(session),
+    });
+    if (!policy.dispatch) {
       BOOST_LOG(info) << "Display helper: physical output override with display configuration disabled; using capture target only.";
       return std::nullopt;
     }

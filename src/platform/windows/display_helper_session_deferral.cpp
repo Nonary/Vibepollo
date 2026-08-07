@@ -1,7 +1,5 @@
 #include "src/platform/windows/display_helper_session_deferral.h"
 
-#include "src/rtsp.h"
-
 #include <algorithm>
 
 namespace display_helper_integration {
@@ -15,9 +13,14 @@ namespace display_helper_integration {
   SessionDeferralManager::SessionDeferralManager(NowFn now_fn):
       now_fn_(std::move(now_fn)) {}
 
-  void SessionDeferralManager::set_pending(const DisplayApplyRequest &request) {
+  void SessionDeferralManager::set_pending(
+    const DisplayApplyRequest &request,
+    PendingSessionSnapshot session_snapshot,
+    const std::uint32_t session_id,
+    const bool has_session
+  ) {
     std::lock_guard<std::mutex> lock(mutex_);
-    pending_ = make_state(request);
+    pending_ = make_state(request, std::move(session_snapshot), session_id, has_session);
   }
 
   SessionDeferralManager::TakeResult SessionDeferralManager::take_ready(bool session_ready) {
@@ -109,30 +112,18 @@ namespace display_helper_integration {
     return kMaxDeferredApplyAttempts;
   }
 
-  SessionDeferralManager::PendingApplyState SessionDeferralManager::make_state(const DisplayApplyRequest &request) const {
+  SessionDeferralManager::PendingApplyState SessionDeferralManager::make_state(
+    const DisplayApplyRequest &request,
+    PendingSessionSnapshot session_snapshot,
+    const std::uint32_t session_id,
+    const bool has_session
+  ) const {
     PendingApplyState state;
     state.request = request;
-    state.has_session = request.session != nullptr;
+    state.has_session = has_session;
     state.request.session = nullptr;
-
-    if (request.session) {
-      state.session_id = request.session->id;
-      state.session_snapshot.width = request.session->width;
-      state.session_snapshot.height = request.session->height;
-      state.session_snapshot.fps = request.session->fps;
-      state.session_snapshot.client_display_mode_override = request.session->client_display_mode_override;
-      state.session_snapshot.client_display_refresh_millihz = request.session->client_display_refresh_millihz;
-      state.session_snapshot.enable_hdr = rtsp_stream::effective_hdr_requested(*request.session);
-      state.session_snapshot.enable_sops = request.session->enable_sops;
-      state.session_snapshot.virtual_display = request.session->virtual_display;
-      state.session_snapshot.virtual_display_device_id = request.session->virtual_display_device_id;
-      state.session_snapshot.virtual_display_ready_since = request.session->virtual_display_ready_since;
-      state.session_snapshot.framegen_refresh_rate = request.session->framegen_refresh_rate;
-      state.session_snapshot.framegen_refresh_millihz = request.session->framegen_refresh_millihz;
-      state.session_snapshot.framegen_refresh_multiplier = request.session->framegen_refresh_multiplier;
-      state.session_snapshot.gen1_framegen_fix = request.session->gen1_framegen_fix;
-      state.session_snapshot.gen2_framegen_fix = request.session->gen2_framegen_fix;
-    }
+    state.session_id = session_id;
+    state.session_snapshot = std::move(session_snapshot);
 
     return state;
   }
