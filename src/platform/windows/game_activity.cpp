@@ -381,7 +381,7 @@ namespace platf::game_activity {
         signals.push_back(playnite_foreground_signal(foreground, playnite_games));
         signals.push_back(foreground_signal(foreground));
 
-        auto resolved = reduce_signals(signals);
+        auto resolved = game_activity_policy::reduce_signals(signals);
         if (detection.verdict == fullscreen_detector::verdict_e::fullscreen) {
           if (resolved.source == signal_source_e::none) {
             resolved = {

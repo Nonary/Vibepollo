@@ -427,7 +427,7 @@ namespace platf::foreground_app {
           context.matching_window_seen = true;
         }
 
-        switch (evaluate_visible_window(window.evidence, context.require_active_app_match)) {
+        switch (game_activity_policy::evaluate_visible_window(window.evidence, context.require_active_app_match)) {
           case visible_stack_decision_e::continue_scan:
             if (window.evidence.passive_host || window.evidence.transient_shell_overlay ||
                 !window.evidence.opaque) {

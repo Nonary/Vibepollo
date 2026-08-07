@@ -733,9 +733,9 @@ namespace platf::playnite {
           for (const auto &p : msg.plugins) {
             std::string key;
             if (!p.id.empty()) {
-              key = platf::playnite::sync::to_lower_copy(p.id);
+              key = sync::policy::to_lower_copy(p.id);
             } else if (!p.name.empty()) {
-              key = "name:" + platf::playnite::sync::to_lower_copy(p.name);
+              key = "name:" + sync::policy::to_lower_copy(p.name);
             }
             if (key.empty()) {
               continue;
