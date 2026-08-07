@@ -289,8 +289,9 @@ sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURC
 sunshine_register_component(NAME test_component_session_history TEST_SOURCE unit/test_session_history.cpp
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_storage_diagnostics.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/session_history_policy.cpp"
-    LINK_LIBRARIES PkgConfig::SQLITE3 Boost::log Boost::log_setup)
+    LINK_LIBRARIES PkgConfig::SQLITE3)
 sunshine_register_component(NAME test_component_host_stats TEST_SOURCE unit/test_host_stats.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/host_stats_service.cpp")
 sunshine_register_component(NAME test_component_audio_policy TEST_SOURCE unit/test_audio.cpp

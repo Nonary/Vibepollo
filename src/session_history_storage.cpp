@@ -14,7 +14,7 @@
 
 // local includes
 #include "session_history_storage.h"
-#include "logging.h"
+#include "session_history_storage_diagnostics.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -270,7 +270,7 @@ namespace session_history::storage {
 
       sqlite3_bind_text(stmt.get(), 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
       if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-        BOOST_LOG(error) << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
+        diagnostics::error() << "session_history: delete failed for uuid=" << uuid << ": " << sqlite3_errmsg(db);
         return false;
       }
       if (track_changes) {
@@ -299,7 +299,7 @@ namespace session_history::storage {
       if (!delete_sessions) return false;
       sqlite3_bind_double(delete_sessions.get(), 1, cutoff_unix);
       if (sqlite3_step(delete_sessions.get()) != SQLITE_DONE) {
-        BOOST_LOG(error) << "session_history: TTL session prune failed: " << sqlite3_errmsg(db);
+        diagnostics::error() << "session_history: TTL session prune failed: " << sqlite3_errmsg(db);
         return false;
       }
 
@@ -346,8 +346,8 @@ namespace session_history::storage {
     sqlite3_stmt *raw = nullptr;
     int rc = sqlite3_prepare_v2(db, sql, -1, &raw, nullptr);
     if (rc != SQLITE_OK) {
-      BOOST_LOG(error) << "session_history: prepare failed (" << rc << "): " << sqlite3_errmsg(db)
-                       << " | SQL: " << sql;
+      diagnostics::error() << "session_history: prepare failed (" << rc << "): " << sqlite3_errmsg(db)
+                           << " | SQL: " << sql;
       return nullptr;
     }
     return stmt_ptr {raw};
@@ -357,7 +357,7 @@ namespace session_history::storage {
     char *err = nullptr;
     int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (rc != SQLITE_OK) {
-      BOOST_LOG(error) << "session_history: exec failed (" << rc << "): " << (err ? err : "unknown");
+      diagnostics::error() << "session_history: exec failed (" << rc << "): " << (err ? err : "unknown");
       sqlite3_free(err);
       return false;
     }
@@ -380,8 +380,8 @@ namespace session_history::storage {
     sqlite3_bind_double(stmt.get(), 2, end_time_unix);
     sqlite3_bind_text(stmt.get(), 3, uuid.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: force_set_end_time failed for uuid=" << uuid
-                       << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: force_set_end_time failed for uuid=" << uuid
+                           << ": " << sqlite3_errmsg(db);
       return false;
     }
     return sqlite3_changes(db) > 0;
@@ -406,7 +406,7 @@ namespace session_history::storage {
       PSID system_sid = nullptr;
       if (!AllocateAndInitializeSid(&nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
                                     0, 0, 0, 0, 0, 0, &admin_sid)) {
-        BOOST_LOG(warning) << "session_history: failed to allocate Administrators SID for " << path.string();
+        diagnostics::warning() << "session_history: failed to allocate Administrators SID for " << path.string();
         return;
       }
       auto free_admin_sid = util::fail_guard([admin_sid]() {
@@ -415,7 +415,7 @@ namespace session_history::storage {
 
       if (!AllocateAndInitializeSid(&nt_authority, 1, SECURITY_LOCAL_SYSTEM_RID,
                                     0, 0, 0, 0, 0, 0, 0, &system_sid)) {
-        BOOST_LOG(warning) << "session_history: failed to allocate SYSTEM SID for " << path.string();
+        diagnostics::warning() << "session_history: failed to allocate SYSTEM SID for " << path.string();
         return;
       }
       auto free_system_sid = util::fail_guard([system_sid]() {
@@ -474,8 +474,8 @@ namespace session_history::storage {
       PACL raw_acl = nullptr;
       DWORD acl_status = SetEntriesInAclW(static_cast<ULONG>(access.size()), access.data(), nullptr, &raw_acl);
       if (acl_status != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "session_history: SetEntriesInAclW failed for " << path.string()
-                           << " (error=" << acl_status << ")";
+        diagnostics::warning() << "session_history: SetEntriesInAclW failed for " << path.string()
+                               << " (error=" << acl_status << ")";
         return;
       }
       auto free_acl = util::fail_guard([raw_acl]() {
@@ -491,8 +491,8 @@ namespace session_history::storage {
         raw_acl,
         nullptr);
       if (sec_status != ERROR_SUCCESS) {
-        BOOST_LOG(warning) << "session_history: SetNamedSecurityInfoW failed for " << path.string()
-                           << " (error=" << sec_status << ")";
+        diagnostics::warning() << "session_history: SetNamedSecurityInfoW failed for " << path.string()
+                               << " (error=" << sec_status << ")";
       }
     };
 
@@ -515,8 +515,8 @@ namespace session_history::storage {
         std::filesystem::perm_options::replace,
         ec);
       if (ec) {
-        BOOST_LOG(warning) << "session_history: failed to tighten permissions for " << path.string()
-                           << ": " << ec.message();
+        diagnostics::warning() << "session_history: failed to tighten permissions for " << path.string()
+                               << ": " << ec.message();
       }
     };
 
@@ -530,8 +530,8 @@ namespace session_history::storage {
           std::filesystem::perm_options::replace,
           ec);
         if (ec) {
-          BOOST_LOG(warning) << "session_history: failed to tighten permissions for " << parent_path.string()
-                             << ": " << ec.message();
+          diagnostics::warning() << "session_history: failed to tighten permissions for " << parent_path.string()
+                                 << ": " << ec.message();
         }
       }
     }
@@ -547,8 +547,8 @@ namespace session_history::storage {
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       if (ec) {
-        BOOST_LOG(error) << "session_history: failed to create DB directory " << path.parent_path().string()
-                         << ": " << ec.message();
+        diagnostics::error() << "session_history: failed to create DB directory " << path.parent_path().string()
+                             << ": " << ec.message();
         return false;
       }
     }
@@ -558,7 +558,7 @@ namespace session_history::storage {
     sqlite3 *raw = nullptr;
     int rc = sqlite3_open(db_path.c_str(), &raw);
     if (rc != SQLITE_OK) {
-      BOOST_LOG(error) << "session_history: failed to open write DB: " << sqlite3_errmsg(raw);
+      diagnostics::error() << "session_history: failed to open write DB: " << sqlite3_errmsg(raw);
       sqlite3_close(raw);
       return false;
     }
@@ -571,7 +571,7 @@ namespace session_history::storage {
     sqlite3 *raw = nullptr;
     int rc = sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nullptr);
     if (rc != SQLITE_OK) {
-      BOOST_LOG(error) << "session_history: failed to open read DB: " << sqlite3_errmsg(raw);
+      diagnostics::error() << "session_history: failed to open read DB: " << sqlite3_errmsg(raw);
       sqlite3_close(raw);
       return false;
     }
@@ -597,7 +597,7 @@ namespace session_history::storage {
       table_exists(db, "events");
 
     if (!exec(db, SCHEMA_SQL)) {
-      BOOST_LOG(error) << "session_history: schema creation failed";
+      diagnostics::error() << "session_history: schema creation failed";
       return false;
     }
 
@@ -626,7 +626,7 @@ namespace session_history::storage {
       if (!column_exists(table, column)) {
         std::string sql = std::string("ALTER TABLE ") + table + " ADD COLUMN " + column + " " + type_default;
         if (!exec(db, sql.c_str())) {
-          BOOST_LOG(error) << "session_history: failed to add column " << table << "." << column;
+          diagnostics::error() << "session_history: failed to add column " << table << "." << column;
           return false;
         }
       }
@@ -639,7 +639,7 @@ namespace session_history::storage {
       }
       const std::string sql = std::string("ALTER TABLE ") + table + " RENAME COLUMN " + old_name + " TO " + new_name;
       if (!exec(db, sql.c_str())) {
-        BOOST_LOG(error) << "session_history: failed to rename " << table << "." << old_name << " to " << new_name;
+        diagnostics::error() << "session_history: failed to rename " << table << "." << old_name << " to " << new_name;
         return false;
       }
       return true;
@@ -735,7 +735,7 @@ namespace session_history::storage {
             CREATE_SAMPLES_TABLE,
             SAMPLES_COLUMNS,
             SAMPLES_INDEXES)) {
-        BOOST_LOG(error) << "session_history: failed to rebuild samples table with ON DELETE CASCADE";
+        diagnostics::error() << "session_history: failed to rebuild samples table with ON DELETE CASCADE";
         return false;
       }
 
@@ -759,7 +759,7 @@ namespace session_history::storage {
             CREATE_EVENTS_TABLE,
             EVENTS_COLUMNS,
             EVENTS_INDEXES)) {
-        BOOST_LOG(error) << "session_history: failed to rebuild events table with ON DELETE CASCADE";
+        diagnostics::error() << "session_history: failed to rebuild events table with ON DELETE CASCADE";
         return false;
       }
     }
@@ -801,13 +801,13 @@ namespace session_history::storage {
     sqlite3_bind_text(stmt.get(), 19, metadata.stream_gpu_model.c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: begin_session insert failed for uuid=" << metadata.uuid
-                       << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: begin_session insert failed for uuid=" << metadata.uuid
+                           << ": " << sqlite3_errmsg(db);
       return false;
     }
 
     if (sqlite3_changes(db) == 0) {
-      BOOST_LOG(warning)
+      diagnostics::warning()
         << "session_history: begin_session ignored - uuid already present in DB: "
         << metadata.uuid << " (sessions will be merged into the existing row)";
     }
@@ -863,8 +863,8 @@ namespace session_history::storage {
     sqlite3_bind_text(stmt.get(), 3, verdict.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt.get(), 4, uuid.c_str(), -1, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: end_session update failed for uuid=" << uuid
-                       << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: end_session update failed for uuid=" << uuid
+                           << ": " << sqlite3_errmsg(db);
       return false;
     }
     return true;
@@ -872,8 +872,8 @@ namespace session_history::storage {
 
   bool process_sample(sqlite3 *db, const session_sample_t &sample, int max_samples_per_session) {
     if (!session_accepts_live_updates(db, sample.session_uuid)) {
-      BOOST_LOG(debug) << "session_history: dropping stale sample for ended or missing session "
-                       << sample.session_uuid;
+      diagnostics::debug() << "session_history: dropping stale sample for ended or missing session "
+                           << sample.session_uuid;
       return true;
     }
     auto stmt = prepare(db,
@@ -914,8 +914,8 @@ namespace session_history::storage {
     sqlite3_bind_double(stmt.get(), 24, sample.host_net_tx_bps);
 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: sample insert failed for uuid=" << sample.session_uuid
-                       << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: sample insert failed for uuid=" << sample.session_uuid
+                           << ": " << sqlite3_errmsg(db);
       return false;
     }
 
@@ -931,8 +931,8 @@ namespace session_history::storage {
     sqlite3_bind_text(trim.get(), 1, sample.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(trim.get(), 2, max_samples_per_session);
     if (sqlite3_step(trim.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: sample trim failed for uuid=" << sample.session_uuid
-                       << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: sample trim failed for uuid=" << sample.session_uuid
+                           << ": " << sqlite3_errmsg(db);
       return false;
     }
     return true;
@@ -940,8 +940,8 @@ namespace session_history::storage {
 
   bool process_event(sqlite3 *db, const session_event_t &event, int max_events_per_session) {
     if (!session_accepts_live_updates(db, event.session_uuid)) {
-      BOOST_LOG(debug) << "session_history: dropping stale event for ended or missing session "
-                       << event.session_uuid << " type=" << event.event_type;
+      diagnostics::debug() << "session_history: dropping stale event for ended or missing session "
+                           << event.session_uuid << " type=" << event.event_type;
       return true;
     }
     auto stmt = prepare(db,
@@ -955,8 +955,8 @@ namespace session_history::storage {
     sqlite3_bind_text(stmt.get(), 4, event.payload.c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: event insert failed for uuid=" << event.session_uuid
-                       << " type=" << event.event_type << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: event insert failed for uuid=" << event.session_uuid
+                           << " type=" << event.event_type << ": " << sqlite3_errmsg(db);
       return false;
     }
 
@@ -972,8 +972,8 @@ namespace session_history::storage {
     sqlite3_bind_text(trim.get(), 1, event.session_uuid.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(trim.get(), 2, max_events_per_session);
     if (sqlite3_step(trim.get()) != SQLITE_DONE) {
-      BOOST_LOG(error) << "session_history: event trim failed for uuid=" << event.session_uuid
-                       << " type=" << event.event_type << ": " << sqlite3_errmsg(db);
+      diagnostics::error() << "session_history: event trim failed for uuid=" << event.session_uuid
+                           << " type=" << event.event_type << ": " << sqlite3_errmsg(db);
       return false;
     }
     return true;
@@ -985,7 +985,7 @@ namespace session_history::storage {
       return delete_apply_e::failed;
     }
 
-    BOOST_LOG(info) << "Deleted session " << uuid << " from history (rows=" << affected << ")";
+    diagnostics::info() << "Deleted session " << uuid << " from history (rows=" << affected << ")";
     return affected > 0 ? delete_apply_e::deleted : delete_apply_e::not_found;
   }
 

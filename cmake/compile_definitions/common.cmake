@@ -161,6 +161,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/session_history_sampler.h"
         "${CMAKE_SOURCE_DIR}/src/session_history_storage.cpp"
         "${CMAKE_SOURCE_DIR}/src/session_history_storage.h"
+        "${CMAKE_SOURCE_DIR}/src/session_history_storage_diagnostics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/session_history_storage_diagnostics.h"
         "${CMAKE_SOURCE_DIR}/src/session_history_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/session_history_policy.h"
         "${CMAKE_SOURCE_DIR}/src/session_history_writer.cpp"
