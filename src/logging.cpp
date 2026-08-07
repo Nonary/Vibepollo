@@ -23,7 +23,6 @@
 
 // lib includes
 #include <boost/core/null_deleter.hpp>
-#include <boost/format.hpp>
 #include <boost/log/attributes/clock.hpp>
 #include <boost/log/common.hpp>
 #include <boost/log/expressions.hpp>
@@ -33,6 +32,7 @@
 
 // local includes
 #include "logging.h"
+#include "logging_policy.h"
 
 // conditional includes
 #ifdef __ANDROID__
@@ -410,39 +410,12 @@ namespace logging {
 
     const auto &attributes = view.attribute_values();
 
-    int log_level = 4;
+    policy::record_t record;
     if (const auto severity_it = attributes.find(severity); severity_it != attributes.end()) {
       if (const auto severity_value = severity_it->second.extract<int>(); severity_value) {
-        log_level = severity_value.get();
+        record.severity = severity_value.get();
       }
     }
-
-    std::string_view log_type = "Log: "sv;
-    switch (log_level) {
-      case 0:
-        log_type = "Verbose: "sv;
-        break;
-      case 1:
-        log_type = "Debug: "sv;
-        break;
-      case 2:
-        log_type = "Info: "sv;
-        break;
-      case 3:
-        log_type = "Warning: "sv;
-        break;
-      case 4:
-        log_type = "Error: "sv;
-        break;
-      case 5:
-        log_type = "Fatal: "sv;
-        break;
-#ifdef SUNSHINE_TESTS
-      case 10:
-        log_type = "Tests: "sv;
-        break;
-#endif
-    };
 
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -452,15 +425,15 @@ namespace logging {
     auto t = std::chrono::system_clock::to_time_t(now);
     auto lt = *std::localtime(&t);
 
-    std::string rendered_message = "<missing log message>";
     if (const auto message_it = attributes.find(message); message_it != attributes.end()) {
       if (const auto message_value = message_it->second.extract<std::string>(); message_value) {
-        rendered_message = message_value.get();
+        record.message = message_value.get();
       }
     }
 
-    os << "["sv << std::put_time(&lt, "%Y-%m-%d %H:%M:%S.") << boost::format("%03u") % ms.count() << "]: "sv
-       << log_type << rendered_message;
+    std::ostringstream timestamp;
+    timestamp << std::put_time(&lt, "%Y-%m-%d %H:%M:%S.") << std::setw(3) << std::setfill('0') << ms.count();
+    os << policy::format_line(timestamp.str(), record);
   }
 #ifdef __ANDROID__
   namespace sinks = boost::log::sinks;
