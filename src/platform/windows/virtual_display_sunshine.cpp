@@ -2521,7 +2521,7 @@ namespace VDISPLAY_SUNSHINE {
         fallback.advancedColorEnabled != 0,
         fallback.advancedColorForceDisabled != 0,
         false,
-        false,
+        fallback.advancedColorEnabled != 0,
         fallback.colorEncoding,
         fallback.bitsPerColorChannel,
         0
@@ -2690,6 +2690,63 @@ namespace VDISPLAY_SUNSHINE {
 
       BOOST_LOG(warning) << "Sunshine virtual display HDR: Windows did not report HDR support/enabled at 10-bit for target "
                          << output.TargetId << " after activation request.";
+      return false;
+    }
+
+    bool reset_hdr_state_for_sdr(const DisplayConfigTarget &output, std::stop_token stop_token = {}) {
+      if (stop_token.stop_requested()) {
+        return false;
+      }
+
+      if (const auto info = query_advanced_color(output)) {
+        BOOST_LOG(debug) << "Sunshine virtual display SDR: target=" << output.TargetId
+                         << " supported=" << info->supported
+                         << " active=" << info->active
+                         << " limited_by_policy=" << info->limited_by_policy
+                         << " hdr_supported=" << info->hdr_supported
+                         << " hdr_enabled=" << info->hdr_enabled
+                         << " active_color_mode=" << info->active_color_mode
+                         << " color_encoding=" << static_cast<unsigned int>(info->color_encoding)
+                         << " bits_per_color_channel=" << info->bits_per_color_channel;
+        if (!VDISPLAY::policy::should_reset_hdr_state_for_stream(false, info->hdr_enabled)) {
+          return true;
+        }
+      }
+
+      const bool hdr_state_reset = set_hdr_state(output, false);
+      bool advanced_color_reset = false;
+      if (!hdr_state_reset) {
+        BOOST_LOG(debug) << "Sunshine virtual display SDR: SET_HDR_STATE was not accepted for target " << output.TargetId
+                         << "; trying Advanced Color state.";
+        advanced_color_reset = set_advanced_color(output, false);
+      }
+
+      if (!hdr_state_reset && !advanced_color_reset) {
+        BOOST_LOG(warning) << "Sunshine virtual display SDR: failed to reset HDR state for target " << output.TargetId
+                           << "; deferring to the display helper.";
+        return false;
+      }
+      if (stop_token.stop_requested()) {
+        return false;
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + VDISPLAY::policy::hdr_activation_timeout;
+      do {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
+        if (const auto info = query_advanced_color(output)) {
+          if (!info->hdr_enabled) {
+            return true;
+          }
+        }
+        if (wait_for_monitor_stop(stop_token, std::chrono::milliseconds(50))) {
+          return false;
+        }
+      } while (std::chrono::steady_clock::now() < deadline);
+
+      BOOST_LOG(warning) << "Sunshine virtual display SDR: Windows still reports HDR enabled for target "
+                         << output.TargetId << " after the reset request; deferring to the display helper.";
       return false;
     }
 
@@ -6549,6 +6606,11 @@ namespace VDISPLAY_SUNSHINE {
             }
             break;
         }
+      } else if (reset_hdr_state_for_sdr(output, stop_token)) {
+        // A stable virtual-display identity can retain Windows' per-monitor HDR
+        // user setting from an earlier HDR stream. Confirm the SDR state before
+        // the session helper snapshots it, so its APPLY stays a no-op.
+        effective_hdr_enabled = false;
       }
 
       if (stop_token.stop_requested()) {
