@@ -158,7 +158,9 @@ namespace display_device::policy {
   }  // namespace
 
   bool effective_hdr_requested(const session_t &session) { return session.enable_hdr && !session.force_sdr; }
-  bool effective_10bit_sdr_requested(const session_t &session) { return session.prefer_sdr_10bit; }
+  bool effective_10bit_sdr_requested(const session_t &session) {
+    return session.prefer_sdr_10bit && !effective_hdr_requested(session);
+  }
 
   std::variant<failed_to_parse_tag_t, configuration_disabled_tag_t, configuration_t> parse_configuration(const video_config_t &video, const session_t &session) {
     const auto preparation = device_preparation(video.dd.configuration_option);

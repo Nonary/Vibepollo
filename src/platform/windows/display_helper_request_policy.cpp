@@ -57,7 +57,7 @@ namespace display_helper_integration::request_policy {
 
     if (input.virtual_display && is_extended(input.layout)) {
       result.topology = input.topology_snapshot;
-      if (!input.target_device_id.empty() && !contains_device(result.topology, input.target_device_id)) {
+      if (!result.topology.empty() && !input.target_device_id.empty() && !contains_device(result.topology, input.target_device_id)) {
         result.topology.push_back({input.target_device_id});
       }
     } else if ((input.virtual_display && input.layout == VirtualDisplayLayout::Exclusive) ||
