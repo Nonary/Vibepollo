@@ -8,7 +8,7 @@ set(SUNSHINE_PUBLISHER_ISSUE_URL "https://github.com/Nonary/Vibepollo/issues"
         If you provide a modified version of Sunshine, we kindly request that you use your own url.")
 
 option(BUILD_DOCS "Build documentation" OFF)
-set(BUILD_TESTS OFF CACHE BOOL "Build unit tests (disabled by repository policy)." FORCE)
+set(BUILD_TESTS ON CACHE BOOL "Build unit tests with every project build." FORCE)
 option(BUILD_WERROR "Enable -Werror flag." OFF)
 
 # if this option is set, the build will exit after configuring special package configuration files

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
-# This is deliberately a standalone entry point. Normal Sunshine configuration
-# continues to force BUILD_TESTS=OFF and does not add this directory.
+# This directory is also usable as a standalone entry point for focused test
+# work, and is included by the normal project build when BUILD_TESTS is enabled.
 project(VibeshineTests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)

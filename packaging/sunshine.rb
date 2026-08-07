@@ -179,8 +179,8 @@ class Sunshine < Formula
   end
 
   def add_test_args(args)
-    args << "-DBUILD_TESTS=OFF"
-    ohai "Building tests: disabled by repository policy"
+    args << "-DBUILD_TESTS=ON"
+    ohai "Building tests: enabled"
   end
 
   def add_docs_args(args)

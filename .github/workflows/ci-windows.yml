@@ -433,7 +433,7 @@ jobs:
             -G Ninja \
             -S . \
             -DBUILD_WERROR=ON \
-            -DBUILD_TESTS=OFF \
+            -DBUILD_TESTS=ON \
             -DBUILD_DOCS=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DSUNSHINE_ENABLE_WEBRTC=ON \

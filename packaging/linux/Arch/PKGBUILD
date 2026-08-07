@@ -149,7 +149,7 @@ build() {
       fi
     fi
 
-    _cmake_options+=(-DBUILD_TESTS=OFF)
+    _cmake_options+=(-DBUILD_TESTS=ON)
 
     cmake "${_cmake_options[@]}"
 

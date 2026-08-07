@@ -48,7 +48,6 @@ if(BUILD_DOCS)
     add_subdirectory(third-party/doxyconfig docs)
 endif()
 
-# Unit tests are intentionally excluded from every build.
 set(TEST_DIR "")
 
 # src/upnp

@@ -136,8 +136,8 @@ python ./scripts/update_clang_format.py
 ```
 
 #### Unit Testing
-Unit tests are disabled by repository policy. Do not add, compile, or run them. `BUILD_TESTS` is forced to `OFF`;
-validate production changes by compiling the affected production target and performing relevant runtime checks.
+Unit tests are enabled for every project build. For a bug fix, first demonstrate the failure with a focused test,
+then make that same test pass with the correction. Run the narrowest relevant test target during local iteration.
 
 Even if your changes cannot be covered in the CI, we still encourage you to write the tests for them. This will allow
 maintainers to run the tests locally.

@@ -92,7 +92,7 @@ function run_step_cmake() {
     "-B=build"
     "-S=."
     "-DBUILD_DOCS=${build_docs}"
-    "-DBUILD_TESTS=OFF"
+    "-DBUILD_TESTS=ON"
     "-DBUILD_WERROR=ON"
     "-DCMAKE_BUILD_TYPE=${build_type}"
     "-DICU_ROOT=$(brew --prefix icu4c@78 2>/dev/null)"

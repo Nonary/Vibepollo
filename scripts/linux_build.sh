@@ -642,7 +642,7 @@ function run_step_cmake() {
     "-B=build"
     "-G=Ninja"
     "-S=."
-    "-DBUILD_TESTS=OFF"
+    "-DBUILD_TESTS=ON"
     "-DBUILD_WERROR=ON"
     "-DCMAKE_BUILD_TYPE=Release"
     "-DCMAKE_INSTALL_PREFIX=/usr"

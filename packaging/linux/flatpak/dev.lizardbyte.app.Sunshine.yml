@@ -63,7 +63,7 @@ modules:
     config-opts:
       - -DBOOST_USE_STATIC=OFF
       - -DBUILD_DOCS=OFF
-      - -DBUILD_TESTS=OFF
+      - -DBUILD_TESTS=ON
       - -DBUILD_WERROR=ON
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_CUDA_COMPILER=/app/cuda/bin/nvcc
