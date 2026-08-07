@@ -987,7 +987,27 @@ namespace amf {
             "PA initial scene-change QP")) return false;
       if (config.pa_activity_type && !set_verified_int64(AMF_PA_ACTIVITY_TYPE, *config.pa_activity_type, "PA activity type")) return false;
     }
+    
+//BEGIN INSERT1
+// Activate AMF GDR intra refresh for 4k HDR 60fps
+    BOOST_LOG(info) << "AMF: Force encoder into HEVC Intra-Refresh (GDR) Mode (gop_size = 120 und ctu_size = 64)";
 
+    encoder->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, 0);
+
+    int64_t gop_size = 120; 
+    encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, gop_size);
+
+    int64_t ctu_size = 64;
+    int64_t ctu_width = (encode_width + (ctu_size - 1)) / ctu_size;
+    int64_t ctu_height = (encode_height + (ctu_size - 1)) / ctu_size;
+    int64_t total_ctus = ctu_width * ctu_height;
+
+    int64_t ctu_rows_per_frame = (ctu_height + gop_size - 1) / gop_size;
+    if (ctu_rows_per_frame < 1) ctu_rows_per_frame = 1; // Mindestens eine Zeile pro Frame
+
+encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_INTRA_REFRESH_NUM_CTBS_PER_SLOT, ctu_rows_per_frame);
+// END INSERT1
+    
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
     // Previously this block hard-coded AMF_VIDEO_ENCODER_(HEVC_)LOWLATENCY_MODE = true
@@ -1839,6 +1859,15 @@ namespace amf {
       }
     }
 
+//BEGIN INSERT2
+    if (force_idr) {
+      surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_NONE);
+      surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, true);
+    } else {
+      surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_NONE);
+    }
+//END INSERT2
+    
     auto disable_rfi_after_property_failure = [&](const char *property_label, AMF_RESULT property_result) {
       BOOST_LOG(warning) << "AMF: failed to apply " << property_label << " (error=" << property_result
                          << "); disabling RFI and falling back to IDR recovery";
