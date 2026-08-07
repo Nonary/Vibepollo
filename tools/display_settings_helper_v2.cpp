@@ -35,11 +35,13 @@
 
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
+  #include "src/platform/windows/display_helper_v2/file_text_storage.h"
   #include "src/platform/windows/display_helper_v2/golden_health.h"
   #include "src/platform/windows/display_helper_v2/operations.h"
   #include "src/platform/windows/display_helper_v2/runtime_support.h"
   #include "src/platform/windows/display_helper_v2/snapshot.h"
   #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
+  #include "src/platform/windows/display_helper_v2/snapshot_file_storage.h"
   #include "src/platform/windows/display_helper_v2/state_machine.h"
   #include "src/platform/windows/display_helper_v2/win_display_settings.h"
   #include "src/platform/windows/display_helper_v2/win_event_pump.h"
@@ -541,7 +543,8 @@ namespace {
   /// Validate a session snapshot file found in a search root; remove it when it
   /// has no usable restore payload (legacy validate_session_snapshot).
   bool validate_session_snapshot_file(const std::filesystem::path &path) {
-    const auto text = display_helper::v2::codec::read_file_text(path);
+    display_helper::v2::AtomicFileTextStorage files;
+    const auto text = files.read(path.string());
     if (!text) {
       return false;
     }
@@ -654,7 +657,8 @@ int run_v2_helper(int argc, char *argv[]) {
   };
   display_helper::v2::FileSnapshotStorage storage(paths);
   display_helper::v2::SnapshotPersistence persistence(storage);
-  display_helper::v2::GoldenHealth golden_health(active_snapshots.golden_status);
+  display_helper::v2::AtomicFileTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, active_snapshots.golden_status.string());
   display_helper::v2::RestoreState restore_state;
   display_helper::v2::ApplyPolicy apply_policy(clock);
   display_helper::v2::WinVirtualDisplayDriver virtual_display;
