@@ -294,18 +294,11 @@ jobs:
             exit 1
           fi
 
-          release_body_file="${RUNNER_TEMP}/release-notes-${release_version}.md"
-          python .github/scripts/compose_release_notes.py \
-            --release-version "${release_version}" \
-            --notes-dir release_notes \
-            --output "${release_body_file}"
-
           echo "Using version-scoped changelog entry: ${notes_file}"
-          echo "Using cumulative public release notes: ${release_body_file}"
           echo "base_version=${base_version}" >> "${GITHUB_OUTPUT}"
           echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
           echo "make_latest=${make_latest}" >> "${GITHUB_OUTPUT}"
-          echo "notes_file=${release_body_file}" >> "${GITHUB_OUTPUT}"
+          echo "notes_file=${notes_file}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
           echo "product_name=${product_name}" >> "${GITHUB_OUTPUT}"
           echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
