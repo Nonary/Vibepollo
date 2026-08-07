@@ -1048,6 +1048,37 @@ namespace display_helper::v2 {
     return false;
   }
 
+  bool RecoveryOperation::golden_restore_is_pending() {
+    auto loaded = storage_.load_with_metadata(SnapshotTier::Golden);
+    if (!loaded) {
+      return false;
+    }
+
+    const auto devices = display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
+    if (codec::filter_loaded_snapshot(
+          *loaded,
+          devices,
+          state_.exclusions(),
+          "golden-pending-check")) {
+      return true;
+    }
+
+    // A filtered load can fail because a required monitor is temporarily
+    // absent. Keep the restore pending in that case, matching the legacy
+    // helper's raw golden-file pending check. Explicit exclusions remain an
+    // intentional exception and must not keep recovery armed forever.
+    const auto available = known_present_devices();
+    const auto snapshot_devices = codec::snapshot_device_set(loaded->snapshot);
+    const auto exclusions = state_.exclusions();
+    return std::any_of(snapshot_devices.begin(), snapshot_devices.end(), [&](const auto &device_id) {
+      const auto normalized = codec::normalize_device_id(device_id);
+      const bool excluded = std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &excluded_id) {
+        return codec::normalize_device_id(excluded_id) == normalized;
+      });
+      return !excluded && !available.contains(normalized);
+    });
+  }
+
   void RecoveryOperation::clear_session_snapshots_after_golden() {
     const bool removed_current = storage_.remove(SnapshotTier::Current);
     const bool removed_previous = storage_.remove(SnapshotTier::Previous);
@@ -1186,7 +1217,7 @@ namespace display_helper::v2 {
         return outcome;
       }
 
-      if (load_filtered(SnapshotTier::Golden, "golden-pending-check")) {
+      if (golden_restore_is_pending()) {
         const auto fallback_count = state_.golden_pending_session_fallbacks.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (fallback_count < kGoldenFallbackCompletionThreshold) {
           BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "

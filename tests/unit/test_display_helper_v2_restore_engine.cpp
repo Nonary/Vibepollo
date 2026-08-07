@@ -615,6 +615,25 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstAcceptsSessionFallbackAfterThreeM
   EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 0u);
 }
 
+// The golden file must remain pending when a required baseline device is
+// temporarily unavailable. A filtered load rejects that golden snapshot, but
+// the unfiltered snapshot is still present and must keep recovery unresolved.
+TEST(DisplayHelperV2RecoveryEngine, KeepsGoldenPendingWhenBaselineDeviceIsMissing) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+
+  harness.state.always_restore_from_golden.store(true);
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Golden, make_snapshot({{"A"}, {"B"}})));
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, make_snapshot({{"A"}})));
+  harness.display.current = make_snapshot({{"X"}});
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_FALSE(outcome.success);
+  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 1u);
+  EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
+}
+
 // --- storage round trip in the legacy file format ---
 
 TEST(DisplayHelperV2FileStorage, LegacyFormatRoundTripWithLayouts) {

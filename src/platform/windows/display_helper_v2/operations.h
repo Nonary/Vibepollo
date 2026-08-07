@@ -237,6 +237,7 @@ namespace display_helper::v2 {
     bool confirm_matches(const codec::ParsedSnapshot &loaded, const char *label, const CancellationToken &token);
     bool apply_and_confirm(const codec::ParsedSnapshot &loaded, const char *label, const CancellationToken &token);
     bool should_skip_golden(const Snapshot &golden);
+    bool golden_restore_is_pending();
     std::set<std::string> known_present_devices();
     void clear_session_snapshots_after_golden();
     long long steady_now_ms() const;
