@@ -1961,7 +1961,7 @@ TEST(DisplayHelperV2StateMachine, ApplyKeepsExistingBaseline) {
 
   auto baseline = harness.storage.load(display_helper::v2::SnapshotTier::Current);
   ASSERT_TRUE(baseline.has_value());
-  EXPECT_EQ(*baseline, existing);
+  EXPECT_TRUE(display_helper::v2::topology::equal_snapshot(*baseline, existing));
 }
 
 // 72b0d996: stream-start probes must not cancel an in-flight unconfirmed restore.
