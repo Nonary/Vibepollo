@@ -2662,7 +2662,10 @@ namespace VDISPLAY_SUNSHINE {
         UINT next_clone_group_id = 0;
         for (const auto &path : requested_paths) {
           if (path.sourceInfo.cloneGroupId != DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID) {
-            next_clone_group_id = (std::max)(next_clone_group_id, path.sourceInfo.cloneGroupId + 1);
+            next_clone_group_id = (std::max)(
+              next_clone_group_id,
+              static_cast<UINT>(path.sourceInfo.cloneGroupId) + 1u
+            );
           }
         }
         requested_target_path.sourceInfo.sourceModeInfoIdx = source_mode_info_index;
