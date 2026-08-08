@@ -2439,6 +2439,326 @@ namespace VDISPLAY_SUNSHINE {
       UINT TargetId;
     };
 
+    struct DisplayConfigQuery {
+      std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+      std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+      bool virtual_mode_aware = false;
+    };
+
+    VDISPLAY::policy::display_config_target_key target_key(const DisplayConfigTarget &target) {
+      return {
+        target.AdapterLuid.LowPart,
+        target.AdapterLuid.HighPart,
+        target.TargetId,
+      };
+    }
+
+    VDISPLAY::policy::display_config_path_state path_state(const DISPLAYCONFIG_PATH_INFO &path) {
+      return {
+        {
+          path.targetInfo.adapterId.LowPart,
+          path.targetInfo.adapterId.HighPart,
+          path.targetInfo.id,
+        },
+        (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0,
+        path.targetInfo.targetAvailable != FALSE,
+      };
+    }
+
+    LONG query_display_config(const UINT flags, DisplayConfigQuery &query) {
+      UINT path_count = 0;
+      UINT mode_count = 0;
+      auto result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+      if (result != ERROR_SUCCESS) {
+        return result;
+      }
+
+      constexpr UINT max_display_paths = 256;
+      constexpr UINT max_display_modes = 1024;
+      if (path_count > max_display_paths || mode_count > max_display_modes) {
+        return ERROR_INVALID_DATA;
+      }
+
+      query.paths.resize(path_count);
+      query.modes.resize(mode_count);
+      for (int attempt = 0; attempt < 4; ++attempt) {
+        UINT queried_path_count = static_cast<UINT>(query.paths.size());
+        UINT queried_mode_count = static_cast<UINT>(query.modes.size());
+        result = QueryDisplayConfig(
+          flags,
+          &queried_path_count,
+          queried_path_count ? query.paths.data() : nullptr,
+          &queried_mode_count,
+          queried_mode_count ? query.modes.data() : nullptr,
+          nullptr
+        );
+        if (result == ERROR_SUCCESS) {
+          if (queried_path_count > max_display_paths || queried_mode_count > max_display_modes) {
+            return ERROR_INVALID_DATA;
+          }
+          query.paths.resize(queried_path_count);
+          query.modes.resize(queried_mode_count);
+          query.virtual_mode_aware = (flags & QDC_VIRTUAL_MODE_AWARE) != 0;
+          return ERROR_SUCCESS;
+        }
+        if (result != ERROR_INSUFFICIENT_BUFFER ||
+            queried_path_count > max_display_paths ||
+            queried_mode_count > max_display_modes) {
+          return result;
+        }
+        query.paths.resize((std::max)(queried_path_count, static_cast<UINT>(query.paths.size() + 1)));
+        query.modes.resize((std::max)(queried_mode_count, static_cast<UINT>(query.modes.size() + 1)));
+      }
+      return result;
+    }
+
+    LONG query_all_display_config_paths(DisplayConfigQuery &query) {
+      auto result = query_display_config(QDC_ALL_PATHS | QDC_VIRTUAL_MODE_AWARE, query);
+      if (result == ERROR_SUCCESS) {
+        return result;
+      }
+      query = {};
+      return query_display_config(QDC_ALL_PATHS, query);
+    }
+
+    std::optional<UINT> source_mode_index(
+      const DISPLAYCONFIG_PATH_INFO &path,
+      const bool virtual_mode_aware
+    ) {
+      if (virtual_mode_aware) {
+        if (path.sourceInfo.sourceModeInfoIdx == DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID) {
+          return std::nullopt;
+        }
+        return path.sourceInfo.sourceModeInfoIdx;
+      }
+      if (path.sourceInfo.modeInfoIdx == DISPLAYCONFIG_PATH_MODE_IDX_INVALID) {
+        return std::nullopt;
+      }
+      return path.sourceInfo.modeInfoIdx;
+    }
+
+    POINTL next_extended_position(const DisplayConfigQuery &query) {
+      std::int64_t right_edge = 0;
+      for (const auto &path : query.paths) {
+        if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+          continue;
+        }
+        const auto mode_index = source_mode_index(path, query.virtual_mode_aware);
+        if (!mode_index || *mode_index >= query.modes.size()) {
+          continue;
+        }
+        const auto &mode = query.modes[*mode_index];
+        if (mode.infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+          continue;
+        }
+        right_edge = (std::max)(
+          right_edge,
+          static_cast<std::int64_t>(mode.sourceMode.position.x) + mode.sourceMode.width
+        );
+      }
+      return {
+        static_cast<LONG>((std::min)(right_edge, static_cast<std::int64_t>((std::numeric_limits<LONG>::max)()))),
+        0,
+      };
+    }
+
+    DISPLAYCONFIG_VIDEO_SIGNAL_INFO make_activation_signal_info(
+      const std::uint32_t width,
+      const std::uint32_t height,
+      const std::uint32_t refresh_millihz
+    ) {
+      DISPLAYCONFIG_VIDEO_SIGNAL_INFO signal {};
+      const auto pixel_rate =
+        (static_cast<std::uint64_t>(width) * height * refresh_millihz) / 1000ull;
+      signal.pixelRate = pixel_rate;
+      signal.hSyncFreq.Numerator = static_cast<UINT32>((std::min)(
+        static_cast<std::uint64_t>((std::numeric_limits<UINT32>::max)()),
+        static_cast<std::uint64_t>(refresh_millihz) * height
+      ));
+      signal.hSyncFreq.Denominator = 1000;
+      signal.vSyncFreq.Numerator = refresh_millihz;
+      signal.vSyncFreq.Denominator = 1000;
+      signal.activeSize.cx = width;
+      signal.activeSize.cy = height;
+      signal.totalSize = signal.activeSize;
+      signal.AdditionalSignalInfo.videoStandard = 255;
+      signal.AdditionalSignalInfo.vSyncFreqDivider = 1;
+      signal.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+      return signal;
+    }
+
+    LONG activate_display_config_target_once_inner(
+      const DisplayConfigTarget &output,
+      const std::uint32_t width,
+      const std::uint32_t height,
+      const std::uint32_t refresh_millihz
+    ) {
+      if (width == 0 || height == 0 || refresh_millihz == 0) {
+        return ERROR_INVALID_PARAMETER;
+      }
+
+      DisplayConfigQuery query;
+      const auto query_result = query_all_display_config_paths(query);
+      if (query_result != ERROR_SUCCESS) {
+        return query_result;
+      }
+
+      std::vector<VDISPLAY::policy::display_config_path_state> path_states;
+      path_states.reserve(query.paths.size());
+      for (const auto &path : query.paths) {
+        path_states.push_back(path_state(path));
+      }
+
+      const auto requested_target = target_key(output);
+      const auto activation_plan = VDISPLAY::policy::plan_exact_target_activation(
+        path_states,
+        requested_target
+      );
+      if (activation_plan.action == VDISPLAY::policy::exact_target_activation_action::already_active) {
+        return ERROR_SUCCESS;
+      }
+      if (activation_plan.action != VDISPLAY::policy::exact_target_activation_action::activate ||
+          activation_plan.path_index >= query.paths.size()) {
+        return ERROR_NOT_FOUND;
+      }
+
+      std::vector<DISPLAYCONFIG_PATH_INFO> requested_paths;
+      requested_paths.reserve(query.paths.size());
+      for (const auto &path : query.paths) {
+        const auto state = path_state(path);
+        if (state.target != requested_target &&
+            VDISPLAY::policy::path_active_after_exact_target_activation(state, requested_target)) {
+          requested_paths.push_back(path);
+        }
+      }
+
+      auto requested_target_path = query.paths[activation_plan.path_index];
+      requested_target_path.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+      requested_target_path.targetInfo.targetAvailable = TRUE;
+      requested_target_path.targetInfo.refreshRate = {refresh_millihz, 1000};
+      requested_target_path.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+
+      auto requested_modes = query.modes;
+      const auto source_mode_info_index = static_cast<UINT>(requested_modes.size());
+      DISPLAYCONFIG_MODE_INFO source_mode {};
+      source_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+      source_mode.id = requested_target_path.sourceInfo.id;
+      source_mode.adapterId = requested_target_path.sourceInfo.adapterId;
+      source_mode.sourceMode.width = width;
+      source_mode.sourceMode.height = height;
+      source_mode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
+      source_mode.sourceMode.position = next_extended_position(query);
+      requested_modes.push_back(source_mode);
+
+      const auto target_mode_info_index = static_cast<UINT>(requested_modes.size());
+      DISPLAYCONFIG_MODE_INFO target_mode {};
+      target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+      target_mode.id = requested_target_path.targetInfo.id;
+      target_mode.adapterId = requested_target_path.targetInfo.adapterId;
+      target_mode.targetMode.targetVideoSignalInfo = make_activation_signal_info(width, height, refresh_millihz);
+      requested_modes.push_back(target_mode);
+
+      if (query.virtual_mode_aware) {
+        UINT next_clone_group_id = 0;
+        for (const auto &path : requested_paths) {
+          if (path.sourceInfo.cloneGroupId != DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID) {
+            next_clone_group_id = (std::max)(next_clone_group_id, path.sourceInfo.cloneGroupId + 1);
+          }
+        }
+        requested_target_path.sourceInfo.sourceModeInfoIdx = source_mode_info_index;
+        requested_target_path.sourceInfo.cloneGroupId = next_clone_group_id;
+        requested_target_path.targetInfo.targetModeInfoIdx = target_mode_info_index;
+        requested_target_path.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+      } else {
+        requested_target_path.sourceInfo.modeInfoIdx = source_mode_info_index;
+        requested_target_path.targetInfo.modeInfoIdx = target_mode_info_index;
+      }
+      requested_paths.push_back(requested_target_path);
+
+      const auto apply_result = SetDisplayConfig(
+        static_cast<UINT>(requested_paths.size()),
+        requested_paths.data(),
+        static_cast<UINT>(requested_modes.size()),
+        requested_modes.data(),
+        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_ALLOW_PATH_ORDER_CHANGES |
+          (query.virtual_mode_aware ? SDC_VIRTUAL_MODE_AWARE : 0)
+      );
+      if (apply_result != ERROR_SUCCESS) {
+        return apply_result;
+      }
+
+      DisplayConfigQuery verified_query;
+      const auto verification_result = query_all_display_config_paths(verified_query);
+      if (verification_result != ERROR_SUCCESS) {
+        return verification_result;
+      }
+      std::vector<VDISPLAY::policy::display_config_path_state> verified_states;
+      verified_states.reserve(verified_query.paths.size());
+      for (const auto &path : verified_query.paths) {
+        verified_states.push_back(path_state(path));
+      }
+      return VDISPLAY::policy::plan_exact_target_activation(verified_states, requested_target).action ==
+                 VDISPLAY::policy::exact_target_activation_action::already_active ?
+               ERROR_SUCCESS :
+               ERROR_RETRY;
+    }
+
+    LONG activate_display_config_target_once(
+      const DisplayConfigTarget &output,
+      const std::uint32_t width,
+      const std::uint32_t height,
+      const std::uint32_t refresh_millihz
+    ) {
+      auto result = activate_display_config_target_once_inner(output, width, height, refresh_millihz);
+      if (result == ERROR_SUCCESS) {
+        return result;
+      }
+
+      HANDLE user_token = platf::retrieve_users_token(false);
+      if (!user_token) {
+        return result;
+      }
+
+      const auto impersonation_ec = platf::impersonate_current_user(user_token, [&]() {
+        result = activate_display_config_target_once_inner(output, width, height, refresh_millihz);
+      });
+      CloseHandle(user_token);
+      if (impersonation_ec) {
+        BOOST_LOG(debug) << "Exact virtual display activation: impersonation failed.";
+      }
+      return result;
+    }
+
+    bool activate_display_config_target(
+      const DisplayConfigTarget &output,
+      const std::uint32_t width,
+      const std::uint32_t height,
+      const std::uint32_t refresh_millihz,
+      std::stop_token stop_token = {}
+    ) {
+      const auto deadline = std::chrono::steady_clock::now() + VDISPLAY::policy::enumeration_timeout;
+      LONG result = ERROR_NOT_FOUND;
+      do {
+        if (stop_token.stop_requested()) {
+          return false;
+        }
+        result = activate_display_config_target_once(output, width, height, refresh_millihz);
+        if (result == ERROR_SUCCESS) {
+          BOOST_LOG(debug) << "Activated exact Sunshine virtual display target " << output.TargetId
+                           << " on adapter " << output.AdapterLuid.HighPart << ':' << output.AdapterLuid.LowPart << '.';
+          return true;
+        }
+        if (wait_for_monitor_stop(stop_token, VDISPLAY::policy::readiness_poll_interval)) {
+          return false;
+        }
+      } while (std::chrono::steady_clock::now() < deadline);
+
+      BOOST_LOG(error) << "Unable to activate exact Sunshine virtual display target " << output.TargetId
+                       << " on adapter " << output.AdapterLuid.HighPart << ':' << output.AdapterLuid.LowPart
+                       << " (error=" << result << ").";
+      return false;
+    }
+
     struct AdvancedColorInfo {
       bool supported = false;
       bool active = false;
@@ -6486,20 +6806,30 @@ namespace VDISPLAY_SUNSHINE {
         create_result.value.target_id
       };
 
+      if (!ensure_watchdog_thread_active_for_lease(stop_token) || stop_token.stop_requested()) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+
+      // Driver arrival only makes the target available. Activate it by the
+      // driver's low-level identity before depending on names or mode data,
+      // which libdisplaydevice intentionally omits for inactive targets.
+      if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
+        BOOST_LOG(error) << "Sunshine temporary display creation did not reach its exact active-topology postcondition; reverting guid="
+                         << requested_uuid.string() << '.';
+        rollback_created_display();
+        return std::nullopt;
+      }
+
       if (*secure_reclaim_supported) {
         if (auto recovery = find_virtual_display_recovery_entry(recovery_entries, requested_uuid);
             recovery != recovery_entries.end()) {
           recovery->phase = VirtualDisplayRecoveryPhase::active;
           if (!save_virtual_display_recovery_journal(recovery_entries)) {
-            BOOST_LOG(warning) << "Virtual display was created with a durable prepared recovery marker, but it could not be promoted for guid="
+            BOOST_LOG(warning) << "Virtual display was activated with a durable prepared recovery marker, but it could not be promoted for guid="
                                << requested_uuid.string() << '.';
           }
         }
-      }
-
-      if (!ensure_watchdog_thread_active_for_lease(stop_token) || stop_token.stop_requested()) {
-        rollback_created_display();
-        return std::nullopt;
       }
 
       auto display_config_identity = wait_for_display_config_identity(
@@ -6557,10 +6887,13 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
         if (allow_pending_enumeration) {
-          BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
+          if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
+            rollback_created_display();
+            return std::nullopt;
+          }
+          BOOST_LOG(warning) << "Sunshine temporary display is active in DisplayConfig, but higher-level display enumeration is unavailable; retaining it for encoder probing.";
 
-          // Enumeration never succeeded here, so activation was definitively not
-          // observed. Leave ready_since unset rather than stamping "now".
+          const auto ready_since = std::chrono::steady_clock::now();
           VirtualDisplayCreationResult result;
           result.display_name = resolved_display_name;
           if (device_id && !device_id->empty()) {
@@ -6570,6 +6903,8 @@ namespace VDISPLAY_SUNSHINE {
             result.client_name = std::string(s_client_name);
           }
           result.reused_existing = false;
+          result.confirmed_active = true;
+          result.ready_since = ready_since;
           driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
           return result;
         }
@@ -6578,6 +6913,12 @@ namespace VDISPLAY_SUNSHINE {
         rollback_created_display();
         return std::nullopt;
       }
+
+      if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
+        rollback_created_display();
+        return std::nullopt;
+      }
+      confirmed_active = true;
 
       if (stop_token.stop_requested()) {
         rollback_created_display();

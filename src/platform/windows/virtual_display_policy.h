@@ -151,6 +151,58 @@ namespace VDISPLAY::policy {
     return device_present;
   }
 
+  struct display_config_target_key {
+    std::uint32_t adapter_low_part {};
+    std::int32_t adapter_high_part {};
+    std::uint32_t target_id {};
+
+    friend constexpr bool operator==(
+      const display_config_target_key &lhs,
+      const display_config_target_key &rhs
+    ) noexcept = default;
+  };
+
+  struct display_config_path_state {
+    display_config_target_key target {};
+    bool active = false;
+    bool available = false;
+  };
+
+  enum class exact_target_activation_action : std::uint8_t {
+    retry,
+    already_active,
+    activate,
+  };
+
+  struct exact_target_activation_plan {
+    exact_target_activation_action action {exact_target_activation_action::retry};
+    std::size_t path_index = 0;
+  };
+
+  constexpr exact_target_activation_plan plan_exact_target_activation(
+    const std::span<const display_config_path_state> paths,
+    const display_config_target_key requested_target
+  ) noexcept {
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+      if (paths[index].target == requested_target && paths[index].active) {
+        return {exact_target_activation_action::already_active, index};
+      }
+    }
+    for (std::size_t index = 0; index < paths.size(); ++index) {
+      if (paths[index].target == requested_target && paths[index].available) {
+        return {exact_target_activation_action::activate, index};
+      }
+    }
+    return {};
+  }
+
+  constexpr bool path_active_after_exact_target_activation(
+    const display_config_path_state path,
+    const display_config_target_key requested_target
+  ) noexcept {
+    return path.active || path.target == requested_target;
+  }
+
   constexpr bool should_release_retained_probe_display(const bool ensure_display_client) noexcept {
     return !ensure_display_client;
   }

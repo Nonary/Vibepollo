@@ -327,6 +327,66 @@ TEST(SunshineVirtualDisplay, AvailabilityChecksStayPassive) {
   EXPECT_FALSE(VDISPLAY::policy::passive_install_status(false));
 }
 
+TEST(SunshineVirtualDisplay, ExactTargetActivationSelectsOnlyDriverReturnedIdentity) {
+  using action = VDISPLAY::policy::exact_target_activation_action;
+  using key = VDISPLAY::policy::display_config_target_key;
+  using path = VDISPLAY::policy::display_config_path_state;
+
+  constexpr key requested {0x1234u, 7, 42u};
+  constexpr std::array paths {
+    path {{0x9999u, 7, 42u}, true, true},
+    path {requested, false, true},
+    path {{0x1234u, 7, 43u}, false, true},
+  };
+
+  const auto plan = VDISPLAY::policy::plan_exact_target_activation(paths, requested);
+  EXPECT_EQ(plan.action, action::activate);
+  EXPECT_EQ(plan.path_index, 1u);
+}
+
+TEST(SunshineVirtualDisplay, ExactTargetActivationNoOpsOnlyWhenExactTargetIsActive) {
+  using action = VDISPLAY::policy::exact_target_activation_action;
+  using key = VDISPLAY::policy::display_config_target_key;
+  using path = VDISPLAY::policy::display_config_path_state;
+
+  constexpr key requested {0x1234u, -2, 42u};
+  constexpr std::array active_paths {
+    path {{0x9999u, -2, 42u}, true, true},
+    path {requested, true, true},
+  };
+  constexpr std::array unpublished_paths {
+    path {requested, false, false},
+  };
+
+  EXPECT_EQ(
+    VDISPLAY::policy::plan_exact_target_activation(active_paths, requested).action,
+    action::already_active
+  );
+  EXPECT_EQ(
+    VDISPLAY::policy::plan_exact_target_activation(unpublished_paths, requested).action,
+    action::retry
+  );
+}
+
+TEST(SunshineVirtualDisplay, ExactTargetActivationPreservesExistingActivePaths) {
+  using key = VDISPLAY::policy::display_config_target_key;
+  using path = VDISPLAY::policy::display_config_path_state;
+
+  constexpr key requested {0x1234u, 7, 42u};
+  EXPECT_TRUE(VDISPLAY::policy::path_active_after_exact_target_activation(
+    path {{0x9999u, 1, 8u}, true, true},
+    requested
+  ));
+  EXPECT_TRUE(VDISPLAY::policy::path_active_after_exact_target_activation(
+    path {requested, false, true},
+    requested
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::path_active_after_exact_target_activation(
+    path {{0x9999u, 1, 9u}, false, true},
+    requested
+  ));
+}
+
 TEST(SunshineVirtualDisplay, LeaseAndTransportFailuresKeepProtocolMeaning) {
   constexpr std::uint64_t minimum = 0x1000;
   EXPECT_GE(VDISPLAY::policy::normalize_opaque_lease_id(7, minimum), minimum);
