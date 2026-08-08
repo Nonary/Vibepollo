@@ -315,49 +315,14 @@ jobs:
           LIBVIRTUALDISPLAY_RELEASE_TAG: v1.6.3
         run: |
           $ErrorActionPreference = 'Stop'
-
-          $releaseTag = $env:LIBVIRTUALDISPLAY_RELEASE_TAG
-          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-            throw 'Unable to resolve a libvirtualdisplay release tag.'
-          }
-
-          $releaseVersion = $releaseTag -replace '^v', ''
           $downloadDir = Join-Path $PWD 'libvirtualdisplay-release'
-          $extractDir = Join-Path $downloadDir 'extract'
-          New-Item -ItemType Directory -Force -Path $downloadDir, $extractDir | Out-Null
-
-          gh release download $releaseTag `
-            --repo Nonary/libvirtualdisplay `
-            --pattern "libvirtualdisplay-$releaseVersion-windows-x64.zip" `
-            --dir $downloadDir `
-            --clobber
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to download libvirtualdisplay release package $releaseTag."
-          }
-
-          $zip = Get-ChildItem -LiteralPath $downloadDir -File -Filter "libvirtualdisplay-$releaseVersion-windows-x64.zip" -ErrorAction Stop |
-            Select-Object -First 1
-          if (-not $zip) {
-            throw "libvirtualdisplay release package was not downloaded for $releaseTag."
-          }
-
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extractDir -Force
-
-          $packageRoot = Get-ChildItem -LiteralPath $extractDir -Directory -Recurse -ErrorAction Stop |
-            Where-Object {
-              (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.dll') -PathType Leaf) -and
-              (Test-Path -LiteralPath (Join-Path $_.FullName 'driver\SunshineVirtualDisplayDriver.inf') -PathType Leaf) -and
-              (Test-Path -LiteralPath (Join-Path $_.FullName 'tools\virtualdisplay_probe.exe') -PathType Leaf)
-            } |
-            Sort-Object -Property LastWriteTime -Descending |
-            Select-Object -First 1
-
-          if (-not $packageRoot) {
-            throw 'The virtual display driver package did not produce a driver/tools payload root.'
-          }
-
-          "VDD_PREBUILT_PACKAGE_DIR=$($packageRoot.FullName)" >> $env:GITHUB_ENV
-          "Using virtual display driver package: $($packageRoot.FullName)"
+          .\scripts\download_libvirtualdisplay_release.ps1 `
+            -Repository Nonary/libvirtualdisplay `
+            -Tag $env:LIBVIRTUALDISPLAY_RELEASE_TAG `
+            -OutDir $downloadDir `
+            -GitHubToken $env:GH_TOKEN
+          "VDD_PREBUILT_PACKAGE_DIR=$downloadDir" >> $env:GITHUB_ENV
+          "Using virtual display driver package: $downloadDir"
 
       - name: Download pinned WebRTC artifacts
         shell: pwsh

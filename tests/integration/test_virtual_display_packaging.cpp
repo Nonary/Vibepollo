@@ -26,9 +26,9 @@ namespace {
   }
 }  // namespace
 
-TEST(SunshineVirtualDisplayPackaging, PackageTargetRefreshesDriverAssetsFromSource) {
+TEST(SunshineVirtualDisplayPackaging, PackageTargetDownloadsPinnedDriverAssets) {
   EXPECT_TRUE(contract::refresh_before_msi);
-  EXPECT_EQ(contract::prebuilt_scope, "github_actions_only");
+  EXPECT_EQ(contract::prebuilt_scope, "pinned_release");
   EXPECT_EQ(contract::local_signing_mode, "self_signed_catalog");
 }
 
@@ -151,8 +151,8 @@ TEST(SunshineVirtualDisplayPackaging, DriverRefreshConsumesPinnedLibvirtualdispl
   EXPECT_EQ(contract::libvirtualdisplay_release_tag, "v1.6.3");
 }
 
-TEST(SunshineVirtualDisplayPackaging, DriverRefreshUsesPrebuiltPayloadOnlyInGithubActions) {
-  EXPECT_EQ(contract::prebuilt_scope, "github_actions_only");
+TEST(SunshineVirtualDisplayPackaging, DriverRefreshUsesThePinnedReleasePayload) {
+  EXPECT_EQ(contract::prebuilt_scope, "pinned_release");
   EXPECT_TRUE(contract::refresh_before_msi);
 }
 

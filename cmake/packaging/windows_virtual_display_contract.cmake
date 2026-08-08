@@ -23,16 +23,16 @@ set(SUNSHINE_VDD_SUDOVDA_DESTINATION "drivers/sudovda")
 set(SUNSHINE_VDD_TRUEHDR_REPOSITORY "Nonary/vibeshine_truehdr_runtime")
 set(SUNSHINE_VDD_TRUEHDR_RELEASE_TAG "v1.0.0")
 set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_REPOSITORY "Nonary/libvirtualdisplay")
-# Keep this synchronized with the release consumed by ci-windows.yml. Packaging
-# always refreshes from source locally and permits this pinned prebuilt release
-# only inside GitHub Actions.
+# Windows packaging always stages this pinned release before it refreshes the
+# product payload. The local source checkout remains available for development,
+# but is not used to build the driver as part of product packaging.
 set(SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_TAG "v1.6.3")
 set(SUNSHINE_VDD_VULKAN_LAYER_NAME "VK_LAYER_SUNSHINE_virtual_hdr")
 set(SUNSHINE_VDD_VULKAN_LAYER_LIBRARY ".\\VkLayer_sunshine_hdr.dll")
 set(SUNSHINE_VDD_VULKAN_LAYER_DISABLE_ENVIRONMENT "DISABLE_SUNSHINE_VIRTUAL_HDR")
 
 set(SUNSHINE_VDD_REFRESH_BEFORE_MSI ON)
-set(SUNSHINE_VDD_PREBUILT_SCOPE "github_actions_only")
+set(SUNSHINE_VDD_PREBUILT_SCOPE "pinned_release")
 set(SUNSHINE_VDD_LOCAL_SIGNING_MODE "self_signed_catalog")
 set(SUNSHINE_VDD_INSTALLER_POWERSHELL_ARCHITECTURE "system64")
 set(SUNSHINE_VDD_COMMAND_LINE_QUOTING "windows_backslash_quote")
