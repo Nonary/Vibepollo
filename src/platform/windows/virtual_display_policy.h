@@ -255,6 +255,19 @@ namespace VDISPLAY::policy {
     return path.active || path.target == requested_target;
   }
 
+  // DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID: QueryDisplayConfig stamps it on
+  // every path it returns, so the retained paths in a supplied configuration
+  // always carry it. SetDisplayConfig with SDC_VIRTUAL_MODE_AWARE rejects a
+  // configuration that mixes valid clone group ids with the sentinel as
+  // ERROR_INVALID_PARAMETER, and the activation path extends the desktop
+  // rather than joining a clone group, so the sentinel is the only id it can
+  // ever legally carry.
+  inline constexpr std::uint32_t display_config_clone_group_invalid = 0xffffu;
+
+  constexpr std::uint32_t exact_target_activation_clone_group_id() noexcept {
+    return display_config_clone_group_invalid;
+  }
+
   constexpr bool should_release_retained_probe_display(const bool ensure_display_client) noexcept {
     return !ensure_display_client;
   }

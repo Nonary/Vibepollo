@@ -432,6 +432,20 @@ TEST(SunshineVirtualDisplay, DisplayConfigBufferSizesAcceptOrdinaryAllPathsTopol
   ));
 }
 
+TEST(SunshineVirtualDisplay, ExactTargetActivationNeverIntroducesACloneGroup) {
+  // QueryDisplayConfig stamps DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID on every
+  // path it returns, so the retained paths in the supplied configuration always
+  // carry the sentinel. Stamping a valid clone group id on the activation path
+  // (the old code derived 0 from "max retained id + 1") mixes valid ids with
+  // the sentinel, which SetDisplayConfig(SDC_VIRTUAL_MODE_AWARE) rejects with
+  // ERROR_INVALID_PARAMETER before considering anything else in the payload.
+  EXPECT_EQ(
+    VDISPLAY::policy::exact_target_activation_clone_group_id(),
+    VDISPLAY::policy::display_config_clone_group_invalid
+  );
+  EXPECT_EQ(VDISPLAY::policy::display_config_clone_group_invalid, 0xffffu);
+}
+
 TEST(SunshineVirtualDisplay, ExactTargetActivationPreservesExistingActivePaths) {
   using key = VDISPLAY::policy::display_config_target_key;
   using path = VDISPLAY::policy::display_config_path_state;

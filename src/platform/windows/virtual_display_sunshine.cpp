@@ -2663,18 +2663,6 @@ namespace VDISPLAY_SUNSHINE {
       source_mode.sourceMode.position = next_extended_position(query);
       requested_modes.push_back(source_mode);
 
-      UINT next_clone_group_id = 0;
-      if (query.virtual_mode_aware) {
-        for (const auto &path : requested_paths) {
-          if (path.sourceInfo.cloneGroupId != DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID) {
-            next_clone_group_id = (std::max)(
-              next_clone_group_id,
-              static_cast<UINT>(path.sourceInfo.cloneGroupId) + 1u
-            );
-          }
-        }
-      }
-
       // A hand-built DISPLAYCONFIG_VIDEO_SIGNAL_INFO cannot match a timing the
       // target actually advertises, so let Windows pick the target mode first and
       // keep the synthesized descriptor as a fallback. The refreshRate and
@@ -2697,7 +2685,7 @@ namespace VDISPLAY_SUNSHINE {
 
         if (query.virtual_mode_aware) {
           path.sourceInfo.sourceModeInfoIdx = source_mode_info_index;
-          path.sourceInfo.cloneGroupId = next_clone_group_id;
+          path.sourceInfo.cloneGroupId = VDISPLAY::policy::exact_target_activation_clone_group_id();
           path.targetInfo.targetModeInfoIdx =
             supply_target_mode ? target_mode_info_index : DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
           path.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
