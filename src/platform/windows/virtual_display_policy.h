@@ -162,11 +162,38 @@ namespace VDISPLAY::policy {
     ) noexcept = default;
   };
 
+  struct display_config_source_key {
+    std::uint32_t adapter_low_part {};
+    std::int32_t adapter_high_part {};
+    std::uint32_t source_id {};
+
+    friend constexpr bool operator==(
+      const display_config_source_key &lhs,
+      const display_config_source_key &rhs
+    ) noexcept = default;
+  };
+
   struct display_config_path_state {
     display_config_target_key target {};
     bool active = false;
     bool available = false;
+    display_config_source_key source {};
   };
+
+  // QDC_ALL_PATHS enumerates the full source x target cross-product of every
+  // adapter, including inactive and persisted CCD entries, so several hundred
+  // paths is ordinary rather than suspicious: an IddCx virtual adapter alone
+  // contributes one path per (source, target) pair. These bounds exist only to
+  // refuse an absurd allocation; they are not a validity check on the topology.
+  inline constexpr std::uint32_t max_display_config_paths = 8192;
+  inline constexpr std::uint32_t max_display_config_modes = 32768;
+
+  constexpr bool display_config_buffer_sizes_are_sane(
+    const std::uint32_t path_count,
+    const std::uint32_t mode_count
+  ) noexcept {
+    return path_count <= max_display_config_paths && mode_count <= max_display_config_modes;
+  }
 
   enum class exact_target_activation_action : std::uint8_t {
     retry,
@@ -188,10 +215,35 @@ namespace VDISPLAY::policy {
         return {exact_target_activation_action::already_active, index};
       }
     }
+    // QDC_ALL_PATHS pairs the requested target with every source on its adapter,
+    // so there are usually many candidates. Prefer one whose (adapter, source)
+    // pair no retained active path already occupies: a supplied configuration
+    // that places a single source in two clone groups is rejected outright.
+    std::optional<std::size_t> first_available;
     for (std::size_t index = 0; index < paths.size(); ++index) {
-      if (paths[index].target == requested_target && paths[index].available) {
+      if (paths[index].target != requested_target || !paths[index].available) {
+        continue;
+      }
+      if (!first_available) {
+        first_available = index;
+      }
+      bool source_in_use = false;
+      for (std::size_t other = 0; other < paths.size(); ++other) {
+        if (paths[other].active &&
+            !(paths[other].target == requested_target) &&
+            paths[other].source == paths[index].source) {
+          source_in_use = true;
+          break;
+        }
+      }
+      if (!source_in_use) {
         return {exact_target_activation_action::activate, index};
       }
+    }
+    if (first_available) {
+      // Every candidate source is spoken for. Ask anyway rather than giving up;
+      // the caller treats activation as best-effort.
+      return {exact_target_activation_action::activate, *first_available};
     }
     return {};
   }

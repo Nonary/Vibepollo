@@ -368,6 +368,70 @@ TEST(SunshineVirtualDisplay, ExactTargetActivationNoOpsOnlyWhenExactTargetIsActi
   );
 }
 
+TEST(SunshineVirtualDisplay, ExactTargetActivationPrefersAnUnusedSource) {
+  using action = VDISPLAY::policy::exact_target_activation_action;
+  using key = VDISPLAY::policy::display_config_target_key;
+  using source = VDISPLAY::policy::display_config_source_key;
+  using path = VDISPLAY::policy::display_config_path_state;
+
+  constexpr key requested {0x1234u, 7, 42u};
+  constexpr source occupied {0x1234u, 7, 0u};
+  constexpr source spare {0x1234u, 7, 1u};
+
+  // QDC_ALL_PATHS pairs the requested target with every source on its adapter.
+  // The first candidate shares a source with a retained active path, so the plan
+  // must skip it rather than ask for one source in two clone groups.
+  constexpr std::array paths {
+    path {{0x1234u, 7, 99u}, true, true, occupied},
+    path {requested, false, true, occupied},
+    path {requested, false, true, spare},
+  };
+
+  const auto plan = VDISPLAY::policy::plan_exact_target_activation(paths, requested);
+  EXPECT_EQ(plan.action, action::activate);
+  EXPECT_EQ(plan.path_index, 2u);
+}
+
+TEST(SunshineVirtualDisplay, ExactTargetActivationStillActivatesWhenEverySourceIsBusy) {
+  using action = VDISPLAY::policy::exact_target_activation_action;
+  using key = VDISPLAY::policy::display_config_target_key;
+  using source = VDISPLAY::policy::display_config_source_key;
+  using path = VDISPLAY::policy::display_config_path_state;
+
+  constexpr key requested {0x1234u, 7, 42u};
+  constexpr source occupied {0x1234u, 7, 0u};
+
+  constexpr std::array paths {
+    path {{0x1234u, 7, 99u}, true, true, occupied},
+    path {requested, false, true, occupied},
+  };
+
+  // Degrading to the first available candidate keeps the plan no worse than
+  // asking nothing at all; activation is best-effort at the call site.
+  const auto plan = VDISPLAY::policy::plan_exact_target_activation(paths, requested);
+  EXPECT_EQ(plan.action, action::activate);
+  EXPECT_EQ(plan.path_index, 1u);
+}
+
+TEST(SunshineVirtualDisplay, DisplayConfigBufferSizesAcceptOrdinaryAllPathsTopologies) {
+  // A single-monitor host with a virtual display driver reports ~316 QDC_ALL_PATHS
+  // paths and ~948 modes. Rejecting those made every exact-target activation fail
+  // with ERROR_INVALID_DATA before SetDisplayConfig was ever reached.
+  EXPECT_TRUE(VDISPLAY::policy::display_config_buffer_sizes_are_sane(316u, 948u));
+  EXPECT_TRUE(VDISPLAY::policy::display_config_buffer_sizes_are_sane(
+    VDISPLAY::policy::max_display_config_paths,
+    VDISPLAY::policy::max_display_config_modes
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::display_config_buffer_sizes_are_sane(
+    VDISPLAY::policy::max_display_config_paths + 1u,
+    VDISPLAY::policy::max_display_config_modes
+  ));
+  EXPECT_FALSE(VDISPLAY::policy::display_config_buffer_sizes_are_sane(
+    VDISPLAY::policy::max_display_config_paths,
+    VDISPLAY::policy::max_display_config_modes + 1u
+  ));
+}
+
 TEST(SunshineVirtualDisplay, ExactTargetActivationPreservesExistingActivePaths) {
   using key = VDISPLAY::policy::display_config_target_key;
   using path = VDISPLAY::policy::display_config_path_state;

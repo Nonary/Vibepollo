@@ -2462,6 +2462,11 @@ namespace VDISPLAY_SUNSHINE {
         },
         (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0,
         path.targetInfo.targetAvailable != FALSE,
+        {
+          path.sourceInfo.adapterId.LowPart,
+          path.sourceInfo.adapterId.HighPart,
+          path.sourceInfo.id,
+        },
       };
     }
 
@@ -2473,10 +2478,19 @@ namespace VDISPLAY_SUNSHINE {
         return result;
       }
 
-      constexpr UINT max_display_paths = 256;
-      constexpr UINT max_display_modes = 1024;
-      if (path_count > max_display_paths || mode_count > max_display_modes) {
+      if (!VDISPLAY::policy::display_config_buffer_sizes_are_sane(path_count, mode_count)) {
+        BOOST_LOG(warning) << "DisplayConfig reported an implausible buffer size (flags=" << flags
+                           << ", paths=" << path_count << ", modes=" << mode_count << ").";
         return ERROR_INVALID_DATA;
+      }
+      // The activation retry loop queries every 50 ms, so only report a topology
+      // whose size actually changed. This is the number that silently rejected
+      // every activation while the buffer bounds were set too low.
+      static std::atomic<std::uint64_t> last_reported_buffer_sizes {~0ull};
+      const auto buffer_sizes = (static_cast<std::uint64_t>(path_count) << 32) | mode_count;
+      if (last_reported_buffer_sizes.exchange(buffer_sizes) != buffer_sizes) {
+        BOOST_LOG(debug) << "DisplayConfig query flags=" << flags << " paths=" << path_count
+                         << " modes=" << mode_count << '.';
       }
 
       query.paths.resize(path_count);
@@ -2493,7 +2507,7 @@ namespace VDISPLAY_SUNSHINE {
           nullptr
         );
         if (result == ERROR_SUCCESS) {
-          if (queried_path_count > max_display_paths || queried_mode_count > max_display_modes) {
+          if (!VDISPLAY::policy::display_config_buffer_sizes_are_sane(queried_path_count, queried_mode_count)) {
             return ERROR_INVALID_DATA;
           }
           query.paths.resize(queried_path_count);
@@ -2502,8 +2516,7 @@ namespace VDISPLAY_SUNSHINE {
           return ERROR_SUCCESS;
         }
         if (result != ERROR_INSUFFICIENT_BUFFER ||
-            queried_path_count > max_display_paths ||
-            queried_mode_count > max_display_modes) {
+            !VDISPLAY::policy::display_config_buffer_sizes_are_sane(queried_path_count, queried_mode_count)) {
           return result;
         }
         query.paths.resize((std::max)(queried_path_count, static_cast<UINT>(query.paths.size() + 1)));
@@ -2650,16 +2663,8 @@ namespace VDISPLAY_SUNSHINE {
       source_mode.sourceMode.position = next_extended_position(query);
       requested_modes.push_back(source_mode);
 
-      const auto target_mode_info_index = static_cast<UINT>(requested_modes.size());
-      DISPLAYCONFIG_MODE_INFO target_mode {};
-      target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
-      target_mode.id = requested_target_path.targetInfo.id;
-      target_mode.adapterId = requested_target_path.targetInfo.adapterId;
-      target_mode.targetMode.targetVideoSignalInfo = make_activation_signal_info(width, height, refresh_millihz);
-      requested_modes.push_back(target_mode);
-
+      UINT next_clone_group_id = 0;
       if (query.virtual_mode_aware) {
-        UINT next_clone_group_id = 0;
         for (const auto &path : requested_paths) {
           if (path.sourceInfo.cloneGroupId != DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID) {
             next_clone_group_id = (std::max)(
@@ -2668,24 +2673,59 @@ namespace VDISPLAY_SUNSHINE {
             );
           }
         }
-        requested_target_path.sourceInfo.sourceModeInfoIdx = source_mode_info_index;
-        requested_target_path.sourceInfo.cloneGroupId = next_clone_group_id;
-        requested_target_path.targetInfo.targetModeInfoIdx = target_mode_info_index;
-        requested_target_path.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
-      } else {
-        requested_target_path.sourceInfo.modeInfoIdx = source_mode_info_index;
-        requested_target_path.targetInfo.modeInfoIdx = target_mode_info_index;
       }
-      requested_paths.push_back(requested_target_path);
 
-      const auto apply_result = SetDisplayConfig(
-        static_cast<UINT>(requested_paths.size()),
-        requested_paths.data(),
-        static_cast<UINT>(requested_modes.size()),
-        requested_modes.data(),
-        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_ALLOW_PATH_ORDER_CHANGES |
-          (query.virtual_mode_aware ? SDC_VIRTUAL_MODE_AWARE : 0)
-      );
+      // A hand-built DISPLAYCONFIG_VIDEO_SIGNAL_INFO cannot match a timing the
+      // target actually advertises, so let Windows pick the target mode first and
+      // keep the synthesized descriptor as a fallback. The refreshRate and
+      // scanLineOrdering set above remain the hint under SDC_ALLOW_CHANGES.
+      const auto apply_activation = [&](const bool supply_target_mode) -> LONG {
+        auto paths = requested_paths;
+        auto modes = requested_modes;
+        auto path = requested_target_path;
+
+        UINT target_mode_info_index = 0;
+        if (supply_target_mode) {
+          target_mode_info_index = static_cast<UINT>(modes.size());
+          DISPLAYCONFIG_MODE_INFO target_mode {};
+          target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+          target_mode.id = path.targetInfo.id;
+          target_mode.adapterId = path.targetInfo.adapterId;
+          target_mode.targetMode.targetVideoSignalInfo = make_activation_signal_info(width, height, refresh_millihz);
+          modes.push_back(target_mode);
+        }
+
+        if (query.virtual_mode_aware) {
+          path.sourceInfo.sourceModeInfoIdx = source_mode_info_index;
+          path.sourceInfo.cloneGroupId = next_clone_group_id;
+          path.targetInfo.targetModeInfoIdx =
+            supply_target_mode ? target_mode_info_index : DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
+          path.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+        } else {
+          path.sourceInfo.modeInfoIdx = source_mode_info_index;
+          path.targetInfo.modeInfoIdx =
+            supply_target_mode ? target_mode_info_index : DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        }
+        paths.push_back(path);
+
+        // SDC_ALLOW_PATH_ORDER_CHANGES is only legal alongside SDC_TOPOLOGY_SUPPLIED,
+        // which is mutually exclusive with SDC_USE_SUPPLIED_DISPLAY_CONFIG.
+        return SetDisplayConfig(
+          static_cast<UINT>(paths.size()),
+          paths.data(),
+          static_cast<UINT>(modes.size()),
+          modes.data(),
+          SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES |
+            (query.virtual_mode_aware ? SDC_VIRTUAL_MODE_AWARE : 0)
+        );
+      };
+
+      auto apply_result = apply_activation(false);
+      if (apply_result != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "Exact virtual display activation: OS-selected target timing was refused (error="
+                         << apply_result << "); retrying with an explicit mode descriptor.";
+        apply_result = apply_activation(true);
+      }
       if (apply_result != ERROR_SUCCESS) {
         return apply_result;
       }
@@ -6814,12 +6854,18 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
-      // Driver arrival only makes the target available. Activate it by the
-      // driver's low-level identity before depending on names or mode data,
-      // which libdisplaydevice intentionally omits for inactive targets.
-      if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
-        BOOST_LOG(error) << "Sunshine temporary display creation did not reach its exact active-topology postcondition; reverting guid="
-                         << requested_uuid.string() << '.';
+      // Driver arrival only makes the target available. Activating it by the
+      // driver's low-level identity is what lets names and mode data resolve,
+      // which libdisplaydevice intentionally omits for inactive targets. This is
+      // a best-effort accelerator, never a precondition: when it fails we keep the
+      // display the driver already accepted and fall back to the enumeration and
+      // name paths, and ultimately to the display helper's own APPLY.
+      bool exact_target_activated = activate_display_config_target(output, width, height, requested_fps, stop_token);
+      if (!exact_target_activated && !stop_token.stop_requested()) {
+        BOOST_LOG(warning) << "Sunshine temporary display did not reach its exact active-topology postcondition; continuing with enumeration-based readiness for guid="
+                           << requested_uuid.string() << '.';
+      }
+      if (stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;
       }
@@ -6890,13 +6936,21 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
         if (allow_pending_enumeration) {
-          if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
+          // DisplayConfig state has changed since the first attempt, so one more
+          // best-effort activation is worthwhile before we give up on it.
+          if (!exact_target_activated) {
+            exact_target_activated = activate_display_config_target(output, width, height, requested_fps, stop_token);
+          }
+          if (stop_token.stop_requested()) {
             rollback_created_display();
             return std::nullopt;
           }
-          BOOST_LOG(warning) << "Sunshine temporary display is active in DisplayConfig, but higher-level display enumeration is unavailable; retaining it for encoder probing.";
+          if (exact_target_activated) {
+            BOOST_LOG(warning) << "Sunshine temporary display is active in DisplayConfig, but higher-level display enumeration is unavailable; retaining it for encoder probing.";
+          } else {
+            BOOST_LOG(warning) << "Sunshine temporary display was accepted by the driver, but Windows display enumeration is unavailable; retaining it for encoder probing.";
+          }
 
-          const auto ready_since = std::chrono::steady_clock::now();
           VirtualDisplayCreationResult result;
           result.display_name = resolved_display_name;
           if (device_id && !device_id->empty()) {
@@ -6906,8 +6960,13 @@ namespace VDISPLAY_SUNSHINE {
             result.client_name = std::string(s_client_name);
           }
           result.reused_existing = false;
-          result.confirmed_active = true;
-          result.ready_since = ready_since;
+          // Enumeration never succeeded here, so only an observed exact-target
+          // activation may claim the display is active. Otherwise leave
+          // ready_since unset rather than stamping "now".
+          if (exact_target_activated) {
+            result.confirmed_active = true;
+            result.ready_since = std::chrono::steady_clock::now();
+          }
           driver_lease_tracker().update_identity(requested_uuid, result.display_name, result.device_id, result.monitor_device_path);
           return result;
         }
@@ -6917,11 +6976,13 @@ namespace VDISPLAY_SUNSHINE {
         return std::nullopt;
       }
 
-      if (!activate_display_config_target(output, width, height, requested_fps, stop_token)) {
-        rollback_created_display();
-        return std::nullopt;
+      // Enumeration has now succeeded, so DisplayConfig state has materially
+      // changed since the first attempt. Failure downgrades to the readiness
+      // result we already have rather than discarding a usable display.
+      if (!exact_target_activated) {
+        exact_target_activated = activate_display_config_target(output, width, height, requested_fps, stop_token);
       }
-      confirmed_active = true;
+      confirmed_active = confirmed_active || exact_target_activated;
 
       if (stop_token.stop_requested()) {
         rollback_created_display();
