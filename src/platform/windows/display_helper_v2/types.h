@@ -33,6 +33,7 @@ namespace display_helper::v2 {
     NeedsVirtualDisplayReset,
     Retryable,
     Fatal,
+    HdrStateFailed,
   };
 
   enum class SnapshotTier {

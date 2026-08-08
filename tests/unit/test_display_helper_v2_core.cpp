@@ -882,13 +882,102 @@ TEST(DisplayHelperV2ApplyOperation, RestoresBaselineWhenSettingsStageFails) {
   display_device::SingleDisplayConfiguration config;
   config.m_device_id = "VIRTUAL";
   config.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+  config.m_hdr_state = display_device::HdrState::Enabled;
   request.configuration = config;
   request.topology = display_device::ActiveTopology {{"VIRTUAL"}};
+  request.virtual_layout = "single";
 
   display_helper::v2::CancellationSource source;
   const auto outcome = operation.run(request, source.token());
 
   EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Retryable);
+  EXPECT_FALSE(outcome.display_may_have_changed);
+  EXPECT_EQ(display.topology, baseline);
+  EXPECT_EQ(display.apply_topology_calls, 2);
+  EXPECT_EQ(display.apply_snapshot_calls, 1);
+}
+
+TEST(DisplayHelperV2ApplyOperation, RetainsVirtualTopologyWhenHdrSettingsStageFails) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  const auto baseline = display_device::ActiveTopology {{"PHYSICAL"}};
+  const auto staged_topology = display_device::ActiveTopology {{"VIRTUAL"}};
+  display.topology = baseline;
+  display.snapshot = make_snapshot({"PHYSICAL"});
+  display.enumerated_devices = {make_active_device("PHYSICAL"), make_active_device("VIRTUAL")};
+  display.apply_status = display_helper::v2::ApplyStatus::HdrStateFailed;
+
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  display_device::SingleDisplayConfiguration config;
+  config.m_device_id = "VIRTUAL";
+  config.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+  config.m_hdr_state = display_device::HdrState::Enabled;
+  request.configuration = config;
+  request.topology = staged_topology;
+  request.virtual_layout = "single";
+
+  display_helper::v2::CancellationSource source;
+  const auto outcome = operation.run(request, source.token());
+
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::HdrStateFailed);
+  EXPECT_TRUE(outcome.display_may_have_changed);
+  EXPECT_EQ(display.topology, staged_topology);
+  EXPECT_EQ(display.apply_topology_calls, 1);
+  EXPECT_EQ(display.apply_snapshot_calls, 0);
+}
+
+TEST(DisplayHelperV2ApplyOperation, RestoresBaselineWhenPhysicalHdrSettingsStageFails) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  const auto baseline = display_device::ActiveTopology {{"PHYSICAL_A"}};
+  display.topology = baseline;
+  display.snapshot = make_snapshot({"PHYSICAL_A"});
+  display.enumerated_devices = {make_active_device("PHYSICAL_A"), make_active_device("PHYSICAL_B")};
+  display.apply_status = display_helper::v2::ApplyStatus::HdrStateFailed;
+
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  display_device::SingleDisplayConfiguration config;
+  config.m_device_id = "PHYSICAL_B";
+  config.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+  config.m_hdr_state = display_device::HdrState::Enabled;
+  request.configuration = config;
+  request.topology = display_device::ActiveTopology {{"PHYSICAL_B"}};
+
+  display_helper::v2::CancellationSource source;
+  const auto outcome = operation.run(request, source.token());
+
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::HdrStateFailed);
+  EXPECT_FALSE(outcome.display_may_have_changed);
+  EXPECT_EQ(display.topology, baseline);
+  EXPECT_EQ(display.apply_topology_calls, 2);
+  EXPECT_EQ(display.apply_snapshot_calls, 1);
+}
+
+TEST(DisplayHelperV2ApplyOperation, RestoresBaselineWhenVirtualSdrHdrStateRestoreFails) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  const auto baseline = display_device::ActiveTopology {{"PHYSICAL"}};
+  display.topology = baseline;
+  display.snapshot = make_snapshot({"PHYSICAL"});
+  display.enumerated_devices = {make_active_device("PHYSICAL"), make_active_device("VIRTUAL")};
+  display.apply_status = display_helper::v2::ApplyStatus::HdrStateFailed;
+
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  display_device::SingleDisplayConfiguration config;
+  config.m_device_id = "VIRTUAL";
+  config.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+  config.m_hdr_state = display_device::HdrState::Disabled;
+  request.configuration = config;
+  request.topology = display_device::ActiveTopology {{"VIRTUAL"}};
+  request.virtual_layout = "single";
+
+  display_helper::v2::CancellationSource source;
+  const auto outcome = operation.run(request, source.token());
+
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::HdrStateFailed);
   EXPECT_FALSE(outcome.display_may_have_changed);
   EXPECT_EQ(display.topology, baseline);
   EXPECT_EQ(display.apply_topology_calls, 2);

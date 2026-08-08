@@ -1055,8 +1055,9 @@ namespace display_helper::v2 {
       case DevicePrepFailed:
       case PrimaryDevicePrepFailed:
       case DisplayModePrepFailed:
-      case HdrStatePrepFailed:
         return ApplyStatus::VerificationFailed;
+      case HdrStatePrepFailed:
+        return ApplyStatus::HdrStateFailed;
       case PersistenceSaveFailed:
         return ApplyStatus::Retryable;
       default:

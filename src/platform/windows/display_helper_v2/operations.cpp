@@ -537,6 +537,15 @@ namespace display_helper::v2 {
     if (outcome.status == ApplyStatus::Ok) {
       apply_monitor_positions(request, token);
       apply_refresh_rate_overrides(request, token);
+    } else if (request.virtual_layout.has_value() &&
+               request.configuration->m_hdr_state == display_device::HdrState::Enabled &&
+               outcome.status == ApplyStatus::HdrStateFailed) {
+      // SettingsManager unwinds primary, mode, and HDR mutations before
+      // reporting this failure, and its topology guard returns to the topology
+      // present at entry: the staged virtual topology accepted above. Retain
+      // that topology for the bounded in-place HDR retry instead of bouncing
+      // the desktop back to the physical pre-APPLY baseline.
+      BOOST_LOG(warning) << "Display helper v2: virtual-display HDR settings failed; retaining the staged topology for retry.";
     } else if (have_rollback_baseline && restore_baseline_after_failed_apply(baseline_snapshot, token)) {
       BOOST_LOG(warning) << "Display helper v2: SettingsManager stage failed; restored the pre-APPLY display baseline.";
       outcome.display_may_have_changed = false;

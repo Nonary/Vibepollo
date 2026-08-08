@@ -84,6 +84,8 @@ namespace display_helper::v2 {
           return "Retryable";
         case ApplyStatus::Fatal:
           return "Fatal";
+        case ApplyStatus::HdrStateFailed:
+          return "HdrStateFailed";
         default:
           return "Unknown";
       }
@@ -1191,7 +1193,11 @@ namespace display_helper::v2 {
       }
     }
 
-    if (completed.status == ApplyStatus::Retryable || completed.status == ApplyStatus::VerificationFailed) {
+    const bool status_allows_bounded_retry =
+      completed.status == ApplyStatus::Retryable ||
+      completed.status == ApplyStatus::VerificationFailed ||
+      completed.status == ApplyStatus::HdrStateFailed;
+    if (status_allows_bounded_retry) {
       if (apply_.can_retry(apply_attempt_)) {
         const auto delay = apply_.retry_delay(apply_attempt_);
         ++apply_attempt_;
@@ -1205,7 +1211,7 @@ namespace display_helper::v2 {
       completed.virtual_display_requested &&
       current_request_.configuration &&
       current_request_.configuration->m_hdr_state == display_device::HdrState::Enabled &&
-      (completed.status == ApplyStatus::Retryable || completed.status == ApplyStatus::VerificationFailed);
+      status_allows_bounded_retry;
     if (can_fallback_virtual_hdr) {
       virtual_hdr_fallback_attempted_ = true;
       current_request_.configuration->m_hdr_state = display_device::HdrState::Disabled;
