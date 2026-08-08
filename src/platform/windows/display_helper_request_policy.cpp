@@ -29,10 +29,9 @@ namespace display_helper_integration::request_policy {
 
   Result evaluate(const Input &input) {
     Result result;
-    result.apply_hdr_profile_to_physical =
-      input.hdr_profile_selected &&
-      !input.virtual_display &&
-      !input.virtual_display_failed;
+    // A failed virtual-display attempt falls back to a physical target. An
+    // explicitly selected HDR profile remains valid for that physical target.
+    result.apply_hdr_profile_to_physical = input.hdr_profile_selected && !input.virtual_display;
 
     if (input.virtual_display && input.target_device_id.empty()) {
       result.dispatch = false;

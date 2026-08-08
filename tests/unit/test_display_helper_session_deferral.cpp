@@ -173,14 +173,18 @@ TEST(DisplayHelperRequestPolicy, PhysicalFallbackAfterVirtualFailureStillDispatc
   EXPECT_TRUE(policy::evaluate(input).dispatch);
 }
 
-TEST(DisplayHelperRequestPolicy, VirtualFailureSuppressesPhysicalHdrProfileOnlyForFallback) {
+TEST(DisplayHelperRequestPolicy, PhysicalFallbackStillAllowsSelectedHdrProfile) {
   policy::Input physical_input;
   physical_input.hdr_profile_selected = true;
   EXPECT_TRUE(policy::evaluate(physical_input).apply_hdr_profile_to_physical);
 
   auto fallback_input = physical_input;
   fallback_input.virtual_display_failed = true;
-  EXPECT_FALSE(policy::evaluate(fallback_input).apply_hdr_profile_to_physical);
+  EXPECT_TRUE(policy::evaluate(fallback_input).apply_hdr_profile_to_physical);
+
+  auto virtual_input = physical_input;
+  virtual_input.virtual_display = true;
+  EXPECT_FALSE(policy::evaluate(virtual_input).apply_hdr_profile_to_physical);
 }
 
 TEST(DisplayHelperRequestPolicy, UsesRtxHdrSourcePolicyForInitialVirtualDisplayConfiguration) {
