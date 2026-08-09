@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -51,4 +52,24 @@ test('host history downsampling and peaks make relative spikes comparable', () =
     'the rendered series must retain each CPU/GPU/encoder/network spike',
   );
   assert.deepEqual(hostHistoryPeaks(points), { cpu: 95, gpu: 88, encoder: 79, networkMbps: 12 });
+});
+
+test('host compute readouts label current and peak values explicitly', () => {
+  const chart = readFileSync(
+    new URL('../components/stats/HostComputeChart.vue', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    chart,
+    /CPU[\s\S]*t\('stats\.current'\)[\s\S]*current\.cpu[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.cpu/,
+  );
+  assert.match(
+    chart,
+    /GPU[\s\S]*t\('stats\.current'\)[\s\S]*current\.gpu[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.gpu/,
+  );
+  assert.match(
+    chart,
+    /ENC[\s\S]*t\('stats\.current'\)[\s\S]*current\.encoder[\s\S]*t\('stats\.peak'\)[\s\S]*peak\.encoder/,
+  );
+  assert.doesNotMatch(chart, /t\('stats\.peak'\)[^\n]*\/[^\n]*t\('stats\.current'\)/);
 });

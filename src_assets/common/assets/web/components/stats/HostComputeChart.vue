@@ -42,7 +42,7 @@ const seriesPoints = computed(() =>
 );
 
 function value(value: number | null | undefined): string {
-  return value == null || !Number.isFinite(value) ? '—' : `${Math.round(value)}%`;
+  return value == null || !Number.isFinite(value) ? '--' : `${Math.round(value)}%`;
 }
 </script>
 
@@ -84,11 +84,19 @@ function value(value: number | null | undefined): string {
       />
     </svg>
     <footer class="host-compute-chart__footer">
-      <span>CPU {{ value(current.cpu) }} / {{ value(peak.cpu) }}</span>
-      <span>GPU {{ value(current.gpu) }} / {{ value(peak.gpu) }}</span>
-      <span>ENC {{ value(current.encoder) }} / {{ value(peak.encoder) }}</span>
+      <span
+        >CPU · {{ t('stats.current') }} {{ value(current.cpu) }} · {{ t('stats.peak') }}
+        {{ value(peak.cpu) }}</span
+      >
+      <span
+        >GPU · {{ t('stats.current') }} {{ value(current.gpu) }} · {{ t('stats.peak') }}
+        {{ value(peak.gpu) }}</span
+      >
+      <span
+        >ENC · {{ t('stats.current') }} {{ value(current.encoder) }} · {{ t('stats.peak') }}
+        {{ value(peak.encoder) }}</span
+      >
     </footer>
-    <small>{{ t('stats.peak') }} / {{ t('stats.current') }}</small>
   </article>
 </template>
 
@@ -149,6 +157,7 @@ function value(value: number | null | undefined): string {
 }
 .host-compute-chart__footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: var(--vs-space-8);
   padding: var(--vs-space-8) var(--vs-space-16) 0;
