@@ -48,21 +48,15 @@ jobs:
           git fetch --force --tags
 
           requested_tag="${REQUESTED_TAG#refs/tags/}"
-          source_tag=""
-          for candidate in "${requested_tag}" "${requested_tag#v}"; do
-            if git show-ref --verify --quiet "refs/tags/${candidate}"; then
-              source_tag="${candidate}"
-              break
-            fi
-          done
-          if [[ -z "${source_tag}" ]]; then
-            echo "::error::Release tag '${REQUESTED_TAG}' does not exist."
+          source_tag="${requested_tag#v}"
+          if ! git show-ref --verify --quiet "refs/tags/${source_tag}"; then
+            echo "::error::V-less release source tag '${source_tag}' does not exist."
             exit 1
           fi
 
           release_commit="$(git rev-list -n 1 "${source_tag}")"
           release_version="${source_tag#v}"
-          tag_name="v${release_version}"
+          tag_name="${source_tag}"
           if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Unsupported release tag '${source_tag}'."
             exit 1
@@ -333,6 +327,7 @@ jobs:
         run: |
           set -euo pipefail
           release_title="v${RELEASE_VERSION}"
+          legacy_tag="v${RELEASE_VERSION}"
           # Keep the installer release asset aligned with the full tag version.
           # This preserves prerelease/patch-channel suffixes such as
           # -alpha.1, -beta.2, or -stable.3, while plain stable tags fall back
@@ -350,9 +345,24 @@ jobs:
             mv -f "${setup_assets[0]}" "${versioned_setup}"
           fi
 
+          release_match="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" |
+              jq -s \
+                --arg source_tag "${TAG_NAME}" \
+                --arg legacy_tag "${legacy_tag}" \
+                '[
+                  .[] | .[]?
+                  | select(.tag_name == $source_tag or .tag_name == $legacy_tag)
+                ]
+                | sort_by(.tag_name != $source_tag)
+                | first // {}'
+          )"
+          release_id="$(jq -r '.id // empty' <<< "${release_match}")"
+          publish_tag="$(jq -r --arg source_tag "${TAG_NAME}" '.tag_name // $source_tag' <<< "${release_match}")"
+
           release_payload="$(
             jq -n \
-              --arg tag_name "${TAG_NAME}" \
+              --arg tag_name "${publish_tag}" \
               --arg target_commitish "${RELEASE_COMMIT}" \
               --arg name "${release_title}" \
               --rawfile body "${NOTES_FILE}" \
@@ -368,12 +378,6 @@ jobs:
                 prerelease: $prerelease,
                 make_latest: $make_latest
               }'
-          )"
-
-          release_id="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-              --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id" |
-              head -n 1
           )"
 
           if [[ -n "${release_id}" ]]; then
@@ -395,13 +399,13 @@ jobs:
           release_id="$(jq -r '.id // empty' <<< "${release_json}")"
           upload_url="$(jq -r '.upload_url // "" | split("{")[0]' <<< "${release_json}")"
           if [[ -z "${release_id}" || -z "${upload_url}" ]]; then
-            echo "::error::Failed to resolve release id/upload URL for ${TAG_NAME}."
+            echo "::error::Failed to resolve release id/upload URL for ${publish_tag}."
             exit 1
           fi
 
           release_url="$(jq -r '.html_url // empty' <<< "${release_json}")"
           if [[ -z "${release_url}" ]]; then
-            echo "::error::Failed to resolve release URL for ${TAG_NAME}."
+            echo "::error::Failed to resolve release URL for ${publish_tag}."
             exit 1
           fi
 

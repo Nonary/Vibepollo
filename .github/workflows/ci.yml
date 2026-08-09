@@ -119,9 +119,6 @@ jobs:
                 return notes_path
             return None
 
-          def canonical_release_tag(tag):
-            return tag if tag.startswith("v") else f"v{tag}"
-
           event_name = os.environ["EVENT_NAME"]
           if event_name not in {"push", "workflow_dispatch"}:
             skip("Release gate only applies to push and manual workflow_dispatch events.")
@@ -144,12 +141,19 @@ jobs:
 
           valid_candidates = []
           for tag in candidate_tags:
+            if tag.startswith("v"):
+              print(f"Skipping {tag}: release source tags must be v-less.")
+              continue
             key = version_key(tag)
             if key is None:
               continue
-            release_tag = canonical_release_tag(tag)
-            if tag in release_tags or release_tag in release_tags:
-              print(f"Skipping {tag}: release already exists as {release_tag}.")
+            legacy_tag = f"v{tag}"
+            existing_release_tag = next(
+              (candidate for candidate in (tag, legacy_tag) if candidate in release_tags),
+              None,
+            )
+            if existing_release_tag is not None:
+              print(f"Skipping {tag}: release already exists as {existing_release_tag}.")
               continue
             comparable_releases = [
               release_key for release_key in release_versions
@@ -177,7 +181,10 @@ jobs:
             if notes_file is None:
               print(f"Skipping {tag}: no exact matching release_notes file in the tag commit.")
               continue
-            valid_candidates.append((key, release_tag, notes_file, release_commit))
+            # Preserve the exact source tag. Release titles and artifact names may
+            # use a display-only v prefix, but the GitHub Release must stay attached
+            # to the existing tag instead of asking the API to synthesize another.
+            valid_candidates.append((key, tag, notes_file, release_commit))
 
           if not valid_candidates:
             skip("No unreleased newer tag with exact matching release notes was found.")

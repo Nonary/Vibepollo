@@ -40,6 +40,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertIn("Leave \\`build_run_id\\` empty", workflow_text)
         self.assertIn("optional recovery override", workflow_text)
+        self.assertIn('if tag.startswith("v"):', workflow_text)
+        self.assertIn("release source tags must be v-less", workflow_text)
+        self.assertIn(
+            "valid_candidates.append((key, tag, notes_file, release_commit))",
+            workflow_text,
+        )
+        self.assertNotIn("def canonical_release_tag", workflow_text)
 
     def test_manual_workflow_auto_resolves_an_exact_valid_build(self) -> None:
         workflow = load_workflow("sign-release.yml")
@@ -68,6 +75,9 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertIn("Vibepollo.msi", workflow_text)
         self.assertIn("windows-versioninfo-Windows", workflow_text)
+        self.assertIn('source_tag="${requested_tag#v}"', workflow_text)
+        self.assertIn('tag_name="${source_tag}"', workflow_text)
+        self.assertNotIn('tag_name="v${release_version}"', workflow_text)
         self.assertEqual(
             signing_inputs["artifact_source_run_id"],
             "${{ needs.resolve_release.outputs.build_run_id }}",
@@ -79,6 +89,14 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "600",
         )
         self.assertIn("release", jobs)
+        self.assertEqual(
+            signing_inputs["release_tag"],
+            "${{ needs.resolve_release.outputs.tag_name }}",
+        )
+        self.assertIn('--arg source_tag "${TAG_NAME}"', workflow_text)
+        self.assertIn('--arg legacy_tag "${legacy_tag}"', workflow_text)
+        self.assertIn('--arg tag_name "${publish_tag}"', workflow_text)
+        self.assertIn(".tag_name // $source_tag", workflow_text)
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"

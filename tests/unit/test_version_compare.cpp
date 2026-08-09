@@ -12,6 +12,12 @@ TEST(VersionCompareTest, StableRespinsSortAbovePlainRelease) {
   EXPECT_GT(version_compare::compare_semver("1.14.14-stable.1", "1.14.14"), 0);
 }
 
+TEST(VersionCompareTest, VLessReleaseTagsRemainCompatibleWithLegacyPrefixedTags) {
+  EXPECT_EQ(version_compare::compare_semver("v1.18.4", "1.18.4"), 0);
+  EXPECT_LT(version_compare::compare_semver("v1.18.4", "1.18.4-stable.2"), 0);
+  EXPECT_GT(version_compare::compare_semver("1.18.4-stable.2", "v1.18.4"), 0);
+}
+
 TEST(VersionCompareTest, StandardPrereleasesStayBelowRelease) {
   EXPECT_LT(version_compare::compare_semver("1.14.14-alpha.1", "1.14.14"), 0);
   EXPECT_LT(version_compare::compare_semver("1.14.14-beta.1", "1.14.14"), 0);
