@@ -168,6 +168,7 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             "mingw-w64-${{ matrix.toolchain }}-onevpl",
             "mingw-w64-${{ matrix.toolchain }}-openssl",
             "mingw-w64-${{ matrix.toolchain }}-opus",
+            "mingw-w64-${{ matrix.toolchain }}-sqlite3",
             "mingw-w64-${{ matrix.toolchain }}-tools",
         )
         for package in packages:
