@@ -19,6 +19,11 @@ on:
         required: false
         type: string
         default: ''
+      release_draft:
+        description: Create or update the signed GitHub release as an unpublished draft for manual review.
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: "sign-release-${{ inputs.release_tag }}"
@@ -555,6 +560,7 @@ jobs:
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
           PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
+          RELEASE_DRAFT: ${{ inputs.release_draft }}
           RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
           TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
         run: |
@@ -593,14 +599,19 @@ jobs:
           release_id="$(jq -r '.id // empty' <<< "${release_match}")"
           publish_tag="$(jq -r --arg source_tag "${TAG_NAME}" '.tag_name // $source_tag' <<< "${release_match}")"
 
+          release_make_latest="${MAKE_LATEST}"
+          if [[ "${RELEASE_DRAFT}" == "true" ]]; then
+            release_make_latest=false
+          fi
+
           release_payload="$(
             jq -n \
               --arg tag_name "${publish_tag}" \
               --arg name "${release_title}" \
               --rawfile body "${NOTES_FILE}" \
-              --argjson draft false \
+              --argjson draft "${RELEASE_DRAFT}" \
               --argjson prerelease "${PRERELEASE}" \
-              --arg make_latest "${MAKE_LATEST}" \
+              --arg make_latest "${release_make_latest}" \
               '{
                 tag_name: $tag_name,
                 name: $name,
@@ -669,6 +680,7 @@ jobs:
           done
 
       - name: Close fixed issues for release
+        if: inputs.release_draft == false
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           RELEASE_ID: ${{ steps.create-release.outputs.release_id }}

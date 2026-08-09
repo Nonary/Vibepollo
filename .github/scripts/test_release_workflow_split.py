@@ -77,6 +77,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("windows-versioninfo-Windows", workflow_text)
         self.assertEqual(dispatch_inputs["signed_run_id"]["required"], "false")
         self.assertIn("finalized signed artifacts", dispatch_inputs["signed_run_id"]["description"])
+        self.assertEqual(dispatch_inputs["release_draft"]["type"], "boolean")
+        self.assertEqual(dispatch_inputs["release_draft"]["default"], "false")
         self.assertIn('source_tag="${requested_tag#v}"', workflow_text)
         self.assertIn('tag_name="${source_tag}"', workflow_text)
         self.assertNotIn('tag_name="v${release_version}"', workflow_text)
@@ -129,6 +131,14 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             '[[ "${asset_name}" == "release-provenance.json" ]] && continue',
             workflow_text,
         )
+
+        release_steps = jobs["release"]["steps"]
+        close_issues = next(
+            step for step in release_steps if step["name"] == "Close fixed issues for release"
+        )
+        self.assertEqual(close_issues["if"], "inputs.release_draft == false")
+        self.assertIn('--argjson draft "${RELEASE_DRAFT}"', workflow_text)
+        self.assertIn('if [[ "${RELEASE_DRAFT}" == "true" ]]', workflow_text)
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"
