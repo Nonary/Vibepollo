@@ -452,13 +452,13 @@ jobs:
           fi
 
           mkdir -p build
-          # Unit tests are part of every configured project build, including release artifacts.
+          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.
           cmake \
             -B build \
             -G Ninja \
             -S . \
             -DBUILD_WERROR=ON \
-            -DBUILD_TESTS=ON \
+            -DBUILD_TESTS=${{ inputs.build_tests && 'ON' || 'OFF' }} \
             -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=OFF \
             -DBUILD_VIRTUALDISPLAY_PROBE=OFF \
             -DBUILD_VIRTUALDISPLAY_TOOLS=OFF \
