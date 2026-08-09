@@ -7,6 +7,7 @@
     "dev": "vite",
     "tokens": "node ./scripts/generate-tokens.mjs",
     "build": "npm run tokens && vue-tsc --noEmit -p tsconfig.app.json && vite build",
+    "test:v2-parity": "node --experimental-strip-types scripts/v2-parity.test.ts",
     "preview": "vite preview",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

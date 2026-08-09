@@ -7,7 +7,8 @@ export type SettingsFieldKind =
   | 'integration-path'
   | 'textarea'
   | 'mode-remapping'
-  | 'display-recovery';
+  | 'display-recovery'
+  | 'command-preparations';
 
 export interface SettingsOption {
   labelKey: string;
@@ -201,7 +202,7 @@ const displayRecovery = (): SettingsField => ({
 });
 
 const virtualDisplayOptions = [
-  option('disabled', 'ui.settings.options.virtual_display_mode.disabled'),
+  option('disabled', 'ui.settings.options.virtual_display_mode.physical'),
   option('per_client', 'ui.settings.options.virtual_display_mode.per_client'),
   option('shared', 'ui.settings.options.virtual_display_mode.shared'),
 ];
@@ -294,6 +295,51 @@ const everydayDisplayFields = (): SettingsField[] => [
     descriptionKey: 'ui.settings.fields.virtual_display_mode.description',
     recommended: true,
   }),
+  select(
+    'dd_configuration_option',
+    [
+      option('verify_only', 'ui.settings.options.display_preparation.verify_only'),
+      option('ensure_active', 'ui.settings.options.display_preparation.ensure_active'),
+      option('ensure_primary', 'ui.settings.options.display_preparation.ensure_primary'),
+      option('ensure_only_display', 'ui.settings.options.display_preparation.ensure_only'),
+      option('disabled', '_common.disabled'),
+    ],
+    {
+      labelKey: 'config.dd_configuration_option',
+      descriptionKey: 'ui.settings.fields.dd_configuration_option.description',
+    },
+  ),
+  select('dd_resolution_option', [
+    option('auto', 'ui.settings.options.resolution.auto'),
+    option('disabled', 'ui.settings.options.resolution.preserve'),
+    option('manual', 'ui.settings.options.resolution.manual'),
+  ]),
+  text('dd_manual_resolution', {
+    placeholderKey: 'ui.settings.placeholders.resolution',
+    visibleWhen: { key: 'dd_resolution_option', equals: 'manual' },
+  }),
+  select('dd_refresh_rate_option', [
+    option('auto', 'ui.settings.options.refresh.auto'),
+    option('prefer_highest', 'ui.settings.options.refresh.highest'),
+    option('disabled', 'ui.settings.options.refresh.preserve'),
+    option('manual', 'ui.settings.options.refresh.manual'),
+  ]),
+  number('dd_manual_refresh_rate', {
+    min: 1,
+    max: 1000,
+    step: 0.001,
+    placeholderKey: 'ui.settings.placeholders.refresh_rate',
+    visibleWhen: { key: 'dd_refresh_rate_option', equals: 'manual' },
+  }),
+  select('dd_hdr_option', [
+    option('auto', 'ui.settings.options.hdr.auto'),
+    option('disabled', 'ui.settings.options.hdr.preserve'),
+  ]),
+  select('dd_hdr_request_override', [
+    option('auto', 'ui.settings.options.hdr_request.auto'),
+    option('force_on', 'ui.settings.options.hdr_request.force_on'),
+    option('force_off', 'ui.settings.options.hdr_request.force_off'),
+  ]),
 ];
 
 const virtualDisplayCustomizationFields = (): SettingsField[] => [
@@ -694,6 +740,18 @@ export const settingsCategories: SettingsCategory[] = [
         ],
       },
       {
+        id: 'host_commands',
+        fields: [
+          {
+            key: 'global_prep_cmd',
+            kind: 'command-preparations',
+            labelKey: 'config.global_prep_cmd',
+            descriptionKey: 'config.global_prep_cmd_desc',
+            stacked: true,
+          },
+        ],
+      },
+      {
         id: 'host_history',
         fields: [
           boolean('session_history_enabled'),
@@ -814,6 +872,7 @@ export const settingsDefaults: Record<string, unknown> = {
   system_tray: true,
   notify_pre_releases: false,
   min_log_level: 2,
+  global_prep_cmd: [],
   session_history_enabled: true,
   session_history_ttl_days: 0,
   session_history_db_size_limit_mb: 0,

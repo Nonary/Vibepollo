@@ -2126,7 +2126,9 @@
     "section_history": "Session History",
     "section_history_desc": "Persistent per-session records stored in a local database, independent of live sampling.",
     "history_title": "Host History Charts",
-    "history_empty": "No history yet. Data points appear as host stats are sampled."
+    "history_empty": "No history yet. Data points appear as host stats are sampled.",
+    "current": "Current",
+    "peak": "Peak"
   },
   "validation": {
     "save_failed": "Save failed. Check fields for errors.",

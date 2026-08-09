@@ -16,10 +16,12 @@ import MetricChart from '@/components/stats/MetricChart.vue';
 import MetricGauge from '@/components/stats/MetricGauge.vue';
 import SessionDetailDialog from '@/components/stats/SessionDetailDialog.vue';
 import SessionPerformanceCharts from '@/components/stats/SessionPerformanceCharts.vue';
+import HostComputeChart from '@/components/stats/HostComputeChart.vue';
 import type { PerformancePoint } from '@/components/stats/types';
 import type { HostInfo, HostStatsSnapshot } from '@/types/host';
 import type { RTSPSession, SessionSummary, WebRTCSession } from '@/types/sessions';
 import { formatBitrate, formatBytes, formatDuration, formatRelativeTime } from '@/utils/format';
+import { downsampleHostHistory } from '@/utils/v2Parity';
 
 const { locale, t } = useI18n();
 
@@ -45,7 +47,7 @@ interface CounterSnapshot {
 }
 
 interface TimedHostStats extends HostStatsSnapshot {
-  collectedAt: number;
+  timestamp: number;
 }
 
 interface ActiveVisualSession {
@@ -165,12 +167,15 @@ const stopConfirmDescription = computed(() => {
     : t('ui.sessions.confirm.stop_rtsp_description');
 });
 
-const cpuHistory = computed(() => hostHistory.value.map((point) => point.cpu_percent));
-const gpuHistory = computed(() => hostHistory.value.map((point) => point.gpu_percent));
-const encoderHistory = computed(() => hostHistory.value.map((point) => point.gpu_encoder_percent));
 const networkHistory = computed(() =>
   hostHistory.value.map((point) => (point.net_tx_bps ?? 0) / 1_000_000),
 );
+const comparableHostHistory = computed(() => downsampleHostHistory(hostHistory.value));
+const hostCurrent = computed(() => ({
+  cpu: hostStats.value?.cpu_percent ?? null,
+  gpu: hostStats.value?.gpu_percent ?? null,
+  encoder: hostStats.value?.gpu_encoder_percent ?? null,
+}));
 
 function percent(value: number | undefined): string {
   return Number.isFinite(value) ? `${Math.round(value ?? 0)}%` : '—';
@@ -297,10 +302,10 @@ async function refresh(silent = false): Promise<void> {
     const infoResult = results[4] as PromiseSettledResult<HostInfo>;
     if (statsResult.status === 'fulfilled') {
       hostStats.value = statsResult.value;
-      const collectedAt = Date.now();
-      const cutoff = collectedAt - retentionMs.value;
-      hostHistory.value = [...hostHistory.value, { ...statsResult.value, collectedAt }]
-        .filter((candidate) => candidate.collectedAt >= cutoff)
+      const timestamp = Date.now();
+      const cutoff = timestamp - retentionMs.value;
+      hostHistory.value = [...hostHistory.value, { ...statsResult.value, timestamp }]
+        .filter((candidate) => candidate.timestamp >= cutoff)
         .slice(-maxHistoryPoints.value);
     }
     if (infoResult.status === 'fulfilled') hostInfo.value = infoResult.value;
@@ -552,29 +557,10 @@ onBeforeUnmount(() => {
           }}</span>
         </div>
         <div v-if="hostHistory.length" class="host-chart-grid">
-          <MetricChart
+          <HostComputeChart
             :title="t('sessions.chart_host_cpu')"
-            :value="percent(hostStats?.cpu_percent)"
-            :values="cpuHistory"
-            unit="%"
-            :ceiling="100"
-            color="var(--vs-color-status-info)"
-          />
-          <MetricChart
-            :title="t('sessions.chart_host_gpu')"
-            :value="percent(hostStats?.gpu_percent)"
-            :values="gpuHistory"
-            unit="%"
-            :ceiling="100"
-            color="var(--vs-color-status-success)"
-          />
-          <MetricChart
-            :title="t('sessions.chart_host_gpu_encoder')"
-            :value="percent(hostStats?.gpu_encoder_percent)"
-            :values="encoderHistory"
-            unit="%"
-            :ceiling="100"
-            color="var(--vs-color-data-accent)"
+            :points="comparableHostHistory"
+            :current="hostCurrent"
           />
           <MetricChart
             :title="t('sessions.chart_host_net_tx')"

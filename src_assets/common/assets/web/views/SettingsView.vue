@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 import { apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
+import GlobalPrepCommands from '@/components/settings/GlobalPrepCommands.vue';
 import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPath.vue';
 import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
@@ -184,14 +185,11 @@ const physicalDisplaySelected = computed(
   () => String(values.virtual_display_mode ?? '') === 'disabled',
 );
 
+const hostPlatform = computed(() => String(hostMetadata.value.platform ?? ''));
+
 const physicalDisplayDescription = computed(() =>
   t(isWindowsHost.value ? 'config.output_name_desc_windows' : 'config.output_name_desc_unix'),
 );
-
-const physicalDisplayConfigurationOptions = computed(() => {
-  const field = fieldByKey('dd_configuration_option');
-  return field ? optionsFor(field) : [];
-});
 
 const displayDeviceOptions = computed(() => {
   const seen = new Set<string>();
@@ -901,6 +899,13 @@ onMounted(() => void load());
                     @update:prefer-golden="values.dd_always_restore_from_golden = $event"
                   />
 
+                  <GlobalPrepCommands
+                    v-else-if="field.kind === 'command-preparations'"
+                    :model-value="values[field.key]"
+                    :platform="hostPlatform"
+                    @update:model-value="values[field.key] = $event"
+                  />
+
                   <SettingsIntegrationPath
                     v-else-if="field.kind === 'integration-path'"
                     :kind="field.integration ?? 'rtss'"
@@ -995,30 +1000,6 @@ onMounted(() => void load());
                         {{ displayDevicesError }}
                       </span>
                     </div>
-                  </div>
-                  <div class="settings-row settings-physical-display__row">
-                    <div class="settings-row__copy">
-                      <span class="settings-row__label">
-                        {{ t('config.dd_configuration_option') }}
-                      </span>
-                      <span class="settings-row__description">
-                        {{ t('ui.settings.fields.dd_configuration_option.description') }}
-                      </span>
-                    </div>
-                    <select
-                      id="setting-dd_configuration_option"
-                      class="vs-select"
-                      :value="String(values.dd_configuration_option ?? '')"
-                      @change="updateValue('dd_configuration_option', $event)"
-                    >
-                      <option
-                        v-for="option in physicalDisplayConfigurationOptions"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ optionText(option, 'dd_configuration_option') }}
-                      </option>
-                    </select>
                   </div>
                 </div>
               </div>

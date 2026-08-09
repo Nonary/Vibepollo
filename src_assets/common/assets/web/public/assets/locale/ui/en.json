@@ -1710,6 +1710,7 @@
         },
         "virtual_display_mode": {
           "disabled": "Physical display",
+          "physical": "Physical display",
           "per_client": "Virtual display for each client",
           "shared": "One shared virtual display"
         },
