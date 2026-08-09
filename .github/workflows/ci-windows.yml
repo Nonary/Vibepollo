@@ -798,6 +798,46 @@ jobs:
       - name: Checkout signing helper
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      - name: Download deferred unsigned MSI for SignPath
+        if: inputs.artifact_source_run_id != ''
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          artifact-ids: ${{ needs.release_artifacts.outputs.unsigned_msi_signpath_artifact_id }}
+          github-token: ${{ github.token }}
+          path: deferred-signpath-msi
+          run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
+
+      - name: Re-upload deferred unsigned MSI for SignPath
+        if: inputs.artifact_source_run_id != ''
+        id: upload-deferred-unsigned-msi
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: deferred-unsigned-msi-Windows
+          path: deferred-signpath-msi/${{ needs.release_artifacts.outputs.msi_name }}
+          if-no-files-found: error
+          retention-days: 1
+          archive: false
+          overwrite: true
+
+      - name: Select current-run SignPath MSI artifact
+        id: select-signpath-msi-artifact
+        shell: pwsh
+        env:
+          CURRENT_ARTIFACT_ID: ${{ needs.release_artifacts.outputs.unsigned_msi_signpath_artifact_id }}
+          DEFERRED_ARTIFACT_ID: ${{ steps.upload-deferred-unsigned-msi.outputs.artifact-id }}
+          DEFERRED_BUILD: ${{ inputs.artifact_source_run_id != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactId = if ($env:DEFERRED_BUILD -eq 'true') {
+            $env:DEFERRED_ARTIFACT_ID
+          } else {
+            $env:CURRENT_ARTIFACT_ID
+          }
+          if ([string]::IsNullOrWhiteSpace($artifactId)) {
+            throw 'The current-run SignPath MSI artifact ID was not resolved.'
+          }
+          "artifact_id=$artifactId" >> $env:GITHUB_OUTPUT
+
       - name: Submit and wait for SignPath MSI signing request
         if: env.SIGNPATH_ENABLED == 'true'
         uses: ./.github/actions/signpath-submit-and-wait
@@ -807,7 +847,7 @@ jobs:
           project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ env.SIGNPATH_MSI_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.release_artifacts.outputs.unsigned_msi_signpath_artifact_id }}
+          github-artifact-id: ${{ steps.select-signpath-msi-artifact.outputs.artifact_id }}
           github-token: ${{ github.token }}
           output-artifact-path: signed-signpath-msi/${{ needs.release_artifacts.outputs.msi_name }}
           timeout-seconds: ${{ inputs.signpath_wait_for_completion_timeout_in_seconds }}

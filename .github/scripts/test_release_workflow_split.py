@@ -93,6 +93,23 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("resolve_source_artifacts", jobs)
         self.assertIn("release_artifacts", jobs)
         self.assertIn("inputs.build_only == false", jobs["sign_windows_msi"]["if"])
+        signing_steps = {
+            step["name"]: step for step in jobs["sign_windows_msi"]["steps"]
+        }
+        deferred_upload = signing_steps[
+            "Re-upload deferred unsigned MSI for SignPath"
+        ]
+        self.assertEqual(
+            deferred_upload["if"], "inputs.artifact_source_run_id != ''"
+        )
+        self.assertEqual(deferred_upload["with"]["archive"], "false")
+        submit_signing = signing_steps[
+            "Submit and wait for SignPath MSI signing request"
+        ]
+        self.assertEqual(
+            submit_signing["with"]["github-artifact-id"],
+            "${{ steps.select-signpath-msi-artifact.outputs.artifact_id }}",
+        )
         for job_name in (
             "sign_windows_msi",
             "package_windows",
