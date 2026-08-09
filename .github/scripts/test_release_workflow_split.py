@@ -97,6 +97,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn('--arg legacy_tag "${legacy_tag}"', workflow_text)
         self.assertIn('--arg tag_name "${publish_tag}"', workflow_text)
         self.assertIn(".tag_name // $source_tag", workflow_text)
+        self.assertNotIn("target_commitish", workflow_text)
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"

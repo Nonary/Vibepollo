@@ -321,7 +321,6 @@ jobs:
           NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           PRERELEASE: ${{ steps.release-metadata.outputs.prerelease }}
           PRODUCT_NAME: ${{ steps.release-metadata.outputs.product_name }}
-          RELEASE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
           RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
           TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
         run: |
@@ -363,7 +362,6 @@ jobs:
           release_payload="$(
             jq -n \
               --arg tag_name "${publish_tag}" \
-              --arg target_commitish "${RELEASE_COMMIT}" \
               --arg name "${release_title}" \
               --rawfile body "${NOTES_FILE}" \
               --argjson draft false \
@@ -371,7 +369,6 @@ jobs:
               --arg make_latest "${MAKE_LATEST}" \
               '{
                 tag_name: $tag_name,
-                target_commitish: $target_commitish,
                 name: $name,
                 body: $body,
                 draft: $draft,
