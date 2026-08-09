@@ -53,6 +53,7 @@ runs:
         TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
       run: |
         $ErrorActionPreference = 'Stop'
+        $timeoutSeconds = 0
         if (-not [int]::TryParse($env:TIMEOUT_SECONDS, [ref]$timeoutSeconds) -or $timeoutSeconds -lt 5) {
           throw "timeout-seconds must be an integer of at least 5; got '$($env:TIMEOUT_SECONDS)'."
         }

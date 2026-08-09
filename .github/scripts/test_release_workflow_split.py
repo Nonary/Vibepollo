@@ -135,6 +135,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertTrue(polling_action_path.is_file())
         action_text = polling_action_path.read_text(encoding="utf-8")
         self.assertIn("wait-for-completion: false", action_text)
+        self.assertIn("$timeoutSeconds = 0", action_text)
         self.assertIn("Start-Sleep -Seconds 5", action_text)
         self.assertIn("AddSeconds($timeoutSeconds)", action_text)
 
