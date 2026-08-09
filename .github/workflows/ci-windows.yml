@@ -313,6 +313,10 @@ jobs:
         uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238  # v6.2.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            src_assets/common/assets/web/package-lock.json
+            src_assets/common/assets/web-legacy/package-lock.json
 
       - name: NodeJS Path
         shell: pwsh

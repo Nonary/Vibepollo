@@ -57,6 +57,10 @@ function(_wv_prerelease_ordinal version output_var)
             math(EXPR _ordinal "30 + ${_pre_num}")
         elseif("${_pre_tag}" STREQUAL "rc")
             math(EXPR _ordinal "60 + ${_pre_num}")
+        elseif("${_pre_tag}" STREQUAL "stable")
+            # Keep stable respins in the stable channel. The timed revision
+            # orders successive stable.N executable builds.
+            set(_ordinal 99)
         else()
             set(_ordinal 90)
         endif()

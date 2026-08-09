@@ -2877,7 +2877,7 @@ namespace VibepolloInstaller {
     // suffix (the ARP DisplayVersion written by new installers, e.g.
     // "1.18.0-beta.2"), into the ordinal-encoded space used by new-scheme MSI
     // ProductVersions: third field = patch * 100 + ordinal, where alpha.N = N,
-    // beta.N = 30 + N, rc.N = 60 + N, stable = 99 (mirrors
+    // beta.N = 30 + N, rc.N = 60 + N, stable[.N] = 99 (mirrors
     // cmake/packaging/windows_wix.cmake). Keeps comparisons between ARP
     // registrations and MSI ProductVersions in one consistent ordering.
     // Four-part numeric strings are already ProductVersions and pass through
@@ -2950,6 +2950,11 @@ namespace VibepolloInstaller {
       }
       if (string.Equals(tag, "rc", StringComparison.Ordinal)) {
         return 60 + number;
+      }
+      if (string.Equals(tag, "stable", StringComparison.Ordinal)) {
+        // Stable respins share the stable ordinal; sortable ProductCodes order
+        // distinct MSI packages within that channel.
+        return 99;
       }
       return 90;
     }

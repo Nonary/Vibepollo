@@ -40,16 +40,19 @@ if(DEFINED GITHUB_CLONE_URL AND (SUNSHINE_REPO_OWNER STREQUAL "Nonary" OR SUNSHI
     endif()
 endif()
 
-# Check if env vars are defined before attempting to access them, variables will be defined even if blank
-if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))  # cmake-lint: disable=W0106
-    if((DEFINED ENV{BRANCH}) AND (NOT $ENV{BUILD_VERSION} STREQUAL ""))
-        # If BRANCH is defined and BUILD_VERSION is not empty, then we are building from CI
-        # If BRANCH is master we are building a push/release build
-        MESSAGE("Got from CI '$ENV{BRANCH}' branch and version '$ENV{BUILD_VERSION}'")
-        set(PROJECT_VERSION $ENV{BUILD_VERSION})
-        string(REGEX REPLACE "^v" "" PROJECT_VERSION ${PROJECT_VERSION})  # remove the v prefix if it exists
-        set(CMAKE_PROJECT_VERSION ${PROJECT_VERSION})  # cpack will use this to set the binary versions
+# BUILD_VERSION is the authoritative version input.  BRANCH is optional build
+# context and must not decide whether an explicit release version is honored.
+# In particular, later build targets may re-run CMake without inheriting a
+# step-local BRANCH value while retaining the job-wide BUILD_VERSION.
+if(DEFINED ENV{BUILD_VERSION} AND NOT "$ENV{BUILD_VERSION}" STREQUAL "")  # cmake-lint: disable=W0106
+    if(DEFINED ENV{BRANCH} AND NOT "$ENV{BRANCH}" STREQUAL "")
+        message("Got explicit build version '$ENV{BUILD_VERSION}' for '$ENV{BRANCH}'")
+    else()
+        message("Got explicit build version '$ENV{BUILD_VERSION}'")
     endif()
+    set(PROJECT_VERSION "$ENV{BUILD_VERSION}")
+    string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION}")  # remove the v prefix if it exists
+    set(CMAKE_PROJECT_VERSION "${PROJECT_VERSION}")  # cpack will use this to set the binary versions
 else()
     # Resolve version from environment tag or git tags
     find_package(Git)

@@ -29,8 +29,9 @@
              (afterInstallInitialize), so a failed install rolls back to the
              previous version instead of leaving neither installed.
              ProductVersion is ordinal-encoded (see windows_wix.cmake) so
-             prerelease/stable builds of the same patch are strictly ordered
-             and downgrades only happen when genuinely requested. -->
+             prerelease channels are ordered numerically. Stable respins share
+             the stable ordinal and are ordered by their sortable ProductCodes,
+             so downgrades only happen when genuinely requested. -->
         <MajorUpgrade
             Schedule="afterInstallInitialize"
             AllowDowngrades="yes"/>

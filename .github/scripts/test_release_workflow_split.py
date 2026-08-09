@@ -274,5 +274,62 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("source_build_run_id", workflow_text)
 
 
+class WindowsWorkflowEfficiencyTest(unittest.TestCase):
+    def test_web_dependency_install_does_not_invalidate_cmake_globs(self) -> None:
+        web_targets = (ROOT / "cmake" / "targets" / "web.cmake").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotRegex(web_targets, r"(?m)^\s*CONFIGURE_DEPENDS\s*$")
+        self.assertEqual(web_targets.count("--prefer-offline"), 2)
+
+    def test_explicit_build_version_does_not_require_branch_context(self) -> None:
+        version_script = (ROOT / "cmake" / "prep" / "build_version.cmake").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'if(DEFINED ENV{BUILD_VERSION} AND NOT "$ENV{BUILD_VERSION}" STREQUAL "")',
+            version_script,
+        )
+        self.assertNotIn(
+            "if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))",
+            version_script,
+        )
+
+    def test_stable_respins_keep_the_stable_windows_version_ordinal(self) -> None:
+        wix_version = (ROOT / "cmake" / "packaging" / "windows_wix.cmake").read_text(
+            encoding="utf-8"
+        )
+        executable_version = (
+            ROOT / "cmake" / "prep" / "emit_windows_versioninfo.cmake"
+        ).read_text(encoding="utf-8")
+        bootstrapper = (
+            ROOT / "packaging" / "windows" / "bootstrapper" / "VibeshineInstaller.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'elseif(_pre_tag STREQUAL "stable")\n'
+            '    # Stable respins remain in the stable channel. Their sortable ProductCodes\n'
+            '    # distinguish stable.N packages that share this MSI ProductVersion.\n'
+            '    set(_WIX_PRERELEASE_ORDINAL 99)',
+            wix_version,
+        )
+        self.assertIn(
+            'elseif("${_pre_tag}" STREQUAL "stable")\n'
+            '            # Keep stable respins in the stable channel. The timed revision\n'
+            '            # orders successive stable.N executable builds.\n'
+            '            set(_ordinal 99)',
+            executable_version,
+        )
+        self.assertIn(
+            'if (string.Equals(tag, "stable", StringComparison.Ordinal)) {\n'
+            '        // Stable respins share the stable ordinal; sortable ProductCodes order\n'
+            '        // distinct MSI packages within that channel.\n'
+            '        return 99;',
+            bootstrapper,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
