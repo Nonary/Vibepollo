@@ -96,6 +96,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         signing_steps = {
             step["name"]: step for step in jobs["sign_windows_msi"]["steps"]
         }
+        deferred_download = signing_steps[
+            "Download deferred unsigned MSI for SignPath"
+        ]
+        self.assertEqual(
+            deferred_download["with"]["artifact-ids"],
+            "${{ needs.release_artifacts.outputs.unsigned_msi_artifact_id }}",
+        )
         deferred_upload = signing_steps[
             "Re-upload deferred unsigned MSI for SignPath"
         ]
