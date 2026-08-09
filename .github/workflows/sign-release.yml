@@ -13,6 +13,12 @@ on:
         description: Optional recovery override. Leave empty to select the newest valid successful CI tag build for this exact release tag and commit.
         required: false
         type: string
+        default: ''
+      signed_run_id:
+        description: Optional recovery override for a prior run with finalized signed artifacts. Leave empty to auto-reuse an exact provenance match when available.
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: "sign-release-${{ inputs.release_tag }}"
@@ -26,6 +32,8 @@ jobs:
       build_run_id: ${{ steps.resolve.outputs.build_run_id }}
       release_commit: ${{ steps.resolve.outputs.release_commit }}
       release_version: ${{ steps.resolve.outputs.release_version }}
+      signed_artifact_id: ${{ steps.resolve.outputs.signed_artifact_id }}
+      signed_run_id: ${{ steps.resolve.outputs.signed_run_id }}
       tag_name: ${{ steps.resolve.outputs.tag_name }}
     permissions:
       actions: read
@@ -41,6 +49,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          REQUESTED_SIGNED_RUN_ID: ${{ inputs.signed_run_id }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
@@ -179,10 +188,135 @@ jobs:
             echo "::notice::Auto-resolved exact CI build ${build_run_id} for ${source_tag} at ${release_commit}."
           fi
 
+          signed_artifact_id=""
+          signed_run_is_valid() {
+            local candidate_run_id="$1"
+            local allow_legacy="$2"
+            local artifacts_json
+            local candidate_artifact_id
+            local candidate_provenance_artifact_id
+            local jobs_json
+            local provenance
+            local resolver_job_id
+            local resolver_log
+            local run_json
+            local run_event
+            local run_path
+            local run_repository
+            local run_status
+            local provenance_zip
+
+            if [[ ! "${candidate_run_id}" =~ ^[0-9]+$ || "${candidate_run_id}" == "${GITHUB_RUN_ID}" ]]; then
+              return 1
+            fi
+
+            if ! run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}")"; then
+              return 1
+            fi
+            run_event="$(jq -r '.event // empty' <<< "${run_json}")"
+            run_path="$(jq -r '.path // empty' <<< "${run_json}")"
+            run_repository="$(jq -r '.head_repository.full_name // empty' <<< "${run_json}")"
+            run_status="$(jq -r '.status // empty' <<< "${run_json}")"
+            if [[ "${run_status}" != "completed" || "${run_event}" != "workflow_dispatch" || "${run_repository}" != "${GITHUB_REPOSITORY}" ]]; then
+              return 1
+            fi
+            if [[ "${run_path}" != ".github/workflows/sign-release.yml" && "${run_path}" != ".github/workflows/sign-release.yml@"* ]]; then
+              return 1
+            fi
+
+            artifacts_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/artifacts?per_page=100" | jq -s '{artifacts: [.[].artifacts[]?]}')"
+            mapfile -t candidate_artifact_ids < <(
+              jq -r '[.artifacts[] | select(.name == "build-Windows" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+            )
+            if (( ${#candidate_artifact_ids[@]} != 1 )); then
+              return 1
+            fi
+            candidate_artifact_id="${candidate_artifact_ids[0]}"
+            mapfile -t candidate_provenance_artifact_ids < <(
+              jq -r '[.artifacts[] | select(.name == "release-provenance" and (.expired | not))] | .[].id' <<< "${artifacts_json}"
+            )
+            provenance=""
+            if (( ${#candidate_provenance_artifact_ids[@]} == 1 )); then
+              candidate_provenance_artifact_id="${candidate_provenance_artifact_ids[0]}"
+              provenance_zip="${RUNNER_TEMP}/release-provenance-${candidate_run_id}.zip"
+              if ! gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${candidate_provenance_artifact_id}/zip" > "${provenance_zip}"; then
+                return 1
+              fi
+              provenance="$(unzip -p "${provenance_zip}" release-provenance.json 2>/dev/null || true)"
+            elif (( ${#candidate_provenance_artifact_ids[@]} > 1 )); then
+              return 1
+            fi
+            if [[ -n "${provenance}" ]]; then
+              if ! jq -e \
+                --arg release_tag "${source_tag}" \
+                --arg release_commit "${release_commit}" \
+                --arg source_build_run_id "${build_run_id}" \
+                '.schema_version == 1
+                 and .release_tag == $release_tag
+                 and .release_commit == $release_commit
+                 and .source_build_run_id == $source_build_run_id
+                 and (.assets | type == "object" and length > 0)' \
+                <<< "${provenance}" >/dev/null; then
+                return 1
+              fi
+            elif [[ "${allow_legacy}" == "true" ]]; then
+              # Artifacts created before provenance support are accepted only by
+              # explicit run ID, after validating every successful signing stage
+              # and the resolver's exact tag/build/commit binding from GitHub logs.
+              jobs_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/jobs?per_page=100" | jq -s '{jobs: [.[].jobs[]?]}')"
+              for required_job in \
+                "Sign Windows release / Sign Windows MSI" \
+                "Sign Windows release / Package Windows" \
+                "Sign Windows release / Sign Windows installer" \
+                "Sign Windows release / Finalize Windows artifacts"; do
+                if ! jq -e --arg name "${required_job}" '[.jobs[] | select(.name == $name and .conclusion == "success")] | length == 1' <<< "${jobs_json}" >/dev/null; then
+                  return 1
+                fi
+              done
+              resolver_job_id="$(jq -r '[.jobs[] | select(.name == "Resolve built release" and .conclusion == "success")] | if length == 1 then .[0].id else empty end' <<< "${jobs_json}")"
+              if [[ -z "${resolver_job_id}" ]]; then
+                return 1
+              fi
+              resolver_log="$(gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${resolver_job_id}/logs")"
+              if ! grep -Fq "Release ${source_tag} will resume from CI run ${build_run_id} at ${release_commit}." <<< "${resolver_log}"; then
+                return 1
+              fi
+              echo "::warning::Explicitly reusing legacy signed run ${candidate_run_id}; its successful signing jobs and exact resolver log were validated."
+            else
+              return 1
+            fi
+
+            signed_artifact_id="${candidate_artifact_id}"
+          }
+
+          signed_run_id="${REQUESTED_SIGNED_RUN_ID}"
+          if [[ -n "${signed_run_id}" ]]; then
+            if ! signed_run_is_valid "${signed_run_id}" true; then
+              echo "::error::The supplied signed_run_id is not a finalized signed artifact for ${source_tag}, CI run ${build_run_id}, and commit ${release_commit}."
+              exit 1
+            fi
+            echo "::notice::Reusing explicitly requested finalized signed artifacts from run ${signed_run_id}."
+          else
+            matching_signed_runs="$(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/sign-release.yml/runs?event=workflow_dispatch&status=completed&per_page=100" |
+                jq -rs '[.[] | .workflow_runs[]?] | sort_by([.run_started_at // "", .id]) | reverse | .[].id'
+            )"
+            while IFS= read -r candidate_run_id; do
+              [[ -z "${candidate_run_id}" ]] && continue
+              if signed_run_is_valid "${candidate_run_id}" false; then
+                signed_run_id="${candidate_run_id}"
+                echo "::notice::Auto-reusing provenance-matched signed artifacts from run ${signed_run_id}."
+                break
+              fi
+            done <<< "${matching_signed_runs}"
+          fi
+
           {
             echo "build_run_id=${build_run_id}"
             echo "release_commit=${release_commit}"
             echo "release_version=${release_version}"
+            echo "signed_artifact_id=${signed_artifact_id}"
+            echo "signed_run_id=${signed_run_id}"
             echo "tag_name=${tag_name}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -192,6 +326,7 @@ jobs:
     name: Sign Windows release
     needs:
       - resolve_release
+    if: needs.resolve_release.outputs.signed_run_id == ''
     permissions:
       actions: read
       contents: read
@@ -215,11 +350,110 @@ jobs:
       signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}
       truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
 
+  reuse-windows:
+    name: Reuse signed Windows release
+    needs:
+      - resolve_release
+    if: needs.resolve_release.outputs.signed_run_id != ''
+    permissions:
+      actions: read
+      contents: read
+    runs-on: windows-2022
+    steps:
+      - name: Download finalized signed artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          artifact-ids: ${{ needs.resolve_release.outputs.signed_artifact_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+          run-id: ${{ needs.resolve_release.outputs.signed_run_id }}
+
+      - name: Verify reused signed artifacts and provenance
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
+          RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          SIGNED_RUN_ID: ${{ needs.resolve_release.outputs.signed_run_id }}
+          SOURCE_BUILD_RUN_ID: ${{ needs.resolve_release.outputs.build_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = Join-Path $PWD 'artifacts'
+          $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
+          $assets = @(Get-ChildItem -LiteralPath $artifactRoot -File | Where-Object { $_.Name -ne 'release-provenance.json' })
+          $setups = @($assets | Where-Object { $_.Name -like 'VibepolloSetup*.exe' })
+          if ($setups.Count -ne 1) {
+            throw "Expected exactly one finalized Vibepollo setup executable; found $($setups.Count)."
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $setups[0].FullName
+          if ($null -eq $signature.SignerCertificate -or $signature.Status -ne 'Valid') {
+            throw "Reused setup executable does not have a valid production Authenticode signature (status=$($signature.Status))."
+          }
+
+          if (Test-Path -LiteralPath $manifestPath) {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            if ($manifest.schema_version -ne 1 -or
+                $manifest.release_tag -ne $env:RELEASE_TAG -or
+                $manifest.release_commit -ne $env:RELEASE_COMMIT -or
+                $manifest.source_build_run_id -ne $env:SOURCE_BUILD_RUN_ID) {
+              throw 'Signed artifact provenance does not match this release request.'
+            }
+            $recordedAssets = @($manifest.assets.PSObject.Properties)
+            if ($recordedAssets.Count -ne $assets.Count) {
+              throw 'Signed artifact provenance asset count does not match the downloaded artifact.'
+            }
+            foreach ($recorded in $recordedAssets) {
+              $path = Join-Path $artifactRoot $recorded.Name
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Provenance asset is missing: $($recorded.Name)"
+              }
+              $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualHash -ne ([string]$recorded.Value).ToLowerInvariant()) {
+                throw "Provenance hash mismatch for $($recorded.Name)."
+              }
+            }
+          }
+
+          $assetHashes = [ordered]@{}
+          foreach ($asset in $assets) {
+            $assetHashes[$asset.Name] = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          $provenance = [ordered]@{
+            schema_version = 1
+            release_tag = $env:RELEASE_TAG
+            release_commit = $env:RELEASE_COMMIT
+            source_build_run_id = $env:SOURCE_BUILD_RUN_ID
+            reused_from_run_id = $env:SIGNED_RUN_ID
+            assets = $assetHashes
+          }
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          Write-Host "Reused verified signed artifacts from run $($env:SIGNED_RUN_ID)."
+
+      - name: Upload reusable finalized artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: build-Windows
+          path: artifacts/
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload reusable release provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-provenance
+          path: artifacts/release-provenance.json
+          if-no-files-found: error
+          overwrite: true
+
   release:
     name: Release
     needs:
       - resolve_release
       - build-windows
+      - reuse-windows
+    if: >-
+      ${{ always() && !cancelled() && needs.resolve_release.result == 'success' &&
+          (needs.build-windows.result == 'success' || needs.reuse-windows.result == 'success') }}
     permissions:
       actions: read
       contents: write
@@ -424,6 +658,7 @@ jobs:
           for asset in artifacts/*; do
             [[ -f "${asset}" ]] || continue
             asset_name="$(basename "${asset}")"
+            [[ "${asset_name}" == "release-provenance.json" ]] && continue
             encoded_asset_name="$(jq -rn --arg name "${asset_name}" '$name|@uri')"
             gh api \
               --method POST \

@@ -1242,6 +1242,41 @@ jobs:
 
           Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."
 
+      - name: Record release artifact provenance
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_BUILD_RUN_ID: ${{ needs.release_artifacts.outputs.source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactRoot = Join-Path $PWD 'artifacts'
+          $assetHashes = [ordered]@{}
+          Get-ChildItem -LiteralPath $artifactRoot -File | ForEach-Object {
+            $assetHashes[$_.Name] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          if ($assetHashes.Count -eq 0) {
+            throw 'No finalized release artifacts were found for provenance.'
+          }
+          $provenance = [ordered]@{
+            schema_version = 1
+            release_tag = $env:RELEASE_TAG
+            release_commit = $env:RELEASE_COMMIT
+            source_build_run_id = $env:SOURCE_BUILD_RUN_ID
+            assets = $assetHashes
+          }
+          $manifestPath = Join-Path $artifactRoot 'release-provenance.json'
+          $provenance | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          Write-Host "Recorded release provenance for $($env:RELEASE_TAG) from CI run $($env:SOURCE_BUILD_RUN_ID)."
+
+      - name: Upload release provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: release-provenance
+          path: artifacts/release-provenance.json
+          if-no-files-found: error
+          overwrite: true
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

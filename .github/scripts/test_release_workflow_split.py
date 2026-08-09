@@ -75,6 +75,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertIn("Vibepollo.msi", workflow_text)
         self.assertIn("windows-versioninfo-Windows", workflow_text)
+        self.assertEqual(dispatch_inputs["signed_run_id"]["required"], "false")
+        self.assertIn("finalized signed artifacts", dispatch_inputs["signed_run_id"]["description"])
         self.assertIn('source_tag="${requested_tag#v}"', workflow_text)
         self.assertIn('tag_name="${source_tag}"', workflow_text)
         self.assertNotIn('tag_name="v${release_version}"', workflow_text)
@@ -98,12 +100,42 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn('--arg tag_name "${publish_tag}"', workflow_text)
         self.assertIn(".tag_name // $source_tag", workflow_text)
         self.assertNotIn("target_commitish", workflow_text)
+        self.assertIn("signed_run_is_valid", workflow_text)
+        self.assertIn("release-provenance.json", workflow_text)
+        self.assertIn("Reusing explicitly requested finalized signed artifacts", workflow_text)
+        self.assertIn("Auto-reusing provenance-matched signed artifacts", workflow_text)
+        self.assertEqual(
+            jobs["build-windows"]["if"],
+            "needs.resolve_release.outputs.signed_run_id == ''",
+        )
+        self.assertIn("reuse-windows", jobs)
+        reuse_steps = {
+            step["name"]: step for step in jobs["reuse-windows"]["steps"]
+        }
+        self.assertEqual(
+            reuse_steps["Download finalized signed artifacts"]["with"]["run-id"],
+            "${{ needs.resolve_release.outputs.signed_run_id }}",
+        )
+        reuse_verification = reuse_steps[
+            "Verify reused signed artifacts and provenance"
+        ]["run"]
+        self.assertIn("Get-AuthenticodeSignature", reuse_verification)
+        self.assertIn("$signature.Status -ne 'Valid'", reuse_verification)
+        self.assertIn("Provenance hash mismatch", reuse_verification)
+        self.assertIn("reuse-windows", jobs["release"]["needs"])
+        self.assertIn("needs.build-windows.result == 'success'", jobs["release"]["if"])
+        self.assertIn("needs.reuse-windows.result == 'success'", jobs["release"]["if"])
+        self.assertIn(
+            '[[ "${asset_name}" == "release-provenance.json" ]] && continue',
+            workflow_text,
+        )
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"
         workflow = load_workflow("ci-windows.yml")
         inputs = workflow["on"]["workflow_call"]["inputs"]
         jobs = workflow["jobs"]
+        workflow_text = workflow_path.read_text(encoding="utf-8")
 
         self.assertIn("artifact_source_run_id", inputs)
         self.assertIn("build_only", inputs)
@@ -237,6 +269,9 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             "          cmake \\",
             workflow_text,
         )
+        self.assertIn("Record release artifact provenance", workflow_text)
+        self.assertIn("Upload release provenance", workflow_text)
+        self.assertIn("source_build_run_id", workflow_text)
 
 
 if __name__ == "__main__":
