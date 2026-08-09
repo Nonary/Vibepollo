@@ -93,6 +93,15 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("resolve_source_artifacts", jobs)
         self.assertIn("release_artifacts", jobs)
         self.assertIn("inputs.build_only == false", jobs["sign_windows_msi"]["if"])
+        for job_name in (
+            "sign_windows_msi",
+            "package_windows",
+            "sign_windows_installer",
+            "finalize_windows",
+        ):
+            condition = jobs[job_name]["if"]
+            self.assertIn("always()", condition)
+            self.assertIn("!cancelled()", condition)
         workflow_text = workflow_path.read_text(encoding="utf-8")
         self.assertIn(
             'direct_msi_artifact="${SYMBOL_PRODUCT_NAME}.msi"',

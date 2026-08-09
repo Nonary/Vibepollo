@@ -780,7 +780,7 @@ jobs:
     name: Sign Windows MSI
     needs:
       - release_artifacts
-    if: inputs.build_only == false && needs.release_artifacts.result == 'success'
+    if: always() && !cancelled() && inputs.build_only == false && needs.release_artifacts.result == 'success'
     runs-on: windows-2022
     timeout-minutes: 20
     outputs:
@@ -855,7 +855,7 @@ jobs:
     needs:
       - release_artifacts
       - sign_windows_msi
-    if: needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success'
+    if: always() && !cancelled() && needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success'
     runs-on: windows-2022
     outputs:
       installer_name: ${{ steps.package-windows.outputs.installer_name }}
@@ -955,7 +955,7 @@ jobs:
     name: Sign Windows installer
     needs:
       - package_windows
-    if: needs.package_windows.result == 'success'
+    if: always() && !cancelled() && needs.package_windows.result == 'success'
     runs-on: windows-2022
     timeout-minutes: 20
     outputs:
@@ -1032,7 +1032,7 @@ jobs:
       - sign_windows_msi
       - package_windows
       - sign_windows_installer
-    if: needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success' && needs.package_windows.result == 'success' && needs.sign_windows_installer.result == 'success'
+    if: always() && !cancelled() && needs.release_artifacts.result == 'success' && needs.sign_windows_msi.result == 'success' && needs.package_windows.result == 'success' && needs.sign_windows_installer.result == 'success'
     runs-on: windows-2022
     env:
       SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}
