@@ -695,6 +695,13 @@ Feature: Display engine v2 client integration and stream lifecycle
 
   Rule: Stream capture uses verification as a default-deadline soft gate, not an assumed success
 
+    Scenario: A v2 Apply result is itself capture-ready
+      Given the v2 helper is applying a stream-start display request
+      When Sunshine receives that request's successful Apply result
+      Then the helper has already completed its core topology, settings, best-effort position and physical-rate work, and target-scoped two-sample verification
+      And WGC prewarm cannot overlap those core helper display mutations from that transaction
+      But an explicitly requested asynchronous HDR-blank compatibility workaround and deferred shell notifications are outside that core capture gate
+
     Scenario: A stream-start apply failure preserves the existing-display capture fallback
       Given a stream-start display request cannot be applied through the helper
       When stream startup continues after the unavailable display configuration

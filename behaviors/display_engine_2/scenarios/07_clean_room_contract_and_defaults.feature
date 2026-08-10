@@ -49,7 +49,7 @@ Feature: Display engine v2 clean-room public contract and defaults
         | Refresh Rate connection and result: 600 milliseconds and 12 seconds | result or unsuccessful result | result remains attributable to the requested display and current request |
         | Snapshot Current stage: 3 seconds           | result, dispatch-only compatibility, or failure      | snapshot work cannot consume all later Apply budget            |
         | stale-result retirement: 250 milliseconds   | prior authority is retired promptly                  | a late result cannot satisfy later work                        |
-        | v2 per-attempt topology readiness: 5 seconds | usable accepted topology or the defined retry or unsuccessful Apply | incomplete activation is never published as verified success |
+        | restore per-attempt topology readiness: 5 seconds | usable restored topology or the defined recovery retry | incomplete restoration is never published as confirmed success |
         | fallback target-activation observation: 6 seconds | observed target or best-effort continuation after core success | an unobserved target does not overturn that fallback's core success |
         | normal helper listener renewal: 15 seconds   | listener availability is renewed                     | pending safety work continues while no client is connected     |
         | helper heartbeat: 30-second initial and missed-ping windows, then 2-minute recovery grace | recovery only after the grace boundary | a timely ping cancels an obsolete missed-ping recovery         |

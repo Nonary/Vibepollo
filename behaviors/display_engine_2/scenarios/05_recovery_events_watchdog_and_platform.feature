@@ -161,9 +161,9 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       Given the connection breaks during the default 5-second post-Apply startup-churn period
       And the session remains eligible for disconnect recovery
       When the Apply reaches a point at which its disconnected configuration can be checked
-      Then disconnected settlement replaces ordinary delayed stabilization with checks after the default 250 ms and 750 ms slots
+      Then disconnected settlement uses checks after the default 250 ms and 750 ms slots
       And a failed check repairs the current requested configuration before the next applicable slot
-      And no old ordinary stabilization check may race or override that settlement decision
+      And no ordinary post-Apply check may race or override that settlement decision
       And tuning those slots preserves bounded checks, repair only for the current recoverable session, and cancellation safety
 
     Scenario: The final disconnected repair is accepted without another observation
@@ -204,17 +204,18 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       Given recovery is armed after a failed or unconfirmed restore
       And the ordinary recovery window has expired or is waiting for another opportunity
       When Windows reports <signal>
-      Then the event opens or extends a default 30-second event recovery window for the current recovery
+      Then the event opens a default 30-second event recovery window for the current recovery
       And the next eligible recovery attempt starts without carrying an old backoff delay
       And each supported signal enters the same coalesced changed-display opportunity rather than selecting a different recovery policy
+      And each notification delivered inside the one-second quiet period extends that quiet edge so a debounced restore-generated burst cannot wake its own restore
+      And a generic display-change or device-nodes notification does not reopen recovery because the preceding restore may have generated it
+      And an identity or power event inside an already active recovery window does not erase that window's bounded retry backoff
       And changing that window may not let an event restore an unarmed or stale session, bypass cancellation, or declare an unconfirmed desktop restored
 
       Examples:
         | signal |
-        | a display configuration change |
         | a monitor-interface device arrival |
         | a complete monitor-interface device removal |
-        | display device nodes changing |
         | automatic system resume |
         | monitor power changing to on |
 
@@ -232,7 +233,7 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       And the helper stops retrying when that window is exhausted
       And it preserves recovery protection while waiting for an eligible new event
       And a later display event can open a new 30-second event window
-      And tuning the backoff intervals preserves bounded, progressive retries and lets a relevant new event remove an old backoff delay without bypassing protection or confirmation
+      And tuning the backoff intervals preserves bounded, progressive retries and lets a relevant event start fresh only after the prior window is exhausted without bypassing protection or confirmation
 
     Scenario: Irrelevant or stale display events do not mutate the current desktop
       Given a newer session or cancellation intent has replaced an earlier one
@@ -241,16 +242,18 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       And a display event outside an armed recovery or virtual-display session does not start an unsolicited restore
 
     Scenario: An event belongs only to the current recovery or virtual-display session
-      Given a display configuration, device arrival, device removal, device-nodes-changed, automatic-resume, or monitor-on event arrives
+      Given a device arrival, device removal, automatic-resume, or monitor-on event arrives
       When it is not stale and the current session is eligible for recovery or virtual-display supervision
-      Then it may reopen recovery or begin the applicable current-session virtual-display check
-      But an irrelevant, unarmed, superseded, or completed session treats the event as a no-op
+      Then it may reopen recovery or begin the applicable current-session virtual-display repair
+      But a generic display configuration or device-nodes event cannot reopen EventLoop recovery from feedback produced by its preceding restore
+      And an irrelevant, unarmed, superseded, or completed session treats the event as a no-op
 
     Scenario: A Windows display-event burst retains its notification-time session ownership
       Given a current recovery or virtual-display session is eligible to receive Windows display events
       When one or more applicable Windows display events arrive before the default 500 ms event quiet window ends
       Then the burst is handled as one eligible event opportunity after that window
       And that opportunity retains the recovery or session identity that owned the notification when it arrived
+      And a device arrival or removal remains identifiable if a generic display or power notification follows it in the same burst
       And changing the quiet window may not relabel an old event for a newer Apply, start a stale restore, or bypass cancellation and target safety
 
     Scenario: A changed virtual identity during Apply is retargeted after the delivered event opportunity
@@ -258,8 +261,10 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       When the outer 500-millisecond event quiet window delivers the applicable event opportunity
       Then the reapply first retargets the current virtual identity
       And an active mutation reaches its result boundary before a queued replacement Apply begins
-      But without an active mutation the replacement Apply begins after the default 100-millisecond delay
-      And cancellation, a stale event, a same-identity event, or a newer session cannot use that delayed restart to mutate another session's desktop
+      And the queued repair re-observes identity at that boundary and disappears if the id is empty or healthy again
+      And an explicit queued Apply, Revert, or Disarm always outranks an autonomous identity repair
+      But without an active mutation the replacement Apply begins immediately after the delivered event opportunity
+      And cancellation, a stale event, a same-identity event, or a newer session cannot use that restart to mutate another session's desktop
 
   Rule: Durable recovery survives helper loss but is cleaned up safely
 
@@ -268,6 +273,7 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       When Windows may first observe that mutation
       Then the engine attempts to create the durable restore safeguard and records its result before the mutation boundary
       And only reported successful creation is recorded as durable protection for a later restore-mode launch
+      And a failed worker-boundary attempt is not retried synchronously by completion handling or a settings-only repair
       But that recorded success does not itself prove the registered definition can launch the helper correctly
       And failed creation is known before mutation but does not itself prevent the mutation or make the desktop safe
 
@@ -383,27 +389,38 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
 
   Rule: Virtual display changes are recovered without losing the physical desktop
 
-    Scenario: A same-identity virtual display event verifies before reapplying
+    Scenario: Generic and same-identity virtual display events are non-actionable
       Given a verified virtual-display session is being monitored
       And the virtual display continues to resolve to the session's current device identity
-      When a virtual display event arrives
-      Then the helper verifies the existing target before attempting a reapply
-      And a healthy configuration is retained without an unnecessary display reset or reapply
+      When display-change, device, or monitor-power events arrive for that unchanged identity
+      Then generic display and power events do not start virtual-device discovery
+      And a device arrival or removal may perform one identity discovery but starts no topology planning, verification, display reset, or repair Apply when the stable identity is unchanged
+      And repeated Windows notifications cannot form an Apply feedback loop after capture starts
 
-    Scenario: Failed same-identity virtual display verification repairs the existing target
+    Scenario: A temporarily unavailable virtual identity does not reapply stale intent
       Given a verified virtual-display session is being monitored
-      And the virtual display continues to resolve to the session's current device identity
-      When a virtual display event verification fails
-      Then it repairs lost topology, mode, or HDR configuration without retargeting an arbitrary display
+      And virtual display discovery temporarily resolves no usable identity
+      When display-change, device, or monitor-power events arrive during that gap
+      Then the helper starts no topology query, verification, display reset, or repair Apply against the prior identity
+      And it waits for a later event that resolves a concrete replacement identity
 
     Scenario: A changed-identity virtual display event retargets before reapplying
       Given a verified virtual-display session is being monitored
       And the virtual driver now resolves to a different usable device identity
-      When a virtual display event arrives
+      When a device-arrival or device-removal event arrives
       Then the helper rediscovers and retargets the session to that virtual display identity
       And any explicit topology member or monitor-position override that named the previous virtual identity follows the new identity
       And it reapplies the requested configuration only to the rediscovered virtual target
       And a late event from an earlier session cannot retarget the newer desktop session
+
+    Scenario: Changed-identity repair is bounded for one client session
+      Given a virtual-display session repeatedly resolves different usable identities
+      When device events overlap an active identity repair
+      Then one queued repair retains and rechecks the latest usable identity at the mutation fence
+      And the helper performs at most two event-driven identity discoveries for that client Apply
+      And the helper performs at most two autonomous changed-identity repair transactions for that client Apply
+      And later identity notifications start neither discovery nor Apply, so they cannot sustain a query or mutation feedback loop
+      But a new explicit client Apply establishes a fresh bounded repair allowance
 
     Scenario: A matching virtual identity is recognized conservatively
       Given virtual-display supervision needs to resolve a Windows display identity
@@ -411,7 +428,8 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       Then it recognizes that display as a compatible virtual display
       And it prefers an active primary compatible identity when more than one compatible identity is available
       And otherwise it prefers an active compatible identity over an inactive one
-      And it returns the selected display's stable device identifier when present, otherwise its display name
+      And it returns only the selected display's stable device identifier
+      But a display-name-only transitional observation remains unavailable until Windows publishes that identifier
 
     Scenario: No matching virtual identity does not create a target
       Given virtual-display supervision needs to resolve a Windows display identity
@@ -448,6 +466,8 @@ Feature: Recovery, events, watchdogs, and Windows platform safety
       Given a verified current session is within a requested temporary HDR-blanking interval
       When a later verified current session also requests HDR blanking
       Then the later workaround does not overlap the earlier blanking interval
+      And queuing it does not join the earlier one on the Apply-result path
+      And a newer live Apply, Revert, Disarm, or recovery start clears any older coalesced request that has not started
       And an accepted blanking operation remains owned until its temporary interval completes
       And only after the complete disable request succeeds does it wait and attempt to restore every HDR state it changed
       But a failed blank or restore operation is swallowed and may leave one or more affected displays in the state Windows last accepted

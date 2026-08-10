@@ -2,7 +2,6 @@
 
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
-#include "src/platform/windows/display_helper_v2/staged_settings.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
 #include <algorithm>
@@ -64,63 +63,13 @@ namespace display_helper::v2 {
 
     std::lock_guard lock(settings_mutex_);
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
-    std::optional<display_device::SingleDisplayConfigState> previous_state;
-    bool persistent_state_rebased = false;
-    const auto restore_rebased_persistent_state = [&] {
-      // A staged topology retry may reuse this SettingsManager instance. Its
-      // original primary/mode/HDR baseline must survive every failure path,
-      // including non-std exceptions raised by the display stack.
-      if (persistent_state_rebased && settings_state_ && !settings_state_->persistState(previous_state)) {
-        BOOST_LOG(error) << "Display helper v2: failed to preserve persistent state after settings apply failure.";
-      }
-    };
     try {
-      const auto current_topology = display_device_->getCurrentTopology();
-      if (!display_device_->isTopologyValid(current_topology)) {
-        return ApplyStatus::VerificationFailed;
-      }
-
-      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      const auto current_initial = StagedSettingsState::rebased_initial(
-        session_initial_state_,
-        current_topology,
-        devices);
-      if (!current_initial || !settings_state_) {
-        return ApplyStatus::VerificationFailed;
-      }
-
-      // Retain v1's original primary/mode/HDR values across consecutive APPLYs,
-      // but rebase the topology fields onto the result already accepted by the
-      // staged transition. This prevents VerifyOnly from restoring an old layout.
-      previous_state = settings_state_->getState();
-      const auto rebased = StagedSettingsState::rebase(
-        previous_state,
-        *current_initial,
-        current_topology);
-      if (!settings_state_->persistState(rebased)) {
-        return ApplyStatus::Retryable;
-      }
-      persistent_state_rebased = true;
-
-      // EnsurePrimary must remain visible to SettingsManager so it can capture
-      // and later restore the original primary. Other preparation modes become
-      // VerifyOnly because topology activation is already complete.
-      const auto settings_config = StagedSettingsState::settings_configuration(config);
-      const auto result = map_apply_result(settings_manager_->applySettings(settings_config));
-      if (result != ApplyStatus::Ok) {
-        restore_rebased_persistent_state();
-      }
-      return result;
+      return map_apply_result(settings_manager_->applySettings(config));
     } catch (const std::exception &e) {
-      // The staged topology can be retried by the state machine, but retaining
-      // a rebased SettingsManager state after a failed settings mutation would
-      // lose the user's original primary/mode/HDR baseline on the next APPLY.
-      restore_rebased_persistent_state();
-      BOOST_LOG(error) << "Display helper v2: staged settings apply failed: " << e.what();
+      BOOST_LOG(error) << "Display helper v2: display settings apply failed: " << e.what();
       return ApplyStatus::Fatal;
     } catch (...) {
-      restore_rebased_persistent_state();
-      BOOST_LOG(error) << "Display helper v2: staged settings apply failed.";
+      BOOST_LOG(error) << "Display helper v2: display settings apply failed.";
       return ApplyStatus::Fatal;
     }
   }
@@ -183,21 +132,10 @@ namespace display_helper::v2 {
       // while Windows is transitioning the desktop after a virtual display is
       // removed. The snapshot is still structurally valid and must reach the
       // real apply path, which can recover and retry the display stack.
-      if (!validate_topology_with_os(topology)) {
+      if (validate_topology_with_os(topology) != ApplyStatus::Ok) {
         BOOST_LOG(warning) << "Display helper v2: OS topology probe failed; preserving structurally valid restore snapshot for retry.";
       }
       return true;
-    } catch (...) {
-      return false;
-    }
-  }
-
-  bool WinDisplaySettings::validate_topology_for_apply(const ActiveTopology &topology) {
-    if (!ensure_initialized()) {
-      return false;
-    }
-    try {
-      return display_device_->isTopologyValid(topology) && validate_topology_with_os(topology);
     } catch (...) {
       return false;
     }
@@ -462,33 +400,63 @@ namespace display_helper::v2 {
     }
   }
 
-  bool WinDisplaySettings::prepare_staged_apply(const ActiveTopology &current_topology) {
+  ApplyPreflightOutcome WinDisplaySettings::preflight_apply(
+    const SingleDisplayConfiguration &config,
+    const std::optional<ActiveTopology> &base_topology) {
     if (!ensure_initialized()) {
-      return false;
+      return {.status = ApplyStatus::Retryable};
     }
 
     std::lock_guard lock(settings_mutex_);
-    if (session_initial_state_) {
-      return true;
-    }
-
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      if (!display_device_->isTopologyValid(current_topology)) {
-        return false;
+      // optional::value_or evaluates its fallback eagerly. Keep the supplied
+      // Sunshine topology as the single preflight snapshot instead of issuing
+      // another live QueryDisplayConfig call that cannot affect this branch.
+      const auto topology_before = base_topology ? *base_topology : display_device_->getCurrentTopology();
+      if (!display_device_->isTopologyValid(topology_before)) {
+        return {.status = base_topology ? ApplyStatus::InvalidRequest : ApplyStatus::Retryable};
       }
+
       const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      auto initial = StagedSettingsState::topology_base(
+      auto initial = topology::compute_initial_state(
         std::nullopt,
-        current_topology,
+        topology_before,
         devices);
       if (!initial) {
-        return false;
+        return {.status = ApplyStatus::Retryable};
       }
-      session_initial_state_ = std::move(*initial);
-      return true;
+
+      auto [new_topology, device_to_configure, additional_devices] = topology::compute_new_topology_and_metadata(
+        config.m_device_prep,
+        config.m_device_id,
+        *initial);
+      const auto validation_status = display_device_->isTopologyTheSame(topology_before, new_topology) ?
+                                       ApplyStatus::Ok :
+                                       validate_topology_with_os(new_topology);
+      if (validation_status != ApplyStatus::Ok) {
+        return {.status = validation_status};
+      }
+
+      TopologyActivationTarget activation_target;
+      activation_target.kind = config.m_device_id.empty() ?
+                                 DeviceTargetKind::DefaultPrimaryGroup :
+                                 DeviceTargetKind::ExplicitDevice;
+      if (!device_to_configure.empty()) {
+        activation_target.acceptable_device_ids.insert(std::move(device_to_configure));
+      }
+      if (activation_target.kind == DeviceTargetKind::DefaultPrimaryGroup) {
+        activation_target.acceptable_device_ids.insert(additional_devices.begin(), additional_devices.end());
+      }
+      return ApplyPreflightOutcome {
+        .status = ApplyStatus::Ok,
+        .plan = ApplyTopologyPlan {
+          .topology = std::move(new_topology),
+          .activation_target = std::move(activation_target),
+        },
+      };
     } catch (...) {
-      return false;
+      return {.status = ApplyStatus::Retryable};
     }
   }
 
@@ -501,20 +469,7 @@ namespace display_helper::v2 {
     if (!settings_manager_->resetPersistence()) {
       return false;
     }
-    session_initial_state_.reset();
     return true;
-  }
-
-  bool WinDisplaySettings::is_primary_device(const std::string &device_id) {
-    if (device_id.empty() || !ensure_initialized()) {
-      return false;
-    }
-    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
-    try {
-      return display_device_->isPrimary(device_id);
-    } catch (...) {
-      return false;
-    }
   }
 
   bool WinDisplaySettings::set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) {
@@ -540,105 +495,126 @@ namespace display_helper::v2 {
     return false;
   }
 
-  std::optional<display_device::Resolution> WinDisplaySettings::get_display_resolution(const std::string &device_id) {
-    if (device_id.empty() || !ensure_initialized()) {
-      return std::nullopt;
+  std::set<std::string> WinDisplaySettings::set_device_refresh_rates(
+    const std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> &overrides) {
+    std::set<std::string> applied;
+    if (overrides.empty() || !ensure_initialized()) {
+      return applied;
     }
+
+    using RequestedRate = std::pair<std::string, std::pair<unsigned int, unsigned int>>;
+    std::unordered_map<std::string, RequestedRate> requested_by_normalized_id;
+    for (const auto &[device_id, rate] : overrides) {
+      if (device_id.empty() || rate.first == 0 || rate.second == 0) {
+        continue;
+      }
+      requested_by_normalized_id[codec::normalize_device_id(device_id)] = {device_id, rate};
+    }
+    if (requested_by_normalized_id.empty()) {
+      return applied;
+    }
+
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      const auto normalized = codec::normalize_device_id(device_id);
+      // libdisplaydevice returns no mode map if any requested id is currently
+      // unavailable. Filter through one Minimal enumeration first so one
+      // sleeping physical monitor cannot prevent every active override.
+      std::unordered_map<std::string, RequestedRate> active_requests;
+      std::set<std::string> active_device_ids;
       const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
       for (const auto &device : devices) {
-        if (device.m_device_id.empty() || codec::normalize_device_id(device.m_device_id) != normalized) {
+        if (device.m_device_id.empty() || !device.m_info) {
           continue;
         }
-        if (device.m_info) {
-          return device.m_info->m_resolution;
+        const auto requested = requested_by_normalized_id.find(codec::normalize_device_id(device.m_device_id));
+        if (requested == requested_by_normalized_id.end()) {
+          continue;
         }
-        return std::nullopt;
+        active_device_ids.insert(device.m_device_id);
+        active_requests.emplace(device.m_device_id, requested->second);
+      }
+      if (active_device_ids.empty()) {
+        return applied;
+      }
+
+      auto current_modes = display_device_->getCurrentDisplayModes(active_device_ids);
+      std::set<std::string> changed;
+      for (const auto &[active_device_id, requested] : active_requests) {
+        const auto &[original_device_id, rate] = requested;
+        auto mode = current_modes.find(active_device_id);
+        if (mode == current_modes.end()) {
+          continue;
+        }
+        const auto &current = mode->second.m_refresh_rate;
+        if (current.m_denominator != 0 &&
+            static_cast<std::uint64_t>(current.m_numerator) * rate.second ==
+              static_cast<std::uint64_t>(rate.first) * current.m_denominator) {
+          applied.insert(original_device_id);
+          continue;
+        }
+        mode->second.m_refresh_rate = display_device::Rational {rate.first, rate.second};
+        changed.insert(original_device_id);
+      }
+
+      if (changed.empty()) {
+        return applied;
+      }
+      if (display_device_->setDisplayModes(current_modes)) {
+        applied.insert(changed.begin(), changed.end());
       }
     } catch (...) {
+    }
+    return applied;
+  }
+
+  std::unordered_map<std::string, std::optional<display_device::Resolution>>
+  WinDisplaySettings::get_repositionable_display_resolutions(const std::set<std::string> &device_ids) {
+    std::unordered_map<std::string, std::optional<display_device::Resolution>> result;
+    if (device_ids.empty() || !ensure_initialized()) {
+      return result;
+    }
+
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      std::unordered_map<std::string, std::vector<std::string>> requested_by_normalized_id;
+      for (const auto &device_id : device_ids) {
+        if (!device_id.empty()) {
+          requested_by_normalized_id[codec::normalize_device_id(device_id)].push_back(device_id);
+        }
+      }
+
+      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
+      for (const auto &device : devices) {
+        if (device.m_device_id.empty() || !device.m_info) {
+          continue;
+        }
+        const auto requested = requested_by_normalized_id.find(codec::normalize_device_id(device.m_device_id));
+        if (requested == requested_by_normalized_id.end()) {
+          continue;
+        }
+        for (const auto &original_id : requested->second) {
+          result.emplace(original_id, device.m_info->m_resolution);
+        }
+      }
+    } catch (...) {
+    }
+    return result;
+  }
+
+  std::optional<display_device::Resolution> WinDisplaySettings::get_display_resolution(const std::string &device_id) {
+    if (device_id.empty()) {
+      return std::nullopt;
+    }
+    const auto displays = get_repositionable_display_resolutions({device_id});
+    const auto display = displays.find(device_id);
+    if (display != displays.end()) {
+      return display->second;
     }
     return std::nullopt;
   }
 
   bool WinDisplaySettings::can_reposition_device(const std::string &device_id) {
-    if (device_id.empty() || !ensure_initialized()) {
-      return false;
-    }
-    try {
-      const auto normalized = codec::normalize_device_id(device_id);
-      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      for (const auto &device : devices) {
-        if (device.m_device_id.empty()) {
-          continue;
-        }
-        if (codec::normalize_device_id(device.m_device_id) != normalized) {
-          continue;
-        }
-        // Only attempt reposition for currently active displays.
-        return static_cast<bool>(device.m_info);
-      }
-    } catch (...) {
-    }
-    return false;
-  }
-
-  std::optional<ActiveTopology> WinDisplaySettings::compute_expected_topology(
-    const SingleDisplayConfiguration &config,
-    const std::optional<ActiveTopology> &base_topology) {
-    auto plan = compute_apply_topology_plan(config, base_topology);
-    if (!plan) {
-      return std::nullopt;
-    }
-    return std::move(plan->topology);
-  }
-
-  std::optional<ApplyTopologyPlan> WinDisplaySettings::compute_apply_topology_plan(
-    const SingleDisplayConfiguration &config,
-    const std::optional<ActiveTopology> &base_topology) {
-    if (!ensure_initialized()) {
-      return std::nullopt;
-    }
-
-    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
-    std::lock_guard lock(settings_mutex_);
-    try {
-      auto topology_before = base_topology.value_or(display_device_->getCurrentTopology());
-      if (!display_device_->isTopologyValid(topology_before)) {
-        return std::nullopt;
-      }
-
-      const auto devices = display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal);
-      auto initial = StagedSettingsState::topology_base(
-        session_initial_state_,
-        topology_before,
-        devices);
-      if (!initial) {
-        return std::nullopt;
-      }
-
-      const auto [new_topology, device_to_configure, additional_devices] = topology::compute_new_topology_and_metadata(
-        config.m_device_prep,
-        config.m_device_id,
-        *initial
-      );
-      TopologyActivationTarget activation_target;
-      activation_target.kind = config.m_device_id.empty() ?
-                                 DeviceTargetKind::DefaultPrimaryGroup :
-                                 DeviceTargetKind::ExplicitDevice;
-      if (!device_to_configure.empty()) {
-        activation_target.acceptable_device_ids.insert(device_to_configure);
-      }
-      if (activation_target.kind == DeviceTargetKind::DefaultPrimaryGroup) {
-        activation_target.acceptable_device_ids.insert(additional_devices.begin(), additional_devices.end());
-      }
-      return ApplyTopologyPlan {
-        .topology = new_topology,
-        .activation_target = std::move(activation_target),
-      };
-    } catch (...) {
-      return std::nullopt;
-    }
+    return !device_id.empty() && get_repositionable_display_resolutions({device_id}).contains(device_id);
   }
 
   bool WinDisplaySettings::is_topology_same(const ActiveTopology &lhs, const ActiveTopology &rhs) {
@@ -668,7 +644,6 @@ namespace display_helper::v2 {
         auto display = std::make_shared<display_device::WinDisplayDevice>(win_api);
         auto persistent_state = std::make_unique<display_device::PersistentState>(
           std::make_shared<display_device::NoopSettingsPersistence>());
-        auto *persistent_state_ptr = persistent_state.get();
         auto settings = std::make_unique<display_device::SettingsManager>(
           display,
           std::make_shared<display_device::NoopAudioContext>(),
@@ -679,7 +654,6 @@ namespace display_helper::v2 {
         win_api_ = std::move(win_api);
         display_device_ = std::move(display);
         settings_manager_ = std::move(settings);
-        settings_state_ = persistent_state_ptr;
         init_state_.store(InitState::Ready, std::memory_order_release);
       } catch (...) {
         BOOST_LOG(error) << "Display helper v2: failed to initialize display settings.";
@@ -690,25 +664,25 @@ namespace display_helper::v2 {
     return init_state_.load(std::memory_order_acquire) == InitState::Ready;
   }
 
-  bool WinDisplaySettings::validate_topology_with_os(const ActiveTopology &topology) const {
+  ApplyStatus WinDisplaySettings::validate_topology_with_os(const ActiveTopology &topology) const {
     if (!display_device_->isTopologyValid(topology)) {
-      return false;
+      return ApplyStatus::InvalidRequest;
     }
 
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     const auto original_data = win_api_->queryDisplayConfig(display_device::QueryType::All);
     if (!original_data) {
-      return false;
+      return ApplyStatus::Retryable;
     }
 
     const auto path_data = display_device::win_utils::collectSourceDataForMatchingPaths(*win_api_, original_data->m_paths);
     if (path_data.empty()) {
-      return false;
+      return ApplyStatus::Retryable;
     }
 
     auto paths = display_device::win_utils::makePathsForNewTopology(topology, path_data, original_data->m_paths);
     if (paths.empty()) {
-      return false;
+      return ApplyStatus::Retryable;
     }
 
     UINT32 flags = SDC_VALIDATE | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES | SDC_VIRTUAL_MODE_AWARE;
@@ -719,9 +693,9 @@ namespace display_helper::v2 {
     }
     if (result != ERROR_SUCCESS) {
       BOOST_LOG(warning) << "Display helper v2: topology validation failed: " << result;
-      return false;
+      return ApplyStatus::InvalidRequest;
     }
-    return true;
+    return ApplyStatus::Ok;
   }
 
   std::optional<std::string> WinDisplaySettings::find_primary_in_set(const std::set<std::string> &ids) const {

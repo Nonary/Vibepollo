@@ -72,6 +72,7 @@ namespace display_helper::v2 {
         // display stack before ApplyOperation can reach its topology boundary.
         // Use the same durable guard first, then carry that fact through every
         // early return so the state machine cannot discard recovery too soon.
+        virtual_reset_outcome.durable_recovery_attempted = true;
         virtual_reset_outcome.durable_recovery_armed =
           apply_operation_.arm_durable_recovery_boundary();
         if (token.is_cancelled()) {
@@ -133,13 +134,16 @@ namespace display_helper::v2 {
       auto outcome = apply_operation_.run(
         request,
         token,
-        virtual_reset_outcome.durable_recovery_armed);
+        virtual_reset_outcome.durable_recovery_armed,
+        virtual_reset_outcome.durable_recovery_attempted);
       outcome.virtual_display_requested = outcome.virtual_display_requested ||
                                          virtual_reset_outcome.virtual_display_requested;
       outcome.display_may_have_changed = outcome.display_may_have_changed ||
                                            virtual_reset_outcome.display_may_have_changed;
       outcome.durable_recovery_armed = outcome.durable_recovery_armed ||
                                         virtual_reset_outcome.durable_recovery_armed;
+      outcome.durable_recovery_attempted = outcome.durable_recovery_attempted ||
+                                            virtual_reset_outcome.durable_recovery_attempted;
       completion(outcome);
     });
   }

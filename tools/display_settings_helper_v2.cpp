@@ -189,9 +189,9 @@ namespace {
            std::holds_alternative<display_helper::v2::ResetCommand>(message);
   }
 
-  bool is_stabilization_completion(const display_helper::v2::Message &message) {
+  bool is_delayed_disconnect_verification_completion(const display_helper::v2::Message &message) {
     const auto *completion = std::get_if<display_helper::v2::VerificationCompleted>(&message);
-    return completion && completion->purpose == display_helper::v2::VerificationPurpose::Stabilization;
+    return completion && completion->purpose == display_helper::v2::VerificationPurpose::TransientDisconnect;
   }
 
   bool is_async_completion(const display_helper::v2::Message &message) {
@@ -798,12 +798,16 @@ int run_v2_helper(int argc, char *argv[]) {
   display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
   std::mutex debounce_mutex;
   display_helper::v2::WinEventPump event_pump;
-  event_pump.start([&](display_helper::v2::DisplayEvent) {
+  event_pump.start([&](display_helper::v2::DisplayEvent event) {
     std::lock_guard<std::mutex> lock(debounce_mutex);
     // Tag at notification time. A WM_DISPLAYCHANGE emitted by a cancelled
     // transaction must not be relabelled as an event for a newer APPLY when
     // the debounce delay expires.
-    debouncer.notify(clock.now(), cancellation.current_generation());
+    debouncer.notify(
+      clock.now(),
+      cancellation.current_generation(),
+      connection_epoch.load(std::memory_order_acquire),
+      event);
   });
 
   auto service_timers = [&]() {
@@ -815,15 +819,16 @@ int run_v2_helper(int argc, char *argv[]) {
       }
     }
 
-    std::optional<std::uint64_t> event_generation;
+    std::optional<display_helper::v2::DebouncedTrigger::Ticket> display_event;
     {
       std::lock_guard<std::mutex> lock(debounce_mutex);
-      event_generation = debouncer.take_if_due(clock.now());
+      display_event = debouncer.take_if_due(clock.now());
     }
-    if (event_generation) {
+    if (display_event) {
       queue.push(display_helper::v2::DisplayEventMessage {
-        display_helper::v2::DisplayEvent::DisplayChange,
-        *event_generation
+        .event = display_event->event,
+        .generation = display_event->generation,
+        .connection_epoch = display_event->connection_epoch,
       });
     }
 
@@ -832,7 +837,7 @@ int run_v2_helper(int argc, char *argv[]) {
 
   auto process_queue = [&]() {
     if (auto message = queue.wait_for(std::chrono::milliseconds(100))) {
-      // A stabilization-verification completion may race a replacement
+      // A delayed disconnect-verification completion may race a replacement
       // APPLY/REVERT/DISARM or refresh command arriving from the pipe. Give a
       // contiguous replacement-intent prefix priority so the state machine can
       // coalesce it behind the active mutation fence before that completion
@@ -843,7 +848,7 @@ int run_v2_helper(int argc, char *argv[]) {
       // pipe order is a baseline-capture contract. Only a contiguous control
       // prefix immediately following an asynchronous completion may supersede
       // that completion.
-      const bool prioritize_refresh_rate = is_stabilization_completion(*message);
+      const bool prioritize_refresh_rate = is_delayed_disconnect_verification_completion(*message);
       auto queued_controls = is_async_completion(*message) ?
                                queue.extract_prefix_while([prioritize_refresh_rate](const display_helper::v2::Message &queued) {
                                  return is_replacement_control_intent(queued) ||

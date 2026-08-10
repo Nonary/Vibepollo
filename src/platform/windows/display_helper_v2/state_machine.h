@@ -65,6 +65,10 @@ namespace display_helper::v2 {
       workarounds_.blank_hdr_states(delay);
     }
 
+    void clear_pending_hdr_blank() {
+      workarounds_.clear_pending_hdr_blank();
+    }
+
     bool create_restore_task() {
       return task_manager_.create_restore_task(L"");
     }
@@ -97,14 +101,6 @@ namespace display_helper::v2 {
       return policy_.maybe_reset_virtual_display(status, virtual_display_requested);
     }
 
-    bool can_retry(int attempt) const {
-      return policy_.can_retry_apply(attempt);
-    }
-
-    std::chrono::milliseconds retry_delay(int attempt) const {
-      return policy_.retry_delay(attempt);
-    }
-
     std::uint64_t dispatch_apply(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display) {
       const auto token = system_.token();
       const auto generation = token.generation();
@@ -117,11 +113,11 @@ namespace display_helper::v2 {
         [enqueue = enqueue_, generation](const ApplyOutcome &outcome) {
           ApplyCompleted completed;
           completed.status = outcome.status;
-          completed.expected_topology = outcome.expected_topology;
           completed.resolved_target = outcome.resolved_target;
           completed.virtual_display_requested = outcome.virtual_display_requested;
           completed.display_may_have_changed = outcome.display_may_have_changed;
           completed.durable_recovery_armed = outcome.durable_recovery_armed;
+          completed.durable_recovery_attempted = outcome.durable_recovery_attempted;
           completed.staged_state_prepared = outcome.staged_state_prepared;
           completed.generation = generation;
           enqueue(completed);
@@ -338,7 +334,7 @@ namespace display_helper::v2 {
     /// may have changed the desktop or is actively applying/restoring it.
     bool requires_disconnect_recovery() const;
     /// v1 treats a pipe break immediately after APPLY as startup churn: retain
-    /// the session and let bounded settling re-applies run instead of restoring
+    /// the session and run its bounded disconnect checks instead of restoring
     /// the desktop just as Windows is activating it.
     bool should_defer_disconnect_recovery() const;
     /// Starts/arms the bounded v1-compatible verify-before-repair work for a
@@ -351,7 +347,12 @@ namespace display_helper::v2 {
     bool recovery_worker_in_progress() const;
 
   private:
-    using DeferredMutationCommand = std::variant<ApplyCommand, RevertCommand, DisarmCommand, ResetCommand>;
+    struct VirtualDisplayRepairIntent {
+      std::string resolved_device_id;
+      std::uint64_t connection_epoch = 0;
+    };
+
+    using DeferredMutationCommand = std::variant<ApplyCommand, VirtualDisplayRepairIntent, RevertCommand, DisarmCommand, ResetCommand>;
 
     enum class MutationWorkerKind {
       Apply,
@@ -364,7 +365,7 @@ namespace display_helper::v2 {
       std::uint64_t generation;
     };
 
-    void retarget_virtual_display_device_id_if_needed();
+    void retarget_virtual_display_device_id_if_needed(const std::string &resolved_device_id);
     ApplyRequest verification_request() const;
 
     void handle_apply_command(const ApplyCommand &command);
@@ -373,10 +374,12 @@ namespace display_helper::v2 {
     void handle_export_golden(const ExportGoldenCommand &command);
     void handle_snapshot_current(const SnapshotCurrentCommand &command);
     void handle_refresh_rate_command(const RefreshRateCommand &command);
+    void handle_virtual_display_repair_intent(const VirtualDisplayRepairIntent &intent);
     void handle_reset_command(const ResetCommand &command);
     void handle_ping_command(const PingCommand &command);
     void handle_stop_command(const StopCommand &command);
     void handle_apply_completed(const ApplyCompleted &completed);
+    void finish_apply_completed(const ApplyCompleted &completed);
     void handle_verification_completed(const VerificationCompleted &completed);
     void handle_reset_completed(const ResetCompleted &completed);
     void handle_refresh_rate_completed(const RefreshRateCompleted &completed);
@@ -400,15 +403,13 @@ namespace display_helper::v2 {
     void send_snapshot_result(bool success, std::uint64_t connection_epoch, std::uint64_t request_id);
     void send_refresh_rate_result(bool success, std::uint64_t connection_epoch, std::uint64_t request_id);
     void enter_steady_state();
-    void reset_post_apply_stabilization();
+    void reset_apply_verification_state();
     void reset_transient_disconnect_settlement();
-    void replace_post_apply_stabilization_with_transient_disconnect_settlement();
-    void rewind_post_apply_stabilization();
-    void schedule_next_post_apply_stabilization();
+    void prepare_transient_disconnect_settlement();
     bool dispatch_next_verification_reapply();
     bool dispatch_next_transient_disconnect_verification();
     void dispatch_transient_disconnect_repair();
-    void dispatch_immediate_repair_after_stabilization_failure();
+    void dispatch_settings_only_repair();
     void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
     void queue_after_active_mutation(
       DeferredMutationCommand command,
@@ -431,6 +432,9 @@ namespace display_helper::v2 {
     bool mutation_worker_active() const;
     bool owns_active_worker(MutationWorkerKind kind, std::uint64_t generation) const;
     bool refresh_targets_active_request(const std::string &device_id) const;
+    bool virtual_identity_repair_available() const;
+    bool consume_virtual_identity_discovery();
+    bool consume_virtual_identity_repair();
 
     ApplyPipeline &apply_;
     RecoveryPipeline &recovery_;
@@ -448,38 +452,32 @@ namespace display_helper::v2 {
     // policy decisions. This is separate from restore_on_disconnect, which
     // controls only whether a disconnected live session begins a recovery.
     bool explicit_recovery_required_ = false;
-    int apply_attempt_ = 0;
     bool virtual_hdr_fallback_attempted_ = false;
     bool apply_result_sent_ = false;
     bool verification_result_sent_ = false;
     // A result may have been sent for an initial failure. Keep successful
-    // verification distinct so only an already-verified session treats later
-    // settling repairs as best effort.
+    // verification distinct so only an already-verified session treats a
+    // later virtual-device replacement repair as best effort.
     bool session_was_verified_ = false;
     bool restore_task_created_ = false;
-    bool post_apply_check_pending_ = false;
-    std::vector<std::chrono::milliseconds> post_apply_stabilization_delays_;
-    std::size_t next_post_apply_stabilization_ = 0;
-    // v1 retries an immediately failed configuration once, then stair-steps
-    // delayed enforcement while Windows settles (750ms, plus 2.5/5.5s for
-    // HDR). Keep that behavior as explicit FSM state instead of background
-    // worker threads. Index zero is the immediate v1 retry and the remaining
-    // entries align with post-apply settling stages.
-    std::vector<std::chrono::milliseconds> verification_reapply_delays_;
-    std::size_t next_verification_reapply_ = 0;
+    // Capture remains closed for one immediate mismatch repair. There is no
+    // proactive post-Apply retry staircase once a session has been verified.
+    bool verification_reapply_available_ = false;
     // v1 also performs a short 250/750ms verify-before-reapply settlement
     // sequence if the control pipe disappears right after APPLY. This is
-    // distinct from the normal verification staircase because it can begin
-    // after an interrupted transaction with no client response lane.
+    // distinct from the initial capture gate because it can begin after an
+    // interrupted transaction with no client response lane.
     bool transient_disconnect_settlement_requested_ = false;
     bool transient_disconnect_check_pending_ = false;
     bool transient_disconnect_repair_in_flight_ = false;
     std::size_t next_transient_disconnect_check_ = 0;
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
-    std::optional<ActiveTopology> expected_topology_;
     std::optional<ResolvedConfigurationTarget> resolved_target_;
     std::optional<Snapshot> recovery_snapshot_;
+    std::optional<std::chrono::steady_clock::time_point> recovery_event_feedback_quiet_until_;
+    std::size_t virtual_identity_discoveries_remaining_ = 0;
+    std::size_t virtual_identity_repairs_remaining_ = 0;
     std::set<std::string> snapshot_blacklist_;
     std::uint64_t current_connection_epoch_ = 0;
 
@@ -489,15 +487,19 @@ namespace display_helper::v2 {
     // and replacement APPLYs behind the worker until it reports completion.
     std::optional<ActiveMutationWorker> active_mutation_worker_;
     std::deque<DeferredMutationCommand> deferred_mutation_commands_;
+    // If RESET is ordered before a newer Apply, hold the completed older
+    // outcome until the barrier either starts that replacement or proves the
+    // replacement stale. This prevents both obsolete capture-ready replies
+    // and an ownerless InProgress state.
+    std::optional<ApplyCompleted> deferred_apply_completion_;
     bool unconfirmed_cancelled_mutation_ = false;
     bool staged_state_reset_pending_ = false;
     // Recovery normally exits the helper after a confirmed restore. If RESET
     // was queued behind that recovery, retain the helper until the ordered
     // backend reset completes.
     bool exit_after_staged_state_reset_ = false;
-    // prepare_staged_apply() mutates backend session state before a display
-    // API call. Track it across retries/cancellation so a terminal no-mutation
-    // transaction cannot leak that provisional baseline into a later session.
+    // SettingsManager may retain original-state transaction data after it is
+    // called. Track it so restore/RESET can clear that session-scoped state.
     bool staged_state_prepared_ = false;
     // The recovery worker clears the backend's retained staged state before
     // validation. Preserve a failed result through validation so a live
@@ -505,7 +507,6 @@ namespace display_helper::v2 {
     std::optional<bool> recovery_staged_state_reset_succeeded_;
     bool recovery_lease_before_apply_ = false;
 
-    std::chrono::steady_clock::time_point last_virtual_apply_display_event_restart_ {};
 
     StateObserver observer_;
     std::function<void(ApplyStatus, std::uint64_t, std::uint64_t)> apply_result_callback_;
