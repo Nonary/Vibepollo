@@ -227,6 +227,23 @@ TEST(SunshineVirtualDisplay, StreamReadinessAllowsHelperToActivateEnumeratedDisp
   EXPECT_TRUE(VDISPLAY::policy::accept_enumerated_target(std::chrono::milliseconds {500}));
 }
 
+TEST(SunshineVirtualDisplay, StableEdidMatchSelectsCandidateWithoutHints) {
+  // A wedged per-client identity enumerates nameless and inactive, so no
+  // dynamic hint can ever match it; the stable EDID match alone must make it
+  // the exact target so the display helper is handed the identity to activate.
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(false, true));
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(true, false));
+  EXPECT_TRUE(VDISPLAY::policy::readiness_candidate_is_exact_target(true, true));
+  EXPECT_FALSE(VDISPLAY::policy::readiness_candidate_is_exact_target(false, false));
+}
+
+TEST(SunshineVirtualDisplay, UnidentifiedReadinessCandidatesStayDeferred) {
+  EXPECT_TRUE(VDISPLAY::policy::defer_unidentified_readiness_candidate(false, false));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(true, false));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(true, true));
+  EXPECT_FALSE(VDISPLAY::policy::defer_unidentified_readiness_candidate(false, true));
+}
+
 TEST(SunshineVirtualDisplay, InactiveRetainedDisplayReusesAdvertisedSessionMode) {
   using action = VDISPLAY::policy::reclaimed_display_action;
   constexpr std::array advertised_refreshes {60'000u, 120'000u, 240'000u};
