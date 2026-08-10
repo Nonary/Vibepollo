@@ -237,6 +237,9 @@ namespace nvhttp {
    */
   nlohmann::json get_all_clients();
 
+  nlohmann::json get_remote_display_layout();
+  bool set_remote_display_layout(const nlohmann::json &layout, std::string &error);
+
   /**
    * @brief Record a client's last seen time (seconds since epoch).
    */

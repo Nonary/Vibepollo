@@ -3,6 +3,7 @@ import { computed, reactive, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import SettingsOverrideEditor from '@/components/settings/SettingsOverrideEditor.vue';
+import DisplayTopologyEditor from '@/components/devices/DisplayTopologyEditor.vue';
 import { AppButton, SettingRow, StatusBadge, UiIcon } from '@/components/ui';
 
 export type ClientVirtualDisplayMode = 'global' | 'per_client' | 'shared' | 'disabled' | null;
@@ -785,6 +786,8 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
       :hidden-keys="hiddenOverrideKeys"
       :control-id-prefix="`${controlIdPrefix}-override`"
     />
+
+    <DisplayTopologyEditor v-if="isWindows" :client-uuid="controlIdPrefix.replace(/^client-/, '')" compact />
 
     <div class="client-settings-editor__footer">
       <p>{{ t('ui.devices.editor.blocking_help') }}</p>

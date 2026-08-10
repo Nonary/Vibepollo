@@ -145,6 +145,10 @@ export function apiPatch<T>(path: string, json: ApiPayload): Promise<T> {
   return apiRequest<T>(path, { method: 'PATCH', json });
 }
 
+export function apiPut<T>(path: string, json: ApiPayload): Promise<T> {
+  return apiRequest<T>(path, { method: 'PUT', json });
+}
+
 export function apiDelete<T>(path: string, json?: ApiPayload): Promise<T> {
   return apiRequest<T>(path, { method: 'DELETE', json });
 }

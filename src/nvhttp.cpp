@@ -50,6 +50,8 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "remote_display_topology.h"
+#include "remote_session.h"
 #include "platform/common.h"
 #include "state_storage.h"
 #include "update.h"
@@ -93,6 +95,7 @@ namespace nvhttp {
 
   struct client_t {
     std::vector<p_named_cert_t> named_devices;
+    std::string remote_display_layout_json {R"({"version":1,"placements":{}})"};
   };
 
   struct pair_session_t;
@@ -1270,6 +1273,7 @@ namespace nvhttp {
           snapshot.named_devices.emplace_back(std::make_shared<crypto::named_cert_t>(*named_cert));
         }
       }
+      snapshot.remote_display_layout_json = client_root.remote_display_layout_json;
       return snapshot;
     }
 
@@ -1378,6 +1382,7 @@ namespace nvhttp {
 
       root["root"] = nlohmann::json::object();
       root["root"]["uniqueid"] = http::unique_id;
+      root["root"]["remote_display_layout"] = client.remote_display_layout_json;
       if (share_state_file) {
         root["root"]["last_notified_version"] = update::state.last_notified_version;
       }
@@ -1565,6 +1570,7 @@ namespace nvhttp {
       http::unique_id = uid;
 
       client_t client;
+      client.remote_display_layout_json = root.value("remote_display_layout", client.remote_display_layout_json);
 
       if (root.contains("devices")) {
         for (auto &device_node : root["devices"]) {
@@ -1641,6 +1647,20 @@ namespace nvhttp {
         }
 
         client_root = client;
+      }
+
+      try {
+        const auto layout = nlohmann::json::parse(client.remote_display_layout_json);
+        if (!layout.is_object() ||
+            layout.value("version", 0U) != remote_display_topology::layout_version ||
+            !layout.contains("placements") ||
+            !layout["placements"].is_object()) {
+          remote_display_topology::instance().set_layout({{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}});
+        } else {
+          remote_display_topology::instance().set_layout(layout);
+        }
+      } catch (...) {
+        remote_display_topology::instance().set_layout({{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}});
       }
     }
 
@@ -3002,6 +3022,36 @@ namespace nvhttp {
       }
 
       return named_cert_nodes;
+    }
+
+    nlohmann::json get_remote_display_layout() {
+      const auto client = client_root_snapshot();
+      try {
+        return nlohmann::json::parse(client.remote_display_layout_json);
+      } catch (...) {
+        return {{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}};
+      }
+    }
+
+    bool set_remote_display_layout(const nlohmann::json &layout, std::string &error) {
+      std::vector<std::string> known_clients;
+      {
+        std::lock_guard lock(client_mutex);
+        known_clients.reserve(client_root.named_devices.size());
+        for (const auto &client : client_root.named_devices) {
+          if (client) known_clients.push_back(client->uuid);
+        }
+      }
+      if (!remote_display_topology::validate_layout(layout, known_clients, remote_display_topology::instance().physical_node_ids(), error)) {
+        return false;
+      }
+      {
+        std::lock_guard lock(client_mutex);
+        client_root.remote_display_layout_json = layout.dump();
+      }
+      save_state();
+      remote_display_topology::instance().set_layout(layout);
+      return true;
     }
 
     void mark_client_last_seen(const std::string &uuid) {
@@ -4663,6 +4713,7 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
+    remote_display_topology::instance().shutdown();
     map_id_sess.clear();
 
     https_server.stop();
@@ -4690,6 +4741,7 @@ namespace nvhttp {
   }
 
   void erase_all_clients() {
+    remote_display_topology::instance().shutdown();
     {
       std::lock_guard<std::mutex> lock(client_mutex);
       client_root = client_t {};
@@ -4938,6 +4990,7 @@ namespace nvhttp {
     load_state();
 
     if (removed) {
+      remote_display_topology::instance().unpair_client(std::string {uuid});
       auto session = rtsp_stream::find_session(uuid);
       if (session) {
         stop_session(*session, true);
