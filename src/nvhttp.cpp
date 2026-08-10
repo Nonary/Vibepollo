@@ -50,6 +50,7 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "remote_session.h"
 #include "platform/common.h"
 #include "state_storage.h"
 #include "update.h"
@@ -2899,14 +2900,21 @@ namespace nvhttp {
       tree.put("root.PairStatus", pair_status);
 
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-        int current_appid = proc::proc.running();
-        // When input only mode is enabled, the only resume method should be launching the same app again.
-        if (config::input.enable_input_only_mode && current_appid != proc::input_only_app_id) {
-          current_appid = 0;
-        }
-        tree.put("root.currentgame", current_appid);
-        tree.put("root.currentgameuuid", proc::proc.get_running_app_uuid());
-        tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
+        const int current_appid = proc::proc.running();
+        const auto active_session = proc::proc.active_session_guard();
+        const auto verified_client = get_verified_cert(request);
+        const auto identity = resolve_client_identity(request, verified_client);
+        const bool caller_owns_active_app =
+          current_appid > 0 && !identity.uuid.empty() && identity.uuid == active_session.client_uuid;
+        // Input-only sessions stay on their existing resume path. Other active
+        // games are visible only to their owner so another paired caller gets
+        // the remote-session controls instead of a globally busy host.
+        const bool expose_active_game =
+          caller_owns_active_app &&
+          !(config::input.enable_input_only_mode && current_appid != proc::input_only_app_id);
+        tree.put("root.currentgame", expose_active_game ? current_appid : 0);
+        tree.put("root.currentgameuuid", expose_active_game ? proc::proc.get_running_app_uuid() : "");
+        tree.put("root.state", expose_active_game ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
       } else {
         tree.put("root.currentgame", 0);
         tree.put("root.currentgameuuid", "");
@@ -3090,10 +3098,41 @@ namespace nvhttp {
           visible_apps.push_back(&app);
         }
 
+        std::vector<remote_session::app_t> configured_apps;
+        configured_apps.reserve(visible_apps.size());
+        for (const auto *app : visible_apps) {
+          const auto appid = util::from_view(app->id);
+          // The source remote-session controls replace Vibepollo's legacy
+          // synthetic input/terminate entries; do not advertise both sets.
+          if (appid == proc::input_only_app_id || appid == proc::terminate_app_id) {
+            continue;
+          }
+          configured_apps.push_back({appid, app->uuid, app->name, false});
+        }
+
+        const auto current_app = proc::proc.resolve_app(current_appid);
+        const auto active_session = proc::proc.active_session_guard();
+        const auto identity = resolve_client_identity(request, verified_client);
+        const remote_session::caller_t caller {
+          .uuid = identity.uuid,
+          .paired = !identity.uuid.empty(),
+          .may_view = has_client_perm(verified_client, PERM::view),
+          .may_launch = has_client_perm(verified_client, PERM::launch),
+          // Vibepollo has no separate termination permission; normal app
+          // termination is authorized by the launch permission too.
+          .may_terminate = has_client_perm(verified_client, PERM::launch),
+        };
+        const remote_session::game_t game {
+          .running = current_appid > 0 && current_appid != proc::input_only_app_id,
+          .owner_uuid = active_session.client_uuid,
+          .app = current_app ? remote_session::app_t {util::from_view(current_app->id), current_app->uuid, current_app->name, false} : remote_session::app_t {},
+        };
+        const auto projection = remote_session::project(caller, game, {}, configured_apps);
+
         const bool enable_legacy_ordering = config::sunshine.legacy_ordering && verified_client->enable_legacy_ordering;
         size_t bits = 0;
-        if (enable_legacy_ordering && !visible_apps.empty()) {
-          bits = zwpad::pad_width_for_count(visible_apps.size());
+        if (enable_legacy_ordering && !projection.catalogue.empty()) {
+          bits = zwpad::pad_width_for_count(projection.catalogue.size());
         }
 
 #ifdef _WIN32
@@ -3103,24 +3142,25 @@ namespace nvhttp {
 #endif
         const bool is_hdr_supported = advertised_video.hevc_mode == 3 || advertised_video.av1_mode == 3;
 
-        for (size_t i = 0; i < visible_apps.size(); ++i) {
-          const auto &app = *visible_apps[i];
+        for (size_t i = 0; i < projection.catalogue.size(); ++i) {
+          const auto &entry = projection.catalogue[i];
+          const auto configured = std::find_if(visible_apps.begin(), visible_apps.end(), [&entry](const auto *candidate) {
+            return candidate->uuid == entry.uuid;
+          });
 
-          std::string app_name;
+          std::string app_name = entry.title;
           if (enable_legacy_ordering && bits > 0) {
-            app_name = zwpad::pad_for_ordering(app.name, bits, i);
-          } else {
-            app_name = app.name;
+            app_name = zwpad::pad_for_ordering(app_name, bits, i);
           }
 
           pt::ptree app_node;
 
           app_node.put("IsHdrSupported"s, is_hdr_supported ? 1 : 0);
           app_node.put("AppTitle"s, app_name);
-          app_node.put("UUID", app.uuid);
-          app_node.put("IDX", app.idx);
-          app_node.put("ID", app.id);
-          app_node.put("ArtVersion", app.art_version);
+          app_node.put("UUID", entry.uuid);
+          app_node.put("IDX", entry.synthetic ? std::to_string(entry.id) : (configured == visible_apps.end() ? "" : (*configured)->idx));
+          app_node.put("ID", entry.id);
+          app_node.put("ArtVersion", entry.synthetic ? "remote-session-v5" : (configured == visible_apps.end() ? "" : (*configured)->art_version));
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
@@ -3165,8 +3205,29 @@ namespace nvhttp {
 
       auto args = request->parse_query_string();
 
+      if (
+        args.find("rikey"s) == std::end(args) ||
+        args.find("rikeyid"s) == std::end(args) ||
+        args.find("localAudioPlayMode"s) == std::end(args) ||
+        (args.find("appid"s) == std::end(args) && args.find("appuuid"s) == std::end(args))
+      ) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "Missing a required launch parameter");
+        return;
+      }
+
       auto appid_str = get_arg(args, "appid", "0");
       auto appuuid_str = get_arg(args, "appuuid", "");
+      // Remote-session controls are host actions, never configured apps. Keep
+      // them out of resolve_app() so stale control identifiers cannot launch a
+      // real app with a colliding id or UUID.
+      if (remote_session::identify(util::from_view(appid_str), appuuid_str) != remote_session::control_e::none) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "Remote session controls require the remote session coordinator");
+        return;
+      }
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_app_uuid = proc::proc.get_running_app_uuid();
@@ -3196,19 +3257,6 @@ namespace nvhttp {
 
         return;
       }
-      if (
-        args.find("rikey"s) == std::end(args) ||
-        args.find("rikeyid"s) == std::end(args) ||
-        args.find("localAudioPlayMode"s) == std::end(args) ||
-        (args.find("appid"s) == std::end(args) && args.find("appuuid"s) == std::end(args))
-      ) {
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 400);
-        tree.put("root.<xmlattr>.status_message", "Missing a required launch parameter");
-
-        return;
-      }
-
       if (!is_input_only) {
         // Special handling for the "terminate" app
         if (

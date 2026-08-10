@@ -96,6 +96,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/crypto.h"
         "${CMAKE_SOURCE_DIR}/src/http_pairing_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/http_pairing_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_session.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_session.h"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.h"
         "${CMAKE_SOURCE_DIR}/src/httpcommon.cpp"
