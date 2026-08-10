@@ -902,10 +902,23 @@ namespace display_helper::v2 {
       return false;
     }
     const bool layout_ok = !loaded.has_layout_data || display_.current_layout_matches(loaded.layout_rotations);
-    const bool ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) && layout_ok &&
-                    quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    bool ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) && layout_ok &&
+              quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    if (ok && loaded.has_layout_data && !loaded.layout_rotations.empty()) {
+      if (token.is_cancelled()) {
+        return false;
+      }
+      // Windows can report the expected portrait orientation after a virtual-display
+      // teardown while a GPU driver's pointer transform is still stale. Reasserting
+      // the saved rotations gives the driver a display-change notification without
+      // replaying the complete topology restore.
+      ok = display_.apply_layout_rotations(loaded.layout_rotations, true);
+      if (!ok) {
+        BOOST_LOG(warning) << "Restore (" << label << "): failed to refresh matching display rotations.";
+      }
+    }
     if (ok) {
-      BOOST_LOG(info) << "Restore (" << label << "): current state already matches baseline; skipping apply.";
+      BOOST_LOG(info) << "Restore (" << label << "): current state already matches baseline; skipping full apply.";
     }
     return ok;
   }

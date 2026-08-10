@@ -50,7 +50,9 @@ namespace display_helper::v2 {
     bool reset_staged_apply_state() override;
     bool is_primary_device(const std::string &device_id) override;
     codec::layout_rotation_map_t capture_layout_rotations(const std::set<std::string> &device_ids) override;
-    bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override;
+    bool apply_layout_rotations(
+      const codec::layout_rotation_map_t &layout_rotations,
+      bool force_reassert_matching = false) override;
     bool current_layout_matches(const codec::layout_rotation_map_t &expected) override;
     bool set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) override;
     std::optional<display_device::Resolution> get_display_resolution(const std::string &device_id) override;

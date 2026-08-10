@@ -124,7 +124,8 @@ namespace display_helper::v2 {
     }
 
     /// Apply per-device rotations (batched, mirrors legacy CDS_NORESET commit).
-    virtual bool apply_layout_rotations(const codec::layout_rotation_map_t &) {
+    virtual bool apply_layout_rotations(const codec::layout_rotation_map_t &, bool force_reassert_matching = false) {
+      (void) force_reassert_matching;
       return true;
     }
 

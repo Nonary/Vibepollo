@@ -127,12 +127,38 @@ namespace display_helper::v2 {
     return it->second;
   }
 
+  std::optional<codec::ParsedSnapshot> InMemorySnapshotStorage::load_with_metadata(SnapshotTier tier) {
+    auto snapshot = load(tier);
+    if (!snapshot) {
+      return std::nullopt;
+    }
+
+    codec::ParsedSnapshot loaded;
+    loaded.snapshot = std::move(*snapshot);
+    loaded.snapshot_version = codec::kSnapshotLayoutVersionLatest;
+    if (auto it = layout_rotations_.find(tier); it != layout_rotations_.end()) {
+      loaded.layout_rotations = it->second;
+    }
+    return loaded;
+  }
+
   bool InMemorySnapshotStorage::save(SnapshotTier tier, const Snapshot &snapshot) {
     snapshots_[tier] = snapshot;
+    layout_rotations_.erase(tier);
+    return true;
+  }
+
+  bool InMemorySnapshotStorage::save(
+    SnapshotTier tier,
+    const Snapshot &snapshot,
+    const codec::layout_rotation_map_t &layout_rotations) {
+    snapshots_[tier] = snapshot;
+    layout_rotations_[tier] = layout_rotations;
     return true;
   }
 
   bool InMemorySnapshotStorage::remove(SnapshotTier tier) {
+    layout_rotations_.erase(tier);
     return snapshots_.erase(tier) > 0;
   }
 

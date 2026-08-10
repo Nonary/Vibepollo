@@ -171,6 +171,20 @@ TEST(SunshineVirtualDisplay, ActivePhysicalDisplayDetectionIsScopedToConfiguredA
   expect_contains(misc_source, "if (config::video.adapter_name.empty()) {");
 }
 
+TEST(SunshineVirtualDisplay, MatchingPortraitRotationIsReassertedDuringRestore) {
+  const auto source = read_source("src/platform/windows/display_helper_v2/win_display_settings.cpp");
+  const auto prepare_pos = source.find("prepare_display_rotation(");
+  ASSERT_NE(prepare_pos, std::string::npos);
+  const auto prepare_end = source.find("}  // namespace", prepare_pos);
+  ASSERT_NE(prepare_end, std::string::npos);
+  const auto prepare_body = source.substr(prepare_pos, prepare_end - prepare_pos);
+
+  // Landscape may be skipped when already correct. Portrait and inverted
+  // orientations must still reach ChangeDisplaySettingsEx so GPU drivers can
+  // refresh a stale pointer transform after virtual-display teardown.
+  expect_contains(prepare_body, "!force_reassert_matching || *target == DMDO_DEFAULT");
+}
+
 TEST(SunshineVirtualDisplay, ConfiguredRenderAdapterIsNeverSilentlyReplaced) {
   for (const auto &relative_path : {
          std::string {"src/platform/windows/virtual_display_sunshine.cpp"},

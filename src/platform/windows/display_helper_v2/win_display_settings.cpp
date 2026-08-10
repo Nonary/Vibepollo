@@ -855,7 +855,10 @@ namespace display_helper::v2 {
       bool already_correct = false;
     };
 
-    std::optional<PreparedRotation> prepare_display_rotation(const std::wstring &display_name, int degrees) {
+    std::optional<PreparedRotation> prepare_display_rotation(
+      const std::wstring &display_name,
+      int degrees,
+      bool force_reassert_matching) {
       if (display_name.empty()) {
         return std::nullopt;
       }
@@ -870,13 +873,18 @@ namespace display_helper::v2 {
       }
       auto *mode = reinterpret_cast<DEVMODEW *>(buf.data());
 
-      if (mode->dmDisplayOrientation == *target) {
+      if (mode->dmDisplayOrientation == *target &&
+          (!force_reassert_matching || *target == DMDO_DEFAULT)) {
         return PreparedRotation {display_name, {}, true};
       }
 
       const bool swap_axes = ((mode->dmDisplayOrientation + *target) % 2) == 1;
       mode->dmFields = DM_DISPLAYORIENTATION | DM_POSITION;
       mode->dmDisplayOrientation = *target;
+      // A non-default orientation must be submitted even when Windows already
+      // reports the requested value. After a virtual display is removed, some
+      // GPU drivers retain the virtual output's pointer transform until the
+      // portrait mode is explicitly reasserted.
       if (swap_axes) {
         std::swap(mode->dmPelsWidth, mode->dmPelsHeight);
         mode->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
@@ -940,7 +948,9 @@ namespace display_helper::v2 {
     return out;
   }
 
-  bool WinDisplaySettings::apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+  bool WinDisplaySettings::apply_layout_rotations(
+    const codec::layout_rotation_map_t &layout_rotations,
+    bool force_reassert_matching) {
     if (layout_rotations.empty()) {
       return true;
     }
@@ -962,7 +972,7 @@ namespace display_helper::v2 {
         continue;
       }
 
-      auto prepared = prepare_display_rotation(it->second, rotation);
+      auto prepared = prepare_display_rotation(it->second, rotation, force_reassert_matching);
       if (!prepared) {
         BOOST_LOG(warning) << "Layout restore: failed to prepare rotation for " << device_id
                            << " (" << rotation << " degrees)";
