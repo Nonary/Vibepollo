@@ -80,7 +80,6 @@ export const clientOverrideableKeys = new Set([
   'dd_config_revert_on_disconnect',
   'dd_paused_virtual_display_timeout_secs',
   'dd_always_restore_from_golden',
-  'dd_display_helper_engine',
   'dd_snapshot_exclude_devices',
   'dd_snapshot_restore_hotkey',
   'dd_snapshot_restore_hotkey_modifiers',
@@ -538,11 +537,6 @@ export const settingsCategories: SettingsCategory[] = [
             step: 1,
             visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
           }),
-          select('dd_display_helper_engine', [
-            option('auto', '_common.auto'),
-            option('v2', 'ui.settings.options.display_engine.current'),
-            option('legacy', 'ui.settings.options.display_engine.legacy'),
-          ]),
           boolean('vulkan_hdr_layer'),
           boolean('dd_wa_dummy_plug_hdr10', {
             visibleWhen: { key: 'virtual_display_mode', equals: 'disabled' },
@@ -824,7 +818,6 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_use_sunshine_virtual_display_driver: true,
   dd_activate_virtual_display: false,
   dd_virtual_display_permanent_count: 0,
-  dd_display_helper_engine: 'auto',
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   dd_config_revert_on_disconnect: false,
