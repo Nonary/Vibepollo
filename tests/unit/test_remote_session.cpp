@@ -65,17 +65,33 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
 TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSafe) {
   remote_session::pending_registry_t registry;
   const auto expiry = std::chrono::steady_clock::now() + std::chrono::minutes(1);
-  EXPECT_TRUE(registry.add({1, "one", "10.0.0.1", true, remote_session::role_e::monitor, expiry}));
-  EXPECT_TRUE(registry.add({2, "two", "10.0.0.1", true, remote_session::role_e::monitor, expiry}));
-  EXPECT_EQ(registry.match_encrypted("one", std::chrono::steady_clock::now())->launch_id, 1u);
-  EXPECT_EQ(registry.match_encrypted("two", std::chrono::steady_clock::now())->launch_id, 2u);
-  EXPECT_TRUE(registry.add({3, "three", "10.0.0.2", false, remote_session::role_e::game, expiry}));
+  EXPECT_TRUE(registry.add({.launch_id = 1, .client_uuid = "one", .crypto_binding = "cert-one", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::monitor, .generation = 1, .expires_at = expiry}));
+  EXPECT_TRUE(registry.add({.launch_id = 2, .client_uuid = "two", .crypto_binding = "cert-two", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::monitor, .generation = 1, .expires_at = expiry}));
+  EXPECT_EQ(registry.match_encrypted("one", "cert-one", std::chrono::steady_clock::now())->launch_id, 1u);
+  EXPECT_EQ(registry.match_encrypted("two", "cert-two", std::chrono::steady_clock::now())->launch_id, 2u);
+  EXPECT_FALSE(registry.match_encrypted("one", "cert-two", std::chrono::steady_clock::now()));
+  EXPECT_TRUE(registry.add({.launch_id = 3, .client_uuid = "three", .source_address = "10.0.0.2", .encrypted = false, .role = remote_session::role_e::game, .expires_at = expiry}));
   std::string warning;
-  EXPECT_FALSE(registry.add({4, "four", "10.0.0.2", false, remote_session::role_e::game, expiry}, &warning));
+  EXPECT_FALSE(registry.add({.launch_id = 4, .client_uuid = "four", .source_address = "10.0.0.2", .encrypted = false, .role = remote_session::role_e::game, .expires_at = expiry}, &warning));
   EXPECT_FALSE(warning.empty());
   EXPECT_EQ(registry.match_plaintext("10.0.0.2", std::chrono::steady_clock::now())->launch_id, 3u);
   registry.expire(std::chrono::steady_clock::now() + std::chrono::minutes(2));
-  EXPECT_FALSE(registry.match_encrypted("one", std::chrono::steady_clock::now() + std::chrono::minutes(2)));
+  EXPECT_FALSE(registry.match_encrypted("one", "cert-one", std::chrono::steady_clock::now() + std::chrono::minutes(2)));
+}
+
+TEST(RemoteSession, MonitorHooksRejectWithoutTopologyAndPreserveGeneration) {
+  remote_session::register_monitor_runtime_hooks({});
+  const auto unavailable = remote_session::activate_or_resume_monitor("client", "Client", "1920x1080@60", 7);
+  EXPECT_FALSE(unavailable.accepted);
+  EXPECT_TRUE(unavailable.retryable);
+
+  std::uint64_t released_generation {};
+  remote_session::register_monitor_runtime_hooks({
+    .explicit_release = [&released_generation](std::string_view, std::uint64_t generation, std::string_view) { released_generation = generation; },
+  });
+  remote_session::release_monitor("client", 7, "disconnect");
+  EXPECT_EQ(released_generation, 7u);
+  remote_session::register_monitor_runtime_hooks({});
 }
 
 TEST(RemoteSession, LayoutGraphRejectsInvalidAnchorsCyclesAndDuplicatePrimary) {

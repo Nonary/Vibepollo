@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <iterator>
+#include <mutex>
 #include <unordered_set>
 
 namespace remote_session {
   namespace {
+    std::mutex monitor_runtime_hooks_mutex;
+    monitor_runtime_hooks_t monitor_runtime_hooks;
     bool equal_folded(std::string_view left, std::string_view right) {
       if (left.size() != right.size()) return false;
       for (std::size_t i = 0; i < left.size(); ++i) {
@@ -111,6 +114,65 @@ namespace remote_session {
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }
 
+  void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks) {
+    std::lock_guard lock {monitor_runtime_hooks_mutex};
+    monitor_runtime_hooks = std::move(hooks);
+  }
+
+  monitor_runtime_state_t activate_or_resume_monitor(const std::string_view client_uuid, const std::string_view client_label, const std::string_view requested_mode, const std::uint64_t generation) {
+    std::function<monitor_runtime_state_t(std::string_view, std::string_view, std::string_view, std::uint64_t)> activate;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      activate = monitor_runtime_hooks.activate_or_resume;
+    }
+    return activate ? activate(client_uuid, client_label, requested_mode, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
+  }
+
+  monitor_runtime_state_t monitor_runtime_snapshot(const std::string_view client_uuid, const std::uint64_t generation) {
+    std::function<monitor_runtime_state_t(std::string_view, std::uint64_t)> snapshot;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      snapshot = monitor_runtime_hooks.snapshot;
+    }
+    return snapshot ? snapshot(client_uuid, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
+  }
+
+  void release_monitor(const std::string_view client_uuid, const std::uint64_t generation, const std::string_view reason) {
+    std::function<void(std::string_view, std::uint64_t, std::string_view)> release;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      release = monitor_runtime_hooks.explicit_release;
+    }
+    if (release) release(client_uuid, generation, reason);
+  }
+
+  void notify_monitor_transport_lost(const std::string_view client_uuid, const std::uint64_t generation) {
+    std::function<void(std::string_view, std::uint64_t)> transport_lost;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      transport_lost = monitor_runtime_hooks.transport_lost;
+    }
+    if (transport_lost) transport_lost(client_uuid, generation);
+  }
+
+  void notify_monitor_unpair(const std::string_view client_uuid) {
+    std::function<void(std::string_view)> unpair;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      unpair = monitor_runtime_hooks.unpair;
+    }
+    if (unpair) unpair(client_uuid);
+  }
+
+  void notify_monitor_shutdown() {
+    std::function<void()> shutdown;
+    {
+      std::lock_guard lock {monitor_runtime_hooks_mutex};
+      shutdown = monitor_runtime_hooks.shutdown;
+    }
+    if (shutdown) shutdown();
+  }
+
   bool pending_registry_t::add(pending_t pending, std::string *warning) {
     expire(std::chrono::steady_clock::now());
     if (!pending.launch_id || pending_.contains(pending.launch_id)) return false;
@@ -127,11 +189,11 @@ namespace remote_session {
     return true;
   }
 
-  std::optional<pending_t> pending_registry_t::match_encrypted(const std::string_view client_uuid, const std::chrono::steady_clock::time_point now) {
+  std::optional<pending_t> pending_registry_t::match_encrypted(const std::string_view client_uuid, const std::string_view crypto_binding, const std::chrono::steady_clock::time_point now) {
     expire(now);
     std::optional<pending_t> match;
     for (const auto &[id, pending] : pending_) {
-      if (pending.encrypted && pending.client_uuid == client_uuid) {
+      if (pending.encrypted && pending.client_uuid == client_uuid && pending.crypto_binding == crypto_binding) {
         if (match) return std::nullopt;
         match = pending;
       }

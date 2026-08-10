@@ -550,6 +550,9 @@ namespace stream {
     int stream_fps = 0;
     int stream_fps_scaled = 0;
     std::uint32_t client_display_refresh_millihz = 0;
+    remote_session::role_e remote_role {remote_session::role_e::game};
+    std::uint64_t remote_role_generation {};
+    bool input_only {};
 
     safe::mail_t mail;
 
@@ -2914,7 +2917,9 @@ namespace stream {
         session.videoThread.join();
         hung_stage->store("audio thread");
         BOOST_LOG(debug) << "Waiting for audio to end..."sv;
-        session.audioThread.join();
+        if (session.audioThread.joinable()) {
+          session.audioThread.join();
+        }
         hung_stage->store("control end");
         BOOST_LOG(debug) << "Waiting for control to end..."sv;
         session.controlEnd.view();
@@ -2951,6 +2956,13 @@ namespace stream {
         });
 
         exec_thread.detach();
+      }
+
+      if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
+        // A monitor transport disappearing is not a release. The topology
+        // owner keeps its logical lease until an explicit, generation-matched
+        // disconnect, unpair, or shutdown request arrives.
+        remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
       }
 
       // Serialize only the ownership transition and shared cleanup. Blocking
@@ -3059,12 +3071,16 @@ namespace stream {
       session.video.peer.address(addr);
       session.video.peer.port(0);
 
-      session.audio.peer.address(addr);
-      session.audio.peer.port(0);
+      if (!session.input_only) {
+        session.audio.peer.address(addr);
+        session.audio.peer.port(0);
+      }
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
-      session.audioThread = std::thread {audioThread, &session};
+      if (!session.input_only) {
+        session.audioThread = std::thread {audioThread, &session};
+      }
       session.videoThread = std::thread {videoThread, &session};
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
@@ -3226,6 +3242,9 @@ namespace stream {
         session->stream_fps_scaled = fps_millihz;
       }
       session->client_display_refresh_millihz = launch_session.client_display_refresh_millihz;
+      session->remote_role = launch_session.role;
+      session->remote_role_generation = launch_session.role_generation;
+      session->input_only = launch_session.role == remote_session::role_e::input;
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;
@@ -3259,37 +3278,25 @@ namespace stream {
         session->video.gcm_iv_counter = 0;
       }
 
-      constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
-
-      util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
-      util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
-
-      for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) {
-        shards_p[x] = (uint8_t *) &shards[x * max_block_size];
+      if (!session->input_only) {
+        constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
+        util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
+        util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
+        for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) shards_p[x] = (uint8_t *) &shards[x * max_block_size];
+        session->audio.shards = std::move(shards);
+        session->audio.shards_p = std::move(shards_p);
+        session->audio.fec_packet.rtp.header = 0x80;
+        session->audio.fec_packet.rtp.packetType = 127;
+        session->audio.fec_packet.rtp.timestamp = 0;
+        session->audio.fec_packet.rtp.ssrc = 0;
+        session->audio.fec_packet.fecHeader.payloadType = 97;
+        session->audio.fec_packet.fecHeader.ssrc = 0;
+        session->audio.cipher = crypto::cipher::cbc_t {launch_session.gcm_key, true};
+        session->audio.ping_payload = launch_session.av_ping_payload;
+        session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
+        session->audio.sequenceNumber = 0;
+        session->audio.timestamp = 0;
       }
-
-      // Audio FEC spans multiple audio packets,
-      // therefore its session specific
-      session->audio.shards = std::move(shards);
-      session->audio.shards_p = std::move(shards_p);
-
-      session->audio.fec_packet.rtp.header = 0x80;
-      session->audio.fec_packet.rtp.packetType = 127;
-      session->audio.fec_packet.rtp.timestamp = 0;
-      session->audio.fec_packet.rtp.ssrc = 0;
-
-      session->audio.fec_packet.fecHeader.payloadType = 97;
-      session->audio.fec_packet.fecHeader.ssrc = 0;
-
-      session->audio.cipher = crypto::cipher::cbc_t {
-        launch_session.gcm_key,
-        true
-      };
-
-      session->audio.ping_payload = launch_session.av_ping_payload;
-      session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
-      session->audio.sequenceNumber = 0;
-      session->audio.timestamp = 0;
 
       session->control.peer = nullptr;
       session->state.store(state_e::STOPPED, std::memory_order_relaxed);
