@@ -6,6 +6,7 @@
 
 #include "src/config.h"
 #include "src/display_helper_builder.h"
+#include "src/platform/windows/display_helper_v2/timing.h"
 #include "src/rtsp.h"
 
 #include <display_device/types.h>
@@ -21,10 +22,14 @@ namespace display_helper_integration {
     StreamStart
   };
 
-  /// Per-APPLY identity for the synchronous v1 capture gate. It is intentionally
-  /// owned by the launching session rather than looked up through mutable global state.
+  /// Per-APPLY identity for the v2 capture gate. It is intentionally owned by
+  /// the launching session rather than looked up through mutable global state.
   struct ApplyVerificationTicket {
     std::uint64_t generation {0};
+    std::uint64_t helper_request_id {0};
+    std::uint64_t client_wait_generation {0};
+    std::uint64_t connection_generation {0};
+    bool uses_v2_helper {false};
     std::chrono::steady_clock::time_point startup_deadline {};
   };
 
@@ -108,16 +113,18 @@ namespace display_helper_integration {
     Unknown
   };
 
-  // Full-policy APPLY acknowledgement and verification share this budget.
-  inline constexpr auto kApplyVerificationTimeout = std::chrono::seconds(15);
+  // Full-policy APPLY acknowledgement and verification share this budget;
+  // verification receives only the time left after APPLY.
+  inline constexpr auto kApplyVerificationTimeout = display_helper::v2::timing::kApplyStartupBudget;
   // RTSP stream-start APPLYs use a shorter shared deadline so capture can begin
   // before the client's first-video timeout, even when APPLY itself is slow.
   inline constexpr auto kStreamStartApplyVerificationTimeout =
-    std::chrono::seconds(8);
+    display_helper::v2::timing::kStreamStartApplyBudget;
   inline constexpr auto kApplyVerificationGateWaitTimeout =
-    kStreamStartApplyVerificationTimeout + std::chrono::seconds(1);
+    kStreamStartApplyVerificationTimeout + display_helper::v2::timing::kApplyGateConsumerSlack;
 
-  // v1 completes APPLY only after its synchronous verification has finished.
+  // Wait for helper verification to finish after APPLY (v2 engine only).
+  // Returns Unknown on timeout, legacy engine, or when verification is unavailable.
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout);

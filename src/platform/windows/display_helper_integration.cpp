@@ -20,6 +20,7 @@
   #include <mutex>
   #include <optional>
   #include <string>
+  #include <string_view>
   #include <thread>
   #include <vector>
 
@@ -849,6 +850,26 @@ namespace {
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
   static std::atomic<bool> g_restore_expected {false};
 
+  // Resolve the effective display helper engine. In automatic mode the v2 engine
+  // only rides pre-release builds; stable releases keep the legacy engine until
+  // v2 has soaked, and users opt in explicitly via dd_display_helper_engine.
+  static bool use_legacy_helper_engine() {
+    using engine_e = config::video_t::dd_t::helper_engine_e;
+    switch (config::video.dd.display_helper_engine) {
+      case engine_e::legacy:
+        return true;
+      case engine_e::v2:
+        return false;
+      case engine_e::automatic:
+      default:
+        break;
+    }
+#ifdef PROJECT_VERSION_PRERELEASE
+    return std::string_view(PROJECT_VERSION_PRERELEASE).empty();
+#else
+    return true;
+#endif
+  }
   static std::atomic<std::uint64_t> g_restore_generation {0};
   static std::atomic<std::uint64_t> g_disarm_generation_sent {0};
   static std::atomic<std::int64_t> g_last_revert_us {0};
@@ -1230,9 +1251,12 @@ namespace {
     }
 
     const bool allow_system_fallback = platf::is_running_as_system() && !user_session_ready();
-    // The helper has one v1 implementation. Keep the command line explicit so
-    // old helper processes cannot select a retired engine from persisted state.
-    const std::wstring helper_args = L"--engine=legacy";
+    // Select the helper engine (legacy fallback vs v2) and propagate the log level.
+    const bool legacy_engine = use_legacy_helper_engine();
+    std::wstring helper_args = legacy_engine ? L"--engine=legacy" : L"--engine=v2";
+    helper_args += L" --log-level=";
+    helper_args += std::to_wstring(std::clamp(config::sunshine.min_log_level, 0, 6));
+    statefile::save_display_helper_engine(legacy_engine ? "legacy" : "v2");
     BOOST_LOG(debug) << "Starting display helper: " << platf::to_utf8(helper.wstring())
                      << " " << platf::to_utf8(helper_args);
     if (cancellation_requested(cancellation_predicate) ||
@@ -1342,6 +1366,11 @@ namespace {
       note_helper_start_success();
     } else {
       note_helper_start_failure("IPC readiness timeout");
+    }
+    if (ipc_ready && !legacy_engine && !cancellation_predicate) {
+      // Keep the v2 helper's log verbosity in sync with Sunshine (legacy would
+      // log "Unknown message type" for this frame).
+      (void) platf::display_helper_client::send_log_level(std::clamp(config::sunshine.min_log_level, 0, 6));
     }
     return ipc_ready;
   }
@@ -1872,6 +1901,9 @@ namespace display_helper_integration {
         }
 
         BOOST_LOG(info) << "Display helper: sending APPLY request via helper.";
+        std::uint64_t helper_apply_request_id = 0;
+        std::uint64_t client_wait_generation = 0;
+        std::uint64_t connection_generation = 0;
         const auto remaining_apply_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
           startup_deadline - std::chrono::steady_clock::now());
         if (remaining_apply_budget <= std::chrono::milliseconds::zero()) {
@@ -1880,9 +1912,9 @@ namespace display_helper_integration {
         }
         const bool ok = platf::display_helper_client::send_apply_json(
           *payload,
-          nullptr,
-          nullptr,
-          nullptr,
+          &helper_apply_request_id,
+          &client_wait_generation,
+          &connection_generation,
           startup_cancellation_predicate,
           static_cast<int>(remaining_apply_budget.count()),
           shutdown_class_caller);
@@ -1891,8 +1923,15 @@ namespace display_helper_integration {
           BOOST_LOG(debug) << "Display helper: APPLY completion was cancelled before its session state was published.";
           return false;
         }
-        if (ok) {
-          g_last_verified_apply_generation.store(apply_generation, std::memory_order_release);
+        // The client identifies the live helper protocol from its ApplyResult.
+        // A non-zero id means this specific connection confirmed v2's
+        // token/verification protocol; an untagged legacy acknowledgement
+        // intentionally preserves v1's synchronous completion behavior.
+        if (verification_ticket && ok && helper_apply_request_id != 0) {
+          verification_ticket->uses_v2_helper = true;
+          verification_ticket->helper_request_id = helper_apply_request_id;
+          verification_ticket->client_wait_generation = client_wait_generation;
+          verification_ticket->connection_generation = connection_generation;
         }
         if (ok && request.session) {
           if (startup_cancellation_predicate()) {
@@ -1982,15 +2021,47 @@ namespace display_helper_integration {
   ApplyVerificationStatus wait_for_apply_verification(
     const ApplyVerificationTicket &ticket,
     std::chrono::milliseconds timeout) {
-    (void) timeout;
-    if (ticket.generation == 0) {
+    // Legacy success is acknowledged only after its synchronous verification,
+    // but it does not emit a separately attributable VerificationResult frame.
+    if (!ticket.uses_v2_helper || ticket.generation == 0 || ticket.helper_request_id == 0 ||
+        ticket.client_wait_generation == 0 || ticket.connection_generation == 0) {
       return ApplyVerificationStatus::Unknown;
     }
-    if (g_last_apply_generation.load(std::memory_order_acquire) == ticket.generation &&
-        g_last_verified_apply_generation.load(std::memory_order_acquire) == ticket.generation) {
+
+    auto effective_timeout = std::max(timeout, std::chrono::milliseconds::zero());
+    if (ticket.startup_deadline != std::chrono::steady_clock::time_point {}) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        ticket.startup_deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::milliseconds::zero()) {
+        BOOST_LOG(warning) << "Display helper: verification skipped because the shared stream-start budget expired.";
+        return ApplyVerificationStatus::Unknown;
+      }
+      effective_timeout = std::min(effective_timeout, remaining);
+    }
+    const int timeout_ms = static_cast<int>(effective_timeout.count());
+    const auto result = platf::display_helper_client::wait_for_verification_result(
+      timeout_ms,
+      [generation = ticket.generation] {
+        return g_last_apply_generation.load(std::memory_order_acquire) != generation;
+      },
+      ticket.helper_request_id,
+      ticket.client_wait_generation,
+      ticket.connection_generation
+    );
+    if (!result.has_value()) {
+      if (g_last_apply_generation.load(std::memory_order_acquire) != ticket.generation) {
+        BOOST_LOG(debug) << "Display helper: verification gate superseded by a newer APPLY.";
+      } else {
+        BOOST_LOG(warning) << "Display helper: verification result unavailable; proceeding with stream.";
+      }
+      return ApplyVerificationStatus::Unknown;
+    }
+
+    if (*result && g_last_apply_generation.load(std::memory_order_acquire) == ticket.generation) {
+      g_last_verified_apply_generation.store(ticket.generation, std::memory_order_release);
       return ApplyVerificationStatus::Verified;
     }
-    return ApplyVerificationStatus::Unknown;
+    return *result ? ApplyVerificationStatus::Unknown : ApplyVerificationStatus::Failed;
   }
 
   bool last_apply_is_capture_stable() {
@@ -2164,8 +2235,15 @@ namespace display_helper_integration {
     }
     BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
     const auto payload = build_snapshot_exclude_payload();
+    // Wire behavior is selected from the helper that actually answered APPLY,
+    // not from a configuration value that may have changed while a helper was
+    // being reused. An unknown connection dispatches in pipe order; APPLY has
+    // its own pre-apply baseline fallback if that snapshot is not yet saved.
     const bool bounded =
       operation_deadline != std::chrono::steady_clock::time_point::max();
+    const bool v2_helper =
+      !bounded &&
+      platf::display_helper_client::uses_v2_response_protocol();
     const bool ok =
       bounded ?
         platf::display_helper_client::send_snapshot_current_within(
@@ -2173,9 +2251,11 @@ namespace display_helper_integration {
           operation_deadline,
           cancellation_predicate
         ) :
-        platf::display_helper_client::send_snapshot_current(payload);
+        (v2_helper ?
+           platf::display_helper_client::send_snapshot_current_and_wait(payload) :
+           platf::display_helper_client::send_snapshot_current(payload));
     BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
-                    << (bounded ? "bounded operation" : "dispatch")
+                    << (bounded ? "bounded operation" : (v2_helper ? "completion" : "dispatch"))
                     << " result=" << (ok ? "true" : "false");
     return ok;
   }

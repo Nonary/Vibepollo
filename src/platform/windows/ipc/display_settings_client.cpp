@@ -26,6 +26,7 @@
   #include "display_settings_client.h"
   #include "src/globals.h"
   #include "src/logging.h"
+  #include "src/platform/windows/display_helper_v2/timing.h"
   #include "src/platform/windows/ipc/pipes.h"
 
 namespace platf::display_helper_client {
@@ -34,7 +35,9 @@ namespace platf::display_helper_client {
     constexpr int kConnectTimeoutMs = 2000;
     constexpr int kSendTimeoutMs = 5000;
     constexpr int kShutdownIpcTimeoutMs = 500;
-    constexpr int kApplyResultTimeoutMs = 15000;
+    constexpr int kV2ApplyResultTimeoutMs = static_cast<int>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        display_helper::v2::timing::kApplyStartupBudget).count());
     constexpr int kLegacyApplyResultTimeoutMs = 5000;
     // A refresh-only mode set on a virtual display serializes against the OS display
     // stack. While an alt-tab is already changing modes, the helper has been measured
@@ -1459,7 +1462,7 @@ namespace platf::display_helper_client {
     const auto protocol = current_apply_response_protocol(session);
     const int protocol_timeout_ms = protocol == ApplyResponseProtocol::Legacy ?
                                       kLegacyApplyResultTimeoutMs :
-                                      kApplyResultTimeoutMs;
+                                      kV2ApplyResultTimeoutMs;
     const auto protocol_deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(protocol_timeout_ms);
     const auto reader_deadline = std::min(operation_deadline, protocol_deadline);
