@@ -106,6 +106,10 @@ namespace display_helper_integration {
   // replaces, so its identity must never enter a session topology snapshot.
   std::optional<std::vector<std::vector<std::string>>> capture_physical_topology();
 
+  // Apply a remote-monitor coordinator composition directly. This is not a
+  // stream APPLY/REVERT and deliberately never creates or restores snapshots.
+  bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology);
+
 #ifdef _WIN32
   enum class ApplyVerificationStatus {
     Verified,

@@ -552,7 +552,17 @@ namespace {
     for (const auto &[device_id, point] : topology.monitor_positions) {
       BOOST_LOG(debug) << "Display helper: setting origin for " << device_id
                        << " to (" << point.m_x << "," << point.m_y << ") after " << label << ".";
-      (void) ctx->display->setDisplayOrigin(device_id, point);
+      if (!ctx->display->setDisplayOrigin(device_id, point)) {
+        BOOST_LOG(warning) << "Display helper: failed to set origin for " << device_id << " (" << label << ").";
+        topology_ok = false;
+      }
+    }
+
+    if (topology.primary_device && !topology.primary_device->empty() &&
+        !ctx->display->setAsPrimary(*topology.primary_device)) {
+      BOOST_LOG(warning) << "Display helper: failed to set remote composed primary "
+                         << *topology.primary_device << " (" << label << ").";
+      topology_ok = false;
     }
 
     return topology_ok;
@@ -2779,6 +2789,10 @@ namespace display_helper_integration {
                       << " existing virtual display identity from the stream topology baseline.";
     }
     return topology;
+  }
+
+  bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology) {
+    return apply_topology_definition(topology, "remote-monitor coordinator");
   }
 
   std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail) {

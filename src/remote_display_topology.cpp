@@ -137,28 +137,28 @@ namespace remote_display_topology {
   void coordinator_t::explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason) {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || generation < it->second.generation) return;
-    if (callbacks_.remove_owned_display) callbacks_.remove_owned_display(client_uuid);
-    it->second.remote_monitor = false;
-    it->second.lease_held = false;
-    it->second.lifecycle = lifecycle_e::released;
-    it->second.warning = reason;
+    if (it == clients_.end() || generation != it->second.generation) return;
+    release_locked(client_uuid, it->second, reason);
     if (!it->second.normal_game) clients_.erase(it);
   }
 
   void coordinator_t::transport_lost(const std::string &client_uuid, uint64_t generation) {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || generation < it->second.generation) return;
-    it->second.generation = generation;
+    if (it == clients_.end() || generation != it->second.generation) return;
     it->second.lease_held = false;
     it->second.lifecycle = lifecycle_e::retryable;
     it->second.warning = "Transport was lost; Remote Monitor ownership and desired settings were retained for Resume.";
   }
 
   activation_result_t coordinator_t::activate_locked(const std::string &client_uuid, client_state_t &state) {
+    if (!callbacks_.create_or_reclaim || !callbacks_.apply_composed_topology || !callbacks_.exact_target_has_current_mode_and_dxgi) {
+      state.lifecycle = lifecycle_e::retryable;
+      state.warning = "Remote Monitor runtime wiring is unavailable; ownership was retained for Resume.";
+      return {true, false, state.warning};
+    }
     state.lifecycle = lifecycle_e::leased;
-    if (callbacks_.create_or_reclaim && !callbacks_.create_or_reclaim(client_uuid, state.requested_mode)) {
+    if (!callbacks_.create_or_reclaim(client_uuid, state.requested_mode)) {
       state.lifecycle = lifecycle_e::retryable;
       state.warning = "The owned virtual display could not be created or reclaimed; Resume will retry the same identity.";
       return {true, false, state.warning};
@@ -167,13 +167,13 @@ namespace remote_display_topology {
     state.lifecycle = lifecycle_e::applying;
     std::vector<std::string> warnings;
     const auto composed = compose_locked(warnings);
-    if (callbacks_.apply_composed_topology && !callbacks_.apply_composed_topology(composed)) {
+    if (!callbacks_.apply_composed_topology(composed)) {
       state.lifecycle = lifecycle_e::retryable;
       state.warning = "The composed display topology did not apply; existing owners and their displays were retained.";
       return {true, false, state.warning};
     }
     if (!warnings.empty()) state.warning = warnings.front();
-    const auto exact_output = callbacks_.exact_target_has_current_mode_and_dxgi ? callbacks_.exact_target_has_current_mode_and_dxgi(client_uuid) : std::nullopt;
+    const auto exact_output = callbacks_.exact_target_has_current_mode_and_dxgi(client_uuid, state.requested_mode);
     if (!exact_output || exact_output->empty()) {
       state.lifecycle = lifecycle_e::retryable;
       state.warning = "The exact Remote Monitor target is not yet active with a current mode in capture enumeration; no physical-display fallback is allowed.";
@@ -198,15 +198,34 @@ namespace remote_display_topology {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end()) return;
-    if (callbacks_.remove_owned_display) callbacks_.remove_owned_display(client_uuid);
-    it->second.remote_monitor = false;
-    it->second.lease_held = false;
-    it->second.lifecycle = lifecycle_e::released;
+    release_locked(client_uuid, it->second, "Remote Monitor was disconnected.");
     if (!it->second.normal_game) clients_.erase(it);
   }
 
   void coordinator_t::unpair_client(const std::string &client_uuid) { disconnect_monitor(client_uuid); std::lock_guard lock(mutex_); clients_.erase(client_uuid); }
-  void coordinator_t::shutdown() { std::lock_guard lock(mutex_); for (const auto &[uuid, state] : clients_) if (state.remote_monitor && callbacks_.remove_owned_display) callbacks_.remove_owned_display(uuid); clients_.clear(); }
+  void coordinator_t::shutdown() {
+    std::lock_guard lock(mutex_);
+    for (auto &[uuid, state] : clients_) {
+      if (state.remote_monitor) release_locked(uuid, state, "Remote Monitor runtime is shutting down.");
+    }
+    clients_.clear();
+  }
+
+  void coordinator_t::release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason) {
+    if (!state.remote_monitor) return;
+    if (callbacks_.remove_owned_display) callbacks_.remove_owned_display(client_uuid);
+    state.remote_monitor = false;
+    state.lease_held = false;
+    state.lifecycle = lifecycle_e::released;
+    state.warning = reason;
+
+    // Recompose only the remaining explicit owners.  This intentionally does
+    // not restore a saved/global topology or remove any peer identity.
+    if (callbacks_.apply_composed_topology) {
+      std::vector<std::string> ignored;
+      (void) callbacks_.apply_composed_topology(compose_locked(ignored));
+    }
+  }
 
   mode_t coordinator_t::effective_mode(const node_t &node) { return node.current_mode.value_or(node.last_requested_mode.value_or(node.configured_mode)); }
 

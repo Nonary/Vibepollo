@@ -96,7 +96,7 @@ namespace remote_session {
         break;
       case control_e::disconnect_game:
         result.permission = permission_e::terminate;
-        result.allowed = caller.may_terminate && game.running;
+        result.allowed = caller.may_terminate && owns_game(caller, game);
         result.terminate_game = result.allowed;
         break;
       case control_e::disconnect_monitor:

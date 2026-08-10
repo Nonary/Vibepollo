@@ -1543,6 +1543,77 @@ namespace video {
     config_t config;
   };
 
+#ifdef _WIN32
+  // A protocol video stream is still required for Remote Input, but it must
+  // never open a desktop/WGC/DD capture target. This source allocates the
+  // normal D3D encoder surfaces and fills them through the existing dummy_img
+  // path, so it remains per-session and encoder-compatible rather than being
+  // a global overlay or a special packet generator.
+  class black_display_t final: public platf::dxgi::display_vram_t {
+  public:
+    explicit black_display_t(const config_t &config) {
+      width = logical_width = env_width = env_logical_width = std::max(1, config.width);
+      height = logical_height = env_height = env_logical_height = std::max(1, config.height);
+      width_before_rotation = width;
+      height_before_rotation = height;
+      capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+      next_image_id.store(0, std::memory_order_relaxed);
+      const D3D_FEATURE_LEVEL feature_levels[] {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+      if (FAILED(D3D11CreateDevice(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            feature_levels, sizeof(feature_levels) / sizeof(D3D_FEATURE_LEVEL), D3D11_SDK_VERSION,
+            &device, &feature_level, &device_ctx))) {
+        device.reset();
+        return;
+      }
+      platf::dxgi::dxgi_t dxgi;
+      IDXGIAdapter *base_adapter = nullptr;
+      if (FAILED(device->QueryInterface(IID_IDXGIDevice, reinterpret_cast<void **>(&dxgi))) ||
+          FAILED(dxgi->GetAdapter(&base_adapter)) ||
+          FAILED(base_adapter->QueryInterface(IID_IDXGIAdapter1, reinterpret_cast<void **>(&adapter)))) {
+        if (base_adapter) base_adapter->Release();
+        device.reset();
+        return;
+      }
+      base_adapter->Release();
+    }
+
+    bool valid() const { return static_cast<bool>(device); }
+
+    platf::capture_e capture(
+      const push_captured_image_cb_t &push,
+      const pull_free_image_cb_t &pull,
+      bool * /*cursor*/
+    ) override {
+      const auto cadence = std::chrono::milliseconds(1000 / std::max(1, client_frame_rate));
+      for (;;) {
+        std::shared_ptr<platf::img_t> image;
+        if (!pull(image) || !image) return platf::capture_e::ok;
+        if (dummy_img(image.get()) != 0) return platf::capture_e::error;
+        if (!push(std::move(image), true)) return platf::capture_e::ok;
+        std::this_thread::sleep_for(std::max(cadence, std::chrono::milliseconds(1)));
+      }
+    }
+
+  protected:
+    platf::capture_e snapshot(
+      const pull_free_image_cb_t &,
+      std::shared_ptr<platf::img_t> &,
+      std::chrono::milliseconds,
+      bool
+    ) override { return platf::capture_e::error; }
+    platf::capture_e release_snapshot() override { return platf::capture_e::ok; }
+  };
+
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
+    auto display = std::make_shared<black_display_t>(config);
+    if (!display->valid()) return {};
+    display->client_frame_rate = std::max(1, config.framerate);
+    return display;
+  }
+#endif
+
   struct capture_thread_async_ctx_t {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue;
     std::thread capture_thread;
@@ -1562,7 +1633,6 @@ namespace video {
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
-  auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
@@ -2544,7 +2614,27 @@ namespace video {
    * @param display_names The list of display names to repopulate.
    * @param current_display_index The current display index or -1 if not yet known.
    */
-  void refresh_displays(platf::mem_type_e dev_type, std::vector<std::string> &display_names, int &current_display_index, std::string &preferred_display_name) {
+  void refresh_displays(
+    platf::mem_type_e dev_type,
+    std::vector<std::string> &display_names,
+    int &current_display_index,
+    const std::optional<std::string> &required_output = std::nullopt
+  ) {
+    if (required_output && !required_output->empty()) {
+      display_names = platf::display_names(dev_type);
+      const auto exact = std::find_if(display_names.begin(), display_names.end(), [&](const auto &candidate) {
+        return boost::iequals(candidate, *required_output);
+      });
+      if (exact == display_names.end()) {
+        // This is a topology-owned target. Do not reuse a previous list or
+        // index zero because that can silently capture a physical display.
+        display_names.clear();
+        current_display_index = -1;
+        return;
+      }
+      current_display_index = static_cast<int>(std::distance(display_names.begin(), exact));
+      return;
+    }
     // It is possible that the output name may be empty even if it wasn't before (device disconnected) or vice-versa
     const auto runtime_output_override = config::runtime_output_name_override();
     const bool has_runtime_output_override = runtime_output_override.has_value();
@@ -2682,7 +2772,17 @@ namespace video {
     std::shared_ptr<platf::display_t> disp;
 
     while (capture_ctx_queue->running()) {
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      const auto &capture_config = capture_ctxs.front().config;
+      if (capture_config.capture_source == capture_source_e::synthetic_black) {
+#ifdef _WIN32
+        disp = make_black_display(capture_config);
+        if (disp) break;
+#endif
+        return;
+      }
+
+      const auto required_output = capture_config.capture_source == capture_source_e::exact_output ? capture_config.capture_output : std::nullopt;
+      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
       if (!ensure_virtual_display_ready(display_names, display_p)) {
         std::this_thread::sleep_for(50ms);
@@ -2988,7 +3088,8 @@ namespace video {
 #endif
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
+              const auto required_output = capture_ctxs.front().config.capture_source == capture_source_e::exact_output ? capture_ctxs.front().config.capture_output : std::nullopt;
+              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
               if (!ensure_virtual_display_ready(display_names, display_p)) {
                 std::this_thread::sleep_for(50ms);
@@ -5287,7 +5388,8 @@ namespace video {
       wait_for_recent_display_apply_stability();
 #endif
       // Refresh display names since a display removal might have caused the reinitialization
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+      const auto required_output = synced_session_ctxs.front()->config.capture_source == capture_source_e::exact_output ? synced_session_ctxs.front()->config.capture_output : std::nullopt;
+      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
       if (!ensure_virtual_display_ready(display_names, display_p)) {
         std::this_thread::sleep_for(50ms);
@@ -5529,18 +5631,24 @@ namespace video {
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
     auto images = std::make_shared<img_event_t::element_type>();
-    auto ref = capture_thread_async.ref();
+    // A capture worker belongs to the session's source key. The former shared
+    // worker selected its first context's display for every later context,
+    // which made a second Remote Monitor silently capture the wrong output.
+    capture_thread_async_ctx_t source_ctx {};
+    if (start_capture_async(source_ctx) != 0) {
+      return;
+    }
+    auto stop_source = util::fail_guard([&]() {
+      end_capture_async(source_ctx);
+    });
     auto lg = util::fail_guard([&]() {
       images->stop();
       shutdown_event->raise(true);
     });
-    if (!ref) {
-      return;
-    }
 
-    ref->capture_ctx_queue->raise(capture_ctx_t {images, config});
+    source_ctx.capture_ctx_queue->raise(capture_ctx_t {images, config});
 
-    if (!ref->capture_ctx_queue->running()) {
+    if (!source_ctx.capture_ctx_queue->running()) {
       return;
     }
 
@@ -5567,19 +5675,19 @@ namespace video {
 
     while (!shutdown_event->peek() && images->running()) {
       // Wait for the main capture event when the display is being reinitialized
-      if (ref->reinit_event.peek()) {
+      if (source_ctx.reinit_event.peek()) {
         std::this_thread::sleep_for(20ms);
         continue;
       }
       // Wait for the display to be ready
       std::shared_ptr<platf::display_t> display;
       {
-        auto lg = ref->display_wp.lock();
-        if (ref->display_wp->expired()) {
+        auto lg = source_ctx.display_wp.lock();
+        if (source_ctx.display_wp->expired()) {
           continue;
         }
 
-        display = ref->display_wp->lock();
+        display = source_ctx.display_wp->lock();
       }
 
       auto *enc_ptr = chosen_encoder;
@@ -5590,7 +5698,7 @@ namespace video {
       auto &encoder = *enc_ptr;
       const auto initialization_deadline = std::chrono::steady_clock::now() + 5s;
       initialization_cancel_t initialization_cancelled = [&]() {
-        return shutdown_event->peek() || ref->reinit_event.peek() || !images->running();
+        return shutdown_event->peek() || source_ctx.reinit_event.peek() || !images->running();
       };
 
       std::unique_ptr<platf::encode_device_t> encode_device;
@@ -5653,7 +5761,7 @@ namespace video {
         display,
         std::move(encode_device),
         std::move(prepared_session),
-        ref->reinit_event,
+        source_ctx.reinit_event,
         session_encoder,
         &hdr_latch,
         channel_data,
@@ -5731,7 +5839,7 @@ namespace video {
     auto idr_events = mail->event<bool>(mail::idr);
 
     idr_events->raise(true);
-    if (encoder->flags & PARALLEL_ENCODING) {
+    if ((encoder->flags & PARALLEL_ENCODING) || config.capture_source != capture_source_e::active_output) {
       capture_async(std::move(mail), config, channel_data);
     } else {
       safe::signal_t join_event;

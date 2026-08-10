@@ -54,7 +54,8 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   const auto active_game = game();
   EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::resume).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("other", false), active_game, {}, remote_session::control_e::resume).allowed);
-  EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).terminate_game);
+  EXPECT_FALSE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).terminate_game);
   EXPECT_FALSE(remote_session::dispatch(caller("other", true, true, false), active_game, {}, remote_session::control_e::disconnect_game).allowed);
   EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::disconnect_monitor).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor).allowed);

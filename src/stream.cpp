@@ -2851,6 +2851,10 @@ namespace stream {
       return false;
     }
 
+    bool remote_role_match(const session_t &session, const remote_session::role_e role, const std::uint64_t generation) {
+      return session.remote_role == role && session.remote_role_generation == generation;
+    }
+
     void stop(session_t &session) {
       while_starting_do_nothing(session.state);
       auto expected = state_e::RUNNING;
@@ -3245,6 +3249,14 @@ namespace stream {
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
       session->input_only = launch_session.role == remote_session::role_e::input;
+      session->config.monitor.input_only = session->input_only;
+      if (session->input_only) {
+        session->config.monitor.capture_source = video::capture_source_e::synthetic_black;
+        session->config.monitor.capture_output.reset();
+      } else if (launch_session.role == remote_session::role_e::monitor && launch_session.remote_capture_output) {
+        session->config.monitor.capture_source = video::capture_source_e::exact_output;
+        session->config.monitor.capture_output = launch_session.remote_capture_output;
+      }
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;

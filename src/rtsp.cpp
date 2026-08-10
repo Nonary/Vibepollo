@@ -790,8 +790,8 @@ namespace rtsp_stream {
      *       the session will be discarded.
      * @param launch_session Streaming session information.
      */
-    void session_raise(std::shared_ptr<launch_session_t> launch_session) {
-      if (!launch_session || launch_session->id == 0) return;
+    bool session_raise(std::shared_ptr<launch_session_t> launch_session) {
+      if (!launch_session || launch_session->id == 0) return false;
       const auto expires_at = std::chrono::steady_clock::now() + config::stream.ping_timeout;
       bool accepted = false;
       {
@@ -815,6 +815,12 @@ namespace rtsp_stream {
         set_pending_vulkan_hdr_layer_stream(pending_hdr_active());
         arm_pending_timer();
       }
+      return accepted;
+    }
+
+    std::string plaintext_warning() {
+      std::lock_guard lock {pending_launches_mutex};
+      return plaintext_route_warning;
     }
 
     /**
@@ -1166,6 +1172,47 @@ namespace rtsp_stream {
       return !to_cleanup.empty();
     }
 
+    bool disconnect_remote_role(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      bool removed_pending = false;
+      bool vulkan_hdr_layer_active = false;
+      {
+        std::lock_guard lock {pending_launches_mutex};
+        for (auto it = pending_launches.begin(); it != pending_launches.end();) {
+          const auto &pending = it->second.session;
+          if (pending->client_uuid == client_uuid && pending->role == role && pending->role_generation == generation) {
+            it = pending_launches.erase(it);
+            removed_pending = true;
+          } else {
+            ++it;
+          }
+        }
+      }
+      {
+        auto lg = _session_state.lock();
+        for (auto it = _session_state->sessions.begin(); it != _session_state->sessions.end();) {
+          const auto &session = *it;
+          if (stream::session::uuid_match(*session, client_uuid) && stream::session::remote_role_match(*session, role, generation)) {
+            to_cleanup.emplace_back(session);
+            _session_state->client_uuids.erase(session.get());
+            _session_state->vulkan_hdr_layer_sessions.erase(session.get());
+            it = _session_state->sessions.erase(it);
+          } else {
+            ++it;
+          }
+        }
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
+      }
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
+      for (auto &session : to_cleanup) {
+        stream::session::stop(*session);
+        stream::session::join(*session);
+      }
+      return removed_pending || !to_cleanup.empty();
+    }
+
     /**
      * @brief Runs an iteration of the RTSP server loop
      */
@@ -1256,8 +1303,14 @@ namespace rtsp_stream {
 
   rtsp_server_t server {};
 
-  void launch_session_raise(std::shared_ptr<launch_session_t> launch_session) {
-    server.session_raise(std::move(launch_session));
+  bool launch_session_raise(std::shared_ptr<launch_session_t> launch_session) {
+    return server.session_raise(std::move(launch_session));
+  }
+
+  std::string plaintext_route_warning() { return server.plaintext_warning(); }
+
+  bool disconnect_remote_role_session(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
+    return server.disconnect_remote_role(client_uuid, role, generation);
   }
 
   void launch_session_clear(uint32_t launch_session_id) {

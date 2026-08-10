@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -75,6 +76,62 @@ using namespace std::literals;
 
 namespace nvhttp {
 
+  namespace {
+    struct remote_role_owner_t {
+      remote_session::role_e role {remote_session::role_e::none};
+      std::uint64_t generation {};
+    };
+
+    std::mutex remote_role_owners_mutex;
+    std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;
+
+    std::string remote_role_owner_key(std::string_view uuid, remote_session::role_e role) {
+      return std::string {uuid} + ':' + std::to_string(static_cast<unsigned int>(role));
+    }
+
+    remote_session::owner_t remote_owner_for_client(std::string_view uuid) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      for (const auto role : {remote_session::role_e::monitor, remote_session::role_e::input}) {
+        const auto it = remote_role_owners.find(remote_role_owner_key(uuid, role));
+        if (it == remote_role_owners.end()) continue;
+        remote_session::owner_t owner {.role = role};
+        if (role == remote_session::role_e::monitor) {
+          const auto state = remote_session::monitor_runtime_snapshot(uuid, it->second.generation);
+          owner.retained = state.accepted;
+          owner.ready = state.ready;
+          owner.retryable = state.retryable;
+          if (!state.output.empty()) owner.output = state.output;
+        }
+        return owner;
+      }
+      return {};
+    }
+
+    void remember_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      remote_role_owners.insert_or_assign(remote_role_owner_key(uuid, role), remote_role_owner_t {role, generation});
+    }
+
+    std::optional<std::uint64_t> remote_owner_generation(std::string_view uuid, remote_session::role_e role) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      const auto it = remote_role_owners.find(remote_role_owner_key(uuid, role));
+      return it == remote_role_owners.end() ? std::nullopt : std::make_optional(it->second.generation);
+    }
+
+    void forget_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      const auto key = remote_role_owner_key(uuid, role);
+      const auto it = remote_role_owners.find(key);
+      if (it != remote_role_owners.end() && it->second.generation == generation) remote_role_owners.erase(it);
+    }
+
+    void forget_remote_client(std::string_view uuid) {
+      std::lock_guard lock {remote_role_owners_mutex};
+      remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::monitor));
+      remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::input));
+    }
+  }  // namespace
+
   static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in Sunshine. Moonlight-qt will report Malformed XML (missing root element)."sv;
 
   namespace fs = std::filesystem;
@@ -108,6 +165,141 @@ namespace nvhttp {
   static std::string otp_device_name;
   static std::chrono::time_point<std::chrono::steady_clock> otp_creation_time;
   thread_local crypto::x509_t tl_peer_certificate;
+
+#ifdef _WIN32
+  namespace {
+    bool remote_device_id_equals(const std::string &lhs, const std::string &rhs) {
+      return !lhs.empty() && !rhs.empty() && boost::iequals(lhs, rhs);
+    }
+
+    int remote_refresh_hz(const display_device::FloatingPoint &refresh) {
+      if (const auto *ratio = std::get_if<display_device::Rational>(&refresh)) {
+        return ratio->m_denominator == 0 ? 0 : static_cast<int>(std::lround(static_cast<double>(ratio->m_numerator) / ratio->m_denominator));
+      }
+      if (const auto *value = std::get_if<double>(&refresh)) return static_cast<int>(std::lround(*value));
+      return 0;
+    }
+
+    void refresh_remote_monitor_physical_baseline() {
+      const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) return;
+      std::vector<remote_display_topology::node_t> physical;
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || !device.m_info || VDISPLAY::is_virtual_display_output(device.m_device_id)) continue;
+        physical.push_back({
+          .id = device.m_device_id,
+          .label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name,
+          .physical = true,
+          .active = true,
+          .primary = device.m_info->m_primary,
+          .x = device.m_info->m_origin_point.m_x,
+          .y = device.m_info->m_origin_point.m_y,
+          .configured_mode = {
+            .width = static_cast<int>(device.m_info->m_resolution.m_width),
+            .height = static_cast<int>(device.m_info->m_resolution.m_height),
+            .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
+          },
+        });
+      }
+      remote_display_topology::instance().set_physical_baseline(std::move(physical));
+    }
+
+    bool apply_remote_monitor_composition(const std::vector<remote_display_topology::node_t> &nodes) {
+      display_helper_integration::DisplayTopologyDefinition topology;
+      const auto physical = display_helper_integration::capture_physical_topology();
+      if (!physical) return false;
+      topology.topology = *physical;
+      const auto has_device = [&topology](const std::string &id) {
+        return std::any_of(topology.topology.begin(), topology.topology.end(), [&id](const auto &group) {
+          return std::any_of(group.begin(), group.end(), [&id](const auto &candidate) { return remote_device_id_equals(candidate, id); });
+        });
+      };
+      for (const auto &node : nodes) {
+        std::string device_id = node.id;
+        if (!node.physical) {
+          const auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(node.id, {}, {}, false);
+          if (!resolved) return false;
+          device_id = *resolved;
+        }
+        if (!has_device(device_id)) topology.topology.push_back({device_id});
+        topology.monitor_positions.emplace(device_id, display_device::Point {node.x, node.y});
+        if (node.primary) topology.primary_device = device_id;
+      }
+      return display_helper_integration::apply_remote_composed_topology(topology);
+    }
+
+    std::optional<std::string> remote_monitor_exact_capture_output(const std::string &client_uuid, const remote_display_topology::mode_t &mode) {
+      const auto expected_device = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(client_uuid, {}, {}, false);
+      if (!expected_device) return std::nullopt;
+      const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) return std::nullopt;
+      const auto capture_outputs = platf::display_names(platf::mem_type_e::dxgi);
+      for (const auto &device : *devices) {
+        if (!remote_device_id_equals(device.m_device_id, *expected_device) || !device.m_info || device.m_display_name.empty()) continue;
+        if (static_cast<int>(device.m_info->m_resolution.m_width) != mode.width ||
+            static_cast<int>(device.m_info->m_resolution.m_height) != mode.height ||
+            remote_refresh_hz(device.m_info->m_refresh_rate) != mode.refresh_hz) return std::nullopt;
+        const auto output = std::find_if(capture_outputs.begin(), capture_outputs.end(), [&](const auto &candidate) {
+          return remote_device_id_equals(candidate, device.m_display_name);
+        });
+        if (output != capture_outputs.end()) return *output;
+        return std::nullopt;
+      }
+      return std::nullopt;
+    }
+
+    void register_remote_monitor_runtime() {
+      remote_display_topology::instance().set_runtime_callbacks({
+        .create_or_reclaim = [](const std::string &client_uuid, const remote_display_topology::mode_t &mode) {
+          if (!VDISPLAY::ensure_driver_is_ready()) return false;
+          const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
+          GUID guid {};
+          std::memcpy(&guid, stable_uuid.b8, sizeof(guid));
+          return VDISPLAY::createVirtualDisplay(client_uuid.c_str(), client_uuid.c_str(), nullptr,
+                   static_cast<std::uint32_t>(mode.width), static_cast<std::uint32_t>(mode.height),
+                   static_cast<std::uint32_t>(mode.refresh_hz * 1000), guid,
+                   static_cast<std::uint32_t>(mode.refresh_hz * 1000), false, 1, false, false, true)
+            .has_value();
+        },
+        .apply_composed_topology = apply_remote_monitor_composition,
+        .exact_target_has_current_mode_and_dxgi = remote_monitor_exact_capture_output,
+        .remove_owned_display = [](const std::string &client_uuid) {
+          const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
+          GUID guid {};
+          std::memcpy(&guid, stable_uuid.b8, sizeof(guid));
+          (void) VDISPLAY::removeVirtualDisplay(guid);
+        },
+      });
+      remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
+        return rtsp_stream::plaintext_route_warning();
+      });
+      remote_session::register_monitor_runtime_hooks({
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) {
+          remote_display_topology::mode_t mode;
+          if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 ||
+              mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
+            return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
+          }
+          refresh_remote_monitor_physical_baseline();
+          const auto state = remote_display_topology::instance().activate_or_resume(std::string {uuid}, std::string {label}, mode, generation);
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+        },
+        .snapshot = [](std::string_view uuid, std::uint64_t generation) {
+          const auto state = remote_display_topology::instance().snapshot(std::string {uuid}, generation);
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+        },
+        .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
+          remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+        },
+        .transport_lost = [](std::string_view uuid, std::uint64_t generation) {
+          remote_display_topology::instance().transport_lost(std::string {uuid}, generation);
+        },
+        .unpair = [](std::string_view uuid) { remote_display_topology::instance().unpair_client(std::string {uuid}); },
+        .shutdown = [] { remote_display_topology::instance().shutdown(); },
+      });
+    }
+  }  // namespace
+#endif
 
   std::string cert_subject_name_for_log(const crypto::x509_t &cert) {
     auto subject_name = crypto::subject_name(cert.get());
@@ -3126,7 +3318,7 @@ namespace nvhttp {
           .owner_uuid = active_session.client_uuid,
           .app = current_app ? remote_session::app_t {util::from_view(current_app->id), current_app->uuid, current_app->name, false} : remote_session::app_t {},
         };
-        const auto projection = remote_session::project(caller, game, {}, remote_configured_apps);
+        const auto projection = remote_session::project(caller, game, remote_owner_for_client(identity.uuid), remote_configured_apps);
 
         const bool enable_legacy_ordering = config::sunshine.legacy_ordering && verified_client->enable_legacy_ordering;
         size_t bits = 0;
@@ -3239,7 +3431,8 @@ namespace nvhttp {
           .may_launch = has_client_perm(verified_client, PERM::launch),
           .may_terminate = has_client_perm(verified_client, PERM::launch),
         };
-        const auto decision = remote_session::dispatch(caller, game, {}, synthetic_control);
+        const auto owner = remote_owner_for_client(request_client_identity.uuid);
+        const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
         if (!decision.allowed) {
           tree.put("root.resume", 0);
           tree.put("root.<xmlattr>.status_code", 403);
@@ -3256,9 +3449,88 @@ namespace nvhttp {
           cancel(std::move(response), std::move(request));
           return;
         }
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Remote session transport is not ready");
+        if (synthetic_control == remote_session::control_e::disconnect_input ||
+            synthetic_control == remote_session::control_e::disconnect_monitor) {
+          const auto role = synthetic_control == remote_session::control_e::disconnect_input ? remote_session::role_e::input : remote_session::role_e::monitor;
+          const auto generation = remote_owner_generation(request_client_identity.uuid, role);
+          if (!generation) {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", 409);
+            tree.put("root.<xmlattr>.status_message", "Remote session generation is no longer owned by this caller");
+            return;
+          }
+          if (role == remote_session::role_e::monitor) {
+            remote_session::release_monitor(request_client_identity.uuid, *generation, "Disconnect Monitor");
+          }
+          (void) rtsp_stream::disconnect_remote_role_session(request_client_identity.uuid, role, *generation);
+          forget_remote_owner(request_client_identity.uuid, role, *generation);
+          tree.put("root.<xmlattr>.status_code", 200);
+          tree.put("root.gamesession", 0);
+          return;
+        }
+        if (synthetic_control == remote_session::control_e::resume ||
+            synthetic_control == remote_session::control_e::running_game) {
+          if (current_appid > 0) {
+            g.disable();
+            resume(host_audio, std::move(response), std::move(request), current_appid);
+            return;
+          }
+          if (const auto generation = remote_owner_generation(request_client_identity.uuid, remote_session::role_e::monitor)) {
+            const auto state = remote_session::monitor_runtime_snapshot(request_client_identity.uuid, *generation);
+            if (!state.ready) {
+              tree.put("root.resume", 0);
+              tree.put("root.<xmlattr>.status_code", 503);
+              tree.put("root.<xmlattr>.status_message", state.error.empty() ? "Remote Monitor is still preparing its exact capture target" : state.error);
+              return;
+            }
+          } else {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", 404);
+            tree.put("root.<xmlattr>.status_message", "No running game or retained Remote Monitor belongs to this caller");
+            return;
+          }
+        }
+
+        if (synthetic_control != remote_session::control_e::input &&
+            synthetic_control != remote_session::control_e::monitor &&
+            synthetic_control != remote_session::control_e::resume &&
+            synthetic_control != remote_session::control_e::running_game) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Unsupported remote session control");
+          return;
+        }
+
+        auto launch_session = make_launch_session_from_snapshot(false, false, args, verified_client, &request_client_identity);
+        launch_session->rtsp_source_address = request->remote_endpoint().address().to_string();
+        launch_session->role_generation = launch_session->id;
+        launch_session->role = synthetic_control == remote_session::control_e::input ? remote_session::role_e::input : remote_session::role_e::monitor;
+        launch_session->host_audio = false;
+        launch_session->continuous_audio = false;
+        if (launch_session->role == remote_session::role_e::monitor) {
+          const auto mode = std::format("{}x{}@{}", launch_session->width, launch_session->height, launch_session->fps);
+          const auto monitor = remote_session::activate_or_resume_monitor(request_client_identity.uuid, request_client_identity.name, mode, launch_session->role_generation);
+          if (!monitor.ready || monitor.output.empty()) {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", monitor.retryable ? 503 : 500);
+            tree.put("root.<xmlattr>.status_message", monitor.error.empty() ? "Remote Monitor exact capture target is not ready" : monitor.error);
+            return;
+          }
+          launch_session->remote_capture_output = monitor.output;
+        }
+        if (!rtsp_stream::launch_session_raise(launch_session)) {
+          if (launch_session->role == remote_session::role_e::monitor) {
+            remote_session::release_monitor(request_client_identity.uuid, launch_session->role_generation, "RTSP admission rejected");
+          }
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 409);
+          tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
+          return;
+        }
+        remember_remote_owner(request_client_identity.uuid, launch_session->role, launch_session->role_generation);
+        tree.put("root.<xmlattr>.status_code", 200);
+        tree.put("root.sessionUrl0", std::format("{}{}:{}", launch_session->rtsp_url_scheme, net::addr_to_url_escaped_string(request->local_endpoint().address()), static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))));
+        tree.put("root.gamesession", 1);
         return;
       }
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
@@ -4231,10 +4503,19 @@ namespace nvhttp {
       return;
     }
 
+    const auto identity = resolve_client_identity(request, verified_client);
+    const bool has_running_app = proc::proc.running() > 0;
+    const auto active_session = proc::proc.active_session_guard();
+    if (!has_running_app || active_session.client_uuid != identity.uuid) {
+      tree.put("root.cancel", 0);
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "Only the configured running-game owner may cancel this game");
+      return;
+    }
+
     tree.put("root.cancel", 1);
     tree.put("root.<xmlattr>.status_code", 200);
 
-    const bool has_running_app = proc::proc.running() > 0;
 #ifdef _WIN32
     const bool preserve_deferred_launch =
       has_running_app &&
@@ -4484,6 +4765,9 @@ namespace nvhttp {
 
   void start() {
     platf::set_thread_name("nvhttp");
+#ifdef _WIN32
+    register_remote_monitor_runtime();
+#endif
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
     auto port_http = net::map_port(PORT_HTTP);
@@ -4713,7 +4997,6 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
-    remote_display_topology::instance().shutdown();
     map_id_sess.clear();
 
     https_server.stop();
@@ -4725,6 +5008,9 @@ namespace nvhttp {
     blocking_route_pool.join();
     discovery_route_pool.stop();
     discovery_route_pool.join();
+    rtsp_stream::terminate_sessions(false);
+    remote_session::notify_monitor_shutdown();
+    remote_session::register_monitor_runtime_hooks({});
   }
 
   std::string request_otp(const std::string &passphrase, const std::string &deviceName) {
@@ -4741,7 +5027,7 @@ namespace nvhttp {
   }
 
   void erase_all_clients() {
-    remote_display_topology::instance().shutdown();
+    remote_session::notify_monitor_shutdown();
     {
       std::lock_guard<std::mutex> lock(client_mutex);
       client_root = client_t {};
@@ -4769,6 +5055,8 @@ namespace nvhttp {
   }
 
   bool disconnect_client(const std::string &uuid) {
+    remote_display_topology::instance().disconnect_monitor(uuid);
+    forget_remote_client(uuid);
     return rtsp_stream::disconnect_client_sessions(uuid);
   }
 
@@ -4990,7 +5278,8 @@ namespace nvhttp {
     load_state();
 
     if (removed) {
-      remote_display_topology::instance().unpair_client(std::string {uuid});
+      remote_session::notify_monitor_unpair(uuid);
+      forget_remote_client(uuid);
       auto session = rtsp_stream::find_session(uuid);
       if (session) {
         stop_session(*session, true);

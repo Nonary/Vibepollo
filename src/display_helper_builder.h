@@ -59,6 +59,9 @@ namespace display_helper_integration {
   struct DisplayTopologyDefinition {
     std::vector<std::vector<std::string>> topology;
     std::map<std::string, display_device::Point> monitor_positions;
+    // A remote composed topology is applied as one operation and may select a
+    // saved client display as primary after its target is part of that topology.
+    std::optional<std::string> primary_device;
     /// Pre-VD-creation refresh rates for physical monitors: device_id → {numerator, denominator}.
     std::map<std::string, std::pair<unsigned int, unsigned int>> device_refresh_rate_overrides;
   };
