@@ -336,6 +336,8 @@ sunshine_register_component(NAME test_component_stream_protocol TEST_SOURCE unit
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp")
 sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/test_remote_session.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_session.cpp")
+sunshine_register_component(NAME test_component_remote_display_topology TEST_SOURCE unit/test_remote_display_topology.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp")
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp

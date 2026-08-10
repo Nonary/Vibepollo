@@ -61,6 +61,7 @@
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
+#include "remote_display_topology.h"
 #include "platform/common.h"
 #include "rtsp.h"
 #include "session_history.h"
@@ -2527,6 +2528,62 @@ namespace confighttp {
     // The list changes immediately after pair/unpair. Avoid serving an old empty
     // list from an HTTP cache after the client state has changed.
     send_response(response, output_tree, "no-store");
+  }
+
+  void refresh_remote_display_physical_baseline() {
+    try {
+      const auto devices = nlohmann::json::parse(display_helper_integration::enumerate_devices_json(display_device::DeviceEnumerationDetail::Full));
+      if (!devices.is_array()) return;
+      std::vector<remote_display_topology::node_t> nodes;
+      for (const auto &device : devices) {
+        const auto id = device.value("device_id", "");
+        const auto label = device.value("friendly_name", device.value("display_name", id));
+        if (id.empty() || boost::algorithm::icontains(label, "virtual display")) continue;
+        remote_display_topology::node_t node;
+        node.id = id;
+        node.label = label;
+        node.physical = true;
+        const auto info = device.value("info", nlohmann::json::object());
+        node.active = info.value("active", true);
+        node.primary = info.value("primary", false);
+        nodes.push_back(std::move(node));
+      }
+      remote_display_topology::instance().set_physical_baseline(std::move(nodes));
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Remote display layout could not refresh physical monitor baseline: " << e.what();
+    }
+  }
+
+  void getClientDisplayLayout(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) return;
+    print_req(request);
+    refresh_remote_display_physical_baseline();
+    const auto clients = nvhttp::get_all_clients();
+    std::vector<nlohmann::json> client_nodes;
+    for (const auto &client : clients) client_nodes.push_back(client);
+    auto output = remote_display_topology::instance().snapshot(client_nodes);
+    output["layout"] = nvhttp::get_remote_display_layout();
+    send_response(response, output, "no-store");
+  }
+
+  void putClientDisplayLayout(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json") || !authenticate(response, request)) return;
+    print_req(request);
+    refresh_remote_display_physical_baseline();
+    try {
+      std::stringstream body;
+      body << request->content.rdbuf();
+      const auto layout = nlohmann::json::parse(body);
+      std::string error;
+      if (!nvhttp::set_remote_display_layout(layout, error)) {
+        bad_request(response, request, error);
+        return;
+      }
+      nlohmann::json output {{"status", true}, {"layout", nvhttp::get_remote_display_layout()}, {"applies_on_next_activation", true}};
+      send_response(response, output, "no-store");
+    } catch (const std::exception &e) {
+      bad_request(response, request, e.what());
+    }
   }
 
 #ifdef _WIN32
@@ -5799,6 +5856,8 @@ namespace confighttp {
     register_api_route("^/api/apps/([0-9]+)$", "DELETE", deleteApp);
     register_api_route("^/api/clients/unpair-all$", "POST", unpairAll);
     register_api_route("^/api/clients/list$", "GET", getClients);
+    register_api_route("^/api/clients/display-layout$", "GET", getClientDisplayLayout);
+    register_api_route("^/api/clients/display-layout$", "PUT", putClientDisplayLayout);
     register_api_route("^/api/clients/hdr-profiles$", "GET", getHdrProfiles);
     register_api_route("^/api/clients/update$", "POST", updateClient);
     register_api_route("^/api/clients/unpair$", "POST", unpair);

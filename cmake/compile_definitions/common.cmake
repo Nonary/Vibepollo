@@ -98,6 +98,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/http_pairing_policy.h"
         "${CMAKE_SOURCE_DIR}/src/remote_session.cpp"
         "${CMAKE_SOURCE_DIR}/src/remote_session.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_display_topology.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_display_topology.h"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.cpp"
         "${CMAKE_SOURCE_DIR}/src/nvhttp.h"
         "${CMAKE_SOURCE_DIR}/src/httpcommon.cpp"
