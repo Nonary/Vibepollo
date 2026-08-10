@@ -16,6 +16,8 @@
   #include <fstream>
   #include <iterator>
   #include <limits>
+  #include <map>
+  #include <memory>
   #include <mutex>
   #include <optional>
   #include <regex>
@@ -507,7 +509,7 @@ namespace confighttp {
 
   static bool deflate_buffer(const char *data, std::size_t size, std::string &out) {
     z_stream zs {};
-    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+    if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
       deflateEnd(&zs);
       return false;
     }
@@ -587,18 +589,27 @@ namespace confighttp {
         }
       };
 
+      // Compiled once per process: sanitize() runs over every exported file and
+      // regex construction is expensive enough to dominate small files.
       // Match only user components of conventional home-directory paths.
-      add_matches(std::regex {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
-      add_matches(std::regex {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase}, 1, 10, "USER");
-
+      static const std::regex user_home_windows {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", std::regex_constants::icase};
+      static const std::regex user_home_posix {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase};
       // Explicit fields are safer to redact than arbitrary words that happen to look like names.
-      add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase}, 1, 0, "USER", false, true);
-      add_matches(std::regex {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase}, 1, 0, "USER", false, true);
+      static const std::regex user_field_quoted {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase};
+      static const std::regex user_field_bare {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase};
+      static const std::regex ipv4_pattern {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))"};
+      static const std::regex ipv6_candidate {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"};
+      static const std::regex mac_pattern {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"};
+      static const std::regex email_pattern {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"};
 
-      add_matches(std::regex {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))"}, 1, 20, "IP");
-      add_matches(std::regex {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"}, 1, 20, "IP", true);
-      add_matches(std::regex {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"}, 1, 30, "MAC");
-      add_matches(std::regex {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"}, 0, 40, "EMAIL");
+      add_matches(user_home_windows, 1, 10, "USER");
+      add_matches(user_home_posix, 1, 10, "USER");
+      add_matches(user_field_quoted, 1, 0, "USER", false, true);
+      add_matches(user_field_bare, 1, 0, "USER", false, true);
+      add_matches(ipv4_pattern, 1, 20, "IP");
+      add_matches(ipv6_candidate, 1, 20, "IP", true);
+      add_matches(mac_pattern, 1, 30, "MAC");
+      add_matches(email_pattern, 0, 40, "EMAIL");
 
       std::sort(replacements.begin(), replacements.end(), [](const auto &a, const auto &b) {
         if (a.begin != b.begin) {
@@ -640,6 +651,13 @@ namespace confighttp {
     }
 
     static bool is_ipv6(const std::string &value) {
+      // The candidate pattern matches every timestamp and hex token in a log
+      // file; reject anything that cannot be IPv6 text (needs "::" or the 6-7
+      // colons of an uncompressed address) before paying for a Winsock parse.
+      const auto colons = std::count(value.begin(), value.end(), ':');
+      if (colons < 6 && value.find("::") == std::string::npos) {
+        return false;
+      }
       IN6_ADDR address {};
       return InetPtonA(AF_INET6, value.c_str(), &address) == 1;
     }
@@ -1056,10 +1074,16 @@ namespace confighttp {
       }
     };
 
-    // Sunshine log directory (session logging)
+    // Sunshine log directory (session logging). Retention keeps up to ~30
+    // sessions x 5 rollover files here; exporting all of them made the bundle
+    // hundreds of megabytes and blew past the HTTP content deadline. Newest
+    // files win, bounded by both a file count and a total byte budget.
+    constexpr std::size_t k_max_session_export_files = 32;
+    constexpr std::uintmax_t k_max_session_export_bytes = 64ull * 1024ull * 1024ull;
     try {
       bool collected_directory = false;
       if (auto log_dir = logging::session_log_directory()) {
+        std::vector<log_candidate_t> candidates;
         std::error_code ec;
         for (std::filesystem::directory_iterator it(*log_dir, ec); it != std::filesystem::directory_iterator(); ++it) {
           if (ec) {
@@ -1069,10 +1093,28 @@ namespace confighttp {
           if (!it->is_regular_file(file_ec)) {
             continue;
           }
+          add_log_candidate(it->path(), candidates);
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+          return a.mtime > b.mtime;
+        });
+        std::uintmax_t budget_used = 0;
+        std::size_t files_added = 0;
+        for (const auto &candidate : candidates) {
+          if (files_added >= k_max_session_export_files) {
+            break;
+          }
+          std::error_code size_ec;
+          const auto size = std::filesystem::file_size(candidate.path, size_ec);
+          if (!size_ec && files_added > 0 && budget_used + size > k_max_session_export_bytes) {
+            break;
+          }
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
-          if (read_file_if_exists(it->path(), data, &mtime)) {
-            entries.push_back(make_export_log_entry(sanitizer, it->path().filename().string(), std::move(data), mtime));
+          if (read_file_if_exists(candidate.path, data, &mtime)) {
+            budget_used += data.size();
+            ++files_added;
+            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
             collected_directory = true;
           }
         }
@@ -1198,7 +1240,12 @@ namespace confighttp {
       } catch (...) {}
     }
 
-    auto add_session_logs_with_prefix = [&](const std::filesystem::path &dir, const std::string &prefix) {
+    // One scan per directory, newest few files per helper prefix. The previous
+    // shape re-enumerated the directory once per prefix and read every session
+    // file ever rotated, which multiplied into the export slowdown.
+    constexpr std::size_t k_max_helper_logs_per_prefix = 6;
+    auto add_session_logs_with_prefixes = [&](const std::filesystem::path &dir, const std::vector<std::string> &prefixes) {
+      std::map<std::string, std::vector<log_candidate_t>> per_prefix;
       std::error_code ec;
       for (std::filesystem::directory_iterator it(dir, ec); it != std::filesystem::directory_iterator(); ++it) {
         if (ec) {
@@ -1209,18 +1256,46 @@ namespace confighttp {
           continue;
         }
         const auto filename = it->path().filename().string();
-        if (filename.rfind(prefix, 0) != 0) {
-          continue;
+        for (const auto &prefix : prefixes) {
+          if (filename.rfind(prefix, 0) == 0) {
+            add_log_candidate(it->path(), per_prefix[prefix]);
+            break;
+          }
         }
-        std::string data;
-        std::optional<std::filesystem::file_time_type> mtime;
-        if (read_file_if_exists(it->path(), data, &mtime)) {
-          entries.push_back(make_export_log_entry(sanitizer, filename, std::move(data), mtime));
+      }
+      for (auto &[prefix, candidates] : per_prefix) {
+        std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
+          return a.mtime > b.mtime;
+        });
+        if (candidates.size() > k_max_helper_logs_per_prefix) {
+          candidates.resize(k_max_helper_logs_per_prefix);
+        }
+        for (const auto &candidate : candidates) {
+          std::string data;
+          std::optional<std::filesystem::file_time_type> mtime;
+          if (read_file_if_exists(candidate.path, data, &mtime)) {
+            entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
+          }
         }
       }
     };
 
+    // The known-folder and CSIDL passes below resolve to the same directories
+    // when Sunshine runs in a user session; without dedup every helper log was
+    // read from disk and regex-sanitized twice.
+    std::unordered_set<std::wstring> visited_helper_bases;
+    auto mark_base_visited = [&](const std::filesystem::path &base) {
+      std::error_code ec;
+      auto canonical = std::filesystem::weakly_canonical(base, ec);
+      std::wstring key = (ec ? base : canonical).native();
+      std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+      return visited_helper_bases.insert(key).second;
+    };
+
     auto add_user_helper_logs = [&](const std::filesystem::path &base) {
+      if (!mark_base_visited(base)) {
+        return;
+      }
       // Legacy single-file helper logs (kept for backwards compatibility).
       {
         std::filesystem::path p = base / L"sunshine_playnite.log";
@@ -1264,12 +1339,14 @@ namespace confighttp {
       }
 
       // Session-mode helper logs live under Roaming/LocalAppData\\Sunshine\\logs.
-      const auto log_dir = base / L"logs";
-      add_session_logs_with_prefix(log_dir, "sunshine_playnite-");
-      add_session_logs_with_prefix(log_dir, "sunshine_playnite_launcher-");
-      add_session_logs_with_prefix(log_dir, "sunshine_launcher-");
-      add_session_logs_with_prefix(log_dir, "sunshine_display_helper-");
-      add_session_logs_with_prefix(log_dir, "sunshine_wgc_helper-");
+      static const std::vector<std::string> helper_log_prefixes {
+        "sunshine_playnite_launcher-",
+        "sunshine_playnite-",
+        "sunshine_launcher-",
+        "sunshine_display_helper-",
+        "sunshine_wgc_helper-",
+      };
+      add_session_logs_with_prefixes(base / L"logs", helper_log_prefixes);
     };
 
     try {
@@ -1340,6 +1417,26 @@ namespace confighttp {
     }
 
     return entries;
+  }
+
+  // The crash-bundle flow calls into the log collection once for the manifest
+  // and once per downloaded part; collecting and sanitizing the corpus each
+  // time multiplied the export cost by the part count. Reuse one snapshot for
+  // the duration of a bundle download.
+  static std::shared_ptr<const std::vector<ZipDataEntry>> collect_support_logs_cached() {
+    static std::mutex cache_mutex;
+    static std::shared_ptr<const std::vector<ZipDataEntry>> cached;
+    static std::chrono::steady_clock::time_point cached_at {};
+    constexpr auto cache_ttl = std::chrono::seconds {120};
+
+    std::lock_guard lock(cache_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (cached && now - cached_at < cache_ttl) {
+      return cached;
+    }
+    cached = std::make_shared<const std::vector<ZipDataEntry>>(collect_support_logs());
+    cached_at = now;
+    return cached;
   }
 
   void downloadPlayniteLogs(resp_https_t response, req_https_t request) {
@@ -2232,8 +2329,8 @@ namespace confighttp {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs();
-      auto plan = build_crash_bundle_plan(entries, dumps);
+      auto entries = collect_support_logs_cached();
+      auto plan = build_crash_bundle_plan(*entries, dumps);
       nlohmann::json out;
       out["parts"] = nlohmann::json::array();
       for (std::size_t i = 0; i < plan.size(); ++i) {
@@ -2275,15 +2372,15 @@ namespace confighttp {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs();
-      auto plan = build_crash_bundle_plan(entries, dumps);
+      auto entries = collect_support_logs_cached();
+      auto plan = build_crash_bundle_plan(*entries, dumps);
       if (part_index > plan.size()) {
         bad_request(response, request, "Invalid crash bundle part index");
         return;
       }
       const auto &selected = plan[part_index - 1];
       const std::vector<ZipDataEntry> empty_entries;
-      const auto &data_entries = selected.include_logs ? entries : empty_entries;
+      const auto &data_entries = selected.include_logs ? *entries : empty_entries;
 
       wchar_t tmpDir[MAX_PATH] = {};
       wchar_t tmpFile[MAX_PATH] = {};
