@@ -1770,6 +1770,121 @@ TEST(DisplayHelperV2StateMachine, EmptyVirtualDeviceIdentityDoesNotReapplyStaleI
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
 }
 
+TEST(DisplayHelperV2StateMachine, GenericEventsWithAbsentPhysicalMemberDoNotReapply) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = display_device::ActiveTopology {{"physical_a"}, {"physical_b"}, {"virtual_current"}};
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_current";
+  harness.add_active_device("physical_a");
+  harness.add_active_device("physical_b");
+  harness.add_active_device("virtual_current");
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+  const int device_id_calls_before = harness.virtual_display.device_id_calls;
+
+  // Physical B powers off: it drops out of enumeration and Windows emits
+  // generic display/power notifications that carry no device identity.
+  harness.display_settings.devices.clear();
+  harness.add_active_device("physical_a");
+  harness.add_active_device("virtual_current");
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::PowerResume,
+    harness.cancellation.current_generation()});
+
+  // Physical B returns enumerable but inactive (no display name / mode info),
+  // as in vibepollo#370, alongside another generic notification.
+  harness.add_inactive_device("physical_b");
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, device_id_calls_before);
+}
+
+TEST(DisplayHelperV2StateMachine, ChangedVirtualIdentityRepairPreservesPhysicalTopologyMembers) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = display_device::ActiveTopology {{"physical_a"}, {"physical_b"}, {"virtual_current"}};
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_current";
+  harness.add_active_device("physical_a");
+  harness.add_active_device("physical_b");
+  harness.add_active_device("virtual_current");
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+
+  // A device arrival that resolves the same virtual identity is not repair
+  // evidence, even while a physical member is temporarily absent.
+  harness.display_settings.devices.clear();
+  harness.add_active_device("physical_a");
+  harness.add_active_device("virtual_current");
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+
+  // A stable changed virtual identity dispatches exactly one bounded repair
+  // whose request keeps both physical members and retargets only the virtual
+  // device id.
+  harness.virtual_display.current_device_id = "virtual_replacement";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration.has_value());
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_replacement");
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology.has_value());
+  const display_device::ActiveTopology expected_topology {{"physical_a"}, {"physical_b"}, {"virtual_replacement"}};
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, expected_topology);
+
+  // The per-session discovery allowance is exhausted, so further identity
+  // churn cannot keep dispatching work.
+  harness.virtual_display.current_device_id = "virtual_third";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+}
+
 TEST(DisplayHelperV2StateMachine, SameIdEventsAroundRefreshDoNotStartApplyFeedbackLoop) {
   StateMachineHarness harness;
   harness.display_settings.topology = {{"virtual_current"}};
