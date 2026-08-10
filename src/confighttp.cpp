@@ -5840,10 +5840,12 @@ namespace confighttp {
     register_api_route("^/api/playnite/force_sync$", "POST", postPlayniteForceSync);
     register_blocking_api_route("^/api/playnite/cover$", "POST", postPlayniteCover);
     register_api_route("^/api/playnite/launch$", "POST", postPlayniteLaunch);
-    // Export logs bundle (Windows only)
-    register_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
-    register_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
-    register_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
+    // Export logs bundle (Windows only). Collection and sanitizing can take
+    // seconds on large log sets; keep it off the single io thread so the rest
+    // of the WebUI stays responsive during an export.
+    register_blocking_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
+    register_blocking_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
+    register_blocking_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;
