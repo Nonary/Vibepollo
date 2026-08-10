@@ -5,7 +5,9 @@
 // standard includes
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
@@ -16,6 +18,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string>
 #include <vector>
 
 // lib includes
@@ -1993,7 +1996,21 @@ namespace platf {
     DWORD bytes_sent;
     if (WSASendMsg((SOCKET) send_info.native_socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR) {
       auto winerr = WSAGetLastError();
-      BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr;
+      // A session stuck in a bad state fails every FEC shard of every frame,
+      // which used to flood the log with thousands of identical lines and
+      // drown out the actual failure. Log the first occurrence, then a
+      // suppressed-count summary at most once per 5 seconds.
+      static std::atomic<std::int64_t> last_log_tick {std::numeric_limits<std::int64_t>::min()};
+      static std::atomic<std::uint64_t> suppressed_count {0};
+      const auto now_tick = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+      auto last = last_log_tick.load(std::memory_order_relaxed);
+      if (now_tick - last >= 5 && last_log_tick.compare_exchange_strong(last, now_tick, std::memory_order_relaxed)) {
+        const auto suppressed = suppressed_count.exchange(0, std::memory_order_relaxed);
+        BOOST_LOG(warning) << "WSASendMsg() failed: "sv << winerr
+                           << (suppressed ? " (" + std::to_string(suppressed) + " similar failures suppressed)" : std::string {});
+      } else {
+        suppressed_count.fetch_add(1, std::memory_order_relaxed);
+      }
       return false;
     }
 

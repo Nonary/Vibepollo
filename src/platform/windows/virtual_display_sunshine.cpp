@@ -7428,9 +7428,16 @@ namespace VDISPLAY_SUNSHINE {
     auto all_guids = active_virtual_display_tracker().all();
     std::vector<VirtualDisplayRecoveryEntry> recovery_entries;
     const auto recovery_load = load_virtual_display_recovery_journal(recovery_entries);
-    if (recovery_load == VirtualDisplayRecoveryLoadResult::failed) {
-      BOOST_LOG(error) << "Virtual display cleanup could not read protected recovery state.";
-      return false;
+    const bool recovery_state_readable = recovery_load != VirtualDisplayRecoveryLoadResult::failed;
+    if (!recovery_state_readable) {
+      // In-process tracked displays carry live driver leases and need no
+      // journal to remove. Returning before removing them leaked the display,
+      // the watchdog then fed its lease forever so the driver never reaped
+      // it, and every later create refused to replace the unreadable journal
+      // while a driver display existed - permanent until an app restart
+      // (vibepollo#326). Remove what this process owns; only journal-sourced
+      // recovery is unavailable.
+      BOOST_LOG(error) << "Virtual display cleanup could not read protected recovery state; removing in-process tracked displays anyway.";
     }
     for (const auto &entry : recovery_entries) {
       if (std::find(all_guids.begin(), all_guids.end(), entry.guid) == all_guids.end()) {
@@ -7439,7 +7446,7 @@ namespace VDISPLAY_SUNSHINE {
     }
     if (all_guids.empty()) {
       BOOST_LOG(debug) << "No in-process or securely recoverable virtual display GUIDs to remove.";
-      return true;
+      return recovery_state_readable;
     }
 
     bool all_removed = true;
@@ -7457,7 +7464,7 @@ namespace VDISPLAY_SUNSHINE {
       BOOST_LOG(warning) << "Virtual display devices failed to be removed.";
     }
 
-    return all_removed;
+    return all_removed && recovery_state_readable;
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
