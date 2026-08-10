@@ -13,11 +13,6 @@
 #include <vector>
 
 namespace display_helper::v2 {
-  enum class TopologyValidationMode {
-    StrictApply,
-    StructuralRestore,
-  };
-
   struct TopologyTransitionOutcome {
     ApplyStatus status = ApplyStatus::Fatal;
     std::optional<ActiveTopology> applied_topology;
@@ -30,7 +25,7 @@ namespace display_helper::v2 {
   };
 
   /**
-   * @brief Staged Windows topology transition shared by APPLY and REVERT.
+   * @brief Bounded Windows topology transition used only by snapshot restore.
    *
    * Windows may return from SetDisplayConfig before newly activated paths are
    * usable by the mode/HDR APIs. This component owns the bounded validation,
@@ -44,21 +39,15 @@ namespace display_helper::v2 {
 
     TopologyTransitionOutcome run(
       const ActiveTopology &topology,
-      TopologyValidationMode validation_mode,
-      const TopologyActivationTarget &activation_target,
       const CancellationToken &token,
       const MutationBoundary &mutation_boundary = {}
     );
 
   private:
     std::optional<ActiveTopology> topology_ready(
-      const ActiveTopology &requested_topology,
-      const TopologyActivationTarget &activation_target,
-      bool allow_os_adjustment);
+      const ActiveTopology &requested_topology);
     std::optional<ActiveTopology> wait_until_ready(
       const ActiveTopology &requested_topology,
-      const TopologyActivationTarget &activation_target,
-      bool allow_os_adjustment,
       const CancellationToken &token);
     bool recover_and_settle(const CancellationToken &token);
     bool wait_with_cancel(std::chrono::milliseconds duration, const CancellationToken &token);
@@ -74,9 +63,8 @@ namespace display_helper::v2 {
 
   struct ApplyOutcome {
     ApplyStatus status = ApplyStatus::Fatal;
-    std::optional<ActiveTopology> expected_topology;
-    /// Target/group context derived from the topology Windows ultimately
-    /// accepted. It deliberately does not rewrite the public configuration.
+    /// Target/group context derived from the single non-mutating preflight.
+    /// It deliberately does not rewrite the public configuration.
     std::optional<ResolvedConfigurationTarget> resolved_target;
     bool virtual_display_requested = false;
     /// A topology/display-stack operation or later settings stage may have
@@ -85,9 +73,12 @@ namespace display_helper::v2 {
     /// Durable recovery was armed synchronously at the first mutation
     /// boundary, before SettingsManager/mode/HDR work can continue.
     bool durable_recovery_armed = false;
-    /// True once the backend captured the provisional session baseline used
-    /// for consecutive APPLY operations. A terminal no-mutation failure must
-    /// discard this provisional state before an unrelated later session.
+    /// The worker already attempted the durable boundary. A failed attempt is
+    /// not retried synchronously by the state machine or a settings-only
+    /// repair, matching v1's single best-effort task registration.
+    bool durable_recovery_attempted = false;
+    /// True once SettingsManager may have retained transaction state. Recovery
+    /// or an explicit RESET must discard it before an unrelated later session.
     bool staged_state_prepared = false;
   };
 
@@ -151,16 +142,11 @@ namespace display_helper::v2 {
     explicit ApplyPolicy(IClock &clock);
 
     PolicyDecision maybe_reset_virtual_display(ApplyStatus status, bool virtual_display_requested);
-    std::chrono::milliseconds retry_delay(int attempt) const;
-    bool should_skip_tier(ApplyStatus status) const;
-    bool can_retry_apply(int attempt) const;
 
   private:
     IClock &clock_;
     std::chrono::steady_clock::time_point last_reset_ {};
     std::chrono::milliseconds reset_cooldown_ {std::chrono::seconds(30)};
-    static constexpr std::chrono::milliseconds kRetryBaseDelay {500};
-    static constexpr int kMaxApplyAttempts = 3;
   };
 
   class ApplyOperation {
@@ -175,8 +161,9 @@ namespace display_helper::v2 {
     ApplyOutcome run(
       const ApplyRequest &request,
       const CancellationToken &token,
-      bool durable_recovery_already_armed = false);
-    /// Arms the same durable recovery boundary used by staged topology/settings
+      bool durable_recovery_already_armed = false,
+      bool durable_recovery_already_attempted = false);
+    /// Arms the same durable recovery boundary used by topology/settings
     /// work. AsyncDispatcher uses this before a virtual-display reset, which
     /// can change the desktop before ApplyOperation::run begins.
     bool arm_durable_recovery_boundary();
@@ -186,12 +173,9 @@ namespace display_helper::v2 {
   private:
     void apply_monitor_positions(const ApplyRequest &request, const CancellationToken &token);
     void apply_refresh_rate_overrides(const ApplyRequest &request, const CancellationToken &token);
-    bool restore_baseline_after_failed_apply(const Snapshot &baseline, const CancellationToken &token);
 
     IDisplaySettings &display_;
-    IClock &clock_;
     MutationBoundary mutation_boundary_;
-    TopologyTransition topology_transition_;
   };
 
   class VerificationOperation {

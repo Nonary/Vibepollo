@@ -25,7 +25,6 @@ namespace display_helper::v2 {
     EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) override;
     ActiveTopology capture_topology() override;
     bool validate_topology(const ActiveTopology &topology) override;
-    bool validate_topology_for_apply(const ActiveTopology &topology) override;
     Snapshot capture_snapshot() override;
     bool apply_snapshot(const Snapshot &snapshot) override;
     bool apply_snapshot_settings(const Snapshot &snapshot) override;
@@ -35,26 +34,25 @@ namespace display_helper::v2 {
       const SingleDisplayConfiguration &config,
       const ResolvedConfigurationTarget &target) override;
     bool set_display_origin(const std::string &device_id, const display_device::Point &origin) override;
-    std::optional<ActiveTopology> compute_expected_topology(
-      const SingleDisplayConfiguration &config,
-      const std::optional<ActiveTopology> &base_topology = std::nullopt) override;
-    std::optional<ApplyTopologyPlan> compute_apply_topology_plan(
-      const SingleDisplayConfiguration &config,
-      const std::optional<ActiveTopology> &base_topology = std::nullopt) override;
     bool is_topology_same(const ActiveTopology &lhs, const ActiveTopology &rhs) override;
 
-    // Staged transition and restore capabilities.
+    // Ordinary Apply preflight and restore capabilities.
     bool topology_is_valid(const ActiveTopology &topology) override;
     bool recover_display_stack() override;
-    bool prepare_staged_apply(const ActiveTopology &current_topology) override;
+    ApplyPreflightOutcome preflight_apply(
+      const SingleDisplayConfiguration &config,
+      const std::optional<ActiveTopology> &base_topology) override;
     bool reset_staged_apply_state() override;
-    bool is_primary_device(const std::string &device_id) override;
     codec::layout_rotation_map_t capture_layout_rotations(const std::set<std::string> &device_ids) override;
     bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override;
     bool current_layout_matches(const codec::layout_rotation_map_t &expected) override;
     bool set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) override;
+    std::set<std::string> set_device_refresh_rates(
+      const std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> &overrides) override;
     std::optional<display_device::Resolution> get_display_resolution(const std::string &device_id) override;
     bool can_reposition_device(const std::string &device_id) override;
+    std::unordered_map<std::string, std::optional<display_device::Resolution>>
+    get_repositionable_display_resolutions(const std::set<std::string> &device_ids) override;
 
     /// Apply a snapshot including layout rotations (legacy restore semantics).
     bool apply_snapshot_with_layouts(const Snapshot &snapshot, const codec::layout_rotation_map_t *layout_rotations);
@@ -68,7 +66,7 @@ namespace display_helper::v2 {
     };
 
     bool ensure_initialized() const;
-    bool validate_topology_with_os(const ActiveTopology &topology) const;
+    ApplyStatus validate_topology_with_os(const ActiveTopology &topology) const;
 
     std::optional<std::string> find_primary_in_set(const std::set<std::string> &ids) const;
     void collect_all_device_ids(std::set<std::string> &out) const;
@@ -84,9 +82,6 @@ namespace display_helper::v2 {
     mutable std::shared_ptr<display_device::WinApiLayer> win_api_;
     mutable std::shared_ptr<display_device::WinDisplayDevice> display_device_;
     mutable std::unique_ptr<display_device::SettingsManager> settings_manager_;
-    // Non-owning observer; settings_manager_ owns this PersistentState.
-    mutable display_device::PersistentState *settings_state_ = nullptr;
     mutable std::mutex settings_mutex_;
-    mutable std::optional<display_device::SingleDisplayConfigState::Initial> session_initial_state_;
   };
 }  // namespace display_helper::v2

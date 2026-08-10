@@ -444,12 +444,6 @@ namespace {
       return true;
     }
 
-    std::optional<display_device::ActiveTopology> compute_expected_topology(
-      const display_device::SingleDisplayConfiguration &,
-      const std::optional<display_device::ActiveTopology> &) override {
-      return std::nullopt;
-    }
-
     bool is_topology_same(const display_device::ActiveTopology &lhs, const display_device::ActiveTopology &rhs) override {
       return codec::canonical_topology(lhs) == codec::canonical_topology(rhs);
     }

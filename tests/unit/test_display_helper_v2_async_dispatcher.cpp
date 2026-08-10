@@ -87,12 +87,6 @@ namespace {
       return true;
     }
 
-    std::optional<display_device::ActiveTopology> compute_expected_topology(
-      const display_device::SingleDisplayConfiguration &,
-      const std::optional<display_device::ActiveTopology> &) override {
-      return topology;
-    }
-
     bool is_topology_same(const display_device::ActiveTopology &lhs, const display_device::ActiveTopology &rhs) override {
       return lhs == rhs;
     }
@@ -184,6 +178,7 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   EXPECT_TRUE(outcome.virtual_display_requested);
   EXPECT_TRUE(outcome.display_may_have_changed);
   EXPECT_TRUE(outcome.durable_recovery_armed);
+  EXPECT_TRUE(outcome.durable_recovery_attempted);
   EXPECT_EQ(recovery_boundary_calls, 1);
   ASSERT_FALSE(clock.sleeps.empty());
   const auto total_sleep = std::accumulate(
@@ -191,6 +186,58 @@ TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
     clock.sleeps.end(),
     std::chrono::milliseconds::zero());
   EXPECT_EQ(total_sleep, std::chrono::milliseconds(1600));
+}
+
+TEST(DisplayHelperV2AsyncDispatcher, FailedVirtualResetRecoveryBoundaryIsAttemptedOnlyOnce) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::SnapshotService snapshot_service(display);
+  display_helper::v2::InMemorySnapshotStorage storage;
+  display_helper::v2::InMemoryTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, {});
+  display_helper::v2::RestoreState restore_state;
+  int recovery_boundary_calls = 0;
+  display_helper::v2::ApplyOperation apply_op(display, clock, [&] {
+    ++recovery_boundary_calls;
+    return false;
+  });
+  display_helper::v2::VerificationOperation verify_op(display, clock);
+  display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
+  display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
+  FakeVirtualDisplayDriver virtual_display;
+  display_helper::v2::AsyncDispatcher dispatcher(
+    apply_op,
+    verify_op,
+    recovery_op,
+    recovery_validate,
+    virtual_display,
+    clock
+  );
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.virtual_layout = "extended";
+  display_helper::v2::CancellationSource cancel;
+  std::promise<display_helper::v2::ApplyOutcome> promise;
+  dispatcher.dispatch_apply(
+    request,
+    cancel.token(),
+    std::chrono::milliseconds::zero(),
+    true,
+    [&](const display_helper::v2::ApplyOutcome &outcome) {
+      promise.set_value(outcome);
+    }
+  );
+
+  auto future = promise.get_future();
+  ASSERT_EQ(future.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+  const auto outcome = future.get();
+
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_TRUE(outcome.durable_recovery_attempted);
+  EXPECT_FALSE(outcome.durable_recovery_armed);
+  EXPECT_EQ(recovery_boundary_calls, 1);
+  EXPECT_EQ(display.apply_calls, 1);
 }
 
 TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
@@ -248,6 +295,7 @@ TEST(DisplayHelperV2AsyncDispatcher, FailsWhenVirtualDisplayDisableFails) {
   EXPECT_TRUE(outcome.virtual_display_requested);
   EXPECT_TRUE(outcome.display_may_have_changed);
   EXPECT_TRUE(outcome.durable_recovery_armed);
+  EXPECT_TRUE(outcome.durable_recovery_attempted);
   EXPECT_EQ(recovery_boundary_calls, 1);
   ASSERT_EQ(clock.sleeps.size(), 1u);
   EXPECT_EQ(clock.sleeps[0], std::chrono::milliseconds(50));
