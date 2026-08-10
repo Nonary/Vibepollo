@@ -2898,20 +2898,23 @@ namespace nvhttp {
 
       tree.put("root.PairStatus", pair_status);
 
+      const auto current_appid = proc::proc.running();
+      const auto current_app = proc::proc.resolve_app(current_appid);
+      bool caller_owns_active_app = false;
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-        int current_appid = proc::proc.running();
-        // When input only mode is enabled, the only resume method should be launching the same app again.
-        if (config::input.enable_input_only_mode && current_appid != proc::input_only_app_id) {
-          current_appid = 0;
-        }
-        tree.put("root.currentgame", current_appid);
-        tree.put("root.currentgameuuid", proc::proc.get_running_app_uuid());
-        tree.put("root.state", current_appid > 0 ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
-      } else {
-        tree.put("root.currentgame", 0);
-        tree.put("root.currentgameuuid", "");
-        tree.put("root.state", "SUNSHINE_SERVER_FREE");
+        const auto verified_client = get_verified_cert(request);
+        const auto identity = resolve_client_identity(request, verified_client);
+        const auto active_session = proc::proc.active_session_guard();
+        caller_owns_active_app = current_appid > 0 && !identity.uuid.empty() && identity.uuid == active_session.client_uuid;
       }
+
+      // A client that does not own the running game sees a free host and uses
+      // the caller-scoped Resume/Disconnect entries in /applist instead of
+      // being locked out by another client's process.
+      const bool expose_active_game = current_appid > 0 && caller_owns_active_app;
+      tree.put("root.currentgame", expose_active_game ? current_appid : 0);
+      tree.put("root.currentgameuuid", expose_active_game && current_app ? current_app->uuid : "");
+      tree.put("root.state", expose_active_game ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
 
       std::ostringstream data;
 
@@ -3057,43 +3060,35 @@ namespace nvhttp {
 
       auto verified_client = get_verified_cert(request);
       if (has_client_perm(verified_client, PERM::_all_actions)) {
-        auto current_appid = proc::proc.running();
-        // Only expose the special "Terminate" entry (and the "busy minimal list" behavior)
-        // when input-only mode is enabled. Otherwise, Moonlight handles terminate/resume UI
-        // without needing a fake app entry in the list.
-        const bool show_terminate_entry =
-          config::input.enable_input_only_mode && current_appid > 0 && current_appid != proc::input_only_app_id;
-        const bool should_hide_inactive_apps = show_terminate_entry;
-
-        auto app_list = proc::proc.get_apps();
-
-        std::vector<const proc::ctx_t *> visible_apps;
-        visible_apps.reserve(app_list.size());
-
-        for (const auto &app : app_list) {
-          auto appid = util::from_view(app.id);
-          bool include = true;
-          if (should_hide_inactive_apps) {
-            if (
-              appid != current_appid && appid != proc::input_only_app_id && appid != proc::terminate_app_id
-            ) {
-              include = false;
-            }
-          } else if (appid == proc::terminate_app_id) {
-            include = show_terminate_entry;
-          }
-
-          if (!include) {
-            continue;
-          }
-
-          visible_apps.push_back(&app);
+        const auto configured_apps = proc::proc.get_apps();
+        std::vector<remote_session::app_t> remote_configured_apps;
+        remote_configured_apps.reserve(configured_apps.size());
+        for (const auto &configured : configured_apps) {
+          remote_configured_apps.push_back({util::from_view(configured.id), configured.uuid, configured.name, false});
         }
+
+        const auto current_appid = proc::proc.running();
+        const auto current_app = proc::proc.resolve_app(current_appid);
+        const auto active_session = proc::proc.active_session_guard();
+        const auto identity = resolve_client_identity(request, verified_client);
+        const remote_session::caller_t caller {
+          .uuid = identity.uuid,
+          .paired = !identity.uuid.empty(),
+          .may_view = has_client_perm(verified_client, PERM::_allow_view),
+          .may_launch = has_client_perm(verified_client, PERM::launch),
+          .may_terminate = has_client_perm(verified_client, PERM::launch),
+        };
+        const remote_session::game_t game {
+          .running = current_appid > 0,
+          .owner_uuid = active_session.client_uuid,
+          .app = current_app ? remote_session::app_t {util::from_view(current_app->id), current_app->uuid, current_app->name, false} : remote_session::app_t {},
+        };
+        const auto projection = remote_session::project(caller, game, {}, remote_configured_apps);
 
         const bool enable_legacy_ordering = config::sunshine.legacy_ordering && verified_client->enable_legacy_ordering;
         size_t bits = 0;
-        if (enable_legacy_ordering && !visible_apps.empty()) {
-          bits = zwpad::pad_width_for_count(visible_apps.size());
+        if (enable_legacy_ordering && !projection.catalogue.empty()) {
+          bits = zwpad::pad_width_for_count(projection.catalogue.size());
         }
 
 #ifdef _WIN32
@@ -3103,24 +3098,27 @@ namespace nvhttp {
 #endif
         const bool is_hdr_supported = advertised_video.hevc_mode == 3 || advertised_video.av1_mode == 3;
 
-        for (size_t i = 0; i < visible_apps.size(); ++i) {
-          const auto &app = *visible_apps[i];
+        for (size_t i = 0; i < projection.catalogue.size(); ++i) {
+          const auto &entry = projection.catalogue[i];
+          const auto configured = std::find_if(configured_apps.begin(), configured_apps.end(), [&entry](const auto &candidate) {
+            return candidate.uuid == entry.uuid;
+          });
 
           std::string app_name;
           if (enable_legacy_ordering && bits > 0) {
-            app_name = zwpad::pad_for_ordering(app.name, bits, i);
+            app_name = zwpad::pad_for_ordering(entry.title, bits, i);
           } else {
-            app_name = app.name;
+            app_name = entry.title;
           }
 
           pt::ptree app_node;
 
           app_node.put("IsHdrSupported"s, is_hdr_supported ? 1 : 0);
           app_node.put("AppTitle"s, app_name);
-          app_node.put("UUID", app.uuid);
-          app_node.put("IDX", app.idx);
-          app_node.put("ID", app.id);
-          app_node.put("ArtVersion", app.art_version);
+          app_node.put("UUID", entry.uuid);
+          app_node.put("IDX", configured == configured_apps.end() ? 0 : configured->idx);
+          app_node.put("ID", entry.id);
+          app_node.put("ArtVersion", entry.synthetic ? "remote-session-v5" : (configured == configured_apps.end() ? "" : configured->art_version));
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
@@ -3167,6 +3165,16 @@ namespace nvhttp {
 
       auto appid_str = get_arg(args, "appid", "0");
       auto appuuid_str = get_arg(args, "appuuid", "");
+      // Synthetic controls are host actions, never configured applications.
+      // Identify them before resolve_app() so they cannot collide with an
+      // apps.json id and accidentally launch a real process.
+      const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str);
+      if (synthetic_control != remote_session::control_e::none) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "Remote session controls require the remote session coordinator");
+        return;
+      }
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_app_uuid = proc::proc.get_running_app_uuid();
