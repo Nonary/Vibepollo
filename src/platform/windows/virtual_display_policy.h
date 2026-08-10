@@ -349,6 +349,28 @@ namespace VDISPLAY::policy {
     return elapsed_since_enumeration >= activation_grace;
   }
 
+  // The stable EDID product/serial is the authoritative per-client identity
+  // (the reuse path already trusts it for resurrection), so the readiness wait
+  // must treat a matching candidate as an exact target even when the OS never
+  // produced a name or path hint. A wedged identity enumerates nameless and
+  // inactive; adopting it here is what lets the display helper attempt an
+  // explicit activation instead of the host timing out into teardown.
+  constexpr bool readiness_candidate_is_exact_target(
+    const bool strong_identity_match,
+    const bool stable_edid_match
+  ) noexcept {
+    return strong_identity_match || stable_edid_match;
+  }
+
+  // Without any identity, selection defers until the complete enumeration
+  // proves there is exactly one virtual resolution match.
+  constexpr bool defer_unidentified_readiness_candidate(
+    const bool exact_target,
+    const bool has_dynamic_hints
+  ) noexcept {
+    return !exact_target && !has_dynamic_hints;
+  }
+
   struct advanced_color_state_t {
     bool supported = false;
     bool hdr_supported = false;

@@ -5892,6 +5892,7 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<std::string> &device_id,
     uint32_t width,
     uint32_t height,
+    const std::optional<std::uint64_t> expected_display_id = std::nullopt,
     const DisplayConfigIdentity *display_config_identity = nullptr,
     bool *confirmed_active = nullptr,
     std::stop_token stop_token = {}
@@ -6071,7 +6072,25 @@ namespace VDISPLAY_SUNSHINE {
             }
           }
 
-          if (!strong_identity_match && weak_identity_match) {
+          // A wedged per-client identity enumerates with no GDI name, no
+          // monitor path hint, and no active mode data, so none of the hint
+          // matchers above can ever select it. Its stable EDID product/serial
+          // still identifies it exactly.
+          bool stable_edid_match = false;
+          if (expected_display_id && is_virtual &&
+              matches_virtual_display_id_edid(candidate, *expected_display_id)) {
+            stable_edid_match = true;
+            if (!strong_identity_match) {
+              BOOST_LOG(info) << "Virtual display candidate "
+                              << (candidate.m_device_id.empty() ? candidate.m_monitor_device_path : candidate.m_device_id)
+                              << " matched the stable EDID identity for display_id=" << *expected_display_id
+                              << (candidate.m_info ? " (active)" : " (enumerated, not active)")
+                              << "; adopting it as the exact target.";
+            }
+          }
+          const bool exact_target = VDISPLAY::policy::readiness_candidate_is_exact_target(strong_identity_match, stable_edid_match);
+
+          if (!exact_target && weak_identity_match) {
             if (has_strong_identity_hints || !is_virtual) {
               continue;
             }
@@ -6086,17 +6105,17 @@ namespace VDISPLAY_SUNSHINE {
             continue;
           }
 
-          if (!strong_identity_match && has_dynamic_hints) {
+          if (!exact_target && has_dynamic_hints) {
             continue;
           }
 
-          if (!has_dynamic_hints) {
+          if (VDISPLAY::policy::defer_unidentified_readiness_candidate(exact_target, has_dynamic_hints)) {
             // No identity is available, so defer selection until the complete
             // enumeration proves there is exactly one virtual resolution match.
             continue;
           }
 
-          if (attempt_candidate(candidate, strong_identity_match, strong_identity_match || !has_dynamic_hints)) {
+          if (attempt_candidate(candidate, exact_target, exact_target || !has_dynamic_hints)) {
             return true;
           }
         }
@@ -6672,7 +6691,7 @@ namespace VDISPLAY_SUNSHINE {
                            << "' device_id='" << (device_id ? *device_id : std::string("(none)")) << "'";
           std::optional<std::wstring> display_name = reuse_name;
           bool confirmed_active = false;
-          if (wait_for_virtual_display_ready(display_name, device_id, width, height, nullptr, &confirmed_active, stop_token)) {
+          if (wait_for_virtual_display_ready(display_name, device_id, width, height, display_id, nullptr, &confirmed_active, stop_token)) {
             if (display_name) {
               if (reclaimed_for_reuse) {
                 wprintf(L"[SunshineVirtualDisplay] Reusing securely reclaimed virtual display: %ls\n", display_name->c_str());
@@ -6918,7 +6937,7 @@ namespace VDISPLAY_SUNSHINE {
       }
 
       bool confirmed_active = false;
-      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_config_ptr, &confirmed_active, stop_token)) {
+      if (!wait_for_virtual_display_ready(resolved_display_name, device_id, width, height, display_id, display_config_ptr, &confirmed_active, stop_token)) {
         if (stop_token.stop_requested()) {
           rollback_created_display();
           return std::nullopt;
