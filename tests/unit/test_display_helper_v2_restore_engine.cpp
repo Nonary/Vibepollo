@@ -459,6 +459,12 @@ namespace {
       return reset_staged_apply_state_result;
     }
 
+    bool apply_layout_rotations(const codec::layout_rotation_map_t &layouts) override {
+      ++layout_apply_calls;
+      last_applied_layouts = layouts;
+      return layout_apply_result;
+    }
+
     static std::string first_id(const display_device::DisplaySettingsSnapshot &snapshot) {
       return first_id(snapshot.m_topology);
     }
@@ -479,7 +485,10 @@ namespace {
     int topology_calls = 0;
     int enumerate_calls = 0;
     int reset_staged_apply_state_calls = 0;
+    int layout_apply_calls = 0;
     bool reset_staged_apply_state_result = true;
+    bool layout_apply_result = true;
+    codec::layout_rotation_map_t last_applied_layouts;
     std::function<void()> on_topology_applied;
     std::function<void()> on_enumerate;
   };
@@ -519,6 +528,24 @@ TEST(DisplayHelperV2RecoveryEngine, TerminatesWithoutApplyOnFirstConfirmedMatch)
   EXPECT_TRUE(outcome.success);
   EXPECT_EQ(harness.display.apply_calls, 0);
   EXPECT_EQ(harness.display.reset_staged_apply_state_calls, 1);
+}
+
+TEST(DisplayHelperV2RecoveryEngine, ReassertsMatchingPortraitLayoutWithoutFullRestore) {
+  RecoveryHarness harness;
+  harness.add_device("A");
+
+  const auto baseline = make_snapshot({{"A"}});
+  const codec::layout_rotation_map_t layouts {{"A", 90}};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, baseline, layouts));
+  harness.display.current = baseline;
+
+  const auto outcome = harness.recovery.run(harness.cancellation.token());
+
+  EXPECT_TRUE(outcome.success);
+  EXPECT_EQ(harness.display.apply_calls, 0);
+  EXPECT_EQ(harness.display.topology_calls, 0);
+  EXPECT_EQ(harness.display.layout_apply_calls, 1);
+  EXPECT_EQ(harness.display.last_applied_layouts, layouts);
 }
 
 TEST(DisplayHelperV2RecoveryEngine, StopsBeforeSettingsWhenTopologyStageIsCancelled) {

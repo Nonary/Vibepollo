@@ -870,13 +870,17 @@ namespace display_helper::v2 {
       }
       auto *mode = reinterpret_cast<DEVMODEW *>(buf.data());
 
-      if (mode->dmDisplayOrientation == *target) {
+      if (mode->dmDisplayOrientation == *target && *target == DMDO_DEFAULT) {
         return PreparedRotation {display_name, {}, true};
       }
 
       const bool swap_axes = ((mode->dmDisplayOrientation + *target) % 2) == 1;
       mode->dmFields = DM_DISPLAYORIENTATION | DM_POSITION;
       mode->dmDisplayOrientation = *target;
+      // A non-default orientation must be submitted even when Windows already
+      // reports the requested value. After a virtual display is removed, some
+      // GPU drivers retain the virtual output's pointer transform until the
+      // portrait mode is explicitly reasserted.
       if (swap_axes) {
         std::swap(mode->dmPelsWidth, mode->dmPelsHeight);
         mode->dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
