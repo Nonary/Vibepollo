@@ -46,6 +46,7 @@ namespace display_helper::v2 {
     codec::layout_rotation_map_t capture_layout_rotations(const std::set<std::string> &device_ids) override;
     bool apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override;
     bool current_layout_matches(const codec::layout_rotation_map_t &expected) override;
+    bool reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) override;
     bool set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) override;
     std::set<std::string> set_device_refresh_rates(
       const std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> &overrides) override;

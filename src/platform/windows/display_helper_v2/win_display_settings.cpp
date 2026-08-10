@@ -905,11 +905,37 @@ namespace display_helper::v2 {
       return out;
     }
 
-    auto names = active_display_names_by_device_id(device_ids);
-    for (const auto &[device_id, display_name] : names) {
-      if (auto rotation = read_display_rotation_degrees(display_name)) {
-        out.emplace(device_id, *rotation);
+    // Enumerate devices directly rather than iterating the name map: that map
+    // also holds lowercase alias keys for lookup, and iterating it persisted
+    // duplicate rotation entries per display.
+    const bool filter = !device_ids.empty();
+    try {
+      for (const auto &d : display_device_->enumAvailableDevices(display_device::DeviceEnumerationDetail::Minimal)) {
+        const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
+        if (id.empty()) {
+          continue;
+        }
+        if (filter && !device_ids.contains(id)) {
+          continue;
+        }
+
+        std::string display_name = d.m_display_name;
+        if (display_name.empty()) {
+          try {
+            display_name = display_device_->getDisplayName(id);
+          } catch (...) {
+          }
+        }
+        if (display_name.empty()) {
+          continue;
+        }
+
+        const std::wstring display_name_w(display_name.begin(), display_name.end());
+        if (auto rotation = read_display_rotation_degrees(display_name_w)) {
+          out.emplace(id, *rotation);
+        }
       }
+    } catch (...) {
     }
     return out;
   }
@@ -994,6 +1020,58 @@ namespace display_helper::v2 {
       all_ok = false;
     }
 
+    return all_ok;
+  }
+
+  bool WinDisplaySettings::reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+    if (layout_rotations.empty()) {
+      return true;
+    }
+    if (!ensure_initialized()) {
+      return false;
+    }
+
+    auto names = active_display_names_by_device_id();
+    std::set<std::wstring> reasserted;  // legacy snapshots may carry case-alias duplicate keys
+    bool all_ok = true;
+
+    for (const auto &[device_id, rotation] : layout_rotations) {
+      if (rotation == 0) {
+        continue;
+      }
+      auto it = names.find(device_id);
+      if (it == names.end()) {
+        continue;
+      }
+      if (!reasserted.insert(it->second).second) {
+        continue;
+      }
+
+      auto buf = alloc_full_devmode(it->second);
+      if (buf.empty()) {
+        all_ok = false;
+        continue;
+      }
+      auto *mode = reinterpret_cast<DEVMODEW *>(buf.data());
+      if (mode->dmDisplayOrientation == DMDO_DEFAULT) {
+        continue;
+      }
+
+      // CDS_RESET forces the mode-set through to the driver even though every
+      // requested value equals the current value; without it Windows dedupes
+      // the call and a stale driver-side pointer transform is never rebuilt.
+      const LONG result = ChangeDisplaySettingsExW(it->second.c_str(), mode, nullptr, CDS_UPDATEREGISTRY | CDS_RESET, nullptr);
+      if (result != DISP_CHANGE_SUCCESSFUL) {
+        BOOST_LOG(warning) << "Rotation reassert: ChangeDisplaySettingsEx failed for display "
+                           << std::string(it->second.begin(), it->second.end())
+                           << " (error=" << result << ")";
+        all_ok = false;
+      } else {
+        BOOST_LOG(info) << "Rotation reassert: forced same-value rotation refresh for display "
+                        << std::string(it->second.begin(), it->second.end())
+                        << " (" << rotation << " degrees)";
+      }
+    }
     return all_ok;
   }
 

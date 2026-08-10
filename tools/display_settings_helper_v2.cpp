@@ -540,9 +540,9 @@ namespace {
     }
   };
 
-  /// Validate a session snapshot file found in a search root; remove it when it
-  /// has no usable restore payload (legacy validate_session_snapshot).
-  bool validate_session_snapshot_file(const std::filesystem::path &path) {
+  /// Validate a snapshot file found in a search root; remove it when it has no
+  /// usable restore payload (legacy validate_session_snapshot).
+  bool validate_snapshot_file(const std::filesystem::path &path, const char *label) {
     display_helper::v2::AtomicFileTextStorage files;
     const auto text = files.read(path.string());
     if (!text) {
@@ -552,7 +552,7 @@ namespace {
       return true;
     }
 
-    BOOST_LOG(warning) << "Existing session snapshot is missing restore topology/mode data; removing path=" << path.string();
+    BOOST_LOG(warning) << "Existing " << label << " snapshot is missing restore topology/mode data; removing path=" << path.string();
     std::error_code ec_rm;
     std::filesystem::remove(path, ec_rm);
     return false;
@@ -568,7 +568,7 @@ namespace {
       const auto paths = display_helper_paths::make_snapshot_paths(root);
       std::error_code ec_cur;
       if (std::filesystem::exists(paths.session_current, ec_cur) && !ec_cur) {
-        if (validate_session_snapshot_file(paths.session_current)) {
+        if (validate_snapshot_file(paths.session_current, "session")) {
           BOOST_LOG(info) << "Existing current session snapshot detected; will preserve until confirmed restore: "
                           << paths.session_current.string();
           if (paths.session_current != active_current) {
@@ -584,7 +584,7 @@ namespace {
       const auto paths = display_helper_paths::make_snapshot_paths(root);
       std::error_code ec_prev;
       if (std::filesystem::exists(paths.session_previous, ec_prev) && !ec_prev) {
-        if (validate_session_snapshot_file(paths.session_previous)) {
+        if (validate_snapshot_file(paths.session_previous, "session")) {
           if (paths.session_previous != active_previous) {
             std::error_code ec_copy;
             std::filesystem::create_directories(active_previous.parent_path(), ec_copy);
@@ -695,6 +695,16 @@ int run_v2_helper(int argc, char *argv[]) {
 
   // Adopt snapshots written by other contexts (SYSTEM vs user) or the legacy engine.
   adopt_snapshots_from_search_roots(search_roots, paths.current, paths.previous);
+
+  // A payload-less golden file (e.g. a crash-truncated overwrite) makes the
+  // restore strategy see an existing-but-unloadable golden tier; drop it so
+  // tier existence stays consistent with loadability.
+  {
+    std::error_code ec_golden;
+    if (std::filesystem::exists(paths.golden, ec_golden) && !ec_golden) {
+      (void) validate_snapshot_file(paths.golden, "golden");
+    }
+  }
 
   // Load snapshot exclusions (user-configured + Sunshine-managed virtual display ids).
   std::set<std::string> initial_blacklist;
