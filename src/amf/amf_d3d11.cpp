@@ -998,9 +998,7 @@ namespace amf {
     encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, gop_size);
 
     int64_t ctu_size = 64;
-    int64_t ctu_width = (encode_width + (ctu_size - 1)) / ctu_size;
     int64_t ctu_height = (encode_height + (ctu_size - 1)) / ctu_size;
-    int64_t total_ctus = ctu_width * ctu_height;
 
     int64_t ctu_rows_per_frame = (ctu_height + gop_size - 1) / gop_size;
     if (ctu_rows_per_frame < 1) ctu_rows_per_frame = 1; // Mindestens eine Zeile pro Frame
