@@ -194,6 +194,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_display_settings.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_event_pump.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_platform_workarounds.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_shell_refresh_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_helper_v2/win_scheduled_task_manager.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.cpp"
