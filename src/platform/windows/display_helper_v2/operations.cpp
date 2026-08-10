@@ -708,9 +708,12 @@ namespace display_helper::v2 {
     if (token.is_cancelled()) {
       return false;
     }
+    const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) &&
+                          quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    // Rotation is not part of the snapshot, so the quiet period cannot observe
+    // rotation drift; the layout must be checked after it, not before.
     const bool layout_ok = !loaded.has_layout_data || display_.current_layout_matches(loaded.layout_rotations);
-    const bool ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) && layout_ok &&
-                    quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    const bool ok = state_ok && layout_ok;
     if (ok) {
       BOOST_LOG(info) << "Restore (" << label << "): current state already matches baseline; skipping apply.";
     }
@@ -768,9 +771,12 @@ namespace display_helper::v2 {
       if (token.is_cancelled()) {
         return false;
       }
+      const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, base) &&
+                            quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      // Same ordering as confirm_matches: rotation drift is invisible to the
+      // quiet period, so the layout check must come after it.
       const bool layout_ok = !require_layout_match || display_.current_layout_matches(layouts);
-      const bool ok = got_stable && codec::equal_snapshots_strict(cur, base) && layout_ok &&
-                      quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      const bool ok = state_ok && layout_ok;
       BOOST_LOG(info) << "Restore (" << label << ") attempt " << attempt << ": before_sig=" << before_sig
                       << ", current_sig=" << codec::signature(cur)
                       << ", baseline_sig=" << codec::signature(base)
@@ -779,10 +785,32 @@ namespace display_helper::v2 {
       return ok;
     };
 
+    // The OS can report a fully matching layout while the display driver's
+    // pointer transform is still stale after a virtual-display session
+    // (Vibepollo #406). When the matching fast path confirms a baseline that
+    // holds a non-default rotation, force a same-value rotation refresh so the
+    // driver rebuilds that transform. Best-effort by design: a confirmed
+    // restore must never fail on this.
+    const auto reassert_rotations_after_match = [&]() {
+      if (!require_layout_match || layouts.empty() || token.is_cancelled()) {
+        return;
+      }
+      const bool any_non_default = std::any_of(layouts.begin(), layouts.end(), [](const auto &entry) {
+        return entry.second != 0;
+      });
+      if (!any_non_default) {
+        return;
+      }
+      if (!display_.reassert_layout_rotations(layouts)) {
+        BOOST_LOG(warning) << "Restore (" << label << "): rotation reassert failed; keeping confirmed restore.";
+      }
+    };
+
     if (token.is_cancelled()) {
       return false;
     }
     if (confirm_matches(loaded, label, token)) {
+      reassert_rotations_after_match();
       return true;
     }
 
@@ -800,6 +828,7 @@ namespace display_helper::v2 {
       return false;
     }
     if (confirm_matches(loaded, label, token)) {
+      reassert_rotations_after_match();
       return true;
     }
     const bool second_apply_succeeded = apply_once();
@@ -944,6 +973,11 @@ namespace display_helper::v2 {
         if (!outcome.staged_state_reset_succeeded) {
           BOOST_LOG(warning) << "Display helper v2: failed to clear staged APPLY state after confirmed golden restore.";
         }
+        // The staged reset is uninterruptible; re-check before destroying the
+        // session tiers so a supersession that arrived during it keeps them.
+        if (token.is_cancelled()) {
+          return false;
+        }
         clear_session_snapshots_after_golden();
         golden_health_.clear_status("restore confirmed");
         restored = golden->snapshot;
@@ -987,7 +1021,11 @@ namespace display_helper::v2 {
     auto try_session_snapshots = [&]() -> bool {
       bool attempted_current = false;
       if (try_session(SnapshotTier::Current, "current", attempted_current)) {
-        (void) storage_.promote_current_to_previous();
+        // Confirmed on screen; skip only the tier housekeeping when a
+        // supersession arrived after try_session's own cancellation check.
+        if (!token.is_cancelled()) {
+          (void) storage_.promote_current_to_previous();
+        }
         return true;
       }
 
@@ -1005,7 +1043,7 @@ namespace display_helper::v2 {
 
       bool attempted_previous = false;
       if (try_session(SnapshotTier::Previous, "previous", attempted_previous)) {
-        if (attempted_current) {
+        if (attempted_current && !token.is_cancelled()) {
           (void) storage_.remove(SnapshotTier::Current);
         }
         return true;

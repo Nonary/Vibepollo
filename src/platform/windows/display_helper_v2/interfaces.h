@@ -115,6 +115,15 @@ namespace display_helper::v2 {
       return true;
     }
 
+    /// Force a same-value rotation mode-set for non-default rotations. The OS
+    /// can report a matching layout while the display driver's pointer
+    /// transform is stale after a virtual-display session; only a forced
+    /// re-apply reaches the driver. Best-effort: failure must not fail a
+    /// confirmed restore.
+    virtual bool reassert_layout_rotations(const codec::layout_rotation_map_t &) {
+      return true;
+    }
+
     /// Restore a device's refresh rate to num/den.
     virtual bool set_device_refresh_rate(const std::string &, unsigned int, unsigned int) {
       return false;
