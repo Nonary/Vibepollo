@@ -2302,7 +2302,18 @@ namespace proc {
 
     // Perform cleanup actions now if needed
     if (_process) {
-      terminate();
+      std::unique_lock<std::mutex> stream_lifecycle_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
+      if (!stream_lifecycle_lock.owns_lock()) {
+        // Teardown is already in flight on another thread. Blocking here
+        // parks the caller - including the single serverinfo worker, which
+        // made the host undiscoverable for the whole teardown tail
+        // (vibepollo#326). The gate owner performs the cleanup; report
+        // not-running without waiting on it.
+        BOOST_LOG(debug) << "[running] App exited but stream teardown is already in flight; deferring cleanup to the gate owner.";
+        return 0;
+      }
+      BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
+      terminate(false, true, false, true);
     }
 
     return 0;
