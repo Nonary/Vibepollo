@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,7 +41,7 @@ namespace remote_session {
     bool retained {};
     bool ready {};
     bool retryable {};
-    std::string output;
+    std::optional<std::string> output;
   };
 
   struct caller_t {
@@ -68,10 +69,29 @@ namespace remote_session {
   struct pending_t {
     std::uint32_t launch_id {};
     std::string client_uuid;
+    std::string crypto_binding;
     std::string source_address;
     bool encrypted {};
     role_e role {role_e::game};
+    std::uint64_t generation {};
     std::chrono::steady_clock::time_point expires_at {};
+  };
+
+  struct monitor_runtime_state_t {
+    bool accepted {};
+    bool ready {};
+    bool retryable {};
+    std::string output;
+    std::string error;
+  };
+
+  struct monitor_runtime_hooks_t {
+    std::function<monitor_runtime_state_t(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, std::uint64_t generation)> activate_or_resume;
+    std::function<monitor_runtime_state_t(std::string_view client_uuid, std::uint64_t generation)> snapshot;
+    std::function<void(std::string_view client_uuid, std::uint64_t generation, std::string_view reason)> explicit_release;
+    std::function<void(std::string_view client_uuid, std::uint64_t generation)> transport_lost;
+    std::function<void(std::string_view client_uuid)> unpair;
+    std::function<void()> shutdown;
   };
 
   struct placement_t {
@@ -91,11 +111,18 @@ namespace remote_session {
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
+  void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks);
+  [[nodiscard]] monitor_runtime_state_t activate_or_resume_monitor(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, std::uint64_t generation);
+  [[nodiscard]] monitor_runtime_state_t monitor_runtime_snapshot(std::string_view client_uuid, std::uint64_t generation);
+  void release_monitor(std::string_view client_uuid, std::uint64_t generation, std::string_view reason);
+  void notify_monitor_transport_lost(std::string_view client_uuid, std::uint64_t generation);
+  void notify_monitor_unpair(std::string_view client_uuid);
+  void notify_monitor_shutdown();
 
   class pending_registry_t {
   public:
     bool add(pending_t pending, std::string *warning = nullptr);
-    std::optional<pending_t> match_encrypted(std::string_view client_uuid, std::chrono::steady_clock::time_point now);
+    std::optional<pending_t> match_encrypted(std::string_view client_uuid, std::string_view crypto_binding, std::chrono::steady_clock::time_point now);
     std::optional<pending_t> match_plaintext(std::string_view address, std::chrono::steady_clock::time_point now);
     void erase(std::uint32_t id);
     void expire(std::chrono::steady_clock::time_point now);
