@@ -810,9 +810,9 @@ namespace rtsp_stream {
      *       the session will be discarded.
      * @param launch_session Streaming session information.
      */
-    void session_raise(std::shared_ptr<launch_session_t> launch_session) {
+    bool session_raise(std::shared_ptr<launch_session_t> launch_session) {
       if (!launch_session || launch_session->id == 0) {
-        return;
+        return false;
       }
       const auto launch_session_id = launch_session->id;
       bool accepted = false;
@@ -835,7 +835,9 @@ namespace rtsp_stream {
         } else if (duplicate_id) {
           BOOST_LOG(error) << "RTSP pending-launch ID collision for " << launch_session_id;
         } else if (duplicate_plaintext) {
-          BOOST_LOG(error) << "Plaintext RTSP has more than one pending launch for one source address; refusing launch " << launch_session_id;
+          plaintext_route_warning =
+            "Plaintext RTSP has more than one pending launch for one source address; rejecting the new launch.";
+          BOOST_LOG(error) << plaintext_route_warning;
         } else {
           _launch_sessions.emplace_back(
             launch_session_entry_t {
@@ -854,6 +856,12 @@ namespace rtsp_stream {
           arm_launch_timer();
         });
       }
+      return accepted;
+    }
+
+    std::string plaintext_warning() {
+      std::lock_guard lock {_launch_sessions_mutex};
+      return plaintext_route_warning;
     }
 
     /**
@@ -1176,6 +1184,84 @@ namespace rtsp_stream {
       return !to_cleanup.empty();
     }
 
+    bool disconnect_remote_role(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
+      std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      bool removed_pending = false;
+      bool pending_launches_remain = false;
+      bool vulkan_hdr_layer_active = false;
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
+      // Match the ANNOUNCE worker's lock order. This prevents a launch that
+      // already passed its reservation check from inserting after this exact
+      // role has been disconnected.
+      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+      {
+        std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
+        for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
+          const auto &pending = it->session;
+          if (pending &&
+              pending->client_uuid == client_uuid &&
+              pending->role == role &&
+              pending->role_generation == generation) {
+            const auto &guid_bytes = pending->virtual_display_guid_bytes;
+            if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
+                  return byte != 0;
+                })) {
+              virtual_display_guid_bytes = guid_bytes;
+            }
+            it = _launch_sessions.erase(it);
+            removed_pending = true;
+          } else {
+            ++it;
+          }
+        }
+        pending_launches_remain = !_launch_sessions.empty();
+      }
+      {
+        auto lg = _session_state.lock();
+        for (auto it = _session_state->sessions.begin(); it != _session_state->sessions.end();) {
+          const auto &session = *it;
+          if (stream::session::uuid_match(*session, client_uuid) && stream::session::remote_role_match(*session, role, generation)) {
+            to_cleanup.emplace_back(session);
+            _session_state->client_uuids.erase(session.get());
+            _session_state->vulkan_hdr_layer_sessions.erase(session.get());
+            it = _session_state->sessions.erase(it);
+          } else {
+            ++it;
+          }
+        }
+        vulkan_hdr_layer_active = vulkan_hdr_layer_active_locked();
+      }
+      lifecycle_lock.unlock();
+#ifdef _WIN32
+      set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
+#endif
+      for (auto &session : to_cleanup) {
+        stream::session::stop(*session);
+        stream::session::join(*session);
+      }
+      if (removed_pending) {
+        if (!pending_launches_remain) {
+          set_pending_vulkan_hdr_layer_stream(false);
+        }
+        asio::post(io_context, [this]() {
+          arm_launch_timer();
+        });
+      }
+
+      if (removed_pending || !to_cleanup.empty()) {
+        stream::session::cleanup_reservation_t cleanup_reservation;
+        lifecycle_lock.lock();
+        const stream::session::shared_runtime_finalize_context_t finalize_context {
+          .virtual_display_guid_bytes = virtual_display_guid_bytes,
+        };
+        (void) stream::session::finalize_shared_runtime_if_idle(
+          "rtsp_remote_role_disconnected",
+          finalize_context
+        );
+      }
+      return removed_pending || !to_cleanup.empty();
+    }
+
     /**
      * @brief Runs an iteration of the RTSP server loop
      */
@@ -1302,7 +1388,9 @@ namespace rtsp_stream {
           for (auto &entry : _launch_sessions) {
             if (!entry.accepted && entry.session && !entry.session->rtsp_cipher && entry.session->rtsp_source_address == remote_address) {
               if (plaintext_match) {
-                BOOST_LOG(error) << "Plaintext RTSP source-address routing is ambiguous; rejecting the transport.";
+                plaintext_route_warning =
+                  "Plaintext RTSP source-address routing became ambiguous and was rejected.";
+                BOOST_LOG(error) << plaintext_route_warning;
                 plaintext_ambiguous = true;
                 break;
               }
@@ -1467,6 +1555,7 @@ namespace rtsp_stream {
     sync_util::sync_t<session_state_t> _session_state;
     std::mutex _launch_sessions_mutex;
     std::vector<launch_session_entry_t> _launch_sessions;
+    std::string plaintext_route_warning;
 
     boost::asio::io_context io_context;
     tcp::acceptor acceptor {io_context};
@@ -1480,8 +1569,14 @@ namespace rtsp_stream {
 
   rtsp_server_t server {};
 
-  void launch_session_raise(std::shared_ptr<launch_session_t> launch_session) {
-    server.session_raise(std::move(launch_session));
+  bool launch_session_raise(std::shared_ptr<launch_session_t> launch_session) {
+    return server.session_raise(std::move(launch_session));
+  }
+
+  std::string plaintext_route_warning() { return server.plaintext_warning(); }
+
+  bool disconnect_remote_role_session(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
+    return server.disconnect_remote_role(client_uuid, role, generation);
   }
 
   void launch_session_clear(uint32_t launch_session_id) {

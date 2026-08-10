@@ -39,7 +39,10 @@ namespace remote_display_topology {
   struct runtime_callbacks_t {
     std::function<bool(const std::string &client_uuid, const mode_t &mode)> create_or_reclaim;
     std::function<bool(const std::vector<node_t> &composed)> apply_composed_topology;
-    std::function<std::optional<std::string>(const std::string &client_uuid)> exact_target_has_current_mode_and_dxgi;
+    // The output is accepted only after this exact client identity has both the
+    // requested mode and a capture-enumerated DXGI name.  Passing the mode here
+    // prevents a callback from treating a GUID/device-id lookup as readiness.
+    std::function<std::optional<std::string>(const std::string &client_uuid, const mode_t &mode)> exact_target_has_current_mode_and_dxgi;
     std::function<void(const std::string &client_uuid)> remove_owned_display;
   };
 
@@ -95,6 +98,7 @@ namespace remote_display_topology {
     };
 
     activation_result_t activate_locked(const std::string &client_uuid, client_state_t &state);
+    void release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason);
     std::vector<node_t> compose_locked(std::vector<std::string> &warnings) const;
     static mode_t effective_mode(const node_t &node);
     mutable std::mutex mutex_;

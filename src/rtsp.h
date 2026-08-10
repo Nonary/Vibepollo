@@ -296,7 +296,15 @@ namespace rtsp_stream {
     });
   }
 
-  void launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+  // Returns false when the per-launch admission registry rejects the request.
+  // Encrypted launches are independent; plaintext remains one pending launch
+  // per source address because it has no cryptographic routing identity.
+  bool launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
+
+  // Surface the actual plaintext admission warning in the topology UI without
+  // giving that UI a second, divergent notion of RTSP routing state.
+  std::string plaintext_route_warning();
+  bool disconnect_remote_role_session(std::string_view client_uuid, remote_session::role_e role, std::uint64_t generation);
 
   /**
    * @brief Clear state for the specified launch session.

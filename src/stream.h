@@ -24,6 +24,7 @@
 #include "thread_safe.h"
 #include "video.h"
 #include "stream_protocol.h"
+#include "remote_session.h"
 
 namespace rtsp_stream {
   struct launch_session_t;
@@ -120,6 +121,7 @@ namespace stream {
     std::string uuid(const session_t &session);
     bool uuid_match(const session_t &session, const std::string_view &uuid);
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm);
+    bool remote_role_match(const session_t &session, remote_session::role_e role, std::uint64_t generation);
     int start(session_t &session, const std::string &addr_string);
     void stop(session_t &session);
     void graceful_stop(session_t &session);
