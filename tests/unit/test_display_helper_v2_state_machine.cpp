@@ -171,11 +171,16 @@ namespace {
       last_delay = delay;
     }
 
+    void clear_pending_hdr_blank() override {
+      clear_blank_calls += 1;
+    }
+
     void refresh_shell() override {
       refresh_calls += 1;
     }
 
     int blank_calls = 0;
+    int clear_blank_calls = 0;
     int refresh_calls = 0;
     std::chrono::milliseconds last_delay {0};
   };
@@ -197,6 +202,7 @@ namespace {
     }
 
     std::string device_id() override {
+      ++device_id_calls;
       return current_device_id;
     }
 
@@ -204,6 +210,7 @@ namespace {
     bool disabled = false;
     bool enabled = false;
     std::string current_device_id {"virtual"};
+    int device_id_calls = 0;
   };
 
   class FakeDisplaySettings final : public display_helper::v2::IDisplaySettings {
@@ -254,12 +261,6 @@ namespace {
       return true;
     }
 
-    std::optional<display_device::ActiveTopology> compute_expected_topology(
-      const display_device::SingleDisplayConfiguration &,
-      const std::optional<display_device::ActiveTopology> &) override {
-      return expected_topology;
-    }
-
     bool is_topology_same(const display_device::ActiveTopology &, const display_device::ActiveTopology &) override {
       return topology_same_result;
     }
@@ -281,7 +282,6 @@ namespace {
     std::map<std::string, int> match_calls;
     display_device::DisplaySettingsSnapshot snapshot;
     bool configuration_matches_result = true;
-    std::optional<display_device::ActiveTopology> expected_topology;
     bool topology_same_result = true;
     int apply_snapshot_calls = 0;
   };
@@ -315,6 +315,8 @@ namespace {
     int apply_result_count = 0;
     std::optional<bool> verification_result;
     int verification_result_count = 0;
+    std::vector<std::string> result_events;
+    bool shell_refresh_dispatched_before_verification_result = false;
     std::optional<bool> snapshot_result;
     std::optional<bool> refresh_result;
     std::optional<int> exit_code;
@@ -360,14 +362,24 @@ namespace {
       display_settings.devices.push_back(std::move(device));
     }
 
+    void add_inactive_device(const std::string &id) {
+      display_device::EnumeratedDevice device;
+      device.m_device_id = id;
+      device.m_friendly_name = "Fake sleeping monitor";
+      display_settings.devices.push_back(std::move(device));
+    }
+
     StateMachineHarness() {
       state_machine.set_apply_result_callback([this](display_helper::v2::ApplyStatus status, std::uint64_t, std::uint64_t) {
         apply_result = status;
         ++apply_result_count;
+        result_events.emplace_back("apply");
       });
       state_machine.set_verification_result_callback([this](bool success, std::uint64_t, std::uint64_t) {
+        shell_refresh_dispatched_before_verification_result = workarounds.refresh_calls > 0;
         verification_result = success;
         ++verification_result_count;
+        result_events.emplace_back("verification");
       });
       state_machine.set_snapshot_result_callback([this](bool success, std::uint64_t, std::uint64_t) {
         snapshot_result = success;
@@ -408,9 +420,27 @@ TEST(DisplayHelperV2Debounce, RetainsNotificationGenerationUntilDue) {
   debouncer.notify(start, 42);
   EXPECT_FALSE(debouncer.take_if_due(start + std::chrono::milliseconds(499)).has_value());
 
-  const auto generation = debouncer.take_if_due(start + std::chrono::milliseconds(500));
-  ASSERT_TRUE(generation.has_value());
-  EXPECT_EQ(*generation, 42u);
+  const auto ticket = debouncer.take_if_due(start + std::chrono::milliseconds(500));
+  ASSERT_TRUE(ticket.has_value());
+  EXPECT_EQ(ticket->generation, 42u);
+}
+
+TEST(DisplayHelperV2Debounce, RetainsDeviceIdentitySignalAcrossGenericBurst) {
+  display_helper::v2::DebouncedTrigger debouncer(std::chrono::milliseconds(500));
+  const auto start = std::chrono::steady_clock::now();
+
+  debouncer.notify(start, 42, 7, display_helper::v2::DisplayEvent::DeviceArrival);
+  debouncer.notify(
+    start + std::chrono::milliseconds(100),
+    42,
+    7,
+    display_helper::v2::DisplayEvent::DisplayChange);
+
+  const auto ticket = debouncer.take_if_due(start + std::chrono::milliseconds(600));
+  ASSERT_TRUE(ticket);
+  EXPECT_EQ(ticket->generation, 42u);
+  EXPECT_EQ(ticket->connection_epoch, 7u);
+  EXPECT_EQ(ticket->event, display_helper::v2::DisplayEvent::DeviceArrival);
 }
 
 TEST(DisplayHelperV2Heartbeat, TriggersTimeoutWhenArmed) {
@@ -467,6 +497,8 @@ TEST(DisplayHelperV2StateMachine, ApplyTransitionsAndVerifies) {
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
   EXPECT_EQ(harness.task_manager.created, 1);
   ASSERT_TRUE(harness.dispatcher.verification_completion);
+  EXPECT_FALSE(harness.apply_result.has_value());
+  EXPECT_FALSE(harness.verification_result.has_value());
 
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
@@ -474,12 +506,14 @@ TEST(DisplayHelperV2StateMachine, ApplyTransitionsAndVerifies) {
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
   ASSERT_TRUE(harness.verification_result.has_value());
   EXPECT_TRUE(harness.verification_result.value());
+  EXPECT_TRUE(harness.shell_refresh_dispatched_before_verification_result);
   EXPECT_TRUE(harness.state_machine.recovery_armed());
   EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 0);
   EXPECT_EQ(harness.workarounds.refresh_calls, 1);
   EXPECT_EQ(harness.workarounds.blank_calls, 0);
   ASSERT_TRUE(harness.apply_result.has_value());
   EXPECT_EQ(harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(harness.result_events, (std::vector<std::string> {"apply", "verification"}));
 }
 
 TEST(DisplayHelperV2StateMachine, IgnoresCommandsFromRetiredConnectionEpoch) {
@@ -508,6 +542,43 @@ TEST(DisplayHelperV2StateMachine, IgnoresCommandsFromRetiredConnectionEpoch) {
 
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+}
+
+TEST(DisplayHelperV2StateMachine, IgnoresDebouncedDisplayEventFromRetiredConnectionEpoch) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_old";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+    1,
+  });
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  active_connection_epoch = 2;
+  harness.virtual_display.current_device_id = "virtual_new";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    .event = display_helper::v2::DisplayEvent::DeviceArrival,
+    .generation = harness.cancellation.current_generation(),
+    .connection_epoch = 1,
+  });
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, 0);
 }
 
 TEST(DisplayHelperV2StateMachine, IgnoresStaleDisconnectAndHeartbeatRecoverySignals) {
@@ -629,6 +700,7 @@ TEST(DisplayHelperV2StateMachine, RecentDisconnectVerifiesBeforeEachBoundedSettl
   harness.drain_messages();
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
   EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(0));
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
 
   harness.dispatcher.apply_completion(failed);
   harness.drain_messages();
@@ -639,6 +711,7 @@ TEST(DisplayHelperV2StateMachine, RecentDisconnectVerifiesBeforeEachBoundedSettl
   harness.dispatcher.verification_completion(false);
   harness.drain_messages();
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
 
   harness.dispatcher.apply_completion(failed);
   harness.drain_messages();
@@ -694,9 +767,19 @@ TEST(DisplayHelperV2StateMachine, ApplyBlanksHdrOnlyWhenRequested) {
 
   EXPECT_EQ(harness.workarounds.blank_calls, 1);
   EXPECT_EQ(harness.workarounds.last_delay, std::chrono::milliseconds(1000));
+
+  request.hdr_blank = false;
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  harness.dispatcher.apply_completion(outcome);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.workarounds.blank_calls, 1);
+  EXPECT_EQ(harness.workarounds.clear_blank_calls, 2);
 }
 
-TEST(DisplayHelperV2StateMachine, ApplyRetriesOnRetryable) {
+TEST(DisplayHelperV2StateMachine, RetryableApplyReportsWithoutBlindMutationRetry) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -708,9 +791,10 @@ TEST(DisplayHelperV2StateMachine, ApplyRetriesOnRetryable) {
   harness.dispatcher.apply_completion(outcome);
   harness.drain_messages();
 
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(500));
-  EXPECT_FALSE(harness.apply_result.has_value());
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::Retryable);
 }
 
 TEST(DisplayHelperV2StateMachine, NewApplySupersedesDeferredRevert) {
@@ -752,6 +836,215 @@ TEST(DisplayHelperV2StateMachine, NewApplySupersedesDeferredRevert) {
   ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
   EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "replacement");
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+}
+
+TEST(DisplayHelperV2StateMachine, RetiredDeferredApplyCannotSuppressActiveCompletion) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest first;
+  first.configuration = display_device::SingleDisplayConfiguration {};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    first,
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  display_helper::v2::ApplyRequest deferred;
+  deferred.configuration = display_device::SingleDisplayConfiguration {};
+  deferred.configuration->m_device_id = "retired";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    deferred,
+    harness.cancellation.current_generation(),
+    1,
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+
+  active_connection_epoch = 2;
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+}
+
+TEST(DisplayHelperV2StateMachine, DeferredApplyRetiringDuringDrainCannotWedgeActiveCompletion) {
+  StateMachineHarness harness;
+  bool retire_during_completion = false;
+  int completion_epoch_checks = 0;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    if (!retire_during_completion) {
+      return std::uint64_t {1};
+    }
+    return ++completion_epoch_checks == 1 ? std::uint64_t {1} : std::uint64_t {2};
+  });
+
+  display_helper::v2::ApplyRequest first;
+  first.configuration = display_device::SingleDisplayConfiguration {};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    first,
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  display_helper::v2::ApplyRequest deferred;
+  deferred.configuration = display_device::SingleDisplayConfiguration {};
+  deferred.configuration->m_device_id = "retiring";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    deferred,
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  retire_during_completion = true;
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+}
+
+TEST(DisplayHelperV2StateMachine, ExplicitDeferredApplyWinsOverAutonomousIdentityRepair) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest first;
+  first.configuration = display_device::SingleDisplayConfiguration {};
+  first.configuration->m_device_id = "virtual_old";
+  first.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_old";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    first,
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  active_connection_epoch = 2;
+  display_helper::v2::ApplyRequest replacement;
+  replacement.configuration = display_device::SingleDisplayConfiguration {};
+  replacement.configuration->m_device_id = "client_replacement";
+  replacement.virtual_layout = "extended";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    replacement,
+    harness.cancellation.current_generation(),
+    2,
+  });
+
+  harness.virtual_display.current_device_id = "event_replacement";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    .event = display_helper::v2::DisplayEvent::DeviceArrival,
+    .generation = harness.cancellation.current_generation(),
+    .connection_epoch = 2,
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "client_replacement");
+}
+
+TEST(DisplayHelperV2StateMachine, ResetBarrierSuppressesCompletedApplyBeforeReplacement) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest first;
+  first.configuration = display_device::SingleDisplayConfiguration {};
+  first.configuration->m_device_id = "first";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    first,
+    harness.cancellation.current_generation(),
+  });
+
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+  });
+  display_helper::v2::ApplyRequest replacement;
+  replacement.configuration = display_device::SingleDisplayConfiguration {};
+  replacement.configuration->m_device_id = "replacement";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    replacement,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 0);
+  EXPECT_EQ(harness.apply_result_count, 0);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 0);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "replacement");
+}
+
+TEST(DisplayHelperV2StateMachine, ResetBarrierResumesHeldCompletionIfReplacementRetires) {
+  StateMachineHarness harness;
+  std::uint64_t active_connection_epoch = 1;
+  harness.state_machine.set_connection_epoch_provider([&] {
+    return active_connection_epoch;
+  });
+
+  display_helper::v2::ApplyRequest first;
+  first.configuration = display_device::SingleDisplayConfiguration {};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    first,
+    harness.cancellation.current_generation(),
+    1,
+  });
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  display_helper::v2::ApplyRequest replacement;
+  replacement.configuration = display_device::SingleDisplayConfiguration {};
+  replacement.configuration->m_device_id = "retiring";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    replacement,
+    harness.cancellation.current_generation(),
+    1,
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 0);
+
+  active_connection_epoch = 2;
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
 }
 
 TEST(DisplayHelperV2StateMachine, DeferredApplySurvivesHeartbeatAfterSupersedingExplicitRevert) {
@@ -812,27 +1105,7 @@ TEST(DisplayHelperV2StateMachine, DeferredApplySurvivesHeartbeatAfterSuperseding
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
 }
 
-TEST(DisplayHelperV2StateMachine, ApplyStopsAfterMaxRetries) {
-  StateMachineHarness harness;
-  display_helper::v2::ApplyRequest request;
-  request.configuration = display_device::SingleDisplayConfiguration {};
-
-  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
-
-  display_helper::v2::ApplyOutcome outcome;
-  outcome.status = display_helper::v2::ApplyStatus::Retryable;
-
-  for (int i = 0; i < 3; ++i) {
-    harness.dispatcher.apply_completion(outcome);
-    harness.drain_messages();
-  }
-
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
-  ASSERT_TRUE(harness.apply_result.has_value());
-  EXPECT_EQ(harness.apply_result, display_helper::v2::ApplyStatus::Retryable);
-}
-
-TEST(DisplayHelperV2StateMachine, VirtualHdrStateFailureRetriesThenFallsBackToSdrAndVerifies) {
+TEST(DisplayHelperV2StateMachine, VirtualHdrStateFailureFallsBackOnceToSdrAndVerifies) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -865,26 +1138,9 @@ TEST(DisplayHelperV2StateMachine, VirtualHdrStateFailureRetriesThenFallsBackToSd
   harness.dispatcher.apply_completion(hdr_failed);
   harness.drain_messages();
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(500));
-  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
-  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_hdr_state, display_device::HdrState::Enabled);
-  EXPECT_EQ(harness.apply_result_count, 0);
-  EXPECT_EQ(harness.verification_result_count, 0);
-
-  harness.dispatcher.apply_completion(hdr_failed);
-  harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(1000));
-  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
-  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_hdr_state, display_device::HdrState::Enabled);
-  EXPECT_EQ(harness.apply_result_count, 0);
-  EXPECT_EQ(harness.verification_result_count, 0);
-
-  harness.dispatcher.apply_completion(hdr_failed);
-  harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
   EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(0));
   ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
   EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_hdr_state, display_device::HdrState::Disabled);
   EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, original_request.configuration->m_device_id);
   EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_prep, original_request.configuration->m_device_prep);
@@ -914,9 +1170,7 @@ TEST(DisplayHelperV2StateMachine, VirtualHdrStateFailureRetriesThenFallsBackToSd
   harness.drain_messages();
   ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
   ASSERT_TRUE(harness.dispatcher.verification_completion);
-  EXPECT_EQ(harness.apply_result_count, 1);
-  ASSERT_TRUE(harness.apply_result);
-  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::Ok);
+  EXPECT_EQ(harness.apply_result_count, 0);
   EXPECT_EQ(harness.verification_result_count, 0);
 
   harness.dispatcher.verification_completion(true);
@@ -929,7 +1183,7 @@ TEST(DisplayHelperV2StateMachine, VirtualHdrStateFailureRetriesThenFallsBackToSd
   EXPECT_TRUE(*harness.verification_result);
 }
 
-TEST(DisplayHelperV2StateMachine, PhysicalHdrStateFailureRetriesWithoutSdrFallback) {
+TEST(DisplayHelperV2StateMachine, PhysicalHdrStateFailureReportsWithoutRetryOrSdrFallback) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -945,18 +1199,7 @@ TEST(DisplayHelperV2StateMachine, PhysicalHdrStateFailureRetriesWithoutSdrFallba
   hdr_failed.status = display_helper::v2::ApplyStatus::HdrStateFailed;
   harness.dispatcher.apply_completion(hdr_failed);
   harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(500));
-
-  harness.dispatcher.apply_completion(hdr_failed);
-  harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(1000));
-
-  harness.dispatcher.apply_completion(hdr_failed);
-  harness.drain_messages();
-
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
   EXPECT_EQ(harness.apply_result_count, 1);
   ASSERT_TRUE(harness.apply_result);
@@ -966,7 +1209,7 @@ TEST(DisplayHelperV2StateMachine, PhysicalHdrStateFailureRetriesWithoutSdrFallba
   EXPECT_FALSE(*harness.verification_result);
 }
 
-TEST(DisplayHelperV2StateMachine, GenericVirtualHdrFailuresRetainSdrFallback) {
+TEST(DisplayHelperV2StateMachine, GenericVirtualFailureDoesNotMasqueradeAsHdrFallback) {
   for (const auto status : {display_helper::v2::ApplyStatus::Retryable, display_helper::v2::ApplyStatus::VerificationFailed}) {
     SCOPED_TRACE(static_cast<int>(status));
     StateMachineHarness harness;
@@ -983,22 +1226,19 @@ TEST(DisplayHelperV2StateMachine, GenericVirtualHdrFailuresRetainSdrFallback) {
     display_helper::v2::ApplyOutcome failed;
     failed.status = status;
     failed.virtual_display_requested = true;
-    for (int attempt = 0; attempt < 3; ++attempt) {
-      harness.dispatcher.apply_completion(failed);
-      harness.drain_messages();
-    }
+    harness.dispatcher.apply_completion(failed);
+    harness.drain_messages();
 
-    EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 4);
-    EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(0));
-    ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
-    EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_hdr_state, display_device::HdrState::Disabled);
-    EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-    EXPECT_EQ(harness.apply_result_count, 0);
-    EXPECT_EQ(harness.verification_result_count, 0);
+    EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+    EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+    ASSERT_TRUE(harness.apply_result);
+    EXPECT_EQ(*harness.apply_result, status);
+    ASSERT_TRUE(harness.verification_result);
+    EXPECT_FALSE(*harness.verification_result);
   }
 }
 
-TEST(DisplayHelperV2StateMachine, VerificationFailureReappliesBeforeReportingFailure) {
+TEST(DisplayHelperV2StateMachine, VerificationFailureGetsOneImmediateRepairBeforeReportingFailure) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -1017,16 +1257,7 @@ TEST(DisplayHelperV2StateMachine, VerificationFailureReappliesBeforeReportingFai
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
   EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(0));
-  EXPECT_FALSE(harness.verification_result.has_value());
-
-  harness.dispatcher.apply_completion(applied);
-  harness.drain_messages();
-  harness.dispatcher.verification_completion(false);
-  harness.drain_messages();
-
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(750));
+  EXPECT_TRUE(harness.dispatcher.apply_request.settings_only_repair);
   EXPECT_FALSE(harness.verification_result.has_value());
 
   harness.dispatcher.apply_completion(applied);
@@ -1035,51 +1266,15 @@ TEST(DisplayHelperV2StateMachine, VerificationFailureReappliesBeforeReportingFai
   harness.drain_messages();
 
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::VerificationFailed);
   ASSERT_TRUE(harness.verification_result.has_value());
   EXPECT_FALSE(*harness.verification_result);
+  EXPECT_EQ(harness.result_events, (std::vector<std::string> {"apply", "verification"}));
 }
 
-TEST(DisplayHelperV2StateMachine, HdrVerificationUsesLegacySettlingStairStep) {
-  StateMachineHarness harness;
-  display_helper::v2::ApplyRequest request;
-  request.configuration = display_device::SingleDisplayConfiguration {};
-  request.configuration->m_hdr_state = display_device::HdrState::Enabled;
-  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
-    request,
-    harness.cancellation.current_generation(),
-  });
-
-  display_helper::v2::ApplyOutcome applied;
-  applied.status = display_helper::v2::ApplyStatus::Ok;
-  const std::array expected_delays {
-    std::chrono::milliseconds(0),
-    std::chrono::milliseconds(750),
-    std::chrono::milliseconds(2500),
-    std::chrono::milliseconds(5500),
-  };
-
-  for (const auto delay : expected_delays) {
-    harness.dispatcher.apply_completion(applied);
-    harness.drain_messages();
-    ASSERT_TRUE(harness.dispatcher.verification_completion);
-    harness.dispatcher.verification_completion(false);
-    harness.drain_messages();
-    EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-    EXPECT_EQ(harness.dispatcher.apply_delay, delay);
-  }
-
-  harness.dispatcher.apply_completion(applied);
-  harness.drain_messages();
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  harness.dispatcher.verification_completion(false);
-  harness.drain_messages();
-
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
-  ASSERT_TRUE(harness.verification_result.has_value());
-  EXPECT_FALSE(*harness.verification_result);
-}
-
-TEST(DisplayHelperV2StateMachine, HdrStabilizationRepairUsesTheNextLegacyStage) {
+TEST(DisplayHelperV2StateMachine, SuccessfulHdrApplyHasNoPostStartVerificationStaircase) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -1093,60 +1288,16 @@ TEST(DisplayHelperV2StateMachine, HdrStabilizationRepairUsesTheNextLegacyStage) 
   applied.status = display_helper::v2::ApplyStatus::Ok;
   harness.dispatcher.apply_completion(applied);
   harness.drain_messages();
+  EXPECT_EQ(harness.apply_result_count, 0);
   ASSERT_TRUE(harness.dispatcher.verification_completion);
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
 
-  // The first delayed (750ms) settling check fails. v1 reapplied immediately,
-  // then used the next 2.5s settling stage if the repair also failed.
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  harness.dispatcher.verification_completion(false);
-  harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(0));
-
-  harness.dispatcher.apply_completion(applied);
-  harness.drain_messages();
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  harness.dispatcher.verification_completion(false);
-  harness.drain_messages();
-
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-  EXPECT_EQ(harness.dispatcher.apply_delay, std::chrono::milliseconds(2500));
-}
-
-TEST(DisplayHelperV2StateMachine, FailedStabilizationRepairKeepsVirtualMonitoring) {
-  StateMachineHarness harness;
-  display_helper::v2::ApplyRequest request;
-  request.configuration = display_device::SingleDisplayConfiguration {};
-  request.configuration->m_device_id = "virtual";
-  request.virtual_layout = "extended";
-  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
-    request,
-    harness.cancellation.current_generation(),
-  });
-
-  display_helper::v2::ApplyOutcome applied;
-  applied.status = display_helper::v2::ApplyStatus::Ok;
-  harness.dispatcher.apply_completion(applied);
-  harness.drain_messages();
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  harness.dispatcher.verification_completion(true);
-  harness.drain_messages();
-  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
-  ASSERT_TRUE(harness.verification_result.has_value());
-  EXPECT_TRUE(*harness.verification_result);
-
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  harness.dispatcher.verification_completion(false);
-  harness.drain_messages();
-  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
-
-  display_helper::v2::ApplyOutcome failed;
-  failed.status = display_helper::v2::ApplyStatus::Fatal;
-  harness.dispatcher.apply_completion(failed);
-  harness.drain_messages();
-
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, 1);
+  ASSERT_TRUE(harness.apply_result.has_value());
+  EXPECT_EQ(*harness.apply_result, display_helper::v2::ApplyStatus::Ok);
   ASSERT_TRUE(harness.verification_result.has_value());
   EXPECT_TRUE(*harness.verification_result);
 }
@@ -1288,10 +1439,9 @@ TEST(DisplayHelperV2StateMachine, VirtualDisplayResetTriggersDispatch) {
   EXPECT_TRUE(harness.dispatcher.apply_reset_virtual_display);
 }
 
-// Test: Display event during APPLY with virtual display triggers re-apply.
-// When a virtual display device crashes/reappears during an active apply operation,
-// the state machine should restart the apply.
-TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTriggersReapply) {
+// A virtual identity replacement during APPLY is coalesced behind the current
+// mutation instead of cancelling and restarting it.
+TEST(DisplayHelperV2StateMachine, ChangedIdentityDuringApplyQueuesOneFollowup) {
   StateMachineHarness harness;
   harness.virtual_display.current_device_id = "virtual_new";
   display_helper::v2::ApplyRequest request;
@@ -1310,15 +1460,19 @@ TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTrigg
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
 
   // The replacement is fenced behind the active worker so its task/recovery
   // state cannot be overwritten while SetDisplayConfig may still be running.
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.apply_result_count, 0);
 
-  display_helper::v2::ApplyOutcome cancelled;
-  cancelled.status = display_helper::v2::ApplyStatus::Fatal;
-  harness.dispatcher.apply_completion(cancelled);
+  display_helper::v2::ApplyOutcome first_completion;
+  first_completion.status = display_helper::v2::ApplyStatus::Fatal;
+  harness.dispatcher.apply_completion(first_completion);
   harness.drain_messages();
 
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
@@ -1330,6 +1484,33 @@ TEST(DisplayHelperV2StateMachine, DisplayEventDuringApplyWithVirtualDisplayTrigg
   EXPECT_EQ(harness.dispatcher.apply_request.topology->front().front(), "virtual_new");
   ASSERT_FALSE(harness.dispatcher.apply_request.monitor_positions.empty());
   EXPECT_EQ(harness.dispatcher.apply_request.monitor_positions.front().first, "virtual_new");
+}
+
+TEST(DisplayHelperV2StateMachine, QueuedIdentityRepairRechecksIdentityBeforeApplying) {
+  StateMachineHarness harness;
+  harness.virtual_display.current_device_id = "virtual_new";
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.virtual_layout = "extended";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+
+  // The replacement disappeared before the active Apply released its
+  // mutation fence. Dispatch must use the latest evidence, not the queued id.
+  harness.virtual_display.current_device_id = "virtual_old";
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
 }
 
 // Test: Successful apply with virtual display enters VirtualDisplayMonitoring state.
@@ -1354,6 +1535,28 @@ TEST(DisplayHelperV2StateMachine, VirtualDisplayEntersMonitoringStateAfterSucces
   // After successful verification with virtual display, we're in VirtualDisplayMonitoring
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
   EXPECT_TRUE(harness.state_machine.recovery_armed());
+}
+
+TEST(DisplayHelperV2StateMachine, FailedWorkerTaskBoundaryIsNotRetriedInsideCaptureGate) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome outcome;
+  outcome.status = display_helper::v2::ApplyStatus::Ok;
+  outcome.display_may_have_changed = true;
+  outcome.durable_recovery_attempted = true;
+  outcome.durable_recovery_armed = false;
+  harness.dispatcher.apply_completion(outcome);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.task_manager.created, 0);
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
 }
 
 // Test: Display event in VirtualDisplayMonitoring state triggers re-apply.
@@ -1402,7 +1605,97 @@ TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateTriggersReapply) 
   EXPECT_EQ(harness.dispatcher.apply_request.monitor_positions.front().first, "virtual_new");
 }
 
-TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateWithSameVirtualDeviceDoesNotReapply) {
+TEST(DisplayHelperV2StateMachine, ChangedIdentityRepairsCoalesceLatestEvidenceAndRemainBounded) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_a";
+  request.topology = display_device::ActiveTopology {{"virtual_a"}};
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_a";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  // The first replacement starts one autonomous repair.
+  harness.virtual_display.current_device_id = "virtual_b";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_b");
+
+  // Preserve the sole observation of a second replacement while that repair
+  // owns the mutation fence. Completion rechecks and dispatches the latest id.
+  harness.virtual_display.current_device_id = "virtual_c";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  const auto complete_first_repair = harness.dispatcher.apply_completion;
+  complete_first_repair(applied);
+  harness.drain_messages();
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  ASSERT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_c");
+
+  // A third identity change cannot sustain an unbounded Apply/event loop for
+  // this client session. A later explicit Apply establishes a fresh budget.
+  harness.virtual_display.current_device_id = "virtual_d";
+  const int identity_queries_after_two_repairs = harness.virtual_display.device_id_calls;
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, identity_queries_after_two_repairs);
+
+  const auto complete_second_repair = harness.dispatcher.apply_completion;
+  complete_second_repair(applied);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.dispatcher.verification_completion);
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 3);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, identity_queries_after_two_repairs);
+
+  request.configuration->m_device_id = "virtual_d";
+  request.topology = display_device::ActiveTopology {{"virtual_d"}};
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.apply_dispatch_count, 4);
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  harness.virtual_display.current_device_id = "virtual_e";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 5);
+  ASSERT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_e");
+}
+
+TEST(DisplayHelperV2StateMachine, RepeatedSameVirtualDeviceEventsDoNotVerifyOrReapply) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -1423,13 +1716,175 @@ TEST(DisplayHelperV2StateMachine, DisplayEventInMonitoringStateWithSameVirtualDe
 
   ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
   const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::PowerResume,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceRemoval,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, 2);
+}
+
+TEST(DisplayHelperV2StateMachine, EmptyVirtualDeviceIdentityDoesNotReapplyStaleIntent) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = display_device::ActiveTopology {{"virtual_current"}};
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_current";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+  harness.virtual_display.current_device_id.clear();
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
+}
+
+TEST(DisplayHelperV2StateMachine, SameIdEventsAroundRefreshDoNotStartApplyFeedbackLoop) {
+  StateMachineHarness harness;
+  harness.display_settings.topology = {{"virtual_current"}};
+  harness.display_settings.snapshot.m_topology = harness.display_settings.topology;
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = harness.display_settings.topology;
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_current";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyOutcome apply_ok;
+  apply_ok.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(apply_ok);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+
+  harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
+    .device_id = "virtual_current",
+    .numerator = 120,
+    .denominator = 1,
+    .generation = harness.cancellation.current_generation(),
+    .connection_epoch = 7,
+  });
+  ASSERT_TRUE(harness.dispatcher.refresh_completion);
 
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
 
-  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  harness.dispatcher.refresh_completion(true);
+  harness.drain_messages();
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
+  ASSERT_TRUE(harness.refresh_result.has_value());
+  EXPECT_TRUE(*harness.refresh_result);
+}
+
+TEST(DisplayHelperV2StateMachine, ChangedIdentityWaitsForRefreshAndPreservesPublishedSession) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_old";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {request, harness.cancellation.current_generation()});
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.apply_result_count, 1);
+  ASSERT_EQ(harness.verification_result_count, 1);
+
+  harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
+    .device_id = "virtual_old",
+    .numerator = 120,
+    .denominator = 1,
+    .generation = harness.cancellation.current_generation(),
+    .connection_epoch = 7,
+  });
+  ASSERT_TRUE(harness.dispatcher.refresh_completion);
+  const auto refresh_generation = harness.cancellation.current_generation();
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+
+  harness.virtual_display.current_device_id = "virtual_new";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+
+  EXPECT_EQ(harness.cancellation.current_generation(), refresh_generation);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+
+  harness.dispatcher.refresh_completion(true);
+  harness.drain_messages();
+
+  ASSERT_TRUE(harness.refresh_result);
+  EXPECT_TRUE(*harness.refresh_result);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_new");
+  EXPECT_FALSE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  const auto *rate = std::get_if<display_device::Rational>(&*harness.dispatcher.apply_request.configuration->m_refresh_rate);
+  ASSERT_NE(rate, nullptr);
+  EXPECT_EQ(rate->m_numerator, 120u);
+  EXPECT_EQ(rate->m_denominator, 1u);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
+
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.apply_result_count, 1);
+  EXPECT_EQ(harness.verification_result_count, 1);
 }
 
 TEST(DisplayHelperV2StateMachine, RefreshRatePersistsIntoVirtualDisplayRepair) {
@@ -1504,7 +1959,7 @@ TEST(DisplayHelperV2StateMachine, ApplyWaitsForAnInFlightRefreshRateMutation) {
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
 }
 
-TEST(DisplayHelperV2StateMachine, RefreshRateInvalidatesPendingStabilizationVerification) {
+TEST(DisplayHelperV2StateMachine, RefreshRateDoesNotReopenPostStartVerificationStaircase) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -1520,11 +1975,7 @@ TEST(DisplayHelperV2StateMachine, RefreshRateInvalidatesPendingStabilizationVeri
   harness.dispatcher.verification_completion(true);
   harness.drain_messages();
 
-  // The successful initial verification schedules the delayed stabilization
-  // check. Keep its completion so it can arrive after the refresh is accepted.
-  ASSERT_TRUE(harness.dispatcher.verification_completion);
-  const auto stale_verification = harness.dispatcher.verification_completion;
-  const int apply_dispatches_before_refresh = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before_refresh = harness.dispatcher.verification_dispatch_count;
 
   harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
     .device_id = "virtual",
@@ -1534,19 +1985,13 @@ TEST(DisplayHelperV2StateMachine, RefreshRateInvalidatesPendingStabilizationVeri
   });
   ASSERT_EQ(harness.dispatcher.refresh_dispatch_count, 1);
 
-  // A failed old verification must not replace the refresh mutation with a
-  // full APPLY using the previous session refresh rate.
-  stale_verification(false);
-  harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before_refresh);
-
   ASSERT_TRUE(harness.dispatcher.refresh_completion);
   harness.dispatcher.refresh_completion(true);
   harness.drain_messages();
   ASSERT_TRUE(harness.refresh_result.has_value());
   EXPECT_TRUE(*harness.refresh_result);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_refresh);
 
-  const int verification_dispatches_before_failed_refresh = harness.dispatcher.verification_dispatch_count;
   harness.state_machine.handle_message(display_helper::v2::RefreshRateCommand {
     .device_id = "virtual",
     .numerator = 116,
@@ -1559,7 +2004,7 @@ TEST(DisplayHelperV2StateMachine, RefreshRateInvalidatesPendingStabilizationVeri
   harness.drain_messages();
   ASSERT_TRUE(harness.refresh_result.has_value());
   EXPECT_FALSE(*harness.refresh_result);
-  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_failed_refresh + 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before_refresh);
 }
 
 // Test: Non-virtual display still goes to Waiting state after successful apply.
@@ -1735,7 +2180,7 @@ TEST(DisplayHelperV2StateMachine, DisarmBeforeApplyWhileRecovering) {
   EXPECT_TRUE(harness.state_machine.recovery_armed());
 }
 
-TEST(DisplayHelperV2StateMachine, EventLoopTriggersRecovery) {
+TEST(DisplayHelperV2StateMachine, EventLoopRequiresExternalIdentityOrPowerEvidenceToRetryRecovery) {
   StateMachineHarness harness;
   harness.seed_current_snapshot();
   display_helper::v2::ApplyRequest request;
@@ -1762,6 +2207,43 @@ TEST(DisplayHelperV2StateMachine, EventLoopTriggersRecovery) {
 
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  harness.clock.advance(std::chrono::milliseconds(500));
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::PowerResume,
+    harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  harness.clock.advance(std::chrono::milliseconds(500));
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  harness.clock.advance(std::chrono::seconds(1));
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
+
+  // Even externally-shaped identity evidence cannot erase the bounded
+  // backoff while the existing recovery window is still active.
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  harness.clock.advance(std::chrono::minutes(2));
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
 
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
@@ -2076,7 +2558,7 @@ TEST(DisplayHelperV2StateMachine, TerminalUncommittedApplyResetsStagedStateBefor
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
 }
 
-TEST(DisplayHelperV2StateMachine, StagedStateFromRetryIsResetAfterTerminalFailure) {
+TEST(DisplayHelperV2StateMachine, RetryableApplyResetsPreparedSettingsTransactionState) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -2087,13 +2569,7 @@ TEST(DisplayHelperV2StateMachine, StagedStateFromRetryIsResetAfterTerminalFailur
   retry.staged_state_prepared = true;
   harness.dispatcher.apply_completion(retry);
   harness.drain_messages();
-  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
-
-  display_helper::v2::ApplyOutcome failed;
-  failed.status = display_helper::v2::ApplyStatus::Fatal;
-  harness.dispatcher.apply_completion(failed);
-  harness.drain_messages();
-
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
   EXPECT_EQ(harness.dispatcher.reset_dispatch_count, 1);
   ASSERT_TRUE(harness.dispatcher.reset_completion);
   harness.dispatcher.reset_completion(true);
@@ -2308,6 +2784,46 @@ TEST(DisplayHelperV2StateMachine, ResetSerializesBehindApplyWithoutCancellingSes
   EXPECT_EQ(harness.task_manager.deleted, 0);
 }
 
+TEST(DisplayHelperV2StateMachine, ChangedIdentityWaitsForActiveResetBarrier) {
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_old";
+  request.virtual_layout = "extended";
+  harness.virtual_display.current_device_id = "virtual_old";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  harness.state_machine.handle_message(display_helper::v2::ResetCommand {
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_EQ(harness.dispatcher.reset_dispatch_count, 1);
+  ASSERT_TRUE(harness.dispatcher.reset_completion);
+
+  harness.virtual_display.current_device_id = "virtual_new";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 1);
+
+  harness.dispatcher.reset_completion(true);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, 2);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_new");
+}
+
 TEST(DisplayHelperV2StateMachine, ResetDuringRecoveryDoesNotCancelOrDeleteRecoveryGuard) {
   StateMachineHarness harness;
   harness.seed_current_snapshot();
@@ -2468,8 +2984,8 @@ TEST(DisplayHelperV2StateMachine, ExplicitRevertSurvivesLaterDisconnectWhenPolic
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
 }
 
-// Restore retry pacing: failed attempts back off, display events reset the
-// backoff, and an exhausted window pauses attempts until the next event.
+// Restore retry pacing: failed attempts back off without event-driven resets,
+// and an exhausted window pauses attempts until new evidence opens another.
 TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   StateMachineHarness harness;
   harness.seed_current_snapshot();
@@ -2501,9 +3017,9 @@ TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   harness.state_machine.handle_tick();
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
 
-  // A display event re-opens an event window and retries immediately.
+  // Identity-bearing evidence re-opens an event window and retries immediately.
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
-    display_helper::v2::DisplayEvent::DisplayChange,
+    display_helper::v2::DisplayEvent::DeviceArrival,
     harness.cancellation.current_generation()});
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 2);
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);

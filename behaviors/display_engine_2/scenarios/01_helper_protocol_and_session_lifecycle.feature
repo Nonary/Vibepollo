@@ -373,7 +373,7 @@ Feature: Display engine v2 helper protocol and session lifecycle
       Examples:
         | member                                      | meaning |
         | sunshine_apply_id                           | unsigned JSON-integer Apply correlation identity |
-        | sunshine_omit_final_initial_hdr_reapply     | Boolean request to omit the final initial HDR correction |
+        | sunshine_omit_final_initial_hdr_reapply     | legacy Boolean accepted and retained without changing bounded v2 Apply behavior |
         | wa_hdr_toggle                               | Boolean post-verification HDR blanking request |
         | sunshine_virtual_layout                     | named virtual-display arrangement string |
         | sunshine_monitor_positions                  | object keyed by device identity whose values contain integer x and y |
@@ -508,15 +508,16 @@ Feature: Display engine v2 helper protocol and session lifecycle
       When the helper accepts the request
       Then the request retains that paused-session policy
 
-    Scenario: The stream-start option can omit the final initial HDR correction
-      Given an Apply request explicitly asks to omit the final initial HDR correction for a capture-gated stream start
+    Scenario: The legacy stream-start HDR option is inert compatibility data
+      Given an Apply request contains the legacy final-initial-HDR-correction option
       When the helper accepts the request
-      Then it retains that stream-start option
+      Then it retains that field for request compatibility
+      And it does not add, remove, or delay an Apply transaction because of the field
 
-    Scenario: An Apply request without the stream-start HDR option uses normal handling
+    Scenario: Omitting the legacy HDR option uses the same bounded handling
       Given an Apply request omits the stream-start HDR option
       When the helper accepts the request
-      Then it retains normal initial HDR handling for that request
+      Then it uses the same one-transaction and one-repair boundary as a request that contains the field
 
     Scenario Outline: A valid Apply policy option preserves unrelated display intent
       Given an Apply request contains a valid display configuration and topology

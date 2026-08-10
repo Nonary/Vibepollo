@@ -90,16 +90,16 @@ namespace display_helper::v2 {
     DefaultPrimaryGroup,
   };
 
-  /// Pre-activation candidates used only to determine whether Windows kept a
-  /// usable target after SetDisplayConfig adjusted a requested topology.
+  /// Candidates derived by the non-mutating preflight for target-scoped
+  /// verification after SettingsManager applies the request.
   struct TopologyActivationTarget {
     DeviceTargetKind kind = DeviceTargetKind::None;
     std::set<std::string> acceptable_device_ids;
   };
 
-  /// Concrete target context derived from the topology Windows actually
-  /// accepted. The original request remains unchanged; this context carries
-  /// the duplicate-group verification/mode/HDR scope separately.
+  /// Concrete target context derived from the preflight plan. The original
+  /// request remains unchanged; this carries duplicate-group verification and
+  /// mode/HDR scope separately.
   struct ResolvedConfigurationTarget {
     DeviceTargetKind kind = DeviceTargetKind::None;
     std::string representative_device_id;
@@ -108,10 +108,15 @@ namespace display_helper::v2 {
 
   struct ApplyTopologyPlan {
     ActiveTopology topology;
-    /// Candidate target(s) that must survive a Windows-adjusted activation.
-    /// For an empty request id this preserves the original primary duplicate
-    /// group instead of collapsing it to one arbitrary member.
+    /// Intended verification candidate(s) derived by preflight. For an empty
+    /// request id this preserves the primary duplicate group rather than
+    /// collapsing it to one arbitrary member.
     TopologyActivationTarget activation_target;
+  };
+
+  struct ApplyPreflightOutcome {
+    ApplyStatus status = ApplyStatus::Fatal;
+    std::optional<ApplyTopologyPlan> plan;
   };
 
   struct ApplyRequest {
@@ -126,10 +131,15 @@ namespace display_helper::v2 {
     /// When false, a broken Sunshine connection must not autonomously restore
     /// (stream is intentionally pause-retained).
     bool restore_on_disconnect = true;
-    /// A capture-gated stream start needs a terminal verification result before
-    /// Moonlight UWP's first-video timeout. Keep the final 5.5s repair for
-    /// non-stream APPLYs and post-verified stabilization.
+    /// Legacy wire field retained while mixed v1/v2 clients are supported.
+    /// The bounded v2 Apply transaction has no final delayed HDR reapply.
     bool omit_final_initial_hdr_reapply = false;
+    /// Internal v1-style repair lane. The state machine sets this only on a
+    /// copy after a completed full Apply; wire parsing never enables it.
+    bool settings_only_repair = false;
+    /// Preserve the original preflight-resolved verification scope without
+    /// querying or planning topology again during a settings-only repair.
+    std::optional<ResolvedConfigurationTarget> repair_target;
     std::optional<std::string> virtual_layout;
     /// Optional snapshot exclusions supplied with this APPLY. Keeping this on
     /// the queued command ensures the state machine, rather than the pipe
@@ -221,21 +231,20 @@ namespace display_helper::v2 {
 
   struct ApplyCompleted {
     ApplyStatus status = ApplyStatus::Fatal;
-    std::optional<ActiveTopology> expected_topology;
     std::optional<ResolvedConfigurationTarget> resolved_target;
     bool virtual_display_requested = false;
     bool display_may_have_changed = false;
     bool durable_recovery_armed = false;
+    bool durable_recovery_attempted = false;
     bool staged_state_prepared = false;
     std::uint64_t generation = 0;
   };
 
   /// Why a read-only verification was scheduled. Keeping this explicit avoids
-  /// conflating the response gate, ordinary settling checks, and the separate
-  /// verify-before-reapply sequence used after a recent pipe disconnect.
+  /// conflating the response gate with the separate verify-before-reapply
+  /// sequence used after a recent pipe disconnect.
   enum class VerificationPurpose {
     Initial,
-    Stabilization,
     TransientDisconnect,
   };
 
@@ -277,6 +286,9 @@ namespace display_helper::v2 {
   struct DisplayEventMessage {
     DisplayEvent event = DisplayEvent::DisplayChange;
     std::uint64_t generation = 0;
+    /// Connection that owned the notification before debounce. Zero denotes
+    /// restore-mode/autonomous ownership.
+    std::uint64_t connection_epoch = 0;
   };
 
   struct HelperEventMessage {

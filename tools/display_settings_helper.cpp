@@ -116,7 +116,7 @@ namespace {
   }
 
   std::wstring build_restore_task_name(const std::wstring &username) {
-    return L"VibeshineDisplayRestore";
+    return L"VibepolloDisplayRestore";
   }
 
   // Trigger a more robust Explorer/shell refresh so that desktop/taskbar icons
@@ -4562,7 +4562,7 @@ namespace {
   }
 
   bool create_restore_scheduled_task() {
-    BOOST_LOG(info) << "Attempting to create scheduled task 'VibeshineDisplayRestore'...";
+    BOOST_LOG(info) << "Attempting to create scheduled task 'VibepolloDisplayRestore'...";
 
     const DWORD active_session_id = WTSGetActiveConsoleSessionId();
 
@@ -4610,7 +4610,7 @@ namespace {
     IRegistrationInfo *reg_info = nullptr;
     hr = task->get_RegistrationInfo(&reg_info);
     if (SUCCEEDED(hr)) {
-      reg_info->put_Author(_bstr_t(L"Sunshine Display Helper"));
+      reg_info->put_Author(_bstr_t(L"Vibepollo Display Helper"));
       reg_info->put_Description(_bstr_t(L"Automatically restores display settings after reboot"));
       reg_info->Release();
     }
@@ -4707,7 +4707,7 @@ namespace {
     hr = trigger->QueryInterface(IID_ILogonTrigger, (void **) &logon_trigger);
     trigger->Release();
     if (SUCCEEDED(hr)) {
-      logon_trigger->put_Id(_bstr_t(L"SunshineDisplayHelperLogonTrigger"));
+      logon_trigger->put_Id(_bstr_t(L"VibepolloDisplayHelperLogonTrigger"));
       logon_trigger->put_Enabled(VARIANT_TRUE);
       if (has_username) {
         logon_trigger->put_UserId(_bstr_t(username.c_str()));

@@ -10,7 +10,6 @@
 #include "src/platform/windows/display_helper_v2/operations.h"
 
 #include <chrono>
-#include <deque>
 #include <optional>
 #include <string>
 #include <utility>
@@ -22,9 +21,7 @@ namespace {
   using display_helper::v2::CancellationSource;
   using display_helper::v2::IDisplaySettings;
   using display_helper::v2::IClock;
-  using display_helper::v2::TopologyActivationTarget;
   using display_helper::v2::TopologyTransition;
-  using display_helper::v2::TopologyValidationMode;
 
   class FakeClock final : public IClock {
   public:
@@ -63,11 +60,6 @@ namespace {
     display_device::EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail) override {
       ++enumerate_calls;
       events.push_back("enumerate");
-      if (!enumeration_sequence.empty()) {
-        auto result = std::move(enumeration_sequence.front());
-        enumeration_sequence.pop_front();
-        return result;
-      }
       return devices;
     }
 
@@ -99,11 +91,6 @@ namespace {
       return true;
     }
 
-    std::optional<ActiveTopology> compute_expected_topology(
-      const display_device::SingleDisplayConfiguration &, const std::optional<ActiveTopology> &) override {
-      return std::nullopt;
-    }
-
     bool is_topology_same(const ActiveTopology &lhs, const ActiveTopology &rhs) override {
       return lhs == rhs;
     }
@@ -117,19 +104,11 @@ namespace {
     ActiveTopology current_topology;
     ActiveTopology topology_after_apply;
     display_device::EnumeratedDeviceList devices;
-    std::deque<display_device::EnumeratedDeviceList> enumeration_sequence;
     int apply_topology_calls = 0;
     int enumerate_calls = 0;
     int recover_calls = 0;
     std::vector<std::string> events;
   };
-
-  TopologyActivationTarget explicit_target(const std::string &device_id) {
-    TopologyActivationTarget target;
-    target.kind = display_helper::v2::DeviceTargetKind::ExplicitDevice;
-    target.acceptable_device_ids.insert(device_id);
-    return target;
-  }
 }  // namespace
 
 TEST(DisplayHelperV2TopologyTransition, DeferredPolicyKeepsCompleteTopologyWhenDispatchIsSuppressed) {
@@ -146,88 +125,6 @@ TEST(DisplayHelperV2TopologyTransition, DeferredPolicyKeepsCompleteTopologyWhenD
   EXPECT_EQ(result.topology, (std::vector<std::vector<std::string>> {{"PHYSICAL"}, {"VIRTUAL"}}));
 }
 
-TEST(DisplayHelperV2TopologyTransition, ApplyWaitsForInitiallyUnpublishedTargetAndAcceptsOsAdjustment) {
-  FakeClock clock;
-  FakeDisplaySettings display;
-  // The requested target is initially absent from capture and is not
-  // enumerable until after activation settles.
-  display.current_topology = {{"PHYSICAL"}};
-  display.topology_after_apply = {{"PHYSICAL-ADJUSTED"}, {"VIRTUAL"}};
-  display.enumeration_sequence.push_back({});
-  display.enumeration_sequence.push_back({make_active_device("VIRTUAL")});
-
-  bool recovery_armed = false;
-  TopologyTransition transition(display, clock);
-  CancellationSource cancellation;
-  const auto outcome = transition.run(
-    {{"PHYSICAL"}, {"VIRTUAL"}},
-    TopologyValidationMode::StrictApply,
-    explicit_target("VIRTUAL"),
-    cancellation.token(),
-    [&recovery_armed] {
-      recovery_armed = true;
-      return true;
-    });
-
-  ASSERT_EQ(outcome.status, ApplyStatus::Ok);
-  ASSERT_TRUE(outcome.applied_topology.has_value());
-  EXPECT_EQ(*outcome.applied_topology, display.topology_after_apply);
-  EXPECT_EQ(display.apply_topology_calls, 1);
-  EXPECT_EQ(display.enumerate_calls, 2);
-  EXPECT_EQ(display.events, (std::vector<std::string> {"apply_topology", "enumerate", "enumerate"}));
-  EXPECT_TRUE(recovery_armed);
-  EXPECT_TRUE(outcome.durable_recovery_armed);
-}
-
-TEST(DisplayHelperV2TopologyTransition, ExactCurrentTopologyUsesNoOpFastPath) {
-  FakeClock clock;
-  FakeDisplaySettings display;
-  display.current_topology = {{"PHYSICAL"}, {"VIRTUAL"}};
-  display.topology_after_apply = {{"UNEXPECTED"}};
-
-  bool recovery_armed = false;
-  TopologyTransition transition(display, clock);
-  CancellationSource cancellation;
-  const auto outcome = transition.run(
-    {{"PHYSICAL"}, {"VIRTUAL"}},
-    TopologyValidationMode::StrictApply,
-    explicit_target("VIRTUAL"),
-    cancellation.token(),
-    [&recovery_armed] {
-      recovery_armed = true;
-      return true;
-    });
-
-  ASSERT_EQ(outcome.status, ApplyStatus::Ok);
-  ASSERT_TRUE(outcome.applied_topology.has_value());
-  EXPECT_EQ(*outcome.applied_topology, display.current_topology);
-  EXPECT_EQ(display.apply_topology_calls, 0);
-  EXPECT_EQ(display.enumerate_calls, 0);
-  EXPECT_FALSE(recovery_armed);
-  EXPECT_FALSE(outcome.display_may_have_changed);
-  EXPECT_FALSE(outcome.durable_recovery_armed);
-}
-
-TEST(DisplayHelperV2TopologyTransition, ApplyRejectsTargetThatNeverBecomesEnumerable) {
-  FakeClock clock;
-  FakeDisplaySettings display;
-  display.current_topology = {{"PHYSICAL"}};
-  display.topology_after_apply = {{"VIRTUAL"}};
-
-  TopologyTransition transition(display, clock);
-  CancellationSource cancellation;
-  const auto outcome = transition.run(
-    {{"VIRTUAL"}},
-    TopologyValidationMode::StrictApply,
-    explicit_target("VIRTUAL"),
-    cancellation.token());
-
-  EXPECT_EQ(outcome.status, ApplyStatus::Retryable);
-  EXPECT_FALSE(outcome.applied_topology.has_value());
-  EXPECT_EQ(display.apply_topology_calls, 2);
-  EXPECT_EQ(display.recover_calls, 1);
-}
-
 TEST(DisplayHelperV2TopologyTransition, RestoreDoesNotAcceptOsAdjustedPartialSnapshot) {
   FakeClock clock;
   FakeDisplaySettings display;
@@ -239,8 +136,6 @@ TEST(DisplayHelperV2TopologyTransition, RestoreDoesNotAcceptOsAdjustedPartialSna
   CancellationSource cancellation;
   const auto outcome = transition.run(
     {{"RESTORED-A"}, {"RESTORED-B"}},
-    TopologyValidationMode::StructuralRestore,
-    TopologyActivationTarget {},
     cancellation.token());
 
   EXPECT_EQ(outcome.status, ApplyStatus::Retryable);
@@ -260,8 +155,6 @@ TEST(DisplayHelperV2TopologyTransition, CancellationAtMutationBoundaryStopsBefor
   CancellationSource cancellation;
   const auto outcome = transition.run(
     {{"VIRTUAL"}},
-    TopologyValidationMode::StrictApply,
-    explicit_target("VIRTUAL"),
     cancellation.token(),
     [&cancellation] {
       cancellation.cancel();

@@ -25,13 +25,13 @@ namespace display_helper::v2 {
 
     std::optional<ResolvedConfigurationTarget> resolve_configuration_target(
       const TopologyActivationTarget &activation_target,
-      const ActiveTopology &accepted_topology) {
+      const ActiveTopology &planned_topology) {
       if (activation_target.kind == DeviceTargetKind::None ||
           activation_target.acceptable_device_ids.empty()) {
         return std::nullopt;
       }
 
-      for (const auto &group : accepted_topology) {
+      for (const auto &group : planned_topology) {
         const auto matching = std::find_if(group.begin(), group.end(), [&](const std::string &active_id) {
           return std::any_of(
             activation_target.acceptable_device_ids.begin(),
@@ -54,36 +54,6 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
-    bool topology_contains_device_id(const ActiveTopology &topology, const std::string &device_id) {
-      return std::any_of(topology.begin(), topology.end(), [&](const auto &group) {
-        return std::any_of(group.begin(), group.end(), [&](const std::string &active_id) {
-          return boost::iequals(active_id, device_id);
-        });
-      });
-    }
-
-    bool resolved_target_remains_active(
-      const ActiveTopology &topology,
-      const ResolvedConfigurationTarget &target) {
-      if (target.kind == DeviceTargetKind::DefaultPrimaryGroup) {
-        return std::any_of(
-          target.duplicate_device_ids.begin(),
-          target.duplicate_device_ids.end(),
-          [&](const std::string &device_id) {
-            return topology_contains_device_id(topology, device_id);
-          });
-      }
-
-      if (!target.representative_device_id.empty()) {
-        return topology_contains_device_id(topology, target.representative_device_id);
-      }
-      return std::any_of(
-        target.duplicate_device_ids.begin(),
-        target.duplicate_device_ids.end(),
-        [&](const std::string &device_id) {
-          return topology_contains_device_id(topology, device_id);
-        });
-    }
   }  // namespace
 
   TopologyTransition::TopologyTransition(IDisplaySettings &display, IClock &clock)
@@ -91,47 +61,22 @@ namespace display_helper::v2 {
       clock_(clock) {}
 
   std::optional<ActiveTopology> TopologyTransition::topology_ready(
-    const ActiveTopology &requested_topology,
-    const TopologyActivationTarget &activation_target,
-    bool allow_os_adjustment) {
+    const ActiveTopology &requested_topology) {
     const auto current = display_.capture_topology();
     if (!display_.topology_is_valid(current)) {
       return std::nullopt;
     }
 
-    const bool exact_match = display_.is_topology_same(requested_topology, current);
-    if (!exact_match && !allow_os_adjustment) {
+    if (!display_.is_topology_same(requested_topology, current)) {
       return std::nullopt;
     }
 
-    // A computed APPLY needs its intended target group to become usable, not
-    // every unrelated path Windows still reports while a monitor is asleep or
-    // changing inputs. Snapshot restore deliberately has no target, so it
-    // continues to require every path in the snapshot topology.
     std::vector<std::string> required_device_ids;
-    if (activation_target.kind != DeviceTargetKind::None &&
-        !activation_target.acceptable_device_ids.empty()) {
-      const auto target_group = std::find_if(current.begin(), current.end(), [&](const auto &group) {
-        return std::any_of(group.begin(), group.end(), [&](const std::string &active_id) {
-          return std::any_of(
-            activation_target.acceptable_device_ids.begin(),
-            activation_target.acceptable_device_ids.end(),
-            [&](const std::string &candidate) {
-              return boost::iequals(active_id, candidate);
-            });
-        });
-      });
-      if (target_group == current.end()) {
-        return std::nullopt;
-      }
-      required_device_ids = *target_group;
-    } else {
-      for (const auto &group : current) {
-        required_device_ids.insert(
-          required_device_ids.end(),
-          group.begin(),
-          group.end());
-      }
+    for (const auto &group : current) {
+      required_device_ids.insert(
+        required_device_ids.end(),
+        group.begin(),
+        group.end());
     }
     if (required_device_ids.empty()) {
       return std::nullopt;
@@ -171,15 +116,10 @@ namespace display_helper::v2 {
 
   std::optional<ActiveTopology> TopologyTransition::wait_until_ready(
     const ActiveTopology &requested_topology,
-    const TopologyActivationTarget &activation_target,
-    bool allow_os_adjustment,
     const CancellationToken &token) {
     const auto deadline = clock_.now() + kActivationTimeout;
     while (!token.is_cancelled()) {
-      if (auto ready = topology_ready(
-            requested_topology,
-            activation_target,
-            allow_os_adjustment)) {
+      if (auto ready = topology_ready(requested_topology)) {
         return ready;
       }
       const auto now = clock_.now();
@@ -206,8 +146,6 @@ namespace display_helper::v2 {
 
   TopologyTransitionOutcome TopologyTransition::run(
     const ActiveTopology &topology,
-    TopologyValidationMode validation_mode,
-    const TopologyActivationTarget &activation_target,
     const CancellationToken &token,
     const MutationBoundary &mutation_boundary) {
     TopologyTransitionOutcome outcome;
@@ -219,20 +157,6 @@ namespace display_helper::v2 {
       BOOST_LOG(error) << "Display helper v2: refusing structurally invalid topology transition.";
       outcome.status = ApplyStatus::InvalidRequest;
       return outcome;
-    }
-
-    // An APPLY that already has the exact requested topology does not need a
-    // SetDisplayConfig mutation. Keep this structural no-op fast path free of
-    // enumeration: a newly requested path may be visible to capture before
-    // Windows publishes it to the device list. Targetless RESTORE deliberately
-    // stays on the strict post-activation path below.
-    if (validation_mode == TopologyValidationMode::StrictApply) {
-      const auto current = display_.capture_topology();
-      if (display_.topology_is_valid(current) && display_.is_topology_same(topology, current)) {
-        outcome.status = ApplyStatus::Ok;
-        outcome.applied_topology = current;
-        return outcome;
-      }
     }
 
     // Capture can expose a requested path before Windows makes it enumerable.
@@ -252,29 +176,6 @@ namespace display_helper::v2 {
         }
       }
     };
-
-    if (validation_mode == TopologyValidationMode::StrictApply &&
-        !display_.validate_topology_for_apply(topology)) {
-      BOOST_LOG(warning) << "Display helper v2: requested topology failed OS validation; recovering the display stack and retrying validation.";
-      arm_mutation_boundary();
-      // The guard is intentionally armed before this call, but cancellation
-      // may arrive in the tiny hand-off window.  Do not begin a recovery call
-      // after cancellation merely because its task was created successfully.
-      if (token.is_cancelled()) {
-        outcome.status = ApplyStatus::Fatal;
-        return outcome;
-      }
-      outcome.display_may_have_changed = true;
-      if (!recover_and_settle(token)) {
-        outcome.status = token.is_cancelled() ? ApplyStatus::Fatal : ApplyStatus::Retryable;
-        return outcome;
-      }
-      if (!display_.validate_topology_for_apply(topology)) {
-        BOOST_LOG(warning) << "Display helper v2: requested topology still fails OS validation after recovery.";
-        outcome.status = ApplyStatus::Retryable;
-        return outcome;
-      }
-    }
 
     for (int attempt = 1; attempt <= kMaxTopologyAttempts; ++attempt) {
       if (token.is_cancelled()) {
@@ -302,20 +203,10 @@ namespace display_helper::v2 {
       // SetDisplayConfig may report success before display names and modes are
       // queryable. It can also report a transient failure after the topology
       // actually landed, so readiness is the authoritative result. A successful
-      // call may also yield a valid OS-adjusted topology; accept it when the
-      // configured target remains active, matching WinDisplayDevice/v1.
-      const bool allow_os_adjustment = validation_mode == TopologyValidationMode::StrictApply &&
-                                       apply_status == ApplyStatus::Ok;
-      if (auto applied_topology = wait_until_ready(
-            topology,
-            activation_target,
-            allow_os_adjustment,
-            token)) {
-        if (!display_.is_topology_same(topology, *applied_topology)) {
-          BOOST_LOG(warning) << "Display helper v2: accepting usable OS-adjusted topology after activation.";
-        } else {
-          BOOST_LOG(info) << "Display helper v2: requested topology is active and all devices are enumerable.";
-        }
+      // Snapshot restoration requires the exact saved topology and every
+      // restored path to become enumerable before settings are replayed.
+      if (auto applied_topology = wait_until_ready(topology, token)) {
+        BOOST_LOG(info) << "Display helper v2: restored topology is active and all devices are enumerable.";
         outcome.status = ApplyStatus::Ok;
         outcome.applied_topology = std::move(applied_topology);
         return outcome;
@@ -356,33 +247,14 @@ namespace display_helper::v2 {
     return PolicyDecision::ResetVirtualDisplay;
   }
 
-  std::chrono::milliseconds ApplyPolicy::retry_delay(int attempt) const {
-    const int multiplier = std::clamp(attempt, 1, kMaxApplyAttempts);
-    return kRetryBaseDelay * multiplier;
-  }
-
-  bool ApplyPolicy::should_skip_tier(ApplyStatus status) const {
-    switch (status) {
-      case ApplyStatus::InvalidRequest:
-      case ApplyStatus::Fatal:
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  bool ApplyPolicy::can_retry_apply(int attempt) const {
-    return attempt < kMaxApplyAttempts;
-  }
-
   ApplyOperation::ApplyOperation(
     IDisplaySettings &display,
     IClock &clock,
     MutationBoundary mutation_boundary)
     : display_(display),
-      clock_(clock),
-      mutation_boundary_(std::move(mutation_boundary)),
-      topology_transition_(display, clock) {}
+      mutation_boundary_(std::move(mutation_boundary)) {
+    (void) clock;
+  }
 
   bool ApplyOperation::arm_durable_recovery_boundary() {
     return mutation_boundary_ && mutation_boundary_();
@@ -391,21 +263,25 @@ namespace display_helper::v2 {
   ApplyOutcome ApplyOperation::run(
     const ApplyRequest &request,
     const CancellationToken &token,
-    bool durable_recovery_already_armed) {
+    bool durable_recovery_already_armed,
+    bool durable_recovery_already_attempted) {
     ApplyOutcome outcome;
     outcome.virtual_display_requested = request.virtual_layout.has_value();
     bool durable_recovery_armed = durable_recovery_already_armed;
-    const auto ensure_durable_recovery = [this, &durable_recovery_armed]() {
+    bool durable_recovery_attempted = durable_recovery_already_armed || durable_recovery_already_attempted;
+    outcome.durable_recovery_armed = durable_recovery_armed;
+    outcome.durable_recovery_attempted = durable_recovery_attempted;
+    const auto ensure_durable_recovery = [this, &durable_recovery_armed, &durable_recovery_attempted]() {
       if (durable_recovery_armed) {
         return true;
       }
+      if (durable_recovery_attempted) {
+        return false;
+      }
+      durable_recovery_attempted = true;
       durable_recovery_armed = arm_durable_recovery_boundary();
       return durable_recovery_armed;
     };
-    const MutationBoundary mutation_boundary = mutation_boundary_ ?
-                                              MutationBoundary {ensure_durable_recovery} :
-                                              MutationBoundary {};
-
     if (token.is_cancelled()) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
@@ -416,81 +292,51 @@ namespace display_helper::v2 {
       return outcome;
     }
 
-    // Keep an in-memory rollback point as well as the durable session snapshot.
-    // The staged engine changes topology before SettingsManager applies primary,
-    // mode, and HDR; if that later stage fails, v1's guard semantics restore
-    // the caller's layout instead of leaving a half-applied transaction live.
-    const auto baseline_snapshot = display_.capture_snapshot();
-    const bool have_rollback_baseline = display_.topology_is_valid(baseline_snapshot.m_topology) &&
-                                       !baseline_snapshot.m_modes.empty();
-
-    const auto current_topology = display_.capture_topology();
-    if (!display_.topology_is_valid(current_topology)) {
-      BOOST_LOG(warning) << "Display helper v2: current topology is unavailable before APPLY; deferring for retry.";
-      outcome.status = ApplyStatus::Retryable;
-      return outcome;
-    }
-    if (!display_.prepare_staged_apply(current_topology)) {
-      BOOST_LOG(warning) << "Display helper v2: could not preserve the session display baseline before APPLY.";
-      outcome.status = ApplyStatus::Retryable;
-      return outcome;
-    }
-    outcome.staged_state_prepared = true;
-
-    auto topology_plan = display_.compute_apply_topology_plan(*request.configuration, current_topology);
-    if (request.topology) {
-      if (topology_plan) {
-        topology_plan->topology = *request.topology;
-      } else {
-        TopologyActivationTarget activation_target;
-        activation_target.kind = request.configuration->m_device_id.empty() ?
-                                   DeviceTargetKind::DefaultPrimaryGroup :
-                                   DeviceTargetKind::ExplicitDevice;
-        if (!request.configuration->m_device_id.empty()) {
-          activation_target.acceptable_device_ids.insert(request.configuration->m_device_id);
-        }
-        topology_plan = ApplyTopologyPlan {
-          .topology = *request.topology,
-          .activation_target = std::move(activation_target),
+    if (request.settings_only_repair) {
+      // Match v1's best_effort_apply_last_cfg(): the full transaction already
+      // established topology, recovery ownership, and target scope. A repair
+      // repeats only SettingsManager; it must not re-enumerate, validate/set
+      // topology, or replay position and physical-refresh adjuncts.
+      outcome.resolved_target = request.repair_target;
+      if (!outcome.resolved_target && !request.configuration->m_device_id.empty()) {
+        outcome.resolved_target = ResolvedConfigurationTarget {
+          .kind = DeviceTargetKind::ExplicitDevice,
+          .representative_device_id = request.configuration->m_device_id,
+          .duplicate_device_ids = {request.configuration->m_device_id},
         };
       }
-    }
-    if (!topology_plan || !display_.topology_is_valid(topology_plan->topology)) {
-      BOOST_LOG(error) << "Display helper v2: could not compute a valid target topology.";
-      outcome.status = ApplyStatus::InvalidRequest;
+      outcome.display_may_have_changed = true;
+      outcome.durable_recovery_attempted = true;
+      outcome.staged_state_prepared = true;
+      outcome.status = display_.apply(*request.configuration);
+      if (token.is_cancelled()) {
+        outcome.status = ApplyStatus::Fatal;
+      }
       return outcome;
     }
-    // `sunshine_topology` is the staging/base topology for SettingsManager,
-    // matching v1. It is not an exact post-apply contract: Windows may legally
-    // adjust or regroup unrelated paths. Verification therefore uses the
-    // resolved target and requested settings below, rather than pinning every
-    // normal APPLY to this intermediate topology.
 
-    const auto topology_outcome = topology_transition_.run(
-      topology_plan->topology,
-      TopologyValidationMode::StrictApply,
-      topology_plan->activation_target,
-      token,
-      mutation_boundary);
-    outcome.status = topology_outcome.status;
-    outcome.display_may_have_changed = topology_outcome.display_may_have_changed;
-    outcome.durable_recovery_armed = durable_recovery_armed || topology_outcome.durable_recovery_armed;
-    if (outcome.status != ApplyStatus::Ok) {
+    // Match the legacy helper's ordinary APPLY lane: one cheap preflight
+    // against the supplied staging topology and no global display-stack
+    // recovery. Recovery belongs to REVERT, where a broad topology jog is
+    // intentional; doing it here destabilizes DWM immediately before capture.
+    auto preflight = display_.preflight_apply(*request.configuration, request.topology);
+    if (preflight.status != ApplyStatus::Ok || !preflight.plan) {
+      BOOST_LOG(error) << "Display helper v2: configuration failed the non-mutating APPLY preflight.";
+      outcome.status = preflight.status == ApplyStatus::Ok ? ApplyStatus::Fatal : preflight.status;
       return outcome;
     }
-    if (!topology_outcome.applied_topology) {
-      outcome.status = ApplyStatus::VerificationFailed;
-      return outcome;
+    auto plan = std::move(*preflight.plan);
+
+    auto activation_target = std::move(plan.activation_target);
+    if (!plan.topology.empty()) {
+      outcome.resolved_target = resolve_configuration_target(activation_target, plan.topology);
     }
-    outcome.resolved_target = resolve_configuration_target(
-      topology_plan->activation_target,
-      *topology_outcome.applied_topology);
-    if (topology_plan->activation_target.kind != DeviceTargetKind::None &&
-        !topology_plan->activation_target.acceptable_device_ids.empty() &&
-        !outcome.resolved_target) {
-      BOOST_LOG(warning) << "Display helper v2: accepted topology did not retain a resolvable configuration target.";
-      outcome.status = ApplyStatus::VerificationFailed;
-      return outcome;
+    if (!outcome.resolved_target && !request.configuration->m_device_id.empty()) {
+      outcome.resolved_target = ResolvedConfigurationTarget {
+        .kind = DeviceTargetKind::ExplicitDevice,
+        .representative_device_id = request.configuration->m_device_id,
+        .duplicate_device_ids = {request.configuration->m_device_id},
+      };
     }
 
     if (token.is_cancelled()) {
@@ -498,35 +344,37 @@ namespace display_helper::v2 {
       return outcome;
     }
 
-    // A topology that was already ready still leaves mode/HDR/primary changes
-    // ahead. Arm recovery immediately before that first settings mutation.
-    if (!outcome.display_may_have_changed) {
-      // This is the first point at which the desktop may have been changed.
-      // Arm the boot/logon restore guard before the remaining potentially
-      // multi-second settings, positioning, and refresh work runs.
-      if (mutation_boundary) {
-        outcome.durable_recovery_armed = ensure_durable_recovery();
-        if (!outcome.durable_recovery_armed) {
-          BOOST_LOG(warning) << "Display helper v2: could not arm durable recovery at topology mutation boundary.";
-        }
+    // Arm the durable restore lease once, immediately before the first possible
+    // mutation. The preflight above is deliberately read-only.
+    if (mutation_boundary_) {
+      outcome.durable_recovery_armed = ensure_durable_recovery();
+      outcome.durable_recovery_attempted = durable_recovery_attempted;
+      if (!outcome.durable_recovery_armed) {
+        BOOST_LOG(warning) << "Display helper v2: could not arm durable recovery at APPLY mutation boundary.";
       }
     }
 
-    // The state machine may have accepted a DISARM/RESET while the worker was
-    // arranging the durable guard.  Respect that cancellation before entering
-    // SettingsManager, which owns several individually-mutating calls.
     if (token.is_cancelled()) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
     }
 
-    // Topology is now settled. The backend rebases SettingsManager onto the
-    // accepted topology and applies primary/mode/HDR state without another
-    // topology transition.
-    // `display_may_have_changed` is deliberately flipped at the call itself,
-    // not when the durable task is armed, so a cancellation in between can
-    // safely clean up the guard without pretending Windows was touched.
+    // The supplied topology is a base, not an exact post-apply contract. Set it
+    // once as v1 does, then let one original SettingsManager request own
+    // topology, primary, mode, HDR, and its transactional rollback guards.
+    if (request.topology && display_.topology_is_valid(*request.topology)) {
+      outcome.display_may_have_changed = true;
+      (void) display_.apply_topology(*request.topology);
+    }
+    if (token.is_cancelled()) {
+      outcome.status = ApplyStatus::Fatal;
+      return outcome;
+    }
+
     outcome.display_may_have_changed = true;
+    // SettingsManager may retain its original-state transaction even when a
+    // later mode/HDR step fails, so recovery must reset it after this call.
+    outcome.staged_state_prepared = true;
     outcome.status = display_.apply(*request.configuration);
 
     if (token.is_cancelled()) {
@@ -537,49 +385,13 @@ namespace display_helper::v2 {
     if (outcome.status == ApplyStatus::Ok) {
       apply_monitor_positions(request, token);
       apply_refresh_rate_overrides(request, token);
-    } else if (request.virtual_layout.has_value() &&
-               request.configuration->m_hdr_state == display_device::HdrState::Enabled &&
-               outcome.status == ApplyStatus::HdrStateFailed) {
-      // SettingsManager unwinds primary, mode, and HDR mutations before
-      // reporting this failure, and its topology guard returns to the topology
-      // present at entry: the staged virtual topology accepted above. Retain
-      // that topology for the bounded in-place HDR retry instead of bouncing
-      // the desktop back to the physical pre-APPLY baseline.
-      BOOST_LOG(warning) << "Display helper v2: virtual-display HDR settings failed; retaining the staged topology for retry.";
-    } else if (have_rollback_baseline && restore_baseline_after_failed_apply(baseline_snapshot, token)) {
-      BOOST_LOG(warning) << "Display helper v2: SettingsManager stage failed; restored the pre-APPLY display baseline.";
-      outcome.display_may_have_changed = false;
-    } else {
-      BOOST_LOG(warning) << "Display helper v2: SettingsManager stage failed and the pre-APPLY baseline could not be restored.";
     }
 
     if (token.is_cancelled()) {
-      // A rollback is itself a staged display mutation. Do not report a clean
-      // retryable result if a competing command cancelled during its later
-      // settings stage; the state machine must retain the recovery guard.
       outcome.status = ApplyStatus::Fatal;
     }
 
     return outcome;
-  }
-
-  bool ApplyOperation::restore_baseline_after_failed_apply(const Snapshot &baseline, const CancellationToken &token) {
-    if (token.is_cancelled() || !display_.topology_is_valid(baseline.m_topology)) {
-      return false;
-    }
-
-    const auto restore = topology_transition_.run(
-      baseline.m_topology,
-      TopologyValidationMode::StructuralRestore,
-      TopologyActivationTarget {},
-      token);
-    if (restore.status != ApplyStatus::Ok || token.is_cancelled()) {
-      return false;
-    }
-    if (token.is_cancelled() || !display_.apply_snapshot_settings(baseline)) {
-      return false;
-    }
-    return !token.is_cancelled() && display_.snapshot_matches_current(baseline);
   }
 
   void ApplyOperation::apply_monitor_positions(const ApplyRequest &request, const CancellationToken &token) {
@@ -593,8 +405,10 @@ namespace display_helper::v2 {
     // non-zero-sized display (d07fd6cb).
     constexpr int kMinDisplayOrigin = -32768;
     constexpr int kMaxDisplayOrigin = 32767;
-    constexpr auto kRepositionRetryInterval = std::chrono::milliseconds(200);
-    constexpr int kMaxRepositionAttempts = 15;  // ~3s window at 200ms
+    // Positioning is best effort and must not turn display enumeration into a
+    // three-second stream-start gate. A later explicit refresh or APPLY can
+    // retry a target that is not active yet.
+    constexpr int kMaxRepositionAttempts = 1;
 
     auto pending_overrides = request.monitor_positions;
     int retry_attempt = 0;
@@ -607,6 +421,14 @@ namespace display_helper::v2 {
       std::vector<std::pair<std::string, display_device::Point>> next_pending;
       next_pending.reserve(pending_overrides.size());
 
+      std::set<std::string> pending_device_ids;
+      for (const auto &[device_id, _] : pending_overrides) {
+        if (!device_id.empty()) {
+          pending_device_ids.insert(device_id);
+        }
+      }
+      const auto repositionable_displays = display_.get_repositionable_display_resolutions(pending_device_ids);
+
       for (const auto &[device_id, origin] : pending_overrides) {
         if (token.is_cancelled()) {
           return;
@@ -614,13 +436,14 @@ namespace display_helper::v2 {
         if (device_id.empty()) {
           continue;
         }
-        if (!display_.can_reposition_device(device_id)) {
+        const auto display = repositionable_displays.find(device_id);
+        if (display == repositionable_displays.end()) {
           next_pending.emplace_back(device_id, origin);
           continue;
         }
         int max_origin_x = kMaxDisplayOrigin;
         int max_origin_y = kMaxDisplayOrigin;
-        if (const auto res = display_.get_display_resolution(device_id)) {
+        if (const auto &res = display->second) {
           max_origin_x = std::max(kMinDisplayOrigin, kMaxDisplayOrigin - static_cast<int>(res->m_width) + 1);
           max_origin_y = std::max(kMinDisplayOrigin, kMaxDisplayOrigin - static_cast<int>(res->m_height) + 1);
         }
@@ -646,7 +469,6 @@ namespace display_helper::v2 {
       if (retry_attempt >= kMaxRepositionAttempts) {
         break;
       }
-      clock_.sleep_for(kRepositionRetryInterval);
     }
 
     if (!pending_overrides.empty()) {
@@ -672,10 +494,11 @@ namespace display_helper::v2 {
     // Restore physical monitor refresh rates from the pre-VD-creation snapshot.
     // When a virtual display is created at (0,0), Windows may reset other monitors'
     // refresh rates (e.g. 240Hz -> 60Hz). This restores the original rates.
-    bool rate_result = true;
+    std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> valid_overrides;
+    valid_overrides.reserve(request.refresh_rate_overrides.size());
     for (const auto &[device_id, rate] : request.refresh_rate_overrides) {
       if (token.is_cancelled()) {
-        break;
+        return;
       }
       if (device_id.empty() || rate.first == 0 || rate.second == 0) {
         continue;
@@ -684,7 +507,16 @@ namespace display_helper::v2 {
       if (request.configuration && device_id == request.configuration->m_device_id) {
         continue;
       }
-      const bool ok = display_.set_device_refresh_rate(device_id, rate.first, rate.second);
+      valid_overrides.emplace_back(device_id, rate);
+    }
+
+    if (token.is_cancelled()) {
+      return;
+    }
+    const auto applied = display_.set_device_refresh_rates(valid_overrides);
+    bool rate_result = true;
+    for (const auto &[device_id, rate] : valid_overrides) {
+      const bool ok = applied.contains(device_id);
       if (ok) {
         BOOST_LOG(info) << "Display helper: restored refresh rate for device=" << device_id
                         << " to " << rate.first << "/" << rate.second;
@@ -731,12 +563,9 @@ namespace display_helper::v2 {
       return false;
     }
 
-    clock_.sleep_for(std::chrono::milliseconds(250));
-
-    if (token.is_cancelled()) {
-      return false;
-    }
-
+    // Observe immediately, then confirm the same target 250 ms later. This is
+    // the legacy helper's capture-readiness boundary; sleeping before the first
+    // sample only serialized another quarter second onto every stable start.
     // Sticky verification re-evaluates any explicit exact topology contract
     // supplied by a future caller, plus the resolved target and requested
     // settings. Normal APPLY treats `sunshine_topology` as a staging/base
@@ -744,18 +573,13 @@ namespace display_helper::v2 {
     // sleeping monitor comes online.
     const auto matches_requested_state = [&]() {
       std::optional<ActiveTopology> current_topology;
-      if (expected_topology || resolved_target) {
+      if (expected_topology) {
         current_topology = display_.capture_topology();
       }
       if (expected_topology) {
         if (!current_topology || !display_.is_topology_same(*expected_topology, *current_topology)) {
           return false;
         }
-      }
-
-      if (resolved_target &&
-          (!current_topology || !resolved_target_remains_active(*current_topology, *resolved_target))) {
-        return false;
       }
 
       if (!request.configuration) {
@@ -766,24 +590,7 @@ namespace display_helper::v2 {
             !display_.configuration_matches(*request.configuration)) {
         return false;
       }
-      if (request.configuration->m_device_prep !=
-          SingleDisplayConfiguration::DevicePreparation::EnsurePrimary) {
-        return true;
-      }
-      if (!resolved_target) {
-        return request.configuration->m_device_id.empty() ||
-               display_.is_primary_device(request.configuration->m_device_id);
-      }
-      if (resolved_target->kind == DeviceTargetKind::DefaultPrimaryGroup) {
-        return std::any_of(
-          resolved_target->duplicate_device_ids.begin(),
-          resolved_target->duplicate_device_ids.end(),
-          [this](const std::string &device_id) {
-            return display_.is_primary_device(device_id);
-          });
-      }
-      return !resolved_target->representative_device_id.empty() &&
-             display_.is_primary_device(resolved_target->representative_device_id);
+      return true;
     };
 
     if (!matches_requested_state()) {
@@ -924,15 +731,13 @@ namespace display_helper::v2 {
     auto apply_once = [&]() -> bool {
       const auto topology_outcome = topology_transition_.run(
         base.m_topology,
-        TopologyValidationMode::StructuralRestore,
-        TopologyActivationTarget {},
         token);
       if (topology_outcome.status != ApplyStatus::Ok) {
         BOOST_LOG(warning) << "Restore (" << label << "): topology activation stage failed with status="
                            << static_cast<int>(topology_outcome.status);
         return false;
       }
-      // A competing APPLY/DISARM may arrive while the staged topology waits
+      // A competing APPLY/DISARM may arrive while the restore topology waits
       // for Windows to enumerate. Do not begin a later restore stage once it
       // has cancelled this transaction.
       if (token.is_cancelled()) {
