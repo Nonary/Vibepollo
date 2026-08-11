@@ -2853,8 +2853,8 @@ namespace stream {
       return false;
     }
 
-    bool remote_role_match(const session_t &session, const remote_session::role_e role, const std::uint64_t generation) {
-      return session.remote_role == role && session.remote_role_generation == generation;
+    bool remote_role_match(const session_t &session, const remote_session::role_e role, const std::optional<std::uint64_t> generation) {
+      return session.remote_role == role && (!generation || session.remote_role_generation == *generation);
     }
 
     void stop(session_t &session) {

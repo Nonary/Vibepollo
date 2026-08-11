@@ -2579,7 +2579,12 @@ namespace confighttp {
         bad_request(response, request, error);
         return;
       }
-      nlohmann::json output {{"status", true}, {"layout", nvhttp::get_remote_display_layout()}, {"applies_on_next_activation", true}};
+      const auto clients = nvhttp::get_all_clients();
+      std::vector<nlohmann::json> client_nodes;
+      for (const auto &client : clients) client_nodes.push_back(client);
+      auto output = remote_display_topology::instance().snapshot(client_nodes);
+      output["layout"] = nvhttp::get_remote_display_layout();
+      output["applies_on_next_activation"] = true;
       send_response(response, output, "no-store");
     } catch (const std::exception &e) {
       bad_request(response, request, e.what());
