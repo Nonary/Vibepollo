@@ -5427,28 +5427,19 @@ namespace nvhttp {
     // explicitly releases it (or is unpaired/shutdown). The RTSP join path
     // publishes the generation-scoped transport-loss transition.
     const auto disconnect = rtsp_stream::disconnect_client_sessions_with_result(uuid);
-    if (const auto generation = remote_owner_generation(uuid, remote_session::role_e::input)) {
-      // Input-only has no retained resource or Resume contract. Active
-      // sessions clear this during join; this covers a pending launch that was
-      // administratively disconnected before RTSP published a session.
-      std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
-      for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
-        removed.push_back({
-          .role = disconnect.pending_roles[i],
-          .client_uuid = uuid,
-          .generation = disconnect.pending_generations[i],
-        });
-      }
-      for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(
-             removed,
-             rtsp_stream::pending_policy::pending_owner_t {
-               remote_session::role_e::input,
-               uuid,
-               *generation,
-             }
-           )) {
-        forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
-      }
+    // The result is the pending-registry removal linearization point. Never
+    // look up the current Input owner here: a newer generation may have been
+    // admitted after the RTSP critical section and must survive.
+    std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
+    for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
+      removed.push_back({
+        .role = disconnect.pending_roles[i],
+        .client_uuid = uuid,
+        .generation = disconnect.pending_generations[i],
+      });
+    }
+    for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(removed)) {
+      forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
     }
     return disconnect.disconnected;
   }
