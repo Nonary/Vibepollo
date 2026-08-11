@@ -2027,7 +2027,7 @@
     },
     "noticeTitle": "Smooth frame pacing",
     "noticeCopy": "Vibepollo applies your selected limiter at stream start and restores your driver settings when the stream ends. RTSS gives the most consistent pacing on physical screens; the NVIDIA driver limiter is the fallback.",
-    "syncLimiterHintVirtual": "On virtual screens Vibepollo selects NVIDIA Reflex automatically because DLSS Frame Generation can otherwise add significant latency. Enable the virtual-display override in Settings to use another mode; mark a game as Frame generation -> Game provided to force Reflex for that app.",
+    "syncLimiterHintVirtual": "On virtual screens Vibeshine selects NVIDIA Reflex automatically because DLSS Frame Generation can otherwise add significant latency. Enable the virtual-display override in Settings to use another mode; mark a game as Frame generation -> Game provided to force Reflex for that app.",
     "rtssMissingNvFallback": "RTSS isn't installed, so Vibepollo will apply the frame cap through the NVIDIA driver instead. Streaming keeps working, but RTSS's Reflex limiter paces frames more consistently — install it or set the path below for the smoothest stream.",
     "rtssMissingNoFallback": "RTSS isn't installed and no fallback limiter is available on this system, so games can't be frame-capped while streaming. Install RTSS or set the path below.",
     "virtual": {
