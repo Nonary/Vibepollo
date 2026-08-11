@@ -75,6 +75,13 @@ namespace remote_display_topology {
     void set_layout(nlohmann::json layout);
     void set_physical_baseline(std::vector<node_t> nodes);
     std::vector<std::string> physical_node_ids() const;
+    // Managed ownership is independent of transport lifetime. A retryable or
+    // transport-less Remote Monitor remains protected until an explicit owner
+    // release, and a normal game may share the same stable client identity.
+    std::size_t managed_client_identity_count() const;
+    std::vector<std::string> managed_client_identity_ids() const;
+    std::vector<std::string> protected_remote_monitor_client_ids() const;
+    bool generic_virtual_display_cleanup_allowed() const;
     void set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider);
     monitor_runtime_state_t activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation);
     monitor_runtime_state_t snapshot(const std::string &client_uuid, uint64_t generation) const;
@@ -85,7 +92,7 @@ namespace remote_display_topology {
     activation_result_t resume_remote_monitor(const std::string &client_uuid);
     normal_game_reservation_t reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
     void rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
-    void release_normal_game_identity(const std::string &client_uuid);
+    void release_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);

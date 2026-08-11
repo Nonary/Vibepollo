@@ -23,6 +23,7 @@ const knownClients = computed(() => data.value?.clients ?? []);
 const anchors = computed(() => (data.value?.nodes ?? []).filter((node) => node.id !== selected.value));
 const focusClients = computed(() => props.clientUuid ? knownClients.value.filter((client) => client.uuid === props.clientUuid) : knownClients.value);
 const selectedPlacement = computed<Placement | null>(() => selected.value ? draft.value[selected.value] ?? null : null);
+const headingId = computed(() => `display-topology-title-${(props.clientUuid || 'all').replace(/[^a-zA-Z0-9_-]/g, '-')}`);
 
 function defaultPlacement(client: string): Placement {
   const physical = (data.value?.nodes ?? []).find((node) => node.kind === 'physical');
@@ -67,9 +68,9 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="topology-editor vs-surface" :class="{ 'topology-editor--compact': compact }" aria-labelledby="display-topology-title">
+  <section class="topology-editor vs-surface" :class="{ 'topology-editor--compact': compact }" :aria-labelledby="headingId">
     <div class="topology-editor__heading">
-      <div><h3 id="display-topology-title">Remote Monitor layout</h3><p>Changes apply on the next activation. They never rearrange an active topology.</p></div>
+      <div><h3 :id="headingId">Remote Monitor layout</h3><p>Changes apply on the next activation. They never rearrange an active topology.</p></div>
       <StatusBadge v-if="data?.capacity" :label="`${data.capacity.used} of ${data.capacity.max} client identities`" tone="neutral" compact />
     </div>
     <InlineAlert v-if="error || validationError" tone="danger">{{ error || validationError }}</InlineAlert>

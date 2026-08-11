@@ -555,11 +555,17 @@ namespace nvhttp {
       return publish(std::move(caps), probe_complete, "idle-probe");
     }
 
-    void cleanup_virtual_display_state() {
+    void cleanup_virtual_display_state(const bool force_display_restore = false) {
       stream::session::cleanup_reservation_t cleanup_reservation;
       const bool has_active_display = has_active_virtual_display();
       const bool has_retained_probe_display = VDISPLAY::has_retained_ensure_display();
       if (!has_active_display && !has_retained_probe_display) {
+        if (force_display_restore) {
+          if (display_helper_integration::revert()) {
+            display_helper_integration::stop_watchdog();
+          }
+          return;
+        }
         BOOST_LOG(debug) << "Skipping virtual display cleanup after cancel because no active virtual display exists.";
         return;
       }
@@ -569,7 +575,10 @@ namespace nvhttp {
         return;
       }
 
-      const auto cleanup = platf::virtual_display_cleanup::run("cancel", config::video.dd.config_revert_on_disconnect);
+      const auto cleanup = platf::virtual_display_cleanup::run(
+        "cancel",
+        force_display_restore || config::video.dd.config_revert_on_disconnect
+      );
       if (cleanup.helper_revert_dispatched) {
         display_helper_integration::stop_watchdog();
       }
@@ -633,7 +642,17 @@ namespace nvhttp {
           return;
         }
 
-        cleanup_virtual_display_state();
+        if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+          BOOST_LOG(info) << "Deferring virtual display cleanup until the remaining managed client display sessions release ownership.";
+          return;
+        }
+
+        // The shared finalizer remains armed while a managed display owner
+        // exists. The final release consumes the queued REVERT exactly once.
+        if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
+          return;
+        }
+        cleanup_virtual_display_state(proc::consume_deferred_display_revert());
       } catch (const std::exception &e) {
         BOOST_LOG(warning) << "Virtual display cleanup failed: " << e.what();
       } catch (...) {
@@ -3497,6 +3516,11 @@ namespace nvhttp {
           }
           (void) rtsp_stream::disconnect_remote_role_session(request_client_identity.uuid, role, *generation);
           forget_remote_owner(request_client_identity.uuid, role, *generation);
+#ifdef _WIN32
+          if (role == remote_session::role_e::monitor) {
+            cleanup_virtual_display_if_idle();
+          }
+#endif
           tree.put("root.<xmlattr>.status_code", 200);
           tree.put("root.gamesession", 0);
           return;
@@ -3771,6 +3795,19 @@ namespace nvhttp {
           (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
         }
       });
+      // Declare teardown before the identity guard so failure unwinds the
+      // normal-role reservation before generic cleanup admission is sampled.
+      auto virtual_display_teardown_guard = util::fail_guard([&]() {
+        stream::session::cleanup_reservation_t cleanup_reservation;
+        if (has_stream_session_activity() || !launch_session->virtual_display) {
+          return;
+        }
+        BOOST_LOG(info) << "Launch aborted before session start; removing virtual displays.";
+        (void) platf::virtual_display_cleanup::run(
+          "launch_aborted",
+          config::video.dd.config_revert_on_disconnect
+        );
+      });
       auto normal_vdd_identity_guard = util::fail_guard([&] {
         if (launch_session->normal_vdd_identity_newly_reserved) {
           remote_display_topology::instance().rollback_normal_game_identity(
@@ -3796,22 +3833,6 @@ namespace nvhttp {
         return;
       }
 
-      auto virtual_display_teardown_guard = util::fail_guard([&]() {
-        stream::session::cleanup_reservation_t cleanup_reservation;
-        if (has_stream_session_activity()) {
-          return;
-        }
-
-        if (!launch_session->virtual_display) {
-          return;
-        }
-
-        BOOST_LOG(info) << "Launch aborted before session start; removing virtual displays.";
-        (void) platf::virtual_display_cleanup::run(
-          "launch_aborted",
-          config::video.dd.config_revert_on_disconnect
-        );
-      });
 #endif
 
       // The display should be restored in case something fails as there are no other sessions.
@@ -4303,6 +4324,17 @@ namespace nvhttp {
         (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
       }
     });
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      if (has_stream_session_activity() || !launch_session->virtual_display) {
+        return;
+      }
+      BOOST_LOG(info) << "Resume aborted before session start; removing virtual displays.";
+      (void) platf::virtual_display_cleanup::run(
+        "resume_aborted",
+        config::video.dd.config_revert_on_disconnect
+      );
+    });
     auto normal_vdd_identity_guard = util::fail_guard([&] {
       if (launch_session->normal_vdd_identity_newly_reserved) {
         remote_display_topology::instance().rollback_normal_game_identity(
@@ -4328,22 +4360,6 @@ namespace nvhttp {
       return;
     }
 
-    auto virtual_display_teardown_guard = util::fail_guard([&]() {
-      stream::session::cleanup_reservation_t cleanup_reservation;
-      if (has_stream_session_activity()) {
-        return;
-      }
-
-      if (!launch_session->virtual_display) {
-        return;
-      }
-
-      BOOST_LOG(info) << "Resume aborted before session start; removing virtual displays.";
-      (void) platf::virtual_display_cleanup::run(
-        "resume_aborted",
-        config::video.dd.config_revert_on_disconnect
-      );
-    });
 #endif
 
     if (no_active_sessions) {
@@ -5079,6 +5095,9 @@ namespace nvhttp {
     discovery_route_pool.join();
     rtsp_stream::terminate_sessions(false);
     remote_session::notify_monitor_shutdown();
+#ifdef _WIN32
+    cleanup_virtual_display_if_idle();
+#endif
     remote_session::register_monitor_runtime_hooks({});
   }
 
@@ -5097,6 +5116,9 @@ namespace nvhttp {
 
   void erase_all_clients() {
     remote_session::notify_monitor_shutdown();
+#ifdef _WIN32
+    cleanup_virtual_display_if_idle();
+#endif
     {
       std::lock_guard<std::mutex> lock(client_mutex);
       client_root = client_t {};
@@ -5357,6 +5379,9 @@ namespace nvhttp {
       if (empty) {
         proc::proc.terminate();
       }
+#ifdef _WIN32
+      cleanup_virtual_display_if_idle();
+#endif
     }
 
     return removed;

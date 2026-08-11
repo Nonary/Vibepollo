@@ -64,10 +64,36 @@ TEST(RemoteDisplayTopology, SharedNormalAndMonitorIdentityCountsOnceAndReleasesI
   ASSERT_TRUE(normal.accepted);
   EXPECT_TRUE(coordinator.activate_or_resume("same", "Same", {}, 7).accepted);
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
-  coordinator.release_normal_game_identity("same");
+  coordinator.release_normal_game_identity("same", normal.token);
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
   coordinator.explicit_release("same", 7, "done");
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 0);
+}
+
+TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePreservesPeers) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<std::string> removals;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+    .remove_owned_display = [&removals](const auto &uuid) { removals.push_back(uuid); },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("two", "Two", {}, 1).ready);
+  coordinator.transport_lost("one", 1);
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  EXPECT_TRUE(coordinator.snapshot("one", 1).retryable);
+
+  coordinator.explicit_release("one", 1, "owner released");
+  EXPECT_EQ(removals, std::vector<std::string>({"one"}));
+  EXPECT_FALSE(coordinator.generic_virtual_display_cleanup_allowed());
+  EXPECT_TRUE(coordinator.snapshot("two", 1).accepted);
+
+  coordinator.explicit_release("two", 1, "final owner released");
+  EXPECT_EQ(removals, std::vector<std::string>({"one", "two"}));
+  EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
 }
 
 TEST(RemoteDisplayTopology, FailedCreationRollbackDoesNotRemoveRetainedMonitor) {

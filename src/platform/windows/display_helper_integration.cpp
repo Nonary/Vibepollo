@@ -46,6 +46,7 @@
   #include "src/platform/windows/misc.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/process.h"
+  #include "src/remote_display_topology.h"
   #include "src/state_storage.h"
   #include "src/stream.h"
   #include "src/webrtc_stream.h"
@@ -2203,6 +2204,12 @@ namespace display_helper_integration {
   }
 
   bool revert(bool prefer_golden_if_current_missing) {
+    if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+      proc::defer_display_revert();
+      BOOST_LOG(info) << "Display helper: deferring REVERT until all managed client display sessions release ownership.";
+      return false;
+    }
+
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     clear_pending_apply_queue_locked();
