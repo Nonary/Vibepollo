@@ -20,6 +20,19 @@ TEST(RemoteDisplayTopology, RejectsInvalidAtomicLayoutGraphs) {
   EXPECT_FALSE(remote_display_topology::validate_layout(layout({{"one", {{"anchor_kind", "physical"}, {"anchor_id", "path"}, {"edge", "left"}, {"alignment", "start"}, {"gap_px", 0}, {"primary", true}}}, {"two", {{"anchor_kind", "physical"}, {"anchor_id", "path"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}, {"primary", true}}}}), clients, {"path"}, error));
 }
 
+TEST(RemoteDisplayTopology, RejectsWrongTypedPersistedPlacementFieldsWithoutThrowing) {
+  const std::vector<std::string> clients {"one"};
+  const std::vector<std::string> physical {"path"};
+  for (const auto &placement : std::vector<nlohmann::json> {
+         {{"anchor_kind", "physical"}, {"anchor_id", "path"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}, {"primary", "yes"}},
+         {{"anchor_kind", 1}, {"anchor_id", "path"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}},
+         {{"anchor_kind", "physical"}, {"anchor_id", "path"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", "0"}},
+       }) {
+    std::string error;
+    EXPECT_NO_THROW(EXPECT_FALSE(remote_display_topology::validate_layout(layout({{"one", placement}}), clients, physical, error)));
+  }
+}
+
 TEST(RemoteDisplayTopology, SupportsEveryEdgeAndAlignment) {
   for (const auto &edge : {"left", "right", "above", "below"}) for (const auto &alignment : {"start", "center", "end"}) {
     std::string error;

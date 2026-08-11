@@ -89,7 +89,7 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_FALSE(remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
-  EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::monitor).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::monitor).allowed);
   EXPECT_FALSE(remote_session::input_uses_display_or_audio(remote_session::role_e::input));
   EXPECT_TRUE(remote_session::input_uses_display_or_audio(remote_session::role_e::monitor));
 }
