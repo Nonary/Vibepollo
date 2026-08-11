@@ -792,22 +792,24 @@ namespace rtsp_stream {
      */
     bool session_raise(std::shared_ptr<launch_session_t> launch_session) {
       if (!launch_session || launch_session->id == 0) return false;
+      // Function arguments may move the session before the map key is read.
+      const auto launch_session_id = launch_session->id;
       const auto expires_at = std::chrono::steady_clock::now() + config::stream.ping_timeout;
       bool accepted = false;
       {
         std::lock_guard lock {pending_launches_mutex};
         expire_pending_locked(std::chrono::steady_clock::now());
         if (pending_launches.size() >= remote_session::max_client_vdds * 2) {
-          BOOST_LOG(error) << "RTSP pending-launch registry is full; refusing launch " << launch_session->id;
-        } else if (pending_launches.contains(launch_session->id)) {
-          BOOST_LOG(error) << "RTSP pending-launch ID collision for " << launch_session->id;
+          BOOST_LOG(error) << "RTSP pending-launch registry is full; refusing launch " << launch_session_id;
+        } else if (pending_launches.contains(launch_session_id)) {
+          BOOST_LOG(error) << "RTSP pending-launch ID collision for " << launch_session_id;
         } else if (!launch_session->rtsp_cipher && std::any_of(pending_launches.begin(), pending_launches.end(), [&launch_session](const auto &entry) {
                      return !entry.second.session->rtsp_cipher && entry.second.source_address == launch_session->rtsp_source_address;
                    })) {
           plaintext_route_warning = "Plaintext RTSP has more than one pending launch for one source address; rejecting the new launch.";
           BOOST_LOG(error) << plaintext_route_warning;
         } else {
-          pending_launches.emplace(launch_session->id, pending_launch_t {std::move(launch_session), expires_at});
+          pending_launches.emplace(launch_session_id, pending_launch_t {std::move(launch_session), expires_at});
           accepted = true;
         }
       }
