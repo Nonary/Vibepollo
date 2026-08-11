@@ -229,7 +229,17 @@ namespace platf {
     const bool want_smooth_motion = policy.smooth_motion && nvidia_gpu_present;
 
     const bool provider_overridden = config::has_runtime_config_override("frame_limiter_provider");
-    const bool rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
+    const bool runtime_rtss_sync_overridden = config::has_runtime_config_override("rtss_frame_limit_type");
+    const bool virtual_display_reflex_required = framegen::virtual_display_reflex_required(
+      policy,
+      config::rtss.allow_virtual_display_override,
+      runtime_rtss_sync_overridden
+    );
+    const bool virtual_display_sync_override =
+      policy.uses_virtual_display &&
+      config::rtss.allow_virtual_display_override &&
+      !virtual_display_reflex_required;
+    const bool rtss_sync_overridden = runtime_rtss_sync_overridden || virtual_display_sync_override;
     const auto configured_provider = parse_provider(config::frame_limiter.provider);
     const bool allow_framegen_default_provider = !provider_overridden && configured_provider == frame_limiter_provider::auto_detect;
     const bool default_policy_can_use_rtss =
@@ -306,6 +316,8 @@ namespace platf {
                      << " effective_wgc_capture=" << policy.effective_wgc_capture
                      << " physical_framegen_capture=" << policy.physical_framegen_capture
                      << " auto_virtual_framegen_limiter=" << policy.auto_virtual_framegen_limiter
+                     << " rtss_virtual_display_override=" << config::rtss.allow_virtual_display_override
+                     << " rtss_virtual_display_reflex_required=" << virtual_display_reflex_required
                      << " nvidia_gpu=" << nvidia_gpu_present
                      << " amd_gpu=" << amd_gpu_present
                      << " nvcp_ready=" << nvcp_ready

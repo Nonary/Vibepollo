@@ -1996,6 +1996,9 @@
     "rtssPathHint": "Root install folder (leave blank to auto-detect under Program Files / Program Files (x86)).",
     "syncLimiterLabel": "RTSS SyncLimiter mode",
     "syncLimiterHint": "Optional: choose the RTSS SyncLimiter mode used for physical-screen streams. Async is a safe default — see the comparison above.",
+    "syncLimiterHintVirtual": "On virtual screens Vibepollo selects NVIDIA Reflex automatically because DLSS Frame Generation can otherwise add significant latency. Enable the virtual-display override in Settings to use another mode; mark a game as Frame generation -> Game provided to force Reflex for that app.",
+    "rtssMissingNvFallback": "RTSS isn't installed, so Vibepollo will apply the frame cap through the NVIDIA driver instead. Streaming keeps working, but RTSS's Reflex limiter paces frames more consistently — install it or set the path below for the smoothest stream.",
+    "rtssMissingNoFallback": "RTSS isn't installed and no fallback limiter is available on this system, so games can't be frame-capped while streaming. Install RTSS or set the path below.",
     "status": {
       "unknown": "Frame limiter status unavailable.",
       "error": "Failed to query frame limiter status.",
