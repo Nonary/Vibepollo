@@ -1883,6 +1883,16 @@ namespace nvhttp {
       }
 
 
+      nlohmann::json remote_display_layout;
+      try {
+        remote_display_layout = remote_display_topology::normalize_layout(
+          nlohmann::json::parse(client.remote_display_layout_json)
+        );
+      } catch (...) {
+        remote_display_layout = remote_display_topology::normalize_layout(nlohmann::json {});
+      }
+      client.remote_display_layout_json = remote_display_layout.dump();
+
       {
         std::lock_guard<std::mutex> lock(client_mutex);
         cert_chain.clear();
@@ -1894,19 +1904,7 @@ namespace nvhttp {
         client_root = client;
       }
 
-      try {
-        const auto layout = nlohmann::json::parse(client.remote_display_layout_json);
-        if (!layout.is_object() ||
-            layout.value("version", 0U) != remote_display_topology::layout_version ||
-            !layout.contains("placements") ||
-            !layout["placements"].is_object()) {
-          remote_display_topology::instance().set_layout({{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}});
-        } else {
-          remote_display_topology::instance().set_layout(layout);
-        }
-      } catch (...) {
-        remote_display_topology::instance().set_layout({{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}});
-      }
+      remote_display_topology::instance().set_layout(std::move(remote_display_layout));
     }
 
     void add_authorized_client(const p_named_cert_t &named_cert_p) {
@@ -3295,7 +3293,7 @@ namespace nvhttp {
     nlohmann::json get_remote_display_layout() {
       const auto client = client_root_snapshot();
       try {
-        return nlohmann::json::parse(client.remote_display_layout_json);
+        return remote_display_topology::normalize_layout(nlohmann::json::parse(client.remote_display_layout_json));
       } catch (...) {
         return {{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}};
       }
@@ -3313,12 +3311,13 @@ namespace nvhttp {
       if (!remote_display_topology::validate_layout(layout, known_clients, remote_display_topology::instance().physical_node_ids(), error)) {
         return false;
       }
+      const auto canonical_layout = remote_display_topology::normalize_layout(layout);
       {
         std::lock_guard lock(client_mutex);
-        client_root.remote_display_layout_json = layout.dump();
+        client_root.remote_display_layout_json = canonical_layout.dump();
       }
       save_state();
-      remote_display_topology::instance().set_layout(layout);
+      remote_display_topology::instance().set_layout(canonical_layout);
       return true;
     }
 

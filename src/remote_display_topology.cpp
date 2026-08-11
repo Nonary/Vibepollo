@@ -25,11 +25,42 @@ namespace remote_display_topology {
     }
   }  // namespace
 
-  bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error) {
-    if (!layout.is_object() || layout.value("version", 0U) != layout_version || !layout.contains("placements") || !layout["placements"].is_object()) {
+  namespace {
+    nlohmann::json empty_layout() { return {{"version", layout_version}, {"placements", nlohmann::json::object()}}; }
+  }
+
+  bool layout_schema_valid(const nlohmann::json &layout, std::string &error) {
+    if (!layout.is_object() || !layout.contains("version") || !layout["version"].is_number_integer() || layout["version"].get<int>() != static_cast<int>(layout_version) || !layout.contains("placements") || !layout["placements"].is_object()) {
       error = "Layout must be version 1 with an object of placements.";
       return false;
     }
+    const std::set<std::string> edges {"left", "right", "above", "below"};
+    const std::set<std::string> alignments {"start", "center", "end"};
+    for (const auto &[client, placement] : layout["placements"].items()) {
+      if (client.empty() || !placement.is_object() || !placement.contains("anchor_kind") || !placement["anchor_kind"].is_string() || !placement.contains("anchor_id") || !placement["anchor_id"].is_string() || !placement.contains("edge") || !placement["edge"].is_string() || !placement.contains("alignment") || !placement["alignment"].is_string() || !placement.contains("gap_px") || !placement["gap_px"].is_number_integer()) {
+        error = "Every layout placement must use the expected field types.";
+        return false;
+      }
+      if (placement.contains("primary") && !placement["primary"].is_boolean()) {
+        error = "Placement primary must be a boolean.";
+        return false;
+      }
+      const auto gap = placement["gap_px"].get<int>();
+      if ((placement["anchor_kind"].get<std::string>() != "physical" && placement["anchor_kind"].get<std::string>() != "client") || placement["anchor_id"].get<std::string>().empty() || !edges.contains(placement["edge"].get<std::string>()) || !alignments.contains(placement["alignment"].get<std::string>()) || gap < 0 || gap > max_gap_px) {
+        error = "Placement has an unsupported anchor, edge, alignment, or gap.";
+        return false;
+      }
+    }
+    return true;
+  }
+
+  nlohmann::json normalize_layout(const nlohmann::json &layout) {
+    std::string error;
+    return layout_schema_valid(layout, error) ? layout : empty_layout();
+  }
+
+  bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error) {
+    if (!layout_schema_valid(layout, error)) return false;
     unsigned int primary_count = 0;
     std::unordered_map<std::string, std::string> client_anchors;
     const std::set<std::string> edges {"left", "right", "above", "below"};
@@ -39,16 +70,8 @@ namespace remote_display_topology {
         error = "Every placement must name a paired client.";
         return false;
       }
-      const auto anchor_kind = placement.value("anchor_kind", "");
-      const auto anchor_id = placement.value("anchor_id", "");
-      if ((anchor_kind != "physical" && anchor_kind != "client") || anchor_id.empty() || !edges.contains(placement.value("edge", "")) || !alignments.contains(placement.value("alignment", ""))) {
-        error = "Placement has an unsupported anchor, edge, or alignment.";
-        return false;
-      }
-      if (!placement.contains("gap_px") || !placement["gap_px"].is_number_integer() || placement["gap_px"].get<int>() < 0 || placement["gap_px"].get<int>() > max_gap_px) {
-        error = "Placement gap_px must be a sane nonnegative integer.";
-        return false;
-      }
+      const auto anchor_kind = placement["anchor_kind"].get<std::string>();
+      const auto anchor_id = placement["anchor_id"].get<std::string>();
       if (placement.value("primary", false) && ++primary_count > 1) {
         error = "Only one client display may be primary.";
         return false;
@@ -81,7 +104,7 @@ namespace remote_display_topology {
   coordinator_t &instance() { static coordinator_t coordinator; return coordinator; }
 
   void coordinator_t::set_runtime_callbacks(runtime_callbacks_t callbacks) { std::lock_guard lock(mutex_); callbacks_ = std::move(callbacks); }
-  void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = std::move(layout); }
+  void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = normalize_layout(layout); }
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
   std::vector<std::string> coordinator_t::physical_node_ids() const { std::lock_guard lock(mutex_); std::vector<std::string> ids; for (const auto &node : physical_baseline_) ids.push_back(node.id); return ids; }
   std::size_t coordinator_t::managed_client_identity_count() const {

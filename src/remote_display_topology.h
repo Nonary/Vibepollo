@@ -67,6 +67,8 @@ namespace remote_display_topology {
   };
 
   // Validates the persisted wire contract without mutating coordinator state.
+  bool layout_schema_valid(const nlohmann::json &layout, std::string &error);
+  nlohmann::json normalize_layout(const nlohmann::json &layout);
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error);
 
   class coordinator_t {

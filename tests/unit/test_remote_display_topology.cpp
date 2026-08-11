@@ -33,6 +33,14 @@ TEST(RemoteDisplayTopology, RejectsWrongTypedPersistedPlacementFieldsWithoutThro
   }
 }
 
+TEST(RemoteDisplayTopology, NormalizesMalformedPersistenceButKeepsUnavailableTypedAnchor) {
+  const auto fallback = remote_display_topology::normalize_layout({{"version", 1}, {"placements", {{"one", {{"anchor_kind", "physical"}, {"anchor_id", "temporarily-missing"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", "0"}}}}}});
+  EXPECT_EQ(fallback, (nlohmann::json {{"version", remote_display_topology::layout_version}, {"placements", nlohmann::json::object()}}));
+
+  const nlohmann::json saved {{"version", 1}, {"placements", {{"one", {{"anchor_kind", "physical"}, {"anchor_id", "temporarily-missing"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}}}}};
+  EXPECT_EQ(remote_display_topology::normalize_layout(saved), saved);
+}
+
 TEST(RemoteDisplayTopology, SupportsEveryEdgeAndAlignment) {
   for (const auto &edge : {"left", "right", "above", "below"}) for (const auto &alignment : {"start", "center", "end"}) {
     std::string error;
@@ -265,11 +273,12 @@ TEST(RemoteDisplayTopology, MissingAnchorAppendsAndReleasingOnePeerPreservesTheO
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [&applied](const auto &nodes) { std::vector<std::string> ids; for (const auto &node : nodes) if (!node.physical) ids.push_back(node.id); applied.push_back(std::move(ids)); return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {std::string {"target-"} + uuid}; }});
   EXPECT_TRUE(coordinator.activate_or_resume("one", "One", {}, 3).ready);
   EXPECT_TRUE(coordinator.activate_or_resume("two", "Two", {}, 3).ready);
+  EXPECT_FALSE(coordinator.snapshot({{{"uuid", "one"}, {"name", "One"}}, {{"uuid", "two"}, {"name", "Two"}}})["warnings"].empty());
   coordinator.explicit_release("one", 3, "Disconnect Monitor");
   const auto state = coordinator.snapshot({{{"uuid", "one"}, {"name", "One"}}, {{"uuid", "two"}, {"name", "Two"}}});
   EXPECT_EQ(state["capacity"]["used"], 1);
   EXPECT_NE(std::find_if(state["nodes"].begin(), state["nodes"].end(), [](const auto &node) { return node["id"] == "two"; }), state["nodes"].end());
-  ASSERT_FALSE(state["warnings"].empty());
+  EXPECT_TRUE(state["warnings"].empty());
   ASSERT_FALSE(applied.empty());
   EXPECT_EQ(applied.back(), std::vector<std::string>({"two"}));
 }
