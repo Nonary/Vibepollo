@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,4 +22,5 @@ namespace rtsp_stream::pending_policy {
   // routing has direct component coverage.
   initial_route_e choose_initial_route(bool plaintext_available, bool encrypted_available, const std::array<std::uint8_t, 4> &first_word);
   std::vector<pending_owner_t> expired_remote_input_owners(const std::vector<pending_owner_t> &expired);
+  std::vector<pending_owner_t> disconnect_input_owners_to_forget(const std::vector<pending_owner_t> &removed, std::optional<pending_owner_t> current_owner);
 }  // namespace rtsp_stream::pending_policy

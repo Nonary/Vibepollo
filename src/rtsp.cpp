@@ -1240,19 +1240,22 @@ namespace rtsp_stream {
       return out;
     }
 
-    bool disconnect_client(const std::string &client_uuid) {
+    client_disconnect_result_t disconnect_client(const std::string &client_uuid) {
       if (client_uuid.empty()) {
-        return false;
+        return {};
       }
 
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
       bool removed_pending = false;
+      client_disconnect_result_t result;
       bool vulkan_hdr_layer_active = false;
       {
         std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
         for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
           const auto &pending = it->session;
           if (pending && pending->client_uuid == client_uuid) {
+            result.pending_roles.push_back(pending->role);
+            result.pending_generations.push_back(pending->role_generation);
             it = _launch_sessions.erase(it);
             removed_pending = true;
           } else {
@@ -1288,7 +1291,8 @@ namespace rtsp_stream {
       if (!to_cleanup.empty()) {
         nvhttp::mark_client_last_seen(client_uuid);
       }
-      return removed_pending || !to_cleanup.empty();
+      result.disconnected = removed_pending || !to_cleanup.empty();
+      return result;
     }
 
     bool disconnect_remote_role(
@@ -1781,6 +1785,10 @@ namespace rtsp_stream {
   }
 
   bool disconnect_client_sessions(const std::string &client_uuid) {
+    return disconnect_client_sessions_with_result(client_uuid).disconnected;
+  }
+
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid) {
     server.clear(false);
     return server.disconnect_client(client_uuid);
   }
