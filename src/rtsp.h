@@ -307,8 +307,8 @@ namespace rtsp_stream {
   // Surface the actual plaintext admission warning in the topology UI without
   // giving that UI a second, divergent notion of RTSP routing state.
   std::string plaintext_route_warning();
-  bool disconnect_game_sessions(std::string_view client_uuid);
-  bool disconnect_remote_role_session(std::string_view client_uuid, remote_session::role_e role, std::uint64_t generation);
+  bool disconnect_game_sessions(std::string_view client_uuid, bool lifecycle_lock_held = false);
+  bool disconnect_remote_role_session(std::string_view client_uuid, remote_session::role_e role, std::uint64_t generation, bool lifecycle_lock_held = false);
 
   /**
    * @brief Clear state for the specified launch session.

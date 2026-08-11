@@ -78,7 +78,9 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   const auto active_game = game();
-  EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::resume).allowed);
+  const auto game_resume = remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::resume);
+  EXPECT_TRUE(game_resume.allowed);
+  EXPECT_EQ(game_resume.resume_role, remote_session::role_e::game);
   EXPECT_FALSE(remote_session::dispatch(caller("other", false), active_game, {}, remote_session::control_e::resume).allowed);
   EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
   EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
@@ -90,6 +92,37 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::monitor).allowed);
   EXPECT_FALSE(remote_session::input_uses_display_or_audio(remote_session::role_e::input));
   EXPECT_TRUE(remote_session::input_uses_display_or_audio(remote_session::role_e::monitor));
+}
+
+TEST(RemoteSession, RetainedMonitorResumeWinsOverPausedConfiguredApp) {
+  const auto decision = remote_session::dispatch(
+    caller("monitor"),
+    game(),
+    {.role = remote_session::role_e::monitor, .retained = true},
+    remote_session::control_e::resume
+  );
+
+  ASSERT_TRUE(decision.allowed);
+  ASSERT_TRUE(decision.resume);
+  EXPECT_EQ(decision.resume_role, remote_session::role_e::monitor);
+}
+
+TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
+  const auto monitor = remote_session::successful_control_completion(remote_session::control_e::disconnect_monitor);
+  ASSERT_TRUE(monitor);
+  EXPECT_EQ(monitor->status_code, 410);
+  EXPECT_EQ(monitor->status_message, "Remote Monitor disconnected successfully.");
+
+  const auto input = remote_session::successful_control_completion(remote_session::control_e::disconnect_input);
+  ASSERT_TRUE(input);
+  EXPECT_EQ(input->status_code, 410);
+
+  const auto game_disconnect = remote_session::successful_control_completion(remote_session::control_e::disconnect_game);
+  ASSERT_TRUE(game_disconnect);
+  EXPECT_EQ(game_disconnect->status_code, 410);
+
+  EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::resume));
+  EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::monitor));
 }
 
 TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSafe) {

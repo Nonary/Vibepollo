@@ -644,11 +644,8 @@ namespace nvhttp {
       return platf::virtual_display_cleanup::in_progress();
     }
 
-    void cleanup_virtual_display_if_idle() {
+    void cleanup_virtual_display_if_idle_locked() {
       try {
-        // Serialize the final owner check through the shared lifecycle gate,
-        // which also excludes concurrent RTSP and WebRTC startup.
-        std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex());
         if (has_stream_session_activity_or_display_cleanup()) {
           BOOST_LOG(info) << "Skipping virtual display cleanup because a streaming session is active or stopping.";
           return;
@@ -672,6 +669,14 @@ namespace nvhttp {
       } catch (...) {
         BOOST_LOG(warning) << "Virtual display cleanup failed with an unknown exception.";
       }
+    }
+
+    void cleanup_virtual_display_if_idle() {
+      // Serialize the final owner check through cleanup and exclude a
+      // concurrent RTSP or WebRTC start. Callers already holding the lifecycle
+      // gate must use cleanup_virtual_display_if_idle_locked().
+      std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex());
+      cleanup_virtual_display_if_idle_locked();
     }
 
     void prepare_virtual_display_for_session(
@@ -2038,6 +2043,26 @@ namespace nvhttp {
 
     std::mutex &stream_lifecycle_mutex() {
       return stream_lifecycle_gate;
+    }
+
+    std::unique_lock<std::mutex> acquire_stream_start_lifecycle_lock() {
+      bool waited_for_teardown = false;
+      for (;;) {
+        std::unique_lock<std::mutex> lifecycle_lock {stream_lifecycle_gate};
+        if (stream::session::teardown_sessions.load(std::memory_order_acquire) == 0) {
+          if (waited_for_teardown) {
+            BOOST_LOG(debug) << "Stream start: prior RTSP teardown completed; lifecycle gate acquired.";
+          }
+          return lifecycle_lock;
+        }
+
+        if (!waited_for_teardown) {
+          waited_for_teardown = true;
+          BOOST_LOG(debug) << "Stream start: yielding lifecycle gate to prior RTSP teardown.";
+        }
+        lifecycle_lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
     }
 
     std::string resolve_known_client_uuid_from_launch_id(const std::string &launch_unique_id) {
@@ -3610,21 +3635,23 @@ namespace nvhttp {
           tree.put("root.<xmlattr>.status_message", "Remote session action is not permitted for this caller");
           return;
         }
-        if (decision.resume && current_appid > 0) {
+        if (decision.resume && decision.resume_role == remote_session::role_e::game && current_appid > 0) {
           g.disable();
           resume(host_audio, std::move(response), std::move(request), current_appid);
           return;
         }
         if (decision.disconnect_game) {
-          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid);
+          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid, true);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
-          tree.put("root.<xmlattr>.status_code", disconnected ? 200 : 409);
-          tree.put(
-            "root.<xmlattr>.status_message",
-            disconnected ? "Disconnected the active configured-game stream" :
-                           "The active configured-game stream is no longer connected"
-          );
+          if (disconnected) {
+            const auto completion = *remote_session::successful_control_completion(synthetic_control);
+            tree.put("root.<xmlattr>.status_code", completion.status_code);
+            tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
+          } else {
+            tree.put("root.<xmlattr>.status_code", 409);
+            tree.put("root.<xmlattr>.status_message", "The active configured-game stream is no longer connected");
+          }
           return;
         }
 
@@ -3643,7 +3670,8 @@ namespace nvhttp {
           (void) rtsp_stream::disconnect_remote_role_session(
             request_client_identity.uuid,
             role,
-            *generation
+            *generation,
+            true
           );
           if (role == remote_session::role_e::monitor) {
             remote_session::release_monitor(
@@ -3655,22 +3683,26 @@ namespace nvhttp {
           forget_remote_owner(request_client_identity.uuid, role, *generation);
 #ifdef _WIN32
           if (role == remote_session::role_e::monitor) {
-            cleanup_virtual_display_if_idle();
+            cleanup_virtual_display_if_idle_locked();
           }
 #endif
-          tree.put("root.<xmlattr>.status_code", 200);
+          const auto completion = *remote_session::successful_control_completion(synthetic_control);
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", completion.status_code);
+          tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
           tree.put("root.gamesession", 0);
           return;
         }
 
         if (synthetic_control == remote_session::control_e::resume ||
             synthetic_control == remote_session::control_e::running_game) {
-          if (current_appid > 0) {
+          if (decision.resume_role == remote_session::role_e::game && current_appid > 0) {
             g.disable();
             resume(host_audio, std::move(response), std::move(request), current_appid);
             return;
           }
-          if (!remote_owner_generation(request_client_identity.uuid, remote_session::role_e::monitor)) {
+          if (decision.resume_role != remote_session::role_e::monitor ||
+              !remote_owner_generation(request_client_identity.uuid, remote_session::role_e::monitor)) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 404);
             tree.put("root.<xmlattr>.status_message", "No running game or retained Remote Monitor belongs to this caller");
@@ -5254,7 +5286,7 @@ namespace nvhttp {
           return;
         }
 
-        std::lock_guard lifecycle_lock {stream_lifecycle_gate};
+        auto lifecycle_lock = acquire_stream_start_lifecycle_lock();
         const int current_appid = proc::proc.current_app_id();
         launch(host_audio, std::move(resp), std::move(req), current_appid);
       });
@@ -5265,7 +5297,7 @@ namespace nvhttp {
         // /launch above; normal app transitions also take their narrower gate.
         std::lock_guard launch_lock {launch_request_mutex};
         (void) proc::proc.running();
-        std::lock_guard lifecycle_lock {stream_lifecycle_gate};
+        auto lifecycle_lock = acquire_stream_start_lifecycle_lock();
         const int current_appid = proc::proc.current_app_id();
         resume(host_audio, std::move(resp), std::move(req), current_appid);
       });
