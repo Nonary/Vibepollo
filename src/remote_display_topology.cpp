@@ -86,13 +86,34 @@ namespace remote_display_topology {
   std::vector<std::string> coordinator_t::physical_node_ids() const { std::lock_guard lock(mutex_); std::vector<std::string> ids; for (const auto &node : physical_baseline_) ids.push_back(node.id); return ids; }
   void coordinator_t::set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider) { std::lock_guard lock(mutex_); plaintext_rtsp_warning_provider_ = std::move(provider); }
 
-  void coordinator_t::note_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
+  normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
     std::lock_guard lock(mutex_);
-    if (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities) return;
+    if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities)) return {};
     auto &[state] = clients_[client_uuid];
+    if (state.normal_game) return {true, false, state.normal_game_token};
     state.label = label;
     state.requested_mode = mode;
     state.normal_game = true;
+    state.normal_game_token = ++next_normal_game_token_;
+    return {true, true, state.normal_game_token};
+  }
+
+  void coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
+    std::lock_guard lock(mutex_);
+    const auto it = clients_.find(client_uuid);
+    if (it == clients_.end() || !it->second.normal_game || it->second.normal_game_token != token) return;
+    it->second.normal_game = false;
+    it->second.normal_game_token = 0;
+    if (!it->second.remote_monitor) clients_.erase(it);
+  }
+
+  void coordinator_t::release_normal_game_identity(const std::string &client_uuid) {
+    std::lock_guard lock(mutex_);
+    const auto it = clients_.find(client_uuid);
+    if (it == clients_.end() || !it->second.normal_game) return;
+    it->second.normal_game = false;
+    it->second.normal_game_token = 0;
+    if (!it->second.remote_monitor) clients_.erase(it);
   }
 
   activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {

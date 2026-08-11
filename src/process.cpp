@@ -48,6 +48,9 @@
 #include "display_device.h"
 #include "deferred_action.h"
 #include "file_handler.h"
+#ifdef _WIN32
+  #include "remote_display_topology.h"
+#endif
 #include "logging.h"
 #include "platform/common.h"
 #ifdef _WIN32

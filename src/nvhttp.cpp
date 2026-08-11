@@ -755,6 +755,30 @@ namespace nvhttp {
         launch_session->framegen_refresh_millihz = framegen_policy.framegen_refresh_millihz;
         launch_session->framegen_refresh_multiplier = framegen_policy.refresh_multiplier;
       };
+      auto reserve_normal_vdd_identity = [&]() {
+        if (shared_virtual_display_mode || launch_session->role != remote_session::role_e::game) return true;
+        if (launch_session->normal_vdd_identity_token != 0) return true;
+        const remote_display_topology::mode_t mode {
+          .width = launch_session->width,
+          .height = launch_session->height,
+          .refresh_hz = launch_session->fps,
+        };
+        const auto reservation = remote_display_topology::instance().reserve_normal_game_identity(
+          launch_session->client_uuid,
+          launch_session->client_name,
+          mode
+        );
+        if (!reservation.accepted) {
+          launch_session->normal_vdd_capacity_rejected = true;
+          launch_session->virtual_display_failed = true;
+          BOOST_LOG(warning) << "Rejecting per-client virtual display for client '" << launch_session->client_uuid
+                             << "' because all four client identities are already reserved.";
+          return false;
+        }
+        launch_session->normal_vdd_identity_token = reservation.token;
+        launch_session->normal_vdd_identity_newly_reserved = reservation.newly_reserved;
+        return true;
+      };
       BOOST_LOG(debug) << "Display helper: session prep client='" << launch_session->client_name
                        << "' allow_display_changes=" << allow_display_changes
                        << " no_active_sessions=" << no_active_sessions
@@ -776,6 +800,7 @@ namespace nvhttp {
         launch_session->virtual_display_recreated_on_demand = false;
         launch_session->virtual_display_needs_resume_apply = false;
         if (request_virtual_display) {
+          if (!reserve_normal_vdd_identity()) return;
           const auto existing_device =
             VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(
               virtual_display_stable_id,
@@ -820,6 +845,7 @@ namespace nvhttp {
 
       if (!allow_display_changes) {
         if (request_virtual_display) {
+          if (!reserve_normal_vdd_identity()) return;
           if (auto existing_device =
                 VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(
                   virtual_display_stable_id,
@@ -918,6 +944,8 @@ namespace nvhttp {
             disable_virtual_display_request();
             return;
           }
+
+          if (!reserve_normal_vdd_identity()) return;
 
           const auto intended_adapter = platf::resolve_preferred_render_adapter(
             config::video.adapter_name,
@@ -3743,6 +3771,14 @@ namespace nvhttp {
           (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
         }
       });
+      auto normal_vdd_identity_guard = util::fail_guard([&] {
+        if (launch_session->normal_vdd_identity_newly_reserved) {
+          remote_display_topology::instance().rollback_normal_game_identity(
+            launch_session->client_uuid,
+            launch_session->normal_vdd_identity_token
+          );
+        }
+      });
       prepare_virtual_display_for_session(
         launch_session,
         no_active_sessions,
@@ -3753,6 +3789,12 @@ namespace nvhttp {
         display_startup_cancelled,
         display_startup_deadline
       );
+      if (launch_session->normal_vdd_capacity_rejected) {
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "Remote display capacity is four paired-client identities");
+        tree.put("root.gamesession", 0);
+        return;
+      }
 
       auto virtual_display_teardown_guard = util::fail_guard([&]() {
         stream::session::cleanup_reservation_t cleanup_reservation;
@@ -4009,9 +4051,16 @@ namespace nvhttp {
       stream::session::arm_shared_runtime_cleanup(
         launch_session->virtual_display_guid_bytes
       );
-      rtsp_stream::launch_session_raise(launch_session);
+      if (!rtsp_stream::launch_session_raise(launch_session)) {
+        if (appid > 0) proc::proc.terminate();
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
+        tree.put("root.gamesession", 0);
+        return;
+      }
 #ifdef _WIN32
       virtual_display_teardown_guard.disable();
+      normal_vdd_identity_guard.disable();
 #endif
       revert_display_configuration = false;
       output_override_guard.disable();
@@ -4254,6 +4303,14 @@ namespace nvhttp {
         (void) video::clear_pending_virtual_display_adapter_hint(*pending_adapter_hint);
       }
     });
+    auto normal_vdd_identity_guard = util::fail_guard([&] {
+      if (launch_session->normal_vdd_identity_newly_reserved) {
+        remote_display_topology::instance().rollback_normal_game_identity(
+          launch_session->client_uuid,
+          launch_session->normal_vdd_identity_token
+        );
+      }
+    });
     prepare_virtual_display_for_session(
       launch_session,
       no_active_sessions,
@@ -4264,6 +4321,12 @@ namespace nvhttp {
       display_startup_cancelled,
       display_startup_deadline
     );
+    if (launch_session->normal_vdd_capacity_rejected) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "Remote display capacity is four paired-client identities");
+      return;
+    }
 
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
       stream::session::cleanup_reservation_t cleanup_reservation;
@@ -4463,9 +4526,15 @@ namespace nvhttp {
     stream::session::arm_shared_runtime_cleanup(
       launch_session->virtual_display_guid_bytes
     );
-    rtsp_stream::launch_session_raise(launch_session);
+    if (!rtsp_stream::launch_session_raise(launch_session)) {
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", 409);
+      tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
+      return;
+    }
 #ifdef _WIN32
     virtual_display_teardown_guard.disable();
+    normal_vdd_identity_guard.disable();
 #endif
     output_override_guard.disable();
     runtime_overrides_guard.disable();
