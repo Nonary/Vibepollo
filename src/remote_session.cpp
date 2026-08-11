@@ -114,7 +114,7 @@ namespace remote_session {
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::monitor);
+        result.allowed = caller.may_launch && owner.role == role_e::none;
         break;
       case control_e::disconnect_game:
         result.permission = permission_e::terminate;
