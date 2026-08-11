@@ -316,7 +316,7 @@ namespace rtsp_stream {
       }
       const auto sequence = util::endian::big<std::uint32_t>(header->sequenceNumber);
       crypto::aes_t iv(12);
-      std::copy_n(reinterpret_cast<std::uint8_t *>(&sequence), sizeof(sequence), std::begin(iv));
+      std::copy_n(reinterpret_cast<const std::uint8_t *>(&sequence), sizeof(sequence), std::begin(iv));
       iv[10] = 'C';
       iv[11] = 'R';
       std::vector<std::uint8_t> plaintext;
