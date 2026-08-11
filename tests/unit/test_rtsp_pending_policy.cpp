@@ -26,10 +26,7 @@ TEST(RtspPendingPolicy, PendingExpiryForgetsOnlyRemoteInputGeneration) {
 
 TEST(RtspPendingPolicy, DisconnectCleanupDoesNotSelectPostRemovalInputGeneration) {
   const std::vector<rtsp_stream::pending_policy::pending_owner_t> removed {{.role = remote_session::role_e::input, .client_uuid = "client", .generation = 7}};
-  const auto cleanup = rtsp_stream::pending_policy::disconnect_input_owners_to_forget(
-    removed,
-    rtsp_stream::pending_policy::pending_owner_t {.role = remote_session::role_e::input, .client_uuid = "client", .generation = 8}
-  );
+  const auto cleanup = rtsp_stream::pending_policy::disconnect_input_owners_to_forget(removed);
   ASSERT_EQ(cleanup.size(), 1);
   EXPECT_EQ(cleanup[0].generation, 7u);
   std::set<std::uint64_t> remembered_generations {7, 8};

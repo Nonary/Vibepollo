@@ -5221,21 +5221,18 @@ namespace nvhttp {
     // ownership remains available through Resume until explicit release,
     // unpair, or shutdown.
     const auto disconnect = rtsp_stream::disconnect_client_sessions_with_result(uuid);
-    if (const auto generation = remote_owner_generation(uuid, remote_session::role_e::input)) {
-      std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
-      for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
-        removed.push_back({
-          .role = disconnect.pending_roles[i],
-          .client_uuid = uuid,
-          .generation = disconnect.pending_generations[i],
-        });
-      }
-      for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(
-             removed,
-             {{remote_session::role_e::input, uuid, *generation}}
-           )) {
-        forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
-      }
+    // The pending-map removal result is the linearization point. A newer
+    // generation admitted after it must not be cleared by this disconnect.
+    std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
+    for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
+      removed.push_back({
+        .role = disconnect.pending_roles[i],
+        .client_uuid = uuid,
+        .generation = disconnect.pending_generations[i],
+      });
+    }
+    for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(removed)) {
+      forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
     }
     return disconnect.disconnected;
   }
