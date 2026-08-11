@@ -70,6 +70,7 @@
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
+  #include "remote_display_topology.h"
   #include "src/platform/common.h"
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_helper_request_policy.h"
@@ -546,10 +547,11 @@ namespace webrtc_stream {
         base_vd_fps_millihz,
         framegen_refresh_active,
         refresh_multiplier,
-        virtual_display_hdr_requested,
-        false,
-        !shared_mode
-      );
+          virtual_display_hdr_requested,
+          false,
+          !shared_mode,
+          !remote_display_topology::instance().protected_remote_monitor_client_ids().empty()
+        );
 
       if (display_info) {
         session->virtual_display = true;

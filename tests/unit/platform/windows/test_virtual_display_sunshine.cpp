@@ -209,6 +209,13 @@ TEST(SunshineVirtualDisplay, ActiveRtspJoinSkipsVirtualDisplayPreparation) {
   EXPECT_TRUE(VDISPLAY::policy::should_prepare_display_for_new_session(true));
 }
 
+TEST(SunshineVirtualDisplay, PeerPreservingCreateCannotTeardownOrRestartSharedAdapter) {
+  EXPECT_FALSE(VDISPLAY::policy::should_teardown_conflicting_virtual_displays(true));
+  EXPECT_FALSE(VDISPLAY::policy::may_restart_adapter_after_create_failure(true));
+  EXPECT_TRUE(VDISPLAY::policy::should_teardown_conflicting_virtual_displays(false));
+  EXPECT_TRUE(VDISPLAY::policy::may_restart_adapter_after_create_failure(false));
+}
+
 TEST(SunshineVirtualDisplay, StableIdentityResolverUsesEdidBeforeFriendlyName) {
   using kind = VDISPLAY::policy::identity_match_kind;
   EXPECT_EQ(VDISPLAY::policy::identity_resolution_order.front(), kind::stable_edid);

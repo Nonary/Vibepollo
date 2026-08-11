@@ -112,7 +112,8 @@ namespace VDISPLAY_SUDOVDA {
     bool framegen_refresh_active = false,
     int framegen_refresh_multiplier = 1,
     bool hdr_requested = false,
-    bool replace_existing = true
+    bool replace_existing = true,
+    bool preserve_peer_displays = false
   );
   bool removeVirtualDisplay(const GUID &guid);
   static bool remove_virtual_display_impl(
@@ -173,6 +174,7 @@ namespace VDISPLAY_SUDOVDA {
     int framegen_refresh_multiplier,
     bool hdr_requested,
     bool replace_existing,
+    bool preserve_peer_displays,
     bool allow_reinstall,
     std::stop_token stop_token
   );
@@ -2831,6 +2833,7 @@ namespace VDISPLAY_SUDOVDA {
         state.params.hdr_requested,
         true,
         false,
+        false,
         stop_token
       );
       if (!recreation) {
@@ -4084,6 +4087,7 @@ namespace VDISPLAY_SUDOVDA {
       bool framegen_refresh_active,
       int framegen_refresh_multiplier,
       bool replace_existing,
+      bool preserve_peer_displays,
       std::stop_token stop_token
     ) {
       if (stop_token.stop_requested() || SUDOVDA_DRIVER_HANDLE == INVALID_HANDLE_VALUE) {
@@ -4102,10 +4106,15 @@ namespace VDISPLAY_SUDOVDA {
                        << "' width=" << width << " height=" << height << " fps=" << fps
                        << " guid=" << requested_uuid.string();
 
-      if (!teardown_conflicting_virtual_displays(requested_uuid, stop_token)) {
+      if (VDISPLAY::policy::should_teardown_conflicting_virtual_displays(preserve_peer_displays) &&
+          !teardown_conflicting_virtual_displays(requested_uuid, stop_token)) {
         return std::nullopt;
       }
-      BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
+      if (preserve_peer_displays) {
+        BOOST_LOG(debug) << "Preserving peer virtual displays while creating guid=" << requested_uuid.string();
+      } else {
+        BOOST_LOG(debug) << "teardown_conflicting_virtual_displays completed for guid=" << requested_uuid.string();
+      }
       if (!enforce_teardown_cooldown_if_needed(stop_token)) {
         return std::nullopt;
       }
@@ -4366,6 +4375,7 @@ namespace VDISPLAY_SUDOVDA {
     int framegen_refresh_multiplier,
     bool hdr_requested,
     bool replace_existing,
+    bool preserve_peer_displays,
     bool allow_reinstall,
     std::stop_token stop_token
   ) {
@@ -4400,6 +4410,7 @@ namespace VDISPLAY_SUDOVDA {
         framegen_refresh_active,
         framegen_refresh_multiplier,
         replace_existing,
+        preserve_peer_displays,
         stop_token
       );
       if (!result) {
@@ -4408,6 +4419,11 @@ namespace VDISPLAY_SUDOVDA {
         }
         BOOST_LOG(warning) << "Virtual display creation attempt " << attempt << '/' << kMaxInitializationAttempts
                            << " failed.";
+
+        if (!VDISPLAY::policy::may_restart_adapter_after_create_failure(preserve_peer_displays)) {
+          BOOST_LOG(warning) << "Peer-preserving virtual display creation failed closed without restarting the adapter.";
+          return std::nullopt;
+        }
 
         if (attempt == kMaxInitializationAttempts) {
           BOOST_LOG(error) << "Virtual display could not be created after " << kMaxInitializationAttempts << " attempts.";
@@ -4547,7 +4563,8 @@ namespace VDISPLAY_SUDOVDA {
     bool framegen_refresh_active,
     int framegen_refresh_multiplier,
     bool hdr_requested,
-    bool replace_existing
+    bool replace_existing,
+    bool preserve_peer_displays
   ) {
     if (!release_retained_ensure_display_for_stream(s_client_uid)) {
       return std::nullopt;
@@ -4565,6 +4582,7 @@ namespace VDISPLAY_SUDOVDA {
       framegen_refresh_multiplier,
       hdr_requested,
       replace_existing,
+      preserve_peer_displays,
       true,
       {}
     );

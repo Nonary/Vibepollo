@@ -23,6 +23,18 @@ namespace VDISPLAY::policy {
     return no_active_sessions;
   }
 
+  // Composed multi-client topologies own each stable VDD independently. A
+  // peer-preserving create may neither remove other identities up front nor
+  // restart the shared adapter after failure, because both actions tear down
+  // displays that are still owned by other clients.
+  constexpr bool should_teardown_conflicting_virtual_displays(const bool preserve_peer_displays) noexcept {
+    return !preserve_peer_displays;
+  }
+
+  constexpr bool may_restart_adapter_after_create_failure(const bool preserve_peer_displays) noexcept {
+    return !preserve_peer_displays;
+  }
+
   // The temporary output created by ensure_display() is probe-scoped. Once a
   // caller reaches any terminal probe path, it must release that output rather
   // than cache it for an unrelated stream or later retry.

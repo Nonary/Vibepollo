@@ -37,7 +37,7 @@ namespace remote_display_topology {
   };
 
   struct runtime_callbacks_t {
-    std::function<bool(const std::string &client_uuid, const mode_t &mode)> create_or_reclaim;
+    std::function<bool(const std::string &client_uuid, const std::string &client_label, const mode_t &mode)> create_or_reclaim;
     std::function<bool(const std::vector<node_t> &composed)> apply_composed_topology;
     // The output is accepted only after this exact client identity has both the
     // requested mode and a capture-enumerated DXGI name.  Passing the mode here

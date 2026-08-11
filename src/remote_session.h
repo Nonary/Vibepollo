@@ -64,7 +64,7 @@ namespace remote_session {
     permission_e permission {permission_e::view};
     bool allowed {};
     bool resume {};
-    bool terminate_game {};
+    bool disconnect_game {};
   };
 
   struct pending_t {
@@ -109,6 +109,7 @@ namespace remote_session {
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
+  [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);

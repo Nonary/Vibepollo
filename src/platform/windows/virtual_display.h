@@ -166,7 +166,8 @@ namespace VDISPLAY {
     int framegen_refresh_multiplier = 1,
     bool hdr_requested = false,
     bool allow_pending_enumeration = false,
-    bool replace_existing = true
+    bool replace_existing = true,
+    bool preserve_peer_displays = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).

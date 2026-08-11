@@ -1152,7 +1152,20 @@ namespace rtsp_stream {
       }
 
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
+      bool removed_pending = false;
       bool vulkan_hdr_layer_active = false;
+      {
+        std::lock_guard<std::mutex> lock {_launch_sessions_mutex};
+        for (auto it = _launch_sessions.begin(); it != _launch_sessions.end();) {
+          const auto &pending = it->session;
+          if (pending && pending->client_uuid == client_uuid) {
+            it = _launch_sessions.erase(it);
+            removed_pending = true;
+          } else {
+            ++it;
+          }
+        }
+      }
       {
         auto lg = _session_state.lock();
         for (auto i = _session_state->sessions.begin(); i != _session_state->sessions.end();) {
@@ -1181,10 +1194,10 @@ namespace rtsp_stream {
       if (!to_cleanup.empty()) {
         nvhttp::mark_client_last_seen(client_uuid);
       }
-      return !to_cleanup.empty();
+      return removed_pending || !to_cleanup.empty();
     }
 
-    bool disconnect_remote_role(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
+    bool disconnect_remote_role(const std::string_view client_uuid, const remote_session::role_e role, const std::optional<std::uint64_t> generation) {
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
       bool removed_pending = false;
       bool pending_launches_remain = false;
@@ -1201,7 +1214,7 @@ namespace rtsp_stream {
           if (pending &&
               pending->client_uuid == client_uuid &&
               pending->role == role &&
-              pending->role_generation == generation) {
+              (!generation || pending->role_generation == *generation)) {
             const auto &guid_bytes = pending->virtual_display_guid_bytes;
             if (std::any_of(guid_bytes.begin(), guid_bytes.end(), [](const std::uint8_t byte) {
                   return byte != 0;
@@ -1574,6 +1587,10 @@ namespace rtsp_stream {
   }
 
   std::string plaintext_route_warning() { return server.plaintext_warning(); }
+
+  bool disconnect_game_sessions(const std::string_view client_uuid) {
+    return server.disconnect_remote_role(client_uuid, remote_session::role_e::game, std::nullopt);
+  }
 
   bool disconnect_remote_role_session(const std::string_view client_uuid, const remote_session::role_e role, const std::uint64_t generation) {
     return server.disconnect_remote_role(client_uuid, role, generation);

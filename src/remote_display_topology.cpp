@@ -216,7 +216,7 @@ namespace remote_display_topology {
       return {true, false, state.warning};
     }
     state.lifecycle = lifecycle_e::leased;
-    if (!callbacks_.create_or_reclaim(client_uuid, state.requested_mode)) {
+    if (!callbacks_.create_or_reclaim(client_uuid, state.label, state.requested_mode)) {
       state.lifecycle = lifecycle_e::retryable;
       state.warning = "The owned virtual display could not be created or reclaimed; Resume will retry the same identity.";
       return {true, false, state.warning};
@@ -307,34 +307,83 @@ namespace remote_display_topology {
     auto nodes = physical_baseline_;
     int rightmost = 0;
     for (const auto &node : nodes) rightmost = std::max(rightmost, node.x + effective_mode(node).width);
+
+    std::vector<std::string> active_ids;
     for (const auto &[uuid, state] : clients_) {
-      if (!state.remote_monitor && !state.normal_game) continue;
-      node_t node {.id = uuid, .label = state.label, .active = true, .configured_mode = state.requested_mode, .last_requested_mode = state.requested_mode};
-      const auto placement_it = layout_["placements"].find(uuid);
-      if (placement_it == layout_["placements"].end()) { node.x = rightmost; rightmost += effective_mode(node).width; nodes.push_back(std::move(node)); continue; }
-      const auto &placement = *placement_it;
-      const auto anchor_id = placement.value("anchor_id", "");
-      const auto anchor = std::find_if(nodes.begin(), nodes.end(), [&](const node_t &candidate) { return candidate.id == anchor_id; });
-      if (anchor == nodes.end()) {
+      if (state.remote_monitor || state.normal_game) active_ids.push_back(uuid);
+    }
+    std::sort(active_ids.begin(), active_ids.end());
+
+    std::unordered_set<std::string> emitted;
+    std::unordered_set<std::string> visiting;
+    std::function<void(const std::string &)> emit = [&](const std::string &uuid) {
+      if (emitted.contains(uuid)) return;
+      const auto state_it = clients_.find(uuid);
+      if (state_it == clients_.end() || (!state_it->second.remote_monitor && !state_it->second.normal_game)) return;
+
+      node_t node {
+        .id = uuid,
+        .label = state_it->second.label,
+        .active = true,
+        .configured_mode = state_it->second.requested_mode,
+        .last_requested_mode = state_it->second.requested_mode,
+      };
+      const auto append_right = [&](const std::string &warning) {
         node.x = rightmost;
         rightmost += effective_mode(node).width;
-        warnings.push_back("Saved anchor '" + anchor_id + "' is unavailable; the client display was appended to the right for this activation.");
-      } else {
-        const auto anchor_mode = effective_mode(*anchor);
-        const auto mode = effective_mode(node);
-        const auto gap = placement.value("gap_px", 0);
-        const auto edge = placement.value("edge", "right");
-        const auto alignment = placement.value("alignment", "center");
-        if (edge == "left") node.x = anchor->x - mode.width - gap;
-        if (edge == "right") node.x = anchor->x + anchor_mode.width + gap;
-        if (edge == "above") node.y = anchor->y - mode.height - gap;
-        if (edge == "below") node.y = anchor->y + anchor_mode.height + gap;
-        if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_mode.height - mode.height : anchor->y + (anchor_mode.height - mode.height) / 2;
-        if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_mode.width - mode.width : anchor->x + (anchor_mode.width - mode.width) / 2;
-        node.primary = placement.value("primary", false);
+        if (!warning.empty()) warnings.push_back(warning);
+        nodes.push_back(std::move(node));
+        emitted.insert(uuid);
+      };
+
+      if (!visiting.insert(uuid).second) {
+        append_right("Saved client anchors contain a cycle; '" + uuid + "' was appended to the right for this activation.");
+        return;
       }
+
+      const auto placement_it = layout_["placements"].find(uuid);
+      if (placement_it == layout_["placements"].end()) {
+        append_right({});
+        visiting.erase(uuid);
+        return;
+      }
+
+      const auto &placement = *placement_it;
+      node.primary = placement.value("primary", false);
+      const auto anchor_id = placement.value("anchor_id", "");
+      if (placement.value("anchor_kind", "") == "client") {
+        emit(anchor_id);
+        if (emitted.contains(uuid)) {
+          visiting.erase(uuid);
+          return;
+        }
+      }
+
+      const auto anchor = std::find_if(nodes.begin(), nodes.end(), [&](const node_t &candidate) { return candidate.id == anchor_id; });
+      if (anchor == nodes.end()) {
+        append_right("Saved anchor '" + anchor_id + "' is unavailable; the client display was appended to the right for this activation.");
+        visiting.erase(uuid);
+        return;
+      }
+
+      const auto anchor_mode = effective_mode(*anchor);
+      const auto mode = effective_mode(node);
+      const auto gap = placement.value("gap_px", 0);
+      const auto edge = placement.value("edge", "right");
+      const auto alignment = placement.value("alignment", "center");
+      if (edge == "left") node.x = anchor->x - mode.width - gap;
+      if (edge == "right") node.x = anchor->x + anchor_mode.width + gap;
+      if (edge == "above") node.y = anchor->y - mode.height - gap;
+      if (edge == "below") node.y = anchor->y + anchor_mode.height + gap;
+      if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_mode.height - mode.height : anchor->y + (anchor_mode.height - mode.height) / 2;
+      if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_mode.width - mode.width : anchor->x + (anchor_mode.width - mode.width) / 2;
+      rightmost = std::max(rightmost, node.x + mode.width);
       nodes.push_back(std::move(node));
-    }
+      emitted.insert(uuid);
+      visiting.erase(uuid);
+    };
+
+    for (const auto &uuid : active_ids) emit(uuid);
     return nodes;
   }
 

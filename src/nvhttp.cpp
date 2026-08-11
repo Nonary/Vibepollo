@@ -268,16 +268,16 @@ namespace nvhttp {
 
     void register_remote_monitor_runtime() {
       remote_display_topology::instance().set_runtime_callbacks({
-        .create_or_reclaim = [](const std::string &client_uuid, const remote_display_topology::mode_t &mode) {
+        .create_or_reclaim = [](const std::string &client_uuid, const std::string &client_label, const remote_display_topology::mode_t &mode) {
           if (!VDISPLAY::ensure_driver_is_ready()) return false;
           const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
           GUID guid {};
           std::memcpy(&guid, stable_uuid.b8, sizeof(guid));
           return VDISPLAY::createVirtualDisplay(
-            client_uuid.c_str(), client_uuid.c_str(), nullptr,
+            client_uuid.c_str(), client_label.c_str(), nullptr,
             static_cast<std::uint32_t>(mode.width), static_cast<std::uint32_t>(mode.height),
             static_cast<std::uint32_t>(mode.refresh_hz * 1000), guid,
-            static_cast<std::uint32_t>(mode.refresh_hz * 1000), false, 1, false, false, true
+            static_cast<std::uint32_t>(mode.refresh_hz * 1000), false, 1, false, false, true, true
           ).has_value();
         },
         .apply_composed_topology = apply_remote_monitor_composition,
@@ -1171,7 +1171,8 @@ namespace nvhttp {
             refresh_multiplier,
             virtual_display_hdr_requested,
             false,
-            !shared_mode
+            !shared_mode,
+            !remote_display_topology::instance().protected_remote_monitor_client_ids().empty()
           );
           if (display_info) {
             launch_session->virtual_display = true;
@@ -3187,8 +3188,11 @@ namespace nvhttp {
         const auto active_session = proc::proc.active_session_guard();
         const auto verified_client = get_verified_cert(request);
         const auto identity = resolve_client_identity(request, verified_client);
+        const auto remote_owner = remote_owner_for_client(identity.uuid);
         const bool caller_owns_active_app =
-          current_appid > 0 && !identity.uuid.empty() && identity.uuid == active_session.client_uuid;
+          current_appid > 0 && !identity.uuid.empty() &&
+          identity.uuid == active_session.client_uuid &&
+          remote_owner.role == remote_session::role_e::none;
         // Input-only sessions stay on their existing resume path. Other active
         // games are visible only to their owner so another paired caller gets
         // the remote-session controls instead of a globally busy host.
@@ -3567,6 +3571,22 @@ namespace nvhttp {
       // them out of resolve_app() so stale control identifiers cannot launch a
       // real app with a colliding id or UUID.
       const auto synthetic_control = remote_session::identify(util::from_view(appid_str), appuuid_str);
+      // A secondary Moonlight client sees the running game in its projected
+      // catalogue even though serverinfo is deliberately presented as free.
+      // Launching that advertised entry is therefore a Resume request, not an
+      // attempt to start the configured application again.
+      if (synthetic_control == remote_session::control_e::none && current_appid > 0) {
+        if (const auto active_app = proc::proc.resolve_app(current_appid)) {
+          const bool requests_active_app =
+            !appuuid_str.empty() ? appuuid_str == active_app->uuid :
+                                   util::from_view(appid_str) == util::from_view(active_app->id);
+          if (requests_active_app) {
+            g.disable();
+            resume(host_audio, std::move(response), std::move(request), current_appid);
+            return;
+          }
+        }
+      }
       if (synthetic_control != remote_session::control_e::none) {
         const auto active_session = proc::proc.active_session_guard();
         const auto active_app = proc::proc.resolve_app(current_appid);
@@ -3592,12 +3612,19 @@ namespace nvhttp {
         }
         if (decision.resume && current_appid > 0) {
           g.disable();
-          resume(host_audio, std::move(response), std::move(request), current_appid, false);
+          resume(host_audio, std::move(response), std::move(request), current_appid);
           return;
         }
-        if (decision.terminate_game) {
-          g.disable();
-          cancel(std::move(response), std::move(request));
+        if (decision.disconnect_game) {
+          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid);
+          tree.put("root.resume", 0);
+          tree.put("root.gamesession", 0);
+          tree.put("root.<xmlattr>.status_code", disconnected ? 200 : 409);
+          tree.put(
+            "root.<xmlattr>.status_message",
+            disconnected ? "Disconnected the active configured-game stream" :
+                           "The active configured-game stream is no longer connected"
+          );
           return;
         }
 
@@ -3640,27 +3667,10 @@ namespace nvhttp {
             synthetic_control == remote_session::control_e::running_game) {
           if (current_appid > 0) {
             g.disable();
-            resume(host_audio, std::move(response), std::move(request), current_appid, false);
+            resume(host_audio, std::move(response), std::move(request), current_appid);
             return;
           }
-          if (const auto generation = remote_owner_generation(
-                request_client_identity.uuid,
-                remote_session::role_e::monitor
-              )) {
-            const auto state = remote_session::monitor_runtime_snapshot(
-              request_client_identity.uuid,
-              *generation
-            );
-            if (!state.ready || state.output.empty()) {
-              tree.put("root.resume", 0);
-              tree.put("root.<xmlattr>.status_code", state.retryable ? 503 : 500);
-              tree.put(
-                "root.<xmlattr>.status_message",
-                state.error.empty() ? "Remote Monitor is still preparing its exact capture target" : state.error
-              );
-              return;
-            }
-          } else {
+          if (!remote_owner_generation(request_client_identity.uuid, remote_session::role_e::monitor)) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 404);
             tree.put("root.<xmlattr>.status_message", "No running game or retained Remote Monitor belongs to this caller");
@@ -3709,6 +3719,16 @@ namespace nvhttp {
             mode,
             launch_session->role_generation
           );
+          if (monitor.accepted) {
+            // Publish retryable ownership as well as ready ownership. This makes
+            // the reduced Resume/Disconnect Monitor catalogue reachable after a
+            // failed apply, and the next Resume retries with a new generation.
+            remember_remote_owner(
+              request_client_identity.uuid,
+              launch_session->role,
+              launch_session->role_generation
+            );
+          }
           if (!monitor.ready || monitor.output.empty()) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", monitor.retryable ? 503 : 500);
@@ -3727,17 +3747,24 @@ namespace nvhttp {
               launch_session->role_generation,
               "RTSP admission rejected"
             );
+            forget_remote_owner(
+              request_client_identity.uuid,
+              launch_session->role,
+              launch_session->role_generation
+            );
           }
           tree.put("root.resume", 0);
           tree.put("root.<xmlattr>.status_code", 409);
           tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
           return;
         }
-        remember_remote_owner(
-          request_client_identity.uuid,
-          launch_session->role,
-          launch_session->role_generation
-        );
+        if (launch_session->role != remote_session::role_e::monitor) {
+          remember_remote_owner(
+            request_client_identity.uuid,
+            launch_session->role,
+            launch_session->role_generation
+          );
+        }
         tree.put("root.<xmlattr>.status_code", 200);
         tree.put(
           "root.sessionUrl0",
@@ -4831,7 +4858,16 @@ namespace nvhttp {
     const auto appid = get_arg(args, "appid", "0");
     const auto appuuid = get_arg(args, "appuuid", "");
     auto app_ctx = proc::proc.resolve_app(appid, appuuid);
-    auto app_image = app_ctx ? proc::validate_app_image_path(app_ctx->image_path) : proc::proc.get_app_image((int) util::from_view(appid));
+    std::string app_image;
+    if (app_ctx) {
+      app_image = proc::validate_app_image_path(app_ctx->image_path);
+    } else if (const auto artwork = remote_session::synthetic_artwork_filename(
+                 remote_session::identify(util::from_view(appid), appuuid)
+               )) {
+      app_image = (fs::path {SUNSHINE_ASSETS_DIR} / "remote-session" / std::string {*artwork}).string();
+    } else {
+      app_image = proc::proc.get_app_image((int) util::from_view(appid));
+    }
 
     fg.disable();
 
@@ -5320,11 +5356,12 @@ namespace nvhttp {
   }
 
   void erase_all_clients() {
-    // Revocation must also invalidate authenticated pending RTSP candidates;
-    // process termination alone does not remove those launch reservations.
-    rtsp_stream::terminate_sessions(false);
-    remote_session::notify_monitor_shutdown();
-    forget_all_remote_clients();
+    const auto clients = client_root_snapshot().named_devices;
+    for (const auto &client : clients) {
+      (void) rtsp_stream::disconnect_client_sessions(client->uuid);
+      remote_session::notify_monitor_unpair(client->uuid);
+      forget_remote_client(client->uuid);
+    }
 #ifdef _WIN32
     cleanup_virtual_display_if_idle();
 #endif
@@ -5355,22 +5392,18 @@ namespace nvhttp {
   }
 
   bool disconnect_client(const std::string &uuid) {
-    bool disconnected_remote_role = false;
-    for (const auto role : {remote_session::role_e::monitor, remote_session::role_e::input}) {
-      const auto generation = remote_owner_generation(uuid, role);
-      if (!generation) {
-        continue;
-      }
-
-      disconnected_remote_role =
-        rtsp_stream::disconnect_remote_role_session(uuid, role, *generation) ||
-        disconnected_remote_role;
-      if (role == remote_session::role_e::monitor) {
-        remote_session::release_monitor(uuid, *generation, "Client disconnected");
-      }
-      forget_remote_owner(uuid, role, *generation);
+    // This endpoint disconnects transport only. A Remote Monitor remains
+    // owned and visible as Resume/Disconnect Monitor until its paired client
+    // explicitly releases it (or is unpaired/shutdown). The RTSP join path
+    // publishes the generation-scoped transport-loss transition.
+    const bool disconnected = rtsp_stream::disconnect_client_sessions(uuid);
+    if (const auto generation = remote_owner_generation(uuid, remote_session::role_e::input)) {
+      // Input-only has no retained resource or Resume contract. Active
+      // sessions clear this during join; this covers a pending launch that was
+      // administratively disconnected before RTSP published a session.
+      forget_remote_owner(uuid, remote_session::role_e::input, *generation);
     }
-    return rtsp_stream::disconnect_client_sessions(uuid) || disconnected_remote_role;
+    return disconnected;
   }
 
   bool has_client_uuid(std::string_view uuid) {
@@ -5591,7 +5624,7 @@ namespace nvhttp {
       // Revoke both pending and active synthetic roles before their ownership
       // generation is forgotten. Encrypted RTSP candidates otherwise remain
       // valid after the certificate has been removed.
-      (void) disconnect_client(std::string {uuid});
+      (void) rtsp_stream::disconnect_client_sessions(std::string {uuid});
       remote_session::notify_monitor_unpair(uuid);
       forget_remote_client(uuid);
 #ifdef _WIN32

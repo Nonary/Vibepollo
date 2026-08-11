@@ -52,16 +52,24 @@ namespace remote_session {
     }
   }
 
+  std::optional<std::string_view> synthetic_artwork_filename(const control_e control) {
+    switch (control) {
+      case control_e::resume: return "resume.png";
+      case control_e::disconnect_monitor: return "disconnect-remote-monitor.png";
+      case control_e::disconnect_input: return "disconnect-remote-input.png";
+      case control_e::disconnect_game: return "disconnect-game.png";
+      case control_e::monitor: return "remote-monitor.png";
+      case control_e::input: return "remote-input.png";
+      default: return std::nullopt;
+    }
+  }
+
   projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured) {
     projection_t result;
-    if (owns_game(caller, game)) {
-      result.free = false;
-      result.current_game = game.app.id;
-      result.catalogue = configured;
-      result.catalogue.push_back(synthetic(control_e::input));
-      result.catalogue.push_back(synthetic(control_e::monitor));
-      return result;
-    }
+    std::vector<app_t> visible_configured;
+    std::copy_if(configured.begin(), configured.end(), std::back_inserter(visible_configured), [](const app_t &app) {
+      return !reserved_name(app.title);
+    });
     if (owner.role == role_e::monitor) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
       return result;
@@ -70,11 +78,19 @@ namespace remote_session {
       result.catalogue = {synthetic(control_e::disconnect_input)};
       return result;
     }
+    if (owns_game(caller, game)) {
+      result.free = false;
+      result.current_game = game.app.id;
+      result.catalogue = visible_configured;
+      result.catalogue.push_back(synthetic(control_e::input));
+      result.catalogue.push_back(synthetic(control_e::monitor));
+      return result;
+    }
     if (game.running) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_game), game.app, synthetic(control_e::input), synthetic(control_e::monitor)};
       return result;
     }
-    result.catalogue = configured;
+    result.catalogue = visible_configured;
     result.catalogue.push_back(synthetic(control_e::input));
     result.catalogue.push_back(synthetic(control_e::monitor));
     return result;
@@ -90,14 +106,17 @@ namespace remote_session {
         result.resume = result.allowed;
         break;
       case control_e::input:
+        result.permission = permission_e::launch;
+        result.allowed = caller.may_launch && owner.role == role_e::none;
+        break;
       case control_e::monitor:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch;
+        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::monitor);
         break;
       case control_e::disconnect_game:
         result.permission = permission_e::terminate;
-        result.allowed = caller.may_terminate && owns_game(caller, game);
-        result.terminate_game = result.allowed;
+        result.allowed = caller.may_terminate && game.running;
+        result.disconnect_game = result.allowed;
         break;
       case control_e::disconnect_monitor:
         result.permission = permission_e::terminate;

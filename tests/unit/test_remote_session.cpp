@@ -19,6 +19,11 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
+  ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::monitor));
+  EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::monitor), "remote-monitor.png");
+  ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor));
+  EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor), "disconnect-remote-monitor.png");
+  EXPECT_FALSE(remote_session::synthetic_artwork_filename(remote_session::control_e::none));
 }
 
 TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
@@ -51,17 +56,38 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured);
   ASSERT_EQ(input.catalogue.size(), 1);
   EXPECT_EQ(input.catalogue[0].id, remote_session::disconnect_input_id);
+
+  const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured);
+  ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
+  EXPECT_EQ(game_owner_monitor.catalogue[0].id, remote_session::resume_id);
+  EXPECT_EQ(game_owner_monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
+}
+
+TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
+  const std::vector<remote_session::app_t> configured {
+    {1, "one", "One", false},
+    {2, "shadow-input", "Remote Input", false},
+    {3, "shadow-monitor", "remote monitor", false},
+  };
+  const auto idle = remote_session::project(caller("client"), {}, {}, configured);
+  ASSERT_EQ(idle.catalogue.size(), 3);
+  EXPECT_EQ(idle.catalogue[0].title, "One");
+  EXPECT_EQ(idle.catalogue[1].id, remote_session::input_id);
+  EXPECT_EQ(idle.catalogue[2].id, remote_session::monitor_id);
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   const auto active_game = game();
   EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::resume).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("other", false), active_game, {}, remote_session::control_e::resume).allowed);
-  EXPECT_FALSE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).allowed);
-  EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).terminate_game);
+  EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
+  EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
   EXPECT_FALSE(remote_session::dispatch(caller("other", true, true, false), active_game, {}, remote_session::control_e::disconnect_game).allowed);
   EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::disconnect_monitor).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::monitor).allowed);
   EXPECT_FALSE(remote_session::input_uses_display_or_audio(remote_session::role_e::input));
   EXPECT_TRUE(remote_session::input_uses_display_or_audio(remote_session::role_e::monitor));
 }
