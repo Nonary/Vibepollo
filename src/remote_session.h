@@ -62,9 +62,15 @@ namespace remote_session {
   struct dispatch_t {
     control_e control {control_e::none};
     permission_e permission {permission_e::view};
+    role_e resume_role {role_e::none};
     bool allowed {};
     bool resume {};
     bool disconnect_game {};
+  };
+
+  struct control_completion_t {
+    int status_code {};
+    std::string_view status_message;
   };
 
   struct pending_t {
@@ -112,6 +118,7 @@ namespace remote_session {
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
+  [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
 
   class normal_app_transition_gate_t {

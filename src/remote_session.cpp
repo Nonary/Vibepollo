@@ -104,6 +104,9 @@ namespace remote_session {
         result.permission = permission_e::view;
         result.allowed = caller.may_view && (game.running || owner.role == role_e::monitor);
         result.resume = result.allowed;
+        if (result.allowed) {
+          result.resume_role = owner.role == role_e::monitor ? role_e::monitor : role_e::game;
+        }
         break;
       case control_e::input:
         result.permission = permission_e::launch;
@@ -129,6 +132,19 @@ namespace remote_session {
       default: break;
     }
     return result;
+  }
+
+  std::optional<control_completion_t> successful_control_completion(const control_e control) {
+    // These entries are host controls presented through Moonlight's launch UI,
+    // not streamable applications. Apollo established 410 as the deliberate
+    // launch failure that completes the action and displays its message instead
+    // of making Moonlight wait for a nonexistent RTSP session URL.
+    switch (control) {
+      case control_e::disconnect_monitor: return control_completion_t {410, "Remote Monitor disconnected successfully."};
+      case control_e::disconnect_input: return control_completion_t {410, "Remote Input disconnected successfully."};
+      case control_e::disconnect_game: return control_completion_t {410, "Stream disconnected successfully."};
+      default: return std::nullopt;
+    }
   }
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }

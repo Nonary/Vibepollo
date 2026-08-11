@@ -2900,7 +2900,7 @@ namespace stream {
       session.controlEnd.raise(true);
     }
 
-    void join(session_t &session) {
+    void join(session_t &session, const bool lifecycle_lock_held) {
       bool teardown_reserved = true;
       teardown_sessions.fetch_add(1, std::memory_order_acq_rel);
       auto teardown_reservation = util::fail_guard([&]() {
@@ -2975,7 +2975,10 @@ namespace stream {
 
       // Serialize only the ownership transition and shared cleanup. Blocking
       // thread joins above must remain outside the lifecycle gate.
-      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
+      if (!lifecycle_lock_held) {
+        lifecycle_lock.lock();
+      }
       auto lifecycle_teardown_reservation = util::fail_guard([&]() {
         if (teardown_reserved) {
           teardown_sessions.fetch_sub(1, std::memory_order_acq_rel);
