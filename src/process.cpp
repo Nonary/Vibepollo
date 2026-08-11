@@ -941,6 +941,7 @@ namespace proc {
       _app(std::move(other._app)),
       _app_launch_time(other._app_launch_time),
       _active_client_uuid(std::move(other._active_client_uuid)),
+      _active_client_vdd_identity_token(other._active_client_vdd_identity_token),
       placebo(other.placebo),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
@@ -979,6 +980,7 @@ namespace proc {
       _app = std::move(other._app);
       _app_launch_time = other._app_launch_time;
       _active_client_uuid = std::move(other._active_client_uuid);
+      _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
       placebo = other.placebo;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
@@ -1276,6 +1278,7 @@ namespace proc {
     _app_name = app.name;
     _launch_session = launch_session;
     _active_client_uuid = launch_session ? launch_session->client_uuid : std::string();
+    _active_client_vdd_identity_token = launch_session ? launch_session->normal_vdd_identity_token : 0;
     allow_client_commands = app.allow_client_commands;
     launch_session->gen1_framegen_fix = _app.gen1_framegen_fix;
     launch_session->gen2_framegen_fix = _app.gen2_framegen_fix;
@@ -2645,6 +2648,21 @@ namespace proc {
 
     _pipe.reset();
 
+#ifdef _WIN32
+    // Clear the normal role before cleanup admission. The coordinator removes
+    // only this stable identity when it has no retained Remote Monitor role;
+    // otherwise the shared display remains protected for Resume.
+    if (!_active_client_uuid.empty() && _active_client_vdd_identity_token != 0) {
+      remote_display_topology::instance().release_normal_game_identity(
+        _active_client_uuid,
+        _active_client_vdd_identity_token
+      );
+    }
+#endif
+
+    // Sample ownership after releasing this app's normal-display role. A
+    // retained Remote Monitor (including one sharing this client's identity)
+    // keeps cleanup and REVERT pending, while the final owner permits them.
     const bool other_streaming_session_active =
       stream::session::has_shared_runtime_owner();
 
@@ -2707,12 +2725,8 @@ namespace proc {
       BOOST_LOG(info) << "Deferring display revert after app termination because another streaming session is still active.";
     }
 
-#ifdef _WIN32
-    if (!_active_client_uuid.empty()) {
-      remote_display_topology::instance().release_normal_game_identity(_active_client_uuid);
-    }
-#endif
     _active_client_uuid.clear();
+    _active_client_vdd_identity_token = 0;
     _app_launch_time = {};
     _app_id = -1;
     _app_name.clear();

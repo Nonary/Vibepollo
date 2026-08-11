@@ -6,6 +6,8 @@
   #include "src/logging.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/virtual_display.h"
+  #include "src/process.h"
+  #include "src/remote_display_topology.h"
 
   #include <algorithm>
   #include <array>
@@ -122,6 +124,15 @@ namespace platf::virtual_display_cleanup {
     cleanup_result_t result;
 
     const std::string reason_text = reason.empty() ? "unspecified" : std::string(reason);
+    if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+      if (enforce_db_restore) {
+        proc::defer_display_revert();
+      }
+      BOOST_LOG(info) << "Virtual display cleanup: deferred (reason=" << reason_text
+                      << ") until the remaining managed client display sessions release ownership.";
+      return result;
+    }
+
     BOOST_LOG(info) << "Virtual display cleanup: begin (reason=" << reason_text
                     << ", enforce_db_restore=" << (enforce_db_restore ? "true" : "false")
                     << ", revert_order="

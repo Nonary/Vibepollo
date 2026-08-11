@@ -259,6 +259,7 @@ namespace proc {
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
     std::string _active_client_uuid;
+    std::uint64_t _active_client_vdd_identity_token {0};
 
     mutable std::mutex _apps_mutex;
 

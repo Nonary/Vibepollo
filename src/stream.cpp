@@ -46,6 +46,7 @@ extern "C" {
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "remote_display_topology.h"
 #include "rtsp.h"
 #include "session_history.h"
 #include "stream.h"
@@ -2675,7 +2676,8 @@ namespace stream {
              other_rtsp_teardown ||
              webrtc_stream::has_active_or_pending_sessions() ||
              webrtc_stream::has_capture_active() ||
-             other_webrtc_teardown;
+             other_webrtc_teardown ||
+             remote_display_topology::instance().managed_client_identity_count() != 0;
     }
 
     void arm_shared_runtime_cleanup(
