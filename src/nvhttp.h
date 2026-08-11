@@ -7,10 +7,12 @@
 
 // standard includes
 #include <chrono>
+#include <cstdint>
 #include <list>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 // lib includes
@@ -64,6 +66,8 @@ namespace nvhttp {
    * @examples_end
    */
   void start();
+
+  void notify_remote_input_transport_lost(std::string_view client_uuid, std::uint64_t generation);
 
   std::string
     get_arg(const args_t &args, const char *name, const char *default_value = nullptr);

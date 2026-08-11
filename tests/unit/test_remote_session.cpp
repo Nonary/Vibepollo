@@ -2,6 +2,9 @@
 
 #include "src/remote_session.h"
 
+#include <atomic>
+#include <thread>
+
 namespace {
   remote_session::caller_t caller(std::string uuid, bool view = true, bool launch = true, bool terminate = true) {
     return {.uuid = std::move(uuid), .paired = true, .may_view = view, .may_launch = launch, .may_terminate = terminate};
@@ -66,8 +69,8 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
 TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSafe) {
   remote_session::pending_registry_t registry;
   const auto expiry = std::chrono::steady_clock::now() + std::chrono::minutes(1);
-  EXPECT_TRUE(registry.add({.launch_id = 1, .client_uuid = "one", .crypto_binding = "cert-one", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::monitor, .generation = 1, .expires_at = expiry}));
-  EXPECT_TRUE(registry.add({.launch_id = 2, .client_uuid = "two", .crypto_binding = "cert-two", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::monitor, .generation = 1, .expires_at = expiry}));
+  EXPECT_TRUE(registry.add({.launch_id = 1, .client_uuid = "one", .crypto_binding = "cert-one", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::game, .generation = 1, .expires_at = expiry}));
+  EXPECT_TRUE(registry.add({.launch_id = 2, .client_uuid = "two", .crypto_binding = "cert-two", .source_address = "10.0.0.1", .encrypted = true, .role = remote_session::role_e::game, .generation = 1, .expires_at = expiry}));
   EXPECT_EQ(registry.match_encrypted("one", "cert-one", std::chrono::steady_clock::now())->launch_id, 1u);
   EXPECT_EQ(registry.match_encrypted("two", "cert-two", std::chrono::steady_clock::now())->launch_id, 2u);
   EXPECT_FALSE(registry.match_encrypted("one", "cert-two", std::chrono::steady_clock::now()));
@@ -78,6 +81,25 @@ TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSaf
   EXPECT_EQ(registry.match_plaintext("10.0.0.2", std::chrono::steady_clock::now())->launch_id, 3u);
   registry.expire(std::chrono::steady_clock::now() + std::chrono::minutes(2));
   EXPECT_FALSE(registry.match_encrypted("one", "cert-one", std::chrono::steady_clock::now() + std::chrono::minutes(2)));
+}
+
+TEST(RemoteSession, NormalAppTransitionGateSerializesProcessStartPublication) {
+  remote_session::normal_app_transition_gate_t gate;
+  std::atomic_bool contender_started {false};
+  std::atomic_bool contender_entered {false};
+  std::unique_lock first_transition {gate};
+  std::jthread contender {[&] {
+    contender_started.store(true, std::memory_order_release);
+    std::lock_guard second_transition {gate};
+    contender_entered.store(true, std::memory_order_release);
+  }};
+  while (!contender_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  EXPECT_FALSE(contender_entered.load(std::memory_order_acquire));
+  first_transition.unlock();
+  contender.join();
+  EXPECT_TRUE(contender_entered.load(std::memory_order_acquire));
 }
 
 TEST(RemoteSession, MonitorHooksRejectWithoutTopologyAndPreserveGeneration) {

@@ -2967,6 +2967,8 @@ namespace stream {
         // owner keeps its logical lease until an explicit, generation-matched
         // disconnect, unpair, or shutdown request arrives.
         remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
+      } else if (session.remote_role == remote_session::role_e::input && !session.device_uuid.empty()) {
+        nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);
       }
 
       // Serialize only the ownership transition and shared cleanup. Blocking

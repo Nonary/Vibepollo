@@ -134,6 +134,10 @@ namespace nvhttp {
 
   static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in Sunshine. Moonlight-qt will report Malformed XML (missing root element)."sv;
 
+  void notify_remote_input_transport_lost(const std::string_view client_uuid, const std::uint64_t generation) {
+    forget_remote_owner(client_uuid, remote_session::role_e::input, generation);
+  }
+
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
 
@@ -1964,6 +1968,7 @@ namespace nvhttp {
     }
 
     std::mutex launch_request_mutex;
+    remote_session::normal_app_transition_gate_t normal_http_app_transition_mutex;
     std::mutex stream_lifecycle_gate;
 
     std::mutex &stream_lifecycle_mutex() {
@@ -3374,7 +3379,7 @@ namespace nvhttp {
       }
     }
 
-    void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid);
+    void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, bool normal_app_transition = true);
     void cancel(resp_https_t response, req_https_t request);
 
     void launch(bool &host_audio, resp_https_t response, req_https_t request, int current_appid) {
@@ -3441,7 +3446,7 @@ namespace nvhttp {
         }
         if (decision.resume && current_appid > 0) {
           g.disable();
-          resume(host_audio, std::move(response), std::move(request), current_appid);
+          resume(host_audio, std::move(response), std::move(request), current_appid, false);
           return;
         }
         if (decision.terminate_game) {
@@ -3472,7 +3477,7 @@ namespace nvhttp {
             synthetic_control == remote_session::control_e::running_game) {
           if (current_appid > 0) {
             g.disable();
-            resume(host_audio, std::move(response), std::move(request), current_appid);
+            resume(host_audio, std::move(response), std::move(request), current_appid, false);
             return;
           }
           if (const auto generation = remote_owner_generation(request_client_identity.uuid, remote_session::role_e::monitor)) {
@@ -3533,6 +3538,7 @@ namespace nvhttp {
         tree.put("root.gamesession", 1);
         return;
       }
+      std::unique_lock normal_transition_lock {normal_http_app_transition_mutex};
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_app_uuid = proc::proc.get_running_app_uuid();
@@ -3597,13 +3603,6 @@ namespace nvhttp {
 
           return;
         }
-      }
-
-      if (rtsp_stream::has_pending_launch_or_startup()) {
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 400);
-        tree.put("root.<xmlattr>.status_message", "Another RTSP session launch is pending");
-        return;
       }
 
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
@@ -4020,7 +4019,7 @@ namespace nvhttp {
     }
 
 
-  void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid) {
+  void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, const bool normal_app_transition) {
     print_req<SunshineHTTPS>(request);
 
 #ifdef _WIN32
@@ -4080,6 +4079,9 @@ namespace nvhttp {
 
       return;
     }
+
+    std::unique_lock normal_transition_lock {normal_http_app_transition_mutex, std::defer_lock};
+    if (normal_app_transition) normal_transition_lock.lock();
 
     // Newer Moonlight clients send localAudioPlayMode on /resume too,
     // so we should use it if it's present in the args and there are
@@ -4928,7 +4930,6 @@ namespace nvhttp {
     https_server.resource["^/appasset$"]["GET"] = appasset;
     https_server.resource["^/launch$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        std::lock_guard launch_lock {launch_request_mutex};
         (void) proc::proc.running();
         std::lock_guard lifecycle_lock {stream_lifecycle_gate};
         const int current_appid = proc::proc.current_app_id();
@@ -4937,7 +4938,6 @@ namespace nvhttp {
     };
     https_server.resource["^/resume$"]["GET"] = [&host_audio, run_blocking_nvhttp](auto resp, auto req) {
       run_blocking_nvhttp([&host_audio, resp = std::move(resp), req = std::move(req)]() mutable {
-        std::lock_guard launch_lock {launch_request_mutex};
         (void) proc::proc.running();
         std::lock_guard lifecycle_lock {stream_lifecycle_gate};
         const int current_appid = proc::proc.current_app_id();

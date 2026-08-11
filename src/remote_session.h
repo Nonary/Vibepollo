@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -111,6 +112,17 @@ namespace remote_session {
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
+
+  class normal_app_transition_gate_t {
+  public:
+    void lock() { mutex_.lock(); }
+    bool try_lock() { return mutex_.try_lock(); }
+    void unlock() { mutex_.unlock(); }
+
+  private:
+    std::mutex mutex_;
+  };
+
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks);
   [[nodiscard]] monitor_runtime_state_t activate_or_resume_monitor(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, std::uint64_t generation);
   [[nodiscard]] monitor_runtime_state_t monitor_runtime_snapshot(std::string_view client_uuid, std::uint64_t generation);
