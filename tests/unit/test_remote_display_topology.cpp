@@ -30,12 +30,55 @@ TEST(RemoteDisplayTopology, SupportsEveryEdgeAndAlignment) {
 TEST(RemoteDisplayTopology, OneIdentityCoversNormalGameAndRemoteMonitorAndCapacityIsFour) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {"\\\\.\\DISPLAY" + uuid}; }});
-  coordinator.note_normal_game_identity("one", "One", {});
+  EXPECT_TRUE(coordinator.reserve_normal_game_identity("one", "One", {}).accepted);
   EXPECT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).accepted);
   EXPECT_TRUE(coordinator.activate_or_resume("two", "Two", {}, 1).accepted);
   EXPECT_TRUE(coordinator.activate_or_resume("three", "Three", {}, 1).accepted);
   EXPECT_TRUE(coordinator.activate_or_resume("four", "Four", {}, 1).accepted);
   EXPECT_FALSE(coordinator.activate_or_resume("five", "Five", {}, 1).accepted);
+}
+
+TEST(RemoteDisplayTopology, NormalReservationRejectsBeforeCreateAndRollsBackOnlyItsIdentity) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  coordinator.set_runtime_callbacks({.create_or_reclaim = [&creates](const auto &, const auto &) { ++creates; return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});
+  const auto normal = coordinator.reserve_normal_game_identity("normal", "Normal", {});
+  ASSERT_TRUE(normal.accepted);
+  EXPECT_TRUE(coordinator.activate_or_resume("rm-1", "RM 1", {}, 1).accepted);
+  EXPECT_TRUE(coordinator.activate_or_resume("rm-2", "RM 2", {}, 1).accepted);
+  EXPECT_TRUE(coordinator.activate_or_resume("rm-3", "RM 3", {}, 1).accepted);
+  EXPECT_FALSE(coordinator.reserve_normal_game_identity("fifth", "Fifth", {}).accepted);
+  EXPECT_EQ(creates, 3);
+
+  coordinator.rollback_normal_game_identity("normal", normal.token);
+  const auto replacement = coordinator.reserve_normal_game_identity("fifth", "Fifth", {});
+  EXPECT_TRUE(replacement.accepted);
+  coordinator.rollback_normal_game_identity("fifth", normal.token);
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 4);
+}
+
+TEST(RemoteDisplayTopology, SharedNormalAndMonitorIdentityCountsOnceAndReleasesIndependently) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});
+  const auto normal = coordinator.reserve_normal_game_identity("same", "Same", {});
+  ASSERT_TRUE(normal.accepted);
+  EXPECT_TRUE(coordinator.activate_or_resume("same", "Same", {}, 7).accepted);
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
+  coordinator.release_normal_game_identity("same");
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
+  coordinator.explicit_release("same", 7, "done");
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 0);
+}
+
+TEST(RemoteDisplayTopology, FailedCreationRollbackDoesNotRemoveRetainedMonitor) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});
+  EXPECT_TRUE(coordinator.activate_or_resume("same", "Same", {}, 4).accepted);
+  const auto normal = coordinator.reserve_normal_game_identity("same", "Same", {});
+  ASSERT_TRUE(normal.newly_reserved);
+  coordinator.rollback_normal_game_identity("same", normal.token);
+  EXPECT_TRUE(coordinator.snapshot("same", 4).accepted);
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
 }
 
 TEST(RemoteDisplayTopology, FailedApplyAndLeaseLossRetainOwnershipWithoutFallback) {

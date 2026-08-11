@@ -60,6 +60,12 @@ namespace remote_display_topology {
     std::string error;
   };
 
+  struct normal_game_reservation_t {
+    bool accepted = false;
+    bool newly_reserved = false;
+    std::uint64_t token = 0;
+  };
+
   // Validates the persisted wire contract without mutating coordinator state.
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error);
 
@@ -77,7 +83,9 @@ namespace remote_display_topology {
     void transport_lost(const std::string &client_uuid, uint64_t generation);
     activation_result_t activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode);
     activation_result_t resume_remote_monitor(const std::string &client_uuid);
-    void note_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
+    normal_game_reservation_t reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
+    void rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
+    void release_normal_game_identity(const std::string &client_uuid);
     void note_lease_lost(const std::string &client_uuid);
     void disconnect_monitor(const std::string &client_uuid);
     void unpair_client(const std::string &client_uuid);
@@ -89,6 +97,7 @@ namespace remote_display_topology {
       std::string label;
       mode_t requested_mode;
       bool normal_game = false;
+      std::uint64_t normal_game_token = 0;
       bool remote_monitor = false;
       bool lease_held = false;
       uint64_t generation = 0;
@@ -107,6 +116,7 @@ namespace remote_display_topology {
     nlohmann::json layout_ { {"version", layout_version}, {"placements", nlohmann::json::object()} };
     std::vector<node_t> physical_baseline_;
     std::unordered_map<std::string, client_state_t> clients_;
+    std::uint64_t next_normal_game_token_ = 0;
   };
 
   coordinator_t &instance();

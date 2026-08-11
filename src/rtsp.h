@@ -110,6 +110,9 @@ namespace rtsp_stream {
     std::optional<bool> client_virtual_display_override;
     bool virtual_display;
     uint32_t scale_factor = 100;
+    bool normal_vdd_capacity_rejected = false;
+    bool normal_vdd_identity_newly_reserved = false;
+    std::uint64_t normal_vdd_identity_token = 0;
     // Host/display resolution derived from a launch-time client override. The RTSP
     // negotiated viewport remains in width/height.
     std::optional<resolution_override_t> resolution_override;
