@@ -66,6 +66,7 @@
 #endif
 #include "process.h"
 #include "rtsp.h"
+#include "rtsp_pending_policy.h"
 #include "stream.h"
 #include "system_tray.h"
 #include "video.h"
@@ -5219,11 +5220,24 @@ namespace nvhttp {
     // Administrative disconnect stops transport only. Retained monitor
     // ownership remains available through Resume until explicit release,
     // unpair, or shutdown.
-    const bool disconnected = rtsp_stream::disconnect_client_sessions(uuid);
+    const auto disconnect = rtsp_stream::disconnect_client_sessions_with_result(uuid);
     if (const auto generation = remote_owner_generation(uuid, remote_session::role_e::input)) {
-      forget_remote_owner(uuid, remote_session::role_e::input, *generation);
+      std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
+      for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
+        removed.push_back({
+          .role = disconnect.pending_roles[i],
+          .client_uuid = uuid,
+          .generation = disconnect.pending_generations[i],
+        });
+      }
+      for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(
+             removed,
+             {{remote_session::role_e::input, uuid, *generation}}
+           )) {
+        forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
+      }
     }
-    return disconnected;
+    return disconnect.disconnected;
   }
 
   bool has_client_uuid(std::string_view uuid) {

@@ -2,6 +2,8 @@
 
 #include "src/rtsp_pending_policy.h"
 
+#include <set>
+
 TEST(RtspPendingPolicy, MixedNatEncryptedFramingSelectsAuthenticatedRoute) {
   const std::array<std::uint8_t, 4> encrypted_word {0x80, 0x00, 0x00, 0x10};
   EXPECT_EQ(
@@ -20,4 +22,18 @@ TEST(RtspPendingPolicy, PendingExpiryForgetsOnlyRemoteInputGeneration) {
   ASSERT_EQ(forgotten.size(), 1);
   EXPECT_EQ(forgotten[0].client_uuid, "input");
   EXPECT_EQ(forgotten[0].generation, 7u);
+}
+
+TEST(RtspPendingPolicy, DisconnectCleanupDoesNotSelectPostRemovalInputGeneration) {
+  const std::vector<rtsp_stream::pending_policy::pending_owner_t> removed {{.role = remote_session::role_e::input, .client_uuid = "client", .generation = 7}};
+  const auto cleanup = rtsp_stream::pending_policy::disconnect_input_owners_to_forget(
+    removed,
+    rtsp_stream::pending_policy::pending_owner_t {.role = remote_session::role_e::input, .client_uuid = "client", .generation = 8}
+  );
+  ASSERT_EQ(cleanup.size(), 1);
+  EXPECT_EQ(cleanup[0].generation, 7u);
+  std::set<std::uint64_t> remembered_generations {7, 8};
+  for (const auto &owner : cleanup) remembered_generations.erase(owner.generation);
+  EXPECT_FALSE(remembered_generations.contains(7));
+  EXPECT_TRUE(remembered_generations.contains(8));
 }
