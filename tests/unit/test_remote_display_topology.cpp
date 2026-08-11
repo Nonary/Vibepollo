@@ -266,6 +266,36 @@ TEST(RemoteDisplayTopology, ClientAnchorCompositionIsIndependentOfMapIterationOr
   EXPECT_TRUE(state["warnings"].empty());
 }
 
+TEST(RemoteDisplayTopology, DefaultPlacementPreservesOwnerActivationOrderRatherThanUuidOrder) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> applied;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&applied](const auto &nodes) {
+      applied = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) {
+      return std::optional<std::string> {uuid};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("z-existing", "Existing", {1920, 1080, 60}).accepted);
+  ASSERT_TRUE(coordinator.activate_or_resume("a-new", "New", {1920, 1080, 60}, 1).ready);
+
+  const auto find_node = [&](const std::string &id) {
+    return std::find_if(applied.begin(), applied.end(), [&](const auto &node) {
+      return node.id == id;
+    });
+  };
+  const auto existing = find_node("z-existing");
+  const auto added = find_node("a-new");
+  ASSERT_NE(existing, applied.end());
+  ASSERT_NE(added, applied.end());
+  EXPECT_EQ(existing->x, 0);
+  EXPECT_EQ(added->x, 1920);
+}
+
 TEST(RemoteDisplayTopology, MissingAnchorAppendsAndReleasingOnePeerPreservesTheOther) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_layout(layout({{"one", {{"anchor_kind", "physical"}, {"anchor_id", "removed-monitor"}, {"edge", "right"}, {"alignment", "center"}, {"gap_px", 0}}}}));
