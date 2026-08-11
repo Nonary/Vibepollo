@@ -224,6 +224,19 @@ target_include_directories(sunshine_test_nanors_headers SYSTEM INTERFACE
 
 enable_testing()
 
+if(WIN32)
+    find_program(SUNSHINE_TEST_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+    if(SUNSHINE_TEST_POWERSHELL_EXECUTABLE)
+        add_test(
+            NAME test_script_webrtc_build_cleanup
+            COMMAND "${SUNSHINE_TEST_POWERSHELL_EXECUTABLE}"
+                -NoLogo -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_LIST_DIR}/scripts/test_cleanup_webrtc_build_sources.ps1"
+                -RepositoryRoot "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_script_webrtc_build_cleanup PROPERTIES LABELS "fast;script")
+    endif()
+endif()
+
 # The foundation target proves that the fast path needs only GTest and the
 # universal test entry. Registrations use the test_fast_ and test_component_
 # naming convention and must declare their exact sources, definitions, and link
