@@ -119,7 +119,7 @@ namespace remote_display_topology {
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
     std::lock_guard lock(mutex_);
     if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities)) return {};
-    auto &[state] = clients_[client_uuid];
+    auto &state = clients_[client_uuid];
     if (state.normal_game) return {true, false, state.normal_game_token};
     state.label = label;
     state.requested_mode = mode;
@@ -170,7 +170,7 @@ namespace remote_display_topology {
     if (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities) {
       return {false, false, true, {}, "Remote display capacity is four paired-client identities."};
     }
-    auto &[state] = clients_[client_uuid];
+    auto &state = clients_[client_uuid];
     if (generation < state.generation) {
       return {true, state.lifecycle == lifecycle_e::ready, state.lifecycle == lifecycle_e::retryable, state.exact_output, state.warning};
     }

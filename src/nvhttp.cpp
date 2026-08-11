@@ -278,7 +278,7 @@ namespace nvhttp {
         return rtsp_stream::plaintext_route_warning();
       });
       remote_session::register_monitor_runtime_hooks({
-        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) {
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
           remote_display_topology::mode_t mode;
           if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 ||
               mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
