@@ -375,6 +375,11 @@ namespace config {
     // SyncLimiter mode. One of: "async", "front edge sync", "back edge sync", "nvidia reflex".
     // If empty or unrecognized, SyncLimiter is not modified.
     std::string frame_limit_type;
+
+    // When enabled, the configured SyncLimiter mode may replace the automatic NVIDIA Reflex
+    // policy for virtual-display streams. Game-provided frame generation still selects Reflex
+    // unless the app/client supplies an explicit RTSS mode override.
+    bool allow_virtual_display_override {false};
   };
 
   struct lossless_scaling_t {

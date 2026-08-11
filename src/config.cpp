@@ -1030,7 +1030,8 @@ namespace config {
   // Windows-only: RTSS defaults
   rtss_t rtss {
     {},  // install_path
-    "async"  // frame_limit_type
+    "async",  // frame_limit_type
+    false  // allow_virtual_display_override
   };
 
   lossless_scaling_t lossless_scaling {
@@ -1985,6 +1986,7 @@ namespace config {
     }
     string_f(vars, "rtss_install_path", rtss.install_path);
     string_f(vars, "rtss_frame_limit_type", rtss.frame_limit_type);
+    bool_f(vars, "rtss_allow_virtual_display_override", rtss.allow_virtual_display_override);
     if (video.dd.wa.dummy_plug_hdr10 && !frame_limiter.disable_vsync) {
       BOOST_LOG(info) << "config: Forcing frame_limiter_disable_vsync=1 due to dummy plug HDR10 workaround (VSYNC override required).";
       frame_limiter.disable_vsync = true;

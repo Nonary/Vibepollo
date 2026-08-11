@@ -72,6 +72,29 @@ namespace framegen {
     return "lossless-scaling";
   }
 
+  inline bool virtual_display_reflex_required(
+    const stream_start_policy_t &policy,
+    bool allow_virtual_display_override,
+    bool runtime_sync_override
+  ) {
+    if (
+      !policy.uses_virtual_display ||
+      !policy.auto_virtual_framegen_limiter ||
+      runtime_sync_override
+    ) {
+      return false;
+    }
+
+    // A game-provided DLSS/FSR frame-generation stream must keep the low-latency
+    // virtual-display path even when the global override is enabled. An explicit
+    // app/client RTSS mode remains the user's strongest opt-in.
+    if (normalize_provider(policy.frame_generation_provider) == "game-provided") {
+      return true;
+    }
+
+    return !allow_virtual_display_override;
+  }
+
   inline std::string normalize_capture_mode(std::string_view value) {
     std::string normalized;
     normalized.reserve(value.size());

@@ -2827,7 +2827,8 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            RTSS sync limiter mode used when applying frame limits.
+            RTSS sync limiter mode used when applying frame limits. Virtual-display streams use NVIDIA Reflex automatically unless
+            @code{}rtss_allow_virtual_display_override@endcode is enabled. An explicit per-app or per-client RTSS mode override still takes precedence.
         </td>
     </tr>
     <tr>
@@ -2856,6 +2857,30 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>nvidia reflex</td>
         <td>NVIDIA Reflex sync limiter (when supported).</td>
+    </tr>
+</table>
+
+### rtss_allow_virtual_display_override
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Allows @code{}rtss_frame_limit_type@endcode to replace the automatic NVIDIA Reflex mode for virtual-display streams.
+            Keep this disabled unless you accept the trade-off: Async, Front-edge Sync, Back-edge Sync, or any other non-Reflex
+            mode can cause massive latency when a game uses DLSS Frame Generation. Mark a game as @code{}Frame generation ->
+            Game provided@endcode to keep Reflex for that app. Explicit per-app or per-client RTSS mode overrides remain authoritative.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            rtss_allow_virtual_display_override = enabled
+            @endcode</td>
     </tr>
 </table>
 

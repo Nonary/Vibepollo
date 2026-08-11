@@ -1411,7 +1411,13 @@
           "description": "Leave blank to let Vibepollo choose the display. Otherwise use an exact device name."
         },
         "rtss_frame_limit_type": {
-          "description": "Async is the recommended low-latency limiter mode."
+          "description": "This mode applies to physical-display streams. Virtual displays use NVIDIA Reflex unless the opt-in virtual-display override is enabled.",
+          "label": "RTSS SyncLimiter mode"
+        },
+        "rtss_allow_virtual_display_override": {
+          "description": "Virtual displays normally enforce NVIDIA Reflex because DLSS Frame Generation can otherwise add significant latency. Enable this only to apply the selected RTSS mode to virtual displays; mark a DLSS/FSR game as Frame generation -> Game provided to force Reflex for that app.",
+          "label": "Allow non-Reflex RTSS modes on virtual displays",
+          "warning": "Warning: Async, Front-edge Sync, Back-edge Sync, or any other mode besides NVIDIA Reflex can cause massive latency when a game uses DLSS Frame Generation. You are accepting that trade-off for virtual-display streams."
         },
         "rtss_install_path": {
           "description": "Leave blank to detect the RTSS installation folder automatically. RTSS is ready when its hooks are present.",

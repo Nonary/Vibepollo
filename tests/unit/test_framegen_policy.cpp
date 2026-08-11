@@ -151,6 +151,21 @@ namespace {
     EXPECT_FALSE(policy.frame_generation_enabled);
     EXPECT_TRUE(policy.uses_virtual_display);
     EXPECT_FALSE(policy.auto_virtual_framegen_limiter);
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(policy, false, false));
+  }
+
+  TEST(FramegenPolicy, VirtualDisplayReflexOverrideRequiresOptInAndPreservesGameProvidedReflex) {
+    const auto generic_policy = make_policy("lossless-scaling", true, "");
+    EXPECT_TRUE(framegen::virtual_display_reflex_required(generic_policy, false, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(generic_policy, true, true));
+
+    const auto game_provided_policy = make_policy("game-provided", true, "");
+    EXPECT_TRUE(framegen::virtual_display_reflex_required(game_provided_policy, true, false));
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(game_provided_policy, true, true));
+
+    const auto physical_policy = make_policy("lossless-scaling", false, "");
+    EXPECT_FALSE(framegen::virtual_display_reflex_required(physical_policy, false, false));
   }
 
   TEST(FramegenPolicy, PhysicalDisplayWithoutFrameGenerationDoesNotAutoEnableLimiter) {
