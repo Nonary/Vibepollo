@@ -67,7 +67,7 @@ namespace remote_display_topology {
     for (const auto &[start, ignored] : client_anchors) {
       std::unordered_set<std::string> visited;
       auto current = start;
-      while (auto it = client_anchors.find(current); it != client_anchors.end()) {
+      for (auto it = client_anchors.find(current); it != client_anchors.end(); it = client_anchors.find(current)) {
         if (!visited.insert(current).second) {
           error = "Client placements must not contain an anchor cycle.";
           return false;
