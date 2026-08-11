@@ -142,7 +142,9 @@ namespace remote_display_topology {
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
     std::lock_guard lock(mutex_);
     if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities)) return {};
-    auto &state = clients_[client_uuid];
+    auto [state_it, inserted] = clients_.try_emplace(client_uuid);
+    auto &state = state_it->second;
+    if (inserted) state.placement_order = ++next_placement_order_;
     if (state.normal_game) return {true, false, state.normal_game_token};
     state.label = label;
     state.requested_mode = mode;
@@ -193,7 +195,9 @@ namespace remote_display_topology {
     if (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities) {
       return {false, false, true, {}, "Remote display capacity is four paired-client identities."};
     }
-    auto &state = clients_[client_uuid];
+    auto [state_it, inserted] = clients_.try_emplace(client_uuid);
+    auto &state = state_it->second;
+    if (inserted) state.placement_order = ++next_placement_order_;
     if (generation < state.generation) {
       return {true, state.lifecycle == lifecycle_e::ready, state.lifecycle == lifecycle_e::retryable, state.exact_output, state.warning};
     }
@@ -335,7 +339,11 @@ namespace remote_display_topology {
     for (const auto &[uuid, state] : clients_) {
       if (state.remote_monitor || state.normal_game) active_ids.push_back(uuid);
     }
-    std::sort(active_ids.begin(), active_ids.end());
+    std::sort(active_ids.begin(), active_ids.end(), [&](const std::string &lhs, const std::string &rhs) {
+      const auto lhs_order = clients_.at(lhs).placement_order;
+      const auto rhs_order = clients_.at(rhs).placement_order;
+      return lhs_order == rhs_order ? lhs < rhs : lhs_order < rhs_order;
+    });
 
     std::unordered_set<std::string> emitted;
     std::unordered_set<std::string> visiting;

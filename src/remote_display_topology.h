@@ -110,6 +110,10 @@ namespace remote_display_topology {
       bool remote_monitor = false;
       bool lease_held = false;
       uint64_t generation = 0;
+      // Stable first-ownership order keeps existing displays in place when a
+      // new owner has no saved layout. UUID ordering must not reshuffle the
+      // desktop merely because the newer UUID sorts first.
+      std::uint64_t placement_order = 0;
       std::string exact_output;
       lifecycle_e lifecycle = lifecycle_e::desired;
       std::string warning;
@@ -126,6 +130,7 @@ namespace remote_display_topology {
     std::vector<node_t> physical_baseline_;
     std::unordered_map<std::string, client_state_t> clients_;
     std::uint64_t next_normal_game_token_ = 0;
+    std::uint64_t next_placement_order_ = 0;
   };
 
   coordinator_t &instance();

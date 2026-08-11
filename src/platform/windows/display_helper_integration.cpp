@@ -555,7 +555,10 @@ namespace {
                        << " to (" << point.m_x << "," << point.m_y << ") after " << label << ".";
       if (!ctx->display->setDisplayOrigin(device_id, point)) {
         BOOST_LOG(warning) << "Display helper: failed to set origin for " << device_id << " (" << label << ").";
-        topology_ok = false;
+        // Do not continue applying later origins after one move fails. A
+        // second move can occupy the failed device's still-current origin and
+        // turn an otherwise extended topology into an unintended clone.
+        return false;
       }
     }
 
