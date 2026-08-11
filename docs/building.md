@@ -194,12 +194,20 @@ A helper script automates the full depot_tools / gclient / gn / ninja flow:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_mingw_webrtc.ps1
 ```
 
-By default the script caches its working tree and output to `%LOCALAPPDATA%\Vibepollo\deps\libwebrtc\{src,out}`,
-which is **shared across every Vibepollo build dir, worktree, and git checkout on the machine**. This means:
+By default the script builds under `%LOCALAPPDATA%\Vibepollo\deps\libwebrtc\src`, stages the reusable SDK under
+`%LOCALAPPDATA%\Vibepollo\deps\libwebrtc\out`, and removes the large source workspace only after verifying the
+staged headers, DLL, import library, and completed-build DLL identity. The retained `out` directory is **shared
+across every Vibepollo build dir, worktree, and git checkout on the machine**. This means:
 
 - Wiping `build/` does not destroy libwebrtc — the next CMake configure picks it back up.
-- Switching git branches does not require rebuilding libwebrtc unless the WebRTC branch (`m125_release` etc.) actually changed.
-- Multiple Vibepollo build dirs share one cached libwebrtc.
+- A successful local dependency build does not leave the multi-gigabyte Chromium/WebRTC source and Git cache behind.
+- A failed build retains its source workspace for diagnosis and retry.
+- Multiple Vibepollo build dirs share one small staged libwebrtc SDK.
+
+Pass `-RetainBuildSources` while actively iterating on WebRTC itself. `-Stage Sync` always retains sources because
+its purpose is to prepare a later `-Stage Build`; a successful `All` or `Build` stage cleans sources by default.
+Explicit `WEBRTC_GIT_CACHE_DIR` or `WEBRTC_DEPOT_TOOLS_DIR` paths outside `WEBRTC_BUILD_DIR` are treated as shared
+external caches and are not removed.
 
 `cmake/dependencies/webrtc.cmake` looks at the same default location, so no `-DWEBRTC_ROOT=...` is needed after the
 first build. To relocate the cache, set `VIBEPOLLO_DEPS_DIR=<path>` in your environment before invoking either the
