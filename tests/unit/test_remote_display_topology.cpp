@@ -327,7 +327,7 @@ TEST(RemoteDisplayTopology, ClientAnchorCompositionIsIndependentOfMapIterationOr
   EXPECT_TRUE(state["warnings"].empty());
 }
 
-TEST(RemoteDisplayTopology, DefaultPlacementPreservesOwnerActivationOrderRatherThanUuidOrder) {
+TEST(RemoteDisplayTopology, RemoteMonitorExtendsActiveNormalGameVirtualDisplayByDefault) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<remote_display_topology::node_t> applied;
   coordinator.set_runtime_callbacks({
@@ -353,6 +353,8 @@ TEST(RemoteDisplayTopology, DefaultPlacementPreservesOwnerActivationOrderRatherT
   const auto added = find_node("a-new");
   ASSERT_NE(existing, applied.end());
   ASSERT_NE(added, applied.end());
+  EXPECT_FALSE(existing->physical);
+  EXPECT_FALSE(added->physical);
   EXPECT_EQ(existing->x, 0);
   EXPECT_EQ(added->x, 1920);
 }
