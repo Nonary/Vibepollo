@@ -131,6 +131,8 @@ namespace remote_session {
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
   [[nodiscard]] capture_plan_t capture_plan(role_e role, std::optional<std::string> output = std::nullopt);
+  [[nodiscard]] int display_refresh_hz_from_session_fps(int session_fps);
+  [[nodiscard]] std::string monitor_mode_from_session_fps(int width, int height, int session_fps);
 
   class normal_app_transition_gate_t {
   public:

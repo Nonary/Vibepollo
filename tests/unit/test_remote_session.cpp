@@ -159,6 +159,13 @@ TEST(RemoteSession, CapturePlanNeverFallsBackForSpecialRoles) {
   EXPECT_EQ(remote_session::capture_plan(remote_session::role_e::game).source, remote_session::capture_source_e::active_output);
 }
 
+TEST(RemoteSession, ConvertsApolloSessionMillihertzBeforeCreatingDisplayModes) {
+  EXPECT_EQ(remote_session::display_refresh_hz_from_session_fps(120000), 120);
+  EXPECT_EQ(remote_session::display_refresh_hz_from_session_fps(119880), 120);
+  EXPECT_EQ(remote_session::display_refresh_hz_from_session_fps(60), 60);
+  EXPECT_EQ(remote_session::monitor_mode_from_session_fps(2560, 1440, 120000), "2560x1440@120");
+}
+
 TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   const auto monitor = remote_session::successful_control_completion(remote_session::control_e::disconnect_monitor);
   ASSERT_TRUE(monitor);

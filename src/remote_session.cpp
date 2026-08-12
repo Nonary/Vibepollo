@@ -1,5 +1,7 @@
 #include "remote_session.h"
 
+#include "framegen_policy.h"
+
 #include <algorithm>
 #include <cctype>
 #include <iterator>
@@ -180,6 +182,15 @@ namespace remote_session {
       return {.source = capture_source_e::exact_output, .output = std::move(output)};
     }
     return {.source = capture_source_e::active_output};
+  }
+
+  int display_refresh_hz_from_session_fps(const int session_fps) {
+    return framegen::rounded_fps_from_millihz(framegen::normalize_refresh_millihz(session_fps));
+  }
+
+  std::string monitor_mode_from_session_fps(const int width, const int height, const int session_fps) {
+    return std::to_string(width) + "x" + std::to_string(height) + "@" +
+           std::to_string(display_refresh_hz_from_session_fps(session_fps));
   }
 
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks) {
