@@ -231,7 +231,6 @@ namespace remote_display_topology {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end() || generation != it->second.generation) return;
-    it->second.lease_held = false;
     it->second.lifecycle = lifecycle_e::retryable;
     it->second.warning = "Transport was lost; Remote Monitor ownership and desired settings were retained for Resume.";
   }
@@ -242,13 +241,15 @@ namespace remote_display_topology {
       state.warning = "Remote Monitor runtime wiring is unavailable; ownership was retained for Resume.";
       return {true, false, state.warning};
     }
-    state.lifecycle = lifecycle_e::leased;
-    if (!callbacks_.create_or_reclaim(client_uuid, state.label, state.requested_mode)) {
-      state.lifecycle = lifecycle_e::retryable;
-      state.warning = "The owned virtual display could not be created or reclaimed; Resume will retry the same identity.";
-      return {true, false, state.warning};
+    if (!state.lease_held) {
+      state.lifecycle = lifecycle_e::leased;
+      if (!callbacks_.create_or_reclaim(client_uuid, state.label, state.requested_mode)) {
+        state.lifecycle = lifecycle_e::retryable;
+        state.warning = "The owned virtual display could not be created or reclaimed; Resume will retry the same identity.";
+        return {true, false, state.warning};
+      }
+      state.lease_held = true;
     }
-    state.lease_held = true;
     state.lifecycle = lifecycle_e::applying;
     std::vector<std::string> warnings;
     const auto composed = compose_locked(warnings);

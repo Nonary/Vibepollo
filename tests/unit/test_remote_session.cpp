@@ -86,12 +86,33 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
   EXPECT_FALSE(remote_session::dispatch(caller("other", true, true, false), active_game, {}, remote_session::control_e::disconnect_game).allowed);
   EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::disconnect_monitor).allowed);
-  EXPECT_FALSE(remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor).allowed);
+  const auto ownerless_disconnect = remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor);
+  EXPECT_TRUE(ownerless_disconnect.allowed);
+  EXPECT_TRUE(ownerless_disconnect.already_complete);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::monitor).allowed);
   EXPECT_FALSE(remote_session::input_uses_display_or_audio(remote_session::role_e::input));
   EXPECT_TRUE(remote_session::input_uses_display_or_audio(remote_session::role_e::monitor));
+}
+
+TEST(RemoteSession, StaleDisconnectControlsAreIdempotentButCannotTargetAnotherRole) {
+  const auto stale_input = remote_session::dispatch(caller("input"), {}, {}, remote_session::control_e::disconnect_input);
+  EXPECT_TRUE(stale_input.allowed);
+  EXPECT_TRUE(stale_input.already_complete);
+  const auto stale_monitor = remote_session::dispatch(caller("monitor"), {}, {}, remote_session::control_e::disconnect_monitor);
+  EXPECT_TRUE(stale_monitor.allowed);
+  EXPECT_TRUE(stale_monitor.already_complete);
+
+  EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::disconnect_input).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::disconnect_monitor).allowed);
+}
+
+TEST(RemoteSession, SecondaryGameTransportJoinsExistingOutputOnlyWhileActive) {
+  EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, true));
 }
 
 TEST(RemoteSession, RetainedMonitorResumeWinsOverPausedConfiguredApp) {

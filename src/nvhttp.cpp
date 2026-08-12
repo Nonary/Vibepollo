@@ -3655,6 +3655,14 @@ namespace nvhttp {
 
         if (synthetic_control == remote_session::control_e::disconnect_input ||
             synthetic_control == remote_session::control_e::disconnect_monitor) {
+          if (decision.already_complete) {
+            const auto completion = *remote_session::successful_control_completion(synthetic_control);
+            tree.put("root.resume", 0);
+            tree.put("root.gamesession", 0);
+            tree.put("root.<xmlattr>.status_code", completion.status_code);
+            tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
+            return;
+          }
           const auto role = synthetic_control == remote_session::control_e::disconnect_input ?
                               remote_session::role_e::input :
                               remote_session::role_e::monitor;
@@ -4391,6 +4399,8 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
+    const bool joining_existing_game_output =
+      remote_session::joins_existing_game_output(remote_session::role_e::game, !no_active_sessions);
     std::unordered_map<std::string, std::string> requested_runtime_overrides;
     if (auto running_app = proc::proc.resolve_app(current_appid)) {
       config::merge_config_overrides(requested_runtime_overrides, running_app->config_overrides);
@@ -4454,6 +4464,7 @@ namespace nvhttp {
 
     const bool is_input_only = config::input.enable_input_only_mode && current_appid == proc::input_only_app_id;
     const bool allow_display_changes = config::video.dd.config_revert_on_disconnect && !is_input_only;
+    const bool allow_session_display_changes = allow_display_changes && !joining_existing_game_output;
     if (no_active_sessions && allow_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
     }
@@ -4522,6 +4533,23 @@ namespace nvhttp {
       }
     }
 
+    if (joining_existing_game_output) {
+      // A secondary game transport attaches to the display already owned by
+      // the running app. Its per-client virtual-display preferences must not
+      // create, reclaim, or retarget a display while another transport owns
+      // the active capture source.
+      launch_session->virtual_display = false;
+      launch_session->client_requests_virtual_display = false;
+      launch_session->client_virtual_display_override.reset();
+      launch_session->virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+      launch_session->virtual_display_layout_override.reset();
+      launch_session->dd_config_option_override.reset();
+      launch_session->output_name_override.reset();
+      launch_session->virtual_display_guid_bytes.fill(0);
+      launch_session->virtual_display_device_id.clear();
+      BOOST_LOG(info) << "Joining the running game's active capture output without preparing a per-client display.";
+    }
+
 #ifdef _WIN32
     const auto display_startup_deadline =
       std::chrono::steady_clock::now() +
@@ -4529,7 +4557,7 @@ namespace nvhttp {
     const auto display_startup_cancelled = [display_startup_deadline] {
       return std::chrono::steady_clock::now() >= display_startup_deadline;
     };
-    if (allow_display_changes) {
+    if (allow_session_display_changes) {
       // Stop any in-flight helper restore loop before resuming display changes.
       (void) display_helper_integration::disarm_pending_restore(
         display_startup_cancelled,
@@ -4575,16 +4603,18 @@ namespace nvhttp {
         );
       }
     });
-    prepare_virtual_display_for_session(
-      launch_session,
-      no_active_sessions,
-      allow_display_changes,
-      is_input_only,
-      pending_output_override,
-      pending_adapter_hint,
-      display_startup_cancelled,
-      display_startup_deadline
-    );
+    if (!joining_existing_game_output) {
+      prepare_virtual_display_for_session(
+        launch_session,
+        no_active_sessions,
+        allow_session_display_changes,
+        is_input_only,
+        pending_output_override,
+        pending_adapter_hint,
+        display_startup_cancelled,
+        display_startup_deadline
+      );
+    }
     if (launch_session->normal_vdd_capacity_rejected) {
       tree.put("root.resume", 0);
       tree.put("root.<xmlattr>.status_code", 409);
