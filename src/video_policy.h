@@ -35,4 +35,10 @@ namespace video::policy {
     encoder_requirements_t requirements,
     const encoder_capability_provider_t &provider
   );
+
+  std::optional<std::string> select_preferred_virtual_output(
+    std::string_view configured_output,
+    std::span<const std::string> active_virtual_outputs,
+    std::span<const std::string> all_virtual_outputs
+  );
 }  // namespace video::policy

@@ -50,3 +50,31 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple(9498, video::policy::rational_t {4749, 50})
   )
 );
+
+TEST(VideoOutputPolicy, KeepsConfiguredVirtualOutputWhenAnotherVirtualDisplayEnumeratesFirst) {
+  const std::array<std::string, 2> active_outputs {
+    "\\\\.\\DISPLAY54",
+    "\\\\.\\DISPLAY53",
+  };
+
+  EXPECT_EQ(
+    video::policy::select_preferred_virtual_output(
+      "\\\\.\\display53",
+      active_outputs,
+      active_outputs
+    ),
+    "\\\\.\\DISPLAY53"
+  );
+}
+
+TEST(VideoOutputPolicy, FallsBackToFirstActiveVirtualOutputWithoutConfiguredAffinity) {
+  const std::array<std::string, 2> active_outputs {
+    "\\\\.\\DISPLAY54",
+    "\\\\.\\DISPLAY53",
+  };
+
+  EXPECT_EQ(
+    video::policy::select_preferred_virtual_output("", active_outputs, active_outputs),
+    "\\\\.\\DISPLAY54"
+  );
+}
