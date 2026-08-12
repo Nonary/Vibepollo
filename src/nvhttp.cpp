@@ -186,32 +186,59 @@ namespace nvhttp {
       return 0;
     }
 
-    void refresh_remote_monitor_physical_baseline() {
+    bool has_stream_session_activity();
+
+    void refresh_remote_monitor_baseline(const bool extend_active_stream) {
       const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
       if (!devices) return;
-      std::vector<remote_display_topology::node_t> physical;
-      for (const auto &device : *devices) {
-        // Only preserve physical outputs that are part of the current desktop.
-        // An exclusive normal-game VDD intentionally leaves physical devices
-        // enumerated but inactive; Remote Monitor must extend that streamed
-        // VDD rather than reactivating the host's physical monitors.
-        if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info || VDISPLAY::is_virtual_display_output(device.m_device_id)) continue;
-        physical.push_back({
-          .id = device.m_device_id,
-          .label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name,
-          .physical = true,
-          .active = true,
-          .primary = device.m_info->m_primary,
-          .x = device.m_info->m_origin_point.m_x,
-          .y = device.m_info->m_origin_point.m_y,
-          .configured_mode = {
-            .width = static_cast<int>(device.m_info->m_resolution.m_width),
-            .height = static_cast<int>(device.m_info->m_resolution.m_height),
-            .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
-          },
-        });
+      const auto active_stream_output = extend_active_stream ? config::get_active_output_name() : std::string {};
+      const bool active_stream_uses_virtual =
+        !active_stream_output.empty() && VDISPLAY::is_virtual_display_output(active_stream_output);
+      const auto managed_client_ids = remote_display_topology::instance().managed_client_identity_ids();
+      std::vector<std::string> managed_device_ids;
+      if (active_stream_uses_virtual) {
+        for (const auto &client_id : managed_client_ids) {
+          if (const auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(client_id, active_stream_output, {}, false)) {
+            managed_device_ids.push_back(*resolved);
+          }
+        }
       }
-      remote_display_topology::instance().set_physical_baseline(std::move(physical));
+      const auto active_game = proc::proc.active_session_guard();
+      std::vector<remote_display_topology::node_t> baseline;
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info) continue;
+        const bool is_virtual = VDISPLAY::is_virtual_display_output(device.m_device_id);
+        if (is_virtual) {
+          if (!active_stream_uses_virtual ||
+              (!remote_device_id_equals(device.m_device_id, active_stream_output) &&
+               !boost::iequals(device.m_display_name, active_stream_output))) continue;
+          if (std::any_of(managed_device_ids.begin(), managed_device_ids.end(), [&](const auto &managed_id) {
+                return remote_device_id_equals(managed_id, device.m_device_id);
+              })) continue;
+        } else if (active_stream_uses_virtual) {
+          continue;
+        }
+        remote_display_topology::node_t node;
+        const bool owner_already_managed = std::find(managed_client_ids.begin(), managed_client_ids.end(), active_game.client_uuid) != managed_client_ids.end();
+        node.id = is_virtual && !active_game.client_uuid.empty() ?
+                    active_game.client_uuid + (owner_already_managed ? ":streamed" : "") :
+                    device.m_device_id;
+        node.device_id = device.m_device_id;
+        node.label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name;
+        node.preexisting = true;
+        node.physical = !is_virtual;
+        node.active = true;
+        node.primary = device.m_info->m_primary;
+        node.x = device.m_info->m_origin_point.m_x;
+        node.y = device.m_info->m_origin_point.m_y;
+        node.configured_mode = {
+          .width = static_cast<int>(device.m_info->m_resolution.m_width),
+          .height = static_cast<int>(device.m_info->m_resolution.m_height),
+          .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
+        };
+        baseline.push_back(std::move(node));
+      }
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
     }
 
     bool apply_remote_monitor_composition(const std::vector<remote_display_topology::node_t> &nodes) {
@@ -225,8 +252,8 @@ namespace nvhttp {
         });
       };
       for (const auto &node : nodes) {
-        std::string device_id = node.id;
-        if (!node.physical) {
+        std::string device_id = node.device_id.empty() ? node.id : node.device_id;
+        if (!node.physical && !node.preexisting) {
           const auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(node.id, {}, {}, false);
           if (!resolved) return false;
           device_id = *resolved;
@@ -290,7 +317,7 @@ namespace nvhttp {
               mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
             return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
           }
-          refresh_remote_monitor_physical_baseline();
+          refresh_remote_monitor_baseline(has_stream_session_activity());
           const auto state = remote_display_topology::instance().activate_or_resume(std::string {uuid}, std::string {label}, mode, generation);
           return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
         },

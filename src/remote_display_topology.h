@@ -25,7 +25,12 @@ namespace remote_display_topology {
 
   struct node_t {
     std::string id;
+    std::string device_id;
     std::string label;
+    // Pre-existing streamed outputs are already owned by another session.
+    // device_id is their exact topology identity; id remains the paired owner
+    // identity used by the layout model.
+    bool preexisting = false;
     bool physical = false;
     bool active = false;
     bool primary = false;
