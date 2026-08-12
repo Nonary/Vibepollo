@@ -8028,32 +8028,48 @@ namespace VDISPLAY_SUNSHINE {
   // END ISOLATED DISPLAY METHODS
 }  // namespace VDISPLAY_SUNSHINE
 
-bool VDISPLAY_SUNSHINE::has_active_physical_display() {
-  auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-  BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
-  if (!devices) {
-    BOOST_LOG(warning) << "Physical display enumeration is unavailable; preserving fail-open physical-display detection.";
-    return true;
-  }
+namespace VDISPLAY_SUNSHINE {
+  namespace {
+    struct active_physical_snapshot_t {
+      bool enumeration_available {};
+      std::vector<std::string> display_names;
+    };
 
-  std::vector<std::string> active_physical_displays;
-  for (const auto &device : *devices) {
-    bool is_virtual = is_virtual_display_device(device);
-    if (!is_virtual) {
-      bool is_active = !device.m_display_name.empty();
-      BOOST_LOG(debug) << "Physical device: " << device.m_display_name << ", is_active: " << is_active;
-      if (is_active) {
-        active_physical_displays.push_back(device.m_display_name);
+    active_physical_snapshot_t active_physical_displays() {
+      auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      BOOST_LOG(debug) << "Enumerated devices count: " << (devices ? devices->size() : 0);
+      if (!devices) {
+        BOOST_LOG(warning) << "Physical display enumeration is unavailable; preserving fail-open physical-display detection.";
+        return {};
       }
+
+      active_physical_snapshot_t snapshot {.enumeration_available = true};
+      for (const auto &device : *devices) {
+        bool is_virtual = is_virtual_display_device(device);
+        if (!is_virtual) {
+          bool is_active = !device.m_display_name.empty();
+          BOOST_LOG(debug) << "Physical device: " << device.m_display_name << ", is_active: " << is_active;
+          if (is_active) {
+            snapshot.display_names.push_back(device.m_display_name);
+          }
+        }
+      }
+
+      return snapshot;
     }
   }
+}  // namespace VDISPLAY_SUNSHINE
 
-  if (active_physical_displays.empty()) {
+bool VDISPLAY_SUNSHINE::has_active_physical_display() {
+  const auto physical = active_physical_displays();
+  if (!physical.enumeration_available) return true;
+
+  if (physical.display_names.empty()) {
     BOOST_LOG(debug) << "No active physical display found, returning false";
     return false;
   }
 
-  return platf::configured_capture_adapter_has_output(active_physical_displays);
+  return platf::configured_capture_adapter_has_output(physical.display_names);
 }
 
 bool VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() {
@@ -8155,8 +8171,19 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
   std::lock_guard<std::mutex> acquire_lock(g_ensure_display_acquire_mutex);
   ensure_display_result result;
 
-  if (!required_adapter_luid && has_active_physical_display()) {
-    result.readiness = ensure_display_readiness_e::existing_display;
+  const auto physical = active_physical_displays();
+  if (!physical.enumeration_available || !physical.display_names.empty()) {
+    if (!physical.enumeration_available || !required_adapter_luid ||
+        platf::adapter_drives_any_output(*required_adapter_luid, physical.display_names) != platf::adapter_output_match_e::no_match) {
+      result.readiness = ensure_display_readiness_e::existing_display;
+    } else {
+      BOOST_LOG(info)
+        << "Encoder probe deferred: the requested adapter has no active physical output, and host-owned probe displays are disabled while a physical desktop exists.";
+    }
+    return result;
+  }
+  if (!VDISPLAY::policy::should_create_host_probe_display()) {
+    BOOST_LOG(info) << "Encoder probe deferred until a requesting client owns a usable display.";
     return result;
   }
 
