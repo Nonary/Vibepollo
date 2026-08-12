@@ -48,6 +48,7 @@ extern "C" {
 #include "sync.h"
 #include "video.h"
 #include "video_encoder_probe_policy.h"
+#include "video_policy.h"
 #include "webrtc_stream.h"
 
 #ifdef _WIN32
@@ -289,25 +290,33 @@ namespace video {
         return mapped;
       };
 
+      std::vector<std::string> active_virtual_outputs;
+      std::vector<std::string> all_virtual_outputs;
       for (const auto &info : virtual_displays) {
-        if (info.is_active) {
-          if (auto mapped = map_to_dxgi_name(info.device_name)) {
-            if (is_dxgi_display_name(*mapped)) {
-              return mapped;
+        if (auto mapped = map_to_dxgi_name(info.device_name)) {
+          if (is_dxgi_display_name(*mapped)) {
+            all_virtual_outputs.push_back(*mapped);
+            if (info.is_active) {
+              active_virtual_outputs.push_back(*mapped);
             }
           }
         }
       }
 
-      for (const auto &info : virtual_displays) {
-        if (auto mapped = map_to_dxgi_name(info.device_name)) {
-          if (is_dxgi_display_name(*mapped)) {
-            return mapped;
-          }
+      std::string configured_virtual_output;
+      const auto configured_output = config::get_active_output_name();
+      if (!configured_output.empty() && VDISPLAY::is_virtual_display_output(configured_output)) {
+        const auto mapped = display_device::map_output_name(configured_output);
+        if (is_dxgi_display_name(mapped)) {
+          configured_virtual_output = mapped;
         }
       }
 
-      return std::nullopt;
+      return policy::select_preferred_virtual_output(
+        configured_virtual_output,
+        active_virtual_outputs,
+        all_virtual_outputs
+      );
     }
 #endif
 
