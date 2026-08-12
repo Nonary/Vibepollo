@@ -287,7 +287,7 @@ namespace nvhttp {
 
     void register_remote_monitor_runtime() {
       remote_display_topology::instance().set_runtime_callbacks({
-        .create_or_reclaim = [](const std::string &client_uuid, const remote_display_topology::mode_t &mode) {
+        .create_or_reclaim = [](const std::string &client_uuid, const std::string &client_label, const remote_display_topology::mode_t &mode) {
           if (!VDISPLAY::ensure_driver_is_ready()) return false;
           const auto stable_uuid = VDISPLAY::virtualDisplayUuidFromStableId(client_uuid);
           GUID guid {};
@@ -457,16 +457,6 @@ namespace nvhttp {
           return info.is_active;
         }
       );
-    }
-
-    bool has_any_active_display() {
-      if (VDISPLAY::has_active_physical_display()) {
-        return true;
-      }
-      if (VDISPLAY::has_retained_ensure_display()) {
-        return true;
-      }
-      return has_active_virtual_display();
     }
 
     void wait_for_probe_helper_settle(
@@ -3459,7 +3449,7 @@ namespace nvhttp {
           app_node.put("IsHdrSupported"s, is_hdr_supported ? 1 : 0);
           app_node.put("AppTitle"s, app_name);
           app_node.put("UUID", entry.uuid);
-          app_node.put("IDX", configured == configured_apps.end() ? 0 : configured->idx);
+          app_node.put("IDX", configured == configured_apps.end() ? "0" : configured->idx);
           app_node.put("ID", entry.id);
           app_node.put("ArtVersion", entry.synthetic ? "remote-session-v5" : (configured == configured_apps.end() ? "" : configured->art_version));
 
