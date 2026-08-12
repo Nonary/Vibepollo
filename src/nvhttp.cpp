@@ -3501,7 +3501,7 @@ namespace nvhttp {
           if (appid == proc::input_only_app_id || appid == proc::terminate_app_id) {
             continue;
           }
-          configured_apps.push_back({appid, app->uuid, app->name, false});
+          configured_apps.push_back({static_cast<std::int32_t>(appid), app->uuid, app->name, false});
         }
 
         const auto current_app = proc::proc.resolve_app(current_appid);
@@ -3519,7 +3519,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0 && current_appid != proc::input_only_app_id,
           .owner_uuid = active_session.client_uuid,
-          .app = current_app ? remote_session::app_t {util::from_view(current_app->id), current_app->uuid, current_app->name, false} : remote_session::app_t {},
+          .app = current_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(current_app->id)), current_app->uuid, current_app->name, false} : remote_session::app_t {},
         };
         const auto projection = remote_session::project(
           caller,
@@ -3657,7 +3657,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0,
           .owner_uuid = active_session.client_uuid,
-          .app = active_app ? remote_session::app_t {util::from_view(active_app->id), active_app->uuid, active_app->name, false} : remote_session::app_t {},
+          .app = active_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(active_app->id)), active_app->uuid, active_app->name, false} : remote_session::app_t {},
         };
         const remote_session::caller_t caller {
           .uuid = request_client_identity.uuid,
