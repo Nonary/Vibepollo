@@ -197,6 +197,10 @@ namespace rtsp_stream {
     snapshot->client_uuid = source.client_uuid;
     snapshot->client_name = source.client_name;
     snapshot->device_name = source.device_name;
+    snapshot->perm = source.perm;
+    snapshot->fps = source.fps;
+    snapshot->client_do_cmds = source.client_do_cmds;
+    snapshot->client_undo_cmds = source.client_undo_cmds;
     snapshot->client_display_mode_override = source.client_display_mode_override;
     snapshot->client_display_refresh_millihz = source.client_display_refresh_millihz;
     snapshot->enable_hdr = source.enable_hdr;
@@ -220,6 +224,10 @@ namespace rtsp_stream {
 #endif
 
     return snapshot;
+  }
+
+  std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const {
+    return make_startup_launch_session_snapshot(*this);
   }
 
   class socket_t: public std::enable_shared_from_this<socket_t> {
@@ -2009,7 +2017,7 @@ namespace rtsp_stream {
 
     const int sequence_number = req->sequenceNumber;
     const std::string client_uuid = session->client_uuid;
-    auto launch_session = make_startup_launch_session_snapshot(*session);
+    auto launch_session = session->clone_for_startup();
     try {
       server->run_startup([server, socket = std::move(socket), session = std::move(session), launch_session, config = std::move(config), remote_address = std::move(remote_address), client_uuid, sequence_number]() mutable {
         // Apply deferred updates and take the hot-apply gate on the startup worker so

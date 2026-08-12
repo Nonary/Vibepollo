@@ -23,7 +23,11 @@ namespace remote_session {
     bool owns_game(const caller_t &caller, const game_t &game) { return game.running && caller.paired && caller.uuid == game.owner_uuid; }
   }
 
-  bool reserved_name(const std::string_view name) { return equal_folded(name, "Remote Input") || equal_folded(name, "Remote Monitor"); }
+  bool reserved_name(const std::string_view name) {
+    return equal_folded(name, "Remote Input") ||
+           equal_folded(name, "Remote Monitor") ||
+           equal_folded(name, "Virtual Display");
+  }
 
   control_e identify(const std::int32_t id, const std::string_view uuid) {
     if (id == resume_id || id == 2147483601 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000001") return control_e::resume;

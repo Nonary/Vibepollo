@@ -19,6 +19,7 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
+  EXPECT_TRUE(remote_session::reserved_name("Virtual Display"));
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::monitor));
   EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::monitor), "remote-monitor.png");
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor));
@@ -69,6 +70,7 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
     {1, "one", "One", false},
     {2, "shadow-input", "Remote Input", false},
     {3, "shadow-monitor", "remote monitor", false},
+    {4, "legacy-virtual-display", "Virtual Display", false},
   };
   const auto idle = remote_session::project(caller("client"), {}, {}, configured);
   ASSERT_EQ(idle.catalogue.size(), 3);

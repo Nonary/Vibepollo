@@ -3693,16 +3693,17 @@ namespace nvhttp {
       auto requested_app = proc::proc.resolve_app(appid_str, appuuid_str);
       auto appid = requested_app ? util::from_view(requested_app->id) : util::from_view(appid_str);
       auto current_app_uuid = proc::proc.get_running_app_uuid();
-      bool is_input_only = config::input.enable_input_only_mode && (appid == proc::input_only_app_id || (appuuid_str == REMOTE_INPUT_UUID));
+      constexpr bool is_input_only = false;
 
       auto required_perm = PERM::launch;
 
       BOOST_LOG(verbose) << "Launching app [" << appid_str << "] with UUID [" << appuuid_str << "]";
       // BOOST_LOG(verbose) << "QS: " << request->query_string;
 
-      // If we have already launched an app, we should allow clients with view permission to join the input only or current app's session.
+      // If the requested configured app is already running, view permission is
+      // enough to join its existing game output.
       if (
-        current_appid > 0 && (appuuid_str != TERMINATE_APP_UUID || appid != proc::terminate_app_id) && (is_input_only || appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid))
+        current_appid > 0 && (appuuid_str != TERMINATE_APP_UUID || appid != proc::terminate_app_id) && (appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid))
       ) {
         required_perm = PERM::_allow_view;
       }
@@ -3730,30 +3731,23 @@ namespace nvhttp {
         return;
       }
 
-      if (!is_input_only) {
-        // Special handling for the "terminate" app
-        if (
-          (appid == proc::terminate_app_id && proc::terminate_app_id > 0) || appuuid_str == TERMINATE_APP_UUID
-        ) {
-          proc::proc.terminate(false, true, false, true);
+      // Preserve Vibepollo's legacy Terminate control while Remote Input and
+      // Remote Monitor are supplied exclusively by the synthetic projection.
+      if ((appid == proc::terminate_app_id && proc::terminate_app_id > 0) || appuuid_str == TERMINATE_APP_UUID) {
+        proc::proc.terminate(false, true, false, true);
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 410);
+        tree.put("root.<xmlattr>.status_message", "App terminated.");
+        return;
+      }
 
-          tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 410);
-          tree.put("root.<xmlattr>.status_message", "App terminated.");
-
-
-          return;
-        }
-
-        if (
-          current_appid > 0 && current_appid != proc::input_only_app_id && ((appid > 0 && appid != current_appid) || (!appuuid_str.empty() && appuuid_str != current_app_uuid))
-        ) {
-          tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 400);
-          tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
-
-          return;
-        }
+      if (
+        current_appid > 0 && ((appid > 0 && appid != current_appid) || (!appuuid_str.empty() && appuuid_str != current_app_uuid))
+      ) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
+        return;
       }
 
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
@@ -4070,31 +4064,7 @@ namespace nvhttp {
       });
 #endif
 
-      if (is_input_only) {
-        BOOST_LOG(info) << "Launching input only session..."sv;
-
-        launch_session->client_do_cmds.clear();
-        launch_session->client_undo_cmds.clear();
-
-        // Still probe encoders once, if input only session is launched first
-        // But we're ignoring if it's successful or not
-        if (no_active_sessions && !proc::proc.virtual_display) {
-
-#ifdef _WIN32
-          if (has_any_active_display()) {
-            video::probe_encoders();
-          }
-#else
-        video::probe_encoders();
-#endif
-          // proc_t::terminate() leaves the app id at -1, so an idle host reports a
-          // non-positive id rather than 0 once anything has ever run. Testing for 0
-          // alone stopped input-only sessions from launching after the first app exit.
-          if (current_appid <= 0) {
-            proc::proc.launch_input_only();
-          }
-        }
-      } else if (appid > 0 || !appuuid_str.empty()) {
+      if (appid > 0 || !appuuid_str.empty()) {
         if (appid == current_appid || (!appuuid_str.empty() && appuuid_str == current_app_uuid)) {
           // We're basically resuming the same app
 
@@ -4103,10 +4073,6 @@ namespace nvhttp {
           if (!proc::proc.allow_client_commands || !verified_client->allow_client_commands) {
             launch_session->client_do_cmds.clear();
             launch_session->client_undo_cmds.clear();
-          }
-
-          if (current_appid == proc::input_only_app_id) {
-            launch_session->input_only = true;
           }
 
         } else {
@@ -4325,8 +4291,8 @@ namespace nvhttp {
       runtime_overrides_reapplied = true;
     }
 
-    const bool is_input_only = config::input.enable_input_only_mode && current_appid == proc::input_only_app_id;
-    const bool allow_display_changes = config::video.dd.config_revert_on_disconnect && !is_input_only;
+    constexpr bool is_input_only = false;
+    const bool allow_display_changes = config::video.dd.config_revert_on_disconnect;
     const bool allow_session_display_changes = allow_display_changes && !joining_existing_game_output;
     if (no_active_sessions && allow_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
