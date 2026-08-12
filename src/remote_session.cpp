@@ -149,6 +149,19 @@ namespace remote_session {
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }
 
+  capture_plan_t capture_plan(const role_e role, std::optional<std::string> output) {
+    if (role == role_e::input) {
+      return {.source = capture_source_e::synthetic_black};
+    }
+    if (role == role_e::monitor) {
+      if (!output || output->empty()) {
+        return {.source = capture_source_e::invalid};
+      }
+      return {.source = capture_source_e::exact_output, .output = std::move(output)};
+    }
+    return {.source = capture_source_e::active_output};
+  }
+
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks) {
     std::lock_guard lock {monitor_runtime_hooks_mutex};
     monitor_runtime_hooks = std::move(hooks);

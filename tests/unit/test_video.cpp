@@ -16,6 +16,12 @@ namespace {
   };
 }
 
+TEST(CapturePolicy, ExactAndSyntheticSourcesRejectProcessDisplayOverride) {
+  EXPECT_TRUE(video::policy::may_apply_process_display_preference(video::policy::capture_selection_e::process_preferred));
+  EXPECT_FALSE(video::policy::may_apply_process_display_preference(video::policy::capture_selection_e::exact_output));
+  EXPECT_FALSE(video::policy::may_apply_process_display_preference(video::policy::capture_selection_e::synthetic_black));
+}
+
 TEST(EncoderPolicy, SelectsFirstAvailableCapableEncoderWithoutHardwareProbe) {
   FakeEncoderProvider provider;
   provider.values["nvenc"] = {false, true, true};

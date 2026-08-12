@@ -7,6 +7,10 @@
 #include <string_view>
 
 namespace video::policy {
+  enum class capture_selection_e : std::uint8_t { process_preferred, exact_output, synthetic_black };
+
+  [[nodiscard]] bool may_apply_process_display_preference(capture_selection_e selection);
+
   struct rational_t {
     int numerator;
     int denominator;
