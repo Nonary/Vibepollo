@@ -49,6 +49,7 @@ extern "C" {
 #include "process.h"
 #include "remote_display_topology.h"
 #include "rtsp.h"
+#include "rtsp_pending_policy.h"
 #include "session_history.h"
 #include "stream.h"
 #include "sync.h"
@@ -1641,7 +1642,7 @@ namespace stream {
     std::optional<std::chrono::steady_clock::time_point> process_terminated_since;
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
       const bool process_running = proc::proc.running() != 0;
-      bool has_session_awaiting_peer = false;
+      bool has_live_session = false;
 
       {
         auto lg = server->_sessions.lock();
@@ -1698,6 +1699,8 @@ namespace stream {
             continue;
           }
 
+          has_live_session = true;
+
           // Remember if we have a session that's waiting for a peer to connect to the
           // control stream. This ensures the clients are properly notified even when
           // the app terminates before they finish connecting.
@@ -1710,7 +1713,6 @@ namespace stream {
               ++pos;
               continue;
             }
-            has_session_awaiting_peer = true;
           } else {
             auto &feedback_queue = session->control.feedback_queue;
             while (feedback_queue->peek()) {
@@ -1738,8 +1740,15 @@ namespace stream {
       }
 #endif
 
-      // Don't break until any pending sessions either expire or connect
-      if (!process_running && !has_session_awaiting_peer) {
+      // Remote Input and Remote Monitor deliberately have no configured app
+      // process. Keep the shared control server alive across both the gap
+      // before RTSP publishes the session and the complete live transport.
+      const bool launch_or_startup_pending = rtsp_stream::has_pending_launch_or_startup();
+      if (!rtsp_stream::pending_policy::control_server_should_remain_alive(
+            process_running,
+            has_live_session,
+            launch_or_startup_pending
+          )) {
         BOOST_LOG(info) << "Process terminated"sv;
         break;
       }

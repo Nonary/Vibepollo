@@ -44,6 +44,7 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   ASSERT_EQ(observer.catalogue.size(), 5);
   EXPECT_EQ(observer.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(observer.catalogue[1].id, remote_session::disconnect_game_id);
+  EXPECT_EQ(observer.catalogue[1].title, "End Stream");
   EXPECT_EQ(observer.catalogue[2].id, 42);
   EXPECT_EQ(observer.catalogue[3].id, remote_session::input_id);
   EXPECT_EQ(observer.catalogue[4].id, remote_session::monitor_id);
@@ -115,6 +116,11 @@ TEST(RemoteSession, SecondaryGameTransportJoinsExistingOutputOnlyWhileActive) {
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, true));
 }
 
+TEST(RemoteSession, ApplistResumeUsesLaunchResponseShape) {
+  EXPECT_EQ(remote_session::stream_start_response_key(true), "gamesession");
+  EXPECT_EQ(remote_session::stream_start_response_key(false), "resume");
+}
+
 TEST(RemoteSession, RetainedMonitorResumeWinsOverPausedConfiguredApp) {
   const auto decision = remote_session::dispatch(
     caller("monitor"),
@@ -156,6 +162,7 @@ TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   const auto game_disconnect = remote_session::successful_control_completion(remote_session::control_e::disconnect_game);
   ASSERT_TRUE(game_disconnect);
   EXPECT_EQ(game_disconnect->status_code, 410);
+  EXPECT_EQ(game_disconnect->status_message, "Stream ended successfully.");
 
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::resume));
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::monitor));

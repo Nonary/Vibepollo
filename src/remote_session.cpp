@@ -45,7 +45,7 @@ namespace remote_session {
       case control_e::resume: return {resume_id, synthetic_uuid(control), "Resume", true};
       case control_e::disconnect_monitor: return {disconnect_monitor_id, synthetic_uuid(control), "Disconnect Monitor", true};
       case control_e::disconnect_input: return {disconnect_input_id, synthetic_uuid(control), "Disconnect Input", true};
-      case control_e::disconnect_game: return {disconnect_game_id, synthetic_uuid(control), "Disconnect", true};
+      case control_e::disconnect_game: return {disconnect_game_id, synthetic_uuid(control), "End Stream", true};
       case control_e::monitor: return {monitor_id, synthetic_uuid(control), "Remote Monitor", true};
       case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
       default: return {};
@@ -140,6 +140,10 @@ namespace remote_session {
     return role == role_e::game && stream_active;
   }
 
+  std::string_view stream_start_response_key(const bool launched_from_applist) {
+    return launched_from_applist ? "gamesession" : "resume";
+  }
+
   std::optional<control_completion_t> successful_control_completion(const control_e control) {
     // These entries are host controls presented through Moonlight's launch UI,
     // not streamable applications. Apollo established 410 as the deliberate
@@ -148,7 +152,7 @@ namespace remote_session {
     switch (control) {
       case control_e::disconnect_monitor: return control_completion_t {410, "Remote Monitor disconnected successfully."};
       case control_e::disconnect_input: return control_completion_t {410, "Remote Input disconnected successfully."};
-      case control_e::disconnect_game: return control_completion_t {410, "Stream disconnected successfully."};
+      case control_e::disconnect_game: return control_completion_t {410, "Stream ended successfully."};
       default: return std::nullopt;
     }
   }
