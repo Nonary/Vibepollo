@@ -114,7 +114,13 @@ namespace remote_session {
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
-        result.allowed = caller.may_launch && owner.role == role_e::none;
+        // Moonlight may retry a slow /launch request or invoke a cached Remote
+        // Monitor tile after ownership has already been published. For the
+        // same paired client this is an idempotent activation retry, not a
+        // permission failure. Another client's owner is never passed here.
+        result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::monitor);
+        result.resume = result.allowed && owner.role == role_e::monitor;
+        if (result.resume) result.resume_role = role_e::monitor;
         break;
       case control_e::disconnect_game:
         result.permission = permission_e::terminate;
