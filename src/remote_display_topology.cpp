@@ -106,7 +106,14 @@ namespace remote_display_topology {
   void coordinator_t::set_runtime_callbacks(runtime_callbacks_t callbacks) { std::lock_guard lock(mutex_); callbacks_ = std::move(callbacks); }
   void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = normalize_layout(layout); }
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
-  std::vector<std::string> coordinator_t::physical_node_ids() const { std::lock_guard lock(mutex_); std::vector<std::string> ids; for (const auto &node : physical_baseline_) ids.push_back(node.id); return ids; }
+  std::vector<std::string> coordinator_t::physical_node_ids() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> ids;
+    for (const auto &node : physical_baseline_) {
+      if (node.physical) ids.push_back(node.id);
+    }
+    return ids;
+  }
   std::size_t coordinator_t::managed_client_identity_count() const {
     std::lock_guard lock(mutex_);
     return static_cast<std::size_t>(std::count_if(clients_.begin(), clients_.end(), [](const auto &entry) {

@@ -97,6 +97,38 @@ TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
   EXPECT_EQ(composed[1].x, 2020);
 }
 
+TEST(RemoteDisplayTopology, RemoteMonitorExtendsPreexistingStreamedVirtualDisplay) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_physical_baseline({{
+    .id = "game-client",
+    .device_id = "shared-game-vdd",
+    .label = "Existing Stream",
+    .preexisting = true,
+    .physical = false,
+    .active = true,
+    .configured_mode = {2560, 1440, 60},
+  }});
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&composed](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"\\\\.\\DISPLAY8"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("monitor-client", "Monitor", {1920, 1080, 60}, 1).ready);
+  ASSERT_EQ(composed.size(), 2);
+  EXPECT_TRUE(composed[0].preexisting);
+  EXPECT_FALSE(composed[0].physical);
+  EXPECT_EQ(composed[0].id, "game-client");
+  EXPECT_EQ(composed[0].device_id, "shared-game-vdd");
+  EXPECT_EQ(composed[1].x, 2560);
+}
+
 TEST(RemoteDisplayTopology, OneIdentityCoversNormalGameAndRemoteMonitorAndCapacityIsFour) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {"\\\\.\\DISPLAY" + uuid}; }});
