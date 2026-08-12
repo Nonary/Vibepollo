@@ -3407,7 +3407,7 @@ namespace nvhttp {
         std::vector<remote_session::app_t> remote_configured_apps;
         remote_configured_apps.reserve(configured_apps.size());
         for (const auto &configured : configured_apps) {
-          remote_configured_apps.push_back({util::from_view(configured.id), configured.uuid, configured.name, false});
+          remote_configured_apps.push_back({static_cast<std::int32_t>(util::from_view(configured.id)), configured.uuid, configured.name, false});
         }
 
         const auto current_appid = proc::proc.running();
@@ -3424,7 +3424,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0,
           .owner_uuid = active_session.client_uuid,
-          .app = current_app ? remote_session::app_t {util::from_view(current_app->id), current_app->uuid, current_app->name, false} : remote_session::app_t {},
+          .app = current_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(current_app->id)), current_app->uuid, current_app->name, false} : remote_session::app_t {},
         };
         const auto projection = remote_session::project(caller, game, remote_owner_for_client(identity.uuid), remote_configured_apps);
 
@@ -3546,7 +3546,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0,
           .owner_uuid = active_session.client_uuid,
-          .app = active_app ? remote_session::app_t {util::from_view(active_app->id), active_app->uuid, active_app->name, false} : remote_session::app_t {},
+          .app = active_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(active_app->id)), active_app->uuid, active_app->name, false} : remote_session::app_t {},
         };
         const remote_session::caller_t caller {
           .uuid = request_client_identity.uuid,
