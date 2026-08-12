@@ -262,7 +262,7 @@ namespace remote_display_topology {
     const auto exact_output = callbacks_.exact_target_has_current_mode_and_dxgi(client_uuid, state.requested_mode);
     if (!exact_output || exact_output->empty()) {
       state.lifecycle = lifecycle_e::retryable;
-      state.warning = "The requested client display is not yet capture-ready. Physical displays remain topology anchors, but capture will wait rather than mirror a host screen.";
+      state.warning = "The requested client display is not yet capture-ready. Existing streamed physical or virtual displays remain topology anchors, but capture will wait rather than mirror another screen.";
       return {true, false, state.warning};
     }
     state.exact_output = *exact_output;

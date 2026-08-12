@@ -191,7 +191,11 @@ namespace nvhttp {
       if (!devices) return;
       std::vector<remote_display_topology::node_t> physical;
       for (const auto &device : *devices) {
-        if (device.m_device_id.empty() || !device.m_info || VDISPLAY::is_virtual_display_output(device.m_device_id)) continue;
+        // Only preserve physical outputs that are part of the current desktop.
+        // An exclusive normal-game VDD intentionally leaves physical devices
+        // enumerated but inactive; Remote Monitor must extend that streamed
+        // VDD rather than reactivating the host's physical monitors.
+        if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info || VDISPLAY::is_virtual_display_output(device.m_device_id)) continue;
         physical.push_back({
           .id = device.m_device_id,
           .label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name,
