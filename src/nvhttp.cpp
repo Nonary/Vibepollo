@@ -85,6 +85,7 @@ namespace nvhttp {
 
     std::mutex remote_role_owners_mutex;
     std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;
+    std::mutex remote_http_control_transition_mutex;
 
     std::string remote_role_owner_key(std::string_view uuid, remote_session::role_e role) {
       return std::string {uuid} + ':' + std::to_string(static_cast<unsigned int>(role));
@@ -3508,6 +3509,7 @@ namespace nvhttp {
         }
       }
       if (synthetic_control != remote_session::control_e::none) {
+        std::unique_lock remote_transition_lock {remote_http_control_transition_mutex};
         const auto active_session = proc::proc.active_session_guard();
         const auto active_app = proc::proc.resolve_app(current_appid);
         const remote_session::game_t game {
@@ -3526,8 +3528,8 @@ namespace nvhttp {
         const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
         if (!decision.allowed) {
           tree.put("root.resume", 0);
-          tree.put("root.<xmlattr>.status_code", 403);
-          tree.put("root.<xmlattr>.status_message", "Remote session action is not permitted for this caller");
+          tree.put("root.<xmlattr>.status_code", 409);
+          tree.put("root.<xmlattr>.status_message", "Remote session action conflicts with this client's current session state");
           return;
         }
         if (decision.resume && decision.resume_role == remote_session::role_e::game && current_appid > 0) {
