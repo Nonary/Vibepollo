@@ -3,6 +3,10 @@
 #include <numeric>
 
 namespace video::policy {
+  bool may_apply_process_display_preference(const capture_selection_e selection) {
+    return selection == capture_selection_e::process_preferred;
+  }
+
   rational_t framerate_x100_to_rational(std::int32_t value) {
     if (value % 2997 == 0) return {(value / 2997) * 30000, 1001};
     if (value == 2397 || value == 2398) return {24000, 1001};

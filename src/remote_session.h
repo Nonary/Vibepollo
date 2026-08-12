@@ -101,6 +101,13 @@ namespace remote_session {
     std::function<void()> shutdown;
   };
 
+  enum class capture_source_e : std::uint8_t { active_output, exact_output, synthetic_black, invalid };
+
+  struct capture_plan_t {
+    capture_source_e source {capture_source_e::active_output};
+    std::optional<std::string> output;
+  };
+
   struct placement_t {
     std::string client_uuid;
     std::string anchor_kind;
@@ -120,6 +127,7 @@ namespace remote_session {
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
+  [[nodiscard]] capture_plan_t capture_plan(role_e role, std::optional<std::string> output = std::nullopt);
 
   class normal_app_transition_gate_t {
   public:

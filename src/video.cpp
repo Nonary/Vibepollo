@@ -311,7 +311,11 @@ namespace video {
     }
 #endif
 
-    bool ensure_virtual_display_ready(std::vector<std::string> &display_names, int &display_index) {
+    bool ensure_virtual_display_ready(
+      std::vector<std::string> &display_names,
+      int &display_index,
+      const bool allow_process_display_preference = true
+    ) {
 #ifdef _WIN32
       static thread_local std::chrono::steady_clock::time_point wait_start {};
       static thread_local std::string pending_virtual_name;
@@ -324,6 +328,12 @@ namespace video {
       }
 
       display_index = std::clamp(display_index, 0, static_cast<int>(display_names.size()) - 1);
+
+      if (!allow_process_display_preference) {
+        wait_start = {};
+        pending_virtual_name.clear();
+        return true;
+      }
 
       if (!should_prefer_virtual_display()) {
         wait_start = {};
@@ -1581,6 +1591,14 @@ namespace video {
 
     bool valid() const { return static_cast<bool>(device); }
 
+    // A synthetic source has no IDXGIOutput. Never call display_base_t's HDR
+    // implementation, which queries the null output pointer.
+    bool is_hdr() override { return false; }
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      std::memset(&metadata, 0, sizeof(metadata));
+      return false;
+    }
+
     platf::capture_e capture(
       const push_captured_image_cb_t &push,
       const pull_free_image_cb_t &pull,
@@ -2784,11 +2802,18 @@ namespace video {
       const auto required_output = capture_config.capture_source == capture_source_e::exact_output ? capture_config.capture_output : std::nullopt;
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
-      if (!ensure_virtual_display_ready(display_names, display_p)) {
+      const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
+        capture_config.capture_source == capture_source_e::active_output ?
+          video::policy::capture_selection_e::process_preferred :
+          video::policy::capture_selection_e::exact_output
+      );
+      if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
         std::this_thread::sleep_for(50ms);
         continue;
       }
 
+      BOOST_LOG(info) << "Capture worker selecting source=" << static_cast<int>(capture_config.capture_source)
+                      << " output='" << display_names[display_p] << "'.";
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
         break;
@@ -3091,7 +3116,12 @@ namespace video {
               const auto required_output = capture_ctxs.front().config.capture_source == capture_source_e::exact_output ? capture_ctxs.front().config.capture_output : std::nullopt;
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
-              if (!ensure_virtual_display_ready(display_names, display_p)) {
+              const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
+                capture_ctxs.front().config.capture_source == capture_source_e::active_output ?
+                  video::policy::capture_selection_e::process_preferred :
+                  video::policy::capture_selection_e::exact_output
+              );
+              if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
                 std::this_thread::sleep_for(50ms);
                 continue;
               }
@@ -5391,7 +5421,12 @@ namespace video {
       const auto required_output = synced_session_ctxs.front()->config.capture_source == capture_source_e::exact_output ? synced_session_ctxs.front()->config.capture_output : std::nullopt;
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
 
-      if (!ensure_virtual_display_ready(display_names, display_p)) {
+      const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
+        synced_session_ctxs.front()->config.capture_source == capture_source_e::active_output ?
+          video::policy::capture_selection_e::process_preferred :
+          video::policy::capture_selection_e::exact_output
+      );
+      if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
         std::this_thread::sleep_for(50ms);
         continue;
       }

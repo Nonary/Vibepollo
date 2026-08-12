@@ -18,6 +18,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <stdexcept>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -3257,13 +3258,26 @@ namespace stream {
       session->remote_role_generation = launch_session.role_generation;
       session->input_only = launch_session.role == remote_session::role_e::input;
       session->config.monitor.input_only = session->input_only;
-      if (session->input_only) {
-        session->config.monitor.capture_source = video::capture_source_e::synthetic_black;
-        session->config.monitor.capture_output.reset();
-      } else if (launch_session.role == remote_session::role_e::monitor && launch_session.remote_capture_output) {
-        session->config.monitor.capture_source = video::capture_source_e::exact_output;
-        session->config.monitor.capture_output = launch_session.remote_capture_output;
+      const auto capture_plan = remote_session::capture_plan(launch_session.role, launch_session.remote_capture_output);
+      switch (capture_plan.source) {
+        case remote_session::capture_source_e::synthetic_black:
+          session->config.monitor.capture_source = video::capture_source_e::synthetic_black;
+          session->config.monitor.capture_output.reset();
+          break;
+        case remote_session::capture_source_e::exact_output:
+          session->config.monitor.capture_source = video::capture_source_e::exact_output;
+          session->config.monitor.capture_output = capture_plan.output;
+          break;
+        case remote_session::capture_source_e::invalid:
+          throw std::runtime_error("Remote Monitor launch is missing its exact capture output");
+        case remote_session::capture_source_e::active_output:
+          session->config.monitor.capture_source = video::capture_source_e::active_output;
+          session->config.monitor.capture_output.reset();
+          break;
       }
+      BOOST_LOG(info) << "Session capture source: role=" << static_cast<int>(launch_session.role)
+                      << " source=" << static_cast<int>(session->config.monitor.capture_source)
+                      << " output='" << session->config.monitor.capture_output.value_or(std::string {}) << "'.";
 
 #ifdef _WIN32
       session->virtual_display.active = launch_session.virtual_display;

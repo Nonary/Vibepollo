@@ -3627,6 +3627,8 @@ namespace nvhttp {
             return;
           }
           launch_session->remote_capture_output = monitor.output;
+          BOOST_LOG(info) << "Remote Monitor exact capture target for client '" << request_client_identity.uuid
+                          << "' is '" << monitor.output << "'.";
         }
         if (!rtsp_stream::launch_session_raise(launch_session)) {
           if (launch_session->role == remote_session::role_e::monitor) {

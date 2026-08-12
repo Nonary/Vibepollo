@@ -107,6 +107,21 @@ TEST(RemoteSession, RetainedMonitorResumeWinsOverPausedConfiguredApp) {
   EXPECT_EQ(decision.resume_role, remote_session::role_e::monitor);
 }
 
+TEST(RemoteSession, CapturePlanNeverFallsBackForSpecialRoles) {
+  const auto input = remote_session::capture_plan(remote_session::role_e::input, std::string {"\\\\.\\DISPLAY99"});
+  EXPECT_EQ(input.source, remote_session::capture_source_e::synthetic_black);
+  EXPECT_FALSE(input.output);
+
+  const auto monitor = remote_session::capture_plan(remote_session::role_e::monitor, std::string {"\\\\.\\DISPLAY54"});
+  EXPECT_EQ(monitor.source, remote_session::capture_source_e::exact_output);
+  ASSERT_TRUE(monitor.output);
+  EXPECT_EQ(*monitor.output, "\\\\.\\DISPLAY54");
+
+  EXPECT_EQ(remote_session::capture_plan(remote_session::role_e::monitor).source, remote_session::capture_source_e::invalid);
+  EXPECT_EQ(remote_session::capture_plan(remote_session::role_e::monitor, std::string {}).source, remote_session::capture_source_e::invalid);
+  EXPECT_EQ(remote_session::capture_plan(remote_session::role_e::game).source, remote_session::capture_source_e::active_output);
+}
+
 TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   const auto monitor = remote_session::successful_control_completion(remote_session::control_e::disconnect_monitor);
   ASSERT_TRUE(monitor);
