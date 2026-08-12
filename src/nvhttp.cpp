@@ -3540,7 +3540,7 @@ namespace nvhttp {
       }
     }
 
-    void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, bool normal_app_transition = true);
+    void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, bool normal_app_transition = true, bool launched_from_applist = false);
     void cancel(resp_https_t response, req_https_t request);
 
     void launch(bool &host_audio, resp_https_t response, req_https_t request, int current_appid) {
@@ -3605,7 +3605,7 @@ namespace nvhttp {
                                    util::from_view(appid_str) == util::from_view(active_app->id);
           if (requests_active_app) {
             g.disable();
-            resume(host_audio, std::move(response), std::move(request), current_appid);
+            resume(host_audio, std::move(response), std::move(request), current_appid, true, true);
             return;
           }
         }
@@ -3635,11 +3635,11 @@ namespace nvhttp {
         }
         if (decision.resume && decision.resume_role == remote_session::role_e::game && current_appid > 0) {
           g.disable();
-          resume(host_audio, std::move(response), std::move(request), current_appid);
+          resume(host_audio, std::move(response), std::move(request), current_appid, true, true);
           return;
         }
         if (decision.disconnect_game) {
-          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid, false);
+          const bool disconnected = rtsp_stream::disconnect_game_sessions(false);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
           if (disconnected) {
@@ -3704,7 +3704,7 @@ namespace nvhttp {
             synthetic_control == remote_session::control_e::running_game) {
           if (decision.resume_role == remote_session::role_e::game && current_appid > 0) {
             g.disable();
-            resume(host_audio, std::move(response), std::move(request), current_appid);
+            resume(host_audio, std::move(response), std::move(request), current_appid, true, true);
             return;
           }
           if (decision.resume_role != remote_session::role_e::monitor ||
@@ -4308,7 +4308,7 @@ namespace nvhttp {
     }
 
 
-  void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, const bool normal_app_transition) {
+  void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, const bool normal_app_transition, const bool launched_from_applist) {
     print_req<SunshineHTTPS>(request);
 
 #ifdef _WIN32
@@ -4791,7 +4791,7 @@ namespace nvhttp {
         static_cast<int>(net::map_port(rtsp_stream::RTSP_SETUP_PORT))
       )
     );
-    tree.put("root.resume", 1);
+    tree.put(std::string {"root."} + std::string {remote_session::stream_start_response_key(launched_from_applist)}, 1);
 
 #ifdef _WIN32
 

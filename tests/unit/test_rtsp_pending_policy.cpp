@@ -12,6 +12,21 @@ TEST(RtspPendingPolicy, MixedNatEncryptedFramingSelectsAuthenticatedRoute) {
   );
 }
 
+TEST(RtspPendingPolicy, ProcesslessRemoteRolesKeepControlServerAlive) {
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, false, true));
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, true, false));
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(true, false, false));
+  EXPECT_FALSE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, false, false));
+}
+
+TEST(RtspPendingPolicy, EndStreamSelectsEveryGameTransportButNoRemoteRole) {
+  using remote_session::role_e;
+  EXPECT_TRUE(rtsp_stream::pending_policy::disconnect_scope_matches(role_e::game, role_e::game, false, true));
+  EXPECT_TRUE(rtsp_stream::pending_policy::disconnect_scope_matches(role_e::game, role_e::game, true, false));
+  EXPECT_FALSE(rtsp_stream::pending_policy::disconnect_scope_matches(role_e::monitor, role_e::game, true, true));
+  EXPECT_FALSE(rtsp_stream::pending_policy::disconnect_scope_matches(role_e::game, role_e::monitor, false, false));
+}
+
 TEST(RtspPendingPolicy, PendingExpiryForgetsOnlyRemoteInputGeneration) {
   const std::vector<rtsp_stream::pending_policy::pending_owner_t> expired {
     {.role = remote_session::role_e::input, .client_uuid = "input", .generation = 7},

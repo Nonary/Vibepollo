@@ -127,6 +127,7 @@ namespace remote_session {
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] bool joins_existing_game_output(role_e role, bool stream_active);
+  [[nodiscard]] std::string_view stream_start_response_key(bool launched_from_applist);
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
   [[nodiscard]] capture_plan_t capture_plan(role_e role, std::optional<std::string> output = std::nullopt);
