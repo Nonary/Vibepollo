@@ -65,6 +65,38 @@ TEST(RemoteDisplayTopology, CreationReceivesPairedClientLabel) {
   EXPECT_EQ(observed_label, "Living Room Tablet");
 }
 
+TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_physical_baseline({{
+    .id = "physical-one",
+    .label = "Host Display",
+    .physical = true,
+    .active = true,
+    .x = 100,
+    .y = 0,
+    .configured_mode = {1920, 1080, 60},
+  }});
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&composed](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"\\\\.\\DISPLAY7"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
+  ASSERT_EQ(composed.size(), 2);
+  EXPECT_TRUE(composed[0].physical);
+  EXPECT_EQ(composed[0].id, "physical-one");
+  EXPECT_FALSE(composed[1].physical);
+  EXPECT_EQ(composed[1].id, "client");
+  EXPECT_EQ(composed[1].x, 2020);
+}
+
 TEST(RemoteDisplayTopology, OneIdentityCoversNormalGameAndRemoteMonitorAndCapacityIsFour) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {"\\\\.\\DISPLAY" + uuid}; }});

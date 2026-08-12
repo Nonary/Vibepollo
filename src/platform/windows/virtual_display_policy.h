@@ -19,6 +19,12 @@ namespace VDISPLAY::policy {
     return !session_uses_virtual_display;
   }
 
+  // Encoder discovery never owns a monitor. It uses an existing physical
+  // output or waits until a requesting client creates its own display.
+  constexpr bool should_create_host_probe_display() noexcept {
+    return false;
+  }
+
   constexpr bool should_prepare_display_for_new_session(const bool no_active_sessions) noexcept {
     return no_active_sessions;
   }
