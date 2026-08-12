@@ -134,6 +134,35 @@ TEST(RemoteDisplayTopology, TransportLossDefersGlobalCleanupAndExplicitReleasePr
   EXPECT_TRUE(coordinator.generic_virtual_display_cleanup_allowed());
 }
 
+TEST(RemoteDisplayTopology, ResumeReusesRetainedLeaseWithoutReplacingDisplay) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  int exact_checks = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&creates](const auto &, const auto &, const auto &) {
+      ++creates;
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [&exact_checks](const auto &, const auto &) {
+      ++exact_checks;
+      return std::optional<std::string> {"\\\\.\\DISPLAY54"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {1920, 1080, 60}, 1).ready);
+  EXPECT_EQ(creates, 1);
+  coordinator.transport_lost("one", 1);
+  EXPECT_TRUE(coordinator.snapshot("one", 1).retryable);
+  EXPECT_TRUE(coordinator.snapshot({})["runtime"]["one"]["lease_held"]);
+
+  const auto resumed = coordinator.activate_or_resume("one", "One", {1920, 1080, 60}, 2);
+  EXPECT_TRUE(resumed.ready);
+  EXPECT_EQ(resumed.output, "\\\\.\\DISPLAY54");
+  EXPECT_EQ(creates, 1);
+  EXPECT_EQ(exact_checks, 2);
+}
+
 TEST(RemoteDisplayTopology, FailedCreationRollbackDoesNotRemoveRetainedMonitor) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});

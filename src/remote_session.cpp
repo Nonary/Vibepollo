@@ -123,15 +123,21 @@ namespace remote_session {
         break;
       case control_e::disconnect_monitor:
         result.permission = permission_e::terminate;
-        result.allowed = caller.may_terminate && owner.role == role_e::monitor;
+        result.allowed = caller.may_terminate && (owner.role == role_e::monitor || owner.role == role_e::none);
+        result.already_complete = result.allowed && owner.role == role_e::none;
         break;
       case control_e::disconnect_input:
         result.permission = permission_e::terminate;
-        result.allowed = caller.may_terminate && owner.role == role_e::input;
+        result.allowed = caller.may_terminate && (owner.role == role_e::input || owner.role == role_e::none);
+        result.already_complete = result.allowed && owner.role == role_e::none;
         break;
       default: break;
     }
     return result;
+  }
+
+  bool joins_existing_game_output(const role_e role, const bool stream_active) {
+    return role == role_e::game && stream_active;
   }
 
   std::optional<control_completion_t> successful_control_completion(const control_e control) {
