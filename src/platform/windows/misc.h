@@ -66,12 +66,6 @@ namespace platf {
   bool is_lock_screen_active();
 
   /**
-   * @brief Check whether the active input desktop is the normal interactive desktop.
-   * @return true when the current desktop is Default, false otherwise.
-   */
-  bool is_default_input_desktop_active();
-
-  /**
    * @brief Cache the interactive user's screen saver enabled state before launching an app.
    * @details Repeated calls preserve the first captured value until it is restored.
    */

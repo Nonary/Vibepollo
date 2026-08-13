@@ -676,6 +676,25 @@ namespace video {
         };
       }
 
+      // A headless or pre-login machine may have no capturable output at all.
+      // Encoder validation uses synthetic surfaces, so resolve the render GPU
+      // directly instead of treating missing WGC/DXGI publication as a missing
+      // encoder target.
+      const auto preferred_adapter = platf::resolve_preferred_render_adapter(
+        config::video.adapter_name,
+        config::video.adapter_pnp_id
+      );
+      if (preferred_adapter) {
+        return probe_target_t {
+          .required_adapter = adapter_id_from_luid(*preferred_adapter.luid),
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = luid_cache_identity(*preferred_adapter.luid),
+            .source = "preferred-render-adapter-without-capture-output",
+            .resolved = true,
+          },
+        };
+      }
+
       return probe_target_t {
         .adapter_identity = probe_adapter_identity_t {
           .identity = "unresolved-automatic-adapter=not-found|output=",
@@ -1542,6 +1561,239 @@ namespace video {
     img_event_t images;
     config_t config;
   };
+
+#ifdef _WIN32
+  SS_HDR_METADATA synthetic_probe_hdr_metadata() {
+    SS_HDR_METADATA metadata {};
+    metadata.displayPrimaries[0] = {35400, 14600};  // Rec.2020 red
+    metadata.displayPrimaries[1] = {8500, 39850};  // Rec.2020 green
+    metadata.displayPrimaries[2] = {6550, 2300};  // Rec.2020 blue
+    metadata.whitePoint = {15635, 16450};  // D65
+    metadata.maxDisplayLuminance = 1000;
+    metadata.minDisplayLuminance = 1;
+    metadata.maxContentLightLevel = 1000;
+    metadata.maxFrameAverageLightLevel = 250;
+    metadata.maxFullFrameLuminance = 400;
+    return metadata;
+  }
+
+  void initialize_synthetic_display_geometry(platf::display_t &display, const config_t &config) {
+    display.width = display.logical_width = display.env_width = display.env_logical_width = std::max(1, config.width);
+    display.height = display.logical_height = display.env_height = display.env_logical_height = std::max(1, config.height);
+  }
+
+  // Encoder validation needs an initialized GPU and shareable surfaces, not a
+  // desktop capture session. Bind D3D to the exact selected adapter so the
+  // cache is owned by the device that actually created the probe surfaces.
+  class synthetic_vram_display_t final: public platf::dxgi::display_vram_t {
+  public:
+    synthetic_vram_display_t(
+      const config_t &config,
+      const std::optional<platf::adapter_id_t> &required_adapter
+    ):
+        hdr_ {config.dynamicRange > 0 && !config.force_sdr} {
+      initialize_synthetic_display_geometry(*this, config);
+      width_before_rotation = width;
+      height_before_rotation = height;
+      capture_format = hdr_ ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
+      next_image_id.store(0, std::memory_order_relaxed);
+
+      if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&factory)))) {
+        return;
+      }
+
+      for (UINT index = 0;; ++index) {
+        IDXGIAdapter1 *candidate_ptr = nullptr;
+        const auto status = factory->EnumAdapters1(index, &candidate_ptr);
+        if (status == DXGI_ERROR_NOT_FOUND) {
+          break;
+        }
+        if (FAILED(status) || !candidate_ptr) {
+          return;
+        }
+
+        platf::dxgi::adapter_t candidate {candidate_ptr};
+        DXGI_ADAPTER_DESC1 description {};
+        if (FAILED(candidate->GetDesc1(&description)) ||
+            (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+          continue;
+        }
+
+        const platf::adapter_id_t candidate_id {
+          .high_part = description.AdapterLuid.HighPart,
+          .low_part = description.AdapterLuid.LowPart,
+        };
+        if (required_adapter && candidate_id != *required_adapter) {
+          continue;
+        }
+        adapter = std::move(candidate);
+        break;
+      }
+
+      if (!adapter) {
+        return;
+      }
+
+      const D3D_FEATURE_LEVEL feature_levels[] {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+      if (FAILED(D3D11CreateDevice(
+            adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+            platf::dxgi::D3D11_CREATE_DEVICE_FLAGS |
+              D3D11_CREATE_DEVICE_BGRA_SUPPORT |
+              D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            feature_levels, sizeof(feature_levels) / sizeof(D3D_FEATURE_LEVEL), D3D11_SDK_VERSION,
+            &device, &feature_level, &device_ctx))) {
+        device.reset();
+        return;
+      }
+
+      // Query the initialized device rather than trusting the requested
+      // adapter pointer. This is the identity published into the probe cache.
+      platf::dxgi::dxgi_t dxgi;
+      IDXGIAdapter *base_adapter = nullptr;
+      IDXGIAdapter1 *actual_adapter = nullptr;
+      if (FAILED(device->QueryInterface(IID_IDXGIDevice, reinterpret_cast<void **>(&dxgi))) ||
+          FAILED(dxgi->GetAdapter(&base_adapter)) ||
+          FAILED(base_adapter->QueryInterface(IID_IDXGIAdapter1, reinterpret_cast<void **>(&actual_adapter)))) {
+        if (base_adapter) base_adapter->Release();
+        device.reset();
+        return;
+      }
+      base_adapter->Release();
+
+      adapter.reset(actual_adapter);
+      DXGI_ADAPTER_DESC1 actual_description {};
+      if (FAILED(adapter->GetDesc1(&actual_description))) {
+        device.reset();
+        return;
+      }
+      captured_adapter_luid = actual_description.AdapterLuid;
+      const platf::adapter_id_t actual_id {
+        .high_part = captured_adapter_luid.HighPart,
+        .low_part = captured_adapter_luid.LowPart,
+      };
+      if (required_adapter && actual_id != *required_adapter) {
+        BOOST_LOG(error) << "Synthetic encoder probe initialized on a different adapter than requested.";
+        device.reset();
+      }
+    }
+
+    bool valid() const { return static_cast<bool>(device); }
+
+    bool is_hdr() override { return hdr_; }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!hdr_) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      metadata = synthetic_probe_hdr_metadata();
+      return true;
+    }
+
+    int dummy_img(platf::img_t *img_base) override {
+      if (platf::dxgi::display_vram_t::dummy_img(img_base)) {
+        return -1;
+      }
+      auto *img = static_cast<platf::dxgi::img_d3d_t *>(img_base);
+      const float black[] = {0.0f, 0.0f, 0.0f, 0.0f};
+      device_ctx->ClearRenderTargetView(img->capture_rt.get(), black);
+      return 0;
+    }
+
+    platf::capture_e capture(
+      const push_captured_image_cb_t &push,
+      const pull_free_image_cb_t &pull,
+      bool * /*cursor*/
+    ) override {
+      const auto cadence = std::chrono::milliseconds(1000 / std::max(1, client_frame_rate));
+      for (;;) {
+        std::shared_ptr<platf::img_t> image;
+        if (!pull(image) || !image) return platf::capture_e::ok;
+        if (dummy_img(image.get()) != 0) return platf::capture_e::error;
+        if (!push(std::move(image), true)) return platf::capture_e::ok;
+        std::this_thread::sleep_for(std::max(cadence, std::chrono::milliseconds(1)));
+      }
+    }
+
+  protected:
+    platf::capture_e snapshot(
+      const pull_free_image_cb_t &,
+      std::shared_ptr<platf::img_t> &,
+      std::chrono::milliseconds,
+      bool
+    ) override { return platf::capture_e::error; }
+    platf::capture_e release_snapshot() override { return platf::capture_e::ok; }
+
+  private:
+    bool hdr_;
+  };
+
+  // Software fallback still needs a fake source, but it must not reopen
+  // Desktop Duplication merely to allocate a CPU image.
+  class synthetic_ram_display_t final: public platf::dxgi::display_ram_t {
+  public:
+    synthetic_ram_display_t(
+      const config_t &config,
+      std::optional<platf::adapter_id_t> required_adapter
+    ):
+        adapter_id_ {std::move(required_adapter)},
+        hdr_ {config.dynamicRange > 0 && !config.force_sdr} {
+      initialize_synthetic_display_geometry(*this, config);
+      capture_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
+
+    platf::capture_e capture(
+      const push_captured_image_cb_t &,
+      const pull_free_image_cb_t &,
+      bool *
+    ) override { return platf::capture_e::error; }
+
+    std::optional<platf::adapter_id_t> capture_adapter_id() const override {
+      return adapter_id_;
+    }
+
+    bool is_hdr() override { return hdr_; }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!hdr_) {
+        std::memset(&metadata, 0, sizeof(metadata));
+        return false;
+      }
+      metadata = synthetic_probe_hdr_metadata();
+      return true;
+    }
+
+  protected:
+    platf::capture_e snapshot(
+      const pull_free_image_cb_t &,
+      std::shared_ptr<platf::img_t> &,
+      std::chrono::milliseconds,
+      bool
+    ) override { return platf::capture_e::error; }
+    platf::capture_e release_snapshot() override { return platf::capture_e::ok; }
+
+  private:
+    std::optional<platf::adapter_id_t> adapter_id_;
+    bool hdr_;
+  };
+
+  std::shared_ptr<platf::display_t> make_synthetic_probe_display(
+    const platf::mem_type_e type,
+    const config_t &config,
+    const std::optional<platf::adapter_id_t> &required_adapter
+  ) {
+    if (type == platf::mem_type_e::system) {
+      return std::make_shared<synthetic_ram_display_t>(config, required_adapter);
+    }
+
+    auto display = std::make_shared<synthetic_vram_display_t>(config, required_adapter);
+    if (!display->valid()) {
+      return {};
+    }
+    return display;
+  }
+
+#endif
 
   struct capture_thread_async_ctx_t {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue;
@@ -5917,6 +6169,9 @@ namespace video {
     std::optional<platf::adapter_id_t> *actual_adapter,
     const std::string &probe_display_name
   ) {
+#ifdef _WIN32
+    (void) probe_display_name;
+#endif
     if (actual_adapter) {
       actual_adapter->reset();
     }
@@ -5940,6 +6195,34 @@ namespace video {
       encoder.av1.capabilities.reset();
     };
 
+    const auto reset_probe_display = [&](const config_t &probe_config) {
+#ifdef _WIN32
+      // Encoder capability validation is intentionally independent of WGC,
+      // Desktop Duplication, GDI publication, and the interactive desktop.
+      // A short retry covers transient D3D device creation without waiting for
+      // display topology to converge.
+      disp.reset();
+      for (int attempt = 0; attempt < 2 && !disp; ++attempt) {
+        disp = make_synthetic_probe_display(
+          encoder.platform_formats->dev_type,
+          probe_config,
+          required_adapter
+        );
+        if (!disp && attempt == 0) {
+          std::this_thread::sleep_for(100ms);
+        }
+      }
+#else
+      reset_display(
+        disp,
+        encoder.platform_formats->dev_type,
+        probe_display_name,
+        probe_config,
+        required_adapter
+      );
+#endif
+    };
+
     // First, test encoder viability
     config_t config_max_ref_frames {1920, 1080, 60, 6000, 1000, 1, 1, 1, 0, 0, 0};
     config_t config_autoselect {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 0};
@@ -5954,7 +6237,7 @@ namespace video {
         cached_display_matches_required) {
       disp = cached_probe_display;
     } else {
-      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect, required_adapter);
+      reset_probe_display(config_autoselect);
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
     }
@@ -6071,11 +6354,11 @@ namespace video {
 
       const config_t generic_hdr_config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, 1, 1, 0};
 
-      // Reset the display since we're switching from SDR to HDR. Keep probing on the
-      // current active display without attempting a display swap.
-      // Clear the cache since we need a fresh display for HDR testing
+      // Reset the synthetic surface since we're switching from SDR to HDR.
+      // The D3D adapter remains exact while the fake source format changes to
+      // FP16, exercising the real 10-bit encoder conversion path.
       cached_probe_display.reset();
-      reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config, required_adapter);
+      reset_probe_display(generic_hdr_config);
       if (!disp) {
         return false;
       }
@@ -6196,15 +6479,6 @@ namespace video {
       BOOST_LOG(debug) << "Encoder probe skipped (cached success).";
       return 0;
     }
-
-#ifdef _WIN32
-    if (required_adapter && probe_target.display_name.empty()) {
-      BOOST_LOG(info)
-        << "Encoder probe deferred because the required adapter has no compatible capture output.";
-      update_probe_cache(cache_key, false, false, false, false, false, false);
-      return -1;
-    }
-#endif
 
     if (!allow_encoder_probing()) {
       // Error already logged
@@ -6370,12 +6644,11 @@ namespace video {
     }
 
     if (new_encoder == nullptr) {
-      const auto output_name = display_device::map_output_name(config::get_active_output_name());
-      BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
-      if (!config::video.adapter_name.empty() || !output_name.empty()) {
-        BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;
+      BOOST_LOG(fatal) << "Unable to initialize a working video encoder during startup."sv;
+      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+        BOOST_LOG(fatal) << "Please ensure the selected GPU is available and its encoder driver is working."sv;
       } else {
-        BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
+        BOOST_LOG(fatal) << "Please check the GPU driver and configured encoder."sv;
       }
       update_probe_cache(cache_key, false, false, false, false, false, false);
       return -1;
