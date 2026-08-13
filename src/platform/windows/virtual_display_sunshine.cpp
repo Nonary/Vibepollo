@@ -6671,6 +6671,30 @@ namespace VDISPLAY_SUNSHINE {
           return std::nullopt;
         }
 
+        if (reclaimed_for_reuse && allow_pending_enumeration) {
+          // A previous probe may have left an owned but unpublished connector
+          // for crash recovery to reclaim. Renew that driver lease directly;
+          // encoder validation must not enter the GDI/DisplayConfig reuse wait.
+          if (!adopt_existing_driver_lease(
+                client,
+                requested_uuid,
+                display_id,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt
+              )) {
+            return std::nullopt;
+          }
+          VirtualDisplayCreationResult result;
+          if (s_client_name && std::strlen(s_client_name) > 0) {
+            result.client_name = std::string(s_client_name);
+          }
+          result.reused_existing = true;
+          BOOST_LOG(info) << "Sunshine encoder-probe display lease reclaimed before desktop publication (guid="
+                          << requested_uuid.string() << ").";
+          return result;
+        }
+
         auto reuse_name = resolve_virtual_display_name_from_devices_for_client(s_client_name);
         std::optional<std::string> device_id;
         if (reuse_name) {
@@ -6868,6 +6892,21 @@ namespace VDISPLAY_SUNSHINE {
       if (!ensure_watchdog_thread_active_for_lease(stop_token) || stop_token.stop_requested()) {
         rollback_created_display();
         return std::nullopt;
+      }
+
+      if (allow_pending_enumeration) {
+        // Encoder probing owns only the driver lease. It uses an exact-adapter
+        // synthetic D3D source, so activating the monitor or waiting for
+        // DisplayConfig/GDI/DXGI publication would add latency without making
+        // the capability result more truthful.
+        VirtualDisplayCreationResult result;
+        if (s_client_name && std::strlen(s_client_name) > 0) {
+          result.client_name = std::string(s_client_name);
+        }
+        result.reused_existing = false;
+        BOOST_LOG(info) << "Sunshine encoder-probe display accepted by the driver; continuing before desktop publication (guid="
+                        << requested_uuid.string() << ").";
+        return result;
       }
 
       // Driver arrival only makes the target available. Activating it by the
@@ -7239,7 +7278,16 @@ namespace VDISPLAY_SUNSHINE {
         }
         return std::nullopt;
       }
-      if (allow_pending_enumeration || confirm_virtual_display_persistence(*result, width, height, stop_token)) {
+      if (allow_pending_enumeration) {
+        if (!track_virtual_display_created(requested_uuid)) {
+          BOOST_LOG(error) << "Sunshine encoder-probe display ownership could not be published.";
+          (void) remove_virtual_display_impl(guid, false, stop_token);
+          return std::nullopt;
+        }
+        return result;
+      }
+
+      if (confirm_virtual_display_persistence(*result, width, height, stop_token)) {
         if (stop_token.stop_requested()) {
           if (!result->reused_existing) {
             (void) remove_virtual_display_impl(guid, false, stop_token);
@@ -7600,7 +7648,10 @@ namespace VDISPLAY_SUNSHINE {
       return false;
     }
 
-    auto cached_display_name = lease_info->display_name ? lease_info->display_name : resolve_virtual_display_name_from_devices();
+    // A probe-owned connector may never receive a desktop identity. Only wait
+    // for teardown when this exact lease already recorded one; resolving an
+    // arbitrary virtual display here could block on an unrelated target.
+    auto cached_display_name = lease_info->display_name;
 
     auto perform_remove = [&]() -> std::pair<bool, DWORD> {
       sunshine_driver::ControlClient client {*transport};
@@ -8133,34 +8184,21 @@ namespace {
     return snapshot;
   }
 
-  void wait_for_sunshine_ensure_target(
-    VDISPLAY::ensure_display_result &result,
-    std::chrono::steady_clock::duration timeout
-  ) {
+  void refresh_sunshine_ensure_target(VDISPLAY::ensure_display_result &result) {
     result.readiness = VDISPLAY::ensure_display_readiness_e::request_retained;
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-
-    while (true) {
-      const auto snapshot = sunshine_ensure_target_snapshot(result.temporary_guid);
-      result.device_id = snapshot.device_id;
-      result.display_name = snapshot.display_name;
-      if (!snapshot.display_name.empty()) {
-        result.readiness = VDISPLAY::ensure_display_readiness_e::target_enumerated;
-        if (snapshot.active) {
-          const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
-          if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
-                return !name.empty() && boost::iequals(name, snapshot.display_name);
-              })) {
-            result.readiness = VDISPLAY::ensure_display_readiness_e::target_ready;
-            return;
-          }
+    const auto snapshot = sunshine_ensure_target_snapshot(result.temporary_guid);
+    result.device_id = snapshot.device_id;
+    result.display_name = snapshot.display_name;
+    if (!snapshot.display_name.empty()) {
+      result.readiness = VDISPLAY::ensure_display_readiness_e::target_enumerated;
+      if (snapshot.active) {
+        const auto dxgi_names = platf::display_names(platf::mem_type_e::dxgi);
+        if (std::any_of(dxgi_names.begin(), dxgi_names.end(), [&](const std::string &name) {
+              return !name.empty() && boost::iequals(name, snapshot.display_name);
+            })) {
+          result.readiness = VDISPLAY::ensure_display_readiness_e::target_ready;
         }
       }
-
-      if (std::chrono::steady_clock::now() >= deadline) {
-        return;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 }  // namespace
@@ -8240,7 +8278,7 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
         result.temporary_guid,
         "retained Sunshine encoder-probe display"
       )) {
-    wait_for_sunshine_ensure_target(result, std::chrono::seconds(3));
+    refresh_sunshine_ensure_target(result);
     BOOST_LOG(info) << "Reusing temporary virtual display for the active encoder probe (readiness="
                     << static_cast<int>(result.readiness)
                     << ", display_name='"
@@ -8351,15 +8389,14 @@ VDISPLAY_SUNSHINE::ensure_display_result VDISPLAY_SUNSHINE::ensure_display(
     return result;
   }
 
-  // CCD and DXGI are distinct enumeration paths. Require the exact retained
-  // target to have a non-empty GDI name and appear in DXGI; another output
-  // must never satisfy readiness on its behalf.
-  wait_for_sunshine_ensure_target(result, std::chrono::seconds(3));
-  if (result.ready_for_probe()) {
+  // Capture readiness remains observable, but it is not an encoder-probe
+  // precondition. Sample it once without waiting for a desktop thread.
+  refresh_sunshine_ensure_target(result);
+  if (result.ready_for_capture()) {
     BOOST_LOG(info) << "Temporary virtual display ready at " << result.display_name << '.';
   } else {
-    BOOST_LOG(warning)
-      << "Temporary virtual display remains pending; refusing to probe another output"
+    BOOST_LOG(info)
+      << "Temporary virtual display remains unpublished; continuing with synthetic encoder surfaces"
       << " (readiness=" << static_cast<int>(result.readiness)
       << ", device_id='" << (result.device_id.empty() ? std::string("<pending>") : result.device_id)
       << "', display_name='" << (result.display_name.empty() ? std::string("<pending>") : result.display_name)

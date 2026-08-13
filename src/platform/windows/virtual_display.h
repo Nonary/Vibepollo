@@ -259,19 +259,23 @@ namespace VDISPLAY {
     std::string device_id;
     std::string display_name;
 
-    [[nodiscard]] bool ready_for_probe() const {
+    [[nodiscard]] bool ready_for_capture() const {
       return readiness == ensure_display_readiness_e::existing_display ||
              (readiness == ensure_display_readiness_e::target_ready && !display_name.empty());
+    }
+
+    [[nodiscard]] bool owns_temporary_probe_request() const {
+      return tracks_temporary_for_probe && temporary_generation != 0;
     }
 
   };
 
   /**
-   * @brief Ensures a display is available for capture/encoding.
-   * Uses an active physical display when available. Otherwise it defers until
-   * a requesting client creates its own display; encoder probing does not own
-   * a host-side virtual monitor.
-   * @return Ownership, exact target identity, and readiness for encoder probing.
+   * @brief Creates or acquires an owned temporary display for encoder probing.
+   * @details Encoder capability validation uses synthetic surfaces and does not
+   *          wait for this target to receive a GDI/DXGI capture identity.
+   *          ready_for_capture() reports the separate publication state.
+   * @return Driver ownership and the currently observed capture readiness.
    */
   ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt);
 
