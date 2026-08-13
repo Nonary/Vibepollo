@@ -459,33 +459,6 @@ namespace nvhttp {
       );
     }
 
-    void wait_for_probe_helper_settle(
-      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
-      const std::chrono::steady_clock::time_point deadline
-    ) {
-      if (!launch_session->display_helper_gate.valid()) {
-        return;
-      }
-      if (launch_session->display_helper_gate.wait_until(deadline) != std::future_status::ready) {
-        BOOST_LOG(warning) << "Display-helper verification did not finish before encoder probing; proceeding on the selected adapter.";
-        return;
-      }
-
-      try {
-        const auto status = launch_session->display_helper_gate.get();
-        if (status == rtsp_stream::launch_session_t::display_helper_gate_status_e::abort_failed) {
-          BOOST_LOG(warning) << "Display-helper verification failed; proceeding with GPU capability probing.";
-        } else if (status == rtsp_stream::launch_session_t::display_helper_gate_status_e::proceed_gaveup) {
-          BOOST_LOG(warning) << "Display-helper verification was inconclusive; proceeding with GPU capability probing.";
-        }
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Display-helper verification wait failed (" << e.what() << "); proceeding with GPU capability probing.";
-      } catch (...) {
-        BOOST_LOG(warning) << "Display-helper verification wait failed; proceeding with GPU capability probing.";
-      }
-    }
-
-    bool has_stream_session_activity();
     bool has_active_or_stopping_stream_session();
 
     http_encoder_capabilities_t advertised_encoder_capabilities_for_http() {
@@ -554,25 +527,16 @@ namespace nvhttp {
         return publish(std::move(caps), false, "active-or-stopping-session");
       }
 
-#ifdef _WIN32
-      // Startup probing already waits for the interactive desktop. Keep idle
-      // HTTP discovery on the same side of that boundary so a pre-login
-      // request cannot create a probe display that Windows cannot enumerate.
-      // Stream-initiated probing remains independent of this gate.
-      if (!platf::is_default_input_desktop_active()) {
-        BOOST_LOG(info) << "HTTP encoder capability probe deferred until the interactive desktop is ready.";
-        return publish(std::move(caps), false, "interactive-desktop");
-      }
-#endif
-
       auto ensure_result = VDISPLAY::ensure_display(idle_virtual_required_adapter);
       auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
         VDISPLAY::cleanup_ensure_display(ensure_result);
       });
-      if (!ensure_result.ready_for_probe()) {
+      if (idle_virtual_required_adapter && !ensure_result.owns_temporary_probe_request()) {
+        BOOST_LOG(warning)
+          << "HTTP capability discovery could not acquire a temporary-display lease; continuing with exact-adapter synthetic validation.";
+      } else if (ensure_result.owns_temporary_probe_request() && !ensure_result.ready_for_capture()) {
         BOOST_LOG(info)
-          << "HTTP encoder capability probe deferred: the exact retained display target is not ready.";
-        return publish(std::move(caps), false, "target-pending");
+          << "HTTP capability discovery is probing synthetic surfaces before the temporary display is published.";
       }
       caps = video::advertised_encoder_capabilities(true, &probe_complete);
       return publish(std::move(caps), probe_complete, "idle-probe");
@@ -4005,27 +3969,21 @@ namespace nvhttp {
 
 #ifdef _WIN32
       bool encoder_probe_failed = false;
-      bool probe_display_unavailable = false;
       if (!video::has_successful_encoder_probe()) {
         {
           VDISPLAY::ensure_display_result ensure_result {};
           auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
             VDISPLAY::cleanup_ensure_display(ensure_result);
           });
-          if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
-            // Let APPLY settle when possible, but capability probing remains
-            // adapter-scoped and does not turn a soft display gate into a 503.
-            wait_for_probe_helper_settle(launch_session, display_startup_deadline);
-          } else {
+          if (VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
             ensure_result = VDISPLAY::ensure_display();
-            probe_display_unavailable = !ensure_result.ready_for_probe();
+            if (!ensure_result.owns_temporary_probe_request() && !ensure_result.ready_for_capture()) {
+              BOOST_LOG(warning)
+                << "Launch could not acquire a temporary-display lease; continuing with synthetic encoder validation.";
+            }
           }
 
-          if (!probe_display_unavailable) {
-            encoder_probe_failed = video::probe_encoders();
-          } else {
-            encoder_probe_failed = true;
-          }
+          encoder_probe_failed = video::probe_encoders();
         }
       } else {
         BOOST_LOG(debug) << "Launch encoder probe skipped (matching selected-GPU cache).";
@@ -4035,12 +3993,7 @@ namespace nvhttp {
 #endif
 
       if (encoder_probe_failed && !is_input_only) {
-        const std::string status_message =
-#ifdef _WIN32
-          probe_display_unavailable ?
-            "No usable display is available on the selected capture adapter." :
-#endif
-            "Failed to initialize video capture/encoding. Is a display connected and turned on?";
+        const std::string status_message = "Failed to initialize a video encoder on the selected adapter.";
         BOOST_LOG(error) << status_message;
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", status_message);
@@ -4543,25 +4496,21 @@ namespace nvhttp {
       // or any number of other factors).
 #ifdef _WIN32
       bool encoder_probe_failed = false;
-      bool probe_display_unavailable = false;
       if (!video::has_successful_encoder_probe()) {
         {
           VDISPLAY::ensure_display_result ensure_result {};
           auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
             VDISPLAY::cleanup_ensure_display(ensure_result);
           });
-          if (!VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
-            wait_for_probe_helper_settle(launch_session, display_startup_deadline);
-          } else {
+          if (VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
             ensure_result = VDISPLAY::ensure_display();
-            probe_display_unavailable = !ensure_result.ready_for_probe();
+            if (!ensure_result.owns_temporary_probe_request() && !ensure_result.ready_for_capture()) {
+              BOOST_LOG(warning)
+                << "Resume could not acquire a temporary-display lease; continuing with synthetic encoder validation.";
+            }
           }
 
-          if (!probe_display_unavailable) {
-            encoder_probe_failed = video::probe_encoders();
-          } else {
-            encoder_probe_failed = true;
-          }
+          encoder_probe_failed = video::probe_encoders();
         }
       } else {
         BOOST_LOG(debug) << "Resume encoder probe skipped (matching selected-GPU cache).";
@@ -4571,12 +4520,7 @@ namespace nvhttp {
 #endif
 
       if (encoder_probe_failed && !launch_session->input_only) {
-        const std::string status_message =
-#ifdef _WIN32
-          probe_display_unavailable ?
-            "No usable display is available on the selected capture adapter." :
-#endif
-            "Failed to initialize video capture/encoding. Is a display connected and turned on?";
+        const std::string status_message = "Failed to initialize a video encoder on the selected adapter.";
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", status_message);

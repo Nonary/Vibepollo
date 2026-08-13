@@ -3221,14 +3221,15 @@ namespace webrtc_stream {
 
           if (VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
             ensure_result = VDISPLAY::ensure_display();
-            if (!ensure_result.ready_for_probe()) {
-              return std::string {"No usable display is available on the selected capture adapter."};
+            if (!ensure_result.owns_temporary_probe_request() && !ensure_result.ready_for_capture()) {
+              BOOST_LOG(warning)
+                << "WebRTC could not acquire a temporary-display lease; continuing with synthetic encoder validation.";
             }
           }
 
           const bool probe_failed = video::probe_encoders();
           if (probe_failed) {
-            return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+            return std::string {"Failed to initialize a video encoder on the selected adapter."};
           }
         } else {
           BOOST_LOG(debug) << "WebRTC encoder probe skipped (matching selected-GPU cache).";

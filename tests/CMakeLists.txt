@@ -422,7 +422,7 @@ if(WIN32)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_request_policy.cpp"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_session_deferral.cpp"
         LINK_LIBRARIES sunshine_test_displaydevice_headers)
-    sunshine_register_component(NAME test_component_startup_display_policy TEST_SOURCE unit/test_startup_display_policy.cpp)
+    sunshine_register_component(NAME test_component_startup_encoder_probe_policy TEST_SOURCE unit/test_startup_encoder_probe_policy.cpp)
     sunshine_register_component(NAME test_component_display_helper_v2_async_dispatcher TEST_SOURCE unit/test_display_helper_v2_async_dispatcher.cpp
         PRODUCT_SOURCES
             "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/diagnostics.cpp"

@@ -5,8 +5,32 @@
 #include <gtest/gtest.h>
 
 #ifdef _WIN32
+  #include <src/platform/windows/virtual_display.h>
   #include <src/platform/windows/virtual_display_cleanup.h>
   #include <src/platform/windows/virtual_display_policy.h>
+
+TEST(VirtualDisplayCleanupPolicy, OwnedProbeRequestDoesNotImplyCaptureReadiness) {
+  const VDISPLAY::ensure_display_result result {
+    .readiness = VDISPLAY::ensure_display_readiness_e::request_retained,
+    .tracks_temporary_for_probe = true,
+    .temporary_generation = 1,
+  };
+
+  EXPECT_TRUE(result.owns_temporary_probe_request());
+  EXPECT_FALSE(result.ready_for_capture());
+}
+
+TEST(VirtualDisplayCleanupPolicy, ExactPublishedTargetIsCaptureReady) {
+  const VDISPLAY::ensure_display_result result {
+    .readiness = VDISPLAY::ensure_display_readiness_e::target_ready,
+    .tracks_temporary_for_probe = true,
+    .temporary_generation = 1,
+    .display_name = R"(\\.\DISPLAY55)",
+  };
+
+  EXPECT_TRUE(result.owns_temporary_probe_request());
+  EXPECT_TRUE(result.ready_for_capture());
+}
 
 TEST(VirtualDisplayCleanupPolicy, RestoreBeforeRemoveKeepsHelperFirst) {
   const auto steps = platf::virtual_display_cleanup::ordered_restore_steps(
