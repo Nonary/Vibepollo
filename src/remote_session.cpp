@@ -10,7 +10,11 @@ namespace remote_session {
   namespace {
     std::mutex monitor_runtime_hooks_mutex;
     monitor_runtime_hooks_t monitor_runtime_hooks;
-    constexpr auto terminate_confirmation_window = std::chrono::seconds {10};
+    // Moonlight refreshes the app catalogue after the first synthetic launch
+    // failure before the user can launch Terminate again. That round trip can
+    // exceed ten seconds on mobile clients even when the second launch is
+    // immediate from the user's perspective.
+    constexpr auto terminate_confirmation_window = std::chrono::seconds {60};
     struct terminate_confirmation_t {
       std::uint64_t generation {};
       std::int32_t app_id {};
@@ -196,7 +200,7 @@ namespace remote_session {
   }
 
   std::string_view termination_confirmation_message() {
-    return "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 10 seconds to confirm this was intentional.";
+    return "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 60 seconds to confirm this was intentional.";
   }
 
   void clear_termination_confirmation(const std::string_view client_uuid) {

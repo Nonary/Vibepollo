@@ -3657,13 +3657,22 @@ namespace nvhttp {
           return;
         }
         if (decision.terminate) {
-          if (remote_session::arm_or_confirm_termination(request_client_identity.uuid, game.generation, game.app.id) == remote_session::terminate_confirmation_e::prompt) {
+          const auto confirmation = remote_session::arm_or_confirm_termination(
+            request_client_identity.uuid,
+            game.generation,
+            game.app.id
+          );
+          if (confirmation == remote_session::terminate_confirmation_e::prompt) {
+            BOOST_LOG(info) << "Terminate confirmation armed for client " << request_client_identity.uuid
+                            << " (app=" << game.app.id << ", generation=" << game.generation << ").";
             tree.put("root.resume", 0);
             tree.put("root.gamesession", 0);
             tree.put("root.<xmlattr>.status_code", 410);
             tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
             return;
           }
+          BOOST_LOG(info) << "Terminate confirmation accepted for client " << request_client_identity.uuid
+                          << " (app=" << game.app.id << ", generation=" << game.generation << ").";
           const bool disconnected = rtsp_stream::disconnect_game_sessions(false);
           proc::proc.terminate(false, true);
           tree.put("root.resume", 0);

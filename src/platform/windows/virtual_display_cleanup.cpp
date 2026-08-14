@@ -111,6 +111,18 @@ namespace platf::virtual_display_cleanup {
       std::memcpy(&guid, guid_bytes->data(), sizeof(guid));
       return VDISPLAY::removeVirtualDisplay(guid);
     }
+
+    void disengage_recovery_monitors(const std::optional<std::array<std::uint8_t, 16>> &guid_bytes) {
+      if (!guid_bytes || guid_bytes_are_empty(*guid_bytes)) {
+        VDISPLAY::cancel_all_virtual_display_recovery_monitors();
+        return;
+      }
+
+      GUID guid {};
+      static_assert(sizeof(guid) == 16);
+      std::memcpy(&guid, guid_bytes->data(), sizeof(guid));
+      VDISPLAY::cancel_virtual_display_recovery_monitor(guid);
+    }
   }  // namespace
 
   cleanup_result_t run(
@@ -118,12 +130,22 @@ namespace platf::virtual_display_cleanup {
     const bool enforce_db_restore,
     const revert_order_t revert_order,
     const bool prefer_golden_if_current_missing,
-    const std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes
+    const std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes,
+    const recovery_monitor_policy_t recovery_monitor_policy
   ) {
     cleanup_reservation_t cleanup_reservation;
     cleanup_result_t result;
 
     const std::string reason_text = reason.empty() ? "unspecified" : std::string(reason);
+    if (recovery_monitor_policy == recovery_monitor_policy_t::disengage_before_admission) {
+      // Terminal intent is authoritative even while a managed session still
+      // owns the display. Cancel before the ownership guard so an intentionally
+      // expired or externally removed lease can never be classified as a crash
+      // and recreated by that ended session's recovery worker.
+      disengage_recovery_monitors(virtual_display_guid_bytes);
+      BOOST_LOG(info) << "Virtual display cleanup: recovery monitors disengaged before terminal cleanup admission (reason="
+                      << reason_text << ").";
+    }
     if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
       if (enforce_db_restore) {
         proc::defer_display_revert();

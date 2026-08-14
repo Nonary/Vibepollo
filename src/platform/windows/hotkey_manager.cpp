@@ -74,10 +74,12 @@ namespace {
       "restore_hotkey",
       true,
       platf::virtual_display_cleanup::revert_order_t::restore_before_remove,
-      true
+      true,
+      std::nullopt,
+      platf::virtual_display_cleanup::recovery_monitor_policy_t::disengage_before_admission
     );
     if (!cleanup.virtual_displays_removed) {
-      BOOST_LOG(warning) << "Restore hotkey cleanup: no virtual display was removed.";
+      BOOST_LOG(warning) << "Restore hotkey cleanup: no virtual display was removed synchronously; session recovery remains disengaged.";
     }
     // Always stop watchdog here. If helper IPC is already unavailable, keeping
     // watchdog alive can continue a failed helper restart loop.

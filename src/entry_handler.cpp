@@ -72,8 +72,18 @@ namespace lifetime {
     int zero = 0;
     desired_exit_code.compare_exchange_strong(zero, exit_code);
 
-    // Raise SIGINT to start termination
-    std::raise(SIGINT);
+    // Internal shutdown requests already run in ordinary thread context. Wake
+    // main directly instead of synchronously executing the process signal
+    // handler on an HTTP or tray thread. The latter performs logging and other
+    // lock-taking work and can therefore stall the caller before shutdown is
+    // ever published.
+    if (mail::man) {
+      mail::man->event<bool>(mail::shutdown)->raise(true);
+    } else {
+      // main() constructs process mail before any runtime caller can request
+      // shutdown. Keep a startup fallback for defensive completeness.
+      std::raise(SIGINT);
+    }
 
     // Termination will happen asynchronously, but the caller may
     // have wanted synchronous behavior.

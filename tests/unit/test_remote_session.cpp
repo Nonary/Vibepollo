@@ -176,14 +176,14 @@ TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   EXPECT_EQ(game_disconnect->status_message, "Active stream terminated. Remote Monitor and Remote Input remain connected.");
   EXPECT_EQ(
     remote_session::termination_confirmation_message(),
-    "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 10 seconds to confirm this was intentional."
+    "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 60 seconds to confirm this was intentional."
   );
 
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::resume));
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::monitor));
 }
 
-TEST(RemoteSession, TerminateRequiresSameClientAndGameGenerationWithinTenSeconds) {
+TEST(RemoteSession, TerminateAllowsMobileCatalogueRefreshWithinSixtySeconds) {
   const auto start = std::chrono::steady_clock::now();
   EXPECT_EQ(
     remote_session::arm_or_confirm_termination("client", 7, 42, start),
@@ -206,7 +206,15 @@ TEST(RemoteSession, TerminateRequiresSameClientAndGameGenerationWithinTenSeconds
     remote_session::terminate_confirmation_e::prompt
   );
   EXPECT_EQ(
-    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {15}),
+    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {45}),
+    remote_session::terminate_confirmation_e::confirmed
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {46}),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {107}),
     remote_session::terminate_confirmation_e::prompt
   );
   remote_session::clear_termination_confirmation("client");
