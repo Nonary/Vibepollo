@@ -13,6 +13,15 @@ namespace platf::virtual_display_cleanup {
     restore_before_remove,
   };
 
+  enum class recovery_monitor_policy_t {
+    // Ordinary speculative cleanup keeps managed-session recovery alive when
+    // ownership admission defers the cleanup.
+    preserve_if_deferred,
+    // A terminal lease/restore boundary cancels recovery before admission, so
+    // an ownership deferral cannot revive an intentionally ended display.
+    disengage_before_admission,
+  };
+
   enum class cleanup_step_t {
     helper_revert,
     retained_probe_remove,
@@ -51,7 +60,8 @@ namespace platf::virtual_display_cleanup {
     bool enforce_db_restore = true,
     revert_order_t revert_order = revert_order_t::remove_before_restore,
     bool prefer_golden_if_current_missing = true,
-    std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt
+    std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes = std::nullopt,
+    recovery_monitor_policy_t recovery_monitor_policy = recovery_monitor_policy_t::preserve_if_deferred
   );
 
   // Nonblocking observation for callers that must not begin display probing

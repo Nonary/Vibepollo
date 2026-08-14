@@ -3531,25 +3531,74 @@ namespace nvhttp {
           resume(host_audio, std::move(response), std::move(request), current_appid, false, true);
           return;
         }
-        if (decision.terminate) {
-          if (remote_session::arm_or_confirm_termination(request_client_identity.uuid, game.generation, game.app.id) == remote_session::terminate_confirmation_e::prompt) {
-            tree.put("root.resume", 0);
-            tree.put("root.gamesession", 0);
-            tree.put("root.<xmlattr>.status_code", 410);
-            tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
-            return;
-          }
-          const bool disconnected = rtsp_stream::disconnect_game_sessions(true);
-          // Role-scoped transport teardown deliberately preserves Remote Monitor
-          // and Remote Input, but it does not end the configured application.
-          // Complete the same process/session lifecycle as /cancel while
-          // transferring the stream-lifecycle lock already held by /launch.
-          proc::proc.terminate(false, true);
+      }
+    }
+    if (synthetic_control != remote_session::control_e::none) {
+      std::unique_lock remote_transition_lock {remote_http_control_transition_mutex};
+      const auto &identity = request_identity;
+      const auto active_session = proc::proc.active_session_guard();
+      const auto active_app = proc::proc.resolve_app(current_appid);
+      const remote_session::game_t game {
+        .running = current_appid > 0,
+        .owner_uuid = active_session.client_uuid,
+        .generation = active_session_generation(active_session),
+        .app = active_app ? remote_session::app_t {util::from_view(active_app->id), active_app->uuid, active_app->name, false} : remote_session::app_t {},
+      };
+      const remote_session::caller_t caller {
+        .uuid = identity.uuid,
+        .paired = !identity.uuid.empty(),
+        .may_view = !identity.uuid.empty(),
+        .may_launch = !identity.uuid.empty(),
+        .may_terminate = !identity.uuid.empty(),
+      };
+      const auto owner = remote_owner_for_client(identity.uuid);
+      const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
+      if (!decision.allowed) {
+        tree.put("root.resume", 0);
+        // Authentication and paired-client capabilities were already checked
+        // above. A denial here is a state/role conflict, not an authorization
+        // failure, so do not show Moonlight a false permission error.
+        tree.put("root.<xmlattr>.status_code", 409);
+        tree.put("root.<xmlattr>.status_message", "Remote session action conflicts with this client's current session state");
+        return;
+      }
+      if (decision.resume && decision.resume_role == remote_session::role_e::game && current_appid > 0) {
+        g.disable();
+        resume(host_audio, std::move(response), std::move(request), current_appid, true, true);
+        return;
+      }
+      if (decision.terminate) {
+        const auto confirmation = remote_session::arm_or_confirm_termination(identity.uuid, game.generation, game.app.id);
+        if (confirmation == remote_session::terminate_confirmation_e::prompt) {
+          BOOST_LOG(info) << "Terminate confirmation armed for client " << identity.uuid
+                          << " (app=" << game.app.id << ", generation=" << game.generation << ").";
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
-          if (!disconnected) {
-            BOOST_LOG(info) << "Terminate found no active game transport; closed the paused configured application lifecycle.";
-          }
+          tree.put("root.<xmlattr>.status_code", 410);
+          tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
+          return;
+        }
+        BOOST_LOG(info) << "Terminate confirmation accepted for client " << identity.uuid
+                        << " (app=" << game.app.id << ", generation=" << game.generation << ").";
+        const bool disconnected = rtsp_stream::disconnect_game_sessions(true);
+        // Role-scoped transport teardown deliberately preserves Remote Monitor
+        // and Remote Input, but it does not end the configured application.
+        // Complete the same process/session lifecycle as /cancel while
+        // transferring the stream-lifecycle lock already held by /launch.
+        proc::proc.terminate(false, true);
+        tree.put("root.resume", 0);
+        tree.put("root.gamesession", 0);
+        if (!disconnected) {
+          BOOST_LOG(info) << "Terminate found no active game transport; closed the paused configured application lifecycle.";
+        }
+        const auto completion = *remote_session::successful_control_completion(synthetic_control);
+        tree.put("root.<xmlattr>.status_code", completion.status_code);
+        tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
+        return;
+      }
+      if (synthetic_control == remote_session::control_e::disconnect_input ||
+          synthetic_control == remote_session::control_e::disconnect_monitor) {
+        if (decision.already_complete) {
           const auto completion = *remote_session::successful_control_completion(synthetic_control);
           tree.put("root.<xmlattr>.status_code", completion.status_code);
           tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});

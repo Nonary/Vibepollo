@@ -184,6 +184,8 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  // Stop recovery for one ended display without removing or untracking it.
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   // Stop session recovery workers without removing or untracking their displays.
   // Unlike process shutdown, later sessions may schedule fresh monitors.
   void cancel_all_virtual_display_recovery_monitors();

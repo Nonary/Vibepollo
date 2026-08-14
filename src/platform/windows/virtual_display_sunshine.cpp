@@ -5055,6 +5055,10 @@ namespace VDISPLAY_SUNSHINE {
     abort_all_recovery_monitors();
   }
 
+  void cancel_virtual_display_recovery_monitor(const GUID &guid) {
+    abort_recovery_monitor(guid_to_uuid(guid));
+  }
+
   void request_virtual_display_recovery_shutdown() {
     recovery_monitors().request_shutdown();
     watchdog_failure_callbacks().request_shutdown();

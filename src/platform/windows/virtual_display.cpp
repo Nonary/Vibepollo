@@ -493,6 +493,7 @@ namespace VDISPLAY_SUNSHINE {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
@@ -566,6 +567,7 @@ namespace VDISPLAY_SUDOVDA {
   bool removeVirtualDisplay(const GUID &guid);
   bool removeAllVirtualDisplays();
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params);
+  void cancel_virtual_display_recovery_monitor(const GUID &guid);
   void cancel_all_virtual_display_recovery_monitors();
   void request_virtual_display_recovery_shutdown();
   void join_virtual_display_recovery_monitors();
@@ -772,6 +774,13 @@ namespace VDISPLAY {
     } else {
       VDISPLAY_SUDOVDA::schedule_virtual_display_recovery_monitor(params);
     }
+  }
+
+  void cancel_virtual_display_recovery_monitor(const GUID &guid) {
+    // The display may have been created by either backend before a
+    // configuration change, so cancel the matching identity in both.
+    VDISPLAY_SUNSHINE::cancel_virtual_display_recovery_monitor(guid);
+    VDISPLAY_SUDOVDA::cancel_virtual_display_recovery_monitor(guid);
   }
 
   void cancel_all_virtual_display_recovery_monitors() {

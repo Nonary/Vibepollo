@@ -270,7 +270,8 @@ namespace stream {
           enforce_display_restore,
           platf::virtual_display_cleanup::revert_order_t::remove_before_restore,
           true,
-          virtual_display_guid_bytes
+          virtual_display_guid_bytes,
+          platf::virtual_display_cleanup::recovery_monitor_policy_t::disengage_before_admission
         );
         if (cleanup.helper_revert_dispatched) {
           display_helper_integration::stop_watchdog();
