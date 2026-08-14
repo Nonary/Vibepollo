@@ -741,7 +741,8 @@
         "deleteSnapshot": "Delete snapshot",
         "replaceSnapshot": "Replace snapshot",
         "restartService": "Restart service",
-        "revokeSession": "Revoke session"
+        "revokeSession": "Revoke session",
+        "terminateVirtualDisplay": "Terminate virtual display"
       },
       "applying": "Applying",
       "confirm": {
@@ -754,7 +755,9 @@
         "restartDescription": "Active streams will disconnect and this interface will be unavailable while the service restarts.",
         "restartTitle": "Restart Vibepollo?",
         "revokeSessionDescription": "That browser will need to sign in again before it can manage this host.",
-        "revokeSessionTitle": "Revoke {browser}?"
+        "revokeSessionTitle": "Revoke {browser}?",
+        "terminateVirtualDisplayDescription": "Vibeshine will disengage automatic recovery, try to restore the physical display layout, remove every managed virtual display, and stop display watchdogs. Active streams using a virtual display will lose video.",
+        "terminateVirtualDisplayTitle": "Terminate every virtual display?"
       },
       "crash": {
         "acknowledged": "Crash acknowledged",
@@ -780,7 +783,8 @@
         "recoveryStatus": "Display recovery status is unavailable.",
         "sessions": "Trusted browser sessions are unavailable.",
         "snapshotCapture": "The display snapshot could not be captured.",
-        "snapshotNotDeleted": "The display recovery snapshot was not deleted."
+        "snapshotNotDeleted": "The display recovery snapshot was not deleted.",
+        "virtualDisplayTermination": "One or more managed virtual displays could not be terminated."
       },
       "notices": {
         "crashAcknowledged": "The crash notice was acknowledged.",
@@ -788,7 +792,8 @@
         "restartRequested": "Restart requested. Reconnect after the Vibepollo service comes back online.",
         "sessionRevoked": "{browser} was revoked.",
         "snapshotCaptured": "The current display layout is now the recovery baseline.",
-        "snapshotDeleted": "The display recovery snapshot was deleted."
+        "snapshotDeleted": "The display recovery snapshot was deleted.",
+        "virtualDisplayTerminated": "Automatic recovery was disengaged and managed virtual displays were terminated."
       },
       "recovery": {
         "available": "Available",

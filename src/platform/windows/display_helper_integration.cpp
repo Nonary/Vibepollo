@@ -2206,11 +2206,15 @@ namespace display_helper_integration {
     );
   }
 
-  bool revert(bool prefer_golden_if_current_missing) {
-    if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+  bool revert(const bool prefer_golden_if_current_missing, const bool override_managed_ownership) {
+    const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
+    if (!managed_cleanup_allowed && !override_managed_ownership) {
       proc::defer_display_revert();
       BOOST_LOG(info) << "Display helper: deferring REVERT until all managed client display sessions release ownership.";
       return false;
+    }
+    if (!managed_cleanup_allowed) {
+      BOOST_LOG(warning) << "Display helper: overriding managed display ownership for terminal user-requested REVERT.";
     }
 
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());

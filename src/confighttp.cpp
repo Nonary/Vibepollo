@@ -4630,6 +4630,34 @@ namespace confighttp {
 
 #ifdef _WIN32
   /**
+   * @brief Execute the same terminal virtual-display cleanup as the restore hotkey.
+   * @api_examples{/api/display/terminate_virtual| POST| {"status":true}}
+   */
+  void postTerminateVirtualDisplay(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) {
+      return;
+    }
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    nlohmann::json out;
+    const auto result = platf::virtual_display_cleanup::terminate_all("maintenance_api");
+    out["status"] = result.virtual_displays_removed;
+    out["driver_watchdog_stopped"] = true;
+    out["recovery_disengaged"] = true;
+    out["virtual_displays_removed"] = result.virtual_displays_removed;
+    out["restore_dispatched"] = result.helper_revert_dispatched;
+    out["database_restore_applied"] = result.database_restore_applied;
+    out["watchdogs_stopped"] = true;
+    if (!result.virtual_displays_removed) {
+      out["error"] = "One or more managed virtual displays could not be removed.";
+    }
+    send_response(response, out, "no-store");
+  }
+
+  /**
    * @brief Export the current Windows display settings as a golden restore snapshot.
    * @api_examples{/api/display/export_golden| POST| {"status":true}}
    */
@@ -5847,6 +5875,7 @@ namespace confighttp {
     register_api_route("^/api/quit$", "POST", quit);
     register_blocking_api_route("^/api/reset-display-device-persistence$", "POST", resetDisplayDevicePersistence);
 #if defined(_WIN32)
+    register_blocking_api_route("^/api/display/terminate_virtual$", "POST", postTerminateVirtualDisplay);
     register_blocking_api_route("^/api/display/export_golden$", "POST", postExportGoldenDisplay);
     register_blocking_api_route("^/api/display/golden_status$", "GET", getGoldenStatus);
     register_api_route("^/api/display/golden$", "DELETE", deleteGolden);
