@@ -9,7 +9,7 @@ namespace {
   remote_session::caller_t caller(std::string uuid, bool view = true, bool launch = true, bool terminate = true) {
     return {.uuid = std::move(uuid), .paired = true, .may_view = view, .may_launch = launch, .may_terminate = terminate};
   }
-  remote_session::game_t game() { return {.running = true, .owner_uuid = "owner", .app = {42, "game", "Running game", false}}; }
+  remote_session::game_t game() { return {.running = true, .owner_uuid = "owner", .generation = 7, .app = {42, "game", "Running game", false}}; }
 }
 
 TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
@@ -19,10 +19,13 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
+  EXPECT_TRUE(remote_session::reserved_name("Terminate"));
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::monitor));
   EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::monitor), "remote-monitor.png");
   ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor));
   EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::disconnect_monitor), "disconnect-remote-monitor.png");
+  ASSERT_TRUE(remote_session::synthetic_artwork_filename(remote_session::control_e::terminate));
+  EXPECT_EQ(*remote_session::synthetic_artwork_filename(remote_session::control_e::terminate), "terminate.png");
   EXPECT_FALSE(remote_session::synthetic_artwork_filename(remote_session::control_e::none));
 }
 
@@ -43,8 +46,8 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   const auto observer = remote_session::project(caller("other"), game(), {}, configured);
   ASSERT_EQ(observer.catalogue.size(), 5);
   EXPECT_EQ(observer.catalogue[0].id, remote_session::resume_id);
-  EXPECT_EQ(observer.catalogue[1].id, remote_session::disconnect_game_id);
-  EXPECT_EQ(observer.catalogue[1].title, "End Stream");
+  EXPECT_EQ(observer.catalogue[1].id, remote_session::terminate_id);
+  EXPECT_EQ(observer.catalogue[1].title, "Terminate");
   EXPECT_EQ(observer.catalogue[2].id, 42);
   EXPECT_EQ(observer.catalogue[3].id, remote_session::input_id);
   EXPECT_EQ(observer.catalogue[4].id, remote_session::monitor_id);
@@ -83,9 +86,9 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(game_resume.allowed);
   EXPECT_EQ(game_resume.resume_role, remote_session::role_e::game);
   EXPECT_FALSE(remote_session::dispatch(caller("other", false), active_game, {}, remote_session::control_e::resume).allowed);
-  EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
-  EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::disconnect_game).disconnect_game);
-  EXPECT_FALSE(remote_session::dispatch(caller("other", true, true, false), active_game, {}, remote_session::control_e::disconnect_game).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("other"), active_game, {}, remote_session::control_e::terminate).terminate);
+  EXPECT_TRUE(remote_session::dispatch(caller("owner"), active_game, {}, remote_session::control_e::terminate).terminate);
+  EXPECT_FALSE(remote_session::dispatch(caller("other", true, true, false), active_game, {}, remote_session::control_e::terminate).allowed);
   EXPECT_TRUE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::disconnect_monitor).allowed);
   const auto ownerless_disconnect = remote_session::dispatch(caller("foreign"), {}, {}, remote_session::control_e::disconnect_monitor);
   EXPECT_TRUE(ownerless_disconnect.allowed);
@@ -167,13 +170,47 @@ TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   ASSERT_TRUE(input);
   EXPECT_EQ(input->status_code, 410);
 
-  const auto game_disconnect = remote_session::successful_control_completion(remote_session::control_e::disconnect_game);
+  const auto game_disconnect = remote_session::successful_control_completion(remote_session::control_e::terminate);
   ASSERT_TRUE(game_disconnect);
   EXPECT_EQ(game_disconnect->status_code, 410);
-  EXPECT_EQ(game_disconnect->status_message, "Stream ended successfully.");
+  EXPECT_EQ(game_disconnect->status_message, "Active stream terminated. Remote Monitor and Remote Input remain connected.");
+  EXPECT_EQ(
+    remote_session::termination_confirmation_message(),
+    "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 10 seconds to confirm this was intentional."
+  );
 
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::resume));
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::monitor));
+}
+
+TEST(RemoteSession, TerminateRequiresSameClientAndGameGenerationWithinTenSeconds) {
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 7, 42, start),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("other", 7, 42, start + std::chrono::seconds {1}),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 7, 42, start + std::chrono::seconds {2}),
+    remote_session::terminate_confirmation_e::confirmed
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 7, 42, start + std::chrono::seconds {3}),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {4}),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_termination("client", 8, 42, start + std::chrono::seconds {15}),
+    remote_session::terminate_confirmation_e::prompt
+  );
+  remote_session::clear_termination_confirmation("client");
+  remote_session::clear_termination_confirmation("other");
 }
 
 TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSafe) {

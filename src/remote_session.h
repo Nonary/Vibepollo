@@ -15,13 +15,15 @@ namespace remote_session {
   inline constexpr std::int32_t resume_id = 2147483501;
   inline constexpr std::int32_t disconnect_monitor_id = 2147483502;
   inline constexpr std::int32_t disconnect_input_id = 2147483503;
-  inline constexpr std::int32_t disconnect_game_id = 2147483504;
+  // Keep this numeric identity stable so clients with a cached app tile keep
+  // resolving the control after its user-facing name changes to Terminate.
+  inline constexpr std::int32_t terminate_id = 2147483504;
   inline constexpr std::int32_t monitor_id = 2147483505;
   inline constexpr std::int32_t input_id = 2147483506;
   inline constexpr std::size_t max_client_vdds = 4;
 
   enum class role_e : std::uint8_t { none, input, monitor, game };
-  enum class control_e : std::uint8_t { none, resume, disconnect_monitor, disconnect_input, disconnect_game, monitor, input, running_game };
+  enum class control_e : std::uint8_t { none, resume, disconnect_monitor, disconnect_input, terminate, monitor, input, running_game };
   enum class permission_e : std::uint8_t { view, launch, terminate };
 
   struct app_t {
@@ -34,6 +36,7 @@ namespace remote_session {
   struct game_t {
     bool running {};
     std::string owner_uuid;
+    std::uint64_t generation {};
     app_t app;
   };
 
@@ -65,7 +68,7 @@ namespace remote_session {
     role_e resume_role {role_e::none};
     bool allowed {};
     bool resume {};
-    bool disconnect_game {};
+    bool terminate {};
     bool already_complete {};
   };
 
@@ -73,6 +76,17 @@ namespace remote_session {
     int status_code {};
     std::string_view status_message;
   };
+
+  enum class terminate_confirmation_e : std::uint8_t { prompt, confirmed };
+
+  [[nodiscard]] terminate_confirmation_e arm_or_confirm_termination(
+    std::string_view client_uuid,
+    std::uint64_t generation,
+    std::int32_t app_id,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+  );
+  [[nodiscard]] std::string_view termination_confirmation_message();
+  void clear_termination_confirmation(std::string_view client_uuid);
 
   struct pending_t {
     std::uint32_t launch_id {};

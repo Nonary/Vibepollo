@@ -86,6 +86,13 @@ namespace nvhttp {
 
     std::mutex remote_role_owners_mutex;
     std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;
+
+    std::uint64_t active_session_generation(const proc::active_session_guard_t &session) {
+      if (!session.has_active_app) return 0;
+      const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(session.launch_started_at.time_since_epoch()).count();
+      return ticks > 0 ? static_cast<std::uint64_t>(ticks) : 0;
+    }
+
     // Display creation/topology apply is deliberately synchronous and can
     // outlive Moonlight's patience for a launch response. Serialize synthetic
     // state transitions so a retry cannot make its dispatch decision against
@@ -3484,6 +3491,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0 && current_appid != proc::input_only_app_id,
           .owner_uuid = active_session.client_uuid,
+          .generation = active_session_generation(active_session),
           .app = current_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(current_app->id)), current_app->uuid, current_app->name, false} : remote_session::app_t {},
         };
         const auto projection = remote_session::project(
@@ -3524,7 +3532,7 @@ namespace nvhttp {
           app_node.put("UUID", entry.uuid);
           app_node.put("IDX", entry.synthetic ? std::to_string(entry.id) : (configured == visible_apps.end() ? "" : (*configured)->idx));
           app_node.put("ID", entry.id);
-          app_node.put("ArtVersion", entry.synthetic ? "remote-session-v5" : (configured == visible_apps.end() ? "" : (*configured)->art_version));
+          app_node.put("ArtVersion", entry.synthetic ? "remote-session-v6" : (configured == visible_apps.end() ? "" : (*configured)->art_version));
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
@@ -3622,6 +3630,7 @@ namespace nvhttp {
         const remote_session::game_t game {
           .running = current_appid > 0,
           .owner_uuid = active_session.client_uuid,
+          .generation = active_session_generation(active_session),
           .app = active_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(active_app->id)), active_app->uuid, active_app->name, false} : remote_session::app_t {},
         };
         const remote_session::caller_t caller {
@@ -3647,18 +3656,24 @@ namespace nvhttp {
           resume(host_audio, std::move(response), std::move(request), current_appid, true, true);
           return;
         }
-        if (decision.disconnect_game) {
+        if (decision.terminate) {
+          if (remote_session::arm_or_confirm_termination(request_client_identity.uuid, game.generation, game.app.id) == remote_session::terminate_confirmation_e::prompt) {
+            tree.put("root.resume", 0);
+            tree.put("root.gamesession", 0);
+            tree.put("root.<xmlattr>.status_code", 410);
+            tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
+            return;
+          }
           const bool disconnected = rtsp_stream::disconnect_game_sessions(false);
+          proc::proc.terminate(false, true);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
-          if (disconnected) {
-            const auto completion = *remote_session::successful_control_completion(synthetic_control);
-            tree.put("root.<xmlattr>.status_code", completion.status_code);
-            tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
-          } else {
-            tree.put("root.<xmlattr>.status_code", 409);
-            tree.put("root.<xmlattr>.status_message", "The active configured-game stream is no longer connected");
+          if (!disconnected) {
+            BOOST_LOG(info) << "Terminate found no active game transport; closed the paused configured application lifecycle.";
           }
+          const auto completion = *remote_session::successful_control_completion(synthetic_control);
+          tree.put("root.<xmlattr>.status_code", completion.status_code);
+          tree.put("root.<xmlattr>.status_message", std::string {completion.status_message});
           return;
         }
 
@@ -5293,7 +5308,7 @@ namespace nvhttp {
         const bool teardown_control =
           control == remote_session::control_e::disconnect_monitor ||
           control == remote_session::control_e::disconnect_input ||
-          control == remote_session::control_e::disconnect_game;
+          control == remote_session::control_e::terminate;
         if (teardown_control) {
           // Role/game teardown joins stream workers, which acquire this same
           // gate during their final cleanup. Let the teardown path acquire

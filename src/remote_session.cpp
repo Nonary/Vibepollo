@@ -10,6 +10,14 @@ namespace remote_session {
   namespace {
     std::mutex monitor_runtime_hooks_mutex;
     monitor_runtime_hooks_t monitor_runtime_hooks;
+    constexpr auto terminate_confirmation_window = std::chrono::seconds {10};
+    struct terminate_confirmation_t {
+      std::uint64_t generation {};
+      std::int32_t app_id {};
+      std::chrono::steady_clock::time_point expires_at {};
+    };
+    std::mutex terminate_confirmation_mutex;
+    std::unordered_map<std::string, terminate_confirmation_t> terminate_confirmations;
     bool equal_folded(std::string_view left, std::string_view right) {
       if (left.size() != right.size()) return false;
       for (std::size_t i = 0; i < left.size(); ++i) {
@@ -23,13 +31,15 @@ namespace remote_session {
     bool owns_game(const caller_t &caller, const game_t &game) { return game.running && caller.paired && caller.uuid == game.owner_uuid; }
   }
 
-  bool reserved_name(const std::string_view name) { return equal_folded(name, "Remote Input") || equal_folded(name, "Remote Monitor"); }
+  bool reserved_name(const std::string_view name) {
+    return equal_folded(name, "Remote Input") || equal_folded(name, "Remote Monitor") || equal_folded(name, "Terminate");
+  }
 
   control_e identify(const std::int32_t id, const std::string_view uuid) {
     if (id == resume_id || id == 2147483601 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000001") return control_e::resume;
     if (id == disconnect_monitor_id || id == 2147483602 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000002") return control_e::disconnect_monitor;
     if (id == disconnect_input_id || id == 2147483603 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000003") return control_e::disconnect_input;
-    if (id == disconnect_game_id || id == 2147483604 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000004") return control_e::disconnect_game;
+    if (id == terminate_id || id == 2147483604 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000004") return control_e::terminate;
     if (id == monitor_id || id == 2147483605 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000005") return control_e::monitor;
     if (id == input_id || id == 2147483606 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000006") return control_e::input;
     return control_e::none;
@@ -45,7 +55,7 @@ namespace remote_session {
       case control_e::resume: return {resume_id, synthetic_uuid(control), "Resume", true};
       case control_e::disconnect_monitor: return {disconnect_monitor_id, synthetic_uuid(control), "Disconnect Monitor", true};
       case control_e::disconnect_input: return {disconnect_input_id, synthetic_uuid(control), "Disconnect Input", true};
-      case control_e::disconnect_game: return {disconnect_game_id, synthetic_uuid(control), "End Stream", true};
+      case control_e::terminate: return {terminate_id, synthetic_uuid(control), "Terminate", true};
       case control_e::monitor: return {monitor_id, synthetic_uuid(control), "Remote Monitor", true};
       case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
       default: return {};
@@ -57,7 +67,7 @@ namespace remote_session {
       case control_e::resume: return "resume.png";
       case control_e::disconnect_monitor: return "disconnect-remote-monitor.png";
       case control_e::disconnect_input: return "disconnect-remote-input.png";
-      case control_e::disconnect_game: return "disconnect-game.png";
+      case control_e::terminate: return "terminate.png";
       case control_e::monitor: return "remote-monitor.png";
       case control_e::input: return "remote-input.png";
       default: return std::nullopt;
@@ -87,7 +97,7 @@ namespace remote_session {
       return result;
     }
     if (game.running) {
-      result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_game), game.app, synthetic(control_e::input), synthetic(control_e::monitor)};
+      result.catalogue = {synthetic(control_e::resume), synthetic(control_e::terminate), game.app, synthetic(control_e::input), synthetic(control_e::monitor)};
       return result;
     }
     result.catalogue = visible_configured;
@@ -122,10 +132,10 @@ namespace remote_session {
         result.resume = result.allowed && owner.role == role_e::monitor;
         if (result.resume) result.resume_role = role_e::monitor;
         break;
-      case control_e::disconnect_game:
+      case control_e::terminate:
         result.permission = permission_e::terminate;
         result.allowed = caller.may_terminate && game.running;
-        result.disconnect_game = result.allowed;
+        result.terminate = result.allowed;
         break;
       case control_e::disconnect_monitor:
         result.permission = permission_e::terminate;
@@ -158,9 +168,40 @@ namespace remote_session {
     switch (control) {
       case control_e::disconnect_monitor: return control_completion_t {410, "Remote Monitor disconnected successfully."};
       case control_e::disconnect_input: return control_completion_t {410, "Remote Input disconnected successfully."};
-      case control_e::disconnect_game: return control_completion_t {410, "Stream ended successfully."};
+      case control_e::terminate: return control_completion_t {410, "Active stream terminated. Remote Monitor and Remote Input remain connected."};
       default: return std::nullopt;
     }
+  }
+
+  terminate_confirmation_e arm_or_confirm_termination(
+    const std::string_view client_uuid,
+    const std::uint64_t generation,
+    const std::int32_t app_id,
+    const std::chrono::steady_clock::time_point now
+  ) {
+    std::lock_guard lock {terminate_confirmation_mutex};
+    const auto it = terminate_confirmations.find(std::string {client_uuid});
+    if (it != terminate_confirmations.end()) {
+      const auto pending = it->second;
+      terminate_confirmations.erase(it);
+      if (pending.generation == generation && pending.app_id == app_id && pending.expires_at > now) {
+        return terminate_confirmation_e::confirmed;
+      }
+    }
+    terminate_confirmations.insert_or_assign(
+      std::string {client_uuid},
+      terminate_confirmation_t {generation, app_id, now + terminate_confirmation_window}
+    );
+    return terminate_confirmation_e::prompt;
+  }
+
+  std::string_view termination_confirmation_message() {
+    return "This will close the active stream but leave Remote Monitor and Remote Input connected. Launch Terminate again within 10 seconds to confirm this was intentional.";
+  }
+
+  void clear_termination_confirmation(const std::string_view client_uuid) {
+    std::lock_guard lock {terminate_confirmation_mutex};
+    terminate_confirmations.erase(std::string {client_uuid});
   }
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }
