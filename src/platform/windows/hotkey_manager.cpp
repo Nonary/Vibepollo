@@ -5,13 +5,8 @@
 #ifdef _WIN32
   #include "hotkey_manager.h"
 
-  #include <winsock2.h>
-  #include <Windows.h>
-
-  #include "display_helper_integration.h"
   #include "src/logging.h"
   #include "src/platform/windows/misc.h"
-  #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/virtual_display_cleanup.h"
 
   #include <atomic>
@@ -70,20 +65,10 @@ namespace {
 
   void trigger_restore() {
     BOOST_LOG(info) << "Restore hotkey triggered; reverting display configuration.";
-    const auto cleanup = platf::virtual_display_cleanup::run(
-      "restore_hotkey",
-      true,
-      platf::virtual_display_cleanup::revert_order_t::restore_before_remove,
-      true,
-      std::nullopt,
-      platf::virtual_display_cleanup::recovery_monitor_policy_t::disengage_before_admission
-    );
+    const auto cleanup = platf::virtual_display_cleanup::terminate_all("restore_hotkey");
     if (!cleanup.virtual_displays_removed) {
-      BOOST_LOG(warning) << "Restore hotkey cleanup: no virtual display was removed synchronously; session recovery remains disengaged.";
+      BOOST_LOG(warning) << "Restore hotkey cleanup: one or more virtual displays could not be removed; session recovery remains disengaged.";
     }
-    // Always stop watchdog here. If helper IPC is already unavailable, keeping
-    // watchdog alive can continue a failed helper restart loop.
-    display_helper_integration::stop_watchdog(true);
   }
 
   void hotkey_thread_main(int initial_vk, UINT initial_modifiers, HANDLE ready_event) {

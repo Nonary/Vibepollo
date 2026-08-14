@@ -18,12 +18,14 @@
   #include <display_device/windows/win_display_device.h>
   #include <exception>
   #include <memory>
+  #include <mutex>
   #include <string>
   #include <thread>
 
 namespace platf::virtual_display_cleanup {
   namespace {
     std::atomic_uint g_cleanup_reservations {0};
+    std::mutex g_terminal_cleanup_mutex;
 
     class cleanup_reservation_t {
     public:
@@ -131,7 +133,8 @@ namespace platf::virtual_display_cleanup {
     const revert_order_t revert_order,
     const bool prefer_golden_if_current_missing,
     const std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes,
-    const recovery_monitor_policy_t recovery_monitor_policy
+    const recovery_monitor_policy_t recovery_monitor_policy,
+    const cleanup_admission_policy_t cleanup_admission_policy
   ) {
     cleanup_reservation_t cleanup_reservation;
     cleanup_result_t result;
@@ -146,13 +149,18 @@ namespace platf::virtual_display_cleanup {
       BOOST_LOG(info) << "Virtual display cleanup: recovery monitors disengaged before terminal cleanup admission (reason="
                       << reason_text << ").";
     }
-    if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+    const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
+    if (!cleanup_admitted(managed_cleanup_allowed, cleanup_admission_policy)) {
       if (enforce_db_restore) {
         proc::defer_display_revert();
       }
       BOOST_LOG(info) << "Virtual display cleanup: deferred (reason=" << reason_text
                       << ") until the remaining managed client display sessions release ownership.";
       return result;
+    }
+    if (!managed_cleanup_allowed) {
+      BOOST_LOG(warning) << "Virtual display cleanup: overriding managed display ownership for terminal user action (reason="
+                         << reason_text << ").";
     }
 
     BOOST_LOG(info) << "Virtual display cleanup: begin (reason=" << reason_text
@@ -170,7 +178,10 @@ namespace platf::virtual_display_cleanup {
         return;
       }
 
-      result.helper_revert_dispatched = display_helper_integration::revert(prefer_golden_if_current_missing);
+      result.helper_revert_dispatched = display_helper_integration::revert(
+        prefer_golden_if_current_missing,
+        cleanup_admission_policy == cleanup_admission_policy_t::override_managed_owners
+      );
       if (result.helper_revert_dispatched) {
         result.database_restore_applied = true;
       }
@@ -227,6 +238,33 @@ namespace platf::virtual_display_cleanup {
                     << ", helper_revert_dispatched=" << (result.helper_revert_dispatched ? "true" : "false")
                     << ", database_restore_applied=" << (result.database_restore_applied ? "true" : "false")
                     << ")";
+    return result;
+  }
+
+  cleanup_result_t terminate_all(const std::string_view reason) {
+    std::lock_guard terminal_lock {g_terminal_cleanup_mutex};
+    // A previous ordinary cleanup may have queued a restore behind the same
+    // managed-owner gate this terminal action intentionally overrides. This
+    // action consumes that intent now, so it must not fire again later.
+    proc::clear_deferred_display_revert();
+    const auto result = run(
+      reason,
+      true,
+      revert_order_t::restore_before_remove,
+      true,
+      std::nullopt,
+      recovery_monitor_policy_t::disengage_before_admission,
+      cleanup_admission_policy_t::override_managed_owners
+    );
+
+    // A terminal user action must also end the helper restart loop. Forced
+    // stop is safe here because run() has already completed the synchronous
+    // REVERT attempt and display teardown. Closing the driver transport stops
+    // its ping/watchdog worker; a later new session may open it again.
+    VDISPLAY::closeVDisplayDevice();
+    display_helper_integration::stop_watchdog(true);
+    BOOST_LOG(info) << "Virtual display cleanup: terminal driver and helper watchdog shutdown completed (reason="
+                    << (reason.empty() ? "unspecified" : std::string(reason)) << ").";
     return result;
   }
 

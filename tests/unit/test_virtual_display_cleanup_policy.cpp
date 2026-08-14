@@ -52,6 +52,15 @@ TEST(VirtualDisplayCleanupPolicy, RemoveBeforeRestoreKeepsTeardownOnlyOrder) {
   EXPECT_EQ(steps[3], platf::virtual_display_cleanup::cleanup_step_t::database_restore);
 }
 
+TEST(VirtualDisplayCleanupPolicy, OnlyTerminalUserActionOverridesManagedOwnership) {
+  using platf::virtual_display_cleanup::cleanup_admission_policy_t;
+  using platf::virtual_display_cleanup::cleanup_admitted;
+
+  EXPECT_TRUE(cleanup_admitted(true, cleanup_admission_policy_t::respect_managed_owners));
+  EXPECT_FALSE(cleanup_admitted(false, cleanup_admission_policy_t::respect_managed_owners));
+  EXPECT_TRUE(cleanup_admitted(false, cleanup_admission_policy_t::override_managed_owners));
+}
+
 TEST(VirtualDisplayCleanupPolicy, SunshineLeaseOwnedGuidSurvivesMissingWindowsEnumeration) {
   EXPECT_FALSE(VDISPLAY::policy::retained_target_is_owned(false, false));
   EXPECT_TRUE(VDISPLAY::policy::retained_target_is_owned(false, true));

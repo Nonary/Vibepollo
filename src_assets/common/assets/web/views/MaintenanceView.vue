@@ -75,6 +75,7 @@ interface MutationResponse {
 type PendingAction =
   | { kind: 'golden-export' }
   | { kind: 'golden-delete' }
+  | { kind: 'terminate-virtual-display' }
   | { kind: 'revoke-session'; session: BrowserSession }
   | { kind: 'restart' };
 
@@ -299,6 +300,14 @@ const dialogCopy = computed(() => {
       tone: 'danger' as const,
     };
   }
+  if (action?.kind === 'terminate-virtual-display') {
+    return {
+      title: t('ui.maintenance.confirm.terminateVirtualDisplayTitle'),
+      description: t('ui.maintenance.confirm.terminateVirtualDisplayDescription'),
+      confirm: t('ui.maintenance.actions.terminateVirtualDisplay'),
+      tone: 'danger' as const,
+    };
+  }
   if (action?.kind === 'revoke-session') {
     return {
       title: t('ui.maintenance.confirm.revokeSessionTitle', {
@@ -352,6 +361,12 @@ async function runConfirmedAction(): Promise<void> {
       }
       notice.value = t('ui.maintenance.notices.snapshotDeleted');
       await load();
+    } else if (action.kind === 'terminate-virtual-display') {
+      const result = await apiPost<MutationResponse>('/api/display/terminate_virtual', {});
+      if (result.status === false) {
+        throw new Error(result.error || t('ui.maintenance.errors.virtualDisplayTermination'));
+      }
+      notice.value = t('ui.maintenance.notices.virtualDisplayTerminated');
     } else if (action.kind === 'revoke-session') {
       await apiDelete<MutationResponse>(`/api/auth/sessions/${encodeURIComponent(action.session.id)}`, {});
       notice.value = t('ui.maintenance.notices.sessionRevoked', {
@@ -591,6 +606,12 @@ onMounted(() => void load());
             :label="t('ui.maintenance.actions.deleteSnapshot')"
             variant="tertiary"
             @click="requestAction({ kind: 'golden-delete' })"
+          />
+          <AppButton
+            class="maintenance-danger-text"
+            :label="t('ui.maintenance.actions.terminateVirtualDisplay')"
+            variant="tertiary"
+            @click="requestAction({ kind: 'terminate-virtual-display' })"
           />
         </div>
       </section>
