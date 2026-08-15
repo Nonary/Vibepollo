@@ -1039,28 +1039,61 @@ namespace amf {
       return false;
     }
 
-    // Create encoder component
-    res = factory->CreateComponent(context, get_codec_id(), &encoder);
-    if (res != AMF_OK || !encoder) {
-      BOOST_LOG(error) << "AMF: CreateComponent failed for codec " << video_format << ", error: " << res;
-      return false;
-    }
+    // Some AMD drivers regress on pre-RDNA hardware and fail H.264 encoder
+    // creation/initialization outright when USAGE is set to
+    // ULTRA_LOW_LATENCY, even though the same GPU encodes fine at the less
+    // aggressive LOW_LATENCY usage preset. This mirrors the FFmpeg AMF path's
+    // "usage=2" fallback_options entry for h264_amf (see amdvce_legacy in
+    // video.cpp / GPUOpen-LibrariesAndSDKs/AMF#410): retry once, forcing
+    // USAGE = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY, before giving up on H.264.
+    constexpr amf_int64 kUsageLowLatency = 2;  // AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY
+    const bool allow_h264_usage_fallback =
+      video_format == 0 && (!config.usage || *config.usage != kUsageLowLatency);
+    const int max_attempts = allow_h264_usage_fallback ? 2 : 1;
+ 
 
-    // Configure encoder properties (before Init)
-    if (!configure_encoder(config, client_config, colorspace)) {
-      return false;
-    }
-
-    // Initialize encoder
+    amf_config attempt_config = config;
     auto amf_format = get_amf_format(buffer_format, colorspace.bit_depth);
-    surface_format = amf_format;
-    encode_width = client_config.width;
-    encode_height = client_config.height;
-    res = encoder->Init(amf_format, client_config.width, client_config.height);
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+      if (attempt > 0) {
+        attempt_config = config;
+        attempt_config.usage = kUsageLowLatency;
+        BOOST_LOG(warning) << "AMF: H.264 encoder creation/initialization failed;"
+                              " retrying with USAGE=LOW_LATENCY (pre-RDNA driver workaround)";
+      }
 
-    if (res != AMF_OK) {
-      BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;
-      return false;
+      // Create encoder component
+      res = factory->CreateComponent(context, get_codec_id(), &encoder);
+      if (res != AMF_OK || !encoder) {
+        BOOST_LOG(error) << "AMF: CreateComponent failed for codec " << video_format << ", error: " << res;
+        if (attempt + 1 < max_attempts) continue;
+        return false;
+      }
+
+      // Configure encoder properties (before Init)
+      if (!configure_encoder(attempt_config, client_config, colorspace)) {
+        encoder->Terminate();
+        encoder = nullptr;
+        if (attempt + 1 < max_attempts) continue;
+        return false;
+      }
+
+      // Initialize encoder
+      surface_format = amf_format;
+      encode_width = client_config.width;
+      encode_height = client_config.height;
+      res = encoder->Init(amf_format, client_config.width, client_config.height);
+
+      if (res != AMF_OK) {
+        BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;
+        encoder->Terminate();
+        encoder = nullptr;
+        if (attempt + 1 < max_attempts) continue;
+        return false;
+      }
+
+      // Successfully created and initialized the encoder
+      break;
     }
 
     // Some runtimes accept a property before Init but substitute a different
