@@ -305,8 +305,8 @@ namespace video {
 #endif
 
 #ifdef _WIN32
-  extern encoder_t amdvce;
-  extern encoder_t amdvce_legacy;
+  extern encoder_t amdvce_experimental;
+  extern encoder_t amdvce_ffmpeg;
   extern encoder_t quicksync;
   extern encoder_t mediafoundation;
 #endif

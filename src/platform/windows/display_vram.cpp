@@ -2227,7 +2227,7 @@ namespace platf::dxgi {
                       << " bitrate=" << client_config.bitrate << "kbps (active=" << active_encoder_count << ')';
 
       // AMF SDK integer values are passed straight through from the existing
-      // amd_* config (shared with the FFmpeg amdvce_legacy path).
+      // amd_* config (shared with the FFmpeg amdvce_ffmpeg path).
       if (client_config.videoFormat == 0) {
         amf_cfg.usage = config::video.amd.amd_usage_h264;
         amf_cfg.quality_preset = config::video.amd.amd_quality_h264;

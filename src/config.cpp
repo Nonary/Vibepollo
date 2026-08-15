@@ -33,6 +33,7 @@
 #include <nlohmann/json.hpp>
 
 // local includes
+#include "amf/amf_lifecycle.h"
 #include "config.h"
 #include "config_key.h"
 #include "config_playnite.h"
@@ -1813,7 +1814,7 @@ namespace config {
     int_f(vars, "amd_vbaq", video.amd.amd_vbaq, amd::tristate_from_view);
     bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
 
-    // Native AMF encoder (amdvce) tuning knobs.
+    // Native AMF encoder (amdvce_experimental) tuning knobs.
     int_f(vars, "amd_ltr_frames", video.amd.amd_ltr_frames);
     if (video.amd.amd_ltr_frames < 0 || video.amd.amd_ltr_frames > 2) {
       BOOST_LOG(warning) << "config: amd_ltr_frames must be between 0 and 2, clamping: "sv << video.amd.amd_ltr_frames;
@@ -1854,6 +1855,12 @@ namespace config {
     string_f(vars, "capture", video.capture);
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
     string_f(vars, "encoder", video.encoder);
+    const auto configured_encoder = video.encoder;
+    video.encoder = std::string(amf::lifecycle::canonical_encoder_name(video.encoder));
+    if (video.encoder != configured_encoder) {
+      BOOST_LOG(info) << "config: encoder = " << configured_encoder
+                      << " is deprecated; using " << video.encoder << '.';
+    }
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "adapter_pnp_id", video.adapter_pnp_id);
     if (!video.adapter_pnp_id.empty() && video.adapter_name.empty()) {
@@ -2961,7 +2968,10 @@ namespace config {
       if (name == adapter_pnp_id_key) {
         continue;
       }
-      base.insert_or_assign(name, value);
+      base.insert_or_assign(
+        name,
+        name == "encoder" ? std::string(amf::lifecycle::canonical_encoder_name(value)) : value
+      );
     }
 
     const auto adapter_name = overrides.find(std::string(adapter_name_key));
@@ -3205,6 +3215,9 @@ namespace config {
       auto normalized_key = nv::normalize_split_encode_key(std::move(k));
       if (!is_valid_override_key(normalized_key) || !is_allowed_override_key(normalized_key)) {
         continue;
+      }
+      if (normalized_key == "encoder") {
+        v = std::string(amf::lifecycle::canonical_encoder_name(v));
       }
       filtered.emplace(std::move(normalized_key), std::move(v));
     }

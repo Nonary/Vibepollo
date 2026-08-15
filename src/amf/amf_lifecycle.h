@@ -227,18 +227,30 @@ namespace amf::lifecycle {
   };
 
   struct encoder_selection_policy_t {
-    bool include_legacy = false;
+    bool include_experimental = false;
     bool fail_closed = false;
   };
 
+  inline constexpr std::string_view canonical_encoder_name(
+    std::string_view requested_encoder) noexcept {
+    if (requested_encoder == "amdvce_legacy") {
+      return "amdvce_ffmpeg";
+    }
+    if (requested_encoder == "amdvce") {
+      return "amdvce_experimental";
+    }
+    return requested_encoder;
+  }
+
   inline constexpr encoder_selection_policy_t encoder_selection_policy(
     std::string_view requested_encoder) noexcept {
-    // Native AMF and the FFmpeg AMF implementation are separate, explicit
-    // contracts. Automatic probing must never make a native feature/property
-    // failure look successful by selecting the legacy encoder behind the user.
+    // The FFmpeg AMF implementation is the supported default. The native AMF
+    // implementation has limited hardware coverage and is only considered when
+    // the user explicitly opts into the experimental encoder.
+    const auto canonical_encoder = canonical_encoder_name(requested_encoder);
     return {
-      requested_encoder == "amdvce_legacy",
-      requested_encoder == "amdvce",
+      canonical_encoder == "amdvce_experimental",
+      canonical_encoder == "amdvce_experimental",
     };
   }
 

@@ -106,7 +106,7 @@ namespace config {
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;  // nullopt = follow usage-preset default
       int amd_coder;
-      // Native AMF encoder (amdvce) tuning knobs.
+      // Native AMF encoder (amdvce_experimental) tuning knobs.
       int amd_ltr_frames;  // Long-term reference frames for RFI (0 = off)
       int amd_input_queue_size;  // AMF input queue depth (0 = driver default)
       // Curated tri-state native-AMF feature knobs. nullopt (auto) leaves the
