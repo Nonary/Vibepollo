@@ -199,14 +199,18 @@ namespace {
     return !automatic && cabac && *cabac == 1 && cavlc && *cavlc == 0;
   }
 
-  bool native_selection_never_routes_to_legacy() {
+  bool experimental_selection_is_explicit_only() {
     const auto automatic = amf::lifecycle::encoder_selection_policy("");
-    const auto native = amf::lifecycle::encoder_selection_policy("amdvce");
-    const auto legacy = amf::lifecycle::encoder_selection_policy("amdvce_legacy");
+    const auto stable = amf::lifecycle::encoder_selection_policy("amdvce_ffmpeg");
+    const auto experimental = amf::lifecycle::encoder_selection_policy("amdvce_experimental");
+    const auto stable_alias = amf::lifecycle::encoder_selection_policy("amdvce_legacy");
+    const auto experimental_alias = amf::lifecycle::encoder_selection_policy("amdvce");
 
-    return !automatic.include_legacy && !automatic.fail_closed &&
-           !native.include_legacy && native.fail_closed &&
-           legacy.include_legacy && !legacy.fail_closed;
+    return !automatic.include_experimental && !automatic.fail_closed &&
+           !stable.include_experimental && !stable.fail_closed &&
+           experimental.include_experimental && experimental.fail_closed &&
+           !stable_alias.include_experimental && !stable_alias.fail_closed &&
+           experimental_alias.include_experimental && experimental_alias.fail_closed;
   }
 
   bool xbox_intra_refresh_maps_to_native_amf() {
@@ -603,8 +607,8 @@ TEST(SunshineNativeAmfReview, AutomaticH264CoderPreservesDriverDefault) {
   EXPECT_TRUE(automatic_h264_coder_preserves_driver_default());
 }
 
-TEST(SunshineNativeAmfReview, NativeSelectionNeverRoutesToLegacy) {
-  EXPECT_TRUE(native_selection_never_routes_to_legacy());
+TEST(VibepolloNativeAmfReview, ExperimentalSelectionIsExplicitOnly) {
+  EXPECT_TRUE(experimental_selection_is_explicit_only());
 }
 
 TEST(SunshineNativeAmfReview, XboxIntraRefreshMapsToNativeAmf) {
