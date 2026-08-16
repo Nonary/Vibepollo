@@ -5,13 +5,17 @@
 #define INITGUID
 
 // standard includes
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -26,7 +30,9 @@
 #include <synchapi.h>
 
 // local includes
+#include "audio_visibility_recovery.h"
 #include "src/config.h"
+#include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "utf_utils.h"
@@ -257,6 +263,79 @@ namespace platf::audio {
 
     PROPVARIANT prop;
   };
+
+  /**
+   * @brief Path of the marker recording an in-flight endpoint visibility change.
+   *
+   * The marker is created before Steam Streaming Speakers is hidden and removed
+   * only after the endpoint is visible again. Endpoint visibility is persisted
+   * device state: if the process dies between the hide and the show, the
+   * endpoint stays hidden across reboots and DEVICE_STATE_ACTIVE enumeration
+   * can never find it again, so the marker is the only record that Sunshine
+   * owns the hidden state and must restore it.
+   */
+  static std::filesystem::path visibility_marker_path() {
+    return platf::appdata() / "steam_audio_visibility_recovery.txt";
+  }
+
+  static bool visibility_marker_present() {
+    std::error_code ec;
+    return std::filesystem::exists(visibility_marker_path(), ec);
+  }
+
+  static bool write_visibility_marker(const std::wstring &device_id) {
+    try {
+      std::ofstream file {visibility_marker_path(), std::ios::binary | std::ios::trunc};
+      if (!file) {
+        return false;
+      }
+      file << visibility_recovery::make_marker(utf_utils::to_utf8(device_id));
+      file.flush();
+      return file.good();
+    } catch (...) {
+      return false;
+    }
+  }
+
+  static void clear_visibility_marker() {
+    std::error_code ec;
+    std::filesystem::remove(visibility_marker_path(), ec);
+  }
+
+  static std::optional<std::wstring> read_visibility_marker_id() {
+    try {
+      std::ifstream file {visibility_marker_path(), std::ios::binary};
+      if (!file) {
+        return std::nullopt;
+      }
+      const std::string content {std::istreambuf_iterator<char> {file}, std::istreambuf_iterator<char> {}};
+      auto id = visibility_recovery::parse_marker(content);
+      if (!id) {
+        return std::nullopt;
+      }
+      return utf_utils::from_utf8(*id);
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  /**
+   * @brief Whether process shutdown has started.
+   *
+   * Hiding an endpoint while the process is going down risks dying between the
+   * hide and the matching show, leaving the endpoint hidden across reboots.
+   */
+  static bool process_shutdown_in_progress() {
+    if (!mail::man) {
+      return false;
+    }
+    try {
+      auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+      return shutdown_event && shutdown_event->peek();
+    } catch (...) {
+      return false;
+    }
+  }
 
   struct format_t {
     WORD channel_count;
@@ -1426,6 +1505,100 @@ namespace platf::audio {
       reset_default_device_impl(false, {});
     }
 
+    /**
+     * @brief Restore Steam Streaming Speakers visibility after an interrupted transition.
+     *
+     * The failed-role fallback hides the endpoint and shows it again. If the
+     * process dies in between, the endpoint stays hidden across reboots and
+     * every DEVICE_STATE_ACTIVE enumeration misses it, so nothing else can
+     * ever heal it. The persisted marker records that Sunshine owns the hidden
+     * state, which keeps this pass from overriding a deliberate user choice.
+     */
+    void recover_interrupted_visibility_transition() {
+      if (!visibility_marker_present()) {
+        return;
+      }
+
+      const auto marker_id = read_visibility_marker_id();
+      std::wstring endpoint_id;
+      std::optional<DWORD> endpoint_state;
+
+      collection_t collection;
+      const auto enum_status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATEMASK_ALL, &collection);
+      if (FAILED(enum_status)) {
+        BOOST_LOG(warning) << "Couldn't enumerate endpoints for audio visibility recovery: [0x"sv << util::hex(enum_status).to_string_view() << ']';
+        return;
+      }
+
+      UINT count = 0;
+      collection->GetCount(&count);
+      for (UINT x = 0; x < count; ++x) {
+        device_t device;
+        if (FAILED(collection->Item(x, &device)) || !device) {
+          continue;
+        }
+
+        audio::wstring_t wstring_id;
+        if (FAILED(device->GetId(&wstring_id)) || !wstring_id) {
+          continue;
+        }
+        std::wstring device_id = wstring_id.get();
+
+        bool matches = marker_id && *marker_id == device_id;
+        if (!matches) {
+          audio::prop_t prop;
+          prop_var_t adapter_friendly_name;
+          if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &prop)) && prop &&
+              SUCCEEDED(prop->GetValue(PKEY_DeviceInterface_FriendlyName, &adapter_friendly_name.prop)) &&
+              adapter_friendly_name.prop.pwszVal) {
+            matches = std::wcscmp(adapter_friendly_name.prop.pwszVal, L"Steam Streaming Speakers") == 0;
+          }
+        }
+        if (!matches) {
+          continue;
+        }
+
+        DWORD state = 0;
+        if (FAILED(device->GetState(&state))) {
+          continue;
+        }
+
+        // Prefer a hidden match: duplicate registrations can leave an active
+        // sibling next to the endpoint that actually needs healing.
+        endpoint_id = std::move(device_id);
+        endpoint_state = state;
+        if (state != DEVICE_STATE_ACTIVE) {
+          break;
+        }
+      }
+
+      switch (visibility_recovery::classify_heal(
+        true,
+        endpoint_state.has_value(),
+        endpoint_state && *endpoint_state == DEVICE_STATE_ACTIVE
+      )) {
+        case visibility_recovery::heal_action_e::none:
+          return;
+        case visibility_recovery::heal_action_e::retain_marker:
+          BOOST_LOG(info) << "Steam audio visibility marker present, but no matching endpoint was found; keeping the marker"sv;
+          return;
+        case visibility_recovery::heal_action_e::clear_marker:
+          clear_visibility_marker();
+          return;
+        case visibility_recovery::heal_action_e::reshow_endpoint:
+          {
+            const auto show_status = policy->SetEndpointVisibility(endpoint_id.c_str(), TRUE);
+            if (FAILED(show_status)) {
+              BOOST_LOG(warning) << "Couldn't restore Steam audio endpoint visibility: [0x"sv << util::hex(show_status).to_string_view() << ']';
+              return;
+            }
+            clear_visibility_marker();
+            BOOST_LOG(info) << "Restored Steam audio endpoint visibility after an interrupted transition"sv;
+            return;
+          }
+      }
+    }
+
   private:
     bool is_default_device(const std::wstring &device_id, ERole role = eConsole) {
       auto current_default_dev = default_device(device_enum, role);
@@ -2292,6 +2465,25 @@ namespace platf::audio {
     }
 
     /**
+     * @brief Show the Steam endpoint again, retrying briefly on failure.
+     *
+     * Re-showing is mandatory cleanup: a hidden endpoint outlives the process
+     * and every reboot. The retries are bounded and deliberately ignore
+     * cancellation; the persisted marker covers any failure that remains.
+     */
+    HRESULT show_steam_endpoint_with_retry(const std::wstring &steam_device_id) {
+      auto show_status = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      for (int attempt = 0; FAILED(show_status) && attempt < 2; ++attempt) {
+        std::this_thread::sleep_for(250ms);
+        show_status = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      }
+      if (SUCCEEDED(show_status)) {
+        clear_visibility_marker();
+      }
+      return show_status;
+    }
+
+    /**
      * @brief Attempts to move the default audio device away from Steam Streaming Speakers.
      * Temporarily disables Steam speakers so the OS picks another default,
      * then re-enables them and confirms the new default. Only the roles that are
@@ -2327,6 +2519,20 @@ namespace platf::audio {
         return reset_result_e::success;
       }
 
+      // Dying between the hide and the show leaves the endpoint hidden across
+      // reboots. During shutdown that race is likely; leave the defaults alone.
+      if (process_shutdown_in_progress()) {
+        BOOST_LOG(info) << "Skipping the Steam audio visibility fallback during shutdown"sv;
+        return reset_result_e::fatal;
+      }
+
+      // Record the transition first so an interrupted hide/show is healed at
+      // the next startup instead of leaving the endpoint hidden forever.
+      if (!write_visibility_marker(steam_device_id)) {
+        BOOST_LOG(warning) << "Couldn't record the Steam audio visibility transition; skipping the visibility fallback"sv;
+        return reset_result_e::fatal;
+      }
+
       // Always issue the matching enable call, even when the hide call reports
       // failure or the assignment is superseded while Windows is servicing it.
       role_device_ids_t fallback_device_ids;
@@ -2345,8 +2551,7 @@ namespace platf::audio {
           }
         }
       }
-      const auto show_status =
-        policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      const auto show_status = show_steam_endpoint_with_retry(steam_device_id);
 
       const bool assignment_active =
         stop_token ?
@@ -2622,6 +2827,20 @@ namespace platf::audio {
         return reset_result_e::inactive;
       }
 
+      // Dying between the hide and the show leaves the endpoint hidden across
+      // reboots. During shutdown that race is likely; leave the defaults alone.
+      if (process_shutdown_in_progress()) {
+        BOOST_LOG(info) << "Skipping the Steam audio visibility fallback during shutdown"sv;
+        return reset_result_e::fatal;
+      }
+
+      // Record the transition first so an interrupted hide/show is healed at
+      // the next startup instead of leaving the endpoint hidden forever.
+      if (!write_visibility_marker(steam_device_id)) {
+        BOOST_LOG(warning) << "Couldn't record the Steam audio visibility transition; skipping the visibility fallback"sv;
+        return reset_result_e::fatal;
+      }
+
       // Publish ownership of the whole visibility transition before Windows
       // moves any role away from Steam. A new stream can then normalize the
       // transferred record against the live fallback without waiting here.
@@ -2657,8 +2876,7 @@ namespace platf::audio {
 
       // Always re-enable Steam after hiding it, even if cancellation races
       // with the fallback or the hide call reports failure.
-      const auto show_status =
-        policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      const auto show_status = show_steam_endpoint_with_retry(steam_device_id);
       if (!pending_restore_worker_can_write(stop_token, token, assignment_epoch)) {
         reassert_current_policy_assignment();
         return reset_result_e::inactive;
@@ -3083,6 +3301,12 @@ namespace platf {
       return nullptr;
     }
 
+    // Heal an interrupted visibility transition before any enumeration. A
+    // hidden endpoint is invisible to DEVICE_STATE_ACTIVE lookups, so without
+    // this it would never be found again and could even trigger a pointless
+    // driver reinstall below.
+    control->recover_interrupted_visibility_transition();
+
     // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
     // the sink information returned includes the new Steam Streaming Speakers device.
     if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
@@ -3105,6 +3329,10 @@ namespace platf {
     // change the default to something else (if another device is available).
     audio::audio_control_t audio_ctrl;
     if (audio_ctrl.init() == 0) {
+      // Recover an endpoint left hidden by an interrupted visibility
+      // transition (crash, watchdog kill, or shutdown mid-fallback) before
+      // touching the default device.
+      audio_ctrl.recover_interrupted_visibility_transition();
       audio_ctrl.reset_default_device_no_wait();
     }
 
