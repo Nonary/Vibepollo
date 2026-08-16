@@ -45,6 +45,27 @@ namespace audio::lifecycle {
     }
 
     /**
+     * @brief Reclaim retained ownership with an observer for a blocked wait.
+     *
+     * The observer is called only when a terminal restore is in progress and
+     * while the state lock is held, immediately before waiting for completion.
+     * Production callers use the overload above and pay no observer cost.
+     */
+    template<typename WaitObserver>
+    bool reclaim(T &value, const bool app_active, WaitObserver &&observer) {
+      wait_for_restore(std::forward<WaitObserver>(observer));
+
+      std::scoped_lock lock {_mutex};
+      if (!app_active || _terminal_pending || !_retained) {
+        return false;
+      }
+
+      value = std::move(*_retained);
+      _retained.reset();
+      return true;
+    }
+
+    /**
      * @brief Atomically enter terminal state and claim retained ownership.
      * @return The retained value, if this call owns terminal restoration.
      */
@@ -75,6 +96,25 @@ namespace audio::lifecycle {
     /** @brief Block creation or reclaim until terminal restore is complete. */
     void wait_for_restore() {
       std::unique_lock lock {_mutex};
+      _restore_complete.wait(lock, [this]() {
+        return !_restore_in_progress;
+      });
+    }
+
+    /**
+     * @brief Wait for terminal restore while reporting entry into the wait.
+     *
+     * This generic overload is a deterministic test seam; the observer runs
+     * only after observing the restore flag under the state lock.
+     */
+    template<typename WaitObserver>
+    void wait_for_restore(WaitObserver &&observer) {
+      std::unique_lock lock {_mutex};
+      if (!_restore_in_progress) {
+        return;
+      }
+
+      std::forward<WaitObserver>(observer)();
       _restore_complete.wait(lock, [this]() {
         return !_restore_in_progress;
       });

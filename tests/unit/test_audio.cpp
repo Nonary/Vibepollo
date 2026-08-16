@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <deque>
+#include <future>
 #include <src/audio_lifecycle_policy.h>
 #include <src/audio_lifecycle_state.h>
 #include <src/audio_policy.h>
@@ -36,23 +37,20 @@ TEST(AudioLifecycleState, BlocksReconnectUntilTerminalRestoreCompletes) {
   ASSERT_TRUE(state.retain(retained, true));
   ASSERT_TRUE(state.begin_terminal());
 
-  std::atomic_bool reconnect_started {false};
   std::atomic_bool reconnect_finished {false};
   std::atomic_bool reclaimed {false};
+  auto reconnect_waiting = std::promise<void> {};
+  auto reconnect_waiting_future = reconnect_waiting.get_future();
   std::thread reconnect([&]() {
-    reconnect_started.store(true, std::memory_order_release);
     lifecycle_token_t reconnect_token {};
-    reclaimed.store(
-      state.reclaim(reconnect_token, true),
-      std::memory_order_release
-    );
+    reclaimed.store(state.reclaim(reconnect_token, true, [&reconnect_waiting]() {
+      reconnect_waiting.set_value();
+    }),
+                    std::memory_order_release);
     reconnect_finished.store(true, std::memory_order_release);
   });
 
-  while (!reconnect_started.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
-  }
-  EXPECT_TRUE(reconnect_started.load(std::memory_order_acquire));
+  reconnect_waiting_future.wait();
   EXPECT_FALSE(reconnect_finished.load(std::memory_order_acquire));
 
   state.complete_terminal_restore();
