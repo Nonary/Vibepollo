@@ -12,6 +12,7 @@
 // local includes
 #include "audio.h"
 #include "audio_lifecycle_policy.h"
+#include "audio_lifecycle_state.h"
 #include "audio_policy.h"
 #include "config.h"
 #include "globals.h"
@@ -38,9 +39,7 @@ namespace audio {
     bool restore_sink {false};
   };
 
-  std::mutex retained_audio_mutex;
-  retained_audio_t retained_audio;
-  bool app_termination_pending {false};
+  lifecycle::state_t<retained_audio_t> audio_state;
 
   void restore_audio_control(audio_ctx_t &ctx) {
     if (!ctx.restore_sink || !ctx.control) {
@@ -55,55 +54,69 @@ namespace audio {
   }
 
   bool retain_audio_control(audio_ctx_t &ctx) {
-    std::scoped_lock lock {retained_audio_mutex};
-    const auto release_action = lifecycle::final_owner_release_action(
-      ctx.restore_sink,
-      proc::proc.current_app_id() > 0,
-      app_termination_pending
-    );
-    if (release_action != lifecycle::release_action_e::retain || retained_audio.control) {
+    if (lifecycle::final_owner_release_action(
+          ctx.restore_sink,
+          proc::proc.current_app_id() > 0,
+          audio_state.terminal_pending()
+        ) != lifecycle::release_action_e::retain) {
       return false;
     }
 
-    retained_audio.control = std::move(ctx.control);
-    retained_audio.sink = std::move(ctx.sink);
-    retained_audio.restore_sink = ctx.restore_sink;
-    return true;
+    retained_audio_t value {
+      std::move(ctx.control),
+      std::move(ctx.sink),
+      ctx.restore_sink,
+    };
+    if (audio_state.retain(value, proc::proc.current_app_id() > 0)) {
+      return true;
+    }
+
+    ctx.control = std::move(value.control);
+    ctx.sink = std::move(value.sink);
+    return false;
   }
 
   bool reclaim_retained_audio(audio_ctx_t &ctx) {
-    std::scoped_lock lock {retained_audio_mutex};
-    if (!lifecycle::can_reclaim_retained_audio(
-          static_cast<bool>(retained_audio.control),
+    audio_state.wait_for_restore();
+    if (lifecycle::can_reclaim_retained_audio(
+          true,
           proc::proc.current_app_id() > 0,
-          app_termination_pending
-        )) {
+          audio_state.terminal_pending()
+        ) == false) {
       return false;
     }
 
-    ctx.control = std::move(retained_audio.control);
-    ctx.sink = std::move(retained_audio.sink);
-    ctx.restore_sink = retained_audio.restore_sink;
+    retained_audio_t value;
+    if (!audio_state.reclaim(value, proc::proc.current_app_id() > 0)) {
+      return false;
+    }
+
+    ctx.control = std::move(value.control);
+    ctx.sink = std::move(value.sink);
+    ctx.restore_sink = value.restore_sink;
     // The retained control is still assigned to the streaming sink. Mark the
     // handoff as already assigned so reconnect does not write the default roles
     // again before opening its microphone.
     ctx.sink_flag->store(true, std::memory_order_release);
-    retained_audio.restore_sink = false;
     return true;
   }
 
   void release_retained_audio() {
-    audio_ctx_t ctx;
-    {
-      std::scoped_lock lock {retained_audio_mutex};
-      ctx.control = std::move(retained_audio.control);
-      ctx.sink = std::move(retained_audio.sink);
-      ctx.restore_sink = retained_audio.restore_sink;
-      retained_audio.restore_sink = false;
+    auto retained = audio_state.begin_terminal();
+    if (!retained) {
+      return;
     }
+
+    audio_ctx_t ctx;
+    ctx.control = std::move(retained->control);
+    ctx.sink = std::move(retained->sink);
+    ctx.restore_sink = retained->restore_sink;
     if (ctx.restore_sink) {
       BOOST_LOG(info) << "Restoring retained audio state after terminal app end."sv;
     }
+    auto restore_completion = util::fail_guard([&]() {
+      audio_state.complete_terminal_restore();
+    });
     restore_audio_control(ctx);
   }
 #endif
@@ -229,6 +242,11 @@ namespace audio {
     if (!ref) {
       return;
     }
+
+    audio_owner_acquired();
+    auto owner_release = util::fail_guard([]() {
+      audio_owner_released();
+    });
 
     auto init_failure_fg = util::fail_guard([&shutdown_event]() {
       BOOST_LOG(error) << "Unable to initialize audio capture. The stream will not have audio."sv;
@@ -370,18 +388,25 @@ namespace audio {
 
   void app_termination_requested() {
 #ifdef _WIN32
-    {
-      std::scoped_lock lock {retained_audio_mutex};
-      app_termination_pending = true;
-    }
     release_retained_audio();
 #endif
   }
 
   void app_started() {
 #ifdef _WIN32
-    std::scoped_lock lock {retained_audio_mutex};
-    app_termination_pending = false;
+    audio_state.app_started();
+#endif
+  }
+
+  void audio_owner_acquired() {
+#ifdef _WIN32
+    audio_state.owner_acquired();
+#endif
+  }
+
+  void audio_owner_released() {
+#ifdef _WIN32
+    audio_state.owner_released();
 #endif
   }
 
@@ -410,6 +435,7 @@ namespace audio {
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
 
 #ifdef _WIN32
+    audio_state.wait_for_restore();
     if (reclaim_retained_audio(ctx)) {
       BOOST_LOG(info) << "Audio retained for resumable app; reclaimed on reconnect."sv;
       fg.disable();
