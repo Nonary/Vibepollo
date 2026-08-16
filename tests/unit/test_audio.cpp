@@ -5,6 +5,7 @@
 #include "../tests_common.h"
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <future>
 #include <src/audio_lifecycle_policy.h>
@@ -50,7 +51,10 @@ TEST(AudioLifecycleState, BlocksReconnectUntilTerminalRestoreCompletes) {
     reconnect_finished.store(true, std::memory_order_release);
   });
 
-  reconnect_waiting_future.wait();
+  EXPECT_EQ(
+    reconnect_waiting_future.wait_for(std::chrono::seconds {5}),
+    std::future_status::ready
+  );
   EXPECT_FALSE(reconnect_finished.load(std::memory_order_acquire));
 
   state.complete_terminal_restore();
