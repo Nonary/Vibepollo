@@ -4,11 +4,37 @@
  */
 #include "../tests_common.h"
 
+#include <deque>
+#include <src/audio_lifecycle_policy.h>
 #include <src/audio_policy.h>
 
-#include <deque>
-
 using namespace audio::policy;
+
+TEST(AudioLifecyclePolicy, RetainsFinalOwnerForResumableApp) {
+  using audio::lifecycle::release_action_e;
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, true, false),
+    release_action_e::retain
+  );
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, true, true),
+    release_action_e::restore
+  );
+  EXPECT_TRUE(audio::lifecycle::can_reclaim_retained_audio(true, true, false));
+  EXPECT_FALSE(audio::lifecycle::can_reclaim_retained_audio(true, false, false));
+}
+
+TEST(AudioLifecyclePolicy, RestoresTerminalAndIgnoresUnchangedSink) {
+  using audio::lifecycle::release_action_e;
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, false, false),
+    release_action_e::restore
+  );
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(false, true, false),
+    release_action_e::ignore
+  );
+}
 
 TEST(AudioStreamPolicy, SelectsChannelAndQualityVariant) {
   EXPECT_EQ(stream_index(2, false), 0);

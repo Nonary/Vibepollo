@@ -3,6 +3,7 @@
  * @brief Definitions for audio capture and encoding.
  */
 #include <algorithm>
+#include <mutex>
 #include <thread>
 
 // lib includes
@@ -10,11 +11,13 @@
 
 // local includes
 #include "audio.h"
+#include "audio_lifecycle_policy.h"
 #include "audio_policy.h"
 #include "config.h"
 #include "globals.h"
 #include "logging.h"
 #include "platform/common.h"
+#include "process.h"
 #include "thread_safe.h"
 #include "utility.h"
 #include "webrtc_stream.h"
@@ -27,6 +30,83 @@ namespace audio {
   static int start_audio_control(audio_ctx_t &ctx);
   static void stop_audio_control(audio_ctx_t &);
   static void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params);
+
+#ifdef _WIN32
+  struct retained_audio_t {
+    std::unique_ptr<platf::audio_control_t> control;
+    platf::sink_t sink;
+    bool restore_sink {false};
+  };
+
+  std::mutex retained_audio_mutex;
+  retained_audio_t retained_audio;
+  bool app_termination_pending {false};
+
+  void restore_audio_control(audio_ctx_t &ctx) {
+    if (!ctx.restore_sink || !ctx.control) {
+      return;
+    }
+
+    const std::string &sink = ctx.sink.host.empty() ? config::audio.sink : ctx.sink.host;
+    if (!sink.empty()) {
+      ctx.control->restore_sink(sink);
+    }
+    ctx.control->reset_default_device(sink);
+  }
+
+  bool retain_audio_control(audio_ctx_t &ctx) {
+    std::scoped_lock lock {retained_audio_mutex};
+    const auto release_action = lifecycle::final_owner_release_action(
+      ctx.restore_sink,
+      proc::proc.current_app_id() > 0,
+      app_termination_pending
+    );
+    if (release_action != lifecycle::release_action_e::retain || retained_audio.control) {
+      return false;
+    }
+
+    retained_audio.control = std::move(ctx.control);
+    retained_audio.sink = std::move(ctx.sink);
+    retained_audio.restore_sink = ctx.restore_sink;
+    return true;
+  }
+
+  bool reclaim_retained_audio(audio_ctx_t &ctx) {
+    std::scoped_lock lock {retained_audio_mutex};
+    if (!lifecycle::can_reclaim_retained_audio(
+          static_cast<bool>(retained_audio.control),
+          proc::proc.current_app_id() > 0,
+          app_termination_pending
+        )) {
+      return false;
+    }
+
+    ctx.control = std::move(retained_audio.control);
+    ctx.sink = std::move(retained_audio.sink);
+    ctx.restore_sink = retained_audio.restore_sink;
+    // The retained control is still assigned to the streaming sink. Mark the
+    // handoff as already assigned so reconnect does not write the default roles
+    // again before opening its microphone.
+    ctx.sink_flag->store(true, std::memory_order_release);
+    retained_audio.restore_sink = false;
+    return true;
+  }
+
+  void release_retained_audio() {
+    audio_ctx_t ctx;
+    {
+      std::scoped_lock lock {retained_audio_mutex};
+      ctx.control = std::move(retained_audio.control);
+      ctx.sink = std::move(retained_audio.sink);
+      ctx.restore_sink = retained_audio.restore_sink;
+      retained_audio.restore_sink = false;
+    }
+    if (ctx.restore_sink) {
+      BOOST_LOG(info) << "Restoring retained audio state after terminal app end."sv;
+    }
+    restore_audio_control(ctx);
+  }
+#endif
 
   int map_stream(int channels, bool quality);
 
@@ -288,6 +368,23 @@ namespace audio {
     return control_shared.ref();
   }
 
+  void app_termination_requested() {
+#ifdef _WIN32
+    {
+      std::scoped_lock lock {retained_audio_mutex};
+      app_termination_pending = true;
+    }
+    release_retained_audio();
+#endif
+  }
+
+  void app_started() {
+#ifdef _WIN32
+    std::scoped_lock lock {retained_audio_mutex};
+    app_termination_pending = false;
+#endif
+  }
+
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {
     if (!ctx.control) {
       return false;
@@ -312,6 +409,14 @@ namespace audio {
 
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
 
+#ifdef _WIN32
+    if (reclaim_retained_audio(ctx)) {
+      BOOST_LOG(info) << "Audio retained for resumable app; reclaimed on reconnect."sv;
+      fg.disable();
+      return 0;
+    }
+#endif
+
     // The default sink has not been replaced yet.
     ctx.restore_sink = false;
 
@@ -333,6 +438,30 @@ namespace audio {
   }
 
   void stop_audio_control(audio_ctx_t &ctx) {
+#ifdef _WIN32
+    if (!ctx.restore_sink) {
+      return;
+    }
+
+    if (retain_audio_control(ctx)) {
+      BOOST_LOG(info) << "Audio retained for resumable app after final transport owner ended."sv;
+      return;
+    }
+
+    BOOST_LOG(info) << "Restoring audio state after terminal app end."sv;
+    restore_audio_control(ctx);
+    return;
+#else
+    const auto release_action = lifecycle::final_owner_release_action(
+      ctx.restore_sink,
+      false,
+      false
+    );
+
+    if (release_action != lifecycle::release_action_e::restore) {
+      return;
+    }
+
     // restore audio-sink if applicable
     if (!ctx.restore_sink) {
       return;
@@ -352,6 +481,7 @@ namespace audio {
     // reconnecting after virtual display teardown), the platform layer can keep
     // retrying that exact device in the background after moving away from Steam.
     ctx.control->reset_default_device(sink);
+#endif
   }
 
   void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params) {
