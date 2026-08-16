@@ -4,6 +4,8 @@
  */
 #include "audio_policy.h"
 
+#include <algorithm>
+
 namespace audio::policy {
   int stream_index(int channels, bool high_quality) {
     const int quality_offset = high_quality ? 1 : 0;
@@ -46,6 +48,73 @@ namespace audio::policy {
       }
     }
     return selected;
+  }
+
+  bool is_steam_streaming_render_adapter(std::string_view adapter_name) {
+    return adapter_name == "Steam Streaming Speakers" ||
+           adapter_name == "Steam Streaming Microphone";
+  }
+
+  render_endpoint_catalog_t build_render_endpoint_catalog(
+    bool discovery_complete,
+    const std::vector<render_endpoint_t> &endpoints
+  ) {
+    render_endpoint_catalog_t catalog {
+      discovery_complete,
+      endpoints,
+      {},
+      {},
+    };
+    for (const auto &endpoint : endpoints) {
+      if (!endpoint.active) {
+        continue;
+      }
+      if (endpoint.id.empty() || endpoint.adapter_name.empty()) {
+        catalog.complete = false;
+        continue;
+      }
+      if (is_steam_streaming_render_adapter(endpoint.adapter_name)) {
+        catalog.steam_endpoint_ids.push_back(endpoint.id);
+      } else {
+        catalog.eligible_non_steam_endpoint_ids.push_back(endpoint.id);
+      }
+    }
+    return catalog;
+  }
+
+  std::optional<std::string> select_eligible_non_steam_render_endpoint(
+    const render_endpoint_catalog_t &catalog,
+    const std::vector<std::string> &preferred_ids
+  ) {
+    if (!catalog.complete) {
+      return std::nullopt;
+    }
+
+    for (const auto &preferred_id : preferred_ids) {
+      if (!preferred_id.empty() &&
+          std::find(
+            catalog.eligible_non_steam_endpoint_ids.begin(),
+            catalog.eligible_non_steam_endpoint_ids.end(),
+            preferred_id
+          ) != catalog.eligible_non_steam_endpoint_ids.end()) {
+        return preferred_id;
+      }
+    }
+
+    if (!catalog.eligible_non_steam_endpoint_ids.empty()) {
+      return catalog.eligible_non_steam_endpoint_ids.front();
+    }
+    return std::nullopt;
+  }
+
+  std::optional<std::string> select_eligible_non_steam_render_endpoint(
+    const std::vector<render_endpoint_t> &endpoints,
+    const std::vector<std::string> &preferred_ids
+  ) {
+    return select_eligible_non_steam_render_endpoint(
+      build_render_endpoint_catalog(true, endpoints),
+      preferred_ids
+    );
   }
 
   sample_action_e sample_action(sample_status_e status) {

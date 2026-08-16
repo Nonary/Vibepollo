@@ -47,6 +47,53 @@ TEST(AudioSinkPolicy, PreservesPriorityAndEmptyFallbacks) {
   EXPECT_TRUE(select_sink(no_virtual, "", 2, false).empty());
 }
 
+TEST(AudioEndpointRestorePolicy, ExcludesBothSteamRenderAdapters) {
+  const std::vector<render_endpoint_t> endpoints {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+    {"realtek", "Realtek USB Audio", true},
+  };
+
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Steam Streaming Speakers"));
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Steam Streaming Microphone"));
+  EXPECT_FALSE(is_steam_streaming_render_adapter("Steam Streaming Speakers 2"));
+  EXPECT_FALSE(is_steam_streaming_render_adapter("Realtek USB Audio"));
+  EXPECT_EQ(
+    select_eligible_non_steam_render_endpoint(endpoints, {"steam-microphone", "realtek"}),
+    std::optional<std::string> {"realtek"}
+  );
+}
+
+TEST(AudioEndpointRestorePolicy, PrefersActivePhysicalEndpointAndRejectsSteamOnlyCatalog) {
+  const std::vector<render_endpoint_t> endpoints {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+    {"inactive-realtek", "Realtek USB Audio", false},
+    {"hdmi", "NVIDIA High Definition Audio", true},
+  };
+
+  EXPECT_EQ(
+    select_eligible_non_steam_render_endpoint(endpoints, {"inactive-realtek", "hdmi"}),
+    std::optional<std::string> {"hdmi"}
+  );
+
+  const std::vector<render_endpoint_t> only_steam {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+  };
+  EXPECT_EQ(select_eligible_non_steam_render_endpoint(only_steam, {}), std::nullopt);
+}
+
+TEST(AudioEndpointRestorePolicy, IncompleteCatalogFailsClosed) {
+  const auto catalog = build_render_endpoint_catalog(false, {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"realtek", "Realtek USB Audio", true},
+  });
+
+  EXPECT_FALSE(catalog.complete);
+  EXPECT_EQ(select_eligible_non_steam_render_endpoint(catalog, {"realtek"}), std::nullopt);
+}
+
 namespace {
   class fake_source_t: public sample_source_t {
   public:
