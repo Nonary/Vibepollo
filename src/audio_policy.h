@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace audio::policy {
   struct stream_layout_t {
@@ -31,6 +33,48 @@ namespace audio::policy {
                           const std::string &configured_sink,
                           int channels,
                           bool host_audio_enabled);
+
+  struct render_endpoint_t {
+    std::string id;
+    std::string adapter_name;
+    bool active;
+  };
+
+  struct render_endpoint_catalog_t {
+    bool complete;
+    std::vector<render_endpoint_t> endpoints;
+    std::vector<std::string> steam_endpoint_ids;
+    std::vector<std::string> eligible_non_steam_endpoint_ids;
+  };
+
+  struct host_mute_visibility_plan_t {
+    std::vector<std::string> show_on_connect;
+    std::vector<std::string> hide_on_connect;
+    std::vector<std::string> hide_on_teardown;
+    std::vector<std::string> show_on_teardown;
+  };
+
+  bool is_steam_streaming_render_adapter(std::string_view adapter_name);
+  render_endpoint_catalog_t build_render_endpoint_catalog(
+    bool discovery_complete,
+    const std::vector<render_endpoint_t> &endpoints
+  );
+  std::optional<std::string> select_eligible_non_steam_render_endpoint(
+    const render_endpoint_catalog_t &catalog,
+    const std::vector<std::string> &preferred_ids
+  );
+  std::optional<std::string> select_eligible_non_steam_render_endpoint(
+    const std::vector<render_endpoint_t> &endpoints,
+    const std::vector<std::string> &preferred_ids
+  );
+
+  std::optional<host_mute_visibility_plan_t> plan_host_mute_visibility(
+    bool discovery_complete,
+    const std::vector<render_endpoint_t> &endpoints,
+    const std::vector<std::string> &virtual_ids
+  );
+
+  int sink_assignment_result(bool assignment_active, int role_failures);
 
   enum class sample_status_e {
     ok,

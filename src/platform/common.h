@@ -635,6 +635,17 @@ namespace platf {
   public:
     virtual int set_sink(const std::string &sink) = 0;
 
+    /**
+     * @brief Selects the streaming sink, optionally enforcing host-audio mute.
+     *
+     * The default implementation preserves the legacy platform behavior. Windows
+     * uses the flag to make the endpoint visibility transition transactional.
+     */
+    virtual int set_sink(const std::string &sink, bool mute_host) {
+      (void) mute_host;
+      return set_sink(sink);
+    }
+
     virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
 
     /**

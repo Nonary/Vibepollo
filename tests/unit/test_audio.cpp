@@ -47,6 +47,102 @@ TEST(AudioSinkPolicy, PreservesPriorityAndEmptyFallbacks) {
   EXPECT_TRUE(select_sink(no_virtual, "", 2, false).empty());
 }
 
+TEST(AudioSinkPolicy, FailsClosedWhenVirtualSinkActivationStopsEarly) {
+  EXPECT_EQ(sink_assignment_result(false, 0), -1);
+  EXPECT_EQ(sink_assignment_result(true, 0), 0);
+  EXPECT_EQ(sink_assignment_result(true, 2), 2);
+}
+
+TEST(AudioEndpointRestorePolicy, ExcludesBothSteamRenderAdapters) {
+  const std::vector<render_endpoint_t> endpoints {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+    {"realtek", "Realtek USB Audio", true},
+  };
+
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Steam Streaming Speakers"));
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Steam Streaming Microphone"));
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Speakers (Steam Streaming Speakers)"));
+  EXPECT_TRUE(is_steam_streaming_render_adapter("Speakers (Steam Streaming Microphone)"));
+  EXPECT_FALSE(is_steam_streaming_render_adapter("Steam Streaming Speakers 2"));
+  EXPECT_FALSE(is_steam_streaming_render_adapter("Realtek USB Audio"));
+  EXPECT_EQ(
+    select_eligible_non_steam_render_endpoint(endpoints, {"steam-microphone", "realtek"}),
+    std::optional<std::string> {"realtek"}
+  );
+}
+
+TEST(AudioEndpointRestorePolicy, PrefersActivePhysicalEndpointAndRejectsSteamOnlyCatalog) {
+  const std::vector<render_endpoint_t> endpoints {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+    {"inactive-realtek", "Realtek USB Audio", false},
+    {"hdmi", "NVIDIA High Definition Audio", true},
+  };
+
+  EXPECT_EQ(
+    select_eligible_non_steam_render_endpoint(endpoints, {"inactive-realtek", "hdmi"}),
+    std::optional<std::string> {"hdmi"}
+  );
+
+  const std::vector<render_endpoint_t> only_steam {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+  };
+  EXPECT_EQ(select_eligible_non_steam_render_endpoint(only_steam, {}), std::nullopt);
+}
+
+TEST(AudioEndpointRestorePolicy, IncompleteCatalogFailsClosed) {
+  const auto catalog = build_render_endpoint_catalog(false, {
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"realtek", "Realtek USB Audio", true},
+  });
+
+  EXPECT_FALSE(catalog.complete);
+  EXPECT_EQ(select_eligible_non_steam_render_endpoint(catalog, {"realtek"}), std::nullopt);
+}
+
+TEST(AudioEndpointRestorePolicy, PlansHostMuteVisibilityAndHidesSteamOnTeardown) {
+  const auto plan = plan_host_mute_visibility(true, {
+    {"realtek", "Realtek USB Audio", true},
+    {"hdmi", "NVIDIA High Definition Audio", true},
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", false},
+  }, {"steam-speakers", "steam-microphone"});
+
+  ASSERT_TRUE(plan.has_value());
+  EXPECT_EQ(plan->show_on_connect, std::vector<std::string>({"steam-microphone"}));
+  EXPECT_EQ(plan->hide_on_connect, std::vector<std::string>({"realtek", "hdmi"}));
+  EXPECT_EQ(
+    plan->hide_on_teardown,
+    std::vector<std::string>({"steam-speakers", "steam-microphone"})
+  );
+  EXPECT_EQ(plan->show_on_teardown, std::vector<std::string>({"realtek", "hdmi"}));
+}
+
+TEST(AudioEndpointRestorePolicy, HostMuteVisibilityFailsClosedOnIncompleteOrMissingVirtualState) {
+  const std::vector<render_endpoint_t> endpoints {
+    {"realtek", "Realtek USB Audio", true},
+    {"steam-speakers", "Steam Streaming Speakers", true},
+  };
+
+  EXPECT_FALSE(plan_host_mute_visibility(false, endpoints, {"steam-speakers"}).has_value());
+  EXPECT_FALSE(plan_host_mute_visibility(true, endpoints, {"steam-speakers", "steam-microphone"}).has_value());
+}
+
+TEST(AudioEndpointRestorePolicy, IgnoresMissingNamesOnNonSteamSnapshotEntries) {
+  const auto plan = plan_host_mute_visibility(true, {
+    {"stale-endpoint", "", false},
+    {"realtek", "Realtek USB Audio", true},
+    {"steam-speakers", "Steam Streaming Speakers", true},
+    {"steam-microphone", "Steam Streaming Microphone", true},
+  }, {"steam-speakers", "steam-microphone"});
+
+  ASSERT_TRUE(plan.has_value());
+  EXPECT_EQ(plan->hide_on_connect, std::vector<std::string>({"realtek"}));
+  EXPECT_EQ(plan->show_on_teardown, std::vector<std::string>({"realtek"}));
+}
+
 namespace {
   class fake_source_t: public sample_source_t {
   public:

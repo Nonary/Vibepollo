@@ -186,9 +186,12 @@ namespace audio {
     // Only the first to start a session may change the default sink
     if (!ref->sink_flag->exchange(true, std::memory_order_acquire)) {
       // If the selected sink is different than the current one, change sinks.
-      ref->restore_sink = ref->sink.host != sink;
+      const bool mute_host = !config.flags[config_t::HOST_AUDIO];
+      // A host-mute session still needs to run the visibility transaction even
+      // when the selected sink is already the current default.
+      ref->restore_sink = ref->sink.host != sink || mute_host;
       if (ref->restore_sink) {
-        if (control->set_sink(sink)) {
+        if (control->set_sink(sink, mute_host)) {
           return;
         }
       }
@@ -344,7 +347,10 @@ namespace audio {
       // Best effort, it's allowed to fail. Windows restores the endpoint
       // captured for each role instead of applying the console sink to all of
       // them.
-      ctx.control->restore_sink(sink);
+      const auto restore_status = ctx.control->restore_sink(sink);
+      if (restore_status) {
+        BOOST_LOG(warning) << "Audio sink teardown completed with status "sv << restore_status;
+      }
     }
 
     // Ensure Steam Streaming Speakers aren't left as the default device.
