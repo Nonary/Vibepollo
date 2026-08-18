@@ -70,10 +70,30 @@ invalidates the catalog hash and **breaks driver installation**. These must be
   `Apollo\drivers\sunshine\nefconc.exe`,
   `Apollo\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.dll`
   (libvirtualdisplay release, origin-signed upstream)
+- `drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll` (+ `.cat`) and
+  `drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe`
+  (libvirtualgamepad release). The DLL is catalog-bound; the setup tool is not,
+  but both are hash-pinned by that package's immutable manifest, so the MSI
+  deep-sign step must leave both bytes unchanged.
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
 The recommended config (Strategy 1 below) excludes these by enumerating only
 first-party files explicitly.
+
+## VHF gamepad release boundary
+
+The VHF gamepad payload follows the same released-package model as the
+Vibeshine display driver, with a stricter immutable-artifact boundary. Before
+an MSI is assembled, CMake pins the libvirtualgamepad release tag, its archive
+SHA-256, and the expected catalog and root-device-tool signer thumbprints. The
+refresh step verifies those values, writes `release-lock.json` beside the
+package, and the installer verifies the lock against the signed catalog and
+setup tool. The production bundle remains disabled until those four pinned
+values are supplied for the first independently signed release.
+
+For local development, `SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE` is an
+explicit separate path. It accepts only the driver package's exported local
+test certificate and never relaxes production release validation.
 
 ## First-party PEs that MUST be signed
 

@@ -1,5 +1,6 @@
 # windows specific packaging
 include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_virtual_display_contract.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/packaging/windows_virtual_gamepad_contract.cmake")
 
 install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 
@@ -223,6 +224,168 @@ install(FILES ${SUNSHINE_VIRTUAL_DISPLAY_VULKAN_LAYER_FILES}
         DESTINATION "${SUNSHINE_VDD_VULKAN_LAYER_DESTINATION}"
         COMPONENT virtual_display_driver)
 
+# Drivers (Vibeshine VHF virtual gamepad)
+#
+# This is intentionally independent from the display-driver refresh flow. The
+# gamepad package is a signed, immutable libvirtualgamepad release that includes
+# a UMDF DLL, its catalog, and an embedded-signed root-device setup tool. Until
+# the first production release is published, the payload remains opt-in.
+set(SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vhf-gamepad/cleanup.ps1")
+if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}")
+    message(FATAL_ERROR
+        "Required VHF gamepad root-device cleanup script is missing: ${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}")
+endif()
+# Keep this narrow, ownership-scoped cleanup script in every MSI. A later
+# build might intentionally stop bundling the driver package, but it must
+# still remove a ROOT\\VIBESHINEVIRTUALGAMEPAD source node created by an
+# earlier bundle on final uninstall.
+install(FILES "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
+        DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}"
+        COMPONENT assets)
+
+set(SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED 0)
+set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 0)
+set(SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR "" CACHE PATH
+    "Optional prebuilt libvirtualgamepad package root with driver/, tools/, and manifest.json")
+if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
+        message(FATAL_ERROR
+            "SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER currently supports only AMD64 because the pinned libvirtualgamepad package is x64. Disable it for ${CMAKE_SYSTEM_PROCESSOR} builds.")
+    endif()
+    set(SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED 1)
+    if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+        set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 1)
+        if(NOT SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR)
+            message(FATAL_ERROR
+                "SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE requires SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR.")
+        endif()
+    else()
+        foreach(_vhf_gamepad_pin IN ITEMS
+                SUNSHINE_VHF_GAMEPAD_RELEASE_TAG
+                SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256
+                SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT
+                SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT)
+            if("${${_vhf_gamepad_pin}}" STREQUAL "")
+                message(FATAL_ERROR
+                    "SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER requires ${_vhf_gamepad_pin} for a production package.")
+            endif()
+        endforeach()
+        unset(_vhf_gamepad_pin)
+        if(NOT SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 MATCHES "^[0-9a-fA-F]{64}$")
+            message(FATAL_ERROR "SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 must be a SHA-256 value.")
+        endif()
+        if(NOT SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT MATCHES "^[0-9a-fA-F]{40}$" OR
+           NOT SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT MATCHES "^[0-9a-fA-F]{40}$")
+            message(FATAL_ERROR "VHF gamepad signer thumbprints must be 40-character SHA-1 thumbprints.")
+        endif()
+    endif()
+
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR
+        "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vhf-gamepad")
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT
+        "${CMAKE_SOURCE_DIR}/packaging/windows/virtual_gamepad_driver/refresh_driver_package.ps1")
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT
+        "${CMAKE_SOURCE_DIR}/scripts/download_libvirtualgamepad_release.ps1")
+    if(SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR)
+        set(SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR
+            "${SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}")
+        set(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE OFF)
+    else()
+        set(SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR
+            "${CMAKE_BINARY_DIR}/libvirtualgamepad-release-${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}")
+        set(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE ON)
+    endif()
+
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES "")
+    foreach(_vhf_gamepad_relative_file IN LISTS SUNSHINE_VHF_GAMEPAD_REQUIRED_FILES)
+        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES
+            "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/${_vhf_gamepad_relative_file}")
+    endforeach()
+    unset(_vhf_gamepad_relative_file)
+
+    if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1")
+        message(FATAL_ERROR
+            "Required VHF gamepad installer script is missing: ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1")
+    endif()
+    if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}")
+        message(FATAL_ERROR
+            "Required VHF gamepad refresh script is missing: ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}")
+    endif()
+
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS "")
+    if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS -AllowLocalTestPackage)
+    endif()
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS "")
+    if(NOT SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS
+            -ReleaseTag "${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}"
+            -ExpectedReleaseAssetSha256 "${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}"
+            -ExpectedCatalogSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT}"
+            -ExpectedDeviceSetupSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT}")
+    endif()
+
+    if(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE)
+        if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}")
+            message(FATAL_ERROR
+                "Required libvirtualgamepad release downloader is missing: ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}")
+        endif()
+        add_custom_target(download_sunshine_virtual_gamepad_driver_release
+            COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                    -File "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}"
+                    -Repository "${SUNSHINE_VHF_GAMEPAD_REPOSITORY}"
+                    -Tag "${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}"
+                    -ExpectedArchiveSha256 "${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}"
+                    -OutDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
+            DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}"
+            COMMENT "Downloading pinned Vibeshine VHF gamepad release"
+            VERBATIM)
+    endif()
+
+    add_custom_target(refresh_sunshine_virtual_gamepad_driver_assets
+        COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
+                -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
+                -PackageDir "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}"
+                ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS}
+                ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS}
+        DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
+                "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1"
+                "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
+        COMMENT "Refreshing Vibeshine VHF gamepad package assets from the pinned release"
+        VERBATIM)
+
+    add_custom_target(validate_sunshine_virtual_gamepad_driver_assets
+        COMMAND powershell -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass
+                -File "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
+                -ValidateOnly
+                -PrebuiltPackageDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
+                -PackageDir "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}"
+                ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS}
+                ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS}
+        DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
+                "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1"
+                "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
+        COMMENT "Validating Vibeshine VHF gamepad package assets"
+        VERBATIM)
+
+    if(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE)
+        add_dependencies(refresh_sunshine_virtual_gamepad_driver_assets
+            download_sunshine_virtual_gamepad_driver_release)
+        add_dependencies(validate_sunshine_virtual_gamepad_driver_assets
+            download_sunshine_virtual_gamepad_driver_release)
+    endif()
+
+    if(TARGET package_msi AND SUNSHINE_VHF_GAMEPAD_REFRESH_BEFORE_MSI)
+        add_dependencies(package_msi refresh_sunshine_virtual_gamepad_driver_assets)
+    endif()
+
+    install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES}
+            DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}"
+            COMPONENT virtual_gamepad_driver)
+endif()
+
 # Mandatory scripts
 install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/sunshine-setup.ps1"
         DESTINATION "scripts"
@@ -316,6 +479,14 @@ set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DISPLAY_NAME "Vibepollo Display Drive
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_DESCRIPTION "Default virtual display driver.")
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_GROUP "Drivers")
 set(CPACK_COMPONENT_VIRTUAL_DISPLAY_DRIVER_REQUIRED true)
+
+if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
+    set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_DISPLAY_NAME "Vibeshine Virtual Gamepad Driver")
+    set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_DESCRIPTION
+        "Pinned VHF UMDF gamepad source-driver package.")
+    set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_GROUP "Drivers")
+    set(CPACK_COMPONENT_VIRTUAL_GAMEPAD_DRIVER_REQUIRED true)
+endif()
 
 # audio tool
 set(CPACK_COMPONENT_AUDIO_DISPLAY_NAME "audio-info")

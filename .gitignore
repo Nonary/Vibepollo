@@ -32,6 +32,10 @@
 *.app
 !src_assets/windows/drivers/sunshine/*.dll
 !src_assets/windows/drivers/sunshine/*.exe
+!src_assets/windows/drivers/vhf-gamepad/driver/*.dll
+!src_assets/windows/drivers/vhf-gamepad/driver/*.cat
+!src_assets/windows/drivers/vhf-gamepad/tools/*.exe
+/src_assets/windows/drivers/vhf-gamepad/release-lock.json
 
 # JetBrains IDE
 .idea/
