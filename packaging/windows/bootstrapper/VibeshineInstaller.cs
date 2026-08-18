@@ -67,6 +67,7 @@ namespace VibepolloInstaller {
           parsed,
           installPath,
           parsed.InternalInstallVirtualDisplay,
+          parsed.InternalInstallVirtualGamepad,
           parsed.InternalInstallSaveLogs,
           false);
         InstallerRunner.TryWriteInternalInstallResult(parsed.InternalInstallResultPath, internalInstall);
@@ -108,11 +109,13 @@ namespace VibepolloInstaller {
     private readonly InstallerArguments _arguments;
     private readonly Border _installSection;
     private readonly Border _installVirtualDisplaySection;
+    private readonly Border _installVirtualGamepadSection;
     private readonly TextBlock _installLocationTitleText;
     private readonly TextBlock _installLocationHintText;
     private readonly Grid _installPathGrid;
     private readonly TextBox _installPathTextBox;
     private readonly ComboBox _virtualDisplayDriverComboBox;
+    private readonly CheckBox _virtualGamepadDriverCheckBox;
     private readonly TextBlock _statusText;
     private readonly TextBlock _statusDetailText;
     private readonly ProgressBar _progressBar;
@@ -153,6 +156,7 @@ namespace VibepolloInstaller {
     private readonly string _preferredInstallDirectory;
     private readonly bool _useSudoVdaSelectedInConfig;
     private readonly bool _showInstallVirtualDisplayOption;
+    private readonly bool _showInstallVirtualGamepadOption;
     private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     private static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     private const uint SWP_NOMOVE = 0x0002;
@@ -180,14 +184,19 @@ namespace VibepolloInstaller {
       _uninstallUiRequested = BuildFlavor.IsUninstallOnly || arguments.UninstallUiRequested;
       var showInstallLocation = !BuildFlavor.IsUninstallOnly && _installedProduct == null;
       _showInstallVirtualDisplayOption = !BuildFlavor.IsUninstallOnly;
-      var showInstallOptions = showInstallLocation || _showInstallVirtualDisplayOption;
+      _showInstallVirtualGamepadOption = !BuildFlavor.IsUninstallOnly
+        && _payloadMsiInfo != null
+        && _payloadMsiInfo.HasBundledVirtualGamepadDriver;
+      var showInstallOptions = showInstallLocation
+        || _showInstallVirtualDisplayOption
+        || _showInstallVirtualGamepadOption;
       var useCompactUpdateLayout = !BuildFlavor.IsUninstallOnly && _installedProduct != null && !showInstallOptions;
       var displayVersion = GetTargetVersionText();
       Title = (BuildFlavor.IsUninstallOnly ? "Vibepollo Uninstaller v" : "Vibepollo Installer v") + displayVersion;
       Width = 720;
-      Height = showInstallOptions ? 620 : useCompactUpdateLayout ? 430 : 500;
+      Height = _showInstallVirtualGamepadOption ? 700 : showInstallOptions ? 620 : useCompactUpdateLayout ? 430 : 500;
       MinWidth = 690;
-      MinHeight = showInstallOptions ? 580 : useCompactUpdateLayout ? 410 : 470;
+      MinHeight = _showInstallVirtualGamepadOption ? 660 : showInstallOptions ? 580 : useCompactUpdateLayout ? 410 : 470;
       WindowStartupLocation = WindowStartupLocation.CenterScreen;
       ResizeMode = ResizeMode.CanMinimize;
       WindowStyle = WindowStyle.None;
@@ -603,6 +612,43 @@ namespace VibepolloInstaller {
       driverStack.Children.Add(virtualDisplayDriverLabel);
       driverStack.Children.Add(_virtualDisplayDriverComboBox);
       driverStack.Children.Add(installVirtualDisplayHintText);
+
+      _installVirtualGamepadSection = new Border {
+        CornerRadius = new CornerRadius(10),
+        Padding = new Thickness(16),
+        Margin = new Thickness(0, 0, 0, 10),
+        Background = new SolidColorBrush(Color.FromArgb(44, 99, 102, 241)),
+        BorderBrush = new SolidColorBrush(Color.FromArgb(112, 128, 133, 255)),
+        BorderThickness = new Thickness(1)
+      };
+      contentStack.Children.Add(_installVirtualGamepadSection);
+
+      var gamepadStack = new StackPanel {
+        Orientation = Orientation.Vertical
+      };
+      _installVirtualGamepadSection.Child = gamepadStack;
+      gamepadStack.Children.Add(new TextBlock {
+        Text = "Virtual gamepad driver",
+        FontSize = 13,
+        FontWeight = FontWeights.SemiBold,
+        Foreground = new SolidColorBrush(Color.FromRgb(226, 235, 250)),
+        Margin = new Thickness(0, 0, 0, 6)
+      });
+      _virtualGamepadDriverCheckBox = new CheckBox {
+        Content = "Install Vibeshine virtual gamepad driver",
+        FontSize = 13,
+        Foreground = new SolidColorBrush(Color.FromRgb(232, 239, 253)),
+        IsChecked = true,
+        Margin = new Thickness(0, 0, 0, 6),
+        ToolTip = "Installs the bundled user-mode virtual gamepad driver."
+      };
+      gamepadStack.Children.Add(_virtualGamepadDriverCheckBox);
+      gamepadStack.Children.Add(new TextBlock {
+        Text = "Enable this to install or update Vibeshine's bundled virtual gamepad driver.",
+        FontSize = 12,
+        Foreground = new SolidColorBrush(Color.FromRgb(190, 208, 236)),
+        TextWrapping = TextWrapping.Wrap
+      });
 
       var divider = new System.Windows.Shapes.Rectangle {
         Height = 1,
@@ -1082,16 +1128,22 @@ namespace VibepolloInstaller {
 
       await RunOperationAsync(async () => {
         var installVirtualDisplayDriver = ShouldInstallVirtualDisplayDriver();
+        var installVirtualGamepadDriver = ShouldInstallVirtualGamepadDriver();
         return await Task.Run(() => InstallerRunner.RunInteractiveInstall(
           _arguments,
           selectedPath,
           installVirtualDisplayDriver,
+          installVirtualGamepadDriver,
           false));
       }, "Install", "Installing or updating Vibepollo...", "Vibepollo installation completed.");
     }
 
     private bool ShouldInstallVirtualDisplayDriver() {
       return _virtualDisplayDriverComboBox.SelectedIndex != 1;
+    }
+
+    private bool ShouldInstallVirtualGamepadDriver() {
+      return _showInstallVirtualGamepadOption && _virtualGamepadDriverCheckBox.IsChecked == true;
     }
 
     private async Task RunUninstallFlow() {
@@ -1505,9 +1557,11 @@ namespace VibepolloInstaller {
         var allowUninstall = !_isBusy && _installedProduct != null;
         _installPathTextBox.IsEnabled = false;
         _virtualDisplayDriverComboBox.IsEnabled = false;
+        _virtualGamepadDriverCheckBox.IsEnabled = false;
         _browseButton.IsEnabled = false;
         _installSection.Visibility = Visibility.Collapsed;
         _installVirtualDisplaySection.Visibility = Visibility.Collapsed;
+        _installVirtualGamepadSection.Visibility = Visibility.Collapsed;
         _continueButton.Visibility = Visibility.Collapsed;
         _uninstallButton.Visibility = Visibility.Visible;
         _uninstallButton.IsEnabled = allowUninstall;
@@ -1522,9 +1576,11 @@ namespace VibepolloInstaller {
       _installPathGrid.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;
       _installPathTextBox.IsEnabled = allowInstallInputs && showInstallLocation;
       _virtualDisplayDriverComboBox.IsEnabled = allowInstallInputs && _showInstallVirtualDisplayOption;
+      _virtualGamepadDriverCheckBox.IsEnabled = allowInstallInputs && _showInstallVirtualGamepadOption;
       _browseButton.IsEnabled = allowInstallInputs && showInstallLocation;
       _installSection.Visibility = showInstallLocation ? Visibility.Visible : Visibility.Collapsed;
       _installVirtualDisplaySection.Visibility = _showInstallVirtualDisplayOption ? Visibility.Visible : Visibility.Collapsed;
+      _installVirtualGamepadSection.Visibility = _showInstallVirtualGamepadOption ? Visibility.Visible : Visibility.Collapsed;
       _uninstallButton.Visibility = hasInstalledProduct ? Visibility.Visible : Visibility.Collapsed;
       _continueButton.Visibility = Visibility.Visible;
       _continueButton.Content = BuildInstallButtonLabel();
@@ -2098,6 +2154,7 @@ namespace VibepolloInstaller {
     private const string InternalElevatedUninstallToken = "--internal-elevated-uninstall";
     private const string InternalInstallPathToken = "--internal-install-path";
     private const string InternalInstallVirtualDisplayDriverToken = "--internal-install-virtual-display-driver";
+    private const string InternalInstallVirtualGamepadDriverToken = "--internal-install-virtual-gamepad-driver";
     private const string InternalInstallSaveLogsToken = "--internal-install-save-logs";
     private const string InternalInstallResultPathToken = "--internal-install-result-path";
     private const string InternalUninstallDeleteInstallDirToken = "--internal-uninstall-delete-install-dir";
@@ -2112,6 +2169,7 @@ namespace VibepolloInstaller {
     public bool InternalElevatedUninstall { get; set; }
     public string InternalInstallPath { get; set; }
     public bool InternalInstallVirtualDisplay { get; set; }
+    public bool InternalInstallVirtualGamepad { get; set; }
     public bool InternalInstallSaveLogs { get; set; }
     public string InternalInstallResultPath { get; set; }
     public bool InternalUninstallFactoryReset { get; set; }
@@ -2163,6 +2221,10 @@ namespace VibepolloInstaller {
         }
         if (string.Equals(arg, InternalInstallVirtualDisplayDriverToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
           parsed.InternalInstallVirtualDisplay = ParseBooleanToken(args[++index]);
+          continue;
+        }
+        if (string.Equals(arg, InternalInstallVirtualGamepadDriverToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
+          parsed.InternalInstallVirtualGamepad = ParseBooleanToken(args[++index]);
           continue;
         }
         if (string.Equals(arg, InternalInstallSaveLogsToken, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length) {
@@ -2249,12 +2311,14 @@ namespace VibepolloInstaller {
       Console.WriteLine("Supported MSI properties:");
       Console.WriteLine("  INSTALL_ROOT=<path>  Install to a custom directory (default: %ProgramFiles%\\Apollo)");
       Console.WriteLine("  INSTALL_VIRTUAL_DISPLAY_DRIVER=0  Use SudoVDA instead of the default Vibepollo Display Driver");
+      Console.WriteLine("  INSTALL_VIRTUAL_GAMEPAD_DRIVER=0  Do not install the bundled Vibepollo virtual gamepad driver");
       Console.WriteLine();
       Console.WriteLine("Examples:");
       Console.WriteLine("  VibepolloSetup.exe /qn");
       Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_ROOT=\"D:\\Vibepollo\"");
       Console.WriteLine("  VibepolloSetup.exe /x {PRODUCT-CODE} /qn");
       Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_VIRTUAL_DISPLAY_DRIVER=0");
+      Console.WriteLine("  VibepolloSetup.exe /qn INSTALL_VIRTUAL_GAMEPAD_DRIVER=0");
       Console.WriteLine("  VibepolloSetup.exe /uninstall");
       Console.WriteLine("  VibepolloSetup.exe /uninstall /quiet");
       Console.WriteLine("  VibepolloSetup.exe --msi C:\\temp\\Vibepollo.msi /passive");
@@ -2346,6 +2410,7 @@ namespace VibepolloInstaller {
       public string VersionText { get; set; }
       public Version Version { get; set; }
       public bool SupportsTransactionalReplacement { get; set; }
+      public bool HasBundledVirtualGamepadDriver { get; set; }
     }
 
     // Copy of the currently installed Vibeshine MSI (from the Windows
@@ -2606,6 +2671,7 @@ namespace VibepolloInstaller {
         var upgradeCode = ReadMsiProperty(packageHandle, "UpgradeCode");
         var versionText = ReadMsiProperty(packageHandle, "ProductVersion");
         var transactionalReplacement = ReadMsiProperty(packageHandle, "VIBESHINE_TRANSACTIONAL_REPLACEMENT");
+        var virtualGamepadDriverBundled = ReadMsiProperty(packageHandle, "INSTALL_VIRTUAL_GAMEPAD_DRIVER");
         if (string.IsNullOrWhiteSpace(productCode) && string.IsNullOrWhiteSpace(versionText) && string.IsNullOrWhiteSpace(upgradeCode)) {
           return null;
         }
@@ -2615,7 +2681,8 @@ namespace VibepolloInstaller {
           UpgradeCode = upgradeCode ?? string.Empty,
           VersionText = versionText ?? string.Empty,
           Version = ParseVersion(versionText),
-          SupportsTransactionalReplacement = string.Equals(transactionalReplacement, "1", StringComparison.Ordinal)
+          SupportsTransactionalReplacement = string.Equals(transactionalReplacement, "1", StringComparison.Ordinal),
+          HasBundledVirtualGamepadDriver = string.Equals(virtualGamepadDriverBundled, "1", StringComparison.Ordinal)
         };
       } finally {
         MsiCloseHandle(packageHandle);
@@ -3320,10 +3387,16 @@ namespace VibepolloInstaller {
       InstallerArguments arguments,
       string installDirectory,
       bool installVirtualDisplayDriver,
+      bool installVirtualGamepadDriver,
       bool saveInstallLogs,
       bool allowSelfElevation = true) {
       if (allowSelfElevation && !IsProcessElevated()) {
-        return RunElevatedBootstrapperInstall(arguments, installDirectory, installVirtualDisplayDriver, saveInstallLogs);
+        return RunElevatedBootstrapperInstall(
+          arguments,
+          installDirectory,
+          installVirtualDisplayDriver,
+          installVirtualGamepadDriver,
+          saveInstallLogs);
       }
 
       SweepStaleInstallerRecoveryDirectories();
@@ -3456,6 +3529,7 @@ namespace VibepolloInstaller {
         msiPath,
         installDirectory,
         installVirtualDisplayDriver,
+        installVirtualGamepadDriver,
         saveInstallLogs,
         restartRequired,
         "install");
@@ -3483,6 +3557,7 @@ namespace VibepolloInstaller {
           refreshedMsiPath,
           installDirectory,
           installVirtualDisplayDriver,
+          installVirtualGamepadDriver,
           saveInstallLogs,
           restartRequired,
           "install_recovery");
@@ -3512,6 +3587,7 @@ namespace VibepolloInstaller {
           msiPath,
           installDirectory,
           installVirtualDisplayDriver,
+          installVirtualGamepadDriver,
           saveInstallLogs,
           restartRequired,
           "install_firewall_cleanup_recovery");
@@ -3533,6 +3609,7 @@ namespace VibepolloInstaller {
             msiPath,
             installDirectory,
             installVirtualDisplayDriver,
+            installVirtualGamepadDriver,
             saveInstallLogs,
             restartRequired,
             "install_registration_recovery");
@@ -3550,6 +3627,7 @@ namespace VibepolloInstaller {
       string msiPath,
       string installDirectory,
       bool installVirtualDisplayDriver,
+      bool installVirtualGamepadDriver,
       bool saveInstallLogs,
       bool competingProductsRequireRestart,
       string logPhase) {
@@ -3563,6 +3641,7 @@ namespace VibepolloInstaller {
         logPath,
         CreatePropertyArgument("INSTALL_ROOT", installDirectory),
         "INSTALL_VIRTUAL_DISPLAY_DRIVER=" + (installVirtualDisplayDriver ? "1" : "0"),
+        "INSTALL_VIRTUAL_GAMEPAD_DRIVER=" + (installVirtualGamepadDriver ? "1" : "0"),
         "SKIP_REMOVE_CONFLICTING_PRODUCTS=1",
         "REBOOT=ReallySuppress",
         "SUPPRESSMSGBOXES=1"
@@ -7740,6 +7819,7 @@ namespace VibepolloInstaller {
       InstallerArguments arguments,
       string installDirectory,
       bool installVirtualDisplayDriver,
+      bool installVirtualGamepadDriver,
       bool saveInstallLogs) {
       string normalizedMsiOverride = null;
       if (!string.IsNullOrWhiteSpace(arguments.MsiPathOverride)) {
@@ -7760,6 +7840,8 @@ namespace VibepolloInstaller {
         installDirectory,
         "--internal-install-virtual-display-driver",
         installVirtualDisplayDriver ? "1" : "0",
+        "--internal-install-virtual-gamepad-driver",
+        installVirtualGamepadDriver ? "1" : "0",
         "--internal-install-save-logs",
         saveInstallLogs ? "1" : "0",
         "--internal-install-result-path",
