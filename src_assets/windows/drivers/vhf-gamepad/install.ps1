@@ -257,13 +257,30 @@ function Assert-DriverPackage {
     }
 }
 
+function Resolve-SystemToolPath {
+    param([Parameter(Mandatory = $true)][string] $ToolName)
+
+    $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
+    foreach ($candidate in @(
+        (Join-Path $systemRoot "Sysnative\$ToolName"),
+        (Join-Path $systemRoot "System32\$ToolName"),
+        (Join-Path $systemRoot "SysWOW64\$ToolName")
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    return Join-Path $systemRoot "System32\$ToolName"
+}
+
 function Invoke-PnpUtil {
     param(
         [Parameter(Mandatory = $true)][string[]] $Arguments,
         [int[]] $AllowedExitCodes = @(0, 3010)
     )
 
-    $pnputil = Join-Path $env:WINDIR 'System32\pnputil.exe'
+    $pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
     Assert-File -Path $pnputil
     # Keep PnPUtil's localized diagnostic text visible without allowing it to
     # become this function's return value.
