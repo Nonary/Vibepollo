@@ -297,12 +297,20 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         set(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE ON)
     endif()
 
-    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES "")
-    foreach(_vhf_gamepad_relative_file IN LISTS SUNSHINE_VHF_GAMEPAD_REQUIRED_FILES)
-        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES
-            "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/${_vhf_gamepad_relative_file}")
-    endforeach()
-    unset(_vhf_gamepad_relative_file)
+    # install(FILES) flattens input paths. Keep the signed driver package's
+    # driver/ and tools/ layout intact because install.ps1 verifies those exact
+    # paths before it stages the INF or creates the source device.
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_ROOT_FILES
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1"
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/manifest.json"
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/release-lock.json")
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PACKAGE_FILES
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/driver/VibeshineVhfGamepad.inf"
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/driver/VibeshineVhfGamepad.dll"
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/driver/VibeshineVhfGamepad.cat")
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_TOOL_FILES
+        "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/tools/VibeshineVhfGamepadDeviceSetup.exe")
+    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_FILES "")
 
     if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1")
         message(FATAL_ERROR
@@ -316,6 +324,8 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS "")
     if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
         list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS -AllowLocalTestPackage)
+        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_FILES
+            "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/driver/VibeshineVhfGamepad.cer")
     endif()
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS "")
     if(NOT SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
@@ -381,9 +391,20 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         add_dependencies(package_msi refresh_sunshine_virtual_gamepad_driver_assets)
     endif()
 
-    install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_FILES}
+    install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_ROOT_FILES}
             DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}"
             COMPONENT virtual_gamepad_driver)
+    install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PACKAGE_FILES}
+            DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/driver"
+            COMPONENT virtual_gamepad_driver)
+    install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_TOOL_FILES}
+            DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/tools"
+            COMPONENT virtual_gamepad_driver)
+    if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
+        install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_FILES}
+                DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/driver"
+                COMPONENT virtual_gamepad_driver)
+    endif()
 endif()
 
 # Mandatory scripts
