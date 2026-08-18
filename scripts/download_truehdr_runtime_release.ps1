@@ -123,10 +123,7 @@ try {
     $resolved[$dll] = $matches[0].FullName
   }
 
-  if (Test-Path -LiteralPath $OutDir) {
-    Remove-Item -LiteralPath $OutDir -Recurse -Force
-  }
-  New-Item -ItemType Directory -Path $OutDir | Out-Null
+  New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 
   foreach ($dll in $requiredDlls) {
     Copy-Item -LiteralPath $resolved[$dll] -Destination (Join-Path $OutDir $dll) -Force
