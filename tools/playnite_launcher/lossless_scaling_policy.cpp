@@ -12,11 +12,8 @@ namespace playnite_launcher::lossless::policy {
     return has_main_window && (!has_filter || path_matches);
   }
 
-  std::optional<std::wstring> select_launch_executable(
-    const std::optional<std::wstring> &explicit_executable,
-    const std::optional<std::wstring> &discovered_executable
-  ) {
-    return explicit_executable ? explicit_executable : discovered_executable;
+  std::optional<std::wstring> select_launch_executable(const launch_executables &executables) {
+    return executables.lossless_scaling;
   }
 
   std::wstring build_executable_filter(const std::vector<std::wstring> &executable_names) {
