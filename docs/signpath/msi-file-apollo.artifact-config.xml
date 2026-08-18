@@ -13,9 +13,11 @@
 
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
   This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
-  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
-  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll)
-  whose .cat catalog hashes would be invalidated by re-signing.
+  SunshineVirtualDisplayDriver.dll + .cat, VibeshineVhfGamepad.dll + .cat,
+  VkLayer_sunshine_hdr.dll, virtualdisplay_probe.exe, nefconc.exe,
+  nvngx_truehdr.dll) whose .cat catalog hashes would be invalidated by
+  re-signing. It also leaves the VHF root-device setup tool alone: that
+  release-signed executable is hash-pinned in the VHF package manifest.
 
   NOTE: the path= values are the file's logical path inside the MSI (install
   layout). The WiX package installs under the Apollo directory, so top-level
@@ -49,6 +51,8 @@
         Apollo/drivers/sunshine/virtualdisplay_probe.exe
         Apollo/drivers/sunshine/nefconc.exe
         Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
+        Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll (+ .cat)
+        Apollo/drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe
         nvngx_truehdr.dll   (NVIDIA RTX Video SDK runtime)
     -->
 
