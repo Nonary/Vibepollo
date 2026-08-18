@@ -51,6 +51,22 @@ function Assert-File {
     }
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $hasher.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-Thumbprint {
     param([Parameter(Mandatory = $true)] $Certificate)
     return $Certificate.Thumbprint.Replace(' ', '').ToUpperInvariant()
@@ -141,7 +157,7 @@ function Assert-ManifestHash {
     $entry = Get-ManifestEntry -Manifest $Manifest -RelativePath $RelativePath
     $path = Join-Path $Root ($RelativePath -replace '/', '\\')
     Assert-File -Path $path
-    $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = Get-Sha256 -Path $path
     if ($actual -ne $entry.sha256.ToLowerInvariant()) {
         throw "[VibeshineVhfGamepad] Manifest hash mismatch for '$RelativePath'."
     }
