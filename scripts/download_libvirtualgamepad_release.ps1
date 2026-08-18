@@ -23,6 +23,22 @@ function Write-Step {
     Write-Host "[libvirtualgamepad] $Message"
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $hasher.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function New-GitHubHeaders {
     param([string] $Token)
 
@@ -173,7 +189,7 @@ try {
         Invoke-WebRequest -Uri $asset.url -Headers $downloadHeaders -OutFile $archivePath
     }
 
-    $actualArchiveSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualArchiveSha256 = Get-Sha256 -Path $archivePath
     if ($actualArchiveSha256 -ne $ExpectedArchiveSha256) {
         throw "Downloaded $assetName SHA-256 does not match the pinned release asset. Expected $ExpectedArchiveSha256, got $actualArchiveSha256."
     }
