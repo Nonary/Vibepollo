@@ -27,7 +27,10 @@ namespace platf::vhf_gamepad {
   };
 
   /**
-   * @brief A decoded rumble/RGB feedback report from the driver.
+   * @brief A decoded rumble feedback report from the driver.
+   * @details `has_rgb` is false for force-feedback events. A DirectInput effect says nothing
+   *          about a light, so forwarding its zeroed colour channels would switch off the LED on
+   *          the client's real controller.
    */
   struct rumble_rgb_t {
     std::uint16_t low_frequency {};
@@ -35,11 +38,13 @@ namespace platf::vhf_gamepad {
     std::uint8_t red {};
     std::uint8_t green {};
     std::uint8_t blue {};
+    bool has_rgb {};
 
     bool operator==(const rumble_rgb_t &other) const noexcept {
       return low_frequency == other.low_frequency &&
              high_frequency == other.high_frequency &&
-             red == other.red && green == other.green && blue == other.blue;
+             red == other.red && green == other.green && blue == other.blue &&
+             has_rgb == other.has_rgb;
     }
   };
 
@@ -83,8 +88,10 @@ namespace platf::vhf_gamepad {
 
   /**
    * @brief Decodes a driver feedback event into rumble and RGB values.
+   * @details Accepts both the rumble/RGB report a vendor output report produces and the
+   *          rumble-only report a DirectInput force-feedback effect produces.
    * @param event The event returned by the driver.
-   * @param feedback Receives the decoded values when the event is a rumble/RGB report.
+   * @param feedback Receives the decoded values when the event carries rumble.
    * @return `true` when `feedback` was populated.
    */
   [[nodiscard]] bool decode_rumble_rgb(const lvg::feedback_event &event, rumble_rgb_t &feedback) noexcept;

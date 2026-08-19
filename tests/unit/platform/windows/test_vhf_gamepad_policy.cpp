@@ -18,12 +18,14 @@ namespace {
   using platf::vhf_gamepad::supported_button_mask;
   using platf::vhf_gamepad::to_hid_vertical_axis;
 
-  lvg::feedback_event make_rumble_event(const lvg::generic_rumble_rgb_feedback &payload) {
+  lvg::feedback_event make_rumble_event(
+    const lvg::generic_rumble_rgb_feedback &payload,
+    const lvg::feedback_type type = lvg::feedback_type::generic_rumble_rgb) {
     lvg::feedback_event event {};
     event.header.size = sizeof(event);
     event.header.version = lvg::k_protocol_version;
     event.controller_id = 3;
-    event.type = lvg::feedback_type::generic_rumble_rgb;
+    event.type = type;
     event.payload_size = sizeof(payload);
     std::memcpy(event.payload, &payload, sizeof(payload));
     return event;
@@ -103,6 +105,41 @@ namespace {
     EXPECT_EQ(feedback.red, 0x10);
     EXPECT_EQ(feedback.green, 0x20);
     EXPECT_EQ(feedback.blue, 0x30);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, RumbleAndRgbFeedbackReportsAnLed) {
+    const lvg::generic_rumble_rgb_feedback payload {1, 2, 3, 4, 5, 0};
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(make_rumble_event(payload), feedback));
+    EXPECT_TRUE(feedback.has_rgb);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, ForceFeedbackRumbleCarriesNoLed) {
+    // A DirectInput effect says nothing about a light. If this reported an LED, the zeroed
+    // colour channels would switch off the light on the client's real controller.
+    const lvg::generic_rumble_rgb_feedback payload {0x4000, 0x8000, 0, 0, 0, 0};
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(
+      make_rumble_event(payload, lvg::feedback_type::generic_rumble), feedback));
+    EXPECT_EQ(feedback.low_frequency, 0x4000);
+    EXPECT_EQ(feedback.high_frequency, 0x8000);
+    EXPECT_FALSE(feedback.has_rgb);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, ForceFeedbackRumbleIgnoresStrayColourBytes) {
+    // The payload struct still has colour channels; a rumble-only event must not surface them
+    // whatever they happen to contain.
+    const lvg::generic_rumble_rgb_feedback payload {1, 2, 0xAA, 0xBB, 0xCC, 0};
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(
+      make_rumble_event(payload, lvg::feedback_type::generic_rumble), feedback));
+    EXPECT_FALSE(feedback.has_rgb);
+    EXPECT_EQ(feedback.red, 0);
+    EXPECT_EQ(feedback.green, 0);
+    EXPECT_EQ(feedback.blue, 0);
   }
 
   TEST_F(VhfGamepadPolicyTest, NonRumbleFeedbackIsRejected) {
