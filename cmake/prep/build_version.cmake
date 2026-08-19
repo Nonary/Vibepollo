@@ -1,5 +1,13 @@
 # Set build variables if env variables are defined
 # These are used in configured files such as manifests for different packages
+# Every git query below must run against the repository, not the binary
+# directory. execute_process defaults to the current binary dir, so an
+# out-of-tree build directory made all of them fail silently and the version
+# fell back to 0.0.0 - which is lower than every release and turns the
+# resulting installer into a downgrade. Resolve the root from this file so it
+# holds however the file is included.
+get_filename_component(SUNSHINE_VERSION_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+
 if(DEFINED ENV{BRANCH})
     set(GITHUB_BRANCH $ENV{BRANCH})
 endif()
@@ -69,6 +77,7 @@ else()
                 COMMAND ${GIT_EXECUTABLE} tag --merged HEAD --sort=-version:refname --list "${_tag_pattern}"
                 OUTPUT_VARIABLE _git_tag_candidates_raw
                 RESULT_VARIABLE _git_tag_candidates_error
+                WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
 
             if(_git_tag_candidates_error)
@@ -103,6 +112,7 @@ else()
             COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
             OUTPUT_VARIABLE GIT_DESCRIBE_BRANCH
             RESULT_VARIABLE GIT_BRANCH_ERROR
+            WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
             OUTPUT_STRIP_TRAILING_WHITESPACE)
         # Highest merged semver tag from the active release-tag family.
         _sunshine_select_latest_git_tag(GIT_NEAREST_TAG_RAW)
@@ -111,11 +121,13 @@ else()
             COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
             OUTPUT_VARIABLE GIT_SHORT
             RESULT_VARIABLE GIT_SHORT_ERROR
+            WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
             OUTPUT_STRIP_TRAILING_WHITESPACE)
         # Dirty state
         execute_process(
             COMMAND ${GIT_EXECUTABLE} diff --quiet --exit-code
             RESULT_VARIABLE GIT_IS_DIRTY
+            WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
             OUTPUT_STRIP_TRAILING_WHITESPACE)
 
         if(NOT GIT_NEAREST_TAG_RAW STREQUAL "")
@@ -128,6 +140,7 @@ else()
                 COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=0
                 OUTPUT_VARIABLE GIT_NEAREST_TAG_RAW
                 RESULT_VARIABLE GIT_TAG_ERROR
+                WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
                 OUTPUT_STRIP_TRAILING_WHITESPACE)
             if(NOT GIT_TAG_ERROR)
                 set(PROJECT_VERSION "${GIT_NEAREST_TAG_RAW}")
@@ -170,6 +183,17 @@ else()
     set(PROJECT_VERSION_PRERELEASE "")
 endif()
 
+# 0.0.0 sorts below every real release, so a package built from it installs over
+# a released one as an MSI downgrade. That is the riskiest replacement path and
+# it should never be entered by accident, so say so loudly here rather than
+# leaving it to be discovered as a half-removed installation.
+if(PROJECT_VERSION_NUMERIC STREQUAL "0.0.0")
+    message(WARNING
+        "Version resolution produced 0.0.0. Any installer built from this tree will look "
+        "older than every release and will be treated as a downgrade. Check that this is a "
+        "git checkout with tags reachable from HEAD.")
+endif()
+
 # Propagate branch information as a compile definition if available.
 # CI builds define BRANCH env var; local builds derive GIT_DESCRIBE_BRANCH above.
 if(DEFINED GIT_DESCRIBE_BRANCH AND NOT GIT_DESCRIBE_BRANCH STREQUAL "")
@@ -191,6 +215,7 @@ if((NOT DEFINED GITHUB_COMMIT) OR (GITHUB_COMMIT STREQUAL ""))
             OUTPUT_VARIABLE GIT_FULL_COMMIT
             RESULT_VARIABLE GIT_FULL_COMMIT_ERROR_CODE
             OUTPUT_STRIP_TRAILING_WHITESPACE
+            WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
         )
         if(NOT GIT_FULL_COMMIT_ERROR_CODE)
             set(GITHUB_COMMIT "${GIT_FULL_COMMIT}")
@@ -301,6 +326,7 @@ if(PROJECT_RELEASE_DATE_ISO STREQUAL "")
             OUTPUT_VARIABLE GIT_COMMIT_DATE_ISO
             RESULT_VARIABLE GIT_COMMIT_DATE_ISO_ERROR_CODE
             OUTPUT_STRIP_TRAILING_WHITESPACE
+            WORKING_DIRECTORY "${SUNSHINE_VERSION_REPO_ROOT}"
         )
         if(NOT GIT_COMMIT_DATE_ISO_ERROR_CODE AND NOT "${GIT_COMMIT_DATE_ISO}" STREQUAL "")
             set(PROJECT_RELEASE_DATE_ISO "${GIT_COMMIT_DATE_ISO}")
