@@ -49,6 +49,9 @@ interface VigemStatus {
   version_compatible?: boolean;
   packaged_version?: string;
   error?: string;
+  // False when Vibeshine's own virtual gamepad driver is available, so a missing
+  // ViGEmBus is an unused option rather than a problem.
+  required?: boolean;
 }
 
 interface VulkanStatus {
@@ -247,16 +250,25 @@ function vigemSummary(): IntegrationSummary {
   if (!isWindows.value) return unavailableSummary('vigem', name, shortDescription);
   if (!value) return failedSummary('vigem', name, shortDescription);
   const compatible = Boolean(value.installed && value.version_compatible);
+  // The server reports required=false when another driver is already providing
+  // controllers. Flagging ViGEmBus in that case sends people off installing a
+  // dependency the host does not use.
+  const required = value.required !== false;
+  const notNeeded = !compatible && !required;
   return {
     id: 'vigem',
     name,
-    description: t('ui.integrations.vigem.description'),
+    description: notNeeded
+      ? t('ui.integrations.vigem.supersededDescription')
+      : t('ui.integrations.vigem.description'),
     status: compatible
       ? t('ui.integrations.status.ready')
-      : value.installed
-        ? t('ui.integrations.status.updateRequired')
-        : t('ui.integrations.status.notInstalled'),
-    tone: compatible ? 'success' : 'warning',
+      : notNeeded
+        ? t('ui.integrations.status.notRequired')
+        : value.installed
+          ? t('ui.integrations.status.updateRequired')
+          : t('ui.integrations.status.notInstalled'),
+    tone: compatible ? 'success' : notNeeded ? 'neutral' : 'warning',
     details: [
       value.version ? t('ui.integrations.details.installedVersion', { version: value.version }) : '',
       value.packaged_version

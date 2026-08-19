@@ -156,6 +156,14 @@ namespace platf {
   bool is_vigem_installed(std::string *version_out = nullptr);
 
   /**
+   * @brief Check whether Vibeshine's own virtual gamepad driver is usable.
+   * @details Probes the driver's private control interface, so it reports what a stream would
+   *          actually get rather than merely whether files are present.
+   * @return true when a virtual controller can be created without ViGEmBus.
+   */
+  bool is_virtual_gamepad_driver_available();
+
+  /**
    * @brief Check whether the Sunshine Vulkan HDR implicit layer is registered for the system.
    * @details Reads HKLM\SOFTWARE\Khronos\Vulkan\ImplicitLayers (64-bit view) and confirms a value
    *          pointing at VkLayer_sunshine_hdr.json whose manifest still exists on disk.

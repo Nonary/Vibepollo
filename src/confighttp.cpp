@@ -1165,6 +1165,8 @@ namespace confighttp {
       bool installed = platf::is_vigem_installed(&version);
       nlohmann::json out;
       out["installed"] = installed;
+      // ViGEmBus is only a requirement when nothing else can provide a virtual controller.
+      out["required"] = !platf::is_virtual_gamepad_driver_available();
       if (!version.empty()) {
         out["version"] = version;
       }
@@ -5562,12 +5564,16 @@ namespace confighttp {
     output_tree["version"] = version_str;
     output_tree["version_compatible"] = version_compatible;
     output_tree["packaged_version"] = VIGEMBUS_PACKAGED_VERSION;
+    // Drives whether the UI presents a missing ViGEmBus as a problem or as an
+    // unused option: Vibeshine's own driver provides controllers without it.
+    output_tree["required"] = !platf::is_virtual_gamepad_driver_available();
 #else
     output_tree["error"] = "ViGEmBus is only available on Windows";
     output_tree["installed"] = false;
     output_tree["version"] = "";
     output_tree["version_compatible"] = false;
     output_tree["packaged_version"] = "";
+    output_tree["required"] = false;
 #endif
 
     send_response(response, output_tree);

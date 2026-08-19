@@ -223,14 +223,24 @@ namespace platf {
 
   class vigem_t {
   public:
+    // Set before init() so the ViGEmBus diagnostics can tell "no gamepad support at all" from
+    // "a different driver is providing it".
+    bool vhf_gamepad_available {false};
+
     int init() {
       // Probe ViGEm during startup to see if we can successfully attach gamepads. The web UI exposes a
       // dedicated health endpoint and warning banner when ViGEm is missing, so avoid fatal logs here.
       client_t client {vigem_alloc()};
       VIGEM_ERROR status = vigem_connect(client.get());
       if (!VIGEM_SUCCESS(status)) {
-        // Do not emit a fatal log that creates a global error banner; the UI now shows a dedicated warning.
-        BOOST_LOG(warning) << "ViGEmBus is not installed or running; gamepad emulation will be unavailable until installed."sv;
+        // Only a problem if nothing else can provide a gamepad. With Vibeshine's own driver
+        // present, ViGEmBus is simply not in use, and warning about it sends people chasing a
+        // dependency they no longer need.
+        if (vhf_gamepad_available) {
+          BOOST_LOG(info) << "ViGEmBus is not installed; gamepad emulation will use the Vibeshine virtual gamepad driver."sv;
+        } else {
+          BOOST_LOG(warning) << "ViGEmBus is not installed or running; gamepad emulation will be unavailable until installed."sv;
+        }
       } else {
         vigem_disconnect(client.get());
       }
@@ -568,14 +578,17 @@ namespace platf {
     input_t result {new input_raw_t {}};
     auto &raw = *(input_raw_t *) result.get();
 
+    // Probe the VHF driver first: whether it is available decides how loudly a missing
+    // ViGEmBus should be reported.
+    raw.vhf = new vhf_gamepad_t {};
+    const bool vhf_available = raw.vhf->probe();
+
     raw.vigem = new vigem_t {};
+    raw.vigem->vhf_gamepad_available = vhf_available;
     if (raw.vigem->init()) {
       delete raw.vigem;
       raw.vigem = nullptr;
     }
-
-    raw.vhf = new vhf_gamepad_t {};
-    raw.vhf->probe();
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
     raw.fnCreateSyntheticPointerDevice = (decltype(CreateSyntheticPointerDevice) *) GetProcAddress(GetModuleHandleA("user32.dll"), "CreateSyntheticPointerDevice");
@@ -1986,8 +1999,17 @@ namespace platf {
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason}
     };
 
+    // A gamepad type that is unavailable only because its backend is not installed is not
+    // worth a warning when another backend is providing controllers; it is just an option the
+    // user is not using.
+    const bool any_backend = enabled || vhf_enabled;
     for (auto &[name, is_enabled, reason_disabled] : gps) {
-      if (!is_enabled) {
+      if (is_enabled) {
+        continue;
+      }
+      if (any_backend) {
+        BOOST_LOG(debug) << "Gamepad " << name << " is unavailable (" << reason_disabled << ')';
+      } else {
         BOOST_LOG(warning) << "Gamepad " << name << " is disabled due to " << reason_disabled;
       }
     }
