@@ -138,6 +138,12 @@ namespace platf {
             return true;
           }
           return false;
+        case vhf_profile_e::switch_pro:
+          if (offers(client, lvg::profile::switch_pro)) {
+            selected = lvg::profile::switch_pro;
+            return true;
+          }
+          return false;
         case vhf_profile_e::automatic:
           break;
       }
@@ -163,6 +169,12 @@ namespace platf {
       return profile == lvg::profile::dualshock_4 || profile == lvg::profile::dualsense;
     }
 
+    // Profiles whose controller carries motion sensors and a battery. The
+    // Switch Pro has both but no touchpad, so the two are not the same set.
+    bool has_motion(const lvg::profile profile) {
+      return is_playstation(profile) || profile == lvg::profile::switch_pro;
+    }
+
     /**
      * @brief Names a profile for the log.
      * @param profile The profile.
@@ -176,6 +188,8 @@ namespace platf {
           return "a DualSense controller"sv;
         case lvg::profile::dualshock_4:
           return "a DualShock 4 controller"sv;
+        case lvg::profile::switch_pro:
+          return "a Switch Pro Controller"sv;
         case lvg::profile::generic_pid:
           return "a generic HID game pad with DirectInput force feedback"sv;
         default:
@@ -469,7 +483,7 @@ namespace platf {
     slot.feedback_queue = std::move(feedback_queue);
     impl->active_count.fetch_add(1, std::memory_order_acq_rel);
 
-    if (is_playstation(profile) && slot.feedback_queue) {
+    if (has_motion(profile) && slot.feedback_queue) {
       // The client only streams motion when asked. Without this a PlayStation
       // pad enumerates with sensors that never report.
       slot.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(
@@ -520,7 +534,7 @@ namespace platf {
     }
     std::shared_lock lock {impl->lifetime};
     const auto &slot = impl->slots[nr];
-    return slot.active && is_playstation(slot.profile);
+    return slot.active && has_motion(slot.profile);
   }
 
   void vhf_gamepad_t::touch(const int nr, const gamepad_touch_t &touch_event) {
@@ -596,7 +610,7 @@ namespace platf {
 
     std::shared_lock lock {impl->lifetime};
     auto &slot = impl->slots[nr];
-    if (!slot.active || !is_playstation(slot.profile)) {
+    if (!slot.active || !has_motion(slot.profile)) {
       return;
     }
 
@@ -622,7 +636,7 @@ namespace platf {
 
     std::shared_lock lock {impl->lifetime};
     auto &slot = impl->slots[nr];
-    if (!slot.active || !is_playstation(slot.profile)) {
+    if (!slot.active || !has_motion(slot.profile)) {
       return;
     }
 

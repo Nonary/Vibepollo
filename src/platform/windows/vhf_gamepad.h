@@ -19,7 +19,8 @@ namespace platf {
     automatic,  ///< Best available for the client, preferring a PlayStation pad when it fits.
     xbox_series,
     dualshock4,
-    dualsense
+    dualsense,
+    switch_pro
   };
 
   /**
