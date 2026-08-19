@@ -1018,9 +1018,8 @@ if (client_config.enableIntraRefresh == 1) {
       return false;
     }
 
-    BOOST_LOG(info) << "AMF: Native GDR mode successfully activated! CTBs per frame: " << total_ctbs_per_frame;
+    BOOST_LOG(info) << "AMF: Native GDR mode successfully activated!";
   } else {
-    // Silent fallback during H.264 / AV1 capability probing at Sunshine startup
     BOOST_LOG(debug) << "AMF: Skipping GDR setup (H.264 or AV1 validation active)";
   }
 } else {
