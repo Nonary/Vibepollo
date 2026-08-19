@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <tuple>
@@ -383,9 +384,27 @@ namespace platf {
       return false;
     }
 
+    // List what the driver offers rather than what an automatic selection would
+    // pick. This line is read to confirm a configured controller type is
+    // reachable, and naming one profile made every other setting look ignored.
+    std::string offered;
+    for (const auto &[candidate, name] : {
+           std::pair {lvg::profile::xbox_series, "Xbox Series"sv},
+           std::pair {lvg::profile::dualsense, "DualSense"sv},
+           std::pair {lvg::profile::dualshock_4, "DualShock 4"sv},
+           std::pair {lvg::profile::generic_pid, "generic HID with force feedback"sv},
+           std::pair {lvg::profile::generic_hid, "generic HID"sv}}) {
+      if (offers(probe_client, candidate)) {
+        if (!offered.empty()) {
+          offered += ", ";
+        }
+        offered.append(name);
+      }
+    }
+
     BOOST_LOG(info) << "Vibeshine virtual gamepad driver is available (up to "sv
-                    << probe_client.maximum_controllers() << " controllers, "sv
-                    << describe_profile(profile) << ')';
+                    << probe_client.maximum_controllers() << " controllers; offers "sv
+                    << offered << ')';
     impl->driver_available = true;
     return true;
   }
