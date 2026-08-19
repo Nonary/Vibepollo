@@ -85,6 +85,29 @@ namespace platf {
     };
   }  // namespace
 
+  namespace {
+    /**
+     * @brief Picks the richest profile the connected driver offers.
+     * @details The PID profile is the same game pad plus the DirectInput force-feedback report
+     *          set. An older driver, or one whose HID stack rejected the larger PID descriptor,
+     *          still offers the plain generic profile.
+     * @param client The connected driver client.
+     * @param selected Receives the chosen profile.
+     * @return `true` when the driver offers a usable profile.
+     */
+    bool select_profile(const lvg::client &client, lvg::profile &selected) {
+      if ((client.available_profiles() & lvg::profile_bit(lvg::profile::generic_pid)) != 0) {
+        selected = lvg::profile::generic_pid;
+        return true;
+      }
+      if ((client.available_profiles() & lvg::profile_bit(lvg::profile::generic_hid)) != 0) {
+        selected = lvg::profile::generic_hid;
+        return true;
+      }
+      return false;
+    }
+  }  // namespace
+
   struct vhf_gamepad_t::impl_t {
     // Guards the driver connection and slot ownership. Submitting input and polling feedback take
     // it shared because those IOCTLs are independent per controller; only connection and slot
@@ -125,10 +148,13 @@ namespace platf {
     const bool rumble_changed = !slot.have_feedback ||
                                 slot.last_feedback.low_frequency != feedback.low_frequency ||
                                 slot.last_feedback.high_frequency != feedback.high_frequency;
-    const bool rgb_changed = !slot.have_feedback ||
-                             slot.last_feedback.red != feedback.red ||
-                             slot.last_feedback.green != feedback.green ||
-                             slot.last_feedback.blue != feedback.blue;
+    // A force-feedback effect carries no colour, so raising an LED update for it would switch
+    // off the light on the client's real controller.
+    const bool rgb_changed = feedback.has_rgb &&
+                             (!slot.have_feedback ||
+                              slot.last_feedback.red != feedback.red ||
+                              slot.last_feedback.green != feedback.green ||
+                              slot.last_feedback.blue != feedback.blue);
 
     // We have to use the client-relative index when communicating back to the client
     if (rumble_changed) {
@@ -247,15 +273,18 @@ namespace platf {
       return false;
     }
 
-    const bool has_generic_hid =
-      (probe_client.available_profiles() & lvg::profile_bit(lvg::profile::generic_hid)) != 0;
-    if (!has_generic_hid) {
-      BOOST_LOG(warning) << "Vibeshine virtual gamepad driver does not expose the generic HID profile"sv;
+    lvg::profile profile {};
+    if (!select_profile(probe_client, profile)) {
+      BOOST_LOG(warning) << "Vibeshine virtual gamepad driver does not expose a usable gamepad profile"sv;
       return false;
     }
 
     BOOST_LOG(info) << "Vibeshine virtual gamepad driver is available (up to "sv
-                    << probe_client.maximum_controllers() << " controllers)"sv;
+                    << probe_client.maximum_controllers() << " controllers, "sv
+                    << (profile == lvg::profile::generic_pid
+                          ? "generic HID with DirectInput force feedback"sv
+                          : "generic HID"sv)
+                    << ')';
     impl->driver_available = true;
     return true;
   }
@@ -288,9 +317,18 @@ namespace platf {
       BOOST_LOG(debug) << "Connected to the Vibeshine virtual gamepad driver"sv;
     }
 
+    lvg::profile profile {};
+    if (!select_profile(impl->client, profile)) {
+      BOOST_LOG(error) << "Vibeshine virtual gamepad driver offers no usable gamepad profile"sv;
+      if (impl->active_count.load(std::memory_order_acquire) == 0) {
+        impl->client.close();
+      }
+      return -1;
+    }
+
     const DWORD status = impl->client.create_controller(
       static_cast<std::uint32_t>(id.globalIndex),
-      lvg::profile::generic_hid
+      profile
     );
     if (status != ERROR_SUCCESS) {
       BOOST_LOG(error) << "Couldn't create VHF gamepad "sv << id.globalIndex << " ["sv
@@ -314,7 +352,10 @@ namespace platf {
     }
     impl->wake.notify_all();
 
-    BOOST_LOG(info) << "VHF gamepad "sv << id.globalIndex << " created as a generic HID game pad"sv;
+    BOOST_LOG(info) << "VHF gamepad "sv << id.globalIndex << " created as a generic HID game pad"sv
+                    << (profile == lvg::profile::generic_pid
+                          ? " with DirectInput force feedback"sv
+                          : ""sv);
     return 0;
   }
 

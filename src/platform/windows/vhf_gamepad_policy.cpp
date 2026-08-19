@@ -41,7 +41,9 @@ namespace platf::vhf_gamepad {
   }
 
   bool decode_rumble_rgb(const lvg::feedback_event &event, rumble_rgb_t &feedback) noexcept {
-    if (event.type != lvg::feedback_type::generic_rumble_rgb ||
+    const bool has_rgb = event.type == lvg::feedback_type::generic_rumble_rgb;
+    const bool rumble_only = event.type == lvg::feedback_type::generic_rumble;
+    if ((!has_rgb && !rumble_only) ||
         event.payload_size != sizeof(lvg::generic_rumble_rgb_feedback)) {
       return false;
     }
@@ -51,9 +53,10 @@ namespace platf::vhf_gamepad {
 
     feedback.low_frequency = payload.low_frequency;
     feedback.high_frequency = payload.high_frequency;
-    feedback.red = payload.red;
-    feedback.green = payload.green;
-    feedback.blue = payload.blue;
+    feedback.red = has_rgb ? payload.red : 0;
+    feedback.green = has_rgb ? payload.green : 0;
+    feedback.blue = has_rgb ? payload.blue : 0;
+    feedback.has_rgb = has_rgb;
     return true;
   }
 

@@ -377,9 +377,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>vhf</td>
         <td>Generic HID game pad on Vibeshine's own virtual gamepad driver, instead of ViGEmBus
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
-            driver to be installed. The generic HID profile is not an XInput device, so games that
-            only support XInput will not detect it, and touchpad, motion, and battery reports are
-            unavailable.}</td>
+            driver to be installed. The pad publishes the DirectInput Physical Interface Device
+            report set, so force feedback works in DirectInput games. It is not an XInput device,
+            so games that only support XInput will not detect it, and touchpad, motion, and
+            battery reports are unavailable.}</td>
     </tr>
     <tr>
         <td>x360</td>
