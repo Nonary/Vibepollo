@@ -26,7 +26,6 @@ namespace {
   using platf::vhf_gamepad::to_protocol_battery_state;
   using platf::vhf_gamepad::to_protocol_motion_kind;
   using platf::vhf_gamepad::to_protocol_touch_event;
-  using platf::vhf_gamepad::to_hid_vertical_axis;
 
   lvg::feedback_event make_rumble_event(
     const lvg::generic_rumble_rgb_feedback &payload,
@@ -84,25 +83,26 @@ namespace {
     EXPECT_EQ(request.right_trigger, 255);
   }
 
-  TEST_F(VhfGamepadPolicyTest, VerticalAxesFlipToTheHidConvention) {
-    // Vibeshine reports stick-up as positive; HID Y and Ry are positive-down, so pushing a stick
-    // up has to reach the driver as a negative value or every game reads the stick inverted.
+  TEST_F(VhfGamepadPolicyTest, VerticalAxesGoOverTheWireUnchanged) {
+    // The wire contract is Vibeshine's normalized state, positive-up. Each driver profile
+    // converts to its own device's convention, so converting here too inverted both sticks.
     normalized_state_t state {};
     state.left_y = 20000;
     state.right_y = -8000;
 
     const auto request = make_input_state(0, state);
-    EXPECT_EQ(request.left_y, -20000);
-    EXPECT_EQ(request.right_y, 8000);
+    EXPECT_EQ(request.left_y, 20000);
+    EXPECT_EQ(request.right_y, -8000);
   }
 
-  TEST_F(VhfGamepadPolicyTest, VerticalAxisSaturatesInsteadOfWrapping) {
-    constexpr auto min_axis = std::numeric_limits<std::int16_t>::min();
-    constexpr auto max_axis = std::numeric_limits<std::int16_t>::max();
+  TEST_F(VhfGamepadPolicyTest, ExtremeAxisValuesSurviveUnchanged) {
+    normalized_state_t state {};
+    state.left_y = std::numeric_limits<std::int16_t>::min();
+    state.right_y = std::numeric_limits<std::int16_t>::max();
 
-    EXPECT_EQ(to_hid_vertical_axis(min_axis), max_axis);
-    EXPECT_EQ(to_hid_vertical_axis(max_axis), static_cast<std::int16_t>(-max_axis));
-    EXPECT_EQ(to_hid_vertical_axis(0), 0);
+    const auto request = make_input_state(0, state);
+    EXPECT_EQ(request.left_y, std::numeric_limits<std::int16_t>::min());
+    EXPECT_EQ(request.right_y, std::numeric_limits<std::int16_t>::max());
   }
 
   TEST_F(VhfGamepadPolicyTest, RumbleAndRgbFeedbackIsDecoded) {

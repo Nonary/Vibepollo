@@ -95,16 +95,6 @@ namespace platf::vhf_gamepad {
     lvg::button_mask::touchpad | lvg::button_mask::misc;
 
   /**
-   * @brief Converts a vertical stick axis to the HID sign convention.
-   * @details Vibeshine's normalized state is positive-up (the XInput convention Moonlight sends),
-   *          while HID Generic Desktop Y and Ry are positive-down. `INT16_MIN` has no positive
-   *          counterpart, so it saturates instead of wrapping back to itself.
-   * @param value The normalized axis value.
-   * @return The axis value in HID orientation.
-   */
-  [[nodiscard]] std::int16_t to_hid_vertical_axis(std::int16_t value) noexcept;
-
-  /**
    * @brief Builds a protocol input report for a controller.
    * @param controller_id The driver-side controller slot.
    * @param state The normalized controller state.

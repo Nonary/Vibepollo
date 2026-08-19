@@ -16,13 +16,6 @@ extern "C" {
 
 namespace platf::vhf_gamepad {
 
-  std::int16_t to_hid_vertical_axis(const std::int16_t value) noexcept {
-    if (value == std::numeric_limits<std::int16_t>::min()) {
-      return std::numeric_limits<std::int16_t>::max();
-    }
-    return static_cast<std::int16_t>(-value);
-  }
-
   lvg::input_state_request make_input_state(
     const std::uint32_t controller_id,
     const normalized_state_t &state
@@ -36,10 +29,15 @@ namespace platf::vhf_gamepad {
     // supported bits are a straight copy and the driver owns the HID button/hat encoding.
     request.buttons = state.button_flags & supported_button_mask;
 
+    // Axes go over the wire as Vibeshine's normalized state, positive-up. Each
+    // driver profile converts to its own device's convention, and they disagree:
+    // HID sticks are positive-down while a DualShock 4's are unsigned. Flipping
+    // here as well double-inverted both sticks on every profile that does its own
+    // conversion, which is all of them.
     request.left_x = state.left_x;
-    request.left_y = to_hid_vertical_axis(state.left_y);
+    request.left_y = state.left_y;
     request.right_x = state.right_x;
-    request.right_y = to_hid_vertical_axis(state.right_y);
+    request.right_y = state.right_y;
     request.left_trigger = state.left_trigger;
     request.right_trigger = state.right_trigger;
     return request;
