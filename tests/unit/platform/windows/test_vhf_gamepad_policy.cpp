@@ -142,6 +142,51 @@ namespace {
     EXPECT_EQ(feedback.blue, 0);
   }
 
+  TEST_F(VhfGamepadPolicyTest, XboxRumbleCarriesAllFourActuators) {
+    // The driver keeps one pending feedback slot, so body and trigger rumble arrive together;
+    // splitting them across events would let coalescing drop one.
+    const lvg::xbox_rumble_feedback payload {0x1000, 0x2000, 0x3000, 0x4000};
+
+    lvg::feedback_event event {};
+    event.header.size = sizeof(event);
+    event.header.version = lvg::k_protocol_version;
+    event.controller_id = 3;
+    event.type = lvg::feedback_type::xbox_rumble;
+    event.payload_size = sizeof(payload);
+    std::memcpy(event.payload, &payload, sizeof(payload));
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(event, feedback));
+    EXPECT_EQ(feedback.low_frequency, 0x1000);
+    EXPECT_EQ(feedback.high_frequency, 0x2000);
+    EXPECT_EQ(feedback.left_trigger, 0x3000);
+    EXPECT_EQ(feedback.right_trigger, 0x4000);
+    EXPECT_TRUE(feedback.has_triggers);
+    EXPECT_FALSE(feedback.has_rgb);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, XboxRumbleWithAWrongSizedPayloadIsRejected) {
+    lvg::feedback_event event {};
+    event.header.size = sizeof(event);
+    event.header.version = lvg::k_protocol_version;
+    event.controller_id = 3;
+    event.type = lvg::feedback_type::xbox_rumble;
+    event.payload_size = sizeof(lvg::xbox_rumble_feedback) - 1;
+
+    rumble_rgb_t feedback {};
+    EXPECT_FALSE(decode_rumble_rgb(event, feedback));
+  }
+
+  TEST_F(VhfGamepadPolicyTest, GenericFeedbackReportsNoTriggerRumble) {
+    const lvg::generic_rumble_rgb_feedback payload {1, 2, 3, 4, 5, 0};
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(make_rumble_event(payload), feedback));
+    EXPECT_FALSE(feedback.has_triggers);
+    EXPECT_EQ(feedback.left_trigger, 0);
+    EXPECT_EQ(feedback.right_trigger, 0);
+  }
+
   TEST_F(VhfGamepadPolicyTest, NonRumbleFeedbackIsRejected) {
     auto event = make_rumble_event({});
     event.type = lvg::feedback_type::raw_output_report;

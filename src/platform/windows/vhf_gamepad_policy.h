@@ -40,11 +40,21 @@ namespace platf::vhf_gamepad {
     std::uint8_t blue {};
     bool has_rgb {};
 
+    // Xbox controllers have impulse triggers. The driver sends all four
+    // actuators in one event because it keeps a single pending feedback slot,
+    // so splitting them would let coalescing drop one.
+    std::uint16_t left_trigger {};
+    std::uint16_t right_trigger {};
+    bool has_triggers {};
+
     bool operator==(const rumble_rgb_t &other) const noexcept {
       return low_frequency == other.low_frequency &&
              high_frequency == other.high_frequency &&
              red == other.red && green == other.green && blue == other.blue &&
-             has_rgb == other.has_rgb;
+             has_rgb == other.has_rgb &&
+             left_trigger == other.left_trigger &&
+             right_trigger == other.right_trigger &&
+             has_triggers == other.has_triggers;
     }
   };
 
