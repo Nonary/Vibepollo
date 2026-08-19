@@ -501,7 +501,45 @@ namespace platf {
    * @return `true` when the VHF driver should be used instead of ViGEmBus.
    */
   static bool vhf_gamepad_selected() {
-    return config::input.gamepad == "vhf"sv;
+    return config::input.gamepad == "vhf"sv ||
+           config::input.gamepad == "vhf_ds4"sv ||
+           config::input.gamepad == "vhf_ds5"sv;
+  }
+
+  /**
+   * @brief Reports whether the configured VHF controller has a touchpad.
+   * @return `true` when the selection always yields a PlayStation controller.
+   */
+  static bool vhf_gamepad_has_touchpad() {
+    return config::input.gamepad == "vhf_ds4"sv || config::input.gamepad == "vhf_ds5"sv;
+  }
+
+  /**
+   * @brief Chooses which controller the VHF driver should present.
+   * @details An explicit `vhf_ds4`/`vhf_ds5` selection is honoured as-is. Plain `vhf` reuses the
+   *          same client-type and motion/touchpad rules that already drive DualShock 4 selection
+   *          on ViGEm, so a PlayStation client gets a PlayStation pad without extra configuration.
+   * @param metadata The client's reported gamepad capabilities.
+   * @return The profile to request.
+   */
+  static vhf_profile_e vhf_desired_profile(const gamepad_arrival_t &metadata) {
+    if (config::input.gamepad == "vhf_ds5"sv) {
+      return vhf_profile_e::dualsense;
+    }
+    if (config::input.gamepad == "vhf_ds4"sv) {
+      return vhf_profile_e::dualshock4;
+    }
+
+    if (metadata.type == LI_CTYPE_PS) {
+      return vhf_profile_e::dualsense;
+    }
+    if (config::input.motion_as_ds4 && (metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO))) {
+      return vhf_profile_e::dualsense;
+    }
+    if (config::input.touchpad_as_ds4 && (metadata.capabilities & LI_CCAP_TOUCHPAD)) {
+      return vhf_profile_e::dualsense;
+    }
+    return vhf_profile_e::automatic;
   }
 
   /**
@@ -1248,16 +1286,19 @@ namespace platf {
     }
 
     if (vhf_gamepad_selected() && raw->vhf) {
-      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be a generic HID game pad on the Vibeshine virtual gamepad driver (manual selection)"sv;
+      const auto desired = vhf_desired_profile(metadata);
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibeshine virtual gamepad driver"sv;
 
-      if (metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO)) {
-        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " has motion sensors, but they are not usable on the Vibeshine virtual gamepad driver"sv;
-      }
-      if (metadata.capabilities & LI_CCAP_TOUCHPAD) {
-        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " has a touchpad, but it is not usable on the Vibeshine virtual gamepad driver"sv;
+      if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+        raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+        return 0;
       }
 
-      if (raw->vhf->alloc(id, feedback_queue) == 0) {
+      // An explicit request that the driver cannot satisfy is worth one retry with whatever it
+      // does offer, rather than dropping straight off the driver the user chose.
+      if (desired != vhf_profile_e::automatic &&
+          raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic) == 0) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " could not use the requested controller type; the Vibeshine driver substituted the closest one it offers"sv;
         raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
         return 0;
       }
@@ -1665,8 +1706,9 @@ namespace platf {
   void gamepad_touch(input_t &input, const gamepad_touch_t &touch) {
     auto raw = (input_raw_t *) input.get();
 
-    // The VHF driver's generic HID profile has no touchpad to report against
     if (vhf_owns_gamepad(raw, touch.id.globalIndex)) {
+      // Dropped when the slot's controller has no touchpad.
+      raw->vhf->touch(touch.id.globalIndex, touch);
       return;
     }
 
@@ -1778,8 +1820,9 @@ namespace platf {
   void gamepad_motion(input_t &input, const gamepad_motion_t &motion) {
     auto raw = (input_raw_t *) input.get();
 
-    // The VHF driver's generic HID profile has no motion sensors
     if (vhf_owns_gamepad(raw, motion.id.globalIndex)) {
+      // Dropped when the slot's controller has no motion sensors.
+      raw->vhf->motion(motion.id.globalIndex, motion);
       return;
     }
 
@@ -1819,8 +1862,9 @@ namespace platf {
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery) {
     auto raw = (input_raw_t *) input.get();
 
-    // The VHF driver's generic HID profile has no battery report
     if (vhf_owns_gamepad(raw, battery.id.globalIndex)) {
+      // Dropped when the slot's controller has no battery.
+      raw->vhf->battery(battery.id.globalIndex, battery);
       return;
     }
 
@@ -1904,6 +1948,8 @@ namespace platf {
         supported_gamepad_t {"x360", false, ""},
         supported_gamepad_t {"ds4", false, ""},
         supported_gamepad_t {"vhf", false, ""},
+        supported_gamepad_t {"vhf_ds4", false, ""},
+        supported_gamepad_t {"vhf_ds5", false, ""},
       };
 
       return gps;
@@ -1921,7 +1967,9 @@ namespace platf {
       supported_gamepad_t {"auto", true, reason},
       supported_gamepad_t {"x360", enabled, reason},
       supported_gamepad_t {"ds4", enabled, reason},
-      supported_gamepad_t {"vhf", vhf_enabled, vhf_reason}
+      supported_gamepad_t {"vhf", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason}
     };
 
     for (auto &[name, is_enabled, reason_disabled] : gps) {
@@ -1940,9 +1988,14 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360 or driving the
-    // VHF driver's generic HID profile, neither of which has a touchpad
-    if (config::input.gamepad != "x360"sv && !vhf_gamepad_selected()) {
+    // We support controller touchpad input as long as we're not emulating X360, which has no
+    // touchpad. On the VHF driver it depends on the controller: the PlayStation profiles have
+    // one, and plain `vhf` may still select one for a PlayStation client, so advertise it unless
+    // the selection rules out a touchpad entirely.
+    const bool vhf_without_touchpad =
+      vhf_gamepad_selected() && !vhf_gamepad_has_touchpad() &&
+      !config::input.motion_as_ds4 && !config::input.touchpad_as_ds4;
+    if (config::input.gamepad != "x360"sv && !vhf_without_touchpad) {
       caps |= platform_caps::controller_touch;
     }
 

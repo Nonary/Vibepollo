@@ -6,8 +6,13 @@
 #include "vhf_gamepad_policy.h"
 
 // standard includes
+#include <cmath>
 #include <cstring>
 #include <limits>
+
+extern "C" {
+#include <moonlight-common-c/src/Limelight.h>
+}
 
 namespace platf::vhf_gamepad {
 
@@ -40,7 +45,111 @@ namespace platf::vhf_gamepad {
     return request;
   }
 
+  std::uint8_t to_protocol_touch_event(const std::uint8_t event_type) noexcept {
+    switch (event_type) {
+      case LI_TOUCH_EVENT_HOVER:
+        return static_cast<std::uint8_t>(lvg::touch_event::hover);
+      case LI_TOUCH_EVENT_DOWN:
+        return static_cast<std::uint8_t>(lvg::touch_event::down);
+      case LI_TOUCH_EVENT_UP:
+        return static_cast<std::uint8_t>(lvg::touch_event::up);
+      case LI_TOUCH_EVENT_MOVE:
+        return static_cast<std::uint8_t>(lvg::touch_event::move);
+      case LI_TOUCH_EVENT_CANCEL:
+        return static_cast<std::uint8_t>(lvg::touch_event::cancel);
+      default:
+        // An unmapped event is safer read as "release everything" than as a
+        // contact the client never reported.
+        return static_cast<std::uint8_t>(lvg::touch_event::cancel_all);
+    }
+  }
+
+  std::uint8_t to_protocol_motion_kind(const std::uint8_t motion_type) noexcept {
+    switch (motion_type) {
+      case LI_MOTION_TYPE_ACCEL:
+        return static_cast<std::uint8_t>(lvg::motion_kind::accelerometer);
+      case LI_MOTION_TYPE_GYRO:
+        return static_cast<std::uint8_t>(lvg::motion_kind::gyroscope);
+      default:
+        return 0;
+    }
+  }
+
+  std::uint8_t to_protocol_battery_state(const std::uint8_t state) noexcept {
+    switch (state) {
+      case LI_BATTERY_STATE_NOT_PRESENT:
+        return static_cast<std::uint8_t>(lvg::battery_state::not_present);
+      case LI_BATTERY_STATE_DISCHARGING:
+        return static_cast<std::uint8_t>(lvg::battery_state::discharging);
+      case LI_BATTERY_STATE_CHARGING:
+        return static_cast<std::uint8_t>(lvg::battery_state::charging);
+      case LI_BATTERY_STATE_FULL:
+        return static_cast<std::uint8_t>(lvg::battery_state::full);
+      case LI_BATTERY_STATE_NOT_CHARGING:
+        return static_cast<std::uint8_t>(lvg::battery_state::not_charging);
+      default:
+        return static_cast<std::uint8_t>(lvg::battery_state::unknown);
+    }
+  }
+
+  std::uint16_t to_normalized_touch(const float value) noexcept {
+    if (!(value > 0.0f)) {  // Also catches NaN.
+      return 0;
+    }
+    if (value >= 1.0f) {
+      return 65535;
+    }
+    return static_cast<std::uint16_t>(value * 65535.0f);
+  }
+
+  std::int32_t to_milli_units(const float value) noexcept {
+    if (std::isnan(value)) {
+      return 0;
+    }
+    const float scaled = value * 1000.0f;
+    if (scaled >= 2147483000.0f) {
+      return 2147483000;
+    }
+    if (scaled <= -2147483000.0f) {
+      return -2147483000;
+    }
+    return static_cast<std::int32_t>(scaled);
+  }
+
   bool decode_rumble_rgb(const lvg::feedback_event &event, rumble_rgb_t &feedback) noexcept {
+    if (event.type == lvg::feedback_type::playstation_output) {
+      if (event.payload_size != sizeof(lvg::playstation_output_feedback)) {
+        return false;
+      }
+
+      lvg::playstation_output_feedback payload {};
+      std::memcpy(&payload, event.payload, sizeof(payload));
+
+      feedback = {};
+      feedback.low_frequency = payload.low_frequency;
+      feedback.high_frequency = payload.high_frequency;
+
+      if (payload.valid & lvg::ps_output_lightbar_valid) {
+        feedback.red = payload.red;
+        feedback.green = payload.green;
+        feedback.blue = payload.blue;
+        feedback.has_rgb = true;
+      }
+
+      if (payload.valid & lvg::ps_output_triggers_valid) {
+        feedback.left_effect.mode = payload.left_trigger.mode;
+        feedback.right_effect.mode = payload.right_trigger.mode;
+        std::memcpy(feedback.left_effect.parameters.data(), payload.left_trigger.parameters,
+                    feedback.left_effect.parameters.size());
+        std::memcpy(feedback.right_effect.parameters.data(), payload.right_trigger.parameters,
+                    feedback.right_effect.parameters.size());
+        // Both triggers travel in one report, so both are always current.
+        feedback.trigger_event_flags = 0x03;
+        feedback.has_trigger_effects = true;
+      }
+      return true;
+    }
+
     if (event.type == lvg::feedback_type::xbox_rumble) {
       if (event.payload_size != sizeof(lvg::xbox_rumble_feedback)) {
         return false;

@@ -156,11 +156,13 @@ export function getConfigSelectOptions(
         x360: 'config.gamepad_x360',
         xone: 'config.gamepad_xone',
         vhf: 'config.gamepad_vhf',
+        vhf_ds4: 'config.gamepad_vhf_ds4',
+        vhf_ds5: 'config.gamepad_vhf_ds5',
       };
       const prioritizedByPlatform: Record<string, string[]> = {
         freebsd: ['switch', 'xone'],
         linux: ['ds5', 'xone', 'switch', 'x360'],
-        windows: ['x360', 'ds4', 'vhf'],
+        windows: ['x360', 'ds4', 'vhf', 'vhf_ds4', 'vhf_ds5'],
       };
       const fallbackOrder = ['x360', 'ds5', 'ds4'];
 

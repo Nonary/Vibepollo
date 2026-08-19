@@ -375,13 +375,28 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf</td>
-        <td>Vibeshine's own virtual gamepad driver, instead of ViGEmBus
+        <td>Vibeshine's own virtual gamepad driver, instead of ViGEmBus, choosing the controller
+            automatically
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
-            driver to be installed. It presents an Xbox Series controller with rumble and impulse
-            triggers, which Windows places on the XInput path. On an older driver it falls back to
-            a generic HID pad that publishes the DirectInput Physical Interface Device report set,
-            so force feedback still works in DirectInput games. Touchpad, motion, and battery
-            reports are unavailable in either case.}</td>
+            driver to be installed. It presents a DualSense to clients that report a PlayStation
+            controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
+            controller otherwise. On an older driver it falls back to a generic HID pad that
+            publishes the DirectInput Physical Interface Device report set, so force feedback still
+            works in DirectInput games.}</td>
+    </tr>
+    <tr>
+        <td>vhf_ds4</td>
+        <td>DualShock 4 on Vibeshine's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. Includes the touchpad, motion sensors, battery reporting, and
+            the lightbar.}</td>
+    </tr>
+    <tr>
+        <td>vhf_ds5</td>
+        <td>DualSense on Vibeshine's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. Includes the touchpad, motion sensors, battery reporting, the
+            lightbar, the player and microphone LEDs, and the adaptive triggers.}</td>
     </tr>
     <tr>
         <td>x360</td>

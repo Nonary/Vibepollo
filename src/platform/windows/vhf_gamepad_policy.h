@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <cstdint>
 
 // lib includes
@@ -27,6 +28,18 @@ namespace platf::vhf_gamepad {
   };
 
   /**
+   * @brief One adaptive trigger's effect program.
+   */
+  struct trigger_effect_t {
+    std::uint8_t mode {};
+    std::array<std::uint8_t, 10> parameters {};
+
+    bool operator==(const trigger_effect_t &other) const noexcept {
+      return mode == other.mode && parameters == other.parameters;
+    }
+  };
+
+  /**
    * @brief A decoded rumble feedback report from the driver.
    * @details `has_rgb` is false for force-feedback events. A DirectInput effect says nothing
    *          about a light, so forwarding its zeroed colour channels would switch off the LED on
@@ -46,6 +59,12 @@ namespace platf::vhf_gamepad {
     std::uint16_t left_trigger {};
     std::uint16_t right_trigger {};
     bool has_triggers {};
+
+    // DualSense adaptive trigger programs, forwarded to the client verbatim.
+    trigger_effect_t left_effect {};
+    trigger_effect_t right_effect {};
+    std::uint8_t trigger_event_flags {};
+    bool has_trigger_effects {};
 
     bool operator==(const rumble_rgb_t &other) const noexcept {
       return low_frequency == other.low_frequency &&
@@ -105,5 +124,40 @@ namespace platf::vhf_gamepad {
    * @return `true` when `feedback` was populated.
    */
   [[nodiscard]] bool decode_rumble_rgb(const lvg::feedback_event &event, rumble_rgb_t &feedback) noexcept;
+
+  /**
+   * @brief Converts a client touch event type into the protocol's.
+   * @param event_type The client event type.
+   * @return The protocol value, or the cancel-all value for anything unmapped.
+   */
+  [[nodiscard]] std::uint8_t to_protocol_touch_event(std::uint8_t event_type) noexcept;
+
+  /**
+   * @brief Converts a client motion type into the protocol's.
+   * @param motion_type The client motion type.
+   * @return The protocol value, or 0 when the type has no mapping.
+   */
+  [[nodiscard]] std::uint8_t to_protocol_motion_kind(std::uint8_t motion_type) noexcept;
+
+  /**
+   * @brief Converts a client battery state into the protocol's.
+   * @param state The client battery state.
+   * @return The protocol value.
+   */
+  [[nodiscard]] std::uint8_t to_protocol_battery_state(std::uint8_t state) noexcept;
+
+  /**
+   * @brief Normalizes a 0..1 touch coordinate to the protocol's 0..65535.
+   * @param value The client value.
+   * @return The normalized value, clamped.
+   */
+  [[nodiscard]] std::uint16_t to_normalized_touch(float value) noexcept;
+
+  /**
+   * @brief Converts a motion sample to the protocol's signed milli-units.
+   * @param value Acceleration in m/s^2 or angular velocity in degrees/second.
+   * @return The value scaled by 1000 and clamped to the protocol's range.
+   */
+  [[nodiscard]] std::int32_t to_milli_units(float value) noexcept;
 
 }  // namespace platf::vhf_gamepad
