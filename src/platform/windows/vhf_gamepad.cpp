@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
+#include <string_view>
 #include <thread>
 #include <tuple>
 
@@ -88,14 +89,20 @@ namespace platf {
   namespace {
     /**
      * @brief Picks the richest profile the connected driver offers.
-     * @details The PID profile is the same game pad plus the DirectInput force-feedback report
-     *          set. An older driver, or one whose HID stack rejected the larger PID descriptor,
-     *          still offers the plain generic profile.
+     * @details Xbox Series reaches XInput; the PID profile is a generic game pad plus the
+     *          DirectInput force-feedback report set; the plain generic profile is what an older
+     *          driver, or one whose HID stack rejected a larger descriptor, still offers.
      * @param client The connected driver client.
      * @param selected Receives the chosen profile.
      * @return `true` when the driver offers a usable profile.
      */
     bool select_profile(const lvg::client &client, lvg::profile &selected) {
+      // Xbox Series first: it is the only profile Windows puts on the XInput
+      // path, so it is the only one an XInput-only game can see at all.
+      if ((client.available_profiles() & lvg::profile_bit(lvg::profile::xbox_series)) != 0) {
+        selected = lvg::profile::xbox_series;
+        return true;
+      }
       if ((client.available_profiles() & lvg::profile_bit(lvg::profile::generic_pid)) != 0) {
         selected = lvg::profile::generic_pid;
         return true;
@@ -105,6 +112,22 @@ namespace platf {
         return true;
       }
       return false;
+    }
+
+    /**
+     * @brief Names a profile for the log.
+     * @param profile The profile.
+     * @return A short human readable description.
+     */
+    std::string_view describe_profile(const lvg::profile profile) {
+      switch (profile) {
+        case lvg::profile::xbox_series:
+          return "an Xbox Series controller on the XInput path"sv;
+        case lvg::profile::generic_pid:
+          return "a generic HID game pad with DirectInput force feedback"sv;
+        default:
+          return "a generic HID game pad"sv;
+      }
     }
   }  // namespace
 
@@ -170,6 +193,18 @@ namespace platf {
         feedback.red,
         feedback.green,
         feedback.blue
+      ));
+    }
+
+    const bool triggers_changed = feedback.has_triggers &&
+                                  (!slot.have_feedback ||
+                                   slot.last_feedback.left_trigger != feedback.left_trigger ||
+                                   slot.last_feedback.right_trigger != feedback.right_trigger);
+    if (triggers_changed) {
+      slot.feedback_queue->raise(gamepad_feedback_msg_t::make_rumble_triggers(
+        slot.client_relative_index,
+        feedback.left_trigger,
+        feedback.right_trigger
       ));
     }
 
@@ -281,10 +316,7 @@ namespace platf {
 
     BOOST_LOG(info) << "Vibeshine virtual gamepad driver is available (up to "sv
                     << probe_client.maximum_controllers() << " controllers, "sv
-                    << (profile == lvg::profile::generic_pid
-                          ? "generic HID with DirectInput force feedback"sv
-                          : "generic HID"sv)
-                    << ')';
+                    << describe_profile(profile) << ')';
     impl->driver_available = true;
     return true;
   }
@@ -352,10 +384,8 @@ namespace platf {
     }
     impl->wake.notify_all();
 
-    BOOST_LOG(info) << "VHF gamepad "sv << id.globalIndex << " created as a generic HID game pad"sv
-                    << (profile == lvg::profile::generic_pid
-                          ? " with DirectInput force feedback"sv
-                          : ""sv);
+    BOOST_LOG(info) << "VHF gamepad "sv << id.globalIndex << " created as "sv
+                    << describe_profile(profile);
     return 0;
   }
 

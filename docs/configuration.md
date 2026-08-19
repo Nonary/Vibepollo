@@ -375,12 +375,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf</td>
-        <td>Generic HID game pad on Vibeshine's own virtual gamepad driver, instead of ViGEmBus
+        <td>Vibeshine's own virtual gamepad driver, instead of ViGEmBus
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
-            driver to be installed. The pad publishes the DirectInput Physical Interface Device
-            report set, so force feedback works in DirectInput games. It is not an XInput device,
-            so games that only support XInput will not detect it, and touchpad, motion, and
-            battery reports are unavailable.}</td>
+            driver to be installed. It presents an Xbox Series controller with rumble and impulse
+            triggers, which Windows places on the XInput path. On an older driver it falls back to
+            a generic HID pad that publishes the DirectInput Physical Interface Device report set,
+            so force feedback still works in DirectInput games. Touchpad, motion, and battery
+            reports are unavailable in either case.}</td>
     </tr>
     <tr>
         <td>x360</td>
