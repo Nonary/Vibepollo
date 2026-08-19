@@ -4,8 +4,13 @@
  */
 #include "../../../tests_common.h"
 
+#include <cmath>
 #include <cstring>
 #include <limits>
+
+extern "C" {
+#include <moonlight-common-c/src/Limelight.h>
+}
 
 #include <src/platform/windows/vhf_gamepad_policy.h>
 
@@ -16,6 +21,11 @@ namespace {
   using platf::vhf_gamepad::normalized_state_t;
   using platf::vhf_gamepad::rumble_rgb_t;
   using platf::vhf_gamepad::supported_button_mask;
+  using platf::vhf_gamepad::to_milli_units;
+  using platf::vhf_gamepad::to_normalized_touch;
+  using platf::vhf_gamepad::to_protocol_battery_state;
+  using platf::vhf_gamepad::to_protocol_motion_kind;
+  using platf::vhf_gamepad::to_protocol_touch_event;
   using platf::vhf_gamepad::to_hid_vertical_axis;
 
   lvg::feedback_event make_rumble_event(
@@ -185,6 +195,105 @@ namespace {
     EXPECT_FALSE(feedback.has_triggers);
     EXPECT_EQ(feedback.left_trigger, 0);
     EXPECT_EQ(feedback.right_trigger, 0);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, PlaystationOutputCarriesRumbleLightbarAndTriggers) {
+    lvg::playstation_output_feedback payload {};
+    payload.low_frequency = 0x1100;
+    payload.high_frequency = 0x2200;
+    payload.red = 0xAA;
+    payload.green = 0xBB;
+    payload.blue = 0xCC;
+    payload.valid = lvg::ps_output_lightbar_valid | lvg::ps_output_triggers_valid;
+    payload.left_trigger.mode = static_cast<std::uint8_t>(lvg::trigger_effect_mode::weapon);
+    payload.left_trigger.parameters[0] = 0x42;
+    payload.right_trigger.mode = static_cast<std::uint8_t>(lvg::trigger_effect_mode::feedback);
+
+    lvg::feedback_event event {};
+    event.header.size = sizeof(event);
+    event.header.version = lvg::k_protocol_version;
+    event.controller_id = 1;
+    event.type = lvg::feedback_type::playstation_output;
+    event.payload_size = sizeof(payload);
+    std::memcpy(event.payload, &payload, sizeof(payload));
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(event, feedback));
+    EXPECT_EQ(feedback.low_frequency, 0x1100);
+    EXPECT_EQ(feedback.high_frequency, 0x2200);
+    EXPECT_TRUE(feedback.has_rgb);
+    EXPECT_EQ(feedback.red, 0xAA);
+    EXPECT_TRUE(feedback.has_trigger_effects);
+    EXPECT_EQ(feedback.left_effect.mode, static_cast<std::uint8_t>(lvg::trigger_effect_mode::weapon));
+    EXPECT_EQ(feedback.left_effect.parameters[0], 0x42);
+    EXPECT_EQ(feedback.right_effect.mode, static_cast<std::uint8_t>(lvg::trigger_effect_mode::feedback));
+    // A PlayStation pad has no impulse triggers, so the Xbox rumble fields stay clear.
+    EXPECT_FALSE(feedback.has_triggers);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, PlaystationOutputWithoutLightbarLeavesTheLedAlone) {
+    lvg::playstation_output_feedback payload {};
+    payload.low_frequency = 0x0500;
+    payload.red = 0xFF;  // Present in the struct but not claimed by the valid mask.
+
+    lvg::feedback_event event {};
+    event.header.size = sizeof(event);
+    event.header.version = lvg::k_protocol_version;
+    event.type = lvg::feedback_type::playstation_output;
+    event.payload_size = sizeof(payload);
+    std::memcpy(event.payload, &payload, sizeof(payload));
+
+    rumble_rgb_t feedback {};
+    ASSERT_TRUE(decode_rumble_rgb(event, feedback));
+    EXPECT_FALSE(feedback.has_rgb);
+    EXPECT_EQ(feedback.red, 0);
+    EXPECT_FALSE(feedback.has_trigger_effects);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, TouchEventTypesMapToTheProtocol) {
+    EXPECT_EQ(to_protocol_touch_event(LI_TOUCH_EVENT_DOWN),
+              static_cast<std::uint8_t>(lvg::touch_event::down));
+    EXPECT_EQ(to_protocol_touch_event(LI_TOUCH_EVENT_MOVE),
+              static_cast<std::uint8_t>(lvg::touch_event::move));
+    EXPECT_EQ(to_protocol_touch_event(LI_TOUCH_EVENT_UP),
+              static_cast<std::uint8_t>(lvg::touch_event::up));
+    // An unmapped event releases everything rather than inventing a contact.
+    EXPECT_EQ(to_protocol_touch_event(0xEE),
+              static_cast<std::uint8_t>(lvg::touch_event::cancel_all));
+  }
+
+  TEST_F(VhfGamepadPolicyTest, MotionAndBatteryMapToTheProtocol) {
+    EXPECT_EQ(to_protocol_motion_kind(LI_MOTION_TYPE_ACCEL),
+              static_cast<std::uint8_t>(lvg::motion_kind::accelerometer));
+    EXPECT_EQ(to_protocol_motion_kind(LI_MOTION_TYPE_GYRO),
+              static_cast<std::uint8_t>(lvg::motion_kind::gyroscope));
+    EXPECT_EQ(to_protocol_motion_kind(0x7F), 0);
+
+    EXPECT_EQ(to_protocol_battery_state(LI_BATTERY_STATE_CHARGING),
+              static_cast<std::uint8_t>(lvg::battery_state::charging));
+    EXPECT_EQ(to_protocol_battery_state(LI_BATTERY_STATE_FULL),
+              static_cast<std::uint8_t>(lvg::battery_state::full));
+  }
+
+  TEST_F(VhfGamepadPolicyTest, TouchCoordinatesNormalizeAndClamp) {
+    EXPECT_EQ(to_normalized_touch(0.0f), 0);
+    EXPECT_EQ(to_normalized_touch(1.0f), 65535);
+    EXPECT_EQ(to_normalized_touch(2.0f), 65535);
+    EXPECT_EQ(to_normalized_touch(-1.0f), 0);
+    // NaN must not become an arbitrary coordinate.
+    EXPECT_EQ(to_normalized_touch(std::nanf("")), 0);
+    const std::uint16_t middle = to_normalized_touch(0.5f);
+    EXPECT_GT(middle, 32000);
+    EXPECT_LT(middle, 33500);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, MotionScalesToMilliUnits) {
+    EXPECT_EQ(to_milli_units(1.0f), 1000);
+    EXPECT_EQ(to_milli_units(-9.80665f), -9806);
+    EXPECT_EQ(to_milli_units(std::nanf("")), 0);
+    // Saturates instead of wrapping.
+    EXPECT_EQ(to_milli_units(1e12f), 2147483000);
+    EXPECT_EQ(to_milli_units(-1e12f), -2147483000);
   }
 
   TEST_F(VhfGamepadPolicyTest, NonRumbleFeedbackIsRejected) {
