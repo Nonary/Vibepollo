@@ -406,6 +406,7 @@ namespace platf {
            std::pair {lvg::profile::xbox_series, "Xbox Series"sv},
            std::pair {lvg::profile::dualsense, "DualSense"sv},
            std::pair {lvg::profile::dualshock_4, "DualShock 4"sv},
+           std::pair {lvg::profile::switch_pro, "Switch Pro"sv},
            std::pair {lvg::profile::generic_pid, "generic HID with force feedback"sv},
            std::pair {lvg::profile::generic_hid, "generic HID"sv}}) {
       if (offers(probe_client, candidate)) {
