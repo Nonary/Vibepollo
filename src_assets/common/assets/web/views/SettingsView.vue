@@ -831,7 +831,12 @@ onMounted(() => void load());
                       {{ fieldDescription(field) }}
                     </span>
                     <span
-                      v-if="field.warningKey && Number(values[field.key]) > 0"
+                      v-if="
+                        field.warningKey &&
+                        (field.kind === 'boolean'
+                          ? isTrue(values[field.key])
+                          : Number(values[field.key]) > 0)
+                      "
                       class="settings-row__warning"
                     >
                       {{ t(field.warningKey) }}

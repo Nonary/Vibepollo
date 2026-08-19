@@ -413,6 +413,13 @@ export const settingsCategories: SettingsCategory[] = [
             recommended: true,
             visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
           }),
+          boolean('rtss_allow_virtual_display_override', {
+            labelKey: 'ui.settings.fields.rtss_allow_virtual_display_override.label',
+            descriptionKey: 'ui.settings.fields.rtss_allow_virtual_display_override.description',
+            warningKey: 'ui.settings.fields.rtss_allow_virtual_display_override.warning',
+            platform: 'windows',
+            visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+          }),
         ],
       },
       {
@@ -584,7 +591,11 @@ export const settingsCategories: SettingsCategory[] = [
               option('back edge sync', 'ui.settings.options.rtss_type.back_edge'),
               option('nvidia reflex', 'ui.settings.options.rtss_type.reflex'),
             ],
-            { platform: 'windows' },
+            {
+              labelKey: 'ui.settings.fields.rtss_frame_limit_type.label',
+              descriptionKey: 'ui.settings.fields.rtss_frame_limit_type.description',
+              platform: 'windows',
+            },
           ),
           integrationPath('lossless_scaling_path', 'lossless', {
             labelKey: 'ui.settings.fields.lossless_scaling_path.label',
@@ -801,6 +812,7 @@ export const settingsDefaults: Record<string, unknown> = {
   frame_limiter_fps_limit: 0,
   frame_limiter_auto_virtual_framegen: 'enabled',
   frame_limiter_disable_vsync: false,
+  rtss_allow_virtual_display_override: false,
   capture: '',
   stream_audio: true,
   controller: true,
