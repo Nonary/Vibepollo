@@ -988,50 +988,45 @@ namespace amf {
       if (config.pa_activity_type && !set_verified_int64(AMF_PA_ACTIVITY_TYPE, *config.pa_activity_type, "PA activity type")) return false;
     }
 
-// BEGIN INSERT1 (Xbox-Safe driver-autonomous HEVC GDR configuration)
+// BEGIN INSERT1 (HEVC GDR configuration)
+// Check if the connected client explicitly requested Intra-Refresh (GDR)
+if (client_config.enableIntraRefresh == 1) {
   AMF_RESULT probe_res = encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, 120);
 
   if (probe_res == AMF_OK) {
-  BOOST_LOG(info) << "AMF: Initializing driver-autonomous HEVC Intra-Refresh (GDR)...";
+    BOOST_LOG(info) << "AMF: Client requested GDR. Initializing driver-autonomous HEVC Intra-Refresh...";
 
-  // NOTE: AMF_VIDEO_ENCODER_IDR_PERIOD is intentionally omitted. 
-  // Forcing a manual IDR period during GDR mode causes the AMD driver to reject 
-  // the property (applied=0), which triggers strict hardware decoder crashes on Xbox.
-  // We leave IDR management entirely to the driver's internal state machine.
+    int64_t gop_size = 120; 
+    encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, gop_size);
 
-  int64_t gop_size = 120; 
-  encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, gop_size);
+    int64_t actual_width = encode_width;   
+    int64_t actual_height = encode_height; 
+    
+    if (actual_width <= 0)  actual_width = 3840;
+    if (actual_height <= 0) actual_height = 2160;
 
-  // Mathematically correct CTB calculation using local Sunshine variables
-  int64_t actual_width = encode_width;   
-  int64_t actual_height = encode_height; 
+    int64_t ctu_size = 64;
+    int64_t ctu_width = (actual_width + (ctu_size - 1)) / ctu_size;
+    int64_t ctu_height = (actual_height + (ctu_size - 1)) / ctu_size;
 
-  // FALLBACK: If the encoder reports 0 dimensions during the very first initialization pass,
-  // we enforce 4K defaults to prevent the formula from collapsing into an invalid "value = 1" loop.
-  if (actual_width <= 0)  actual_width = 3840;
-  if (actual_height <= 0) actual_height = 2160;
+    int64_t ctu_rows_per_frame = (ctu_height + gop_size - 1) / gop_size;
+    if (ctu_rows_per_frame < 1) ctu_rows_per_frame = 1;
 
-  int64_t ctu_size = 64;
-  int64_t ctu_width = (actual_width + (ctu_size - 1)) / ctu_size;
-  int64_t ctu_height = (actual_height + (ctu_size - 1)) / ctu_size;
+    int64_t total_ctbs_per_frame = ctu_rows_per_frame * ctu_width;
 
-  int64_t ctu_rows_per_frame = (ctu_height + gop_size - 1) / gop_size;
-  if (ctu_rows_per_frame < 1) ctu_rows_per_frame = 1;
+    if (!set_verified_int64(AMF_VIDEO_ENCODER_HEVC_INTRA_REFRESH_NUM_CTBS_PER_SLOT, total_ctbs_per_frame, "HEVC GDR CTBs per Slot")) {
+      return false;
+    }
 
-  // Calculate the total number of blocks per frame required for a proper horizontal refresh
-  int64_t total_ctbs_per_frame = ctu_rows_per_frame * ctu_width;
-
-  if (!set_verified_int64(AMF_VIDEO_ENCODER_HEVC_INTRA_REFRESH_NUM_CTBS_PER_SLOT, total_ctbs_per_frame, "HEVC GDR CTBs per Slot")) {
-    return false;
+    BOOST_LOG(info) << "AMF: Native GDR mode successfully activated! CTBs per frame: " << total_ctbs_per_frame;
+  } else {
+    // Silent fallback during H.264 / AV1 capability probing at Sunshine startup
+    BOOST_LOG(debug) << "AMF: Skipping GDR setup (H.264 or AV1 validation active)";
   }
-
-  BOOST_LOG(info) << "AMF: Native GDR mode successfully activated! CTBs per frame: " << total_ctbs_per_frame;
 } else {
-  // Silent fallback during H.264 / AV1 capability probing at Sunshine startup
-  BOOST_LOG(debug) << "AMF: Skipping GDR setup (H.264 or AV1 validation active)";
+  BOOST_LOG(info) << "AMF: Intra-Refresh disabled (not requested by client configuration)";
 }
 // END INSERT1
-    
     
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
