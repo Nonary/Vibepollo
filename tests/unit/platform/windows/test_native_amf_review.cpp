@@ -555,7 +555,7 @@ int main() {
              preanalysis_dependent_rate_control_is_planned_natively() &&
              preanalysis_pipeline_primes_and_drains_in_order() &&
              automatic_h264_coder_preserves_driver_default() &&
-             native_selection_never_routes_to_legacy() &&
+             experimental_selection_is_explicit_only() &&
              xbox_intra_refresh_maps_to_native_amf() &&
              effective_reference_frame_limit_matches_configure_and_verify() &&
              repeated_input_rotates_away_from_a_lookahead_owned_surface() &&
