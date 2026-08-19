@@ -57,10 +57,21 @@ namespace {
     );
   }
 
-  TEST(LosslessScalingLaunchExe, ExplicitPathOverridesRuntimePath) {
-    auto selected = playnite_launcher::lossless::policy::select_launch_executable(L"custom-lossless.exe", L"runtime-lossless.exe");
+  TEST(LosslessScalingLaunchExe, GameTargetDoesNotOverrideLosslessScalingPath) {
+    auto selected = playnite_launcher::lossless::policy::select_launch_executable({
+      .lossless_scaling = L"custom-lossless.exe",
+      .game = L"game.exe",
+    });
     ASSERT_TRUE(selected.has_value());
     EXPECT_EQ(*selected, L"custom-lossless.exe");
+  }
+
+  TEST(LosslessScalingLaunchExe, MissingLosslessScalingPathDoesNotLaunchGame) {
+    auto selected = playnite_launcher::lossless::policy::select_launch_executable({
+      .lossless_scaling = std::nullopt,
+      .game = L"game.exe",
+    });
+    EXPECT_FALSE(selected.has_value());
   }
 
 }  // namespace

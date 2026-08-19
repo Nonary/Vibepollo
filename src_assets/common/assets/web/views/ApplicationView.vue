@@ -927,8 +927,8 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
           auto,
           { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
           { value: 'quicksync', labelKey: 'ui.settings.options.encoder.quicksync' },
-          { value: 'amdvce', labelKey: 'ui.settings.options.encoder.amdvce' },
-          { value: 'amdvce_legacy', labelKey: 'ui.settings.options.encoder.amdvce_legacy' },
+          { value: 'amdvce_ffmpeg', labelKey: 'ui.settings.options.encoder.amdvce_ffmpeg' },
+          { value: 'amdvce_experimental', labelKey: 'ui.settings.options.encoder.amdvce_experimental' },
           { value: 'mediafoundation', labelKey: 'ui.settings.options.encoder.mediafoundation' },
           { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
         ]

@@ -702,7 +702,10 @@ namespace playnite_launcher::lossless {
     std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state);
 
     std::optional<std::wstring> select_lossless_launch_exe(const lossless_scaling_runtime_state &state, const std::string &exe_path_utf8) {
-      return policy::select_launch_executable(exe_from_explicit_path(exe_path_utf8), discover_lossless_scaling_exe(state));
+      return policy::select_launch_executable({
+        .lossless_scaling = discover_lossless_scaling_exe(state),
+        .game = exe_from_explicit_path(exe_path_utf8),
+      });
     }
 
     std::optional<std::wstring> discover_lossless_scaling_exe(const lossless_scaling_runtime_state &state) {

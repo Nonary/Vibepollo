@@ -4,11 +4,116 @@
  */
 #include "../tests_common.h"
 
-#include <src/audio_policy.h>
-
+#include <atomic>
 #include <deque>
+#include <src/audio_lifecycle_policy.h>
+#include <src/audio_lifecycle_state.h>
+#include <src/audio_policy.h>
+#include <thread>
 
 using namespace audio::policy;
+
+namespace {
+  struct lifecycle_token_t {
+    int id {};
+  };
+}  // namespace
+
+TEST(AudioLifecycleState, RetainsAndReclaimsTheSameOwner) {
+  audio::lifecycle::state_t<lifecycle_token_t> state;
+  lifecycle_token_t retained {7};
+  lifecycle_token_t reclaimed {};
+
+  ASSERT_TRUE(state.retain(retained, true));
+  ASSERT_TRUE(state.reclaim(reclaimed, true));
+  EXPECT_EQ(reclaimed.id, 7);
+  EXPECT_FALSE(state.terminal_pending());
+}
+
+TEST(AudioLifecycleState, BlocksReconnectUntilTerminalRestoreCompletes) {
+  audio::lifecycle::state_t<lifecycle_token_t> state;
+  lifecycle_token_t retained {11};
+  ASSERT_TRUE(state.retain(retained, true));
+  ASSERT_TRUE(state.begin_terminal());
+
+  std::atomic_bool reconnect_started {false};
+  std::atomic_bool reconnect_finished {false};
+  std::atomic_bool reclaimed {false};
+  std::thread reconnect([&]() {
+    reconnect_started.store(true, std::memory_order_release);
+    lifecycle_token_t reconnect_token {};
+    reclaimed.store(
+      state.reclaim(reconnect_token, true),
+      std::memory_order_release
+    );
+    reconnect_finished.store(true, std::memory_order_release);
+  });
+
+  while (!reconnect_started.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(reconnect_started.load(std::memory_order_acquire));
+  EXPECT_FALSE(reconnect_finished.load(std::memory_order_acquire));
+
+  state.complete_terminal_restore();
+  reconnect.join();
+  EXPECT_TRUE(reconnect_finished.load(std::memory_order_acquire));
+  EXPECT_FALSE(reclaimed.load(std::memory_order_acquire));
+}
+
+TEST(AudioLifecycleState, RepeatedTerminalReleaseRestoresAtMostOnce) {
+  audio::lifecycle::state_t<lifecycle_token_t> state;
+  lifecycle_token_t retained {13};
+  ASSERT_TRUE(state.retain(retained, true));
+
+  auto first = state.begin_terminal();
+  ASSERT_TRUE(first);
+  EXPECT_FALSE(state.begin_terminal());
+  state.complete_terminal_restore();
+  EXPECT_FALSE(state.begin_terminal());
+}
+
+TEST(AudioLifecycleState, ContinuousHandoffHasNoIntermediateRestore) {
+  audio::lifecycle::state_t<lifecycle_token_t> state;
+  state.owner_acquired();
+  ASSERT_EQ(state.owner_count(), 1u);
+
+  // The successor app is published while A still owns the shared context.
+  ASSERT_FALSE(state.begin_terminal());
+  state.app_started();
+  state.owner_acquired();
+  EXPECT_FALSE(state.terminal_pending());
+  EXPECT_EQ(state.owner_count(), 2u);
+
+  state.owner_released();
+  EXPECT_EQ(state.owner_count(), 1u);
+}
+
+TEST(AudioLifecyclePolicy, RetainsFinalOwnerForResumableApp) {
+  using audio::lifecycle::release_action_e;
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, true, false),
+    release_action_e::retain
+  );
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, true, true),
+    release_action_e::restore
+  );
+  EXPECT_TRUE(audio::lifecycle::can_reclaim_retained_audio(true, true, false));
+  EXPECT_FALSE(audio::lifecycle::can_reclaim_retained_audio(true, false, false));
+}
+
+TEST(AudioLifecyclePolicy, RestoresTerminalAndIgnoresUnchangedSink) {
+  using audio::lifecycle::release_action_e;
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(true, false, false),
+    release_action_e::restore
+  );
+  EXPECT_EQ(
+    audio::lifecycle::final_owner_release_action(false, true, false),
+    release_action_e::ignore
+  );
+}
 
 TEST(AudioStreamPolicy, SelectsChannelAndQualityVariant) {
   EXPECT_EQ(stream_index(2, false), 0);
