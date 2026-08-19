@@ -374,6 +374,14 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{This option applies to FreeBSD and Linux only.}</td>
     </tr>
     <tr>
+        <td>vhf</td>
+        <td>Generic HID game pad on Vibeshine's own virtual gamepad driver, instead of ViGEmBus
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. The generic HID profile is not an XInput device, so games that
+            only support XInput will not detect it, and touchpad, motion, and battery reports are
+            unavailable.}</td>
+    </tr>
+    <tr>
         <td>x360</td>
         <td>Xbox 360 controller
             @note{This option applies to Windows only.}</td>

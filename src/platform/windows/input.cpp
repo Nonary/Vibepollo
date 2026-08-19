@@ -9,6 +9,7 @@
 #include <Windows.h>
 
 // standard includes
+#include <array>
 #include <cmath>
 #include <thread>
 #include <vector>
@@ -23,6 +24,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "vhf_gamepad.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -468,17 +470,49 @@ namespace platf {
     task_pool.push(&vigem_t::set_rgb_led, (vigem_t *) userdata, target, led_color.Red, led_color.Green, led_color.Blue);
   }
 
+  /**
+   * @brief The virtual gamepad driver backing a given gamepad slot.
+   */
+  enum class gamepad_backend_e {
+    none,
+    vigem,
+    vhf
+  };
+
   struct input_raw_t {
     ~input_raw_t() {
       delete vigem;
+      delete vhf;
     }
 
     vigem_t *vigem;
+    vhf_gamepad_t *vhf;
+
+    // Slots are allocated one at a time, so both backends can own gamepads simultaneously.
+    std::array<gamepad_backend_e, MAX_GAMEPADS> gamepad_backend {};
 
     decltype(CreateSyntheticPointerDevice) *fnCreateSyntheticPointerDevice;
     decltype(InjectSyntheticPointerInput) *fnInjectSyntheticPointerInput;
     decltype(DestroySyntheticPointerDevice) *fnDestroySyntheticPointerDevice;
   };
+
+  /**
+   * @brief Reports whether Vibeshine's own virtual gamepad driver is the configured backend.
+   * @return `true` when the VHF driver should be used instead of ViGEmBus.
+   */
+  static bool vhf_gamepad_selected() {
+    return config::input.gamepad == "vhf"sv;
+  }
+
+  /**
+   * @brief Reports whether a gamepad slot is currently owned by the VHF driver.
+   * @param raw The input context.
+   * @param nr The gamepad index.
+   * @return `true` when the slot was allocated on the VHF backend.
+   */
+  static bool vhf_owns_gamepad(const input_raw_t *raw, int nr) {
+    return nr >= 0 && nr < MAX_GAMEPADS && raw->gamepad_backend[nr] == gamepad_backend_e::vhf;
+  }
 
   input_t input() {
     input_t result {new input_raw_t {}};
@@ -489,6 +523,9 @@ namespace platf {
       delete raw.vigem;
       raw.vigem = nullptr;
     }
+
+    raw.vhf = new vhf_gamepad_t {};
+    raw.vhf->probe();
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
     raw.fnCreateSyntheticPointerDevice = (decltype(CreateSyntheticPointerDevice) *) GetProcAddress(GetModuleHandleA("user32.dll"), "CreateSyntheticPointerDevice");
@@ -1205,6 +1242,31 @@ namespace platf {
   int alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
     auto raw = (input_raw_t *) input.get();
 
+    if (id.globalIndex < 0 || id.globalIndex >= MAX_GAMEPADS) {
+      BOOST_LOG(error) << "Gamepad index out of range: "sv << id.globalIndex;
+      return -1;
+    }
+
+    if (vhf_gamepad_selected() && raw->vhf) {
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be a generic HID game pad on the Vibeshine virtual gamepad driver (manual selection)"sv;
+
+      if (metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO)) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " has motion sensors, but they are not usable on the Vibeshine virtual gamepad driver"sv;
+      }
+      if (metadata.capabilities & LI_CCAP_TOUCHPAD) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " has a touchpad, but it is not usable on the Vibeshine virtual gamepad driver"sv;
+      }
+
+      if (raw->vhf->alloc(id, feedback_queue) == 0) {
+        raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+        return 0;
+      }
+
+      // Falling back keeps a session playable rather than leaving the client with a dead
+      // controller, but it has to be loud: the user asked for a specific driver.
+      BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibeshine virtual gamepad driver; falling back to ViGEmBus"sv;
+    }
+
     if (!raw->vigem) {
       return 0;
     }
@@ -1253,11 +1315,30 @@ namespace platf {
       }
     }
 
-    return raw->vigem->alloc_gamepad_internal(id, feedback_queue, selectedGamepadType);
+    const auto result = raw->vigem->alloc_gamepad_internal(id, feedback_queue, selectedGamepadType);
+    if (result == 0) {
+      raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vigem;
+    }
+
+    return result;
   }
 
   void free_gamepad(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
+
+    if (nr < 0 || nr >= MAX_GAMEPADS) {
+      return;
+    }
+
+    const auto backend = raw->gamepad_backend[nr];
+    raw->gamepad_backend[nr] = gamepad_backend_e::none;
+
+    if (backend == gamepad_backend_e::vhf) {
+      if (raw->vhf) {
+        raw->vhf->free(nr);
+      }
+      return;
+    }
 
     if (!raw->vigem) {
       return;
@@ -1543,7 +1624,14 @@ namespace platf {
    * @param gamepad_state The gamepad button/axis state sent from the client.
    */
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    if (vhf_owns_gamepad(raw, nr)) {
+      raw->vhf->update(nr, gamepad_state);
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1575,7 +1663,14 @@ namespace platf {
    * @param touch The touch event.
    */
   void gamepad_touch(input_t &input, const gamepad_touch_t &touch) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    // The VHF driver's generic HID profile has no touchpad to report against
+    if (vhf_owns_gamepad(raw, touch.id.globalIndex)) {
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1681,7 +1776,14 @@ namespace platf {
    * @param motion The motion event.
    */
   void gamepad_motion(input_t &input, const gamepad_motion_t &motion) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    // The VHF driver's generic HID profile has no motion sensors
+    if (vhf_owns_gamepad(raw, motion.id.globalIndex)) {
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1715,7 +1817,14 @@ namespace platf {
    * @param battery The battery event.
    */
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+
+    // The VHF driver's generic HID profile has no battery report
+    if (vhf_owns_gamepad(raw, battery.id.globalIndex)) {
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1794,20 +1903,25 @@ namespace platf {
         supported_gamepad_t {"auto", true, ""},
         supported_gamepad_t {"x360", false, ""},
         supported_gamepad_t {"ds4", false, ""},
+        supported_gamepad_t {"vhf", false, ""},
       };
 
       return gps;
     }
 
-    auto vigem = ((input_raw_t *) input)->vigem;
-    auto enabled = vigem != nullptr;
+    auto raw = (input_raw_t *) input;
+    auto enabled = raw->vigem != nullptr;
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
+
+    auto vhf_enabled = raw->vhf != nullptr && raw->vhf->available();
+    auto vhf_reason = vhf_enabled ? "" : "gamepads.vhf-not-available";
 
     // ds4 == ps4
     static std::vector gps {
       supported_gamepad_t {"auto", true, reason},
       supported_gamepad_t {"x360", enabled, reason},
-      supported_gamepad_t {"ds4", enabled, reason}
+      supported_gamepad_t {"ds4", enabled, reason},
+      supported_gamepad_t {"vhf", vhf_enabled, vhf_reason}
     };
 
     for (auto &[name, is_enabled, reason_disabled] : gps) {
@@ -1826,8 +1940,9 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360
-    if (config::input.gamepad != "x360"sv) {
+    // We support controller touchpad input as long as we're not emulating X360 or driving the
+    // VHF driver's generic HID profile, neither of which has a touchpad
+    if (config::input.gamepad != "x360"sv && !vhf_gamepad_selected()) {
       caps |= platform_caps::controller_touch;
     }
 

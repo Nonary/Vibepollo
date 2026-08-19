@@ -615,6 +615,16 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('keyboard'),
           boolean('mouse'),
           boolean('controller'),
+          select(
+            'gamepad',
+            [
+              option('auto', '_common.auto'),
+              option('x360', 'config.gamepad_x360'),
+              option('ds4', 'config.gamepad_ds4'),
+              option('vhf', 'config.gamepad_vhf'),
+            ],
+            { platform: 'windows' },
+          ),
           boolean('motion_as_ds4'),
           boolean('touchpad_as_ds4'),
           boolean('ds4_back_as_touchpad_click'),

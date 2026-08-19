@@ -1658,14 +1658,19 @@ namespace config {
     return ret;
   }
 
-  std::vector<::std::string_view> get_supported_gamepad_options() {
-    // The platform owns this static list; keep it by reference so the views remain valid.
-    const auto &options = platf::supported_gamepads(nullptr);
-    std::vector<::std::string_view> opts;
-    opts.reserve(options.size());
-    for (const auto &opt : options) {
-      opts.emplace_back(opt.name);
-    }
+  std::vector<std::string_view> &get_supported_gamepad_options() {
+    // The names are owned by a function-local static inside the platform layer, so these views
+    // stay valid. Build the list once: copying the vector per call left every view dangling and
+    // appended another full set of options on each parse.
+    static std::vector<std::string_view> opts = [] {
+      const auto &options = platf::supported_gamepads(nullptr);
+      std::vector<std::string_view> names;
+      names.reserve(options.size());
+      for (const auto &opt : options) {
+        names.emplace_back(opt.name);
+      }
+      return names;
+    }();
     return opts;
   }
 
