@@ -385,6 +385,14 @@ editing the `conf` file in a text editor. Use the examples as reference.
             works in DirectInput games.}</td>
     </tr>
     <tr>
+        <td>vhf_xbox</td>
+        <td>Xbox Series controller on Vibeshine's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. This is the only virtual gamepad option Windows places on the
+            XInput path, so it is the one games that support only XInput can see. It has rumble and
+            impulse triggers, but no touchpad, motion, or battery reporting.}</td>
+    </tr>
+    <tr>
         <td>vhf_ds4</td>
         <td>DualShock 4 on Vibeshine's own virtual gamepad driver
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad

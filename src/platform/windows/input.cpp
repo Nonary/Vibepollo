@@ -502,6 +502,7 @@ namespace platf {
    */
   static bool vhf_gamepad_selected() {
     return config::input.gamepad == "vhf"sv ||
+           config::input.gamepad == "vhf_xbox"sv ||
            config::input.gamepad == "vhf_ds4"sv ||
            config::input.gamepad == "vhf_ds5"sv;
   }
@@ -512,6 +513,14 @@ namespace platf {
    */
   static bool vhf_gamepad_has_touchpad() {
     return config::input.gamepad == "vhf_ds4"sv || config::input.gamepad == "vhf_ds5"sv;
+  }
+
+  /**
+   * @brief Reports whether the configured VHF controller definitely has no touchpad.
+   * @return `true` when the selection always yields an Xbox controller.
+   */
+  static bool vhf_gamepad_is_xbox() {
+    return config::input.gamepad == "vhf_xbox"sv;
   }
 
   /**
@@ -528,6 +537,9 @@ namespace platf {
     }
     if (config::input.gamepad == "vhf_ds4"sv) {
       return vhf_profile_e::dualshock4;
+    }
+    if (config::input.gamepad == "vhf_xbox"sv) {
+      return vhf_profile_e::xbox_series;
     }
 
     if (metadata.type == LI_CTYPE_PS) {
@@ -1948,6 +1960,7 @@ namespace platf {
         supported_gamepad_t {"x360", false, ""},
         supported_gamepad_t {"ds4", false, ""},
         supported_gamepad_t {"vhf", false, ""},
+        supported_gamepad_t {"vhf_xbox", false, ""},
         supported_gamepad_t {"vhf_ds4", false, ""},
         supported_gamepad_t {"vhf_ds5", false, ""},
       };
@@ -1968,6 +1981,7 @@ namespace platf {
       supported_gamepad_t {"x360", enabled, reason},
       supported_gamepad_t {"ds4", enabled, reason},
       supported_gamepad_t {"vhf", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_xbox", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason}
     };
@@ -1994,7 +2008,8 @@ namespace platf {
     // the selection rules out a touchpad entirely.
     const bool vhf_without_touchpad =
       vhf_gamepad_selected() && !vhf_gamepad_has_touchpad() &&
-      !config::input.motion_as_ds4 && !config::input.touchpad_as_ds4;
+      (vhf_gamepad_is_xbox() ||
+       (!config::input.motion_as_ds4 && !config::input.touchpad_as_ds4));
     if (config::input.gamepad != "x360"sv && !vhf_without_touchpad) {
       caps |= platform_caps::controller_touch;
     }
