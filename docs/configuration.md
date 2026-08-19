@@ -385,6 +385,14 @@ editing the `conf` file in a text editor. Use the examples as reference.
             works in DirectInput games.}</td>
     </tr>
     <tr>
+        <td>vhf_switch</td>
+        <td>Switch Pro Controller on Vibeshine's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. Includes motion sensors, battery reporting, rumble, and the
+            Capture button. This controller has no analog triggers, so trigger travel is reported
+            as ZL and ZR presses, and it has no touchpad.}</td>
+    </tr>
+    <tr>
         <td>vhf_xbox</td>
         <td>Xbox Series controller on Vibeshine's own virtual gamepad driver
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad

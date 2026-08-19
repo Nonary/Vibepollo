@@ -625,6 +625,7 @@ export const settingsCategories: SettingsCategory[] = [
               option('vhf_xbox', 'config.gamepad_vhf_xbox'),
               option('vhf_ds4', 'config.gamepad_vhf_ds4'),
               option('vhf_ds5', 'config.gamepad_vhf_ds5'),
+              option('vhf_switch', 'config.gamepad_vhf_switch'),
             ],
             { platform: 'windows' },
           ),

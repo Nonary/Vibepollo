@@ -695,6 +695,7 @@
     "gamepad_vhf_xbox": "Vibeshine Virtual Gamepad (Xbox Series)",
     "gamepad_vhf_ds4": "Vibeshine Virtual Gamepad (DualShock 4)",
     "gamepad_vhf_ds5": "Vibeshine Virtual Gamepad (DualSense)",
+    "gamepad_vhf_switch": "Vibeshine Virtual Gamepad (Switch Pro)",
     "gamepad_xone": "XOne (Xbox One)",
     "vigem_missing_title": "Virtual Gamepad Driver (ViGEm) not installed",
     "vigem_missing_desc": "Vibepollo requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:",
