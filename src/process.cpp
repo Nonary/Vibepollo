@@ -3509,11 +3509,9 @@ namespace proc {
           if (app_node.contains("output")) {
             ctx.output = parse_env_val(this_env, app_node.value("output", ""));
           }
+          // `output` is the command-log path; only display-output selects a monitor.
           if (app_node.contains("display-output")) {
             ctx.output_name_override = parse_env_val(this_env, app_node.value("display-output", ""));
-          } else if (!ctx.output.empty()) {
-            // Backward compatibility for apps saved before display output received its own field.
-            ctx.output_name_override = ctx.output;
           }
           std::string name = parse_env_val(this_env, app_node.value("name", ""));
           if (app_node.contains("cmd")) {

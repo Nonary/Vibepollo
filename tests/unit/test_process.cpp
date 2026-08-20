@@ -4,6 +4,7 @@
  */
 #include "../tests_common.h"
 
+#include <src/app_display_policy.h>
 #include <src/app_catalog_policy.h>
 #include <src/deferred_action.h>
 
@@ -13,6 +14,19 @@
 namespace {
   using proc::catalog::alias_state_t;
   using proc::catalog::app_identity_t;
+  using proc::display_policy::app_override_e;
+
+  TEST(ProcessDisplayPolicy, GlobalVirtualModeIsInheritedWithoutAppOverride) {
+    EXPECT_TRUE(proc::display_policy::resolve_virtual_display_request(true, app_override_e::inherit));
+  }
+
+  TEST(ProcessDisplayPolicy, ExplicitPhysicalAppOverrideWinsOverGlobalVirtualMode) {
+    EXPECT_FALSE(proc::display_policy::resolve_virtual_display_request(true, app_override_e::physical));
+  }
+
+  TEST(ProcessDisplayPolicy, ExplicitVirtualAppOverrideWinsOverGlobalPhysicalMode) {
+    EXPECT_TRUE(proc::display_policy::resolve_virtual_display_request(false, app_override_e::virtual_display));
+  }
 
   proc::catalog::byte_buffer_t png(std::uint8_t payload = 0) {
     return {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, payload};
