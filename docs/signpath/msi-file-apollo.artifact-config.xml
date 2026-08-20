@@ -12,10 +12,13 @@
            <authenticode-sign/> directly under <msi-file> signs the container LAST.
 
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
-  This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
-  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
-  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll)
-  whose .cat catalog hashes would be invalidated by re-signing.
+  This NEVER touches the genuinely third-party files (SudoVDA.dll + sudovda.cat,
+  signed by sudovda@su.mk; nefconc.exe, signed by Nefarius; nvngx_truehdr.dll,
+  the NVIDIA RTX Video SDK runtime), nor any file a catalog hashes.
+
+  SunshineVirtualDisplayDriver.dll is catalog-bound because the INF copies it.
+  Signing it changes the bytes its catalog attests to and breaks installation.
+  The catalog, probe, and Vulkan layer can be signed independently.
 
   NOTE: the path= values are the file's logical path inside the MSI (install
   layout). The WiX package installs under the Apollo directory, so top-level
@@ -40,16 +43,40 @@
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
 
     <!--
-      DO NOT add the vendor / catalog-bound files below: they are origin-signed
-      upstream and re-signing breaks their .cat catalog hashes (driver install
-      fails). Keep them out of this configuration:
-        Apollo/drivers/sudovda/SudoVDA.dll
-        Apollo/drivers/sudovda/nefconc.exe
-        Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll  (+ .cat)
-        Apollo/drivers/sunshine/virtualdisplay_probe.exe
-        Apollo/drivers/sunshine/nefconc.exe
-        Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
-        nvngx_truehdr.dll   (NVIDIA RTX Video SDK runtime)
+      Sunshine virtual display driver. Its catalog was previously signed only by
+      a SELF-SIGNED certificate that install.ps1 pushes into the machine's
+      Trusted Root store to make Windows accept it. Signing it here means the
+      catalog chains to a real CA and that root no longer has to be installed.
+
+      The probe and the Vulkan layer beside it were shipping unsigned outright.
+      Neither is named by the INF, so neither is catalog-bound, and both are
+      ours to sign.
+    -->
+    <catalog-file path="Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.cat"
+                  min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </catalog-file>
+    <pe-file path="Apollo/drivers/sunshine/virtualdisplay_probe.exe"
+             min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll"
+             min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
+
+    <!--
+      DO NOT add these. Two reasons, and they are different reasons:
+
+      Catalog-bound. Signing changes the hash its catalog attests to:
+        drivers/sunshine/SunshineVirtualDisplayDriver.dll
+
+      Third-party, already signed by their own publishers. Re-signing would
+      both misattribute them and break sudovda's catalog:
+        drivers/sudovda/SudoVDA.dll        (+ sudovda.cat)  CN=sudovda@su.mk
+        drivers/sudovda/nefconc.exe        CN=Nefarius Software Solutions e.U.
+        drivers/sunshine/nefconc.exe       CN=Nefarius Software Solutions e.U.
+        nvngx_truehdr.dll                  NVIDIA RTX Video SDK runtime
     -->
 
     <!-- sign the MSI container LAST -->
