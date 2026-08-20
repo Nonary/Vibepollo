@@ -18,6 +18,7 @@ namespace platf {
   enum class vhf_profile_e {
     automatic,  ///< Best available for the client, preferring a PlayStation pad when it fits.
     xbox_series,
+    xbox_one,
     dualshock4,
     dualsense,
     switch_pro

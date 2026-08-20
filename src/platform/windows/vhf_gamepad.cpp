@@ -138,6 +138,12 @@ namespace platf {
             return true;
           }
           return false;
+        case vhf_profile_e::xbox_one:
+          if (offers(client, lvg::profile::xbox_one)) {
+            selected = lvg::profile::xbox_one;
+            return true;
+          }
+          return false;
         case vhf_profile_e::switch_pro:
           if (offers(client, lvg::profile::switch_pro)) {
             selected = lvg::profile::switch_pro;
@@ -184,6 +190,8 @@ namespace platf {
       switch (profile) {
         case lvg::profile::xbox_series:
           return "an Xbox Series controller on the XInput path"sv;
+        case lvg::profile::xbox_one:
+          return "an Xbox One controller on the XInput path"sv;
         case lvg::profile::dualsense:
           return "a DualSense controller"sv;
         case lvg::profile::dualshock_4:
@@ -191,7 +199,7 @@ namespace platf {
         case lvg::profile::switch_pro:
           return "a Switch Pro Controller"sv;
         case lvg::profile::generic_pid:
-          return "a generic HID game pad with DirectInput force feedback"sv;
+          return "a generic HID game pad that also publishes force feedback reports"sv;
         default:
           return "a generic HID game pad"sv;
       }
@@ -404,10 +412,11 @@ namespace platf {
     std::string offered;
     for (const auto &[candidate, name] : {
            std::pair {lvg::profile::xbox_series, "Xbox Series"sv},
+           std::pair {lvg::profile::xbox_one, "Xbox One"sv},
            std::pair {lvg::profile::dualsense, "DualSense"sv},
            std::pair {lvg::profile::dualshock_4, "DualShock 4"sv},
            std::pair {lvg::profile::switch_pro, "Switch Pro"sv},
-           std::pair {lvg::profile::generic_pid, "generic HID with force feedback"sv},
+           std::pair {lvg::profile::generic_pid, "generic HID with force feedback reports"sv},
            std::pair {lvg::profile::generic_hid, "generic HID"sv}}) {
       if (offers(probe_client, candidate)) {
         if (!offered.empty()) {

@@ -708,6 +708,7 @@
     "gamepad_x360": "X360 (Xbox 360)",
     "gamepad_vhf": "Vibepollo Virtual Gamepad (automatic)",
     "gamepad_vhf_xbox": "Vibepollo Virtual Gamepad (Xbox Series)",
+    "gamepad_vhf_xbox_one": "Vibepollo Virtual Gamepad (Xbox One)",
     "gamepad_vhf_ds4": "Vibepollo Virtual Gamepad (DualShock 4)",
     "gamepad_vhf_ds5": "Vibepollo Virtual Gamepad (DualSense)",
     "gamepad_vhf_switch": "Vibepollo Virtual Gamepad (Switch Pro)",
