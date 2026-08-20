@@ -557,7 +557,7 @@
         "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
         "name": "ViGEmBus",
         "shortDescription": "Virtual controller driver support.",
-        "supersededDescription": "Not in use: the Vibeshine virtual gamepad driver is providing virtual controllers. Install ViGEmBus only if you want the Xbox 360 or DualShock 4 options that depend on it."
+        "supersededDescription": "Not in use: the Vibepollo virtual gamepad driver is providing virtual controllers. Install ViGEmBus only if you want the Xbox 360 or DualShock 4 options that depend on it."
       },
       "vulkan": {
         "description": "Registers the implicit Vulkan layer used by virtual-display HDR workflows.",

@@ -375,9 +375,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf</td>
-        <td>Vibeshine's own virtual gamepad driver, instead of ViGEmBus, choosing the controller
+        <td>Vibepollo's own virtual gamepad driver, instead of ViGEmBus, choosing the controller
             automatically
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. It presents a DualSense to clients that report a PlayStation
             controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
             controller otherwise. On an older driver it falls back to a generic HID pad that
@@ -386,16 +386,16 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf_switch</td>
-        <td>Switch Pro Controller on Vibeshine's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+        <td>Switch Pro Controller on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. Includes motion sensors, battery reporting, rumble, and the
             Capture button. This controller has no analog triggers, so trigger travel is reported
             as ZL and ZR presses, and it has no touchpad.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
-        <td>Xbox Series controller on Vibeshine's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+        <td>Xbox Series controller on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. Along with vhf_xbox_one, this is a virtual gamepad option
             Windows places on the XInput path, so it is one of the two that games supporting only
             XInput can see. It has rumble and impulse triggers, but no touchpad, motion, or
@@ -403,8 +403,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf_xbox_one</td>
-        <td>Xbox One controller on Vibeshine's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+        <td>Xbox One controller on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. It reaches the XInput path the same way vhf_xbox does, and is
             recognised by Windows on its own product ID rather than a generic one, which can help
             with software that identifies controllers by generation. It is otherwise identical to
@@ -412,15 +412,15 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
     <tr>
         <td>vhf_ds4</td>
-        <td>DualShock 4 on Vibeshine's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+        <td>DualShock 4 on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. Includes the touchpad, motion sensors, battery reporting, and
             the lightbar.}</td>
     </tr>
     <tr>
         <td>vhf_ds5</td>
-        <td>DualSense on Vibeshine's own virtual gamepad driver
-            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+        <td>DualSense on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. Includes the touchpad, motion sensors, battery reporting, the
             lightbar, the player and microphone LEDs, and the adaptive triggers.}</td>
     </tr>

@@ -237,7 +237,7 @@ namespace platf {
         // present, ViGEmBus is simply not in use, and warning about it sends people chasing a
         // dependency they no longer need.
         if (vhf_gamepad_available) {
-          BOOST_LOG(info) << "ViGEmBus is not installed; gamepad emulation will use the Vibeshine virtual gamepad driver."sv;
+          BOOST_LOG(info) << "ViGEmBus is not installed; gamepad emulation will use the Vibepollo virtual gamepad driver."sv;
         } else {
           BOOST_LOG(warning) << "ViGEmBus is not installed or running; gamepad emulation will be unavailable until installed."sv;
         }
@@ -1322,7 +1322,7 @@ namespace platf {
 
     if (vhf_gamepad_selected() && raw->vhf) {
       const auto desired = vhf_desired_profile(metadata);
-      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibeshine virtual gamepad driver"sv;
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv;
 
       if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
         raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
@@ -1333,14 +1333,14 @@ namespace platf {
       // does offer, rather than dropping straight off the driver the user chose.
       if (desired != vhf_profile_e::automatic &&
           raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic) == 0) {
-        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " could not use the requested controller type; the Vibeshine driver substituted the closest one it offers"sv;
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " could not use the requested controller type; the Vibepollo driver substituted the closest one it offers"sv;
         raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
         return 0;
       }
 
       // Falling back keeps a session playable rather than leaving the client with a dead
       // controller, but it has to be loud: the user asked for a specific driver.
-      BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibeshine virtual gamepad driver; falling back to ViGEmBus"sv;
+      BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver; falling back to ViGEmBus"sv;
     }
 
     if (!raw->vigem) {

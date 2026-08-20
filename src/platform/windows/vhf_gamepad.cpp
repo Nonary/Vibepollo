@@ -395,14 +395,14 @@ namespace platf {
     lvg::client probe_client;
     const DWORD status = probe_client.connect();
     if (status != ERROR_SUCCESS) {
-      BOOST_LOG(info) << "Vibeshine virtual gamepad driver is not available ["sv
+      BOOST_LOG(info) << "Vibepollo virtual gamepad driver is not available ["sv
                       << util::hex(status).to_string_view() << ']';
       return false;
     }
 
     lvg::profile profile {};
     if (!select_profile(probe_client, vhf_profile_e::automatic, profile)) {
-      BOOST_LOG(warning) << "Vibeshine virtual gamepad driver does not expose a usable gamepad profile"sv;
+      BOOST_LOG(warning) << "Vibepollo virtual gamepad driver does not expose a usable gamepad profile"sv;
       return false;
     }
 
@@ -426,7 +426,7 @@ namespace platf {
       }
     }
 
-    BOOST_LOG(info) << "Vibeshine virtual gamepad driver is available (up to "sv
+    BOOST_LOG(info) << "Vibepollo virtual gamepad driver is available (up to "sv
                     << probe_client.maximum_controllers() << " controllers; offers "sv
                     << offered << ')';
     impl->driver_available = true;
@@ -457,16 +457,16 @@ namespace platf {
     if (!impl->client.connected()) {
       const DWORD connect_status = impl->client.connect();
       if (connect_status != ERROR_SUCCESS) {
-        BOOST_LOG(error) << "Couldn't connect to the Vibeshine virtual gamepad driver ["sv
+        BOOST_LOG(error) << "Couldn't connect to the Vibepollo virtual gamepad driver ["sv
                          << util::hex(connect_status).to_string_view() << ']';
         return -1;
       }
-      BOOST_LOG(debug) << "Connected to the Vibeshine virtual gamepad driver"sv;
+      BOOST_LOG(debug) << "Connected to the Vibepollo virtual gamepad driver"sv;
     }
 
     lvg::profile profile {};
     if (!select_profile(impl->client, desired, profile)) {
-      BOOST_LOG(error) << "Vibeshine virtual gamepad driver does not offer the requested gamepad profile"sv;
+      BOOST_LOG(error) << "Vibepollo virtual gamepad driver does not offer the requested gamepad profile"sv;
       if (impl->active_count.load(std::memory_order_acquire) == 0) {
         impl->client.close();
       }
@@ -533,7 +533,7 @@ namespace platf {
 
     slot.reset();
     if (impl->active_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-      BOOST_LOG(debug) << "Disconnecting from the Vibeshine virtual gamepad driver"sv;
+      BOOST_LOG(debug) << "Disconnecting from the Vibepollo virtual gamepad driver"sv;
       impl->client.close();
     }
   }

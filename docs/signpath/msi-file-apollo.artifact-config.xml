@@ -72,15 +72,15 @@
       Neither is named by the INF, so neither is catalog-bound, and both are
       ours to sign.
     -->
-    <catalog-file path="Sunshine/drivers/sunshine/SunshineVirtualDisplayDriver.cat"
+    <catalog-file path="Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.cat"
                   min-matches="0" max-matches="1">
       <authenticode-sign/>
     </catalog-file>
-    <pe-file path="Sunshine/drivers/sunshine/virtualdisplay_probe.exe"
+    <pe-file path="Apollo/drivers/sunshine/virtualdisplay_probe.exe"
              min-matches="0" max-matches="1">
       <authenticode-sign/>
     </pe-file>
-    <pe-file path="Sunshine/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll"
+    <pe-file path="Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll"
              min-matches="0" max-matches="1">
       <authenticode-sign/>
     </pe-file>
@@ -91,11 +91,11 @@
       min-matches="0" keeps a build without the payload from failing the whole
       request.
     -->
-    <catalog-file path="Sunshine/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.cat"
+    <catalog-file path="Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.cat"
                   min-matches="0" max-matches="1">
       <authenticode-sign/>
     </catalog-file>
-    <pe-file path="Sunshine/drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe"
+    <pe-file path="Apollo/drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe"
              min-matches="0" max-matches="1">
       <authenticode-sign/>
     </pe-file>
