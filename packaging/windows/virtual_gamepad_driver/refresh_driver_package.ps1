@@ -33,6 +33,13 @@ $manifestPayload = @(
 $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
 $releaseLockFile = 'release-lock.json'
 
+# A package that ships unsigned because SignPath is not available on
+# Nonary/libvirtualgamepad. Its catalogue is signed later, by the Vibeshine MSI
+# signing request. Nothing has been signed yet at this point in the build, so
+# every manifest hash below is still checked exactly as before; only the
+# signature checks are skipped, because there is no signature to check.
+$msiRequestChannel = 'msi-request-signing'
+
 function Normalize-Hex {
     param(
         [Parameter(Mandatory = $true)][string] $Value,
@@ -235,6 +242,23 @@ function Assert-Package {
 
     $catalogPath = Join-Path $Root 'driver/VibeshineVhfGamepad.cat'
     $toolPath = Join-Path $Root 'tools/VibeshineVhfGamepadDeviceSetup.exe'
+
+    if ($manifest.signing.channel -eq $msiRequestChannel) {
+        if ($AllowLocalTest) {
+            throw '[VibeshineVhfGamepad] An MSI-signed package is not a local-test package.'
+        }
+        if ($hasLocalCertificate) {
+            throw '[VibeshineVhfGamepad] An MSI-signed package must not include a local-test certificate.'
+        }
+        # Catalogue membership cannot be checked here: signtool verifies members
+        # against a signature, and there is none until the MSI request signs it.
+        # The manifest hashes above already pin the .cat and the .dll together
+        # as the pinned release produced them, and Windows itself re-checks the
+        # driver against the catalogue when the INF is staged at install time.
+        Write-Host '[VibeshineVhfGamepad] Package is unsigned by design; the MSI signing request signs its catalog.'
+        return $manifest
+    }
+
     $catalogSignature = Get-AuthenticodeSignature -LiteralPath $catalogPath
     $toolSignature = Get-AuthenticodeSignature -LiteralPath $toolPath
     if ($null -eq $catalogSignature.SignerCertificate -or $null -eq $toolSignature.SignerCertificate -or
@@ -251,9 +275,13 @@ function Assert-Package {
         if ($manifest.signing.channel -ne 'external-catalog-signing') {
             throw '[VibeshineVhfGamepad] Production package does not declare external catalog signing.'
         }
-        if ((Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $ExpectedCatalogSignerThumbprint -or
+        if ($ExpectedCatalogSignerThumbprint -and
+            (Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $ExpectedCatalogSignerThumbprint) {
+            throw '[VibeshineVhfGamepad] Signed catalog does not match the signer identity pinned by Vibeshine.'
+        }
+        if ($ExpectedDeviceSetupSignerThumbprint -and
             (Get-Thumbprint -Certificate $toolSignature.SignerCertificate) -ne $ExpectedDeviceSetupSignerThumbprint) {
-            throw '[VibeshineVhfGamepad] Signed package artifacts do not match the signer identities pinned by Vibeshine.'
+            throw '[VibeshineVhfGamepad] Signed setup tool does not match the signer identity pinned by Vibeshine.'
         }
     }
 

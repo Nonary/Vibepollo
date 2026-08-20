@@ -261,11 +261,11 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
                 "SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE requires SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR.")
         endif()
     else()
+        # Only the archive identity is required. The catalogue is signed by
+        # the MSI signing request, so there is no upstream signer to pin.
         foreach(_vhf_gamepad_pin IN ITEMS
                 SUNSHINE_VHF_GAMEPAD_RELEASE_TAG
-                SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256
-                SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT
-                SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT)
+                SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256)
             if("${${_vhf_gamepad_pin}}" STREQUAL "")
                 message(FATAL_ERROR
                     "SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER requires ${_vhf_gamepad_pin} for a production package.")
@@ -275,10 +275,17 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         if(NOT SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 MATCHES "^[0-9a-fA-F]{64}$")
             message(FATAL_ERROR "SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 must be a SHA-256 value.")
         endif()
-        if(NOT SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT MATCHES "^[0-9a-fA-F]{40}$" OR
-           NOT SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT MATCHES "^[0-9a-fA-F]{40}$")
-            message(FATAL_ERROR "VHF gamepad signer thumbprints must be 40-character SHA-1 thumbprints.")
-        endif()
+        # Still validated when supplied, for the hand-signed package case.
+        foreach(_vhf_gamepad_signer IN ITEMS
+                SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT
+                SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT)
+            if(NOT "${${_vhf_gamepad_signer}}" STREQUAL "" AND
+               NOT "${${_vhf_gamepad_signer}}" MATCHES "^[0-9a-fA-F]{40}$")
+                message(FATAL_ERROR
+                    "${_vhf_gamepad_signer} must be a 40-character SHA-1 thumbprint when set.")
+            endif()
+        endforeach()
+        unset(_vhf_gamepad_signer)
     endif()
 
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR
@@ -331,9 +338,16 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
     if(NOT SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
         list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS
             -ReleaseTag "${SUNSHINE_VHF_GAMEPAD_RELEASE_TAG}"
-            -ExpectedReleaseAssetSha256 "${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}"
-            -ExpectedCatalogSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT}"
-            -ExpectedDeviceSetupSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT}")
+            -ExpectedReleaseAssetSha256 "${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}")
+        # Passed through only when a pre-signed package is being used.
+        if(NOT "${SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT}" STREQUAL "")
+            list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS
+                -ExpectedCatalogSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT}")
+        endif()
+        if(NOT "${SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT}" STREQUAL "")
+            list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PIN_ARGS
+                -ExpectedDeviceSetupSignerThumbprint "${SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT}")
+        endif()
     endif()
 
     if(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE)

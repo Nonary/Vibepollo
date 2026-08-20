@@ -13,11 +13,26 @@
 
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
   This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
-  SunshineVirtualDisplayDriver.dll + .cat, VibeshineVhfGamepad.dll + .cat,
-  VkLayer_sunshine_hdr.dll, virtualdisplay_probe.exe, nefconc.exe,
-  nvngx_truehdr.dll) whose .cat catalog hashes would be invalidated by
-  re-signing. It also leaves the VHF root-device setup tool alone: that
-  release-signed executable is hash-pinned in the VHF package manifest.
+  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
+  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll) whose .cat catalog
+  hashes would be invalidated by re-signing.
+
+  THE VHF GAMEPAD DRIVER IS DIFFERENT and is signed here. SignPath is not
+  available on Nonary/libvirtualgamepad, so that package can never arrive
+  production-signed; it is consumed unsigned and signed as part of this
+  request. Two files, and only these two:
+
+    - VibeshineVhfGamepad.cat   <catalog-file>, because a driver package is
+      trusted through its catalogue, not through a signature on the driver
+      binary. This is what makes the driver installable.
+    - VibeshineVhfGamepadDeviceSetup.exe  <pe-file>. It is safe to sign only
+      because it is NOT listed in the INF's [VibeshineVhfGamepad.CopyFiles]
+      section, so the catalogue does not hash it.
+
+  VibeshineVhfGamepad.dll MUST NOT be added. The catalogue hashes it, so
+  signing it changes the hash the catalogue attests to and the driver stops
+  installing. Its integrity comes from the signed .cat, which is exactly how
+  Windows validates a driver package.
 
   NOTE: the path= values are the file's logical path inside the MSI (install
   layout). The WiX package installs under the Apollo directory, so top-level
@@ -42,6 +57,21 @@
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
 
     <!--
+      Vibeshine VHF gamepad driver. Present only when the installer is built
+      with SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON, so both entries are optional:
+      min-matches="0" keeps a build without the payload from failing the whole
+      request.
+    -->
+    <catalog-file path="Sunshine/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.cat"
+                  min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </catalog-file>
+    <pe-file path="Sunshine/drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe"
+             min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
+
+    <!--
       DO NOT add the vendor / catalog-bound files below: they are origin-signed
       upstream and re-signing breaks their .cat catalog hashes (driver install
       fails). Keep them out of this configuration:
@@ -51,8 +81,8 @@
         Apollo/drivers/sunshine/virtualdisplay_probe.exe
         Apollo/drivers/sunshine/nefconc.exe
         Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
-        Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll (+ .cat)
-        Apollo/drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe
+        Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll
+            (catalog-bound - see the header comment)
         nvngx_truehdr.dll   (NVIDIA RTX Video SDK runtime)
     -->
 

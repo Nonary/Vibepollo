@@ -1240,10 +1240,14 @@ jobs:
             }
           }
 
-          # A VHF package, when enabled, is an immutable signed release
-          # payload. Its DLL is catalog-bound and its setup tool is hash-pinned
-          # by manifest.json, so neither may be altered by the MSI deep-sign.
-          # Verify it separately from the generic first-party PE sweep.
+          # The VHF package arrives unsigned: SignPath is not available on
+          # Nonary/libvirtualgamepad, so its catalog and setup tool are signed
+          # by this repository's MSI request instead. That inverts what this
+          # check is for. The signature assertions below now confirm OUR
+          # signing ran, rather than that upstream signed it, and the manifest
+          # hashes for those two files are expected not to match because
+          # signing rewrote them. Everything else is still hash-pinned, and the
+          # catalog-bound DLL must still be untouched.
           $vhfPackageDir = Join-Path $extractDir 'Sunshine\drivers\vhf-gamepad'
           $vhfManifestPath = Join-Path $vhfPackageDir 'manifest.json'
           # cleanup.ps1 is deliberately present in every MSI so a later
@@ -1279,6 +1283,14 @@ jobs:
                     throw "manifest lacks exactly one payload entry: $requiredPayload"
                   }
                 }
+                # Rewritten by the signing request, so their recorded hashes are
+                # stale by design. The catalog still attests to the DLL, which is
+                # verified below, and the DLL's own hash is still checked here.
+                $vhfSignedDownstream = $vhfManifest.signing.channel -eq 'msi-request-signing'
+                $vhfDownstreamSigned = @(
+                  'driver/VibeshineVhfGamepad.cat',
+                  'tools/VibeshineVhfGamepadDeviceSetup.exe'
+                )
                 foreach ($entry in @($vhfManifest.files)) {
                   if ($null -eq $entry -or [string]::IsNullOrWhiteSpace($entry.path) -or
                       [string]::IsNullOrWhiteSpace($entry.sha256) -or
@@ -1288,6 +1300,9 @@ jobs:
                   $path = Join-Path $vhfPackageDir ($entry.path -replace '/', '\\')
                   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                     throw "manifest file is missing: $($entry.path)"
+                  }
+                  if ($vhfSignedDownstream -and $vhfDownstreamSigned -contains $entry.path) {
+                    continue
                   }
                   $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
                   if ($actual -ne $entry.sha256.ToLowerInvariant()) {

@@ -25,6 +25,22 @@ $manifestPayload = @(
     'tools/VibeshineVhfGamepadDeviceSetup.exe'
 )
 $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
+
+# Signing channel for a package that ships unsigned and is signed by the
+# Vibeshine MSI signing request instead. SignPath is not available on
+# Nonary/libvirtualgamepad, so its releases cannot carry a production
+# signature; the catalogue is signed downstream, inside the MSI.
+$msiRequestChannel = 'msi-request-signing'
+
+# Under that channel these two files are re-signed after the manifest was
+# written, so neither their hash nor their signer identity can be pinned by the
+# upstream package. Everything else about them is still checked: the catalogue
+# must carry an intact signature that Windows trusts, and the catalogue is what
+# attests to VibeshineVhfGamepad.dll, whose hash IS still pinned.
+$downstreamSignedFiles = @(
+    'driver/VibeshineVhfGamepad.cat',
+    'tools/VibeshineVhfGamepadDeviceSetup.exe'
+)
 $rebootExitCode = 3010
 
 function Write-DriverMessage {
@@ -104,16 +120,21 @@ function Assert-ReleaseLock {
     $channel = Get-RequiredStringProperty -Object $lock -Name 'channel' -Context 'Release lock'
     $sourceRevision = Get-RequiredStringProperty -Object $lock -Name 'source_revision' -Context 'Release lock'
     $driverVer = Get-RequiredStringProperty -Object $lock -Name 'driver_ver' -Context 'Release lock'
-    $catalogSigner = Get-RequiredStringProperty -Object $lock -Name 'catalog_signer_thumbprint' -Context 'Release lock'
-    $deviceSetupSigner = Get-RequiredStringProperty -Object $lock -Name 'device_setup_signer_thumbprint' -Context 'Release lock'
-    if ($catalogSigner -notmatch '^[0-9a-fA-F]{40}$' -or $deviceSetupSigner -notmatch '^[0-9a-fA-F]{40}$') {
-        throw '[VibeshineVhfGamepad] Release lock has invalid signer thumbprints.'
+    $signerIsPinnedUpstream = $Manifest.signing.channel -ne $msiRequestChannel
+    if ($signerIsPinnedUpstream) {
+        $catalogSigner = Get-RequiredStringProperty -Object $lock -Name 'catalog_signer_thumbprint' -Context 'Release lock'
+        $deviceSetupSigner = Get-RequiredStringProperty -Object $lock -Name 'device_setup_signer_thumbprint' -Context 'Release lock'
+        if ($catalogSigner -notmatch '^[0-9a-fA-F]{40}$' -or $deviceSetupSigner -notmatch '^[0-9a-fA-F]{40}$') {
+            throw '[VibeshineVhfGamepad] Release lock has invalid signer thumbprints.'
+        }
+        if ($catalogSigner.ToUpperInvariant() -ne (Get-Thumbprint -Certificate $CatalogSignature.SignerCertificate) -or
+            $deviceSetupSigner.ToUpperInvariant() -ne (Get-Thumbprint -Certificate $ToolSignature.SignerCertificate)) {
+            throw '[VibeshineVhfGamepad] Release lock does not describe the signed VHF package.'
+        }
     }
     if ($sourceRevision.ToLowerInvariant() -ne $Manifest.source_revision.ToLowerInvariant() -or
-        $driverVer -ne $Manifest.driver_ver -or
-        $catalogSigner.ToUpperInvariant() -ne (Get-Thumbprint -Certificate $CatalogSignature.SignerCertificate) -or
-        $deviceSetupSigner.ToUpperInvariant() -ne (Get-Thumbprint -Certificate $ToolSignature.SignerCertificate)) {
-        throw '[VibeshineVhfGamepad] Release lock does not describe the signed VHF package.'
+        $driverVer -ne $Manifest.driver_ver) {
+        throw '[VibeshineVhfGamepad] Release lock does not describe this VHF package.'
     }
 
     if ($Manifest.signing.channel -eq 'self-signed-local-test') {
@@ -123,7 +144,8 @@ function Assert-ReleaseLock {
         return
     }
 
-    if ($Manifest.signing.channel -ne 'external-catalog-signing' -or $channel -ne 'production') {
+    if ($Manifest.signing.channel -notin @('external-catalog-signing', $msiRequestChannel) -or
+        $channel -ne 'production') {
         throw '[VibeshineVhfGamepad] Production package declares an unsupported signing channel.'
     }
     $releaseTag = Get-RequiredStringProperty -Object $lock -Name 'release_tag' -Context 'Release lock'
@@ -206,7 +228,13 @@ function Assert-DriverPackage {
     # manifest.json cannot hash itself: it is the metadata produced after the
     # immutable payload hashes are computed. Its existence and JSON schema are
     # checked above; only the described artifacts are hash-verified here.
+    $signedDownstream = $manifest.signing.channel -eq $msiRequestChannel
     foreach ($relativePath in $manifestPayload) {
+        if ($signedDownstream -and $downstreamSignedFiles -contains $relativePath) {
+            # Re-signed after this manifest was written, so the recorded hash
+            # is expected not to match. Its signature is checked below.
+            continue
+        }
         Assert-ManifestHash -Manifest $manifest -Root $Root -RelativePath $relativePath
     }
 
@@ -223,6 +251,9 @@ function Assert-DriverPackage {
     } elseif ($manifest.signing.channel -eq 'self-signed-local-test') {
         throw '[VibeshineVhfGamepad] Local-test manifest is missing its public certificate.'
     }
+    if ($hasLocalCertificate -and $manifest.signing.channel -eq $msiRequestChannel) {
+        throw '[VibeshineVhfGamepad] An MSI-signed package must not carry a local-test certificate.'
+    }
 
     $catalogPath = Join-Path $Root 'driver/VibeshineVhfGamepad.cat'
     $toolPath = Join-Path $Root 'tools/VibeshineVhfGamepadDeviceSetup.exe'
@@ -233,9 +264,16 @@ function Assert-DriverPackage {
         $toolSignature.Status -eq [System.Management.Automation.SignatureStatus]::HashMismatch) {
         throw '[VibeshineVhfGamepad] Catalog or root-device setup tool has no intact Authenticode signature.'
     }
-    if ((Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $manifest.signing.signer_thumbprint.ToUpperInvariant() -or
-        (Get-Thumbprint -Certificate $toolSignature.SignerCertificate) -ne $manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant()) {
-        throw '[VibeshineVhfGamepad] Manifest signer identity does not match the signed package artifacts.'
+    if (-not $signedDownstream) {
+        if ((Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $manifest.signing.signer_thumbprint.ToUpperInvariant() -or
+            (Get-Thumbprint -Certificate $toolSignature.SignerCertificate) -ne $manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant()) {
+            throw '[VibeshineVhfGamepad] Manifest signer identity does not match the signed package artifacts.'
+        }
+    } elseif ((Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne
+              (Get-Thumbprint -Certificate $toolSignature.SignerCertificate)) {
+        # Both are signed by the same request, so a split identity means one of
+        # them did not come from this installer's signing run.
+        throw '[VibeshineVhfGamepad] Catalog and root-device setup tool were signed by different certificates.'
     }
 
     Assert-ReleaseLock -Root $Root -Manifest $manifest -CatalogSignature $catalogSignature -ToolSignature $toolSignature
