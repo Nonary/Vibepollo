@@ -68,6 +68,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
+  #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
 #endif
@@ -117,6 +118,7 @@ namespace proc {
     constexpr int LOSSLESS_SHARPNESS_MAX = 10;
 
     constexpr const char *ENV_LOSSLESS_PROFILE = "SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE";
+    constexpr const char *ENV_LOSSLESS_ENABLED = "SUNSHINE_LOSSLESS_SCALING_ENABLED";
     constexpr const char *ENV_LOSSLESS_CAPTURE_API = "SUNSHINE_LOSSLESS_SCALING_CAPTURE_API";
     constexpr const char *ENV_LOSSLESS_QUEUE_TARGET = "SUNSHINE_LOSSLESS_SCALING_QUEUE_TARGET";
     constexpr const char *ENV_LOSSLESS_HDR = "SUNSHINE_LOSSLESS_SCALING_HDR";
@@ -1662,6 +1664,7 @@ namespace proc {
 #endif
 
     auto clear_lossless_runtime_env = [&]() {
+      _env[ENV_LOSSLESS_ENABLED] = "";
       _env[ENV_LOSSLESS_PROFILE] = "";
       _env[ENV_LOSSLESS_CAPTURE_API] = "";
       _env[ENV_LOSSLESS_QUEUE_TARGET] = "";
@@ -1680,13 +1683,17 @@ namespace proc {
       _env[ENV_LOSSLESS_LEGACY_AUTO_DETECT] = "";
     };
 
-    const bool lossless_scaling_enabled = _app.lossless_scaling_enabled || _app.lossless_scaling_framegen;
+    const bool lossless_scaling_enabled = playnite_launcher::lossless::policy::should_enable_runtime(
+      _app.lossless_scaling_enabled,
+      _app.lossless_scaling_framegen
+    );
     _env["SUNSHINE_FRAME_GENERATION_PROVIDER"] =
       _app.frame_generation_enabled ? _app.frame_generation_provider : "";
 
     const bool using_lossless_provider = _app.lossless_scaling_framegen &&
                                          boost::iequals(_app.frame_generation_provider, "lossless-scaling");
     if (lossless_scaling_enabled) {
+      _env[ENV_LOSSLESS_ENABLED] = "1";
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = _app.lossless_scaling_framegen ? "1" : "";
       if (using_lossless_provider && effective_lossless_target) {
         _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = std::to_string(*effective_lossless_target);
@@ -1808,6 +1815,7 @@ namespace proc {
       set_int(ENV_LOSSLESS_LAUNCH_DELAY, std::optional<int>(_app.lossless_scaling_launch_delay_seconds));
       set_bool(ENV_LOSSLESS_LEGACY_AUTO_DETECT, std::optional<bool>(_app.lossless_scaling_legacy_auto_detect));
     } else {
+      _env[ENV_LOSSLESS_ENABLED] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"] = "";
       _env["SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"] = "";

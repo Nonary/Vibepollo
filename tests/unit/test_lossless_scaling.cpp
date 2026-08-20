@@ -9,6 +9,18 @@ namespace {
 
   using playnite_launcher::lossless::policy::restart_state;
 
+  TEST(LosslessScalingRuntime, EnablesScalingWithoutFrameGeneration) {
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_enable_runtime(true, false));
+  }
+
+  TEST(LosslessScalingRuntime, PreservesLegacyFrameGenerationActivation) {
+    EXPECT_TRUE(playnite_launcher::lossless::policy::should_enable_runtime(false, true));
+  }
+
+  TEST(LosslessScalingRuntime, StaysDisabledWithoutEitherFeature) {
+    EXPECT_FALSE(playnite_launcher::lossless::policy::should_enable_runtime(false, false));
+  }
+
   TEST(LosslessScalingRestart, LaunchesWhenNoHelperRunning) {
     restart_state state;
     state.stopped = false;
