@@ -12,10 +12,16 @@
            <authenticode-sign/> directly under <msi-file> signs the container LAST.
 
   STRATEGY 1 (recommended): explicit enumeration of first-party PEs only.
-  This NEVER touches the vendor/catalog-bound files (SudoVDA.dll,
-  SunshineVirtualDisplayDriver.dll + .cat, VkLayer_sunshine_hdr.dll,
-  virtualdisplay_probe.exe, nefconc.exe, nvngx_truehdr.dll) whose .cat catalog
-  hashes would be invalidated by re-signing.
+  This NEVER touches the genuinely third-party files (SudoVDA.dll + sudovda.cat,
+  signed by sudovda@su.mk; nefconc.exe, signed by Nefarius; nvngx_truehdr.dll,
+  the NVIDIA RTX Video SDK runtime), nor any file a catalog hashes.
+
+  Only two files in the whole package are catalog-bound, because each driver's
+  INF copies exactly one binary:
+    SunshineVirtualDisplayDriver.dll   ([SourceDisksFiles] lists only it)
+    VibeshineVhfGamepad.dll            ([VibeshineVhfGamepad.CopyFiles] ditto)
+  Signing either changes the bytes its catalog attests to and the driver stops
+  installing. Everything else beside them is fair game.
 
   THE VHF GAMEPAD DRIVER IS DIFFERENT and is signed here. SignPath is not
   available on Nonary/libvirtualgamepad, so that package can never arrive
@@ -57,6 +63,29 @@
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
 
     <!--
+      Sunshine virtual display driver. Its catalog was previously signed only by
+      a SELF-SIGNED certificate that install.ps1 pushes into the machine's
+      Trusted Root store to make Windows accept it. Signing it here means the
+      catalog chains to a real CA and that root no longer has to be installed.
+
+      The probe and the Vulkan layer beside it were shipping unsigned outright.
+      Neither is named by the INF, so neither is catalog-bound, and both are
+      ours to sign.
+    -->
+    <catalog-file path="Sunshine/drivers/sunshine/SunshineVirtualDisplayDriver.cat"
+                  min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </catalog-file>
+    <pe-file path="Sunshine/drivers/sunshine/virtualdisplay_probe.exe"
+             min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="Sunshine/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll"
+             min-matches="0" max-matches="1">
+      <authenticode-sign/>
+    </pe-file>
+
+    <!--
       Vibeshine VHF gamepad driver. Present only when the installer is built
       with SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON, so both entries are optional:
       min-matches="0" keeps a build without the payload from failing the whole
@@ -72,18 +101,18 @@
     </pe-file>
 
     <!--
-      DO NOT add the vendor / catalog-bound files below: they are origin-signed
-      upstream and re-signing breaks their .cat catalog hashes (driver install
-      fails). Keep them out of this configuration:
-        Apollo/drivers/sudovda/SudoVDA.dll
-        Apollo/drivers/sudovda/nefconc.exe
-        Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll  (+ .cat)
-        Apollo/drivers/sunshine/virtualdisplay_probe.exe
-        Apollo/drivers/sunshine/nefconc.exe
-        Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll
+      DO NOT add these. Two reasons, and they are different reasons:
+
+      Catalog-bound. Signing changes the hash its catalog attests to:
+        Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll
         Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll
-            (catalog-bound - see the header comment)
-        nvngx_truehdr.dll   (NVIDIA RTX Video SDK runtime)
+
+      Third-party, already signed by their own publishers. Re-signing would
+      both misattribute them and break sudovda's catalog:
+        Apollo/drivers/sudovda/SudoVDA.dll        (+ sudovda.cat)  CN=sudovda@su.mk
+        Apollo/drivers/sudovda/nefconc.exe        CN=Nefarius Software Solutions e.U.
+        Apollo/drivers/sunshine/nefconc.exe       CN=Nefarius Software Solutions e.U.
+        nvngx_truehdr.dll                  NVIDIA RTX Video SDK runtime
     -->
 
     <!-- sign the MSI container LAST -->
