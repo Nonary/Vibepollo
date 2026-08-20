@@ -1899,6 +1899,29 @@ if (client_config.enableIntraRefresh == 1) {
       return false;
     };
 
+// BEGIN INSERT2
+// Check if GDR is requested by client
+if (encoder && current_config.enableIntraRefresh == 1) {
+    AMF_RESULT res;
+
+    if (force_idr) {
+        res = surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_NONE);
+        if (res != AMF_OK) {
+            BOOST_LOG(warning) << "AMF GDR: Failed to set FORCE_PICTURE_TYPE (IDR interception)";
+        }
+        res = surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_INSERT_HEADER, true);
+        if (res != AMF_OK) {
+            BOOST_LOG(warning) << "AMF GDR: Failed to set INSERT_HEADER";
+        }
+    } else {
+        res = surface->SetProperty(AMF_VIDEO_ENCODER_HEVC_FORCE_PICTURE_TYPE, AMF_VIDEO_ENCODER_HEVC_PICTURE_TYPE_NONE);
+        if (res != AMF_OK) {
+            BOOST_LOG(warning) << "AMF GDR: Failed to set FORCE_PICTURE_TYPE (Normal operation)";
+        }
+    }
+}
+// END INSERT2
+    
     auto set_forced_idr_properties = [&]() {
       auto check = [&](AMF_RESULT property_result, const char *label) {
         if (property_result == AMF_OK) return true;
