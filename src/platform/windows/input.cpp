@@ -1320,26 +1320,24 @@ namespace platf {
       return -1;
     }
 
-    if (vhf_gamepad_selected() && raw->vhf) {
+    if (vhf_gamepad_selected()) {
       const auto desired = vhf_desired_profile(metadata);
       BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv;
 
-      if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+      if (raw->vhf && raw->vhf->alloc(id, feedback_queue, desired) == 0) {
         raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
         return 0;
       }
 
-      // An explicit request that the driver cannot satisfy is worth one retry with whatever it
-      // does offer, rather than dropping straight off the driver the user chose.
-      if (desired != vhf_profile_e::automatic &&
-          raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic) == 0) {
-        BOOST_LOG(warning) << "Gamepad " << id.globalIndex << " could not use the requested controller type; the Vibepollo driver substituted the closest one it offers"sv;
-        raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
-        return 0;
+      // An explicit profile must not be replaced by an automatic/client-selected profile or by
+      // ViGEmBus. Otherwise a failed Switch Pro allocation makes the client override appear to
+      // win even though the user selected a specific VHF profile.
+      if (desired != vhf_profile_e::automatic) {
+        BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not create the requested Vibepollo controller profile; refusing to substitute another profile"sv;
+        return -1;
       }
 
-      // Falling back keeps a session playable rather than leaving the client with a dead
-      // controller, but it has to be loud: the user asked for a specific driver.
+      // The generic VHF option is allowed to fall back when the driver cannot create a device.
       BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver; falling back to ViGEmBus"sv;
     }
 
