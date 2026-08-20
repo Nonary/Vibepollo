@@ -708,6 +708,7 @@
     "gamepad_x360": "X360 (Xbox 360)",
     "gamepad_vhf": "Vibeshine Virtual Gamepad (automatic)",
     "gamepad_vhf_xbox": "Vibeshine Virtual Gamepad (Xbox Series)",
+    "gamepad_vhf_xbox_one": "Vibeshine Virtual Gamepad (Xbox One)",
     "gamepad_vhf_ds4": "Vibeshine Virtual Gamepad (DualShock 4)",
     "gamepad_vhf_ds5": "Vibeshine Virtual Gamepad (DualSense)",
     "gamepad_vhf_switch": "Vibeshine Virtual Gamepad (Switch Pro)",
