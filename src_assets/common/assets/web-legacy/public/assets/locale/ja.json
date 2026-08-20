@@ -396,6 +396,14 @@
     "output_name_default": "プライマリ ディスプレイ (デフォルト)"
   },
   "config": {
+    "remote_monitor_options_title": "リモートモニターのオプション",
+    "remote_monitor_options_desc": "リモートモニターが送信する内容と、追加の Windows 画面を削除するタイミングを選択します。",
+    "remote_monitor_mute_audio": "リモートモニターの音声をミュート",
+    "remote_monitor_mute_audio_desc": "映像と入力だけを送り、ゲームやデスクトップの音声はリモートモニターのクライアントへ送信しません。",
+    "remote_monitor_disconnect_on_stream_end": "リモートモニターのストリーム終了時に切断",
+    "remote_monitor_disconnect_on_stream_end_desc": "ストリーム終了時にクライアントの追加モニターを削除します。再開できる状態で残す場合はオフにしてください。",
+    "remote_monitor_disconnect_on_client_disconnect": "クライアントと一緒に切断",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "クライアント接続が切れたとき、または「切断」を使用したときに、再開待ちであっても追加モニターをすぐに削除します。",
     "amf": {
       "quality": "AMF 用途",
       "rate_control": "AMF レート制御"

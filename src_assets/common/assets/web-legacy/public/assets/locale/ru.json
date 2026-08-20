@@ -396,6 +396,14 @@
     "output_name_default": "Основной дисплей (по умолчанию)"
   },
   "config": {
+    "remote_monitor_options_title": "Параметры удалённого монитора",
+    "remote_monitor_options_desc": "Выберите, что передаёт удалённый монитор и когда удаляется его дополнительный экран Windows.",
+    "remote_monitor_mute_audio": "Отключить звук удалённого монитора",
+    "remote_monitor_mute_audio_desc": "Передаёт изображение и ввод без звука игры или рабочего стола клиенту удалённого монитора.",
+    "remote_monitor_disconnect_on_stream_end": "Отключать после завершения потока удалённого монитора",
+    "remote_monitor_disconnect_on_stream_end_desc": "Удаляет дополнительный монитор клиента после завершения потока. Оставьте выключенным, чтобы монитор был готов к возобновлению.",
+    "remote_monitor_disconnect_on_client_disconnect": "Отключать вместе с клиентом",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Немедленно удаляет дополнительный монитор при разрыве подключения клиента или выборе «Отключить», даже если монитор ожидал возобновления.",
     "amf": {
       "quality": "Использование AMF",
       "rate_control": "Управление битрейтом AMF"

@@ -396,6 +396,14 @@
     "output_name_default": "Primäre Anzeige (Standard)"
   },
   "config": {
+    "remote_monitor_options_title": "Optionen für Remote Monitor",
+    "remote_monitor_options_desc": "Lege fest, was Remote Monitor überträgt und wann der zusätzliche Windows-Bildschirm entfernt wird.",
+    "remote_monitor_mute_audio": "Audio auf Remote Monitor stummschalten",
+    "remote_monitor_mute_audio_desc": "Überträgt Bild und Eingaben, aber keinen Spiel- oder Desktop-Ton an den Remote-Monitor-Client.",
+    "remote_monitor_disconnect_on_stream_end": "Nach Ende des Remote-Monitor-Streams trennen",
+    "remote_monitor_disconnect_on_stream_end_desc": "Entfernt den zusätzlichen Monitor des Clients, wenn sein Stream endet. Deaktiviert lassen, damit der Monitor zum Fortsetzen bereit bleibt.",
+    "remote_monitor_disconnect_on_client_disconnect": "Zusammen mit dem Client trennen",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Entfernt den zusätzlichen Monitor, sobald die Client-Verbindung abbricht oder „Trennen“ verwendet wird, auch wenn der Monitor auf das Fortsetzen wartete.",
     "amf": {
       "quality": "AMF-Nutzung",
       "rate_control": "AMF-Rate-Control"

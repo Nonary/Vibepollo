@@ -396,6 +396,14 @@
     "output_name_default": "Primární displej (výchozí)"
   },
   "config": {
+    "remote_monitor_options_title": "Možnosti vzdáleného monitoru",
+    "remote_monitor_options_desc": "Zvolte, co vzdálený monitor přenáší a kdy se jeho další obrazovka ve Windows odebere.",
+    "remote_monitor_mute_audio": "Ztlumit zvuk vzdáleného monitoru",
+    "remote_monitor_mute_audio_desc": "Přenáší obraz a vstup bez zvuku hry nebo plochy do klienta vzdáleného monitoru.",
+    "remote_monitor_disconnect_on_stream_end": "Odpojit po ukončení streamu vzdáleného monitoru",
+    "remote_monitor_disconnect_on_stream_end_desc": "Po skončení streamu odebere další monitor klienta. Nechte vypnuté, aby zůstal připravený k obnovení.",
+    "remote_monitor_disconnect_on_client_disconnect": "Odpojit společně s klientem",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Odebere další monitor ihned po ztrátě připojení klienta nebo po použití Odpojit, i když monitor čekal na obnovení.",
     "amf": {
       "quality": "Použití AMF",
       "rate_control": "Řízení rychlosti AMF"

@@ -396,6 +396,14 @@
     "output_name_default": "主显示器（默认）"
   },
   "config": {
+    "remote_monitor_options_title": "远程显示器选项",
+    "remote_monitor_options_desc": "选择远程显示器传输的内容，以及何时移除额外的 Windows 屏幕。",
+    "remote_monitor_mute_audio": "静音远程显示器音频",
+    "remote_monitor_mute_audio_desc": "只传输画面和输入，不向远程显示器客户端发送游戏或桌面音频。",
+    "remote_monitor_disconnect_on_stream_end": "远程显示器串流结束时断开连接",
+    "remote_monitor_disconnect_on_stream_end_desc": "串流结束时移除客户端的额外显示器。若要保留显示器以便继续，请保持关闭。",
+    "remote_monitor_disconnect_on_client_disconnect": "与客户端一起断开连接",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "客户端连接断开或使用“断开连接”时立即移除额外显示器，即使显示器正在等待继续。",
     "amf": {
       "quality": "AMF 使用场景",
       "rate_control": "AMF 码率控制"

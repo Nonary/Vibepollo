@@ -396,6 +396,14 @@
     "output_name_default": "Birincil ekran (varsayılan)"
   },
   "config": {
+    "remote_monitor_options_title": "Uzak monitör seçenekleri",
+    "remote_monitor_options_desc": "Uzak monitörün ne göndereceğini ve ek Windows ekranının ne zaman kaldırılacağını seçin.",
+    "remote_monitor_mute_audio": "Uzak monitörün sesini kapat",
+    "remote_monitor_mute_audio_desc": "Uzak monitör istemcisine oyun veya masaüstü sesi göndermeden görüntü ve girdiyi iletir.",
+    "remote_monitor_disconnect_on_stream_end": "Uzak monitör akışı bitince bağlantıyı kes",
+    "remote_monitor_disconnect_on_stream_end_desc": "Akış bittiğinde istemcinin ek monitörünü kaldırır. Monitörü Sürdür için hazır tutmak üzere kapalı bırakın.",
+    "remote_monitor_disconnect_on_client_disconnect": "İstemciyle birlikte bağlantıyı kes",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "İstemci bağlantısı koptuğunda veya Bağlantıyı Kes'i kullandığınızda, monitör Sürdür için bekliyor olsa bile ek monitörü hemen kaldırır.",
     "amf": {
       "quality": "AMF kullanımı",
       "rate_control": "AMF hız denetimi"

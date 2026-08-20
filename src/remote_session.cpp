@@ -88,24 +88,22 @@ namespace remote_session {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
       return result;
     }
-    if (owner.role == role_e::input) {
-      result.catalogue = {synthetic(control_e::disconnect_input)};
-      return result;
-    }
     if (owns_game(caller, game)) {
       result.free = false;
       result.current_game = game.app.id;
       result.catalogue = visible_configured;
-      result.catalogue.push_back(synthetic(control_e::input));
+      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
     if (game.running) {
-      result.catalogue = {synthetic(control_e::resume), synthetic(control_e::terminate), game.app, synthetic(control_e::input), synthetic(control_e::monitor)};
+      result.catalogue = {synthetic(control_e::resume), synthetic(control_e::terminate), game.app};
+      if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
+      result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
     result.catalogue = visible_configured;
-    result.catalogue.push_back(synthetic(control_e::input));
+    if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
     result.catalogue.push_back(synthetic(control_e::monitor));
     return result;
   }
@@ -209,6 +207,18 @@ namespace remote_session {
   }
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }
+
+  bool uses_audio(const role_e role, const bool mute_remote_monitor) {
+    return role != role_e::input && !(role == role_e::monitor && mute_remote_monitor);
+  }
+
+  bool disconnect_monitor_after_stream(
+    const bool disconnect_on_stream_end,
+    const bool disconnect_on_client_disconnect,
+    const bool client_disconnected
+  ) {
+    return disconnect_on_stream_end || (disconnect_on_client_disconnect && client_disconnected);
+  }
 
   capture_plan_t capture_plan(const role_e role, std::optional<std::string> output) {
     if (role == role_e::input) {

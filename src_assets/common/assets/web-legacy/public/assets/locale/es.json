@@ -396,6 +396,14 @@
     "output_name_default": "Pantalla principal (predeterminada)"
   },
   "config": {
+    "remote_monitor_options_title": "Opciones de Monitor remoto",
+    "remote_monitor_options_desc": "Elige qué envía Monitor remoto y cuándo se elimina su pantalla adicional de Windows.",
+    "remote_monitor_mute_audio": "Silenciar el audio de Monitor remoto",
+    "remote_monitor_mute_audio_desc": "Envía imagen y entrada sin enviar el audio del juego o del escritorio al cliente de Monitor remoto.",
+    "remote_monitor_disconnect_on_stream_end": "Desconectar al terminar la transmisión de Monitor remoto",
+    "remote_monitor_disconnect_on_stream_end_desc": "Elimina el monitor adicional del cliente cuando termina su transmisión. Déjalo desactivado para mantenerlo listo para Reanudar.",
+    "remote_monitor_disconnect_on_client_disconnect": "Desconectar junto con el cliente",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Elimina el monitor adicional en cuanto se pierde la conexión del cliente o usas Desconectar, aunque estuviera esperando para reanudarse.",
     "amf": {
       "quality": "Uso de AMF",
       "rate_control": "Control de tasa AMF"

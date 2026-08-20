@@ -58,8 +58,17 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
 
   const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured);
-  ASSERT_EQ(input.catalogue.size(), 1);
-  EXPECT_EQ(input.catalogue[0].id, remote_session::disconnect_input_id);
+  ASSERT_EQ(input.catalogue.size(), 3);
+  EXPECT_EQ(input.catalogue[0].id, 1);
+  EXPECT_EQ(input.catalogue[1].id, 2);
+  EXPECT_EQ(input.catalogue[2].id, remote_session::monitor_id);
+
+  const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured);
+  ASSERT_EQ(input_during_game.catalogue.size(), 4);
+  EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::resume_id);
+  EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::terminate_id);
+  EXPECT_EQ(input_during_game.catalogue[2].id, 42);
+  EXPECT_EQ(input_during_game.catalogue[3].id, remote_session::monitor_id);
 
   const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured);
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
@@ -106,6 +115,18 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_EQ(stale_monitor_launch.resume_role, remote_session::role_e::monitor);
   EXPECT_FALSE(remote_session::input_uses_display_or_audio(remote_session::role_e::input));
   EXPECT_TRUE(remote_session::input_uses_display_or_audio(remote_session::role_e::monitor));
+  EXPECT_FALSE(remote_session::uses_audio(remote_session::role_e::input, false));
+  EXPECT_TRUE(remote_session::uses_audio(remote_session::role_e::monitor, false));
+  EXPECT_FALSE(remote_session::uses_audio(remote_session::role_e::monitor, true));
+  EXPECT_TRUE(remote_session::uses_audio(remote_session::role_e::game, true));
+}
+
+TEST(RemoteSession, MonitorDisconnectPoliciesKeepStreamEndAndClientLossIndependent) {
+  EXPECT_FALSE(remote_session::disconnect_monitor_after_stream(false, false, false));
+  EXPECT_FALSE(remote_session::disconnect_monitor_after_stream(false, true, false));
+  EXPECT_TRUE(remote_session::disconnect_monitor_after_stream(false, true, true));
+  EXPECT_TRUE(remote_session::disconnect_monitor_after_stream(true, false, false));
+  EXPECT_TRUE(remote_session::disconnect_monitor_after_stream(true, true, true));
 }
 
 TEST(RemoteSession, StaleDisconnectControlsAreIdempotentButCannotTargetAnotherRole) {

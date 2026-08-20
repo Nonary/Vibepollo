@@ -1373,6 +1373,18 @@
           "description": "Adjust interface size without changing the resolution requested by the client.",
           "label": "Windows scaling"
         },
+        "remote_monitor_mute_audio": {
+          "description": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
+          "label": "Mute audio on Remote Monitor"
+        },
+        "remote_monitor_disconnect_on_stream_end": {
+          "description": "Remove the client's extra monitor when its stream finishes. Leave this off to keep the monitor ready for Resume.",
+          "label": "Remove it when the Remote Monitor stream ends"
+        },
+        "remote_monitor_disconnect_on_client_disconnect": {
+          "description": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
+          "label": "Remove it when the client disconnects"
+        },
         "capture": {
           "description": "Automatic follows the capture backend Vibepollo already chooses for this Windows version. Override it only for compatibility or a specific pacing behavior.",
           "label": "Capture method"
@@ -1495,6 +1507,10 @@
         "display_virtual": {
           "description": "The core streaming-display choices, with display-specific controls below.",
           "title": "Virtual display"
+        },
+        "display_remote_monitor": {
+          "description": "Remote Monitor turns another paired device into an extra Windows screen. Choose what it hears and when that screen disappears.",
+          "title": "Your extra Remote Monitor"
         },
         "everyday_access": {
           "title": "Where you can manage and connect"
