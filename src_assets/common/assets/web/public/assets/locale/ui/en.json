@@ -1542,6 +1542,10 @@
           "description": "Choose what happens after a disconnect and keep a known-good desktop layout ready for restoration.",
           "title": "Display lifecycle and recovery"
         },
+        "everyday_remote_monitor": {
+          "description": "Remote Monitor turns another paired device into an extra Windows screen. Choose what it hears and when that screen disappears.",
+          "title": "Your extra Remote Monitor"
+        },
         "everyday_smoothness": {
           "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
           "title": "Automatic virtual-screen smoothness"
