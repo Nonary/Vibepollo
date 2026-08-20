@@ -24,6 +24,7 @@ namespace platf::virtual_display_cleanup {
 
   enum class cleanup_admission_policy_t {
     respect_managed_owners,
+    // The explicit user killswitch is authoritative over every managed owner.
     override_managed_owners,
   };
 
