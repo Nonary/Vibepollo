@@ -1389,6 +1389,10 @@
           "description": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
           "label": "Remove it when the client disconnects"
         },
+        "remote_monitor_terminate_on_first_request": {
+          "description": "Moonlight needs Vibeshine to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
+          "label": "Terminate on the first request"
+        },
         "capture": {
           "description": "Automatic follows the capture backend Vibepollo already chooses for this Windows version. Override it only for compatibility or a specific pacing behavior.",
           "label": "Capture method"

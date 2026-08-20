@@ -371,6 +371,11 @@ const remoteMonitorFields = (): SettingsField[] => [
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
     platform: 'windows',
   }),
+  boolean('remote_monitor_terminate_on_first_request', {
+    labelKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.label',
+    descriptionKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.description',
+    platform: 'windows',
+  }),
 ];
 
 const everydayPacingFields = (): SettingsField[] => [
@@ -850,6 +855,7 @@ export const settingsDefaults: Record<string, unknown> = {
   remote_monitor_mute_audio: false,
   remote_monitor_disconnect_on_stream_end: false,
   remote_monitor_disconnect_on_client_disconnect: false,
+  remote_monitor_terminate_on_first_request: false,
   dd_virtual_display_scale: -1,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',

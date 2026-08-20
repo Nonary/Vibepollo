@@ -3558,18 +3558,30 @@ namespace nvhttp {
           return;
         }
         if (decision.terminate) {
-          const auto confirmation = remote_session::arm_or_confirm_termination(request_client_identity.uuid, game.generation, game.app.id);
-          if (confirmation == remote_session::terminate_confirmation_e::prompt) {
-            BOOST_LOG(info) << "Terminate confirmation armed for client " << request_client_identity.uuid
+          const bool caller_owns_active_game = !game.owner_uuid.empty() && request_client_identity.uuid == game.owner_uuid;
+          if (remote_session::requires_termination_confirmation(
+                config::video.remote_monitor_terminate_on_first_request,
+                caller_owns_active_game
+              )) {
+            const auto confirmation = remote_session::arm_or_confirm_termination(request_client_identity.uuid, game.generation, game.app.id);
+            if (confirmation == remote_session::terminate_confirmation_e::prompt) {
+              BOOST_LOG(info) << "Terminate confirmation armed for client " << request_client_identity.uuid
+                              << " (app=" << game.app.id << ", generation=" << game.generation << ").";
+              tree.put("root.resume", 0);
+              tree.put("root.gamesession", 0);
+              tree.put("root.<xmlattr>.status_code", 410);
+              tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
+              return;
+            }
+            BOOST_LOG(info) << "Terminate confirmation accepted for client " << request_client_identity.uuid
                             << " (app=" << game.app.id << ", generation=" << game.generation << ").";
-            tree.put("root.resume", 0);
-            tree.put("root.gamesession", 0);
-            tree.put("root.<xmlattr>.status_code", 410);
-            tree.put("root.<xmlattr>.status_message", std::string {remote_session::termination_confirmation_message()});
-            return;
+          } else {
+            // Do not let a previous guarded request survive a configuration
+            // change or an owner request and confirm a later extra-client launch.
+            remote_session::clear_termination_confirmation(request_client_identity.uuid);
+            BOOST_LOG(info) << "Terminate accepted on the first request for client " << request_client_identity.uuid
+                            << (caller_owns_active_game ? " (active-game owner)." : " (configured first-request mode).");
           }
-          BOOST_LOG(info) << "Terminate confirmation accepted for client " << request_client_identity.uuid
-                          << " (app=" << game.app.id << ", generation=" << game.generation << ").";
           const bool disconnected = rtsp_stream::disconnect_game_sessions(true);
           // Role-scoped transport teardown deliberately preserves Remote Monitor
           // and Remote Input, but it does not end the configured application.

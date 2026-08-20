@@ -79,6 +79,8 @@ namespace remote_session {
 
   enum class terminate_confirmation_e : std::uint8_t { prompt, confirmed };
 
+  [[nodiscard]] bool requires_termination_confirmation(bool terminate_on_first_request, bool caller_owns_active_game);
+
   [[nodiscard]] terminate_confirmation_e arm_or_confirm_termination(
     std::string_view client_uuid,
     std::uint64_t generation,

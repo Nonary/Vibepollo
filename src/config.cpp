@@ -921,6 +921,7 @@ namespace config {
     false,  // remote_monitor_mute_audio
     false,  // remote_monitor_disconnect_on_stream_end
     false,  // remote_monitor_disconnect_on_client_disconnect
+    false,  // remote_monitor_terminate_on_first_request
 
     {
       video_t::dd_t::config_option_e::verify_only,  // configuration_option
@@ -1885,6 +1886,7 @@ namespace config {
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
     bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
     bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);
+    bool_f(vars, "remote_monitor_terminate_on_first_request", video.remote_monitor_terminate_on_first_request);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);
