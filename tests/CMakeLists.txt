@@ -2397,3 +2397,13 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     set_tests_properties(test_component_videotoolbox_options
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_thread_name_bounds
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_older_native_fixes.py"
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}"
+            --only thread_name)
+    set_tests_properties(test_component_thread_name_bounds
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
