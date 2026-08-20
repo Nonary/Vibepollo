@@ -355,6 +355,24 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
   }),
 ];
 
+const remoteMonitorFields = (): SettingsField[] => [
+  boolean('remote_monitor_mute_audio', {
+    labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
+    descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
+    platform: 'windows',
+  }),
+  boolean('remote_monitor_disconnect_on_stream_end', {
+    labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
+    descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
+    platform: 'windows',
+  }),
+  boolean('remote_monitor_disconnect_on_client_disconnect', {
+    labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
+    descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
+    platform: 'windows',
+  }),
+];
+
 const everydayPacingFields = (): SettingsField[] => [
   boolean('frame_limiter_enable', {
     labelKey: 'ui.settings.fields.frame_limiter_enable.label',
@@ -392,6 +410,10 @@ export const settingsCategories: SettingsCategory[] = [
             recommended: true,
           }),
         ],
+      },
+      {
+        id: 'everyday_remote_monitor',
+        fields: remoteMonitorFields(),
       },
       {
         id: 'everyday_resolution',
@@ -481,25 +503,7 @@ export const settingsCategories: SettingsCategory[] = [
       },
       {
         id: 'display_remote_monitor',
-        fields: [
-          boolean('remote_monitor_mute_audio', {
-            labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
-            descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
-            platform: 'windows',
-          }),
-          boolean('remote_monitor_disconnect_on_stream_end', {
-            labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
-            descriptionKey:
-              'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
-            platform: 'windows',
-          }),
-          boolean('remote_monitor_disconnect_on_client_disconnect', {
-            labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
-            descriptionKey:
-              'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
-            platform: 'windows',
-          }),
-        ],
+        fields: remoteMonitorFields(),
       },
       {
         id: 'display_target',
