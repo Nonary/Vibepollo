@@ -212,6 +212,8 @@ namespace remote_session {
     return role != role_e::input && !(role == role_e::monitor && mute_remote_monitor);
   }
 
+  bool uses_host_audio(const role_e role) { return role == role_e::monitor; }
+
   bool disconnect_monitor_after_stream(
     const bool disconnect_on_stream_end,
     const bool disconnect_on_client_disconnect,

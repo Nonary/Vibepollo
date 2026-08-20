@@ -145,6 +145,10 @@ namespace remote_session {
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);
   [[nodiscard]] bool uses_audio(role_e role, bool mute_remote_monitor);
+  // Remote Monitor keeps host playback enabled independently of the client's
+  // localAudioPlayMode request. remote_monitor_mute_audio separately controls
+  // whether the monitor receives an audio stream at all.
+  [[nodiscard]] bool uses_host_audio(role_e role);
   [[nodiscard]] bool disconnect_monitor_after_stream(bool disconnect_on_stream_end, bool disconnect_on_client_disconnect, bool client_disconnected);
   [[nodiscard]] capture_plan_t capture_plan(role_e role, std::optional<std::string> output = std::nullopt);
 

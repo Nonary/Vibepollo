@@ -3870,7 +3870,7 @@ namespace nvhttp {
         launch_session->role = is_remote_input ?
                                  remote_session::role_e::input :
                                  remote_session::role_e::monitor;
-        launch_session->host_audio = false;
+        launch_session->host_audio = remote_session::uses_host_audio(launch_session->role);
         launch_session->continuous_audio = false;
         if (launch_session->role == remote_session::role_e::monitor) {
           const auto monitor_fps_hz = launch_session->fps >= 1000 ?
