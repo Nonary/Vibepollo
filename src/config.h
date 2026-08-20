@@ -161,6 +161,7 @@ namespace config {
     bool remote_monitor_mute_audio;  ///< Do not capture or transmit audio for Remote Monitor sessions.
     bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
     bool remote_monitor_disconnect_on_client_disconnect;  ///< Release a Remote Monitor when its paired client transport disconnects.
+    bool remote_monitor_terminate_on_first_request;  ///< Let extra clients terminate the active game with one Terminate request.
 
     struct dd_t {
       struct workarounds_t {

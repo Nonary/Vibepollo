@@ -175,6 +175,12 @@ namespace remote_session {
     }
   }
 
+  bool requires_termination_confirmation(const bool terminate_on_first_request, const bool caller_owns_active_game) {
+    // The original game client is not affected by the extra-client safety
+    // guard. The setting only opts secondary clients into the one-request path.
+    return !terminate_on_first_request && !caller_owns_active_game;
+  }
+
   terminate_confirmation_e arm_or_confirm_termination(
     const std::string_view client_uuid,
     const std::uint64_t generation,

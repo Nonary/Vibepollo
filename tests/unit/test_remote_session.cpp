@@ -206,6 +206,13 @@ TEST(RemoteSession, DisconnectControlsCompleteAsDisplayedLaunchFailures) {
   EXPECT_FALSE(remote_session::successful_control_completion(remote_session::control_e::monitor));
 }
 
+TEST(RemoteSession, TerminationConfirmationOnlyProtectsExtraClientsByDefault) {
+  EXPECT_TRUE(remote_session::requires_termination_confirmation(false, false));
+  EXPECT_FALSE(remote_session::requires_termination_confirmation(false, true));
+  EXPECT_FALSE(remote_session::requires_termination_confirmation(true, false));
+  EXPECT_FALSE(remote_session::requires_termination_confirmation(true, true));
+}
+
 TEST(RemoteSession, TerminateAllowsMobileCatalogueRefreshWithinSixtySeconds) {
   const auto start = std::chrono::steady_clock::now();
   EXPECT_EQ(
