@@ -37,7 +37,9 @@ const props = defineProps<{
   health: FrameGenHealth | null;
   healthLoading: boolean;
   healthError: string | null;
+  isPlayniteManaged: boolean;
   losslessActive: boolean;
+  losslessScalingEnabled: boolean;
   nvidiaActive: boolean;
   usingVirtualDisplay: boolean;
   windows10: boolean;
@@ -245,6 +247,15 @@ const displayTargets = computed(() => props.health?.display.targets || []);
           size="small"
           :clearable="false"
         />
+        <n-alert
+          v-if="(isLosslessMode || props.losslessScalingEnabled) && !props.isPlayniteManaged"
+          type="warning"
+          :show-icon="true"
+          size="small"
+          class="text-xs"
+        >
+          {{ $t('apps.framegen.lossless_unmanaged_warning') }}
+        </n-alert>
         <p class="text-[12px] opacity-70 leading-relaxed">
           {{ $t('apps.framegen.kind_hint') }}
         </p>

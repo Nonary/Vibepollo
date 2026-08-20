@@ -1519,7 +1519,10 @@ namespace playnite_launcher::lossless {
 
   lossless_scaling_options lossless_scaling_env_loader::load() const {
     lossless_scaling_options opt;
-    opt.enabled = parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"));
+    opt.enabled = policy::should_enable_runtime(
+      parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_ENABLED")),
+      parse_env_flag(std::getenv("SUNSHINE_LOSSLESS_SCALING_FRAMEGEN"))
+    );
     opt.target_fps = parse_env_double(std::getenv("SUNSHINE_LOSSLESS_SCALING_TARGET_FPS"));
     opt.rtss_limit = parse_env_int(std::getenv("SUNSHINE_LOSSLESS_SCALING_RTSS_LIMIT"));
     opt.active_profile = parse_env_string(std::getenv("SUNSHINE_LOSSLESS_SCALING_ACTIVE_PROFILE"));
