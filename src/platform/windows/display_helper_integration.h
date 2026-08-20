@@ -60,6 +60,7 @@ namespace display_helper_integration {
 
   // Launch the helper (if needed) and send REVERT.
   // Returns true if the helper accepted the command; false to allow fallback.
+  // Terminal user actions may explicitly override managed display ownership.
   bool revert(
     bool prefer_golden_if_current_missing = true,
     bool override_managed_ownership = false
