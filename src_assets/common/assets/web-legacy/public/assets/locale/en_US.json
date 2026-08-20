@@ -388,6 +388,14 @@
     "exclude_global_state_cmd": "Exclude Global State Commands"
   },
   "config": {
+    "remote_monitor_options_title": "Remote Monitor options",
+    "remote_monitor_options_desc": "Choose what Remote Monitor sends and when its extra Windows screen is removed.",
+    "remote_monitor_mute_audio": "Mute audio on Remote Monitor",
+    "remote_monitor_mute_audio_desc": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
+    "remote_monitor_disconnect_on_stream_end": "Disconnect when the Remote Monitor stream ends",
+    "remote_monitor_disconnect_on_stream_end_desc": "Remove the client's extra monitor when its stream finishes. Leave this off to keep the monitor ready for Resume.",
+    "remote_monitor_disconnect_on_client_disconnect": "Disconnect with the client",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
     "adapter_name": "Adapter Name",
     "adapter_name_default": "Automatic (recommended)",
     "adapter_name_desc_linux_1": "Manually specify a GPU to use for capture.",

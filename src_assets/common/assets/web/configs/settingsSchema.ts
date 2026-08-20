@@ -480,6 +480,28 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [...everydayDisplayFields(), ...virtualDisplayCustomizationFields()],
       },
       {
+        id: 'display_remote_monitor',
+        fields: [
+          boolean('remote_monitor_mute_audio', {
+            labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
+            descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
+            platform: 'windows',
+          }),
+          boolean('remote_monitor_disconnect_on_stream_end', {
+            labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
+            descriptionKey:
+              'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
+            platform: 'windows',
+          }),
+          boolean('remote_monitor_disconnect_on_client_disconnect', {
+            labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
+            descriptionKey:
+              'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
+            platform: 'windows',
+          }),
+        ],
+      },
+      {
         id: 'display_target',
         fields: [
           text('output_name', { monospace: true, stacked: true }),
@@ -821,6 +843,9 @@ export const settingsCategories: SettingsCategory[] = [
 export const settingsDefaults: Record<string, unknown> = {
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
+  remote_monitor_mute_audio: false,
+  remote_monitor_disconnect_on_stream_end: false,
+  remote_monitor_disconnect_on_client_disconnect: false,
   dd_virtual_display_scale: -1,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',

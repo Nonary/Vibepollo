@@ -917,6 +917,10 @@ namespace config {
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
+    false,  // remote_monitor_mute_audio
+    false,  // remote_monitor_disconnect_on_stream_end
+    false,  // remote_monitor_disconnect_on_client_disconnect
+
     {
       video_t::dd_t::config_option_e::verify_only,  // configuration_option
       video_t::dd_t::resolution_option_e::automatic,  // resolution_option
@@ -1871,6 +1875,9 @@ namespace config {
     }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
+    bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
+    bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
+    bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);

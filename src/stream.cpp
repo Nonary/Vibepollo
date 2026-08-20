@@ -557,6 +557,8 @@ namespace stream {
     remote_session::role_e remote_role {remote_session::role_e::game};
     std::uint64_t remote_role_generation {};
     bool input_only {};
+    bool audio_disabled {};
+    std::atomic_bool client_disconnected {false};
 
     safe::mail_t mail;
 
@@ -810,7 +812,7 @@ namespace stream {
                  !session->config.monitor.prefer_sdr_10bit &&
                  !session->config.monitor.force_sdr;
       info.yuv444 = session->config.monitor.chromaSamplingType != 0;
-      info.audio_channels = session->config.audio.channels;
+      info.audio_channels = session->audio_disabled ? 0 : session->config.audio.channels;
       info.state = state_name(session->state.load(std::memory_order_relaxed));
 
       // Real-time performance counters
@@ -1051,6 +1053,7 @@ namespace stream {
           break;
         case ENET_EVENT_TYPE_DISCONNECT:
           BOOST_LOG(info) << "CLIENT DISCONNECTED"sv;
+          session->client_disconnected.store(true, std::memory_order_release);
           // No more clients to send video data to ^_^
           if (session->state == session::state_e::RUNNING) {
             session::stop(*session);
@@ -1681,6 +1684,7 @@ namespace stream {
                                  << "). The ENet handshake did not complete; outbound replies to the client may be getting dropped."sv;
               }
             }
+            session->client_disconnected.store(true, std::memory_order_release);
             session::stop(*session);
           }
 
@@ -2868,6 +2872,10 @@ namespace stream {
       return session.remote_role == role && (!generation || session.remote_role_generation == *generation);
     }
 
+    void mark_client_disconnected(session_t &session) {
+      session.client_disconnected.store(true, std::memory_order_release);
+    }
+
     void stop(session_t &session) {
       while_starting_do_nothing(session.state);
       auto expected = state_e::RUNNING;
@@ -2956,40 +2964,34 @@ namespace stream {
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input);
 
-      if (!session.undo_cmds.empty()) {
-        auto exec_thread = std::thread([cmd_list = session.undo_cmds] {
-          for (auto &cmd : cmd_list) {
-            std::error_code ec;
-            auto env = proc::proc.get_env();
-            boost::filesystem::path working_dir = proc::find_working_directory(cmd.cmd, env);
-            auto child = platf::run_command(cmd.elevated, true, cmd.cmd, working_dir, env, nullptr, ec, nullptr);
-            BOOST_LOG(info) << "Spawning client undo command ["sv << cmd.cmd << "] in ["sv << working_dir << ']';
-            if (ec) {
-              BOOST_LOG(warning) << "Couldn't spawn ["sv << cmd.cmd << "]: System: "sv << ec.message();
-            } else {
-              child.detach();
-            }
-          }
-        });
-
-        exec_thread.detach();
-      }
-
-      if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
-        // A monitor transport disappearing is not a release. The topology
-        // owner keeps its logical lease until an explicit, generation-matched
-        // disconnect, unpair, or shutdown request arrives.
-        remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
-      } else if (session.remote_role == remote_session::role_e::input && !session.device_uuid.empty()) {
-        nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);
-      }
-
-      // Serialize only the ownership transition and shared cleanup. Blocking
-      // thread joins above must remain outside the lifecycle gate.
+      // Serialize the ownership transition and shared cleanup. Normal session
+      // reaping acquires the lifecycle gate only after the blocking joins
+      // above. A synchronous NVHTTP disconnect already owns that gate, so it
+      // explicitly transfers the ownership contract instead of reacquiring
+      // this non-recursive mutex.
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::defer_lock);
       if (!lifecycle_lock_held) {
         lifecycle_lock.lock();
       }
+
+      if (session.remote_role == remote_session::role_e::monitor && !session.device_uuid.empty()) {
+        const bool client_disconnected = session.client_disconnected.load(std::memory_order_acquire);
+        if (remote_session::disconnect_monitor_after_stream(
+              config::video.remote_monitor_disconnect_on_stream_end,
+              config::video.remote_monitor_disconnect_on_client_disconnect,
+              client_disconnected)) {
+          const auto reason = client_disconnected ? "Remote Monitor client disconnected" : "Remote Monitor stream ended";
+          remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason);
+          nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
+        } else {
+          // Retain the exact display and desired mode so this paired client can
+          // resume the Remote Monitor without changing any peer's topology.
+          remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
+        }
+      } else if (session.remote_role == remote_session::role_e::input && !session.device_uuid.empty()) {
+        nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);
+      }
+
       auto lifecycle_teardown_reservation = util::fail_guard([&]() {
         if (teardown_reserved) {
           teardown_sessions.fetch_sub(1, std::memory_order_acq_rel);
@@ -3093,14 +3095,14 @@ namespace stream {
       session.video.peer.address(addr);
       session.video.peer.port(0);
 
-      if (!session.input_only) {
+      if (!session.audio_disabled) {
         session.audio.peer.address(addr);
         session.audio.peer.port(0);
       }
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
-      if (!session.input_only) {
+      if (!session.audio_disabled) {
         session.audioThread = std::thread {audioThread, &session};
       }
       session.videoThread = std::thread {videoThread, &session};
@@ -3132,7 +3134,7 @@ namespace stream {
                    !session.config.monitor.prefer_sdr_10bit &&
                    !session.config.monitor.force_sdr;
         meta.yuv444 = session.config.monitor.chromaSamplingType != 0;
-        meta.audio_channels = session.config.audio.channels;
+        meta.audio_channels = session.audio_disabled ? 0 : session.config.audio.channels;
         meta.server_version = current_server_version();
         session_history::begin_session(meta);
       }
@@ -3267,6 +3269,10 @@ namespace stream {
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
       session->input_only = launch_session.role == remote_session::role_e::input;
+      session->audio_disabled = !remote_session::uses_audio(
+        launch_session.role,
+        config::video.remote_monitor_mute_audio
+      );
       session->config.monitor.input_only = session->input_only;
       const auto capture_plan = remote_session::capture_plan(launch_session.role, launch_session.remote_capture_output);
       switch (capture_plan.source) {
@@ -3321,7 +3327,7 @@ namespace stream {
         session->video.gcm_iv_counter = 0;
       }
 
-      if (!session->input_only) {
+      if (!session->audio_disabled) {
         constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
         util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
         util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};

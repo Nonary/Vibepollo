@@ -147,6 +147,10 @@ namespace nvhttp {
     forget_remote_owner(client_uuid, remote_session::role_e::input, generation);
   }
 
+  void notify_remote_monitor_released(const std::string_view client_uuid, const std::uint64_t generation) {
+    forget_remote_owner(client_uuid, remote_session::role_e::monitor, generation);
+  }
+
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
 
@@ -5461,6 +5465,94 @@ namespace nvhttp {
       save_state();
     }
     return updated;
+  }
+
+  bool has_client_uuid(std::string_view uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert.uuid == uuid) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::string get_cert_by_uuid(std::string_view uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert.uuid == uuid) {
+        return named_cert.cert;
+      }
+    }
+    return {};
+  }
+
+  bool disconnect_client(const std::string &uuid) {
+    // Capture the generation before stopping transport. The join path may
+    // retain it for Resume, while a newer launch admitted after this point
+    // must never be released by this disconnect request.
+    const auto monitor_generation = config::video.remote_monitor_disconnect_on_client_disconnect ?
+                                      remote_owner_generation(uuid, remote_session::role_e::monitor) :
+                                      std::nullopt;
+    const auto disconnect = rtsp_stream::disconnect_client_sessions_with_result(uuid);
+    // The result is the pending-map removal linearization point. Never look
+    // up the current Input owner here: a newer generation may have been
+    // admitted after the RTSP critical section and must survive.
+    std::vector<rtsp_stream::pending_policy::pending_owner_t> removed;
+    for (std::size_t i = 0; i < disconnect.pending_roles.size(); ++i) {
+      removed.push_back({.role = disconnect.pending_roles[i], .client_uuid = uuid, .generation = disconnect.pending_generations[i]});
+    }
+    for (const auto &owner : rtsp_stream::pending_policy::disconnect_input_owners_to_forget(removed)) {
+      forget_remote_owner(owner.client_uuid, owner.role, owner.generation);
+    }
+
+    bool monitor_disconnected = false;
+    if (monitor_generation) {
+      std::unique_lock lifecycle_lock {stream_lifecycle_mutex()};
+      // An active session may already have released this generation while it
+      // joined above. Recheck under the lifecycle gate so this path handles
+      // only retained/pending ownership and never repeats or reaches into a
+      // newer Remote Monitor launch.
+      if (remote_owner_generation(uuid, remote_session::role_e::monitor) != monitor_generation) {
+        return disconnect.disconnected;
+      }
+      remote_session::release_monitor(uuid, *monitor_generation, "Paired client disconnected");
+      forget_remote_owner(uuid, remote_session::role_e::monitor, *monitor_generation);
+#ifdef _WIN32
+      cleanup_virtual_display_if_idle_locked();
+#endif
+      monitor_disconnected = true;
+    }
+    return disconnect.disconnected || monitor_disconnected;
+  }
+
+  bool get_client_prefer_10bit_sdr(const std::string &uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert.uuid == uuid) {
+        return named_cert.prefer_10bit_sdr;
+      }
+    }
+    return false;
+  }
+
+  std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid) {
+    std::lock_guard<std::mutex> lock(client_mutex);
+    for (const auto &named_cert : client_root.named_devices) {
+      if (named_cert.uuid == uuid) {
+        auto overrides = named_cert.config_overrides;
+#ifdef _WIN32
+        if (!named_cert.hdr_profile.empty() && !overrides.contains("rtx_hdr_peak_brightness")) {
+          if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(named_cert.hdr_profile)) {
+            const auto effective_peak = std::clamp<std::uint32_t>(*profile_peak, 400, 2000);
+            overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(effective_peak));
+          }
+        }
+#endif
+        return overrides;
+      }
+    }
+    return {};
   }
 
   // (Windows-only) display_helper_integration is included above

@@ -396,6 +396,14 @@
     "output_name_default": "主要顯示器（預設）"
   },
   "config": {
+    "remote_monitor_options_title": "遠端顯示器選項",
+    "remote_monitor_options_desc": "選擇遠端顯示器傳送的內容，以及何時移除額外的 Windows 畫面。",
+    "remote_monitor_mute_audio": "將遠端顯示器音訊靜音",
+    "remote_monitor_mute_audio_desc": "只傳送畫面與輸入，不將遊戲或桌面音訊傳送到遠端顯示器用戶端。",
+    "remote_monitor_disconnect_on_stream_end": "遠端顯示器串流結束時中斷連線",
+    "remote_monitor_disconnect_on_stream_end_desc": "串流結束時移除用戶端的額外顯示器。若要保留顯示器以便繼續，請保持關閉。",
+    "remote_monitor_disconnect_on_client_disconnect": "與用戶端一起中斷連線",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "用戶端連線中斷或使用「中斷連線」時立即移除額外顯示器，即使顯示器正在等待繼續。",
     "amf": {
       "quality": "AMF 使用情境",
       "rate_control": "AMF 位元率控制"

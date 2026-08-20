@@ -396,6 +396,14 @@
     "output_name_default": "Màn hình chính (mặc định)"
   },
   "config": {
+    "remote_monitor_options_title": "Tùy chọn màn hình từ xa",
+    "remote_monitor_options_desc": "Chọn nội dung màn hình từ xa truyền đi và thời điểm gỡ màn hình Windows bổ sung.",
+    "remote_monitor_mute_audio": "Tắt âm thanh trên màn hình từ xa",
+    "remote_monitor_mute_audio_desc": "Truyền hình ảnh và thao tác mà không gửi âm thanh trò chơi hoặc màn hình nền đến ứng dụng màn hình từ xa.",
+    "remote_monitor_disconnect_on_stream_end": "Ngắt kết nối khi luồng màn hình từ xa kết thúc",
+    "remote_monitor_disconnect_on_stream_end_desc": "Gỡ màn hình bổ sung của máy khách khi luồng kết thúc. Để tắt nếu muốn màn hình luôn sẵn sàng Tiếp tục.",
+    "remote_monitor_disconnect_on_client_disconnect": "Ngắt kết nối cùng máy khách",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Gỡ ngay màn hình bổ sung khi kết nối máy khách bị mất hoặc bạn dùng Ngắt kết nối, kể cả khi màn hình đang chờ Tiếp tục.",
     "amf": {
       "quality": "AMF Cách sử dụng",
       "rate_control": "AMF Kiểm soát tỷ lệ"

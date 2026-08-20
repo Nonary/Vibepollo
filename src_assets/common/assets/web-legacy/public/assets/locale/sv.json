@@ -396,6 +396,14 @@
     "output_name_default": "Primär skärm (standard)"
   },
   "config": {
+    "remote_monitor_options_title": "Alternativ för fjärrskärm",
+    "remote_monitor_options_desc": "Välj vad fjärrskärmen skickar och när dess extra Windows-skärm tas bort.",
+    "remote_monitor_mute_audio": "Stäng av ljudet på fjärrskärmen",
+    "remote_monitor_mute_audio_desc": "Skickar bild och inmatning utan spel- eller skrivbordsljud till fjärrskärmens klient.",
+    "remote_monitor_disconnect_on_stream_end": "Koppla från när fjärrskärmens ström slutar",
+    "remote_monitor_disconnect_on_stream_end_desc": "Tar bort klientens extra skärm när strömmen slutar. Låt vara avstängt för att hålla skärmen redo att återupptas.",
+    "remote_monitor_disconnect_on_client_disconnect": "Koppla från tillsammans med klienten",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Tar bort den extra skärmen så snart klientanslutningen bryts eller du använder Koppla från, även om skärmen väntade på att återupptas.",
     "amf": {
       "quality": "AMF-användning",
       "rate_control": "AMF-hastighetskontroll"

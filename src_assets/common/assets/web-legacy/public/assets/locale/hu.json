@@ -396,6 +396,14 @@
     "output_name_default": "Elsődleges kijelző (alapértelmezett)"
   },
   "config": {
+    "remote_monitor_options_title": "Távoli monitor beállításai",
+    "remote_monitor_options_desc": "Válassza ki, mit továbbít a távoli monitor, és mikor távolítsa el a Windows a hozzá tartozó extra képernyőt.",
+    "remote_monitor_mute_audio": "Távoli monitor hangjának némítása",
+    "remote_monitor_mute_audio_desc": "Képet és bemenetet továbbít, de nem küldi el a játék vagy az asztal hangját a távoli monitor kliensének.",
+    "remote_monitor_disconnect_on_stream_end": "Leválasztás a távoli monitor streamjének végén",
+    "remote_monitor_disconnect_on_stream_end_desc": "A stream befejezésekor eltávolítja a kliens extra monitorát. Hagyja kikapcsolva, hogy a monitor készen álljon a folytatásra.",
+    "remote_monitor_disconnect_on_client_disconnect": "Leválasztás a klienssel együtt",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Azonnal eltávolítja az extra monitort, ha megszakad a kliens kapcsolata vagy a Leválasztás lehetőséget választja, még akkor is, ha a monitor folytatásra várt.",
     "amf": {
       "quality": "AMF használat",
       "rate_control": "AMF bitrátavezérlés"

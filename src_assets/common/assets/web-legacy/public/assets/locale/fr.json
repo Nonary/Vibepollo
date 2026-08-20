@@ -396,6 +396,14 @@
     "output_name_default": "Affichage principal (par défaut)"
   },
   "config": {
+    "remote_monitor_options_title": "Options du moniteur distant",
+    "remote_monitor_options_desc": "Choisissez ce que transmet le moniteur distant et quand son écran Windows supplémentaire est supprimé.",
+    "remote_monitor_mute_audio": "Couper le son du moniteur distant",
+    "remote_monitor_mute_audio_desc": "Transmet l'image et les commandes sans envoyer le son du jeu ou du bureau au client du moniteur distant.",
+    "remote_monitor_disconnect_on_stream_end": "Déconnecter à la fin du flux du moniteur distant",
+    "remote_monitor_disconnect_on_stream_end_desc": "Supprime le moniteur supplémentaire du client à la fin de son flux. Laissez cette option désactivée pour qu'il reste prêt à reprendre.",
+    "remote_monitor_disconnect_on_client_disconnect": "Déconnecter avec le client",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Supprime le moniteur supplémentaire dès que la connexion du client est perdue ou que vous utilisez Déconnecter, même s'il attendait une reprise.",
     "amf": {
       "quality": "Utilisation AMF",
       "rate_control": "Contrôle de débit AMF"

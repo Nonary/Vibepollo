@@ -396,6 +396,14 @@
     "output_name_default": "기본 디스플레이(기본값)"
   },
   "config": {
+    "remote_monitor_options_title": "원격 모니터 옵션",
+    "remote_monitor_options_desc": "원격 모니터가 전송할 내용과 추가 Windows 화면을 제거할 시점을 선택합니다.",
+    "remote_monitor_mute_audio": "원격 모니터 오디오 음소거",
+    "remote_monitor_mute_audio_desc": "영상과 입력만 전송하고 게임 또는 데스크톱 오디오는 원격 모니터 클라이언트로 보내지 않습니다.",
+    "remote_monitor_disconnect_on_stream_end": "원격 모니터 스트림 종료 시 연결 해제",
+    "remote_monitor_disconnect_on_stream_end_desc": "스트림이 끝나면 클라이언트의 추가 모니터를 제거합니다. 다시 시작할 수 있도록 유지하려면 끄십시오.",
+    "remote_monitor_disconnect_on_client_disconnect": "클라이언트와 함께 연결 해제",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "클라이언트 연결이 끊기거나 연결 해제를 사용하면 다시 시작 대기 중이더라도 추가 모니터를 즉시 제거합니다.",
     "amf": {
       "quality": "AMF 사용법",
       "rate_control": "AMF 속도 제어"

@@ -401,6 +401,14 @@
     "output_name_default": "Primary display (default)"
   },
   "config": {
+    "remote_monitor_options_title": "Remote Monitor options",
+    "remote_monitor_options_desc": "Choose what Remote Monitor sends and when its extra Windows screen is removed.",
+    "remote_monitor_mute_audio": "Mute audio on Remote Monitor",
+    "remote_monitor_mute_audio_desc": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
+    "remote_monitor_disconnect_on_stream_end": "Disconnect when the Remote Monitor stream ends",
+    "remote_monitor_disconnect_on_stream_end_desc": "Remove the client's extra monitor when its stream finishes. Leave this off to keep the monitor ready for Resume.",
+    "remote_monitor_disconnect_on_client_disconnect": "Disconnect with the client",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
     "amf": {
       "quality": "AMF Usage",
       "rate_control": "AMF Rate Control"

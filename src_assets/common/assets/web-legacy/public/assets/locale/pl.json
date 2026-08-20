@@ -396,6 +396,14 @@
     "output_name_default": "Ekran główny (domyślny)"
   },
   "config": {
+    "remote_monitor_options_title": "Opcje monitora zdalnego",
+    "remote_monitor_options_desc": "Wybierz, co przesyła monitor zdalny i kiedy jego dodatkowy ekran Windows ma zostać usunięty.",
+    "remote_monitor_mute_audio": "Wycisz dźwięk monitora zdalnego",
+    "remote_monitor_mute_audio_desc": "Przesyła obraz i sterowanie bez dźwięku gry lub pulpitu do klienta monitora zdalnego.",
+    "remote_monitor_disconnect_on_stream_end": "Odłącz po zakończeniu strumienia monitora zdalnego",
+    "remote_monitor_disconnect_on_stream_end_desc": "Usuwa dodatkowy monitor klienta po zakończeniu strumienia. Pozostaw wyłączone, aby monitor był gotowy do wznowienia.",
+    "remote_monitor_disconnect_on_client_disconnect": "Odłącz razem z klientem",
+    "remote_monitor_disconnect_on_client_disconnect_desc": "Usuwa dodatkowy monitor natychmiast po zerwaniu połączenia klienta lub użyciu opcji Odłącz, nawet jeśli monitor czekał na wznowienie.",
     "amf": {
       "quality": "Użycie AMF",
       "rate_control": "Kontrola przepływności AMF"
