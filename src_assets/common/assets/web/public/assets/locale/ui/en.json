@@ -1509,8 +1509,8 @@
           "title": "Virtual display"
         },
         "display_remote_monitor": {
-          "description": "Remote Monitor turns another paired device into an extra Windows screen. Choose what it hears and when that screen disappears.",
-          "title": "Your extra Remote Monitor"
+          "description": "Use a paired device as an additional Windows display. Choose whether it receives audio and when the display is removed.",
+          "title": "Remote Monitor"
         },
         "everyday_access": {
           "title": "Where you can manage and connect"
@@ -1543,8 +1543,8 @@
           "title": "Display lifecycle and recovery"
         },
         "everyday_remote_monitor": {
-          "description": "Remote Monitor turns another paired device into an extra Windows screen. Choose what it hears and when that screen disappears.",
-          "title": "Your extra Remote Monitor"
+          "description": "Use a paired device as an additional Windows display. Choose whether it receives audio and when the display is removed.",
+          "title": "Remote Monitor"
         },
         "everyday_smoothness": {
           "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
