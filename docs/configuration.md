@@ -396,9 +396,19 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>vhf_xbox</td>
         <td>Xbox Series controller on Vibeshine's own virtual gamepad driver
             @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
-            driver to be installed. This is the only virtual gamepad option Windows places on the
-            XInput path, so it is the one games that support only XInput can see. It has rumble and
-            impulse triggers, but no touchpad, motion, or battery reporting.}</td>
+            driver to be installed. Along with vhf_xbox_one, this is a virtual gamepad option
+            Windows places on the XInput path, so it is one of the two that games supporting only
+            XInput can see. It has rumble and impulse triggers, but no touchpad, motion, or
+            battery reporting.}</td>
+    </tr>
+    <tr>
+        <td>vhf_xbox_one</td>
+        <td>Xbox One controller on Vibeshine's own virtual gamepad driver
+            @note{This option applies to Windows only and requires the Vibeshine virtual gamepad
+            driver to be installed. It reaches the XInput path the same way vhf_xbox does, and is
+            recognised by Windows on its own product ID rather than a generic one, which can help
+            with software that identifies controllers by generation. It is otherwise identical to
+            vhf_xbox except that an Xbox One pad has no Share button.}</td>
     </tr>
     <tr>
         <td>vhf_ds4</td>
