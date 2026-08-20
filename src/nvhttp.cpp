@@ -42,6 +42,7 @@
 #include <Simple-Web-Server/server_http.hpp>
 
 // local includes
+#include "app_display_policy.h"
 #include "config.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
@@ -685,13 +686,17 @@ namespace nvhttp {
       };
 
       std::optional<std::string> app_output_override;
+      auto app_display_override = proc::display_policy::app_override_e::inherit;
       if (launch_session->output_name_override) {
         app_output_override = boost::algorithm::trim_copy(*launch_session->output_name_override);
       }
 
       if (app_output_override && !app_output_override->empty() && VDISPLAY::is_virtual_display_selection(*app_output_override)) {
         launch_session->virtual_display = true;
+        app_display_override = proc::display_policy::app_override_e::virtual_display;
         app_output_override.reset();
+      } else if (app_output_override) {
+        app_display_override = proc::display_policy::app_override_e::physical;
       }
       launch_session->virtual_display_recreated_on_demand = false;
       launch_session->virtual_display_needs_resume_apply = false;
@@ -709,10 +714,11 @@ namespace nvhttp {
       const bool session_requests_virtual = launch_session->app_metadata && launch_session->app_metadata->virtual_screen;
       const bool launch_requests_physical = launch_session->client_virtual_display_override &&
                                             !*launch_session->client_virtual_display_override;
-      bool request_virtual_display =
-        launch_session->virtual_display ||
+      bool request_virtual_display = proc::display_policy::resolve_virtual_display_request(
         (config_requests_virtual && !launch_requests_physical) ||
-        client_requests_virtual || session_requests_virtual || forced_sudavda_virtual_display;
+          launch_session->virtual_display || session_requests_virtual || forced_sudavda_virtual_display,
+        app_display_override
+      ) || client_requests_virtual;
       const auto requested_virtual_display_mode =
         launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       const bool shared_virtual_display_mode =
