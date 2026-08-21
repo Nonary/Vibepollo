@@ -314,6 +314,14 @@ namespace nvhttp {
   std::mutex &stream_lifecycle_mutex();
 
   /**
+   * @brief Request an asynchronous Force Close teardown from a control-plane caller.
+   *
+   * The request is queued on the blocking lifecycle worker so tray/UI callbacks
+   * never wait on stream joins, process termination, or display cleanup.
+   */
+  void request_force_stop();
+
+  /**
    * @brief Persist a per-client HDR color profile selection (Windows only).
    * @return True if the client was found and updated.
    */

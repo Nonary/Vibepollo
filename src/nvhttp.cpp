@@ -2034,6 +2034,12 @@ namespace nvhttp {
     remote_session::normal_app_transition_gate_t normal_http_app_transition_mutex;
     std::mutex stream_lifecycle_gate;
 
+    namespace {
+      std::mutex force_stop_dispatch_mutex;
+      thread_pool_util::ThreadPool *force_stop_dispatch_pool = nullptr;
+      std::atomic_bool force_stop_pending = false;
+    }
+
     std::mutex &stream_lifecycle_mutex() {
       return stream_lifecycle_gate;
     }
@@ -4715,6 +4721,77 @@ namespace nvhttp {
 #endif
   }
 
+  namespace {
+    void terminate_streams_and_app(
+      const bool immediate,
+      const bool preserve_deferred_launch,
+      const bool terminate_app
+    ) {
+      rtsp_stream::terminate_sessions(preserve_deferred_launch);
+
+      if (terminate_app && !preserve_deferred_launch) {
+        proc::proc.terminate(immediate);
+      }
+
+#ifdef _WIN32
+      // Session joins complete before this final owner check. Any display
+      // cleanup that remains is therefore ordered after transport teardown.
+      cleanup_virtual_display_if_idle();
+#endif
+    }
+
+    void run_force_stop() {
+      std::lock_guard launch_lock {launch_request_mutex};
+
+#ifdef _WIN32
+      // Keep this request visible as one cleanup operation while it cancels
+      // recovery, drains RTSP, terminates the app, and removes the display.
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      VDISPLAY::cancel_all_virtual_display_recovery_monitors();
+#endif
+
+      // Force Close is a host-side lifecycle action, so it must close either
+      // transport before the process/display teardown, not just classic RTSP.
+      webrtc_stream::shutdown_all_sessions();
+      BOOST_LOG(info) << "Force stop: terminating streaming sessions before app and display teardown."sv;
+      terminate_streams_and_app(true, false, true);
+    }
+  }  // namespace
+
+  void request_force_stop() {
+    bool expected = false;
+    if (!force_stop_pending.compare_exchange_strong(expected, true)) {
+      BOOST_LOG(debug) << "Force stop is already pending."sv;
+      return;
+    }
+
+    try {
+      std::lock_guard dispatch_lock {force_stop_dispatch_mutex};
+      if (!force_stop_dispatch_pool) {
+        force_stop_pending.store(false, std::memory_order_release);
+        BOOST_LOG(warning) << "Force stop request dropped because the blocking lifecycle worker is unavailable."sv;
+        return;
+      }
+
+      force_stop_dispatch_pool->push([]() {
+        try {
+          run_force_stop();
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Force stop teardown failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Force stop teardown failed with an unknown exception.";
+        }
+        force_stop_pending.store(false, std::memory_order_release);
+      });
+    } catch (const std::exception &e) {
+      force_stop_pending.store(false, std::memory_order_release);
+      BOOST_LOG(error) << "Could not queue Force stop teardown: " << e.what();
+    } catch (...) {
+      force_stop_pending.store(false, std::memory_order_release);
+      BOOST_LOG(error) << "Could not queue Force stop teardown due to an unknown exception.";
+    }
+  }
+
   void cancel(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -4768,20 +4845,7 @@ namespace nvhttp {
 #else
     constexpr bool preserve_deferred_launch = false;
 #endif
-    rtsp_stream::terminate_sessions(preserve_deferred_launch);
-
-    if (has_running_app && !preserve_deferred_launch) {
-      proc::proc.terminate();
-    }
-    // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
-
-#ifdef _WIN32
-
-    // RTSP session termination above is synchronous, so by the time we reach
-    // this point the old session threads have already completed their joins.
-    cleanup_virtual_display_if_idle();
-
-#endif
+    terminate_streams_and_app(false, preserve_deferred_launch, has_running_app);
   }
 
   void appasset(resp_https_t response, req_https_t request) {
@@ -5042,6 +5106,10 @@ namespace nvhttp {
     http_server_t http_server;
     thread_pool_util::ThreadPool blocking_route_pool;
     blocking_route_pool.start(1);
+    {
+      std::lock_guard dispatch_lock {force_stop_dispatch_mutex};
+      force_stop_dispatch_pool = &blocking_route_pool;
+    }
     // Discovery routes are observation-only, so they must not queue behind the mutating
     // routes. A launch/resume/cancel handler can hold the lifecycle gate across unbounded
     // work, and on a single FIFO worker that made the host undiscoverable until restart.
@@ -5252,6 +5320,10 @@ namespace nvhttp {
 
     ssl.join();
     tcp.join();
+    {
+      std::lock_guard dispatch_lock {force_stop_dispatch_mutex};
+      force_stop_dispatch_pool = nullptr;
+    }
     blocking_route_pool.stop();
     blocking_route_pool.join();
     discovery_route_pool.stop();

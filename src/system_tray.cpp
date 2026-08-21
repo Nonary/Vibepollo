@@ -51,6 +51,7 @@
   // local includes
   #include "config.h"
   #include "confighttp.h"
+  #include "nvhttp.h"
   #include "logging.h"
   #include "network.h"
   #include "platform/common.h"
@@ -104,7 +105,7 @@ namespace system_tray {
   void
     tray_force_stop_cb(struct tray_menu *item) {
     BOOST_LOG(info) << "Force stop from system tray"sv;
-    proc::proc.terminate(true);
+    nvhttp::request_force_stop();
   }
 
   void tray_restart_cb([[maybe_unused]] struct tray_menu *item) {
@@ -523,7 +524,7 @@ namespace system_tray {
       tray.notification_text = s_notification_text.c_str();
       tray.notification_cb = []() {
         BOOST_LOG(info) << "Force stop from notification"sv;
-        proc::proc.terminate();
+        nvhttp::request_force_stop();
       };
       tray.tooltip = PROJECT_NAME;
       s_last_playing_app.clear();
