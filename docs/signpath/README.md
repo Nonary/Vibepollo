@@ -49,8 +49,9 @@ and installed its certificate into the machine trust stores. The MSI request
 now signs `drivers/sunshine/SunshineVirtualDisplayDriver.cat` itself. The
 catalog-bound `SunshineVirtualDisplayDriver.dll` is deliberately left byte-for-
 byte unchanged; signing that DLL would invalidate the catalog. The installer
-only removes the old self-signed root after it confirms that the signed catalog
-is the catalog staged in `DriverStore`.
+adds the exact SignPath publisher certificate to `TrustedPublisher` before PnP
+installation, while leaving existing legacy trust and unchanged driver
+payloads alone.
 
 The artifact configuration requires exactly one catalog match. This is
 intentional: a path mismatch must fail signing rather than publish an MSI that
