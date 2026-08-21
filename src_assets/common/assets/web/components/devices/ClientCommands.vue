@@ -54,7 +54,8 @@ function commandsFor(key: CommandList): ClientCommandDraft[] {
 }
 
 function updateCommands(key: CommandList, next: ClientCommandDraft[]): void {
-  emit(key === 'do' ? 'update:doCommands' : 'update:undoCommands', next);
+  if (key === 'do') emit('update:doCommands', next);
+  else emit('update:undoCommands', next);
 }
 
 function addCommand(key: CommandList): void {
