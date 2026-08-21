@@ -1091,9 +1091,8 @@ namespace amf {
     // USAGE = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY, before giving up on H.264.
     constexpr amf_int64 kUsageLowLatency = 2;  // AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY
     const bool allow_h264_usage_fallback =
-      video_format == 0 && (!config.usage || *config.usage != kUsageLowLatency);
+      video_format == 0 && (!config.usage || *config.usage == AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY);
     const int max_attempts = allow_h264_usage_fallback ? 2 : 1;
- 
 
     amf_config attempt_config = config;
     auto amf_format = get_amf_format(buffer_format, colorspace.bit_depth);
@@ -1112,16 +1111,18 @@ namespace amf {
                                  res == AMF_NOT_SUPPORTED ? lifecycle::initialization_failure_e::unsupported_format :
                                                             lifecycle::initialization_failure_e::encoder_create;
         BOOST_LOG(error) << "AMF: CreateComponent failed for codec " << video_format << ", error: " << res;
-        if (attempt + 1 < max_attempts) continue;
+        if (encoder) { encoder->Terminate(); encoder = nullptr; }
+        if (initialization_failure != lifecycle::initialization_failure_e::device_or_capture && attempt + 1 < max_attempts) continue;
         return false;
       }
 
       // Configure encoder properties (before Init)
       if (!configure_encoder(attempt_config, client_config, colorspace)) {
-        initialization_failure = lifecycle::initialization_failure_e::unsupported_format;
+        initialization_failure = device->GetDeviceRemovedReason() != S_OK ? lifecycle::initialization_failure_e::device_or_capture :
+                                                                          lifecycle::initialization_failure_e::unsupported_format;
         encoder->Terminate();
         encoder = nullptr;
-        if (attempt + 1 < max_attempts) continue;
+        if (initialization_failure != lifecycle::initialization_failure_e::device_or_capture && attempt + 1 < max_attempts) continue;
         return false;
       }
 
@@ -1133,13 +1134,12 @@ namespace amf {
 
       if (res != AMF_OK) {
         initialization_failure = device->GetDeviceRemovedReason() != S_OK ? lifecycle::initialization_failure_e::device_or_capture :
-                                 (res == AMF_NOT_SUPPORTED || res == AMF_INVALID_ARG) ?
-                                   lifecycle::initialization_failure_e::unsupported_format :
-                                   lifecycle::initialization_failure_e::encoder_init;
+                                 (res == AMF_NOT_SUPPORTED || res == AMF_INVALID_ARG) ? lifecycle::initialization_failure_e::unsupported_format :
+                                                                                    lifecycle::initialization_failure_e::encoder_init;
         BOOST_LOG(error) << "AMF: encoder Init failed with the requested encode settings, error: " << res;
         encoder->Terminate();
         encoder = nullptr;
-        if (attempt + 1 < max_attempts) continue;
+        if (initialization_failure != lifecycle::initialization_failure_e::device_or_capture && attempt + 1 < max_attempts) continue;
         return false;
       }
 
