@@ -33,6 +33,14 @@ test('persisted command JSON is available to the v2 editor', () => {
   ]);
 });
 
+test('client command edits survive the latest-device merge before save', () => {
+  const devicesView = readFileSync(new URL('../views/DevicesView.vue', import.meta.url), 'utf8');
+  assert.match(
+    devicesView,
+    /'allowClientCommands',\s*'doCommands',\s*'undoCommands',\s*'displayMode'/,
+  );
+});
+
 test('server command rows round-trip for the Vibepollo editor', () => {
   const server = normalizeServerCommandRows(
     JSON.stringify([{ name: 'Open overlay', cmd: 'overlay.exe', elevated: true }]),

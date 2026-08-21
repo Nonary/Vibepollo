@@ -460,6 +460,8 @@ const draftScalarKeys = [
   'permissions',
   'enableLegacyOrdering',
   'allowClientCommands',
+  'doCommands',
+  'undoCommands',
   'displayMode',
   'displayOverrideEnabled',
   'displaySelection',
