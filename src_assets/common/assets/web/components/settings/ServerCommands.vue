@@ -46,9 +46,16 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
 <template>
   <div class="server-commands">
     <div v-if="rows.length" class="server-commands__list">
-      <section v-for="(row, index) in rows" :key="index" class="server-commands__row">
+      <section
+        v-for="(row, index) in rows"
+        :key="index"
+        class="server-commands__row"
+        :aria-labelledby="`server-command-${index}`"
+      >
         <header class="server-commands__header">
-          <strong>{{ t('config.server_cmd_entry', { index: index + 1 }) }}</strong>
+          <h4 :id="`server-command-${index}`">
+            {{ t('config.server_cmd_entry', { index: index + 1 }) }}
+          </h4>
           <div class="server-commands__actions">
             <label v-if="isWindows" class="vs-switch-label">
               <input
@@ -60,6 +67,7 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
             </label>
             <AppButton
               :label="t('_common.remove')"
+              :aria-label="t('ui.settings.command_editor.remove', { number: index + 1 })"
               icon="trash"
               variant="tertiary"
               size="compact"
@@ -94,7 +102,8 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
         </div>
       </section>
     </div>
-    <AppButton :label="t('config.add')" icon="plus" size="compact" @click="add" />
+    <p v-else class="server-commands__empty">{{ t('ui.settings.command_editor.empty') }}</p>
+    <AppButton :label="t('_common.add')" icon="plus" size="compact" @click="add" />
   </div>
 </template>
 
@@ -121,6 +130,14 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
   gap: var(--vs-space-8);
 }
 
+.server-commands__header h4 {
+  margin: 0;
+  color: var(--vs-color-text-primary);
+  font-size: var(--vs-type-size-control);
+  font-weight: var(--vs-type-weight-semibold);
+  line-height: var(--vs-type-line-height-control);
+}
+
 .server-commands__actions {
   justify-content: flex-end;
 }
@@ -128,6 +145,16 @@ function updateRow(index: number, key: 'name' | 'cmd' | 'elevated', value: unkno
 .server-commands__fields {
   display: grid;
   gap: var(--vs-space-8);
+}
+
+.server-commands__empty {
+  margin: 0;
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.server-commands > :deep(.vs-button) {
+  justify-self: start;
 }
 
 .vs-switch-label {

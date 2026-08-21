@@ -89,7 +89,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
 
 <template>
   <section
-    class="client-command-editor"
+    class="client-settings-section client-command-editor"
     :aria-labelledby="`${controlIdPrefix}-commands-title`"
   >
     <div class="client-command-editor__heading">
@@ -102,7 +102,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
     </div>
 
     <SettingRow
-      class="client-command-editor__allow"
+      class="client-command-editor__allow client-setting-row--switch"
       :label="t('pin.allow_client_commands')"
       :description="t('pin.allow_client_commands_desc')"
       :control-id="`${controlIdPrefix}-allow`"
@@ -172,6 +172,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
               </label>
               <AppButton
                 :label="t('_common.remove')"
+                :aria-label="t('ui.devices.editor.remove_command', { number: index + 1 })"
                 icon="trash"
                 variant="tertiary"
                 size="compact"
@@ -199,11 +200,11 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
 <style scoped>
 .client-command-editor {
   display: grid;
-  gap: var(--vs-space-16);
+  gap: var(--vs-space-12);
   padding: var(--vs-space-16);
   border: var(--vs-border-width) solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
-  background: var(--vs-color-bg-subtle);
+  background: var(--vs-color-bg-surface);
 }
 
 .client-command-editor__heading,
@@ -221,12 +222,18 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
   font-weight: var(--vs-type-weight-semibold);
 }
 
+.client-command-editor__heading h3 {
+  font-size: var(--vs-type-size-control);
+  line-height: var(--vs-type-line-height-control);
+}
+
 .client-command-editor__heading p,
 .client-command-editor fieldset p,
 .client-command-editor__empty {
   margin: 0;
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-metadata);
+  line-height: var(--vs-type-line-height-metadata);
 }
 
 .client-command-editor fieldset {
@@ -235,6 +242,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
   padding: var(--vs-space-12);
   border: 1px solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-raised);
 }
 
 .client-command-editor fieldset legend {
@@ -247,6 +255,7 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
   padding: var(--vs-space-12);
   border: 1px solid var(--vs-color-border-subtle);
   border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
 }
 
 .client-command-editor__row-actions {
@@ -262,11 +271,45 @@ function updateElevated(key: CommandList, index: number, value: boolean): void {
   justify-content: flex-end;
 }
 
+.client-command-editor :deep(.vs-setting-row__control > .vs-textarea) {
+  inline-size: 100%;
+}
+
+.client-command-editor > :deep(.vs-button),
+.client-command-editor fieldset > :deep(.vs-button) {
+  justify-self: start;
+}
+
 .vs-switch-label {
   display: inline-flex;
   align-items: center;
   gap: var(--vs-space-8);
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-helper);
+}
+
+@container client-settings (max-width: 64rem) {
+  .client-command-editor
+    :deep(.vs-setting-row:not(.vs-setting-row--stacked, .client-setting-row--switch)) {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: var(--vs-space-12);
+  }
+
+  .client-command-editor :deep(.vs-setting-row__control) {
+    min-inline-size: 0;
+    justify-content: flex-start;
+  }
+}
+
+@container client-settings (max-width: 20rem) {
+  .client-command-editor,
+  .client-command-editor fieldset {
+    padding: var(--vs-space-12);
+  }
+
+  .client-command-editor__row-actions {
+    justify-content: flex-start;
+  }
 }
 </style>
