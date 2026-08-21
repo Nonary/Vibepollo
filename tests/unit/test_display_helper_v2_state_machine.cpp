@@ -1772,6 +1772,14 @@ TEST(DisplayHelperV2StateMachine, EmptyVirtualDeviceIdentityDoesNotReapplyStaleI
 
 TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive) {
   StateMachineHarness harness;
+  auto golden = make_snapshot("physical_a");
+  golden.m_topology.push_back({"physical_b"});
+  golden.m_modes["physical_b"] = display_device::DisplayMode {};
+  golden.m_hdr_states["physical_b"] = std::nullopt;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Golden,
+    golden));
+
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
   request.configuration->m_device_id = "virtual_current";
@@ -1802,6 +1810,11 @@ TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive)
   harness.display_settings.devices.clear();
   harness.add_active_device("physical_a");
   harness.add_active_device("virtual_current");
+  harness.display_settings.topology = {{"physical_a"}, {"virtual_current"}};
+  harness.display_settings.snapshot = make_snapshot("physical_a");
+  harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.snapshot.m_modes["virtual_current"] = display_device::DisplayMode {};
+  harness.display_settings.snapshot.m_hdr_states["virtual_current"] = std::nullopt;
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
@@ -1939,6 +1952,19 @@ TEST(DisplayHelperV2StateMachine, ActivePhysicalBaselineReturnGetsOneTopologyRep
   });
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before + 2);
+
+  // A failed physical repair never becomes the authoritative session request.
+  // A later virtual-display replacement must start from the last verified
+  // topology and retarget only the virtual member.
+  harness.virtual_display.current_device_id = "virtual_replacement";
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation(),
+  });
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(
+    *harness.dispatcher.apply_request.topology,
+    (display_device::ActiveTopology {{"physical_primary"}, {"virtual_replacement"}}));
 }
 
 TEST(DisplayHelperV2StateMachine, ExclusiveVirtualLayoutIgnoresActivePhysicalBaselineReturn) {
@@ -2461,7 +2487,7 @@ TEST(DisplayHelperV2StateMachine, DisarmBeforeApplyWhileRecovering) {
   EXPECT_TRUE(harness.state_machine.recovery_armed());
 }
 
-TEST(DisplayHelperV2StateMachine, EventLoopRequiresExternalIdentityOrPowerEvidenceToRetryRecovery) {
+TEST(DisplayHelperV2StateMachine, EventLoopUsesGenericTopologyEvidenceOnlyAfterRecoveryWindowExpires) {
   StateMachineHarness harness;
   harness.seed_current_snapshot();
   display_helper::v2::ApplyRequest request;
@@ -2514,19 +2540,22 @@ TEST(DisplayHelperV2StateMachine, EventLoopRequiresExternalIdentityOrPowerEviden
 
   harness.clock.advance(std::chrono::seconds(1));
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
-    display_helper::v2::DisplayEvent::DeviceArrival,
+    display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
 
-  // Even externally-shaped identity evidence cannot erase the bounded
-  // backoff while the existing recovery window is still active.
+  // Generic topology evidence cannot erase the bounded backoff while the
+  // existing recovery window is still active.
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::EventLoop);
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
 
   harness.clock.advance(std::chrono::minutes(2));
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
-    display_helper::v2::DisplayEvent::DeviceArrival,
+    display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
 
+  // Once the bounded primary window is exhausted, a generic topology change
+  // is actionable. Monitor power transitions do not always emit a concrete
+  // DeviceArrival or PowerResume notification.
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Recovery);
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 2);
 }

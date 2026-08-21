@@ -487,6 +487,9 @@ namespace display_helper::v2 {
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
     std::optional<ResolvedConfigurationTarget> resolved_target_;
+    // Candidate physical-return topology. It remains separate from the
+    // authoritative current request until the exact topology verifies.
+    std::optional<ActiveTopology> expected_topology_;
     std::optional<Snapshot> recovery_snapshot_;
     std::optional<std::chrono::steady_clock::time_point> recovery_event_feedback_quiet_until_;
     std::size_t virtual_identity_discoveries_remaining_ = 0;
