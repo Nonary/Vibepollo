@@ -996,12 +996,12 @@ if (client_config.enableIntraRefresh == 1) {
   if (probe_res == AMF_OK) {
     BOOST_LOG(info) << "AMF: Client requested GDR. Initializing driver-autonomous HEVC Intra-Refresh...";
 
-    int64_t gop_size = 120; 
+    int64_t gop_size = 120;
     encoder->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, gop_size);
 
-    int64_t actual_width = encode_width;   
-    int64_t actual_height = encode_height; 
-    
+    int64_t actual_width = encode_width;
+    int64_t actual_height = encode_height;
+
     if (actual_width <= 0)  actual_width = 3840;
     if (actual_height <= 0) actual_height = 2160;
 
@@ -1026,7 +1026,7 @@ if (client_config.enableIntraRefresh == 1) {
   BOOST_LOG(info) << "AMF: Intra-Refresh disabled (not requested by client configuration)";
 }
 // END INSERT1
-    
+
     // NOTE: LOWLATENCY_MODE is intentionally NOT forced here.
     //
     // Previously this block hard-coded AMF_VIDEO_ENCODER_(HEVC_)LOWLATENCY_MODE = true
@@ -1877,7 +1877,7 @@ if (client_config.enableIntraRefresh == 1) {
         }
       }
     }
-    
+
     auto disable_rfi_after_property_failure = [&](const char *property_label, AMF_RESULT property_result) {
       BOOST_LOG(warning) << "AMF: failed to apply " << property_label << " (error=" << property_result
                          << "); disabling RFI and falling back to IDR recovery";
@@ -1921,7 +1921,7 @@ if (encoder && current_config.enableIntraRefresh == 1) {
     }
 }
 // END INSERT2
-    
+
     auto set_forced_idr_properties = [&]() {
       auto check = [&](AMF_RESULT property_result, const char *label) {
         if (property_result == AMF_OK) return true;
