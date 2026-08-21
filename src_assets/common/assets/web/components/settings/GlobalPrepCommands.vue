@@ -127,6 +127,9 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-metadata);
 }
+.global-prep-commands > :deep(.vs-button) {
+  justify-self: start;
+}
 .vs-switch-label {
   display: inline-flex;
   align-items: center;
