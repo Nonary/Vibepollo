@@ -3667,7 +3667,7 @@ namespace nvhttp {
           return;
         }
 
-        std::unique_lock remote_transition_lock {normal_http_app_transition_mutex};
+        std::unique_lock normal_transition_lock {normal_http_app_transition_mutex};
         const bool no_active_sessions = !has_stream_session_activity();
         const auto runtime_app = proc::proc.resolve_app(
           "0",
