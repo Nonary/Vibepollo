@@ -1871,7 +1871,7 @@ namespace amf {
         }
       }
     }
-    
+
     auto disable_rfi_after_property_failure = [&](const char *property_label, AMF_RESULT property_result) {
       BOOST_LOG(warning) << "AMF: failed to apply " << property_label << " (error=" << property_result
                          << "); disabling RFI and falling back to IDR recovery";
