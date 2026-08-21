@@ -24,6 +24,13 @@ test('global command rows preserve order, verbatim text, and Windows elevation',
   ]);
 });
 
+test('persisted command JSON is available to the v2 editor', () => {
+  const persisted = JSON.stringify([{ do: 'connect', undo: 'disconnect', elevated: true }]);
+  assert.deepEqual(normalizeCommandRows(persisted, 'windows'), [
+    { do: 'connect', undo: 'disconnect', elevated: true },
+  ]);
+});
+
 test('display visibility calls disabled Physical and does not clear hidden values', () => {
   assert.deepEqual(displayFieldVisibility('disabled'), { physical: true, virtual: false });
   assert.deepEqual(displayFieldVisibility('per_client'), { physical: false, virtual: true });

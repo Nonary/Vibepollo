@@ -42,7 +42,6 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
 
 <template>
   <div class="global-prep-commands">
-    <p class="settings-row__description">{{ t('config.global_prep_cmd_desc') }}</p>
     <div v-if="rows.length" class="global-prep-commands__list">
       <section v-for="(row, index) in rows" :key="index" class="global-prep-commands__row">
         <header class="global-prep-commands__header">

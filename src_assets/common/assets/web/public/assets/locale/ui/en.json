@@ -1515,6 +1515,10 @@
         "everyday_access": {
           "title": "Where you can manage and connect"
         },
+        "everyday_automation": {
+          "description": "Optional host scripting and automation for power users. Most setups can leave these controls alone.",
+          "title": "Automation & scripting"
+        },
         "everyday_capture": {
           "title": "Capture, encoding, sound, and controllers"
         },

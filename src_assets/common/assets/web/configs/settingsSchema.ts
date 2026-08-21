@@ -492,6 +492,18 @@ export const settingsCategories: SettingsCategory[] = [
           ),
         ],
       },
+      {
+        id: 'everyday_automation',
+        fields: [
+          {
+            key: 'global_prep_cmd',
+            kind: 'command-preparations',
+            labelKey: 'config.global_prep_cmd',
+            descriptionKey: 'config.global_prep_cmd_desc',
+            stacked: true,
+          },
+        ],
+      },
     ],
   },
   {
@@ -789,18 +801,6 @@ export const settingsCategories: SettingsCategory[] = [
             option('5', 'ui.settings.options.log_level.fatal'),
             option('6', 'ui.settings.options.log_level.none'),
           ]),
-        ],
-      },
-      {
-        id: 'host_commands',
-        fields: [
-          {
-            key: 'global_prep_cmd',
-            kind: 'command-preparations',
-            labelKey: 'config.global_prep_cmd',
-            descriptionKey: 'config.global_prep_cmd_desc',
-            stacked: true,
-          },
         ],
       },
       {
