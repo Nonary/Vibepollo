@@ -57,6 +57,7 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
             </label>
             <AppButton
               :label="t('_common.remove')"
+              :aria-label="t('ui.settings.command_editor.remove', { number: index + 1 })"
               icon="trash"
               variant="tertiary"
               size="compact"
