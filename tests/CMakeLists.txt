@@ -2407,3 +2407,13 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     set_tests_properties(test_component_thread_name_bounds
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_wayland_current_mode
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_older_native_fixes.py"
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}"
+            --only wayland_mode)
+    set_tests_properties(test_component_wayland_current_mode
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()

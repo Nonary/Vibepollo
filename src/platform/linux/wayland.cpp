@@ -117,7 +117,7 @@ namespace wl {
     return wl_display_get_registry(display_internal.get());
   }
 
-  inline monitor_t::monitor_t(wl_output *output):
+  monitor_t::monitor_t(wl_output *output):
       output {output},
       wl_listener {
         &CLASS_CALL(monitor_t, wl_geometry),
@@ -166,10 +166,14 @@ namespace wl {
     std::int32_t height,
     std::int32_t refresh
   ) {
+    BOOST_LOG(info) << "[wayland] Resolution: "sv << width << 'x' << height;
+
+    if (!(flags & WL_OUTPUT_MODE_CURRENT)) {
+      return;
+    }
+
     viewport.width = width;
     viewport.height = height;
-
-    BOOST_LOG(info) << "[wayland] Resolution: "sv << width << 'x' << height;
   }
 
   void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
