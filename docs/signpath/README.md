@@ -56,6 +56,13 @@ The artifact configuration requires exactly one catalog match. This is
 intentional: a path mismatch must fail signing rather than publish an MSI that
 falls back to an interactive driver-install prompt.
 
+Windows PnP also requires the catalog's end-entity Authenticode certificate to
+be established in the local machine `TrustedPublisher` store for a silent
+third-party driver install. After validating the production catalog, the
+driver installer imports only the exact `SignPath Foundation` signer
+certificate there before invoking `pnputil`; it does not install a new root CA
+or trust an arbitrary catalog signer.
+
 A literal single request would require migrating off the custom bootstrapper to a
 **WiX Burn** bundle (which SignPath can deep-sign), losing the custom installer
 UX. That is intentionally out of scope.
@@ -209,7 +216,7 @@ if any first-party PE is unsigned. It:
 1. confirms the outer `VibepolloSetup.exe` is signed,
 2. confirms the signed MSI is signed,
 3. administratively extracts the MSI and confirms the Sunshine virtual-display
-   catalog carries a signature,
+   catalog carries a signature from SignPath Foundation,
 4. confirms every first-party PE carries a signature, while **skipping** the
    vendor and catalog-bound files above.
 

@@ -1190,11 +1190,16 @@ jobs:
           $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
           $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
           $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
+          $expectedVirtualDisplaySigner = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
           if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
             $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
           } elseif (Test-Signed $virtualDisplayCatalog) {
             $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
             Write-Host "[verify] OK   virtual display catalog signed: $($catalogSignature.SignerCertificate.Subject) ($($catalogSignature.Status))"
+            if (-not $allowUntrustedSignatures -and
+                $catalogSignature.SignerCertificate.Subject -ne $expectedVirtualDisplaySigner) {
+              $failures.Add("virtual display catalog signer is not SignPath Foundation: $($catalogSignature.SignerCertificate.Subject)")
+            }
             if (-not $allowUntrustedSignatures) {
               $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
               foreach ($catalogPayload in @($virtualDisplayInf, $virtualDisplayDll)) {
