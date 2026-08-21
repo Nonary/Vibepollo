@@ -409,18 +409,17 @@ function Install-CertificateIfPresent {
 }
 
 # Subject of the self-signed certificate older builds created and trusted. It
-# is matched by name because a production package no longer ships the .cer, so
-# there is nothing left on disk to read the thumbprint from.
+# is matched by name because a production package may no longer ship the .cer,
+# so there is nothing left on disk to read the thumbprint from.
 $legacySelfSignedSubject = 'CN=Sunshine Virtual Display Release Signing'
 
 # True when Windows would accept this catalog even if the bundled certificate
 # were not trusted at all: a real signature, from something that is not our own
 # self-signed certificate, chaining to a root the machine already trusts.
-#
-# This is what makes removing that root safe. Answer "no" and the old behaviour
-# is kept, so a locally built or not-yet-signed package still installs.
 function Test-CatalogTrustedIndependently {
-    $signature = Get-AuthenticodeSignature -LiteralPath $catPath
+    param([string]$CatalogPath = $catPath)
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath
     if (-not $signature.SignerCertificate -or $signature.Status -ne 'Valid') {
         return $false
     }
@@ -850,7 +849,7 @@ function Get-SunshineDriverPublishedNames {
     Get-DisplayDriverPublishedNamesByOriginalName -OriginalNames @('SunshineVirtualDisplayDriver.inf')
 }
 
-function Get-CurrentDriverStoreDllPaths {
+function Get-CurrentDriverStorePackageRoots {
     $systemRoot = if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { 'C:\Windows' } else { $env:SystemRoot }
     $driverStoreRoot = Join-Path $systemRoot 'System32\DriverStore\FileRepository'
     if (-not (Test-Path -LiteralPath $driverStoreRoot -PathType Container)) {
@@ -859,27 +858,71 @@ function Get-CurrentDriverStoreDllPaths {
 
     return @(
         Get-ChildItem -LiteralPath $driverStoreRoot -Directory -Filter 'sunshinevirtualdisplaydriver.inf_*' -ErrorAction SilentlyContinue |
-            ForEach-Object { Join-Path $_.FullName 'SunshineVirtualDisplayDriver.dll' } |
+            ForEach-Object { $_.FullName } |
+            Select-Object -Unique
+    )
+}
+
+function Get-CurrentDriverStoreDllPaths {
+    return @(
+        Get-CurrentDriverStorePackageRoots |
+            ForEach-Object { Join-Path $_ 'SunshineVirtualDisplayDriver.dll' } |
             Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
             Select-Object -Unique
     )
 }
 
-function Test-DriverStoreMatchesPackagedPayload {
-    $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
-    if ($currentDllPaths.Count -eq 0) {
+function Get-CurrentDriverStoreCatalogPaths {
+    return @(
+        Get-CurrentDriverStorePackageRoots |
+            ForEach-Object { Join-Path $_ 'SunshineVirtualDisplayDriver.cat' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -Unique
+    )
+}
+
+function Test-InstalledDriverStoreCatalogsTrustedIndependently {
+    $currentPackageRoots = @(Get-CurrentDriverStorePackageRoots)
+    $currentCatalogPaths = @(Get-CurrentDriverStoreCatalogPaths)
+    if ($currentPackageRoots.Count -eq 0 -or $currentCatalogPaths.Count -ne $currentPackageRoots.Count) {
         return $false
     }
 
-    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
-    $currentHashes = @(
+    foreach ($currentCatalogPath in $currentCatalogPaths) {
+        if (-not (Test-CatalogTrustedIndependently -CatalogPath $currentCatalogPath)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-DriverStoreMatchesPackagedPayload {
+    $currentPackageRoots = @(Get-CurrentDriverStorePackageRoots)
+    $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
+    $currentCatalogPaths = @(Get-CurrentDriverStoreCatalogPaths)
+    if ($currentPackageRoots.Count -eq 0 -or
+        $currentDllPaths.Count -ne $currentPackageRoots.Count -or
+        $currentCatalogPaths.Count -ne $currentPackageRoots.Count) {
+        return $false
+    }
+
+    $packagedDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    $packagedCatalogHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $catPath).Hash
+    $currentDllHashes = @(
         $currentDllPaths |
             ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash } |
             Select-Object -Unique
     )
+    $currentCatalogHashes = @(
+        $currentCatalogPaths |
+            ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash } |
+            Select-Object -Unique
+    )
 
-    return $currentHashes.Count -eq 1 -and
-        [string]::Equals($currentHashes[0], $packagedHash, [System.StringComparison]::OrdinalIgnoreCase)
+    return $currentDllHashes.Count -eq 1 -and
+        [string]::Equals($currentDllHashes[0], $packagedDllHash, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $currentCatalogHashes.Count -eq 1 -and
+        [string]::Equals($currentCatalogHashes[0], $packagedCatalogHash, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Wait-DriverStoreMatchesPackagedPayload {
@@ -897,11 +940,14 @@ function Wait-DriverStoreMatchesPackagedPayload {
 }
 
 function Write-DriverStorePayloadDiagnostics {
-    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
-    Write-Host "[SunshineVirtualDisplay] Packaged driver DLL SHA256: $packagedHash"
+    $packagedDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    $packagedCatalogHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $catPath).Hash
+    Write-Host "[SunshineVirtualDisplay] Packaged driver DLL SHA256: $packagedDllHash"
+    Write-Host "[SunshineVirtualDisplay] Packaged driver catalog SHA256: $packagedCatalogHash"
 
     $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
-    if ($currentDllPaths.Count -eq 0) {
+    $currentCatalogPaths = @(Get-CurrentDriverStoreCatalogPaths)
+    if ($currentDllPaths.Count -eq 0 -and $currentCatalogPaths.Count -eq 0) {
         Write-Host '[SunshineVirtualDisplay] DriverStore contains no Sunshine virtual display DLL payloads.'
         return
     }
@@ -914,6 +960,15 @@ function Write-DriverStorePayloadDiagnostics {
             Write-Warning "[SunshineVirtualDisplay] Unable to hash DriverStore payload '$currentDllPath': $($_.Exception.Message)"
         }
     }
+
+    foreach ($currentCatalogPath in $currentCatalogPaths) {
+        try {
+            $currentHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $currentCatalogPath).Hash
+            Write-Host "[SunshineVirtualDisplay] DriverStore catalog SHA256: $currentHash ($currentCatalogPath)"
+        } catch {
+            Write-Warning "[SunshineVirtualDisplay] Unable to hash DriverStore catalog '$currentCatalogPath': $($_.Exception.Message)"
+        }
+    }
 }
 
 function Test-DriverPackageRefreshNeeded {
@@ -923,25 +978,33 @@ function Test-DriverPackageRefreshNeeded {
         return $true
     }
 
+    $currentPackageRoots = @(Get-CurrentDriverStorePackageRoots)
     $currentDllPaths = @(Get-CurrentDriverStoreDllPaths)
-    if ($currentDllPaths.Count -eq 0) {
-        Write-Host '[SunshineVirtualDisplay] No DriverStore Sunshine virtual display DLL was found; driver install is required.'
+    $currentCatalogPaths = @(Get-CurrentDriverStoreCatalogPaths)
+    if ($currentPackageRoots.Count -eq 0 -or
+        $currentDllPaths.Count -ne $currentPackageRoots.Count -or
+        $currentCatalogPaths.Count -ne $currentPackageRoots.Count) {
+        Write-Host '[SunshineVirtualDisplay] No complete DriverStore Sunshine virtual display package was found; driver install is required.'
         return $true
     }
 
-    $packagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
-    $currentHashes = @(
+    $packagedDllHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dllPath).Hash
+    $currentDllHashes = @(
         $currentDllPaths |
             ForEach-Object { (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash } |
             Select-Object -Unique
     )
 
-    if ($currentHashes.Count -eq 1 -and [string]::Equals($currentHashes[0], $packagedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Write-Host '[SunshineVirtualDisplay] Installed driver package already matches packaged driver payload; skipping driver replacement.'
+    if ($currentDllHashes.Count -eq 1 -and
+        [string]::Equals($currentDllHashes[0], $packagedDllHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host '[SunshineVirtualDisplay] Installed driver version/payload matches the packaged DLL; skipping driver replacement.'
+        if (-not (Test-InstalledDriverStoreCatalogsTrustedIndependently)) {
+            Write-Host '[SunshineVirtualDisplay] The existing DriverStore catalog is retained, so legacy certificate trust remains in place until a future driver refresh.'
+        }
         return $false
     }
 
-    Write-Host '[SunshineVirtualDisplay] Packaged driver payload differs from the installed driver package; driver replacement is required.'
+    Write-Host '[SunshineVirtualDisplay] Packaged driver DLL differs from the installed driver package; driver replacement is required.'
     return $true
 }
 
@@ -1202,19 +1265,16 @@ if ($Uninstall) {
     exit 0
 }
 
-# An upgrade is the moment to undo this. Older builds signed the catalog with
-# a self-signed certificate and installed it as a trusted root so Windows would
-# accept the driver. Once the catalog carries a signature that stands on its
-# own, that root buys nothing and is removed.
-#
-# The condition is deliberately the real one - "is this catalog already trusted
-# without us" - rather than a version check, so it cannot remove the trust a
-# package still depends on.
-if (Test-CatalogTrustedIndependently) {
-    Remove-LegacySelfSignedCertificate
-} else {
+# Do not remove the legacy root merely because the catalog in the new MSI is
+# independently trusted. The DriverStore may still contain the old catalog
+# when the DLL is unchanged. Keep the old trust until the complete package
+# (including the catalog) has been staged successfully.
+$catalogTrustedIndependently = Test-CatalogTrustedIndependently
+if (-not $catalogTrustedIndependently) {
     Install-CertificateIfPresent -StoreName 'Root'
     Install-CertificateIfPresent -StoreName 'TrustedPublisher'
+} else {
+    Write-Host '[SunshineVirtualDisplay] Packaged driver catalog is independently trusted; legacy certificate cleanup is deferred until DriverStore replacement is verified.'
 }
 Register-VulkanLayer
 
@@ -1226,6 +1286,9 @@ Stop-VirtualDisplayBrokerForDriverInstall
 if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
     Initialize-DriverStateRegistryAccess
     Invoke-InstallerHealthCheck
+    if ($catalogTrustedIndependently -and (Test-InstalledDriverStoreCatalogsTrustedIndependently)) {
+        Remove-LegacySelfSignedCertificate
+    }
     Start-VirtualDisplayBrokerIfNeeded
     Start-ApolloServiceIfNeeded
     Write-Host '[SunshineVirtualDisplay] Driver install complete.'
@@ -1254,6 +1317,15 @@ if (-not (Test-DeviceNodePresent)) {
     Write-Host '[SunshineVirtualDisplay] Creating device node.'
     Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
     Install-DriverPackage
+}
+
+if ($catalogTrustedIndependently -and (Test-DriverStoreMatchesPackagedPayload)) {
+    # The catalog is now the one that was delivered in this MSI. It is safe to
+    # remove the broad trust older self-signed packages required, and doing so
+    # here keeps the entire transition non-interactive.
+    Remove-LegacySelfSignedCertificate
+} elseif ($catalogTrustedIndependently) {
+    Write-Warning '[SunshineVirtualDisplay] The independently signed catalog was not confirmed in DriverStore; retaining the legacy certificate trust.'
 }
 
 Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')

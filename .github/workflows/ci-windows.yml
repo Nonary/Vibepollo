@@ -1183,10 +1183,35 @@ jobs:
             throw "Administrative MSI extraction failed (exit $($proc.ExitCode))."
           }
 
+          $virtualDisplayRoot = Join-Path $extractDir 'Sunshine\drivers\sunshine'
+          $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
+          $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
+          $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
+          if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
+            $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
+          } elseif (Test-Signed $virtualDisplayCatalog) {
+            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
+            Write-Host "[verify] OK   virtual display catalog signed: $($catalogSignature.SignerCertificate.Subject) ($($catalogSignature.Status))"
+            if (-not $allowUntrustedSignatures) {
+              $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+              foreach ($catalogPayload in @($virtualDisplayInf, $virtualDisplayDll)) {
+                & $signtool verify '/v' '/pa' '/c' $virtualDisplayCatalog $catalogPayload
+                if ($LASTEXITCODE -ne 0) {
+                  $payloadName = Split-Path -Leaf $catalogPayload
+                  $failures.Add("virtual display catalog does not validate $payloadName")
+                }
+              }
+            }
+          } else {
+            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
+            $failures.Add("Sunshine virtual display catalog is unsigned or untrusted (status=$($catalogSignature.Status))")
+          }
+
           $firstParty = @(
             'sunshine.exe','uninstall.exe','libwebrtc.dll','zlib1.dll',
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
-            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe'
+            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
+            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')
           $vendorSkip = @(
