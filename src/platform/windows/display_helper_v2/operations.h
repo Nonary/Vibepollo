@@ -195,15 +195,13 @@ namespace display_helper::v2 {
 
   /**
    * @brief One restore attempt over the snapshot chain, ported from the legacy
-   *        helper's try_restore_once_if_valid: golden-first strategy with bounded
+   *        helper's try_restore_once_if_valid: golden-first strategy with usable
    *        session fallbacks, prefer-golden-when-current-missing, stable-read +
    *        quiet-period confirmation, and current->previous promotion on success.
    *        Returns success only when the restore was CONFIRMED on screen.
    */
   class RecoveryOperation {
   public:
-    static constexpr std::size_t kGoldenFallbackCompletionThreshold = 3;
-
     RecoveryOperation(
       IDisplaySettings &display,
       ISnapshotStorage &storage,

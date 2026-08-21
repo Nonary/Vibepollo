@@ -633,9 +633,9 @@ TEST(DisplayHelperV2RecoveryEngine, PrefersGoldenWhenCurrentMissing) {
   EXPECT_FALSE(harness.storage.exists(display_helper::v2::SnapshotTier::Previous));
 }
 
-// d1c2230e / 59802f34: in golden-first mode, a confirmed session fallback is only
-// accepted after three consecutive golden-first attempts keep failing.
-TEST(DisplayHelperV2RecoveryEngine, GoldenFirstAcceptsSessionFallbackAfterThreeMisses) {
+// A usable session fallback is only a bootstrap state. The configured golden
+// snapshot remains authoritative until every baseline device can be restored.
+TEST(DisplayHelperV2RecoveryEngine, GoldenFirstKeepsCompleteBaselinePendingAfterRepeatedFallbacks) {
   RecoveryHarness harness;
   harness.add_device("G");
   harness.add_device("C");
@@ -667,8 +667,8 @@ TEST(DisplayHelperV2RecoveryEngine, GoldenFirstAcceptsSessionFallbackAfterThreeM
   harness.clock.advance(std::chrono::seconds(61));
   harness.display.current = make_snapshot({{"X"}});
   auto third = harness.recovery.run(harness.cancellation.token());
-  EXPECT_TRUE(third.success);
-  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 0u);
+  EXPECT_FALSE(third.success);
+  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 3u);
 }
 
 // The golden file must remain pending when a required baseline device is
@@ -683,10 +683,12 @@ TEST(DisplayHelperV2RecoveryEngine, KeepsGoldenPendingWhenBaselineDeviceIsMissin
   ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, make_snapshot({{"A"}})));
   harness.display.current = make_snapshot({{"X"}});
 
-  const auto outcome = harness.recovery.run(harness.cancellation.token());
-
-  EXPECT_FALSE(outcome.success);
-  EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), 1u);
+  for (std::size_t attempt = 1; attempt <= 4; ++attempt) {
+    harness.display.current = make_snapshot({{"X"}});
+    const auto outcome = harness.recovery.run(harness.cancellation.token());
+    EXPECT_FALSE(outcome.success);
+    EXPECT_EQ(harness.state.golden_pending_session_fallbacks.load(), attempt);
+  }
   EXPECT_TRUE(harness.storage.exists(display_helper::v2::SnapshotTier::Golden));
 }
 
