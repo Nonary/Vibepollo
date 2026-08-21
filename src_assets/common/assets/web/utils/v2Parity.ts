@@ -18,10 +18,21 @@ export interface DisplayFieldVisibility {
   virtual: boolean;
 }
 
+function arrayValue(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export function normalizeCommandRows(value: unknown, platform: string): CommandRow[] {
-  if (!Array.isArray(value)) return [];
+  const entries = arrayValue(value);
   const windows = platform.toLocaleLowerCase().includes('windows');
-  return value.map((entry) => {
+  return entries.map((entry) => {
     const source =
       entry && typeof entry === 'object' && !Array.isArray(entry)
         ? (entry as Record<string, unknown>)

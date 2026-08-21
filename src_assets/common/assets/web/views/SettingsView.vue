@@ -17,6 +17,7 @@ import {
   type SettingsOption,
   type SettingsVisibility,
 } from '@/configs/settingsSchema';
+import { serializeCommandRows } from '@/utils/v2Parity';
 
 const { locale, t, te } = useI18n();
 
@@ -543,6 +544,16 @@ function updateValue(key: string, event: Event, field?: SettingsField): void {
     (field?.kind === 'number' || field?.kind === 'duration') && raw !== '' ? Number(raw) : raw;
 }
 
+function saveValue(key: string): unknown {
+  const value = values[key];
+  if (key === 'global_prep_cmd') {
+    return serializeCommandRows(value, hostPlatform.value).filter(
+      (row) => row.do.trim() || row.undo.trim(),
+    );
+  }
+  return value === '' ? null : value;
+}
+
 function normalizeConfiguredValues(configured: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...configured };
   const logLevels: Record<string, number> = {
@@ -638,9 +649,7 @@ async function save(): Promise<void> {
   error.value = '';
   notice.value = '';
   try {
-    const patch = Object.fromEntries(
-      dirtyKeys.value.map((key) => [key, values[key] === '' ? null : values[key]]),
-    );
+    const patch = Object.fromEntries(dirtyKeys.value.map((key) => [key, saveValue(key)]));
     const result = await apiPatch<SaveResult>('/api/config', patch);
     original.value = cloneSettings(values);
     restartAvailable.value = Boolean(result.restartRequired);
