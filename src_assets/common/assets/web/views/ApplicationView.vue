@@ -711,7 +711,7 @@ async function postRtxHdrLiveOverrides(
   overrides: Record<string, unknown>,
   key: string,
 ): Promise<void> {
-  if (isNew.value || !form.uuid) return;
+  if (isNew.value || isRemoteSession.value || !form.uuid) return;
 
   liveRtxHdrStatus.value = 'applying';
   liveRtxHdrError.value = '';
@@ -1085,7 +1085,7 @@ const editableKeys = new Set([
   'detached',
   'config-overrides',
 ]);
-const transientKeys = new Set(['id', 'index', 'image-version', 'playnite-icon-version']);
+const transientKeys = new Set(['id', 'index', 'image-version', 'playnite-icon-version', 'remote-session']);
 
 function newUuid(): string {
   return crypto.randomUUID();
@@ -1139,6 +1139,10 @@ function emptyForm(): EditorForm {
 
 const routeId = computed(() => (typeof route.params.id === 'string' ? route.params.id : ''));
 const isNew = computed(() => route.name === 'application-new' || !routeId.value);
+const isRemoteSession = computed(() => {
+  const marker = sourceApp.value?.['remote-session'];
+  return marker === 'input' || marker === 'monitor';
+});
 const pageTitle = computed(() =>
   isNew.value
     ? t('ui.application.page.addTitle')
@@ -2367,6 +2371,7 @@ onBeforeUnmount(() => {
                 "
                 :aria-invalid="Boolean(errors.name)"
                 :aria-describedby="errors.name ? 'app-name-error' : 'app-name-help'"
+                :readonly="isRemoteSession"
                 @focus="isNew && openPlaynitePicker()"
                 @blur="closePlaynitePicker"
                 @input="handleNameInput"
@@ -2508,7 +2513,7 @@ onBeforeUnmount(() => {
 
           <div class="editor-grid">
             <label
-              v-if="!isPlayniteLinked"
+              v-if="!isPlayniteLinked && !isRemoteSession"
               class="vs-field editor-field editor-field--full"
               for="app-command"
             >
@@ -2531,7 +2536,7 @@ onBeforeUnmount(() => {
               </span>
             </label>
 
-            <label v-if="!isPlayniteLinked" class="vs-field editor-field" for="app-working-dir">
+            <label v-if="!isPlayniteLinked && !isRemoteSession" class="vs-field editor-field" for="app-working-dir">
               <span class="vs-field__label">{{ t('apps.working_dir') }}</span>
               <input
                 id="app-working-dir"
@@ -3273,7 +3278,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="!isNew" class="editor-danger" aria-labelledby="danger-heading">
+      <section v-if="!isNew && !isRemoteSession" class="editor-danger" aria-labelledby="danger-heading">
         <div>
           <h2 id="danger-heading">{{ t('ui.application.delete.sectionTitle') }}</h2>
           <p>{{ t('ui.application.delete.sectionDescription') }}</p>

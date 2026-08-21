@@ -2819,6 +2819,14 @@ namespace stream {
         shared_platform_started = false;
       }
 
+      // A Remote Input/Monitor record can own the runtime configuration without
+      // ever launching a process. Restore the global settings once the last
+      // shared owner has gone away, while preserving overrides for a paused app.
+      if (proc::proc.current_app_id() <= 0) {
+        config::clear_runtime_config_overrides();
+        config::apply_config_now();
+      }
+
       if (context.apply_deferred_config) {
         config::maybe_apply_deferred();
       }

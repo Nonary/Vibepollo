@@ -89,6 +89,10 @@ function displayName(app: AppRecord): string {
   return appName(app) || t('ui.library.unnamed');
 }
 
+function isRemoteSessionApp(app: AppRecord): boolean {
+  return app['remote-session'] === 'input' || app['remote-session'] === 'monitor';
+}
+
 function serviceError(cause: unknown, fallbackKey: string): string {
   if (cause instanceof AppServiceError && cause.code === 'missing-app-uuid') {
     return t('ui.library.errors.missingUuidGeneric');
@@ -637,6 +641,7 @@ onBeforeUnmount(() => {
               @click="openApp(app)"
             />
             <AppButton
+              v-if="!isRemoteSessionApp(app)"
               role="menuitem"
               size="compact"
               variant="tertiary"
