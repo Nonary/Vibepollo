@@ -2393,8 +2393,8 @@ namespace {
     std::atomic<bool> restore_attempted_unconfirmed {false};
     // Guard: if a session restore succeeded recently, suppress Golden for a cooldown
     std::atomic<long long> last_session_restore_success_ms {0};
-    // After a few consecutive confirmed session fallbacks, stop forcing golden
-    // retries within the same restore request.
+    // Track confirmed session fallbacks for diagnostics while the configured
+    // golden baseline remains pending.
     std::atomic<size_t> golden_pending_session_fallbacks {0};
     // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
     std::atomic<bool> always_restore_from_golden {false};
@@ -2430,7 +2430,6 @@ namespace {
     static constexpr auto kHeartbeatMissWindow = std::chrono::seconds(30);
     static constexpr auto kHeartbeatRecoveryWindow = std::chrono::minutes(2);
     static constexpr auto kVerificationSettleDelay = std::chrono::milliseconds(250);
-    static constexpr size_t kGoldenFallbackCompletionThreshold = 3;
     static constexpr size_t kGoldenOutOfDateFailureThreshold = 3;
     static constexpr auto kGoldenOutOfDateFailureWindow = std::chrono::hours(72);
     std::mutex golden_restore_issue_mutex;
@@ -3630,8 +3629,8 @@ namespace {
           return true;
         }
         // Golden failed. Session snapshots can keep the machine usable, but
-        // only retry golden a few times within the same restore request before
-        // accepting the confirmed session fallback.
+        // they cannot complete a request whose configured authoritative
+        // baseline is still pending.
         if (!try_session_snapshots()) {
           reset_pending_golden_session_fallbacks();
           return false;
@@ -3639,16 +3638,9 @@ namespace {
 
         if (controller.load_display_settings_snapshot(golden_path)) {
           const auto fallback_count = note_pending_golden_session_fallback();
-          if (fallback_count < kGoldenFallbackCompletionThreshold) {
-            BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
-                            << fallback_count << '/' << kGoldenFallbackCompletionThreshold << ").";
-            return false;
-          }
-
-          reset_pending_golden_session_fallbacks();
-          BOOST_LOG(info) << "Restore: session fallback confirmed while golden snapshot remains pending; accepting session restore after "
-                          << kGoldenFallbackCompletionThreshold << " consecutive golden-first attempts.";
-          return true;
+          BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
+                          << fallback_count << ").";
+          return false;
         }
 
         register_unresolved_golden_restore_request("session fallback accepted");

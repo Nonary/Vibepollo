@@ -319,6 +319,7 @@ namespace display_helper::v2 {
     virtual_identity_repairs_remaining_ = 0;
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    expected_topology_.reset();
     if (delete_restore_task) {
       system_.delete_restore_task();
       restore_task_created_ = false;
@@ -897,6 +898,7 @@ namespace display_helper::v2 {
     reset_apply_verification_state();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    expected_topology_.reset();
 
     if (current_request_.snapshot_exclusions) {
       update_blacklist(*current_request_.snapshot_exclusions);
@@ -1015,6 +1017,9 @@ namespace display_helper::v2 {
       return;
     }
     deferred_apply_completion_.reset();
+    baseline_topology_repair_available_ = false;
+    baseline_topology_repair_in_flight_ = false;
+    expected_topology_.reset();
     // Disconnect-triggered reverts honor the restore-on-disconnect policy: a
     // paused stream with revert_on_disconnect=false must preserve its display
     // state (3b7a52c4 / 0add1f80). Explicit client REVERTs always run.
@@ -1102,6 +1107,9 @@ namespace display_helper::v2 {
     }
 
     deferred_apply_completion_.reset();
+    baseline_topology_repair_available_ = false;
+    baseline_topology_repair_in_flight_ = false;
+    expected_topology_.reset();
 
     BOOST_LOG(info) << "Display helper: received Disarm command, resetting state";
 
@@ -1276,7 +1284,9 @@ namespace display_helper::v2 {
   void StateMachine::finish_apply_completed(const ApplyCompleted &completed) {
     const bool baseline_topology_repair = baseline_topology_repair_in_flight_;
     baseline_topology_repair_in_flight_ = false;
-    resolved_target_ = completed.resolved_target;
+    if (!baseline_topology_repair || completed.resolved_target) {
+      resolved_target_ = completed.resolved_target;
+    }
 
     if (completed.status == ApplyStatus::Ok || completed.display_may_have_changed) {
       activate_recovery_lease();
@@ -1311,6 +1321,14 @@ namespace display_helper::v2 {
       // owns the FSM and must finish its Verification/Waiting transition.
       deferred_apply_completion_.reset();
       BOOST_LOG(debug) << "Display helper: queued Apply intent retired before dispatch; completing the active transaction.";
+    }
+
+    if (baseline_topology_repair && completed.status != ApplyStatus::Ok) {
+      expected_topology_.reset();
+      BOOST_LOG(warning) << "Display helper: bounded physical baseline topology repair failed; preserving the last verified virtual-session topology.";
+      enter_steady_state();
+      drain_deferred_mutation_commands();
+      return;
     }
 
     if (completed.status == ApplyStatus::Ok) {
@@ -1443,6 +1461,16 @@ namespace display_helper::v2 {
     }
 
     if (completed.success) {
+      if (baseline_topology_admission_check || baseline_topology_repair_check) {
+        if (expected_topology_) {
+          current_request_.topology = *expected_topology_;
+        }
+        expected_topology_.reset();
+        BOOST_LOG(info) << "Display helper: active physical baseline topology verified; committing it to the live session contract.";
+        enter_steady_state();
+        return;
+      }
+
       const bool initial_verification = !verification_result_sent_;
       const bool disconnected_settlement = transient_disconnect_settlement_requested_;
       if (initial_verification) {
@@ -1499,11 +1527,14 @@ namespace display_helper::v2 {
       verification_reapply_available_ = false;
       baseline_topology_repair_in_flight_ = true;
       transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
-      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      auto repair_request = current_request_;
+      repair_request.topology = expected_topology_;
+      dispatch_apply_worker(repair_request, std::chrono::milliseconds(0), false);
       return;
     }
 
     if (baseline_topology_repair_check) {
+      expected_topology_.reset();
       BOOST_LOG(warning) << "Display helper: bounded physical baseline topology repair did not verify; preserving the exact active virtual session without retrying.";
       enter_steady_state();
       return;
@@ -1781,7 +1812,6 @@ namespace display_helper::v2 {
         // live topology contract is extended, and one admission per explicit
         // APPLY prevents the resulting Windows notifications from looping.
         baseline_topology_repair_available_ = false;
-        current_request_.topology = *repaired_topology;
         expected_topology_ = std::move(repaired_topology);
         verification_reapply_available_ = false;
         transition(State::Verification, ApplyAction::Apply);
@@ -1940,16 +1970,6 @@ namespace display_helper::v2 {
     }
     recovery_event_feedback_quiet_until_.reset();
 
-    if (event.event == DisplayEvent::DisplayChange) {
-      // A restore attempt itself emits WM_DISPLAYCHANGE (and often
-      // DBT_DEVNODES_CHANGED). Treating that generic notification as fresh
-      // recovery evidence resets backoff and lets a failed restore wake
-      // itself forever. Device arrival/removal and resume/monitor-on remain
-      // actionable external opportunities; ordinary retries stay scheduled.
-      BOOST_LOG(debug) << "Display helper: ignoring generic display-change feedback while waiting for bounded recovery.";
-      return;
-    }
-
     if (scheduler_.window_active(now)) {
       // The open recovery window already owns a bounded retry schedule. A
       // restore can itself wake or re-enumerate a monitor, so allowing an
@@ -1961,8 +1981,11 @@ namespace display_helper::v2 {
       return;
     }
 
-    // After an exhausted window, one relevant event opens a new bounded
-    // opportunity; the actual attempt fires immediately when allowed.
+    // Recovery-generated display changes are contained by the feedback quiet
+    // period and the open bounded window above. Once that window has expired,
+    // even a generic WM_DISPLAYCHANGE/DBT_DEVNODES_CHANGED is new topology
+    // evidence: monitor power transitions do not always produce a device-
+    // identity notification. Open one new bounded opportunity.
     scheduler_.on_display_event(now);
     if (scheduler_.should_attempt(now)) {
       start_recovery(std::chrono::milliseconds(0), ApplyAction::Revert);
@@ -2039,6 +2062,9 @@ namespace display_helper::v2 {
     system_.cancel_operations();
     system_.disarm_heartbeat();
     reset_apply_verification_state();
+    baseline_topology_repair_available_ = false;
+    baseline_topology_repair_in_flight_ = false;
+    expected_topology_.reset();
     golden_health_.reset_request_tracking();
     scheduler_.arm_primary(system_.now(), std::chrono::milliseconds(5000));
     start_recovery(std::chrono::milliseconds(5000), ApplyAction::Revert);
