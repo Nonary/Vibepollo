@@ -412,10 +412,11 @@ function Install-CertificateIfPresent {
 # is matched by name because a production package may no longer ship the .cer,
 # so there is nothing left on disk to read the thumbprint from.
 $legacySelfSignedSubject = 'CN=Sunshine Virtual Display Release Signing'
+$signPathSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 
-# True when Windows would accept this catalog even if the bundled certificate
-# were not trusted at all: a real signature, from something that is not our own
-# self-signed certificate, chaining to a root the machine already trusts.
+# True when Windows would accept this catalog without the legacy self-signed
+# certificate: the production SignPath signer is valid and chains to a root the
+# machine already trusts.
 function Test-CatalogTrustedIndependently {
     param([string]$CatalogPath = $catPath)
 
@@ -426,6 +427,9 @@ function Test-CatalogTrustedIndependently {
 
     $signer = $signature.SignerCertificate
     if ([string]::Equals($signer.Subject, $legacySelfSignedSubject, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if (-not [string]::Equals($signer.Subject, $signPathSignerSubject, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $false
     }
     if (Test-Path -LiteralPath $certPath -PathType Leaf) {
@@ -449,6 +453,37 @@ function Test-CatalogTrustedIndependently {
         }
     }
     return $true
+}
+
+# PnP distinguishes a CA-valid third-party catalog from a publisher the local
+# machine has explicitly trusted. Import only the exact, already-verified
+# SignPath end-entity certificate into LocalMachine\TrustedPublisher so an
+# elevated silent install does not ask the user to approve the publisher.
+function Install-CatalogSignerCertificate {
+    param([string]$CatalogPath = $catPath)
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath
+    $signer = $signature.SignerCertificate
+    if (-not $signer -or $signature.Status -ne 'Valid') {
+        throw "[SunshineVirtualDisplay] Cannot establish the SignPath publisher certificate from the catalog ($($signature.Status)): $CatalogPath"
+    }
+    if (-not [string]::Equals($signer.Subject, $signPathSignerSubject, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "[SunshineVirtualDisplay] Refusing to trust unexpected virtual display catalog signer: $($signer.Subject)"
+    }
+
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $existing = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $signer.Thumbprint, $false)
+        if ($existing.Count -eq 0) {
+            $store.Add($signer)
+            Write-Host '[SunshineVirtualDisplay] SignPath publisher certificate installed into LocalMachine\TrustedPublisher for silent driver installation.'
+        } else {
+            Write-Host '[SunshineVirtualDisplay] SignPath publisher certificate already present in LocalMachine\TrustedPublisher.'
+        }
+    } finally {
+        $store.Close()
+    }
 }
 
 # Removes the self-signed certificate an older build installed. A self-signed
@@ -1270,11 +1305,12 @@ if ($Uninstall) {
 # when the DLL is unchanged. Keep the old trust until the complete package
 # (including the catalog) has been staged successfully.
 $catalogTrustedIndependently = Test-CatalogTrustedIndependently
-if (-not $catalogTrustedIndependently) {
+if ($catalogTrustedIndependently) {
+    Install-CatalogSignerCertificate
+    Write-Host '[SunshineVirtualDisplay] SignPath catalog is trusted; legacy certificate cleanup remains deferred until DriverStore replacement is verified.'
+} else {
     Install-CertificateIfPresent -StoreName 'Root'
     Install-CertificateIfPresent -StoreName 'TrustedPublisher'
-} else {
-    Write-Host '[SunshineVirtualDisplay] Packaged driver catalog is independently trusted; legacy certificate cleanup is deferred until DriverStore replacement is verified.'
 }
 Register-VulkanLayer
 
