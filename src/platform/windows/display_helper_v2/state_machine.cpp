@@ -167,6 +167,100 @@ namespace display_helper::v2 {
     return replaced;
   }
 
+  std::optional<ActiveTopology> SnapshotLedger::topology_with_returned_active_baseline_devices(
+    const std::string &virtual_device_id,
+    const std::vector<std::string> &exclusions) {
+    const auto devices = service_.enumerate();
+    const auto active_topology = service_.capture().m_topology;
+
+    const auto contains_id = [](const auto &ids, const std::string &needle) {
+      return std::any_of(ids.begin(), ids.end(), [&needle](const std::string &candidate) {
+        return boost::iequals(candidate, needle);
+      });
+    };
+    const auto topology_contains = [&contains_id](const ActiveTopology &topology, const std::string &needle) {
+      return std::any_of(topology.begin(), topology.end(), [&contains_id, &needle](const auto &group) {
+        return contains_id(group, needle);
+      });
+    };
+    if (virtual_device_id.empty() ||
+        active_topology.empty() ||
+        !topology_contains(active_topology, virtual_device_id)) {
+      return std::nullopt;
+    }
+
+    const auto excluded = [&exclusions](const std::string &needle) {
+      return std::any_of(exclusions.begin(), exclusions.end(), [&needle](const std::string &candidate) {
+        return boost::iequals(candidate, needle);
+      });
+    };
+    const auto active_physical_device = [&devices](const std::string &needle) {
+      return std::any_of(devices.begin(), devices.end(), [&needle](const auto &device) {
+        return !device.m_device_id.empty() &&
+               boost::iequals(device.m_device_id, needle) &&
+               device.m_info.has_value() &&
+               !codec::is_virtual_display_device(device);
+      });
+    };
+
+    std::optional<Snapshot> baseline;
+    for (const auto tier : persistence_.recovery_order()) {
+      auto loaded = persistence_.storage().load(tier);
+      if (loaded && !loaded->m_topology.empty()) {
+        baseline = std::move(loaded);
+        break;
+      }
+    }
+    if (!baseline) {
+      return std::nullopt;
+    }
+
+    ActiveTopology candidate = active_topology;
+    bool added_device = false;
+    for (const auto &baseline_group : baseline->m_topology) {
+      std::vector<std::string> active_group;
+      for (const auto &device_id : baseline_group) {
+        if (!device_id.empty() &&
+            !boost::iequals(device_id, virtual_device_id) &&
+            !excluded(device_id) &&
+            active_physical_device(device_id)) {
+          active_group.push_back(device_id);
+        }
+      }
+
+      std::vector<std::string> missing_group;
+      std::copy_if(
+        active_group.begin(),
+        active_group.end(),
+        std::back_inserter(missing_group),
+        [&topology_contains, &active_topology](const std::string &device_id) {
+          return !topology_contains(active_topology, device_id);
+        });
+      if (missing_group.empty()) {
+        continue;
+      }
+
+      auto destination = std::find_if(candidate.begin(), candidate.end(), [&contains_id, &active_group](const auto &live_group) {
+        return std::any_of(active_group.begin(), active_group.end(), [&contains_id, &live_group](const std::string &device_id) {
+          return contains_id(live_group, device_id);
+        });
+      });
+      if (destination == candidate.end()) {
+        candidate.push_back(std::move(active_group));
+      } else {
+        destination->insert(destination->end(), missing_group.begin(), missing_group.end());
+      }
+      added_device = true;
+    }
+
+    if (!added_device) {
+      return std::nullopt;
+    }
+
+    BOOST_LOG(info) << "Display helper: an active physical baseline device is missing from the live topology; admitting one bounded topology repair.";
+    return candidate;
+  }
+
   StateMachine::StateMachine(
     ApplyPipeline &apply,
     RecoveryPipeline &recovery,
@@ -223,6 +317,8 @@ namespace display_helper::v2 {
     recovery_event_feedback_quiet_until_.reset();
     virtual_identity_discoveries_remaining_ = 0;
     virtual_identity_repairs_remaining_ = 0;
+    baseline_topology_repair_available_ = false;
+    baseline_topology_repair_in_flight_ = false;
     if (delete_restore_task) {
       system_.delete_restore_task();
       restore_task_created_ = false;
@@ -799,6 +895,8 @@ namespace display_helper::v2 {
     current_connection_epoch_ = command.connection_epoch;
     resolved_target_.reset();
     reset_apply_verification_state();
+    baseline_topology_repair_available_ = false;
+    baseline_topology_repair_in_flight_ = false;
 
     if (current_request_.snapshot_exclusions) {
       update_blacklist(*current_request_.snapshot_exclusions);
@@ -810,6 +908,10 @@ namespace display_helper::v2 {
       transition(State::Waiting, ApplyAction::Apply, ApplyStatus::InvalidRequest);
       return;
     }
+
+    baseline_topology_repair_available_ =
+      current_request_.virtual_layout.has_value() &&
+      !boost::iequals(*current_request_.virtual_layout, "exclusive");
 
     last_apply_started_ = system_.now();
 
@@ -1172,7 +1274,8 @@ namespace display_helper::v2 {
   }
 
   void StateMachine::finish_apply_completed(const ApplyCompleted &completed) {
-
+    const bool baseline_topology_repair = baseline_topology_repair_in_flight_;
+    baseline_topology_repair_in_flight_ = false;
     resolved_target_ = completed.resolved_target;
 
     if (completed.status == ApplyStatus::Ok || completed.display_may_have_changed) {
@@ -1233,10 +1336,10 @@ namespace display_helper::v2 {
       transition(State::Verification, ApplyAction::Apply, completed.status);
       apply_.dispatch_verification(
         verification_request(),
-        std::nullopt,
+        baseline_topology_repair ? expected_topology_ : std::nullopt,
         resolved_target_,
         std::chrono::milliseconds(0),
-        VerificationPurpose::Initial);
+        baseline_topology_repair ? VerificationPurpose::BaselineTopologyRepair : VerificationPurpose::Initial);
       // RESET is intentionally non-cancelling, mirroring v1's synchronous
       // reset-persistence request. It can run now that SettingsManager has
       // finished mutating, while verification remains read-only.
@@ -1311,6 +1414,8 @@ namespace display_helper::v2 {
     }
 
     const bool transient_disconnect_check = completed.purpose == VerificationPurpose::TransientDisconnect;
+    const bool baseline_topology_admission_check = completed.purpose == VerificationPurpose::BaselineTopologyReturn;
+    const bool baseline_topology_repair_check = completed.purpose == VerificationPurpose::BaselineTopologyRepair;
     if (transient_disconnect_check) {
       transient_disconnect_check_pending_ = false;
     }
@@ -1386,6 +1491,21 @@ namespace display_helper::v2 {
       } else {
         transition(State::Waiting, ApplyAction::Apply, ApplyStatus::VerificationFailed);
       }
+      return;
+    }
+
+    if (baseline_topology_admission_check) {
+      BOOST_LOG(warning) << "Display helper: active physical baseline topology is not applied; running the admitted full topology repair once.";
+      verification_reapply_available_ = false;
+      baseline_topology_repair_in_flight_ = true;
+      transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
+      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      return;
+    }
+
+    if (baseline_topology_repair_check) {
+      BOOST_LOG(warning) << "Display helper: bounded physical baseline topology repair did not verify; preserving the exact active virtual session without retrying.";
+      enter_steady_state();
       return;
     }
 
@@ -1644,14 +1764,46 @@ namespace display_helper::v2 {
     BOOST_LOG(info) << "Display helper: received display event '" << display_event_to_string(event.event)
                     << "' in state " << state_to_string(state_);
 
+    const bool topology_evidence_event = event.event == DisplayEvent::DisplayChange ||
+                                         event.event == DisplayEvent::PowerResume ||
+                                         event.event == DisplayEvent::DeviceArrival;
+    if (state_ == State::VirtualDisplayMonitoring &&
+        baseline_topology_repair_available_ &&
+        topology_evidence_event &&
+        current_request_.configuration &&
+        current_request_.virtual_layout &&
+        !mutation_worker_active() &&
+        !staged_state_reset_pending_) {
+      if (auto repaired_topology = snapshots_.topology_with_returned_active_baseline_devices(
+            current_request_.configuration->m_device_id,
+            exclusions_vector())) {
+        // The exact virtual configuration remains the capture target. Only the
+        // live topology contract is extended, and one admission per explicit
+        // APPLY prevents the resulting Windows notifications from looping.
+        baseline_topology_repair_available_ = false;
+        current_request_.topology = *repaired_topology;
+        expected_topology_ = std::move(repaired_topology);
+        verification_reapply_available_ = false;
+        transition(State::Verification, ApplyAction::Apply);
+        apply_.dispatch_verification(
+          verification_request(),
+          expected_topology_,
+          resolved_target_,
+          std::chrono::milliseconds(0),
+          VerificationPurpose::BaselineTopologyReturn);
+        return;
+      }
+    }
+
     const bool device_identity_event = event.event == DisplayEvent::DeviceArrival ||
                                        event.event == DisplayEvent::DeviceRemoval;
     if ((state_ == State::VirtualDisplayMonitoring || state_ == State::InProgress || state_ == State::Verification) &&
         current_request_.virtual_layout &&
         !device_identity_event) {
       // WM_DISPLAYCHANGE and power notifications are generated by healthy
-      // Apply/shell activity and carry no device identity. Do not turn them
-      // into a post-start QueryDisplayConfig enumeration.
+      // Apply/shell activity and carry no device identity. A bounded topology
+      // comparison above may admit a proven physical return; otherwise do not
+      // turn them into identity repair or an unconditional re-apply.
       BOOST_LOG(debug) << "Display helper: ignoring generic virtual-session display event without identity evidence.";
       return;
     }

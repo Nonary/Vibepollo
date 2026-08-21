@@ -1061,9 +1061,9 @@ namespace display_helper::v2 {
         outcome.snapshot = restored;
         return outcome;
       }
-      // Golden failed. Session snapshots can keep the machine usable, but only
-      // retry golden a few times within the same restore request before accepting
-      // the confirmed session fallback.
+      // Golden failed. Session snapshots can keep the machine usable, but they
+      // cannot complete a request whose configured authoritative baseline is
+      // still pending.
       if (!try_session_snapshots()) {
         state_.golden_pending_session_fallbacks.store(0, std::memory_order_release);
         return outcome;
@@ -1071,17 +1071,8 @@ namespace display_helper::v2 {
 
       if (golden_restore_is_pending()) {
         const auto fallback_count = state_.golden_pending_session_fallbacks.fetch_add(1, std::memory_order_acq_rel) + 1;
-        if (fallback_count < kGoldenFallbackCompletionThreshold) {
-          BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
-                          << fallback_count << '/' << kGoldenFallbackCompletionThreshold << ").";
-          return outcome;
-        }
-
-        state_.golden_pending_session_fallbacks.store(0, std::memory_order_release);
-        BOOST_LOG(info) << "Restore: session fallback confirmed while golden snapshot remains pending; accepting session restore after "
-                        << kGoldenFallbackCompletionThreshold << " consecutive golden-first attempts.";
-        outcome.success = true;
-        outcome.snapshot = restored;
+        BOOST_LOG(info) << "Restore: session fallback applied while golden snapshot remains pending; continuing polling (attempt "
+                        << fallback_count << ").";
         return outcome;
       }
 

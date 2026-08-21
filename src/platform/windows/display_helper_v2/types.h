@@ -246,6 +246,8 @@ namespace display_helper::v2 {
   enum class VerificationPurpose {
     Initial,
     TransientDisconnect,
+    BaselineTopologyReturn,
+    BaselineTopologyRepair,
   };
 
   struct VerificationCompleted {

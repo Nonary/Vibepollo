@@ -268,6 +268,17 @@ namespace display_helper::v2 {
     }
 
     /**
+     * @brief Build the live topology plus physical baseline devices that have
+     *        become active but are not yet members of the active topology.
+     *
+     * The persisted snapshot remains authoritative and is never rewritten.
+     * Inactive, excluded, and virtual devices are not admitted.
+     */
+    std::optional<ActiveTopology> topology_with_returned_active_baseline_devices(
+      const std::string &virtual_device_id,
+      const std::vector<std::string> &exclusions);
+
+    /**
      * @brief Legacy capture pipeline: capture, gate on topology validity, filter
      *        (active virtual displays, exclusions, display_name-less devices),
      *        attach layout rotations, then save with retries.
@@ -453,6 +464,8 @@ namespace display_helper::v2 {
     // controls only whether a disconnected live session begins a recovery.
     bool explicit_recovery_required_ = false;
     bool virtual_hdr_fallback_attempted_ = false;
+    bool baseline_topology_repair_available_ = false;
+    bool baseline_topology_repair_in_flight_ = false;
     bool apply_result_sent_ = false;
     bool verification_result_sent_ = false;
     // A result may have been sent for an initial failure. Keep successful
