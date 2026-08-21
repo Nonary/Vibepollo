@@ -442,6 +442,11 @@ function fieldDescription(field: SettingsField): string {
   return key ? t(key) : '';
 }
 
+function fieldUsesCustomEditor(field: SettingsField): boolean {
+  const kind = String(field.kind);
+  return kind === 'command-preparations' || kind === 'server-commands';
+}
+
 function optionText(option: SettingsOption, fieldKey = ''): string {
   if (!option.value && fieldKey === 'capture') return automaticCaptureLabel.value;
   if (!option.value && fieldKey === 'encoder') return automaticEncoderLabel.value;
@@ -822,10 +827,11 @@ onMounted(() => void load());
                     </span>
                   </div>
 
-                  <label
+                  <component
+                    :is="fieldUsesCustomEditor(field) ? 'div' : 'label'"
                     v-else-if="field.kind !== 'display-recovery'"
                     class="settings-row__copy"
-                    :for="`setting-${field.key}`"
+                    :for="fieldUsesCustomEditor(field) ? undefined : `setting-${field.key}`"
                   >
                     <span class="settings-row__label">
                       {{ fieldLabel(field) }}
@@ -853,7 +859,7 @@ onMounted(() => void load());
                     <span v-if="dependencyHint(field)" class="settings-row__dependency">
                       {{ dependencyHint(field) }}
                     </span>
-                  </label>
+                  </component>
 
                   <label v-if="field.kind === 'boolean'" class="vs-switch">
                     <input
