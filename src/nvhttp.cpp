@@ -146,6 +146,18 @@ namespace nvhttp {
 
   void notify_remote_input_transport_lost(const std::string_view client_uuid, const std::uint64_t generation) {
     forget_remote_owner(client_uuid, remote_session::role_e::input, generation);
+    const bool has_stream_activity =
+      rtsp_stream::has_pending_launch_or_startup() ||
+      rtsp_stream::session_count_no_cleanup() > 0 ||
+      stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+      stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+      webrtc_stream::has_active_or_pending_sessions() ||
+      webrtc_stream::has_capture_active() ||
+      webrtc_stream::has_teardown_in_progress();
+    if (!has_stream_activity && remote_display_topology::instance().managed_client_identity_count() == 0) {
+      config::clear_runtime_config_overrides();
+      config::apply_config_now();
+    }
   }
 
   void notify_remote_monitor_released(const std::string_view client_uuid, const std::uint64_t generation) {
@@ -3433,7 +3445,11 @@ namespace nvhttp {
           app_node.put("UUID", entry.uuid);
           app_node.put("IDX", configured == configured_apps.end() ? "0" : configured->idx);
           app_node.put("ID", entry.id);
-          app_node.put("ArtVersion", entry.synthetic ? "remote-session-v6" : (configured == configured_apps.end() ? "" : configured->art_version));
+          app_node.put(
+            "ArtVersion",
+            entry.synthetic ? (configured == configured_apps.end() ? "remote-session-v6" : configured->art_version) :
+                              (configured == configured_apps.end() ? "" : configured->art_version)
+          );
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }
@@ -3633,6 +3649,76 @@ namespace nvhttp {
           return;
         }
 
+        std::unique_lock remote_transition_lock {normal_http_app_transition_mutex};
+        const bool no_active_sessions = !has_stream_session_activity();
+        const auto runtime_app = proc::proc.resolve_app(
+          "0",
+          remote_session::synthetic(
+            synthetic_control == remote_session::control_e::input ? remote_session::control_e::input : remote_session::control_e::monitor
+          ).uuid
+        );
+        auto client_settings = verified_client;
+        if (!client_settings && !request_client_identity.uuid.empty()) {
+          client_settings = get_client_snapshot_by_uuid(request_client_identity.uuid);
+        }
+        std::unordered_map<std::string, std::string> requested_runtime_overrides;
+        if (runtime_app) {
+          config::merge_config_overrides(requested_runtime_overrides, runtime_app->config_overrides);
+        }
+        if (client_settings) {
+          config::merge_config_overrides(requested_runtime_overrides, client_settings->config_overrides);
+        }
+        if (!no_active_sessions &&
+            !config::adapter_config_overrides_compatible_with_active(requested_runtime_overrides)) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Another stream is active with a different capture adapter selection");
+          return;
+        }
+
+        auto previous_runtime_overrides = config::runtime_config_overrides_snapshot();
+        bool runtime_overrides_applied = false;
+        bool keep_runtime_overrides = false;
+        auto runtime_overrides_guard = util::fail_guard([&]() {
+          if (!runtime_overrides_applied || keep_runtime_overrides) {
+            return;
+          }
+          config::set_runtime_config_overrides(std::move(previous_runtime_overrides));
+          if (!has_stream_session_activity()) {
+            config::apply_config_now();
+          } else {
+            config::mark_deferred_reload();
+          }
+        });
+
+        if (no_active_sessions) {
+          try {
+            auto overrides = requested_runtime_overrides;
+#ifdef _WIN32
+            if (client_settings &&
+                !client_settings->hdr_profile.empty() &&
+                !overrides.contains("rtx_hdr_peak_brightness")) {
+              if (const auto profile_peak = VDISPLAY::hdr_profile_peak_luminance_nits(client_settings->hdr_profile)) {
+                overrides.insert_or_assign("rtx_hdr_peak_brightness", std::to_string(std::clamp<std::uint32_t>(*profile_peak, 400, 2000)));
+              }
+            }
+#endif
+            config::set_runtime_config_overrides(std::move(overrides));
+            runtime_overrides_applied = true;
+            config::apply_config_now();
+          } catch (...) {
+            config::set_runtime_config_overrides(previous_runtime_overrides);
+            config::apply_config_now();
+            runtime_overrides_applied = false;
+            throw;
+          }
+        }
+
+        auto _hot_apply_gate = config::acquire_apply_read_gate();
+        if (no_active_sessions) {
+          config::record_active_adapter_config();
+        }
+
         auto launch_session = make_launch_session_from_snapshot(false, false, args, verified_client, &request_client_identity);
         launch_session->rtsp_source_address = request->remote_endpoint().address().to_string();
         launch_session->role_generation = launch_session->id;
@@ -3663,6 +3749,7 @@ namespace nvhttp {
           BOOST_LOG(info) << "Remote Monitor exact capture target for client '" << request_client_identity.uuid
                           << "' is '" << monitor.output << "'.";
         }
+        stream::session::arm_shared_runtime_cleanup(launch_session->virtual_display_guid_bytes);
         if (!rtsp_stream::launch_session_raise(launch_session)) {
           if (launch_session->role == remote_session::role_e::monitor) {
             remote_session::release_monitor(request_client_identity.uuid, launch_session->role_generation, "RTSP admission rejected");
@@ -3673,6 +3760,7 @@ namespace nvhttp {
           tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
           return;
         }
+        keep_runtime_overrides = true;
         if (launch_session->role != remote_session::role_e::monitor) {
           remember_remote_owner(request_client_identity.uuid, launch_session->role, launch_session->role_generation);
         }

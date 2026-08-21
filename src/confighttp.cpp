@@ -62,6 +62,7 @@
 #include "network.h"
 #include "nvhttp.h"
 #include "remote_display_topology.h"
+#include "remote_session.h"
 #include "platform/common.h"
 #include "rtsp.h"
 #include "session_history.h"
@@ -157,6 +158,51 @@ namespace confighttp {
       }
     }
     return std::nullopt;
+  }
+
+  remote_session::control_e configurable_remote_session(std::string_view uuid) {
+    const auto control = remote_session::identify(0, uuid);
+    return control == remote_session::control_e::input || control == remote_session::control_e::monitor
+             ? control
+             : remote_session::control_e::none;
+  }
+
+  bool ensure_remote_session_apps(nlohmann::json &file_tree) {
+    if (!file_tree.contains("apps") || !file_tree["apps"].is_array()) {
+      file_tree["apps"] = nlohmann::json::array();
+    }
+
+    bool changed = false;
+    for (const auto control : {remote_session::control_e::input, remote_session::control_e::monitor}) {
+      const auto synthetic = remote_session::synthetic(control);
+      const auto artwork = remote_session::synthetic_artwork_filename(control);
+      if (!artwork) {
+        continue;
+      }
+
+      const auto default_image = std::string {"remote-session/"} + std::string {*artwork};
+      const auto index = find_app_index_by_uuid(file_tree["apps"], synthetic.uuid);
+      if (!index) {
+        file_tree["apps"].push_back({
+          {"name", synthetic.title},
+          {"uuid", synthetic.uuid},
+          {"image-path", default_image},
+        });
+        changed = true;
+        continue;
+      }
+
+      auto &app = file_tree["apps"][*index];
+      if (app.value("name", std::string {}) != synthetic.title) {
+        app["name"] = synthetic.title;
+        changed = true;
+      }
+      if (!app.contains("image-path") || !app["image-path"].is_string() || app["image-path"].get<std::string>().empty()) {
+        app["image-path"] = default_image;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   std::optional<size_t> resolve_app_index_token(const nlohmann::json &apps_node, const std::string &token) {
@@ -1704,7 +1750,7 @@ namespace confighttp {
         "lossless-scaling-launch-delay"
       };
 
-      bool mutated = false;
+      bool mutated = ensure_remote_session_apps(file_tree);
       auto normalize_lossless_profile_overrides = [](nlohmann::json &node) -> bool {
         if (!node.is_object()) {
           return false;
@@ -1819,6 +1865,7 @@ namespace confighttp {
       if (mutated) {
         try {
           file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+          proc::refresh(config::stream.file_apps, false);
         } catch (std::exception &e) {
           BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
         }
@@ -1849,6 +1896,10 @@ namespace confighttp {
               if (v) {
                 app["image-version"] = v;
               }
+            }
+            const auto control = configurable_remote_session(app.value("uuid", ""));
+            if (control != remote_session::control_e::none) {
+              app["remote-session"] = control == remote_session::control_e::input ? "input" : "monitor";
             }
           } catch (...) {
           }
@@ -1960,6 +2011,14 @@ namespace confighttp {
       // Remove old field to avoid duplication
       input_tree.erase("dlss-framegen-capture-fix");
 #endif
+
+      const auto remote_control = configurable_remote_session(input_tree.value("uuid", ""));
+      input_tree.erase("remote-session");
+      if (remote_control != remote_session::control_e::none) {
+        const auto synthetic = remote_session::synthetic(remote_control);
+        input_tree["uuid"] = synthetic.uuid;
+        input_tree["name"] = synthetic.title;
+      }
 
       auto &apps_node = file_tree["apps"];
       if (!apps_node.is_array()) {
@@ -2437,6 +2496,18 @@ namespace confighttp {
           bad_request(response, request, std::format("Application '{}' not found", *token_from_path));
           return;
         }
+      }
+
+      std::optional<size_t> protected_index;
+      if (uuid && !uuid->empty()) {
+        protected_index = find_app_index_by_uuid(apps_node, *uuid);
+      } else if (target_index && *target_index < apps_node.size()) {
+        protected_index = *target_index;
+      }
+      if (protected_index &&
+          configurable_remote_session(apps_node[*protected_index].value("uuid", "")) != remote_session::control_e::none) {
+        bad_request(response, request, "Remote session applications cannot be deleted");
+        return;
       }
 
       nlohmann::json::array_t new_apps;
