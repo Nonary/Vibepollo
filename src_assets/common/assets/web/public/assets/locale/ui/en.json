@@ -1299,6 +1299,9 @@
       "categories_label": "Settings categories",
       "dependency_inactive": "Currently inactive because “{setting}” is off or uses another mode.",
       "description": "Start with the choices that shape every stream, then use the focused categories for less common configuration.",
+      "command_editor": {
+        "empty": "No commands configured yet. Use Add to create one."
+      },
       "discard": "Discard",
       "display_recovery": {
         "action": "Clear display state",
