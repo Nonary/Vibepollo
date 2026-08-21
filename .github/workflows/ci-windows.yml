@@ -1186,17 +1186,42 @@ jobs:
             throw "Administrative MSI extraction failed (exit $($proc.ExitCode))."
           }
 
+          $virtualDisplayRoot = Join-Path $extractDir 'Apollo\drivers\sunshine'
+          $virtualDisplayCatalog = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.cat'
+          $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
+          $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
+          if (-not (Test-Path -LiteralPath $virtualDisplayCatalog -PathType Leaf)) {
+            $failures.Add('Sunshine virtual display catalog is missing from the signed MSI')
+          } elseif (Test-Signed $virtualDisplayCatalog) {
+            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
+            Write-Host "[verify] OK   virtual display catalog signed: $($catalogSignature.SignerCertificate.Subject) ($($catalogSignature.Status))"
+            if (-not $allowUntrustedSignatures) {
+              $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+              foreach ($catalogPayload in @($virtualDisplayInf, $virtualDisplayDll)) {
+                & $signtool verify '/v' '/pa' '/c' $virtualDisplayCatalog $catalogPayload
+                if ($LASTEXITCODE -ne 0) {
+                  $payloadName = Split-Path -Leaf $catalogPayload
+                  $failures.Add("virtual display catalog does not validate $payloadName")
+                }
+              }
+            }
+          } else {
+            $catalogSignature = Get-AuthenticodeSignature -LiteralPath $virtualDisplayCatalog
+            $failures.Add("Sunshine virtual display catalog is unsigned or untrusted (status=$($catalogSignature.Status))")
+          }
+
           $firstParty = @(
             'sunshine.exe','uninstall.exe','libwebrtc.dll','zlib1.dll',
             'sunshinesvc.exe','dxgi-info.exe','audio-info.exe',
-            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe'
+            'playnite-launcher.exe','sunshine_wgc_capture.exe','sunshine_display_helper.exe',
+            'virtualdisplay_probe.exe','VkLayer_sunshine_hdr.dll'
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')
-          $vendorSkip = @(
-            'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
-            'VkLayer_sunshine_hdr.dll','VibeshineVhfGamepad.dll','VibeshineVhfGamepadDeviceSetup.exe',
-            'nvngx_truehdr.dll','nvngx_vsr.dll'
-          )
+            $vendorSkip = @(
+              'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
+              'VkLayer_sunshine_hdr.dll','VibeshineVhfGamepad.dll','VibeshineVhfGamepadDeviceSetup.exe',
+              'nvngx_truehdr.dll','nvngx_vsr.dll'
+            )
 
           $allPe = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File |
             Where-Object { $_.Extension -in '.exe', '.dll' })
@@ -1248,7 +1273,7 @@ jobs:
           # hashes for those two files are expected not to match because
           # signing rewrote them. Everything else is still hash-pinned, and the
           # catalog-bound DLL must still be untouched.
-          $vhfPackageDir = Join-Path $extractDir 'Sunshine\drivers\vhf-gamepad'
+          $vhfPackageDir = Join-Path $extractDir 'Apollo\drivers\vhf-gamepad'
           $vhfManifestPath = Join-Path $vhfPackageDir 'manifest.json'
           # cleanup.ps1 is deliberately present in every MSI so a later
           # unbundled build can remove an older owned source node. A complete

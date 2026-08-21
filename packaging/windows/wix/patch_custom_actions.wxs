@@ -15,7 +15,10 @@
     <Property Id="REMOVEVIRTUALGAMEPADDRIVER" Value="0" Secure="yes"/>
     <Property Id="FACTORYRESET" Value="0" Secure="yes"/>
     <Property Id="INSTALL_SUDOVDA" Value="1" Secure="yes"/>
-    <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Secure="yes"/>
+    <!-- Keep the bundled Sunshine driver automatic for direct MSI and silent
+         installs. The bootstrapper overrides this to 0 only when the user
+         explicitly selects the legacy SudoVDA backend. -->
+    <Property Id="INSTALL_VIRTUAL_DISPLAY_DRIVER" Value="1" Secure="yes"/>
     <Property Id="INSTALL_VIRTUAL_GAMEPAD_DRIVER" Value="$(var.VhfGamepadDriverBundled)" Secure="yes"/>
     <Property Id="ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE" Value="$(var.VhfGamepadAllowLocalTest)" Secure="yes"/>
     <Property Id="SKIP_REMOVE_CONFLICTING_PRODUCTS" Value="0" Secure="yes"/>

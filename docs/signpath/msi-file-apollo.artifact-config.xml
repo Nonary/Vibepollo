@@ -23,6 +23,11 @@
   Signing either changes the bytes its catalog attests to and the driver stops
   installing. Everything else beside them is fair game.
 
+  The Sunshine virtual-display catalog is intentionally signed here. Its DLL
+  remains untouched because the catalog hashes it; signing the catalog itself
+  lets the installer establish the SignPath publisher without changing the
+  catalog-bound driver DLL.
+
   THE VHF GAMEPAD DRIVER IS DIFFERENT and is signed here. SignPath is not
   available on Nonary/libvirtualgamepad, so that package can never arrive
   production-signed; it is consumed unsigned and signed as part of this
@@ -63,25 +68,22 @@
     <pe-file path="Apollo/tools/sunshine_display_helper.exe"><authenticode-sign/></pe-file>
 
     <!--
-      Sunshine virtual display driver. Its catalog was previously signed only by
-      a SELF-SIGNED certificate that install.ps1 pushes into the machine's
-      Trusted Root store to make Windows accept it. Signing it here means the
-      catalog chains to a real CA and that root no longer has to be installed.
-
-      The probe and the Vulkan layer beside it were shipping unsigned outright.
-      Neither is named by the INF, so neither is catalog-bound, and both are
-      ours to sign.
+      Sunshine virtual display driver. Sign the catalog, but never the DLL it
+      hashes. The catalog path is required so a bad portal path fails the
+      signing request instead of producing an installer that prompts users to
+      approve the driver interactively. The adjacent probe and Vulkan layer are
+      not catalog-bound and must be signed as first-party files.
     -->
     <catalog-file path="Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.cat"
-                  min-matches="0" max-matches="1">
+                  min-matches="1" max-matches="1">
       <authenticode-sign/>
     </catalog-file>
     <pe-file path="Apollo/drivers/sunshine/virtualdisplay_probe.exe"
-             min-matches="0" max-matches="1">
+             min-matches="1" max-matches="1">
       <authenticode-sign/>
     </pe-file>
     <pe-file path="Apollo/drivers/sunshine/vulkan-layer/VkLayer_sunshine_hdr.dll"
-             min-matches="0" max-matches="1">
+             min-matches="1" max-matches="1">
       <authenticode-sign/>
     </pe-file>
 
