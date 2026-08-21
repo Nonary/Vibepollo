@@ -2,6 +2,7 @@
 import { computed, reactive, toRaw, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import ClientCommands from '@/components/devices/ClientCommands.vue';
 import SettingsOverrideEditor from '@/components/settings/SettingsOverrideEditor.vue';
 import DisplayTopologyEditor from '@/components/devices/DisplayTopologyEditor.vue';
 import { AppButton, SettingRow, StatusBadge, UiIcon } from '@/components/ui';
@@ -788,6 +789,15 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
     />
 
     <DisplayTopologyEditor v-if="isWindows" :client-uuid="controlIdPrefix.replace(/^client-/, '')" compact />
+
+    <ClientCommands
+      v-model:allow-client-commands="draft.allowClientCommands"
+      v-model:do-commands="draft.doCommands"
+      v-model:undo-commands="draft.undoCommands"
+      :platform="metadata.platform"
+      :disabled="busy"
+      :control-id-prefix="`${controlIdPrefix}-commands`"
+    />
 
     <div class="client-settings-editor__footer">
       <p>{{ t('ui.devices.editor.blocking_help') }}</p>

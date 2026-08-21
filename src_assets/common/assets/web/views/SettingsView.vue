@@ -6,6 +6,7 @@ import { apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
 import DisplayRecoverySettings from '@/components/settings/DisplayRecoverySettings.vue';
 import GlobalPrepCommands from '@/components/settings/GlobalPrepCommands.vue';
+import ServerCommands from '@/components/settings/ServerCommands.vue';
 import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPath.vue';
 import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
@@ -17,7 +18,7 @@ import {
   type SettingsOption,
   type SettingsVisibility,
 } from '@/configs/settingsSchema';
-import { serializeCommandRows } from '@/utils/v2Parity';
+import { serializeCommandRows, serializeServerCommandRows } from '@/utils/v2Parity';
 
 const { locale, t, te } = useI18n();
 
@@ -551,9 +552,14 @@ function updateValue(key: string, event: Event, field?: SettingsField): void {
 
 function saveValue(key: string): unknown {
   const value = values[key];
-  if (key === 'global_prep_cmd') {
+  if (key === 'global_prep_cmd' || key === 'global_state_cmd') {
     return serializeCommandRows(value, hostPlatform.value).filter(
       (row) => row.do.trim() || row.undo.trim(),
+    );
+  }
+  if (key === 'server_cmd') {
+    return serializeServerCommandRows(value, hostPlatform.value).filter(
+      (row) => row.name.trim() && row.cmd.trim(),
     );
   }
   return value === '' ? null : value;
@@ -921,6 +927,13 @@ onMounted(() => void load());
 
                   <GlobalPrepCommands
                     v-else-if="field.kind === 'command-preparations'"
+                    :model-value="values[field.key]"
+                    :platform="hostPlatform"
+                    @update:model-value="values[field.key] = $event"
+                  />
+
+                  <ServerCommands
+                    v-else-if="field.kind === 'server-commands'"
                     :model-value="values[field.key]"
                     :platform="hostPlatform"
                     @update:model-value="values[field.key] = $event"

@@ -8,7 +8,8 @@ export type SettingsFieldKind =
   | 'textarea'
   | 'mode-remapping'
   | 'display-recovery'
-  | 'command-preparations';
+  | 'command-preparations'
+  | 'server-commands';
 
 export interface SettingsOption {
   labelKey: string;
@@ -507,6 +508,20 @@ export const settingsCategories: SettingsCategory[] = [
             descriptionKey: 'config.global_prep_cmd_desc',
             stacked: true,
           },
+          {
+            key: 'global_state_cmd',
+            kind: 'command-preparations',
+            labelKey: 'config.global_state_cmd',
+            descriptionKey: 'config.global_state_cmd_desc',
+            stacked: true,
+          },
+          {
+            key: 'server_cmd',
+            kind: 'server-commands',
+            labelKey: 'config.server_cmd',
+            descriptionKey: 'config.server_cmd_desc',
+            stacked: true,
+          },
         ],
       },
     ],
@@ -935,6 +950,8 @@ export const settingsDefaults: Record<string, unknown> = {
   notify_pre_releases: false,
   min_log_level: 2,
   global_prep_cmd: [],
+  global_state_cmd: [],
+  server_cmd: [],
   session_history_enabled: true,
   session_history_ttl_days: 0,
   session_history_db_size_limit_mb: 0,

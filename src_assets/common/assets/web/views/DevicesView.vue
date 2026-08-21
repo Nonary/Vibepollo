@@ -165,6 +165,15 @@ function normalizeCommands(value: unknown): ClientCommandEntry[] {
   });
 }
 
+function serializeCommands(commands: ClientCommandEntry[]): ClientCommandEntry[] {
+  return commands.reduce<ClientCommandEntry[]>((result, entry) => {
+    const command = entry.command.trim();
+    if (!command) return result;
+    result.push({ command, elevated: entry.elevated === true });
+    return result;
+  }, []);
+}
+
 function normalizeVirtualMode(value: unknown): ClientDeviceDraft['virtualDisplayMode'] {
   const mode = String(value ?? '')
     .trim()
@@ -417,8 +426,14 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
     perm: draft.permissions & PERMISSION_ALL,
     enable_legacy_ordering: draft.enableLegacyOrdering,
     allow_client_commands: draft.allowClientCommands,
-    do: draft.doCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
-    undo: draft.undoCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
+    do: serializeCommands(draft.doCommands).map((entry) => ({
+      cmd: entry.command,
+      elevated: entry.elevated,
+    })),
+    undo: serializeCommands(draft.undoCommands).map((entry) => ({
+      cmd: entry.command,
+      elevated: entry.elevated,
+    })),
     display_mode: draft.displayMode.trim(),
     output_name_override: outputName,
     always_use_virtual_display:
