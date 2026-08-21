@@ -1770,7 +1770,7 @@ TEST(DisplayHelperV2StateMachine, EmptyVirtualDeviceIdentityDoesNotReapplyStaleI
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
 }
 
-TEST(DisplayHelperV2StateMachine, GenericEventsWithAbsentPhysicalMemberDoNotReapply) {
+TEST(DisplayHelperV2StateMachine, MissingOrInactivePhysicalMemberRemainsPassive) {
   StateMachineHarness harness;
   display_helper::v2::ApplyRequest request;
   request.configuration = display_device::SingleDisplayConfiguration {};
@@ -1815,11 +1815,177 @@ TEST(DisplayHelperV2StateMachine, GenericEventsWithAbsentPhysicalMemberDoNotReap
   harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
     display_helper::v2::DisplayEvent::DisplayChange,
     harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::PowerResume,
+    harness.cancellation.current_generation()});
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DeviceArrival,
+    harness.cancellation.current_generation()});
 
   EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
   EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
   EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
-  EXPECT_EQ(harness.virtual_display.device_id_calls, device_id_calls_before);
+  EXPECT_EQ(harness.virtual_display.device_id_calls, device_id_calls_before + 1);
+}
+
+TEST(DisplayHelperV2StateMachine, ActivePhysicalBaselineReturnGetsOneTopologyRepairWithoutRetargetingVirtualDisplay) {
+  StateMachineHarness harness;
+  auto golden = make_snapshot("physical_primary");
+  golden.m_topology.push_back({"physical_returned"});
+  golden.m_modes["physical_returned"] = display_device::DisplayMode {};
+  golden.m_hdr_states["physical_returned"] = std::nullopt;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Golden,
+    golden));
+
+  harness.add_active_device("physical_primary");
+  harness.add_active_device("physical_returned");
+  harness.add_active_device("virtual_current");
+  harness.display_settings.topology = {{"physical_primary"}, {"virtual_current"}};
+  harness.display_settings.snapshot = make_snapshot("physical_primary");
+  harness.display_settings.snapshot.m_topology.push_back({"virtual_current"});
+  harness.display_settings.snapshot.m_modes["virtual_current"] = display_device::DisplayMode {};
+  harness.display_settings.snapshot.m_hdr_states["virtual_current"] = std::nullopt;
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = harness.display_settings.topology;
+  request.virtual_layout = "extended";
+  request.prefer_golden_first = true;
+  harness.virtual_display.current_device_id = "virtual_current";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.resolved_target = display_helper::v2::ResolvedConfigurationTarget {
+    .kind = display_helper::v2::DeviceTargetKind::ExplicitDevice,
+    .representative_device_id = "virtual_current",
+    .duplicate_device_ids = {"virtual_current"},
+  };
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+
+  // A debounced generic event is actionable only because the persisted
+  // physical baseline member is active yet absent from the live topology.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation(),
+  });
+
+  const display_device::ActiveTopology expected_topology {
+    {"physical_primary"},
+    {"virtual_current"},
+    {"physical_returned"},
+  };
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::Verification);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before + 1);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, expected_topology);
+  ASSERT_TRUE(harness.dispatcher.verification_request.configuration);
+  EXPECT_EQ(harness.dispatcher.verification_request.configuration->m_device_id, "virtual_current");
+  ASSERT_TRUE(harness.dispatcher.verification_target);
+  EXPECT_EQ(harness.dispatcher.verification_target->representative_device_id, "virtual_current");
+
+  // The helper's own WM_DISPLAYCHANGE/DBT_DEVNODES_CHANGED burst cannot start
+  // work while the read-only admission check is in flight.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before + 1);
+
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::InProgress);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  EXPECT_FALSE(harness.dispatcher.apply_request.settings_only_repair);
+  ASSERT_TRUE(harness.dispatcher.apply_request.topology);
+  EXPECT_EQ(*harness.dispatcher.apply_request.topology, expected_topology);
+  ASSERT_TRUE(harness.dispatcher.apply_request.configuration);
+  EXPECT_EQ(harness.dispatcher.apply_request.configuration->m_device_id, "virtual_current");
+
+  // The admitted full apply is followed by one exact-topology check. Failure
+  // preserves the verified virtual session and does not open another repair.
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before + 2);
+  ASSERT_TRUE(harness.dispatcher.verification_topology);
+  EXPECT_EQ(*harness.dispatcher.verification_topology, expected_topology);
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation(),
+  });
+  harness.dispatcher.verification_completion(false);
+  harness.drain_messages();
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation(),
+  });
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before + 1);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before + 2);
+}
+
+TEST(DisplayHelperV2StateMachine, ExclusiveVirtualLayoutIgnoresActivePhysicalBaselineReturn) {
+  StateMachineHarness harness;
+  ASSERT_TRUE(harness.storage.save(
+    display_helper::v2::SnapshotTier::Golden,
+    make_snapshot("physical_returned")));
+  harness.add_active_device("physical_returned");
+  harness.add_active_device("virtual_current");
+  harness.display_settings.topology = {{"virtual_current"}};
+  harness.display_settings.snapshot = make_snapshot("virtual_current");
+
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "virtual_current";
+  request.topology = harness.display_settings.topology;
+  request.virtual_layout = "exclusive";
+  request.prefer_golden_first = true;
+  harness.virtual_display.current_device_id = "virtual_current";
+
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request,
+    harness.cancellation.current_generation(),
+  });
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  const int apply_dispatches_before = harness.dispatcher.apply_dispatch_count;
+  const int verification_dispatches_before = harness.dispatcher.verification_dispatch_count;
+  for (const auto event : {
+         display_helper::v2::DisplayEvent::DisplayChange,
+         display_helper::v2::DisplayEvent::PowerResume,
+         display_helper::v2::DisplayEvent::DeviceArrival,
+       }) {
+    harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+      event,
+      harness.cancellation.current_generation(),
+    });
+  }
+
+  EXPECT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  EXPECT_EQ(harness.dispatcher.apply_dispatch_count, apply_dispatches_before);
+  EXPECT_EQ(harness.dispatcher.verification_dispatch_count, verification_dispatches_before);
 }
 
 TEST(DisplayHelperV2StateMachine, ChangedVirtualIdentityRepairPreservesPhysicalTopologyMembers) {
@@ -3130,6 +3296,13 @@ TEST(DisplayHelperV2StateMachine, TickDrivesScheduledRestoreRetries) {
   harness.clock.advance(std::chrono::minutes(3));
   harness.state_machine.handle_tick();
   harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
+
+  // A generic event from the failed restore cannot reopen the exhausted
+  // window or bypass the existing event/backoff admission rule.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation()});
   EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, dispatches_after_first + 1);
 
   // Identity-bearing evidence re-opens an event window and retries immediately.
