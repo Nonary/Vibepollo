@@ -7,6 +7,7 @@
 // standard includes
 #include <array>
 #include <cstdint>
+#include <optional>
 
 // lib includes
 #include <libvirtualgamepad/protocol.h>
@@ -93,6 +94,17 @@ namespace platf::vhf_gamepad {
     lvg::button_mask::paddle_1 | lvg::button_mask::paddle_2 |
     lvg::button_mask::paddle_3 | lvg::button_mask::paddle_4 |
     lvg::button_mask::touchpad | lvg::button_mask::misc;
+
+  /**
+   * @brief Selects the preferred public console profile from a driver mask.
+   * @details The generic protocol enum values remain reserved, but they have no accepted public
+   *          USB PID and must never become an automatic fallback.
+   * @param available_profiles The mask returned by the VHF driver.
+   * @return The selected console profile, or no value when none is available.
+   */
+  [[nodiscard]] std::optional<lvg::profile> select_automatic_profile(
+    lvg::profile_mask_t available_profiles
+  ) noexcept;
 
   /**
    * @brief Builds a protocol input report for a controller.
