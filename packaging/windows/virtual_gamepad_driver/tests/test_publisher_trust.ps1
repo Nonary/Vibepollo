@@ -157,13 +157,13 @@ if ($trustOffset -lt 0 -or $pnpOffset -lt 0 -or $trustOffset -ge $pnpOffset) {
     throw 'Production publisher trust is not established before PnPUtil driver staging.'
 }
 
-$workflowText = (Get-Content -LiteralPath $workflowPath -Raw).Replace("`r`n", "`n")
-$expectedGate = @'
+$workflowText = (Get-Content -LiteralPath $workflowPath -Raw).Replace("`r", '')
+$expectedGate = (@'
       - name: Test VHF publisher trust policy
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
-'@
-if ($workflowText.IndexOf($expectedGate.TrimEnd(), [System.StringComparison]::Ordinal) -lt 0) {
+'@).Replace("`r", '').TrimEnd()
+if ($workflowText.IndexOf($expectedGate, [System.StringComparison]::Ordinal) -lt 0) {
     throw 'The ordinary/release Windows build does not run this publisher trust policy test.'
 }
 

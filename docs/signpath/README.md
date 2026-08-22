@@ -90,10 +90,10 @@ catalogue, which is how Windows validates a driver package anyway.
 
 ### What this changes about verification
 
-Vibepollo fetches the immutable public producer prerelease once in a dedicated
-job, validates its lightweight tag target, exact four-asset set, GitHub asset
-digests, external checksum, release lock, evidence, case-sensitive ZIP layout,
-manifest and fresh-Inf2Cat hash binding, then passes that verified directory to
+The consumer workflow fetches the immutable public producer prerelease once in
+a dedicated job, validates its lightweight tag target, exact four-asset set,
+GitHub asset digests, external checksum, release lock, evidence, case-sensitive
+ZIP layout, manifest and fresh-Inf2Cat hash binding, then passes that verified directory to
 the Windows build as an internal artifact. The consumer never compiles the
 driver, setup tool, or package.
 
@@ -181,7 +181,9 @@ second fetch; they are not installed in the MSI. The installed
 
 For local development, `SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE` is an
 explicit separate path. It accepts only the driver package's exported local
-test certificate and never relaxes production release validation.
+test certificate and never relaxes production release validation. Its
+`self-signed-local-test` manifest must declare and hash that `.cer`; production
+manifest file sets remain exact and exclude certificates.
 
 ## First-party PEs that MUST be signed
 

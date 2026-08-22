@@ -1,13 +1,13 @@
 include_guard(GLOBAL)
 
 # The virtual-gamepad package is independently versioned and released from
-# Nonary/libvirtualgamepad. Vibepollo consumes its immutable archive; it must
-# never build the UMDF driver while assembling an application MSI.
+# Nonary/libvirtualgamepad. The application consumes its immutable archive; it
+# must never build the UMDF driver while assembling a consumer MSI.
 #
 # The producer archive is intentionally unsigned. Production signing remains
-# downstream: the same SignPath request that deep-signs the MSI signs its VHF
-# catalog and root-device setup tool. See
-# docs/signpath/msi-file-apollo.artifact-config.xml.
+# downstream: the same consumer-MSI signing request that deep-signs the MSI
+# signs its VHF catalog and root-device setup tool. See docs/signpath/ for the
+# repository-specific executable signing configuration.
 #
 # What that moves, and what it does not:
 #   - Archive integrity is still pinned, by release tag and SHA-256 of the
@@ -52,7 +52,7 @@ set(SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT "" CACHE STRING
     "Optional expected Authenticode signer thumbprint for a pre-signed VHF root-device setup tool.")
 set(SUNSHINE_VHF_GAMEPAD_PREBUILT_SCOPE "pinned_release")
 # Where the production signature comes from. "msi_request" means the catalogue
-# and the root-device tool are signed inside the Vibepollo MSI signing request
+# and the root-device tool are signed inside the consumer MSI signing request
 # rather than arriving signed.
 set(SUNSHINE_VHF_GAMEPAD_SIGNING_MODE "msi_request")
 set(SUNSHINE_VHF_GAMEPAD_LOCAL_SIGNING_MODE "explicit_local_test_only")

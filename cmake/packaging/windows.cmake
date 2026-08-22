@@ -377,7 +377,7 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
                     -ExpectedProtocolVersion "${SUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION}"
                     -OutDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
             DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}"
-            COMMENT "Downloading pinned libvirtualgamepad release"
+            COMMENT "Downloading pinned VHF gamepad producer release"
             VERBATIM)
     endif()
 
@@ -391,7 +391,7 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
                 "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1"
                 "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
-        COMMENT "Refreshing Vibepollo VHF gamepad package assets from the pinned release"
+        COMMENT "Refreshing VHF gamepad package assets from the pinned producer release"
         VERBATIM)
 
     add_custom_target(validate_sunshine_virtual_gamepad_driver_assets
@@ -405,7 +405,7 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT}"
                 "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/install.ps1"
                 "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
-        COMMENT "Validating Vibepollo VHF gamepad package assets"
+        COMMENT "Validating consumer VHF gamepad package assets"
         VERBATIM)
 
     if(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE)

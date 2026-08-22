@@ -105,7 +105,7 @@ on:
         required: false
         type: string
         # Deep-signs first-party PEs inside the MSI, then the MSI container.
-        # See docs/signpath/msi-file-apollo.artifact-config.xml.
+        # See docs/signpath/ for the executable consumer-MSI signing policy.
         default: msi-file-apollo
     secrets:
       symbol_token:
@@ -305,6 +305,10 @@ jobs:
       - name: Test VHF publisher trust policy
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
+
+      - name: Test VHF manifest channel contract
+        shell: pwsh
+        run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
 
       - name: Download verified VHF producer package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
@@ -1567,7 +1571,7 @@ jobs:
           if ($failures.Count -gt 0) {
             Write-Host "::error::SignPath nested-signing verification failed ($($failures.Count) issue(s))."
             $failures | ForEach-Object { Write-Host "::error:: - $_" }
-            throw "SignPath verification failed. Confirm the 'msi-file-apollo' artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
+            throw "SignPath verification failed. Confirm the consumer-MSI artifact configuration deep-signs nested PEs in the SignPath portal (see docs/signpath/)."
           }
 
           Write-Host "[verify] All first-party PEs are signed (outer setup EXE, MSI, and nested binaries)."

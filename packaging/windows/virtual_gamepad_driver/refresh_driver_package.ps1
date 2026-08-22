@@ -38,7 +38,7 @@ $releaseLockFile = 'release-lock.json'
 $consumerReleaseLockFile = 'consumer-release-lock.json'
 
 # A package that ships unsigned because SignPath is not available on
-# Nonary/libvirtualgamepad. Its catalogue is signed later, by the Vibeshine MSI
+# Nonary/libvirtualgamepad. Its catalogue is signed later, by the consumer MSI
 # signing request. At ingest every manifest/fresh-Inf2Cat hash is checked and
 # CAT, DLL, and setup tool must explicitly report NotSigned with no signer.
 $msiRequestChannel = 'msi-request-signing'
@@ -240,6 +240,29 @@ function Assert-ManifestHash {
     }
 }
 
+function Assert-ManifestPayloadContract {
+    param(
+        [Parameter(Mandatory = $true)] $Manifest,
+        [Parameter(Mandatory = $true)][string] $Root
+    )
+
+    $expectedPayload = @($manifestPayload)
+    if ([string] $Manifest.signing.channel -eq 'self-signed-local-test') {
+        $expectedPayload += $localTestCertificate
+    }
+    Assert-ExactList `
+        -Actual @($Manifest.files | ForEach-Object { [string] $_.path } | Sort-Object) `
+        -Expected @($expectedPayload | Sort-Object) `
+        -Name 'manifest file list'
+
+    # manifest.json is metadata written after the payload hashes are known; a
+    # self-hash would be circular. Require it to exist and parse, but only
+    # hash-check the immutable artifacts it describes.
+    foreach ($relativePath in $expectedPayload) {
+        Assert-ManifestHash -Manifest $Manifest -Root $Root -RelativePath $relativePath
+    }
+}
+
 function Assert-Package {
     param(
         [Parameter(Mandatory = $true)][string] $Root,
@@ -259,19 +282,12 @@ function Assert-Package {
         $null -eq $manifest.files -or $null -eq $manifest.signing) {
         throw "[VibeshineVhfGamepad] Manifest is incomplete or uses an unsupported schema: $manifestPath"
     }
-    Assert-ExactList -Actual @($manifest.files | ForEach-Object { [string] $_.path } | Sort-Object) -Expected @($manifestPayload | Sort-Object) -Name 'manifest file list'
+    Assert-ManifestPayloadContract -Manifest $manifest -Root $Root
     if (-not $AllowLocalTest -and
         ($manifest.source_revision.ToLowerInvariant() -ne $ExpectedSourceRevision.ToLowerInvariant() -or
          $manifest.driver_ver -ne $ExpectedDriverVer -or
          [uint16] $manifest.protocol_version -ne $ExpectedProtocolVersion)) {
         throw '[VibeshineVhfGamepad] Manifest does not match the pinned producer source, DriverVer, or protocol.'
-    }
-
-    # manifest.json is metadata written after the payload hashes are known; a
-    # self-hash would be circular. Require it to exist and parse, but only
-    # hash-check the immutable artifacts it describes.
-    foreach ($relativePath in $manifestPayload) {
-        Assert-ManifestHash -Manifest $manifest -Root $Root -RelativePath $relativePath
     }
 
     $certificatePath = Join-Path $Root ($localTestCertificate -replace '/', '\\')
@@ -347,16 +363,15 @@ function Assert-Package {
         }
         if ($ExpectedCatalogSignerThumbprint -and
             (Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $ExpectedCatalogSignerThumbprint) {
-            throw '[VibeshineVhfGamepad] Signed catalog does not match the signer identity pinned by Vibeshine.'
+            throw '[VibeshineVhfGamepad] Signed catalog does not match the signer identity pinned by the consumer.'
         }
         if ($ExpectedDeviceSetupSignerThumbprint -and
             (Get-Thumbprint -Certificate $toolSignature.SignerCertificate) -ne $ExpectedDeviceSetupSignerThumbprint) {
-            throw '[VibeshineVhfGamepad] Signed setup tool does not match the signer identity pinned by Vibeshine.'
+            throw '[VibeshineVhfGamepad] Signed setup tool does not match the signer identity pinned by the consumer.'
         }
     }
 
     if ($hasLocalCertificate) {
-        Assert-ManifestHash -Manifest $manifest -Root $Root -RelativePath $localTestCertificate
         $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath)
         $certificateThumbprint = Get-Thumbprint -Certificate $certificate
         if ((Get-Thumbprint -Certificate $catalogSignature.SignerCertificate) -ne $certificateThumbprint -or
@@ -525,7 +540,7 @@ function Assert-ReleaseLock {
         $lockSourceRevision.ToLowerInvariant() -ne $ExpectedSourceRevision.ToLowerInvariant() -or
         $lockDriverVer -ne $ExpectedDriverVer -or [uint16] $lock.protocol_version -ne $ExpectedProtocolVersion -or
         $lock.signing_channel -cne $msiRequestChannel) {
-        throw '[VibeshineVhfGamepad] Release lock does not match the Vibeshine-pinned production package.'
+        throw '[VibeshineVhfGamepad] Release lock does not match the consumer-pinned production package.'
     }
 }
 

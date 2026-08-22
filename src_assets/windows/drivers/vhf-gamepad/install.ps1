@@ -35,7 +35,7 @@ $expectedProtocolVersion = 2
 $expectedSignPathFoundationSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 
 # Signing channel for a package that ships unsigned and is signed by the
-# Vibeshine MSI signing request instead. SignPath is not available on
+# consumer MSI signing request instead. SignPath is not available on
 # Nonary/libvirtualgamepad, so its releases cannot carry a production
 # signature; the catalogue is signed downstream, inside the MSI.
 $msiRequestChannel = 'msi-request-signing'
@@ -88,6 +88,20 @@ function Get-Sha256 {
         }
     } finally {
         $stream.Dispose()
+    }
+}
+
+function Assert-ExactList {
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Actual,
+        [Parameter(Mandatory = $true)][object[]] $Expected,
+        [Parameter(Mandatory = $true)][string] $Name
+    )
+
+    $actualText = @($Actual | ForEach-Object { [string] $_ }) -join "`n"
+    $expectedText = @($Expected | ForEach-Object { [string] $_ }) -join "`n"
+    if ($actualText -cne $expectedText) {
+        throw "[VibeshineVhfGamepad] $Name does not match.`nExpected:`n$expectedText`nActual:`n$actualText"
     }
 }
 
@@ -289,6 +303,34 @@ function Assert-ManifestHash {
     }
 }
 
+function Assert-ManifestPayloadContract {
+    param(
+        [Parameter(Mandatory = $true)] $Manifest,
+        [Parameter(Mandatory = $true)][string] $Root
+    )
+
+    $expectedPayload = @($manifestPayload)
+    if ([string] $Manifest.signing.channel -eq 'self-signed-local-test') {
+        $expectedPayload += $localTestCertificate
+    }
+    Assert-ExactList `
+        -Actual @($Manifest.files | ForEach-Object { [string] $_.path } | Sort-Object) `
+        -Expected @($expectedPayload | Sort-Object) `
+        -Name 'manifest file list'
+
+    # manifest.json cannot hash itself: it is metadata written after the
+    # immutable payload hashes are known. Hash-check every channel-owned file.
+    $signedDownstream = [string] $Manifest.signing.channel -eq $msiRequestChannel
+    foreach ($relativePath in $expectedPayload) {
+        if ($signedDownstream -and $downstreamSignedFiles -contains $relativePath) {
+            # Re-signed after this manifest was written, so the recorded hash
+            # is expected not to match. Its signature is checked below.
+            continue
+        }
+        Assert-ManifestHash -Manifest $Manifest -Root $Root -RelativePath $relativePath
+    }
+}
+
 function Ensure-LocalTestCertificateTrusted {
     param(
         [Parameter(Mandatory = $true)][string] $CertificatePath,
@@ -330,23 +372,13 @@ function Assert-DriverPackage {
         $null -eq $manifest.files -or $null -eq $manifest.signing) {
         throw "[VibeshineVhfGamepad] Manifest is incomplete or unsupported: $manifestPath"
     }
-    # manifest.json cannot hash itself: it is the metadata produced after the
-    # immutable payload hashes are computed. Its existence and JSON schema are
-    # checked above; only the described artifacts are hash-verified here.
     $signedDownstream = $manifest.signing.channel -eq $msiRequestChannel
     if ($signedDownstream -and
         (@($manifest.signing.signed_downstream).Count -ne 2 -or
          (@($manifest.signing.signed_downstream) -join ',') -cne ($downstreamSignedFiles -join ','))) {
         throw '[VibeshineVhfGamepad] MSI-signing manifest does not declare exactly the catalog and setup tool.'
     }
-    foreach ($relativePath in $manifestPayload) {
-        if ($signedDownstream -and $downstreamSignedFiles -contains $relativePath) {
-            # Re-signed after this manifest was written, so the recorded hash
-            # is expected not to match. Its signature is checked below.
-            continue
-        }
-        Assert-ManifestHash -Manifest $manifest -Root $Root -RelativePath $relativePath
-    }
+    Assert-ManifestPayloadContract -Manifest $manifest -Root $Root
 
     $certificatePath = Join-Path $Root ($localTestCertificate -replace '/', '\\')
     $hasLocalCertificate = Test-Path -LiteralPath $certificatePath -PathType Leaf
@@ -357,7 +389,6 @@ function Assert-DriverPackage {
         if ($manifest.signing.channel -ne 'self-signed-local-test') {
             throw '[VibeshineVhfGamepad] A production manifest must not include a local-test certificate.'
         }
-        Assert-ManifestHash -Manifest $manifest -Root $Root -RelativePath $localTestCertificate
     } elseif ($manifest.signing.channel -eq 'self-signed-local-test') {
         throw '[VibeshineVhfGamepad] Local-test manifest is missing its public certificate.'
     }
