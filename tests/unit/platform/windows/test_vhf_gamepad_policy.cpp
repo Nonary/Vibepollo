@@ -20,6 +20,7 @@ namespace {
   using platf::vhf_gamepad::make_input_state;
   using platf::vhf_gamepad::normalized_state_t;
   using platf::vhf_gamepad::rumble_rgb_t;
+  using platf::vhf_gamepad::select_automatic_profile;
   using platf::vhf_gamepad::supported_button_mask;
   using platf::vhf_gamepad::to_milli_units;
   using platf::vhf_gamepad::to_normalized_touch;
@@ -41,6 +42,28 @@ namespace {
   }
 
   class VhfGamepadPolicyTest: public testing::Test {};
+
+  TEST_F(VhfGamepadPolicyTest, AutomaticProfilePrefersXinputThenPlaystation) {
+    const auto all_public =
+      lvg::profile_bit(lvg::profile::xbox_series) |
+      lvg::profile_bit(lvg::profile::dualsense) |
+      lvg::profile_bit(lvg::profile::dualshock_4);
+    EXPECT_EQ(select_automatic_profile(all_public), lvg::profile::xbox_series);
+    EXPECT_EQ(
+      select_automatic_profile(all_public & ~lvg::profile_bit(lvg::profile::xbox_series)),
+      lvg::profile::dualsense);
+    EXPECT_EQ(
+      select_automatic_profile(lvg::profile_bit(lvg::profile::dualshock_4)),
+      lvg::profile::dualshock_4);
+  }
+
+  TEST_F(VhfGamepadPolicyTest, AutomaticProfileNeverFallsBackToReservedGenericEnums) {
+    const auto reserved_generics =
+      lvg::profile_bit(lvg::profile::generic_pid) |
+      lvg::profile_bit(lvg::profile::generic_hid);
+
+    EXPECT_FALSE(select_automatic_profile(reserved_generics).has_value());
+  }
 
   TEST_F(VhfGamepadPolicyTest, InputStateCarriesAValidProtocolHeader) {
     const auto request = make_input_state(5, normalized_state_t {});

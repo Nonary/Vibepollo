@@ -90,22 +90,40 @@ catalogue, which is how Windows validates a driver package anyway.
 
 ### What this changes about verification
 
-The archive is still pinned by release tag and SHA-256; that check is unchanged
-and is what proves the bits came from the pinned release. What moves is *when*
-Authenticode is checked:
+Vibepollo fetches the immutable public producer prerelease once in a dedicated
+job, validates its lightweight tag target, exact four-asset set, GitHub asset
+digests, external checksum, release lock, evidence, case-sensitive ZIP layout,
+manifest and fresh-Inf2Cat hash binding, then passes that verified directory to
+the Windows build as an internal artifact. The consumer never compiles the
+driver, setup tool, or package.
 
-- **At ingest** (`refresh_driver_package.ps1`): no signature exists yet, so the
-  signature checks are skipped for this channel. Every manifest hash is still
-  verified, because nothing has been signed at that point.
+What moves is *when* Authenticode is checked:
+
+- **At ingest** (`download_libvirtualgamepad_release.ps1` and
+  `refresh_driver_package.ps1`): CAT, DLL, and setup tool must explicitly be
+  `NotSigned` with no signer. Every producer hash and fresh-Inf2Cat evidence
+  hash is verified before staging, and an administrative extraction verifies
+  the complete unsigned MSI payload before it is submitted to SignPath.
 - **After signing** (CI "Verify SignPath signatures", and `install.ps1` on the
   user's machine): the catalogue and setup tool must carry a valid signature,
   and their manifest hashes are deliberately **not** checked, because signing
-  rewrote them. The other payload hashes are still enforced.
+  rewrote them. The INF, DLL, manifest, `install.ps1`, and `cleanup.ps1` remain
+  byte-pinned; production signing also rechecks catalog membership.
+
+Before noninteractive PnP staging, the installed VHF script requires the CAT
+and setup tool to have valid signatures from the same certificate and requires
+both signer subjects to equal the stable `SignPath Foundation` production
+identity already required for the virtual-display catalog. Only then does it
+add that exact validated end-entity certificate to
+`LocalMachine\TrustedPublisher` and verifies it was persisted. This trust step
+is owned by the VHF package and does not depend on the optional virtual-display
+driver having installed the same publisher first. A failure stops VHF staging;
+the MSI's best-effort wrapper may report it as a driver warning, but never as a
+successful VHF installation.
 
 The package declares this with `signing.channel = "msi-request-signing"` and
-lists the affected files under `signing.signed_downstream`, so a consumer does
-not have to infer which hashes are expected to go stale. Produce such a package
-with `verify-driver-package.ps1 -UnsignedForMsiSigning`.
+lists the affected files under `signing.signed_downstream`, so the consumer does
+not infer which hashes are expected to go stale.
 
 ### Approval order
 
@@ -118,7 +136,7 @@ cannot install.
 
 | Slug | File | Used by | Purpose |
 | --- | --- | --- | --- |
-| `msi-file-apollo` | [`msi-file-apollo.artifact-config.xml`](msi-file-apollo.artifact-config.xml) | `ci-windows.yml` (MSI request), `scripts/signpath_sign.ps1` | Deep-sign nested first-party PEs, then the MSI |
+| `msi-file-apollo` | [`msi-file-apollo.artifact-config.xml`](msi-file-apollo.artifact-config.xml) | `ci-windows.yml` (MSI request), `scripts/signpath_sign.ps1` | Deep-sign nested first-party PEs, the VHF CAT/setup tool, then the MSI |
 | `setup-exe` | [`setup-exe.artifact-config.xml`](setup-exe.artifact-config.xml) | `ci-windows.yml` (setup-EXE request) | Authenticode-sign the outer `VibepolloSetup.exe` |
 
 Slugs and project/org/policy are passed as reusable-workflow inputs in
@@ -138,11 +156,10 @@ invalidates the catalog hash and **breaks driver installation**. These must be
   `Apollo\drivers\sunshine\nefconc.exe`,
   `Apollo\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.dll`
   (libvirtualdisplay release, origin-signed upstream)
-- `drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll` (+ `.cat`) and
-  `drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe`
-  (libvirtualgamepad release). The DLL is catalog-bound; the setup tool is not,
-  but both are hash-pinned by that package's immutable manifest, so the MSI
-  deep-sign step must leave both bytes unchanged.
+- `Apollo\drivers\vhf-gamepad\driver\VibeshineVhfGamepad.dll` is catalog-bound and
+  remains byte-for-byte unchanged. The VHF CAT and setup tool are deliberate
+  exceptions: both arrive unsigned from the producer and are signed by this
+  repository's MSI request.
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
 The recommended config signs the Sunshine catalog and explicitly excludes the
@@ -150,14 +167,17 @@ catalog-bound DLL and third-party binaries above.
 
 ## VHF gamepad release boundary
 
-The VHF gamepad payload follows the same released-package model as the
-Vibeshine display driver, with a stricter immutable-artifact boundary. Before
-an MSI is assembled, CMake pins the libvirtualgamepad release tag, its archive
-SHA-256, and the expected catalog and root-device-tool signer thumbprints. The
-refresh step verifies those values, writes `release-lock.json` beside the
-package, and the installer verifies the lock against the signed catalog and
-setup tool. The production bundle remains disabled until those four pinned
-values are supplied for the first independently signed release.
+The Windows release flow pins `Nonary/libvirtualgamepad` tag
+`v0.1.0-beta.2`, source/tag target
+`52cbb8f27cbeb18baec53ca5d7b88081f0787a06`, and archive SHA-256
+`354c11239a91fd9fb2f52d45449de8409d96a4e4ed998f2794b5465eaec2434b`.
+It also requires DriverVer `08/21/2026,0.1.0.30` and protocol version 2.
+
+The producer sidecars remain outside its ZIP. They travel only in the internal
+CI artifact so the Windows build can revalidate the same public bytes without a
+second fetch; they are not installed in the MSI. The installed
+`release-lock.json` binds the producer identity and hashes plus the exact
+`install.ps1` and `cleanup.ps1` bytes.
 
 For local development, `SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE` is an
 explicit separate path. It accepts only the driver package's exported local
@@ -218,7 +238,10 @@ if any first-party PE is unsigned. It:
 2. confirms the signed MSI is signed,
 3. administratively extracts the MSI and confirms the Sunshine virtual-display
    catalog carries a signature from SignPath Foundation,
-4. confirms every first-party PE carries a signature, while **skipping** the
+4. confirms the complete VHF package and release lock are present, its CAT and
+   setup tool are signed, its DLL remains unsigned and byte-pinned, and its
+   production CAT still validates the INF and DLL,
+5. confirms every first-party PE carries a signature, while **skipping** the
    vendor and catalog-bound files above.
 
 This catches a portal misconfiguration (e.g. a container-only `msi-file-apollo` config,
@@ -228,12 +251,13 @@ or a newly added binary missing from Strategy-1 enumeration) before release.
 
 1. Create/confirm the `msi-file-apollo` artifact configuration matches
    `msi-file-apollo.artifact-config.xml` (deep-signs first-party PEs and the Sunshine
-   virtual-display catalog, while excluding catalog-bound DLLs and vendors).
+   virtual-display catalog and VHF CAT/setup tool, while excluding catalog-bound
+   DLLs and vendors).
 2. Create/confirm the `setup-exe` artifact configuration matches
    `setup-exe.artifact-config.xml` (PE Authenticode).
 3. Confirm the GitHub trusted-build system is linked to project `Vibepollo`.
-4. Trigger `tester-windows-installer.yml` (or a release candidate) and confirm the
-   verification gate passes.
+4. Trigger `tester-windows-installer.yml` (or a release candidate) and confirm
+   both unsigned-MSI and post-sign VHF verification gates pass.
 
 ## Local builds are unsigned by design
 

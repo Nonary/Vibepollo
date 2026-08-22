@@ -16,6 +16,23 @@ extern "C" {
 
 namespace platf::vhf_gamepad {
 
+  std::optional<lvg::profile> select_automatic_profile(
+    const lvg::profile_mask_t available_profiles
+  ) noexcept {
+    // Xbox Series stays first because it is the only automatic candidate on
+    // the XInput path. Generic profiles are intentionally excluded until they
+    // have an accepted public USB PID.
+    for (const auto candidate : {
+           lvg::profile::xbox_series,
+           lvg::profile::dualsense,
+           lvg::profile::dualshock_4}) {
+      if ((available_profiles & lvg::profile_bit(candidate)) != 0) {
+        return candidate;
+      }
+    }
+    return std::nullopt;
+  }
+
   lvg::input_state_request make_input_state(
     const std::uint32_t controller_id,
     const normalized_state_t &state

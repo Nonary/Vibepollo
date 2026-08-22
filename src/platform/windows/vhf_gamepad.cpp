@@ -100,11 +100,10 @@ namespace platf {
 
   namespace {
     /**
-     * @brief Picks the richest profile the connected driver offers.
+     * @brief Picks a requested public console profile the connected driver offers.
      * @details Xbox Series reaches XInput; the PlayStation profiles add a touchpad, motion,
-     *          battery, and a lightbar; the PID profile is a generic game pad plus the
-     *          DirectInput force-feedback report set; the plain generic profile is what an older
-     *          driver, or one whose HID stack rejected a larger descriptor, still offers.
+     *          battery, and a lightbar. Generic profile enum values remain reserved and are not
+     *          eligible for automatic selection until they have an accepted public USB PID.
      * @param client The connected driver client.
      * @param selected Receives the chosen profile.
      * @return `true` when the driver offers a usable profile.
@@ -154,19 +153,10 @@ namespace platf {
           break;
       }
 
-      // Xbox Series first for the automatic case: it is the only profile
-      // Windows puts on the XInput path, so it is the only one an XInput-only
-      // game can see at all.
-      for (const lvg::profile candidate : {
-             lvg::profile::xbox_series,
-             lvg::profile::dualsense,
-             lvg::profile::dualshock_4,
-             lvg::profile::generic_pid,
-             lvg::profile::generic_hid}) {
-        if (offers(client, candidate)) {
-          selected = candidate;
-          return true;
-        }
+      const auto automatic = vhf_gamepad::select_automatic_profile(client.available_profiles());
+      if (automatic) {
+        selected = *automatic;
+        return true;
       }
       return false;
     }
@@ -198,10 +188,8 @@ namespace platf {
           return "a DualShock 4 controller"sv;
         case lvg::profile::switch_pro:
           return "a Switch Pro Controller"sv;
-        case lvg::profile::generic_pid:
-          return "a generic HID game pad that also publishes force feedback reports"sv;
         default:
-          return "a generic HID game pad"sv;
+          return "an unsupported gamepad profile"sv;
       }
     }
   }  // namespace
@@ -406,18 +394,15 @@ namespace platf {
       return false;
     }
 
-    // List what the driver offers rather than what an automatic selection would
-    // pick. This line is read to confirm a configured controller type is
-    // reachable, and naming one profile made every other setting look ignored.
+    // List the public console profiles rather than what automatic selection
+    // would pick. Reserved generic enum values are intentionally not surfaced.
     std::string offered;
     for (const auto &[candidate, name] : {
            std::pair {lvg::profile::xbox_series, "Xbox Series"sv},
            std::pair {lvg::profile::xbox_one, "Xbox One"sv},
            std::pair {lvg::profile::dualsense, "DualSense"sv},
            std::pair {lvg::profile::dualshock_4, "DualShock 4"sv},
-           std::pair {lvg::profile::switch_pro, "Switch Pro"sv},
-           std::pair {lvg::profile::generic_pid, "generic HID with force feedback reports"sv},
-           std::pair {lvg::profile::generic_hid, "generic HID"sv}}) {
+           std::pair {lvg::profile::switch_pro, "Switch Pro"sv}}) {
       if (offers(probe_client, candidate)) {
         if (!offered.empty()) {
           offered += ", ";
