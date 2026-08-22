@@ -277,22 +277,37 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
             endif()
         endforeach()
         unset(_vhf_gamepad_pin)
-        if(NOT SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 MATCHES "^[0-9a-fA-F]{64}$")
+        sunshine_vhf_is_fixed_length_hex(
+            _vhf_gamepad_pin_valid
+            "${SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256}"
+            64)
+        if(NOT _vhf_gamepad_pin_valid)
             message(FATAL_ERROR "SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256 must be a SHA-256 value.")
         endif()
-        if(NOT SUNSHINE_VHF_GAMEPAD_SOURCE_REVISION MATCHES "^[0-9a-fA-F]{40}$")
+        sunshine_vhf_is_fixed_length_hex(
+            _vhf_gamepad_pin_valid
+            "${SUNSHINE_VHF_GAMEPAD_SOURCE_REVISION}"
+            40)
+        if(NOT _vhf_gamepad_pin_valid)
             message(FATAL_ERROR "SUNSHINE_VHF_GAMEPAD_SOURCE_REVISION must be a full commit SHA.")
         endif()
+        unset(_vhf_gamepad_pin_valid)
         # Still validated when supplied, for the hand-signed package case.
         foreach(_vhf_gamepad_signer IN ITEMS
                 SUNSHINE_VHF_GAMEPAD_CATALOG_SIGNER_THUMBPRINT
                 SUNSHINE_VHF_GAMEPAD_DEVICE_SETUP_SIGNER_THUMBPRINT)
-            if(NOT "${${_vhf_gamepad_signer}}" STREQUAL "" AND
-               NOT "${${_vhf_gamepad_signer}}" MATCHES "^[0-9a-fA-F]{40}$")
-                message(FATAL_ERROR
-                    "${_vhf_gamepad_signer} must be a 40-character SHA-1 thumbprint when set.")
+            if(NOT "${${_vhf_gamepad_signer}}" STREQUAL "")
+                sunshine_vhf_is_fixed_length_hex(
+                    _vhf_gamepad_signer_valid
+                    "${${_vhf_gamepad_signer}}"
+                    40)
+                if(NOT _vhf_gamepad_signer_valid)
+                    message(FATAL_ERROR
+                        "${_vhf_gamepad_signer} must be a 40-character SHA-1 thumbprint when set.")
+                endif()
             endif()
         endforeach()
+        unset(_vhf_gamepad_signer_valid)
         unset(_vhf_gamepad_signer)
     endif()
 

@@ -1,5 +1,18 @@
 include_guard(GLOBAL)
 
+function(sunshine_vhf_is_fixed_length_hex output_variable value expected_length)
+    if(NOT expected_length MATCHES "^[0-9]+$" OR expected_length LESS 1)
+        message(FATAL_ERROR "VHF hexadecimal validation requires a positive expected length.")
+    endif()
+
+    string(LENGTH "${value}" actual_length)
+    if(actual_length EQUAL expected_length AND value MATCHES "^[0-9a-fA-F]+$")
+        set(${output_variable} TRUE PARENT_SCOPE)
+    else()
+        set(${output_variable} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
 # The virtual-gamepad package is independently versioned and released from
 # Nonary/libvirtualgamepad. The application consumes its immutable archive; it
 # must never build the UMDF driver while assembling a consumer MSI.

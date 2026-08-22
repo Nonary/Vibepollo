@@ -2,6 +2,8 @@
 # Keep the UpgradeCode stable, but generate a new ProductCode for every MSI so
 # same-numeric-version prereleases can be ordered by canonical UUID text.
 
+include("${CMAKE_CURRENT_LIST_DIR}/sortable_product_guid_contract.cmake")
+
 function(_vibepollo_generate_sortable_product_guid _output_variable)
   set(_guid "")
 
@@ -15,7 +17,8 @@ function(_vibepollo_generate_sortable_product_guid _output_variable)
     )
   endif()
 
-  if(NOT _guid MATCHES "^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}\\}$")
+  vibepollo_is_sortable_product_guid(_guid_is_valid "${_guid}")
+  if(NOT _guid_is_valid)
     # Fallback for non-PowerShell hosts.  CMake only exposes seconds here, so
     # random bits keep ProductCodes unique if two packages are produced within
     # the same second; the leading timestamp still preserves sortable ordering.
@@ -47,6 +50,11 @@ function(_vibepollo_generate_sortable_product_guid _output_variable)
     string(SUBSTRING "${_random_hex}" 3 3 _rand_b)
     string(SUBSTRING "${_random_hex}" 6 12 _rand_c)
     set(_guid "{${_time_a}-${_time_b}-7${_rand_a}-8${_rand_b}-${_rand_c}}")
+  endif()
+
+  vibepollo_is_sortable_product_guid(_guid_is_valid "${_guid}")
+  if(NOT _guid_is_valid)
+    message(FATAL_ERROR "Failed to generate a structurally valid sortable UUIDv7 ProductCode.")
   endif()
 
   string(TOUPPER "${_guid}" _guid)
