@@ -74,7 +74,7 @@ set(CPACK_WIX_EXTRA_SOURCES
 set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.in")
 
 # uninstall.exe is packed into the MSI unsigned and signed as a nested PE by the
-# SignPath "msi-file" deep-sign (see docs/signpath/). There is intentionally no
+# consumer-MSI deep-signing policy (see docs/signpath/). There is intentionally no
 # CPACK_PRE_BUILD_SCRIPTS uninstaller-signing hook: a runner-local signature is
 # non-origin-verified and was a no-op in CI anyway (the token is deliberately
 # withheld from the MSI build step).

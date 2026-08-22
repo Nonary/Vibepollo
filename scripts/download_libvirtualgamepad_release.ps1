@@ -89,7 +89,7 @@ function New-GitHubHeaders {
     param([string] $Token, [string] $Accept = 'application/vnd.github+json')
     $headers = @{
         Accept = $Accept
-        'User-Agent' = 'Vibepollo-libvirtualgamepad-release-fetcher'
+        'User-Agent' = 'libvirtualgamepad-consumer-release-fetcher'
         'X-GitHub-Api-Version' = '2022-11-28'
     }
     if (-not [string]::IsNullOrWhiteSpace($Token)) {
@@ -140,7 +140,7 @@ function Assert-ProducerReleaseDirectory {
         }
     }
     if ((Get-Sha256 -Path $archivePath) -cne $ExpectedArchiveSha256) {
-        throw 'Producer archive hash does not match the Vibepollo pin.'
+        throw 'Producer archive hash does not match the consumer pin.'
     }
     $checksumText = (Get-Content -LiteralPath $checksumPath -Raw).TrimEnd("`r", "`n")
     if ($checksumText -cne "$ExpectedArchiveSha256  $script:archiveName") {
@@ -330,7 +330,7 @@ $escapedTag = [System.Uri]::EscapeDataString($Tag)
 $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/$escapedTag" -Headers (New-GitHubHeaders -Token $GitHubToken)
 if ($release.tag_name -cne $Tag -or $release.target_commitish -cne $ExpectedSourceRevision -or
     $release.draft -ne $false -or $release.prerelease -ne $true -or $release.immutable -ne $true) {
-    throw 'GitHub release is not the exact immutable public prerelease pinned by Vibepollo.'
+    throw 'GitHub release is not the exact immutable public prerelease pinned by the consumer.'
 }
 $tagRef = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/git/ref/tags/$escapedTag" -Headers (New-GitHubHeaders -Token $GitHubToken)
 if ($tagRef.ref -cne "refs/tags/$Tag" -or $tagRef.object.type -cne 'commit' -or $tagRef.object.sha -cne $ExpectedSourceRevision) {
