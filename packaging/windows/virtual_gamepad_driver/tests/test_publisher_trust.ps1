@@ -157,13 +157,47 @@ if ($trustOffset -lt 0 -or $pnpOffset -lt 0 -or $trustOffset -ge $pnpOffset) {
     throw 'Production publisher trust is not established before PnPUtil driver staging.'
 }
 
-$workflowText = (Get-Content -LiteralPath $workflowPath -Raw).Replace("`r", '')
-$expectedGate = (@'
+$expectedGate = @'
       - name: Test VHF publisher trust policy
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1
-'@).Replace("`r", '').TrimEnd()
-if ($workflowText.IndexOf($expectedGate, [System.StringComparison]::Ordinal) -lt 0) {
+'@
+
+function Test-WorkflowContainsPublisherTrustGate {
+    param(
+        [Parameter(Mandatory = $true)][string] $WorkflowText,
+        [Parameter(Mandatory = $true)][string] $ExpectedGate
+    )
+
+    $normalizedWorkflowText = $WorkflowText.Replace("`r`n", "`n").Replace("`r", "`n")
+    $normalizedExpectedGate = $ExpectedGate.Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd()
+    return $normalizedWorkflowText.IndexOf(
+        $normalizedExpectedGate,
+        [System.StringComparison]::Ordinal) -ge 0
+}
+
+$lfGateFixture = $expectedGate.Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd()
+$crlfGateFixture = $lfGateFixture.Replace("`n", "`r`n")
+foreach ($validGateFixture in @($lfGateFixture, $crlfGateFixture)) {
+    if (-not (Test-WorkflowContainsPublisherTrustGate `
+            -WorkflowText $validGateFixture `
+            -ExpectedGate $expectedGate)) {
+        throw 'The publisher trust workflow gate rejected a valid newline style.'
+    }
+}
+$missingGateFixture = $lfGateFixture.Replace(
+    '.\packaging\windows\virtual_gamepad_driver\tests\test_publisher_trust.ps1',
+    '.\packaging\windows\virtual_gamepad_driver\tests\missing.ps1')
+if (Test-WorkflowContainsPublisherTrustGate `
+        -WorkflowText $missingGateFixture `
+        -ExpectedGate $expectedGate) {
+    throw 'The publisher trust workflow gate accepted a missing policy test.'
+}
+
+$workflowText = Get-Content -LiteralPath $workflowPath -Raw
+if (-not (Test-WorkflowContainsPublisherTrustGate `
+        -WorkflowText $workflowText `
+        -ExpectedGate $expectedGate)) {
     throw 'The ordinary/release Windows build does not run this publisher trust policy test.'
 }
 

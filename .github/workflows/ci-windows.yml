@@ -310,6 +310,14 @@ jobs:
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
 
+      - name: Test VHF CMake release contract
+        shell: pwsh
+        run: cmake -P .\packaging\windows\virtual_gamepad_driver\tests\test_release_contract.cmake
+
+      - name: Test WiX sortable ProductCode contract
+        shell: pwsh
+        run: cmake -P .\packaging\windows\wix\tests\test_sortable_product_guid_contract.cmake
+
       - name: Download verified VHF producer package
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:

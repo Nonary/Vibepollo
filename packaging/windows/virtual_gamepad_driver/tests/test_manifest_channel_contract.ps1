@@ -203,13 +203,47 @@ try {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$workflowText = (Get-Content -LiteralPath $workflowPath -Raw).Replace("`r", '')
-$expectedGate = (@'
+$expectedGate = @'
       - name: Test VHF manifest channel contract
         shell: pwsh
         run: .\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1
-'@).Replace("`r", '').TrimEnd()
-if ($workflowText.IndexOf($expectedGate, [System.StringComparison]::Ordinal) -lt 0) {
+'@
+
+function Test-WorkflowContainsManifestContractGate {
+    param(
+        [Parameter(Mandatory = $true)][string] $WorkflowText,
+        [Parameter(Mandatory = $true)][string] $ExpectedGate
+    )
+
+    $normalizedWorkflowText = $WorkflowText.Replace("`r`n", "`n").Replace("`r", "`n")
+    $normalizedExpectedGate = $ExpectedGate.Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd()
+    return $normalizedWorkflowText.IndexOf(
+        $normalizedExpectedGate,
+        [System.StringComparison]::Ordinal) -ge 0
+}
+
+$lfGateFixture = $expectedGate.Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd()
+$crlfGateFixture = $lfGateFixture.Replace("`n", "`r`n")
+foreach ($validGateFixture in @($lfGateFixture, $crlfGateFixture)) {
+    if (-not (Test-WorkflowContainsManifestContractGate `
+            -WorkflowText $validGateFixture `
+            -ExpectedGate $expectedGate)) {
+        throw 'The manifest contract workflow gate rejected a valid newline style.'
+    }
+}
+$missingGateFixture = $lfGateFixture.Replace(
+    '.\packaging\windows\virtual_gamepad_driver\tests\test_manifest_channel_contract.ps1',
+    '.\packaging\windows\virtual_gamepad_driver\tests\missing.ps1')
+if (Test-WorkflowContainsManifestContractGate `
+        -WorkflowText $missingGateFixture `
+        -ExpectedGate $expectedGate) {
+    throw 'The manifest contract workflow gate accepted a missing policy test.'
+}
+
+$workflowText = Get-Content -LiteralPath $workflowPath -Raw
+if (-not (Test-WorkflowContainsManifestContractGate `
+        -WorkflowText $workflowText `
+        -ExpectedGate $expectedGate)) {
     throw 'The ordinary/release Windows build does not run this manifest contract test.'
 }
 $packagingText = Get-Content -LiteralPath $windowsPackagingCmake -Raw
