@@ -1362,6 +1362,10 @@
           "description": "Keep up to four virtual monitors outside streams. 0 creates them only when needed.",
           "label": "Always-available virtual displays"
         },
+        "dd_virtual_display_image_width_mm": {
+          "description": "Width of the image area your client actually displays, in millimetres. Windows reads it from the virtual display's EDID and derives DPI from it, so buttons and the cursor match the physical size they have on the host monitor. Measure the image area, not the device: a letterboxed stream is smaller than the panel. 0 disables it. Examples: 345 for an Alienware m16 R2 at 2560x1600, 151 for a Galaxy Z Fold8 Ultra inner panel at 2504x2256.",
+          "label": "Client image width (mm)"
+        },
         "dd_virtual_display_scale": {
           "description": "Adjust interface size without changing the resolution requested by the client.",
           "label": "Windows scaling"

@@ -4229,6 +4229,33 @@ Controls AMD's high-motion quality boost. Use `auto` to leave the driver default
 
 Sets how long a paused virtual display may remain ready before the display helper releases it. Set `0` to disable the timeout.
 
+### dd_virtual_display_image_width_mm
+
+Sets the width, in millimetres, of the image area the client actually displays. Set `0` to disable.
+
+The stream protocol carries pixels, not physical dimensions, so the host cannot tell a 2504-pixel-wide
+phone panel from a 2504-pixel-wide desktop monitor. Left to itself it guesses a scale from the
+resolution, and buttons, text, and the cursor end up a different physical size on the client than they
+are on the host's own monitor. Measuring the image area once removes the guess: the virtual display
+advertises those dimensions in its EDID, Windows derives DPI from them the same way it does for a real
+monitor, and interface elements come out at their true physical size.
+
+Measure the **image area**, not the device. On a letterboxed panel the two differ: a 16:10 stream on the
+8.0-inch inner panel of a Galaxy Z Fold8 Ultra occupies only about 7.01 inches of it. The height is
+derived from the width and the requested mode, so only the width is configured.
+
+Known-good widths, as a starting point — this is an ordinary list, so add your own device by measuring
+its image area:
+
+| Client | Mode | Image area (mm) | Width to configure | Density |
+| --- | --- | --- | --- | --- |
+| Alienware m16 R2 | 2560x1600 | 344.68 x 215.42 | `345` | 188.65 PPI |
+| Galaxy Z Fold8 Ultra (inner panel, landscape) | 2504x2256 | 150.97 x 136.01 | `151` | 421.3 PPI |
+
+`dd_virtual_display_scale` still wins when set to an explicit percentage, and `0` (preserve Windows'
+choice) still leaves the Windows DPI setting alone. The measured width only replaces the automatic
+recommendation.
+
 ### dd_virtual_display_scale
 
 Sets the virtual-display scale override. Leave it unset or at the automatic setting to use the recommended scale for the requested display mode.

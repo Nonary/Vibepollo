@@ -12,6 +12,24 @@ namespace {
     100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500
   };
 
+  // Windows only exposes the scales in kWindowsScalePercentages, so every derived scale has to
+  // land on one of them.
+  std::uint32_t nearest_windows_scale_percent(const double ideal_scale) {
+    const auto closest = std::ranges::min_element(
+      kWindowsScalePercentages,
+      [ideal_scale](const auto lhs, const auto rhs) {
+        return std::abs(static_cast<double>(lhs) - ideal_scale) <
+               std::abs(static_cast<double>(rhs) - ideal_scale);
+      }
+    );
+    return closest != kWindowsScalePercentages.end() ? *closest : 100u;
+  }
+
+  bool image_width_is_usable(const int image_width_mm) {
+    return image_width_mm >= VDISPLAY::kMinImageWidthMillimeters &&
+           image_width_mm <= VDISPLAY::kMaxImageWidthMillimeters;
+  }
+
   bool equals_ascii_ci(const std::string_view lhs, const std::string_view rhs) {
     return lhs.size() == rhs.size() &&
            std::ranges::equal(lhs, rhs, [](const char left, const char right) {
@@ -108,25 +126,47 @@ namespace VDISPLAY {
            starts_with_wide_ascii_ci(product_code, L"5");
   }
 
+  std::optional<virtual_display_physical_size_t> virtual_display_physical_size_mm(
+    const int configured_image_width_mm,
+    const std::uint32_t width,
+    const std::uint32_t height
+  ) {
+    if (!image_width_is_usable(configured_image_width_mm) || width == 0 || height == 0) {
+      return std::nullopt;
+    }
+
+    virtual_display_physical_size_t size {};
+    size.width_mm = static_cast<std::uint32_t>(configured_image_width_mm);
+    size.height_mm = static_cast<std::uint32_t>((std::max)(
+      1L,
+      std::lround(
+        static_cast<double>(configured_image_width_mm) *
+        static_cast<double>(height) / static_cast<double>(width)
+      )
+    ));
+    return size;
+  }
+
   std::uint32_t effective_virtual_display_scale_percent(
     const int configured_scale_percent,
     const std::uint32_t width,
-    const std::uint32_t height
+    const std::uint32_t height,
+    const int configured_image_width_mm
   ) {
     if (configured_scale_percent >= 0) {
       return static_cast<std::uint32_t>(configured_scale_percent);
     }
 
+    // A measured image width pins the client's real pixel density, so the scale follows from
+    // physics instead of from a guess keyed on resolution alone.
+    if (image_width_is_usable(configured_image_width_mm) && width > 0) {
+      const auto dots_per_inch =
+        static_cast<double>(width) * 25.4 / static_cast<double>(configured_image_width_mm);
+      return nearest_windows_scale_percent(dots_per_inch * 100.0 / VDISPLAY::kWindowsReferenceDpi);
+    }
+
     const auto short_edge = (std::min)(width, height);
-    const auto ideal_scale = static_cast<double>(short_edge) * 100.0 / 864.0;
-    const auto closest = std::ranges::min_element(
-      kWindowsScalePercentages,
-      [ideal_scale](const auto lhs, const auto rhs) {
-        return std::abs(static_cast<double>(lhs) - ideal_scale) <
-               std::abs(static_cast<double>(rhs) - ideal_scale);
-      }
-    );
-    return closest != kWindowsScalePercentages.end() ? *closest : 100u;
+    return nearest_windows_scale_percent(static_cast<double>(short_edge) * 100.0 / 864.0);
   }
 
   std::uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid) {

@@ -231,6 +231,7 @@ namespace config {
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       int virtual_display_scale_percent;  ///< Windows scale for virtual displays (-1 is resolution-based; 0 preserves Windows' choice).
+      int virtual_display_image_width_mm;  ///< Width of the client's visible image area in millimetres (0 disables). Drives the synthetic EDID so Windows derives DPI from a real physical size.
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.

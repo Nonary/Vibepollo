@@ -68,12 +68,40 @@ namespace VDISPLAY {
     std::uint32_t scale_percent
   );
 
-  // Resolve the configured virtual-display scale. -1 selects a resolution-based
-  // recommendation, 0 preserves Windows' existing choice, and positive values are exact.
+  // Physical size of the image area a virtual display advertises through its synthetic EDID.
+  struct virtual_display_physical_size_t {
+    std::uint32_t width_mm = 0;
+    std::uint32_t height_mm = 0;
+  };
+
+  // Lowest and highest client image widths we accept, in millimetres. The range spans a
+  // phone's inner panel up to a projected image; anything outside it is a typo, not a display.
+  inline constexpr int kMinImageWidthMillimeters = 10;
+  inline constexpr int kMaxImageWidthMillimeters = 2000;
+
+  // The DPI a 100% Windows scale factor is defined against.
+  inline constexpr double kWindowsReferenceDpi = 96.0;
+
+  // Resolve the image area a virtual display should advertise, from the measured width of the
+  // client's visible image and the mode being requested. Returns nullopt when no width is
+  // configured, leaving callers on the scale-derived EDID. Height follows the mode's pixel
+  // aspect: the streamed image fills the client's image area, so its pixels are square even
+  // when the client's panel is not the same shape as the image.
+  std::optional<virtual_display_physical_size_t> virtual_display_physical_size_mm(
+    int configured_image_width_mm,
+    std::uint32_t width,
+    std::uint32_t height
+  );
+
+  // Resolve the configured virtual-display scale. -1 selects a recommendation, 0 preserves
+  // Windows' existing choice, and positive values are exact. A measured client image width
+  // refines the recommendation: it describes the client's pixel density exactly, where the
+  // resolution-only heuristic can only guess at it.
   std::uint32_t effective_virtual_display_scale_percent(
     int configured_scale_percent,
     std::uint32_t width,
-    std::uint32_t height
+    std::uint32_t height,
+    int configured_image_width_mm = 0
   );
 
   // Read the MHC2 peak-luminance value from a Windows HDR calibration profile selection.
