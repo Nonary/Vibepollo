@@ -73,3 +73,39 @@ TEST_P(MouseControllerTest, AbsoluteMoveForwardsViewportAndCoordinates) {
   EXPECT_EQ(backend.last_absolute, requested);
   EXPECT_EQ(backend.absolute_calls, 1);
 }
+
+// The virtual-desktop grid spans every monitor, but the position handed to a backend is
+// relative to the streamed monitor, so the monitor's origin has to be folded in first.
+// Dropping that term is what sent absolute mouse input to the wrong monitor.
+TEST(MouseVirtualDesktopMapping, AddsTheMonitorOriginBeforeScaling) {
+  const mouse_input::viewport_t viewport {2000, 0, 4000, 2000};
+
+  const auto mapped = mouse_input::to_virtual_desktop(viewport, {1000.0f, 500.0f});
+
+  // (1000 + 2000) / 4000 and 500 / 2000 of the grid.
+  EXPECT_EQ(mapped.x, 49151);
+  EXPECT_EQ(mapped.y, 16384);
+}
+
+TEST(MouseVirtualDesktopMapping, LeavesASingleMonitorDesktopAlone) {
+  const mouse_input::viewport_t viewport {0, 0, 4000, 2000};
+
+  const auto mapped = mouse_input::to_virtual_desktop(viewport, {1000.0f, 500.0f});
+
+  EXPECT_EQ(mapped.x, 16384);
+  EXPECT_EQ(mapped.y, 16384);
+}
+
+TEST(MouseVirtualDesktopMapping, HandlesAMonitorLeftOfThePrimary) {
+  // display_base_t reports offsets relative to the top-left of the virtual desktop, so a
+  // monitor left of the primary shows up at offset 0 with the primary pushed right.
+  const mouse_input::viewport_t viewport {0, 0, 4000, 2000};
+
+  EXPECT_EQ(mouse_input::to_virtual_desktop(viewport, {0.0f, 0.0f}).x, 0);
+  EXPECT_EQ(mouse_input::to_virtual_desktop({2000, 0, 4000, 2000}, {2000.0f, 0.0f}).x, mouse_input::VIRTUAL_DESKTOP_GRID);
+}
+
+TEST(MouseVirtualDesktopMapping, MapsAnEmptyViewportToTheOrigin) {
+  EXPECT_EQ(mouse_input::to_virtual_desktop({0, 0, 0, 0}, {10.0f, 10.0f}), (mouse_input::point_t {0, 0}));
+  EXPECT_EQ(mouse_input::to_virtual_desktop({0, 0, 1920, 0}, {10.0f, 10.0f}), (mouse_input::point_t {0, 0}));
+}

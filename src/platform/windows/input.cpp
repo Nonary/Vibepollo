@@ -22,6 +22,7 @@
 #include "src/config.h"
 #include "src/globals.h"
 #include "src/logging.h"
+#include "src/mouse_input.h"
 #include "src/platform/common.h"
 
 #ifdef __MINGW32__
@@ -34,13 +35,6 @@ namespace platf {
   using namespace std::literals;
 
   thread_local HDESK _lastKnownInputDesktop = nullptr;
-
-  constexpr touch_port_t target_touch_port {
-    0,
-    0,
-    65535,
-    65535
-  };
 
   using client_t = util::safe_ptr<_VIGEM_CLIENT_T, vigem_free>;
   using target_t = util::safe_ptr<_VIGEM_TARGET_T, vigem_target_free>;
@@ -550,13 +544,17 @@ namespace platf {
       // MOUSEEVENTF_VIRTUALDESK maps to the entirety of the desktop rather than the primary desktop
       MOUSEEVENTF_VIRTUALDESK;
 
-    // Note: x and y already include the display offset (offset_x/offset_y) from client_to_touchport(),
-    // so we must not add offset_x/offset_y again here to avoid double-offsetting on multi-monitor setups.
-    auto scaled_x = std::lround(x * ((float) target_touch_port.width / (float) touch_port.width));
-    auto scaled_y = std::lround(y * ((float) target_touch_port.height / (float) touch_port.height));
+    // x and y are relative to the streamed monitor: client_to_touchport() only folds the
+    // monitor origin in for the Linux backends, leaving Windows and macOS to apply it in
+    // platform code. MOUSEEVENTF_VIRTUALDESK addresses the whole desktop, so the origin
+    // has to be added back before scaling, or every non-primary monitor lands wrong.
+    const auto scaled = mouse_input::to_virtual_desktop(
+      {touch_port.offset_x, touch_port.offset_y, touch_port.width, touch_port.height},
+      {x, y}
+    );
 
-    mi.dx = scaled_x;
-    mi.dy = scaled_y;
+    mi.dx = scaled.x;
+    mi.dy = scaled.y;
 
     send_input(i);
   }
