@@ -581,9 +581,25 @@ async function focusOverride(key: string): Promise<void> {
                         ? t(fieldFor(key)!.placeholderKey!)
                         : undefined
                     "
+                    :list="
+                      fieldFor(key)?.presets?.length
+                        ? `${controlIdPrefix}-${key}-presets`
+                        : undefined
+                    "
                     :aria-describedby="descriptionId"
                     @input="updateFromEvent(key, $event)"
                   />
+                  <datalist
+                    v-if="fieldFor(key)?.presets?.length"
+                    :id="`${controlIdPrefix}-${key}-presets`"
+                  >
+                    <option
+                      v-for="preset in fieldFor(key)!.presets"
+                      :key="preset.value"
+                      :value="preset.value"
+                      :label="preset.label"
+                    />
+                  </datalist>
                   <AppButton
                     variant="tertiary"
                     size="compact"

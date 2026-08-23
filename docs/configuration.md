@@ -4244,13 +4244,21 @@ Measure the **image area**, not the device. On a letterboxed panel the two diffe
 8.0-inch inner panel of a Galaxy Z Fold8 Ultra occupies only about 7.01 inches of it. The height is
 derived from the width and the requested mode, so only the width is configured.
 
-Known-good widths, as a starting point — this is an ordinary list, so add your own device by measuring
-its image area:
+Devices that have already been worked out are offered as suggestions in the web UI, on the global
+setting and on the per-client and per-app overrides alike, so the common cases do not have to be
+measured twice:
 
 | Client | Mode | Image area (mm) | Width to configure | Density |
 | --- | --- | --- | --- | --- |
 | Alienware m16 R2 | 2560x1600 | 344.68 x 215.42 | `345` | 188.65 PPI |
 | Galaxy Z Fold8 Ultra (inner panel, landscape) | 2504x2256 | 150.97 x 136.01 | `151` | 421.3 PPI |
+
+That table is an ordinary list of examples rather than a supported-device list, and the suggestions
+never restrict the field: measure your own device's image area and type the width in. To offer a
+device to everyone, add a row to `src_assets/common/assets/web/configs/clientImageWidthPresets.ts`.
+The listed width is the panel's full active width, which a stream wider in aspect than the panel
+fills even while letterboxed; a stream narrower than the panel is pillarboxed and needs a smaller
+number.
 
 `dd_virtual_display_scale` still wins when set to an explicit percentage, and `0` (preserve Windows'
 choice) still leaves the Windows DPI setting alone. The measured width only replaces the automatic

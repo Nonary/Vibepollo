@@ -1,3 +1,5 @@
+import { clientImageWidthPresets } from './clientImageWidthPresets.ts';
+
 export type SettingsFieldKind =
   | 'boolean'
   | 'number'
@@ -15,6 +17,16 @@ export interface SettingsOption {
   value: string;
 }
 
+/**
+ * A suggested value for a field, offered alongside free entry rather than replacing it.
+ * Unlike SettingsOption the label is literal text: these name real-world things such as
+ * device models, which are not translated.
+ */
+export interface SettingsPreset {
+  label: string;
+  value: string;
+}
+
 export interface SettingsVisibility {
   key: string;
   equals?: string | boolean;
@@ -28,6 +40,7 @@ export interface SettingsField {
   descriptionKey?: string;
   warningKey?: string;
   options?: SettingsOption[];
+  presets?: SettingsPreset[];
   min?: number;
   max?: number;
   step?: number;
@@ -360,6 +373,10 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
     min: 0,
     max: 2000,
     step: 1,
+    presets: clientImageWidthPresets.map((preset) => ({
+      label: `${preset.label} - ${preset.mode}`,
+      value: String(preset.widthMm),
+    })),
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];

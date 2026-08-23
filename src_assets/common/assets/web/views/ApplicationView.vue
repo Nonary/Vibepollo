@@ -3245,9 +3245,25 @@ onBeforeUnmount(() => {
                           :step="overrideField(key)?.step"
                           :value="String(overrideValue(key) ?? '')"
                           :placeholder="overridePlaceholder(key)"
+                          :list="
+                            overrideField(key)?.presets?.length
+                              ? `app-override-${key}-presets`
+                              : undefined
+                          "
                           :aria-describedby="descriptionId"
                           @input="updateOverrideFromEvent(key, overrideField(key), $event)"
                         />
+                        <datalist
+                          v-if="overrideField(key)?.presets?.length"
+                          :id="`app-override-${key}-presets`"
+                        >
+                          <option
+                            v-for="preset in overrideField(key)!.presets"
+                            :key="preset.value"
+                            :value="preset.value"
+                            :label="preset.label"
+                          />
+                        </datalist>
                         <AppButton
                           variant="tertiary"
                           size="compact"
