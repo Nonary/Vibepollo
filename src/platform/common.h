@@ -265,6 +265,8 @@ namespace platf {
     int offset_x, offset_y;
     int width, height;
     int logical_width, logical_height;
+
+    bool operator==(const touch_port_t &) const = default;
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!

@@ -905,6 +905,8 @@
     "sw_tune_zerolatency": "zerolatency -- good for fast encoding and low-latency streaming (default)",
     "system_tray": "Enable system tray",
     "system_tray_desc": "Show icon in system tray and display desktop notifications",
+    "touch_cursor_isolation": "Isolate Cursor From Virtual Display Touch",
+    "touch_cursor_isolation_desc": "When enabled, touch and pen input aimed at a Vibepollo virtual display no longer moves or hides the host mouse cursor, so the streamed panel behaves like an independent touch surface. Applications that only handle legacy mouse input will stop responding to touch on that display. Has no effect when streaming a physical display.",
     "touchpad_as_ds4": "Emulate a DS4 gamepad if the client gamepad reports a touchpad is present",
     "touchpad_as_ds4_desc": "If disabled, touchpad presence will not be taken into account during gamepad type selection.",
     "upnp": "UPnP",

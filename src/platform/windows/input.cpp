@@ -10,6 +10,7 @@
 
 // standard includes
 #include <cmath>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "touch_isolation.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -41,6 +43,22 @@ namespace platf {
     65535,
     65535
   };
+
+  // display_base_t normalizes each monitor's offset into a space whose origin is the
+  // top-left of the virtual desktop, because that is what MOUSEEVENTF_VIRTUALDESK
+  // wants. InjectSyntheticPointerInput() instead takes true virtual-screen pixels,
+  // which are negative for monitors left of or above the primary, so the origin has to
+  // be added back before injecting.
+  touch_port_t to_desktop_port(const touch_port_t &touch_port) {
+    return touch_port_t {
+      touch_port.offset_x + GetSystemMetrics(SM_XVIRTUALSCREEN),
+      touch_port.offset_y + GetSystemMetrics(SM_YVIRTUALSCREEN),
+      touch_port.width,
+      touch_port.height,
+      touch_port.logical_width,
+      touch_port.logical_height
+    };
+  }
 
   using client_t = util::safe_ptr<_VIGEM_CLIENT_T, vigem_free>;
   using target_t = util::safe_ptr<_VIGEM_TARGET_T, vigem_target_free>;
@@ -552,6 +570,10 @@ namespace platf {
 
     // Note: x and y already include the display offset (offset_x/offset_y) from client_to_touchport(),
     // so we must not add offset_x/offset_y again here to avoid double-offsetting on multi-monitor setups.
+    //
+    // This deliberately stays in the 0-origin space that MOUSEEVENTF_VIRTUALDESK maps;
+    // do not route it through to_desktop_port(), which exists for the pointer injection
+    // path and its very different coordinate contract.
     auto scaled_x = std::lround(x * ((float) target_touch_port.width / (float) touch_port.width));
     auto scaled_y = std::lround(y * ((float) target_touch_port.height / (float) touch_port.height));
 
@@ -726,7 +748,35 @@ namespace platf {
     POINTER_TYPE_INFO touchInfo[10] {};
     UINT32 activeTouchSlots {};
     thread_pool_util::ThreadPool::task_id_t touchRepeatTask {};
+
+    // Pen and touch share one isolation request: a client aims both at the same display.
+    std::shared_ptr<touch_isolation::scope_t> isolation;
+    touch_port_t isolatedPort {};
   };
+
+  /**
+   * @brief Keeps the cursor isolation request in step with the display being touched.
+   * @details Re-requesting costs a display enumeration, so repeated calls with the same
+   * port do nothing. The port is compared rather than the scope, because when isolation
+   * is unavailable acquire() returns nothing and retrying every packet would be waste.
+   * @param raw The client-specific input context.
+   * @param desktop_port The streamed display in true virtual-screen coordinates.
+   */
+  void refresh_touch_isolation(client_input_raw_t *raw, const touch_port_t &desktop_port) {
+    if (raw->isolatedPort == desktop_port) {
+      return;
+    }
+    raw->isolatedPort = desktop_port;
+
+    // Drop the old request first so its slot is free for the new rectangle.
+    raw->isolation.reset();
+    raw->isolation = touch_isolation::acquire({
+      desktop_port.offset_x,
+      desktop_port.offset_y,
+      desktop_port.offset_x + desktop_port.width,
+      desktop_port.offset_y + desktop_port.height
+    });
+  }
 
   /**
    * @brief Allocates a context to store per-client input data.
@@ -984,11 +1034,14 @@ namespace platf {
 
     pointer->type = PT_TOUCH;
 
+    const auto desktop_port = to_desktop_port(touch_port);
+    refresh_touch_isolation(raw, desktop_port);
+
     auto &touchInfo = pointer->touchInfo;
     touchInfo.pointerInfo.pointerType = PT_TOUCH;
 
     // Populate shared pointer info fields
-    populate_common_pointer_info(touchInfo.pointerInfo, touch_port, touch.eventType, touch.x, touch.y);
+    populate_common_pointer_info(touchInfo.pointerInfo, desktop_port, touch.eventType, touch.x, touch.y);
 
     touchInfo.touchMask = TOUCH_MASK_NONE;
 
@@ -1021,10 +1074,10 @@ namespace platf {
         float contactHeight = (std::sin(majorAxisAngle) * touch.contactAreaMajor) + (std::sin(minorAxisAngle) * touch.contactAreaMinor);
 
         // Convert into screen coordinates centered at the touch location and constrained by screen dimensions
-        touchInfo.rcContact.left = std::max<LONG>(touch_port.offset_x, touchInfo.pointerInfo.ptPixelLocation.x - std::floor(contactWidth / 2));
-        touchInfo.rcContact.right = std::min<LONG>(touch_port.offset_x + touch_port.width, touchInfo.pointerInfo.ptPixelLocation.x + std::ceil(contactWidth / 2));
-        touchInfo.rcContact.top = std::max<LONG>(touch_port.offset_y, touchInfo.pointerInfo.ptPixelLocation.y - std::floor(contactHeight / 2));
-        touchInfo.rcContact.bottom = std::min<LONG>(touch_port.offset_y + touch_port.height, touchInfo.pointerInfo.ptPixelLocation.y + std::ceil(contactHeight / 2));
+        touchInfo.rcContact.left = std::max<LONG>(desktop_port.offset_x, touchInfo.pointerInfo.ptPixelLocation.x - std::floor(contactWidth / 2));
+        touchInfo.rcContact.right = std::min<LONG>(desktop_port.offset_x + desktop_port.width, touchInfo.pointerInfo.ptPixelLocation.x + std::ceil(contactWidth / 2));
+        touchInfo.rcContact.top = std::max<LONG>(desktop_port.offset_y, touchInfo.pointerInfo.ptPixelLocation.y - std::floor(contactHeight / 2));
+        touchInfo.rcContact.bottom = std::min<LONG>(desktop_port.offset_y + desktop_port.height, touchInfo.pointerInfo.ptPixelLocation.y + std::ceil(contactHeight / 2));
 
         touchInfo.touchMask |= TOUCH_MASK_CONTACTAREA;
       }
@@ -1052,6 +1105,10 @@ namespace platf {
     // If we still have an active touch, refresh the touch state periodically
     if (raw->activeTouchSlots > 1 || touchInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE) {
       raw->touchRepeatTask = task_pool.pushDelayed(repeat_touch, ISPI_REPEAT_INTERVAL, raw).task_id;
+    }
+
+    if (raw->isolation) {
+      touch_isolation::poke_cursor_visibility();
     }
   }
 
@@ -1096,12 +1153,15 @@ namespace platf {
 
     raw->penInfo.type = PT_PEN;
 
+    const auto desktop_port = to_desktop_port(touch_port);
+    refresh_touch_isolation(raw, desktop_port);
+
     auto &penInfo = raw->penInfo.penInfo;
     penInfo.pointerInfo.pointerType = PT_PEN;
     penInfo.pointerInfo.pointerId = 0;
 
     // Populate shared pointer info fields
-    populate_common_pointer_info(penInfo.pointerInfo, touch_port, pen.eventType, pen.x, pen.y);
+    populate_common_pointer_info(penInfo.pointerInfo, desktop_port, pen.eventType, pen.x, pen.y);
 
     // Windows only supports a single pen button, so send all buttons as the barrel button
     if (pen.penButtons) {
@@ -1171,6 +1231,10 @@ namespace platf {
     // If we still have an active pen interaction, refresh the pen state periodically
     if (penInfo.pointerInfo.pointerFlags != POINTER_FLAG_NONE) {
       raw->penRepeatTask = task_pool.pushDelayed(repeat_pen, ISPI_REPEAT_INTERVAL, raw).task_id;
+    }
+
+    if (raw->isolation) {
+      touch_isolation::poke_cursor_visibility();
     }
   }
 
