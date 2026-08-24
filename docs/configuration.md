@@ -4211,7 +4211,7 @@ Sets the number of long-term reference frames used by the native AMD encoder. Le
 
 ### amd_input_queue_size
 
-Sets the native AMD encoder input queue depth. A positive explicit value overrides automatic low-latency queue selection.
+Sets the native AMD driver's input capacity. This is not the number of frames Vibepollo permits to accumulate: the native encoder independently keeps the smallest pipeline depth demonstrated by the runtime and drops a newer stale capture rather than growing that backlog. Leave this at `0` for the driver default unless hardware testing shows a benefit. A positive explicit value overrides VRR low-latency queue selection; values as small as `1` can starve drivers that retain several startup surfaces, while `4` is the safer low-latency tuning point.
 
 ### amd_smart_access_video
 

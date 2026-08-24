@@ -423,6 +423,49 @@ namespace amf::lifecycle {
     return input_surfaces_in_flight <= encoder_input_queue_size;
   }
 
+  // The AMF input-queue property describes driver capacity, not the amount of
+  // latency the application should permit. Keep enough driver headroom to avoid
+  // starving Radeon runtimes, then hold the smallest pipeline depth the runtime
+  // has demonstrated plus any PA lookahead. A normal no-PA encoder learns zero
+  // retained frames and therefore becomes strict depth one: the previous submission
+  // must complete before another input crosses into AMF. A bounded cold-start
+  // allowance is necessary because some runtimes retain several initial surfaces
+  // before producing their first packet.
+  inline constexpr std::size_t refine_low_latency_pipeline_depth(
+    std::optional<std::size_t> previous_depth,
+    uint64_t accepted_input_count,
+    uint64_t completed_output_count,
+    int lookahead_depth) noexcept {
+    const auto outstanding = accepted_input_count > completed_output_count ?
+                               accepted_input_count - completed_output_count :
+                               0;
+    const auto observed_depth = std::max<std::size_t>(
+      static_cast<std::size_t>(std::max(0, lookahead_depth)),
+      static_cast<std::size_t>(outstanding));
+    return previous_depth ? std::min(*previous_depth, observed_depth) : observed_depth;
+  }
+
+  inline constexpr bool low_latency_submit_capacity_available(
+    uint64_t accepted_input_count,
+    uint64_t completed_output_count,
+    int lookahead_depth,
+    std::size_t cold_start_submission_limit,
+    std::optional<std::size_t> learned_pipeline_depth) noexcept {
+    if (accepted_input_count <= completed_output_count) {
+      return true;
+    }
+
+    if (!learned_pipeline_depth) {
+      return accepted_input_count < std::max<std::size_t>(1, cold_start_submission_limit);
+    }
+
+    const auto outstanding = accepted_input_count - completed_output_count;
+    const auto permitted_depth = std::max<std::size_t>(
+      *learned_pipeline_depth,
+      static_cast<std::size_t>(std::max(0, lookahead_depth)));
+    return outstanding <= static_cast<uint64_t>(permitted_depth);
+  }
+
   inline constexpr bool saturation_wait_should_finish(bool output_fatal,
                                                        bool capacity_available) noexcept {
     return output_fatal || capacity_available;
@@ -498,23 +541,41 @@ namespace amf::lifecycle {
            queried_through_input == accepted_input_count;
   }
 
-  // Keep submission coalescing within one negotiated frame period. Sparse/static
-  // delivery gets its longer, image-interruptible grace in the outer capture loop;
-  // carrying that grace into encode_frame lets a fresh capture inherit a 32 ms wait.
+  inline constexpr bool output_poll_requires_fixed_backoff(
+    std::size_t active_poll_waiters,
+    bool immediate_no_output_result,
+    bool query_timeout_supported) noexcept {
+    // A latency waiter has a short absolute deadline and should re-query after a
+    // scheduler yield. Fixed 1 ms sleeps are reserved for idle/drain polling where
+    // they cannot add directly to capture-to-packet latency.
+    return active_poll_waiters == 0 &&
+           (immediate_no_output_result || !query_timeout_supported);
+  }
+
+  inline constexpr std::chrono::milliseconds negotiated_frame_period(int framerate) noexcept {
+    return framerate > 0 ?
+             std::chrono::milliseconds((1000 + framerate - 1) / framerate) :
+             std::chrono::milliseconds(17);
+  }
+
+  // Once an input is accepted, favour completion over submitting a newer frame.
+  // One-period-minus-1 ms abandoned work just before it became ready and deferred
+  // delivery until the next capture. Two periods (bounded at 50 ms) cover normal
+  // VCN tail spikes while the application-depth gate prevents latency from
+  // accumulating behind that slow frame.
   inline constexpr std::chrono::milliseconds output_coalesce_budget(int framerate) noexcept {
-    const auto frame_period = framerate > 0 ?
-                                std::chrono::milliseconds((1000 + framerate - 1) / framerate) :
-                                std::chrono::milliseconds(17);
+    const auto frame_period = negotiated_frame_period(framerate);
     return std::clamp(
-      frame_period > std::chrono::milliseconds(1) ?
-        frame_period - std::chrono::milliseconds(1) :
-        std::chrono::milliseconds(1),
-      std::chrono::milliseconds(1),
-      std::chrono::milliseconds(32));
+      frame_period * 2 - std::chrono::milliseconds(1),
+      std::chrono::milliseconds(2),
+      std::chrono::milliseconds(50));
   }
 
   inline constexpr std::chrono::milliseconds driver_wait_budget(int framerate) noexcept {
-    return std::min(std::chrono::milliseconds(20), output_coalesce_budget(framerate));
+    const auto frame_period = negotiated_frame_period(framerate);
+    return std::min(
+      std::chrono::milliseconds(20),
+      std::max(std::chrono::milliseconds(1), frame_period - std::chrono::milliseconds(1)));
   }
 
   inline constexpr bool output_delivery_is_due(uint64_t accepted_input_count,

@@ -338,7 +338,47 @@ namespace {
     return amf::lifecycle::should_disarm_output_poll(queried_through, 10, false, 0) &&
            !amf::lifecycle::should_disarm_output_poll(queried_through, 10, false, 1) &&
            !amf::lifecycle::should_disarm_output_poll(queried_through, 11, false, 0) &&
-           !amf::lifecycle::should_disarm_output_poll(queried_through, 10, true, 0);
+           !amf::lifecycle::should_disarm_output_poll(queried_through, 10, true, 0) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(1, true, true) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(1, true, false) &&
+           amf::lifecycle::output_poll_requires_fixed_backoff(0, true, true) &&
+           amf::lifecycle::output_poll_requires_fixed_backoff(0, false, false) &&
+           !amf::lifecycle::output_poll_requires_fixed_backoff(0, false, true);
+  }
+
+  bool strict_application_depth_preserves_driver_headroom() {
+    using amf::lifecycle::low_latency_submit_capacity_available;
+
+    // Cold start may prime four retained native surfaces, independent of the
+    // driver's larger configured input-queue capacity.
+    const bool cold_start = low_latency_submit_capacity_available(0, 0, 0, 4, std::nullopt) &&
+                            low_latency_submit_capacity_available(1, 0, 0, 4, std::nullopt) &&
+                            low_latency_submit_capacity_available(3, 0, 0, 4, std::nullopt) &&
+                            !low_latency_submit_capacity_available(4, 0, 0, 4, std::nullopt);
+
+    // A normal no-PA encoder learns that it retains no output after completion,
+    // making the application depth one. PA preserves exactly its lookahead.
+    const auto direct_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 1, 1, 0);
+    const auto pa_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 2, 1, 1);
+    const bool steady_state = low_latency_submit_capacity_available(4, 4, 0, 4, direct_depth) &&
+                              !low_latency_submit_capacity_available(5, 4, 0, 4, direct_depth) &&
+                              low_latency_submit_capacity_available(5, 4, 1, 6, pa_depth) &&
+                              !low_latency_submit_capacity_available(6, 4, 1, 6, pa_depth);
+
+    // If a driver needs four inputs before its first output, retain that observed
+    // three-frame baseline so the gate cannot deadlock. Later catch-up can only
+    // reduce the learned depth; it can never let latency drift upward.
+    const auto retained_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      std::nullopt, 4, 1, 0);
+    const auto caught_up_depth = amf::lifecycle::refine_low_latency_pipeline_depth(
+      retained_depth, 4, 3, 0);
+    const bool retained_driver = retained_depth == 3 &&
+                                 low_latency_submit_capacity_available(4, 1, 0, 4, retained_depth) &&
+                                 !low_latency_submit_capacity_available(5, 1, 0, 4, retained_depth) &&
+                                 caught_up_depth == 1;
+    return cold_start && steady_state && retained_driver;
   }
 
   bool asynchronous_pipeline_catches_up_to_current_output() {
@@ -346,11 +386,11 @@ namespace {
     using amf::lifecycle::driver_wait_budget;
     using amf::lifecycle::output_coalesce_target_reached;
 
-    return output_coalesce_budget(30) == std::chrono::milliseconds(32) &&
-           output_coalesce_budget(60) == std::chrono::milliseconds(16) &&
-           output_coalesce_budget(120) == std::chrono::milliseconds(8) &&
-           output_coalesce_budget(240) == std::chrono::milliseconds(4) &&
-           output_coalesce_budget(1000) == std::chrono::milliseconds(1) &&
+    return output_coalesce_budget(30) == std::chrono::milliseconds(50) &&
+           output_coalesce_budget(60) == std::chrono::milliseconds(33) &&
+           output_coalesce_budget(120) == std::chrono::milliseconds(17) &&
+           output_coalesce_budget(240) == std::chrono::milliseconds(9) &&
+           output_coalesce_budget(1000) == std::chrono::milliseconds(2) &&
            driver_wait_budget(30) == std::chrono::milliseconds(20) &&
            driver_wait_budget(60) == std::chrono::milliseconds(16) &&
            driver_wait_budget(120) == std::chrono::milliseconds(8) &&
@@ -559,6 +599,7 @@ int main() {
              driver_submit_capacity_bounds_are_inclusive() &&
              saturation_wait_requires_an_actual_surface_release() &&
              output_poll_rearm_survives_concurrent_submission() &&
+             strict_application_depth_preserves_driver_headroom() &&
              asynchronous_pipeline_catches_up_to_current_output() &&
              preanalysis_target_tracks_accepted_indices_with_gaps() &&
              teardown_timeout_returns_control_before_a_wedged_destructor() &&
@@ -634,6 +675,10 @@ TEST(SunshineNativeAmfReview, SaturationWaitRequiresActualSurfaceRelease) {
 
 TEST(SunshineNativeAmfReview, OutputPollRearmSurvivesConcurrentSubmission) {
   EXPECT_TRUE(output_poll_rearm_survives_concurrent_submission());
+}
+
+TEST(SunshineNativeAmfReview, StrictApplicationDepthPreservesDriverHeadroom) {
+  EXPECT_TRUE(strict_application_depth_preserves_driver_headroom());
 }
 
 TEST(SunshineNativeAmfReview, AsynchronousPipelineCatchesUpToCurrentOutput) {
