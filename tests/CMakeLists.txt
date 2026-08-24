@@ -2417,3 +2417,12 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     set_tests_properties(test_component_wayland_current_mode
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_avahi_lifetime
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_avahi_lifetime.py"
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    set_tests_properties(test_component_avahi_lifetime
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
