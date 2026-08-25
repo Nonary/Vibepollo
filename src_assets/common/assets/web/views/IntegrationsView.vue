@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { ApiError, apiGet, apiPost } from '@/api/client';
+import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import {
   AppButton,
   ConfirmDialog,
@@ -16,12 +16,36 @@ import {
 import { useSystemStore } from '@/stores/system';
 
 interface PlayniteStatus {
+  enabled?: boolean;
+  available?: boolean;
   active?: boolean;
   installed?: boolean | null;
   extensions_dir?: string;
   installed_version?: string;
   packaged_version?: string;
   update_available?: boolean;
+}
+
+interface SteamStatus {
+  enabled?: boolean;
+  forced?: boolean;
+  available?: boolean;
+  game_count?: number;
+  playnite_available?: boolean;
+  auto_sync?: boolean;
+  autosync_remove_uninstalled?: boolean;
+  remove_uninstalled?: boolean;
+  include_tools?: boolean;
+  exclude_games?: Array<{ id?: string; name?: string }> | string[] | number;
+}
+
+interface SteamGame {
+  appid: number | string;
+  steam_id?: string;
+  name?: string;
+  install_dir?: string;
+  excluded?: boolean;
+  filtered?: boolean;
 }
 
 interface RtssStatus {
@@ -64,7 +88,7 @@ interface MutationResult {
   error?: string;
 }
 
-type IntegrationId = 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
+type IntegrationId = 'steam' | 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
 type PendingAction = 'playnite-install' | 'playnite-uninstall' | 'vigem-install' | 'vulkan-register';
 
 interface IntegrationSummary {
@@ -79,6 +103,11 @@ interface IntegrationSummary {
 const { t } = useI18n();
 const system = useSystemStore();
 const playnite = ref<PlayniteStatus | null>(null);
+const steam = ref<SteamStatus | null>(null);
+const steamGames = ref<SteamGame[]>([]);
+const steamGamesLoading = ref(false);
+const steamGamesError = ref('');
+const steamExclusionBusy = ref<string | null>(null);
 const rtss = ref<RtssStatus | null>(null);
 const lossless = ref<LosslessStatus | null>(null);
 const vigem = ref<VigemStatus | null>(null);
@@ -102,6 +131,68 @@ function message(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
 }
 
+function steamGameId(game: SteamGame): string {
+  return String(game.steam_id ?? game.appid ?? '').trim();
+}
+
+function steamGameName(game: SteamGame): string {
+  return String(game.name ?? '').trim() || t('ui.integrations.steam.unknownGame', { id: steamGameId(game) });
+}
+
+function exclusionEntries(): Array<{ id: string; name: string }> {
+  const entries = steam.value?.exclude_games;
+  if (Array.isArray(entries)) {
+    return entries
+    .map((entry) => {
+      if (typeof entry === 'string') return { id: entry, name: '' };
+      return { id: String(entry?.id ?? '').trim(), name: String(entry?.name ?? '').trim() };
+    })
+    .filter((entry) => entry.id || entry.name);
+  }
+  // Older status responses only exposed an exclusion count. Preserve the
+  // discovered per-game flags until the newer metadata field is available.
+  return steamGames.value
+    .filter((game) => game.excluded === true)
+    .map((game) => ({ id: steamGameId(game), name: steamGameName(game) }));
+}
+
+function gameExcluded(game: SteamGame): boolean {
+  const id = steamGameId(game);
+  return game.excluded === true || exclusionEntries().some((entry) => entry.id === id);
+}
+
+function steamAutoSyncEnabled(): boolean {
+  return steam.value?.auto_sync !== false;
+}
+
+function steamRemoveUninstalledEnabled(): boolean {
+  return steam.value?.autosync_remove_uninstalled === true || steam.value?.remove_uninstalled === true;
+}
+
+function steamIncludeToolsEnabled(): boolean {
+  return steam.value?.include_tools === true;
+}
+
+async function loadSteamGames(): Promise<void> {
+  steamGamesLoading.value = true;
+  steamGamesError.value = '';
+  try {
+    const payload = await apiGet<unknown>('/api/steam/games');
+    const games =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as { games?: unknown }).games
+        : payload;
+    steamGames.value = (Array.isArray(games) ? games : []).filter(
+      (game): game is SteamGame => Boolean(game) && typeof game === 'object' && !Array.isArray(game),
+    );
+  } catch (cause) {
+    steamGames.value = [];
+    steamGamesError.value = message(cause, t('ui.integrations.errors.steamGames'));
+  } finally {
+    steamGamesLoading.value = false;
+  }
+}
+
 async function load(preserveNotice = false): Promise<void> {
   if (refreshing.value) return;
   refreshing.value = true;
@@ -110,36 +201,37 @@ async function load(preserveNotice = false): Promise<void> {
 
   if (!system.metadata) await system.refreshHost();
 
-  if (!isWindows.value) {
-    errors.value = {};
-    loading.value = false;
-    refreshing.value = false;
-    return;
-  }
+  const steamResult = (await Promise.allSettled([apiGet<SteamStatus>('/api/steam/status')]))[0];
+  const windowsResults = isWindows.value
+    ? await Promise.allSettled([
+        apiGet<PlayniteStatus>('/api/playnite/status'),
+        apiGet<RtssStatus>('/api/rtss/status'),
+        apiGet<LosslessStatus>('/api/lossless_scaling/status'),
+        apiGet<VigemStatus>('/api/vigembus/status'),
+        apiGet<VulkanStatus>('/api/health/vulkan-hdr-layer'),
+      ])
+    : [];
+  const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult] = windowsResults;
 
-  const requests = await Promise.allSettled([
-    apiGet<PlayniteStatus>('/api/playnite/status'),
-    apiGet<RtssStatus>('/api/rtss/status'),
-    apiGet<LosslessStatus>('/api/lossless_scaling/status'),
-    apiGet<VigemStatus>('/api/vigembus/status'),
-    apiGet<VulkanStatus>('/api/health/vulkan-hdr-layer'),
-  ]);
-  const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult] = requests;
+  if (steamResult.status === 'fulfilled') steam.value = steamResult.value;
+  else nextErrors.steam = message(steamResult.reason, t('ui.integrations.errors.steamStatus'));
 
-  if (playniteResult.status === 'fulfilled') playnite.value = playniteResult.value;
-  else nextErrors.playnite = message(playniteResult.reason, t('ui.integrations.errors.playniteStatus'));
+  if (playniteResult?.status === 'fulfilled') playnite.value = playniteResult.value;
+  else if (playniteResult) nextErrors.playnite = message(playniteResult.reason, t('ui.integrations.errors.playniteStatus'));
 
-  if (rtssResult.status === 'fulfilled') rtss.value = rtssResult.value;
-  else nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
+  if (rtssResult?.status === 'fulfilled') rtss.value = rtssResult.value;
+  else if (rtssResult) nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
 
-  if (losslessResult.status === 'fulfilled') lossless.value = losslessResult.value;
-  else nextErrors.lossless = message(losslessResult.reason, t('ui.integrations.errors.losslessStatus'));
+  if (losslessResult?.status === 'fulfilled') lossless.value = losslessResult.value;
+  else if (losslessResult) nextErrors.lossless = message(losslessResult.reason, t('ui.integrations.errors.losslessStatus'));
 
-  if (vigemResult.status === 'fulfilled') vigem.value = vigemResult.value;
-  else nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
+  if (vigemResult?.status === 'fulfilled') vigem.value = vigemResult.value;
+  else if (vigemResult) nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
 
-  if (vulkanResult.status === 'fulfilled') vulkan.value = vulkanResult.value;
-  else nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
+  if (vulkanResult?.status === 'fulfilled') vulkan.value = vulkanResult.value;
+  else if (vulkanResult) nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
+
+  if (steamResult.status === 'fulfilled') await loadSteamGames();
 
   errors.value = nextErrors;
   loading.value = false;
@@ -152,6 +244,16 @@ function playniteSummary(): IntegrationSummary {
   const shortDescription = t('ui.integrations.playnite.shortDescription');
   if (!isWindows.value) return unavailableSummary('playnite', name, shortDescription);
   if (!value) return failedSummary('playnite', name, shortDescription);
+  if (value.enabled === false) {
+    return {
+      id: 'playnite',
+      name,
+      description: t('ui.integrations.playnite.description'),
+      status: t('_common.disabled'),
+      tone: 'neutral',
+      details: [],
+    };
+  }
   const status = value.update_available
     ? t('ui.integrations.status.updateAvailable')
     : value.active
@@ -184,6 +286,32 @@ function playniteSummary(): IntegrationSummary {
     status,
     tone,
     details,
+  };
+}
+
+function steamSummary(): IntegrationSummary {
+  const value = steam.value;
+  const name = t('ui.integrations.steam.name');
+  const description = t('ui.integrations.steam.description');
+  if (!value) return failedSummary('steam', name, description);
+  const enabled = value.enabled !== false;
+  const status = !enabled
+    ? t('_common.disabled')
+    : !value.available
+      ? t('ui.integrations.status.notDetected')
+      : value.forced
+        ? t('ui.integrations.steam.forced')
+        : t('ui.integrations.status.ready');
+  return {
+    id: 'steam',
+    name,
+    description,
+    status,
+    tone: enabled && value.available ? 'success' : enabled ? 'info' : 'neutral',
+    details: [
+      value.game_count !== undefined ? t('ui.integrations.steam.gameCount', { count: value.game_count }) : '',
+      value.forced ? t('ui.integrations.steam.linuxForced') : '',
+    ].filter(Boolean),
   };
 }
 
@@ -322,6 +450,7 @@ function failedSummary(id: IntegrationId, name: string, description: string): In
 }
 
 const summaries = computed(() => [
+  steamSummary(),
   playniteSummary(),
   rtssSummary(),
   losslessSummary(),
@@ -447,6 +576,70 @@ async function syncPlaynite(): Promise<void> {
   }
 }
 
+async function syncSteam(): Promise<void> {
+  if (syncing.value) return;
+  syncing.value = true;
+  notice.value = '';
+  try {
+    const result = await apiPost<MutationResult>('/api/steam/force_sync', {});
+    if (result.status === false) throw new Error(result.error || t('ui.integrations.errors.steamSyncRejected'));
+    notice.value = t('ui.integrations.notices.steamSynced');
+    await load(true);
+  } catch (cause) {
+    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.steamSyncFailed')) };
+  } finally {
+    syncing.value = false;
+  }
+}
+
+async function setProviderEnabled(provider: 'steam' | 'playnite', enabled: boolean): Promise<void> {
+  if (provider === 'steam' && steam.value?.forced) return;
+  try {
+    await apiPatch('/api/config', { [`${provider}_enabled`]: enabled });
+    notice.value = t('ui.integrations.notices.providerUpdated');
+    await load(true);
+  } catch (cause) {
+    errors.value = { ...errors.value, [provider]: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+  }
+}
+
+async function setSteamPolicy(key: 'steam_auto_sync' | 'steam_autosync_remove_uninstalled', value: boolean): Promise<void> {
+  try {
+    await apiPatch('/api/config', { [key]: value });
+    notice.value = t('ui.integrations.notices.providerUpdated');
+    await load(true);
+  } catch (cause) {
+    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+  }
+}
+
+async function setSteamIncludeTools(value: boolean): Promise<void> {
+  try {
+    await apiPatch('/api/config', { steam_include_tools: value });
+    notice.value = t('ui.integrations.notices.providerUpdated');
+    await load(true);
+  } catch (cause) {
+    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+  }
+}
+
+async function setSteamExclusion(game: SteamGame, excluded: boolean): Promise<void> {
+  const id = steamGameId(game);
+  if (!id || steamExclusionBusy.value) return;
+  steamExclusionBusy.value = id;
+  try {
+    const next = exclusionEntries().filter((entry) => entry.id !== id);
+    if (excluded) next.push({ id, name: steamGameName(game) });
+    await apiPatch('/api/config', { steam_exclude_games: next });
+    if (steam.value) steam.value.exclude_games = next;
+    notice.value = t('ui.integrations.notices.exclusionsUpdated');
+  } catch (cause) {
+    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.exclusionsUpdateFailed')) };
+  } finally {
+    steamExclusionBusy.value = null;
+  }
+}
+
 onMounted(() => void load());
 </script>
 
@@ -511,7 +704,7 @@ onMounted(() => void load());
         :aria-labelledby="`integration-${summary.id}`"
       >
         <span class="integration-row__icon" aria-hidden="true">
-          <UiIcon :name="summary.id === 'vigem' ? 'gamepad' : summary.id === 'playnite' ? 'library' : 'integrations'" :size="20" />
+          <UiIcon :name="summary.id === 'vigem' || summary.id === 'steam' ? 'gamepad' : summary.id === 'playnite' ? 'library' : 'integrations'" :size="20" />
         </span>
         <div class="integration-row__main">
           <div class="integration-row__title">
@@ -522,18 +715,100 @@ onMounted(() => void load());
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>
+          <div v-if="summary.id === 'steam'" class="steam-policy" aria-labelledby="steam-policy-heading">
+            <h3 id="steam-policy-heading">{{ t('ui.integrations.steam.policyTitle') }}</h3>
+            <label class="steam-policy__toggle">
+              <input
+                type="checkbox"
+                :checked="steamAutoSyncEnabled()"
+                @change="setSteamPolicy('steam_auto_sync', ($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                <strong>{{ t('ui.integrations.steam.autoSync') }}</strong>
+                <small>{{ t('ui.integrations.steam.autoSyncDescription') }}</small>
+              </span>
+            </label>
+            <label class="steam-policy__toggle">
+              <input
+                type="checkbox"
+                :checked="steamRemoveUninstalledEnabled()"
+                @change="setSteamPolicy('steam_autosync_remove_uninstalled', ($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                <strong>{{ t('ui.integrations.steam.removeUninstalled') }}</strong>
+                <small>{{ t('ui.integrations.steam.removeUninstalledDescription') }}</small>
+              </span>
+            </label>
+            <label class="steam-policy__toggle steam-policy__toggle--advanced">
+              <input
+                type="checkbox"
+                :checked="steamIncludeToolsEnabled()"
+                @change="setSteamIncludeTools(($event.target as HTMLInputElement).checked)"
+              />
+              <span>
+                <strong>{{ t('ui.integrations.steam.includeTools') }}</strong>
+                <small>{{ t('ui.integrations.steam.includeToolsDescription') }}</small>
+              </span>
+            </label>
+            <div class="steam-policy__exclusions">
+              <strong>{{ t('ui.integrations.steam.exclusionsTitle') }}</strong>
+              <small>{{ t('ui.integrations.steam.exclusionsDescription') }}</small>
+              <p v-if="steamGamesLoading" class="steam-policy__notice">{{ t('ui.integrations.steam.loadingGames') }}</p>
+              <p v-else-if="steamGamesError" class="steam-policy__notice steam-policy__notice--error">{{ steamGamesError }}</p>
+              <p v-else-if="!steamGames.length" class="steam-policy__notice">{{ t('ui.integrations.steam.noGames') }}</p>
+              <label v-for="game in steamGames" v-else :key="steamGameId(game)" class="steam-policy__game">
+                <input
+                  type="checkbox"
+                  :checked="gameExcluded(game)"
+                  :disabled="steamExclusionBusy === steamGameId(game)"
+                  :aria-label="t('ui.integrations.steam.excludeGame', { name: steamGameName(game) })"
+                  @change="setSteamExclusion(game, ($event.target as HTMLInputElement).checked)"
+                />
+                <span>{{ steamGameName(game) }}</span>
+                <small v-if="game.filtered && !game.excluded" class="steam-policy__game-filtered">
+                  {{ t('ui.integrations.steam.filteredTool') }}
+                </small>
+                <code>{{ steamGameId(game) }}</code>
+              </label>
+            </div>
+          </div>
         </div>
-        <div v-if="isWindows" class="integration-row__actions">
-          <template v-if="summary.id === 'playnite'">
+        <div v-if="summary.id === 'steam' || isWindows" class="integration-row__actions">
+          <template v-if="summary.id === 'steam'">
             <AppButton
-              v-if="playnite?.installed !== true || playnite?.update_available"
+              v-if="!steam?.forced"
+              :label="steam?.enabled === false ? t('ui.integrations.actions.enable') : t('ui.integrations.actions.disable')"
+              variant="tertiary"
+              size="compact"
+              @click="setProviderEnabled('steam', steam?.enabled === false)"
+            />
+            <AppButton
+              icon="refresh"
+              :label="t('ui.integrations.actions.rescan')"
+              variant="secondary"
+              size="compact"
+              :busy="syncing"
+              :busy-label="t('ui.integrations.syncing')"
+              :disabled="steam?.enabled === false"
+              @click="syncSteam"
+            />
+          </template>
+          <template v-else-if="summary.id === 'playnite'">
+            <AppButton
+              :label="playnite?.enabled === false ? t('ui.integrations.actions.enable') : t('ui.integrations.actions.disable')"
+              variant="tertiary"
+              size="compact"
+              @click="setProviderEnabled('playnite', playnite?.enabled === false)"
+            />
+            <AppButton
+              v-if="playnite?.enabled !== false && (playnite?.installed !== true || playnite?.update_available)"
               :label="playnite?.update_available ? t('ui.integrations.actions.update') : t('ui.integrations.actions.install')"
               variant="secondary"
               size="compact"
               @click="requestAction('playnite-install')"
             />
             <AppButton
-              v-if="playnite?.installed === true"
+              v-if="playnite?.enabled !== false && playnite?.installed === true"
               icon="refresh"
               :label="t('ui.integrations.actions.rescan')"
               variant="tertiary"
@@ -544,7 +819,7 @@ onMounted(() => void load());
               @click="syncPlaynite"
             />
             <AppButton
-              v-if="playnite?.installed === true"
+              v-if="playnite?.enabled !== false && playnite?.installed === true"
               class="integration-action--danger"
               :label="t('_common.remove')"
               variant="tertiary"
@@ -658,6 +933,71 @@ onMounted(() => void load());
 
 .integration-details li {
   overflow-wrap: anywhere;
+}
+
+.steam-policy {
+  display: grid;
+  max-width: 42rem;
+  gap: var(--vs-space-8);
+  padding-top: var(--vs-space-8);
+}
+
+.steam-policy h3 {
+  font-size: var(--vs-type-size-label);
+}
+
+.steam-policy__toggle,
+.steam-policy__game {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vs-space-8);
+}
+
+.steam-policy__toggle input,
+.steam-policy__game input {
+  flex: 0 0 auto;
+  margin-top: 0.2rem;
+}
+
+.steam-policy__toggle span,
+.steam-policy__exclusions {
+  display: grid;
+  gap: var(--vs-space-2);
+}
+
+.steam-policy small {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.steam-policy__exclusions {
+  gap: var(--vs-space-4);
+  padding-top: var(--vs-space-4);
+}
+
+.steam-policy__game {
+  align-items: center;
+  padding: var(--vs-space-4) 0;
+}
+
+.steam-policy__game code {
+  margin-inline-start: auto;
+  color: var(--vs-color-text-tertiary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.steam-policy__game-filtered {
+  color: var(--vs-color-text-tertiary);
+  font-style: italic;
+}
+
+.steam-policy__notice {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.steam-policy__notice--error {
+  color: var(--vs-color-status-danger);
 }
 
 .integration-row__actions {

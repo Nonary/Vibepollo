@@ -99,6 +99,19 @@ export interface AppForm {
   rtxHdrSaturation: number;
   playniteId?: string | undefined;
   playniteManaged?: 'manual' | string | undefined;
+  'steam-id'?: string | undefined;
+  'steam-managed'?: 'auto' | 'manual' | string | undefined;
+  'steam-source'?: string | undefined;
+  'steam-install-dir'?: string | undefined;
+  'steam-library-path'?: string | undefined;
+  'steam-icon-path'?: string | undefined;
+  'steam-header-path'?: string | undefined;
+  'steam-boxart-path'?: string | undefined;
+  'steam-artwork-path'?: string | undefined;
+  'steam-artwork-client-path'?: string | undefined;
+  'steam-artwork-format'?: string | undefined;
+  'steam-artwork-client-compatible'?: boolean | undefined;
+  'steam-app-type'?: string | undefined;
   ddConfigurationOption?:
     | 'disabled'
     | 'verify_only'

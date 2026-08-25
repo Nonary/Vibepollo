@@ -156,7 +156,7 @@
           "label": "Target frame rate"
         },
         "name": {
-          "help": "Type a custom name or search the installed games from Playnite.",
+          "help": "Type a custom name or search installed Playnite and Steam games.",
           "label": "Application or Playnite game"
         },
         "output": {
@@ -281,6 +281,16 @@
         "loading": "Loading Playnite games...",
         "resultsLabel": "Matching Playnite games",
         "unavailable": "Playnite game search is unavailable because its integration is not installed or active.",
+        "useCustom": "Use a custom application"
+      },
+      "steam": {
+        "browse": "Browse Steam games",
+        "editNotice": "Steam launch metadata is retained with this application. The command uses Steam's platform-appropriate URI launcher.",
+        "empty": "No installed Steam games match this name.",
+        "loadFailed": "Unable to load Steam games. Check that Steam is installed and its libraries are readable.",
+        "loading": "Loading Steam games...",
+        "resultsLabel": "Matching Steam games",
+        "unavailable": "Steam game search is unavailable because Steam was not detected or its libraries could not be read.",
         "useCustom": "Use a custom application"
       },
       "prep": {
@@ -464,9 +474,11 @@
     },
     "integrations": {
       "actions": {
+        "disable": "Disable",
         "install": "Install",
         "installDriver": "Install driver",
         "installExtension": "Install extension",
+        "enable": "Enable",
         "refreshStatus": "Refresh status",
         "registerLayer": "Register layer",
         "removeExtension": "Remove extension",
@@ -504,6 +516,12 @@
         "playniteStatus": "Playnite status is unavailable.",
         "playniteSyncFailed": "Unable to synchronize Playnite.",
         "playniteSyncRejected": "Playnite did not accept the synchronization request.",
+        "providerUpdateFailed": "Unable to update integration settings.",
+        "steamStatus": "Steam status is unavailable.",
+        "steamGames": "Steam games are unavailable.",
+        "exclusionsUpdateFailed": "Unable to update Steam game exclusions.",
+        "steamSyncFailed": "Unable to synchronize Steam.",
+        "steamSyncRejected": "Steam did not accept the synchronization request.",
         "rtssStatus": "RTSS status is unavailable.",
         "statusLoad": "Status could not be loaded.",
         "vigemStatus": "ViGEmBus status is unavailable.",
@@ -526,12 +544,36 @@
         "playniteInstalled": "The Playnite extension was installed.",
         "playniteRemoved": "The Playnite extension was removed.",
         "playniteSynced": "Playnite synchronization completed.",
+        "providerUpdated": "Integration settings updated.",
+        "exclusionsUpdated": "Steam game exclusions updated.",
+        "steamSynced": "Steam synchronization completed.",
         "vigemCompleted": "The ViGEmBus installer completed.",
         "vulkanRefreshed": "The Vulkan HDR layer registration was refreshed."
       },
       "playnite": {
         "description": "Synchronizes installed games and metadata through the Vibepollo extension.",
         "shortDescription": "Library synchronization and launch integration."
+      },
+      "steam": {
+        "autoSync": "Synchronize installed games automatically",
+        "autoSyncDescription": "Keep installed Steam games synchronized with the streaming library.",
+        "description": "Discovers installed games from local Steam libraries.",
+        "excludeGame": "Exclude {name} from automatic synchronization",
+        "exclusionsDescription": "Excluded games remain available for manual applications but are not added by Steam auto-sync.",
+        "exclusionsTitle": "Excluded games",
+        "filteredTool": "Filtered by app type",
+        "forced": "Enabled (Linux policy)",
+        "gameCount": "{count} installed games",
+        "includeTools": "Advanced: include tools and runtimes",
+        "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
+        "loadingGames": "Loading discovered Steam games...",
+        "linuxForced": "Steam is required on Linux.",
+        "name": "Steam",
+        "noGames": "No Steam games were discovered.",
+        "policyTitle": "Synchronization policy",
+        "removeUninstalled": "Remove uninstalled games automatically",
+        "removeUninstalledDescription": "Remove Steam-managed applications when their game is no longer installed.",
+        "unknownGame": "Steam game {id}"
       },
       "refreshing": "Refreshing",
       "rtss": {
