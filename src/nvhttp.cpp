@@ -1483,7 +1483,7 @@ namespace nvhttp {
 
 #ifndef _WIN32
   namespace {
-    bool has_stream_session_activity_for_http_probe() {
+    bool has_stream_session_activity() {
       return rtsp_stream::has_pending_launch_or_startup() ||
              rtsp_stream::session_count_no_cleanup() > 0 ||
              stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
@@ -1521,7 +1521,7 @@ namespace nvhttp {
       if (video::has_successful_encoder_probe()) {
         return publish(video::advertised_encoder_capabilities(false), "matching-cache-after-gate");
       }
-      if (has_stream_session_activity_for_http_probe()) {
+      if (has_stream_session_activity()) {
         BOOST_LOG(debug) << "Skipping HTTP encoder capability probe while a streaming session is active or stopping.";
         return publish(video::advertised_encoder_capabilities(false), "active-or-stopping-session");
       }

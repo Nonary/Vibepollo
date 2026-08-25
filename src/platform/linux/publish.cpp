@@ -345,7 +345,7 @@ namespace platf::publish {
         avahi::PROTO_UNSPEC,
         avahi::PublishFlags(0),
         name.get(),
-        platf::SERVICE_TYPE,
+        platf::SERVICE_TYPE.data(),
         nullptr,
         nullptr,
         net::map_port(nvhttp::PORT_HTTP),

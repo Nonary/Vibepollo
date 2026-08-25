@@ -1080,7 +1080,7 @@ namespace nvenc {
       return false;
     }
 
-    const bool is_hevc = (saved_init_params.encodeGUID == NV_ENC_CODEC_HEVC_GUID);
+    const bool is_hevc = equal_guids(saved_init_params.encodeGUID, NV_ENC_CODEC_HEVC_GUID);
     const uint32_t new_bitrate_bps = static_cast<uint32_t>(bitrate_kbps) * 1000u;
     const uint32_t prev_bitrate_bps = current_enc_config.rcParams.averageBitRate;
 
