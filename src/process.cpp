@@ -950,6 +950,13 @@ namespace proc {
       _active_client_uuid(std::move(other._active_client_uuid)),
       _active_client_vdd_identity_token(other._active_client_vdd_identity_token),
       placebo(other.placebo),
+      _steam_tracker(std::move(other._steam_tracker)),
+      _steam_process_controller(std::move(other._steam_process_controller)),
+      _steam_tracking_active(other._steam_tracking_active),
+      _steam_tracking_associated(other._steam_tracking_associated),
+      _steam_tracking_exit(other._steam_tracking_exit),
+      _steam_tracking_deadline(other._steam_tracking_deadline),
+      _steam_last_tracking_poll(other._steam_last_tracking_poll),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
 #ifdef _WIN32
@@ -989,6 +996,13 @@ namespace proc {
       _active_client_uuid = std::move(other._active_client_uuid);
       _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
       placebo = other.placebo;
+      _steam_tracker = std::move(other._steam_tracker);
+      _steam_process_controller = std::move(other._steam_process_controller);
+      _steam_tracking_active = other._steam_tracking_active;
+      _steam_tracking_associated = other._steam_tracking_associated;
+      _steam_tracking_exit = other._steam_tracking_exit;
+      _steam_tracking_deadline = other._steam_tracking_deadline;
+      _steam_last_tracking_poll = other._steam_last_tracking_poll;
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
       _pipe = std::move(other._pipe);
@@ -2201,6 +2215,25 @@ namespace proc {
         }
       }
 #endif
+      // Steam's xdg-open/cmd URI launcher is intentionally short-lived. Take
+      // the process baseline immediately before handing the URI to Steam so
+      // the game can be owned independently of that launcher process.
+      if (!_app.steam_id.empty() && !_app.steam_install_dir.empty()) {
+        _steam_tracker.clear();
+        _steam_tracking_active = _steam_tracker.begin(_app.steam_install_dir);
+        _steam_tracking_associated = false;
+        _steam_tracking_exit = {};
+        _steam_tracking_deadline = std::chrono::steady_clock::now() + 15s;
+        _steam_last_tracking_poll = {};
+        if (!_steam_tracking_active) {
+          BOOST_LOG(warning) << "Steam app " << _app.steam_id
+                             << " could not capture a process baseline; continuing with untrackable detached behavior.";
+        } else {
+          BOOST_LOG(debug) << "Steam app " << _app.steam_id
+                           << " process baseline captured for install directory ["
+                           << _app.steam_install_dir << "]";
+        }
+      }
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
       _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
       if (ec) {
@@ -2324,31 +2357,78 @@ namespace proc {
     }
 #endif
 
-    if (placebo) {
-      return _app_id;
-    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-      // The app is still running if any process in the group is still running
-      return _app_id;
-    } else if (_process.running()) {
-      // The app is still running only if the initial process launched is still running
-      return _app_id;
-    } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
-      BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
-      BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
-      BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
-      placebo = true;
+    if (_steam_tracking_active) {
+      const auto now = std::chrono::steady_clock::now();
+      constexpr auto tracking_poll_interval = 100ms;
+      if (_steam_last_tracking_poll.time_since_epoch().count() == 0 ||
+          now - _steam_last_tracking_poll >= tracking_poll_interval) {
+        _steam_last_tracking_poll = now;
+        const auto tracking = _steam_tracker.finish();
+        _steam_tracking_exit.observe(_steam_tracking_associated, tracking);
+        if (tracking.associated()) {
+          if (!_steam_tracking_associated) {
+            BOOST_LOG(info) << "Steam app " << _app.steam_id
+                            << " associated with " << tracking.tree.processes.size()
+                            << " tracked process(es).";
+          }
+          _steam_tracking_associated = true;
+          placebo = false;
+        } else if (_steam_tracking_associated &&
+                   tracking.reason.find("unavailable") == std::string::npos) {
+          // A complete snapshot with no retained PID means the tracked game
+          // tree has exited. Let the normal cleanup path run below.
+          _steam_tracking_associated = false;
+          _steam_tracking_active = false;
+        }
+      }
+
+      if (_steam_tracking_associated) {
+        return _app_id;
+      }
+      if (!_steam_tracking_exit.exited && now < _steam_tracking_deadline) {
+        // Keep the stream alive while Steam is still starting the game. This
+        // preserves the existing detached/placebo behavior if association
+        // eventually fails, without turning polling into a blocking wait.
+        return _app_id;
+      }
+
+      if (!_steam_tracking_exit.exited) {
+        BOOST_LOG(warning) << "Steam app " << _app.steam_id
+                           << " process tree remained untrackable after the 15 second launch window;"
+                              " retaining detached streaming behavior.";
+        _steam_tracking_active = false;
+        placebo = true;
+        return _app_id;
+      }
+    }
+
+    if (!_steam_tracking_exit.exited) {
+      if (placebo) {
+        return _app_id;
+      } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
+        // The app is still running if any process in the group is still running
+        return _app_id;
+      } else if (_process.running()) {
+        // The app is still running only if the initial process launched is still running
+        return _app_id;
+      } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
+        BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
+        BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
+        BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
+        placebo = true;
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-      if (_process.native_exit_code() != 0) {
-        system_tray::update_tray_launch_error(proc::proc.get_last_run_app_name(), _process.native_exit_code());
-      }
+        if (_process.native_exit_code() != 0) {
+          system_tray::update_tray_launch_error(proc::proc.get_last_run_app_name(), _process.native_exit_code());
+        }
 #endif
 
-      return _app_id;
+        return _app_id;
+      }
     }
 
     // Perform cleanup actions now if needed
-    if (_process) {
+    if (_process || _steam_tracking_exit.exited) {
       std::unique_lock<std::mutex> stream_lifecycle_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
       if (!stream_lifecycle_lock.owns_lock()) {
         // Teardown is already in flight on another thread. Blocking here
@@ -2564,7 +2644,7 @@ namespace proc {
 #ifdef _WIN32
     return _app_id > 0 && !placebo && (_process || _process_group);
 #else
-    return _app_id > 0 && !placebo && static_cast<bool>(_process);
+    return _app_id > 0 && !placebo && (_steam_tracking_associated || static_cast<bool>(_process));
 #endif
   }
 
@@ -2627,6 +2707,33 @@ namespace proc {
       platf::playnite::stop_client_for_session();
     }
 #endif
+    // Steam's URI launcher is not the game process and its process group does
+    // not own the Proton/Wine tree. Stop only the identities retained by the
+    // tracker; Steam client/runtime PIDs are never inserted into this tree.
+    if (!_steam_tracker.tree().empty()) {
+      if (!_steam_process_controller) {
+        _steam_process_controller = platf::steam::lifecycle::native_process_controller();
+      }
+      platf::steam::lifecycle::stop_options steam_stop_options;
+      steam_stop_options.grace_period = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::max(remaining_timeout, 0s));
+      const auto stopped = platf::steam::lifecycle::stop_tree(
+        _steam_tracker.tree(), *_steam_process_controller, steam_stop_options);
+      BOOST_LOG(info) << "Steam tracked tree termination requested: TERM=" << stopped.terminate_sent
+                      << ", KILL=" << stopped.kill_sent << ", skipped=" << stopped.skipped
+                      << ", complete=" << (stopped.complete ? "yes" : "no");
+      // The app timeout has been consumed by the Steam-owned tree. The URI
+      // launcher/group cleanup below remains best effort and must not extend
+      // the configured Steam app timeout a second time.
+      remaining_timeout = 0s;
+    }
+    _steam_tracker.clear();
+    _steam_tracking_active = false;
+    _steam_tracking_associated = false;
+    _steam_tracking_exit = {};
+    _steam_tracking_deadline = {};
+    _steam_last_tracking_poll = {};
+
     // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout)
     terminate_process_group(_process, _process_group, remaining_timeout);
     _process = bp::child();
@@ -3585,6 +3692,12 @@ namespace proc {
             ctx.working_dir += '\\';
 #endif
         }
+          if (app_node.contains("steam-id")) {
+            ctx.steam_id = parse_env_val(this_env, app_node.value("steam-id", ""));
+          }
+          if (app_node.contains("steam-install-dir")) {
+            ctx.steam_install_dir = parse_env_val(this_env, app_node.value("steam-install-dir", ""));
+          }
           if (app_node.contains("image-path")) {
             ctx.image_path = parse_env_val(this_env, app_node.value("image-path", ""));
           }

@@ -130,6 +130,10 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    if (!config::playnite.enabled) {
+      send_response(response, nlohmann::json{{"active", false}, {"enabled", false}, {"available", false}, {"installed", false}, {"update_available", false}});
+      return;
+    }
     // Keep the Playnite IPC client alive when the UI refreshes status.
     // This updates the inactivity timer and ensures a fresh connection.
     platf::playnite::ensure_client_for_api();
@@ -411,6 +415,10 @@ namespace confighttp {
       return;
     }
     print_req(request);
+    if (!config::playnite.enabled) {
+      send_response(response, nlohmann::json{{"status", false}, {"error", "Playnite integration is disabled"}});
+      return;
+    }
     nlohmann::json out;
     bool ok = platf::playnite::force_sync();
     out["status"] = ok;

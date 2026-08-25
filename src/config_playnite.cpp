@@ -37,7 +37,8 @@ namespace config {
 
 #ifdef _WIN32
     try {
-      const bool want = playnite.fullscreen_entry_enabled;
+      std::lock_guard apps_lock {confighttp::apps_file_mutex()};
+      const bool want = playnite.enabled && playnite.fullscreen_entry_enabled;
       // Read current apps list
       nlohmann::json file_tree = nlohmann::json::object();
       try {
@@ -106,7 +107,7 @@ namespace config {
     }
 #endif
 #ifdef _WIN32
-    if (config::playnite.auto_sync) {
+    if (config::playnite.enabled && config::playnite.auto_sync) {
       try {
         // Startup/config application must not wait on an optional external plugin.
         // A delivered snapshot is reconciled asynchronously by the normal auto-sync path.

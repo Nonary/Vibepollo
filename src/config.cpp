@@ -39,6 +39,7 @@
 #include "config_playnite.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
+#include "config_steam.h"
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "globals.h"
@@ -2239,8 +2240,10 @@ namespace config {
       }
     }
 
+    // Provider settings are cross-platform. Playnite remains Windows-only,
+    // while Steam's parser enforces the Linux Steam-only policy.
+    config::apply_steam(vars);
 #ifdef _WIN32
-    // Apply Playnite-specific configuration keys
     config::apply_playnite(vars);
 #endif
 

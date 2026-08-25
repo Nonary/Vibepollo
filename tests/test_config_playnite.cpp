@@ -18,6 +18,14 @@ TEST(PlayniteConfig, Booleans_ParseCaseInsensitiveTruths) {
   EXPECT_TRUE(vars.empty());
 }
 
+TEST(PlayniteConfig, EnabledDefaultsOnAndCanBeDisabled) {
+  std::unordered_map<std::string, std::string> vars{{"playnite_enabled", "off"}};
+  const auto parsed = config::parse_playnite(vars);
+  EXPECT_FALSE(parsed.enabled);
+  EXPECT_TRUE(vars.empty());
+  EXPECT_TRUE(config::playnite_t{}.enabled);
+}
+
 TEST(PlayniteConfig, Integers_ValidAndClampNegatives) {
   std::unordered_map<std::string, std::string> vars {{"playnite_recent_games", "20"}, {"playnite_recent_max_age_days", "-5"}, {"playnite_autosync_delete_after_days", "7"}, {"playnite_focus_attempts", "0"}, {"playnite_focus_timeout_secs", "12"}};
   const auto parsed = config::parse_playnite(vars);

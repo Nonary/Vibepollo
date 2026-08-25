@@ -34,6 +34,7 @@
 #include "video.h"
 #include "session_history.h"
 #include "state_storage.h"
+#include "steam_auto_sync.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -571,6 +572,15 @@ int main(int argc, char *argv[]) {
     (void) platf::linux_private_display::revert();
   });
 #endif
+
+  // Steam's catalog can change while the server is running. The watcher is
+  // started after logging/platform initialization and owns its shutdown
+  // thread independently of the task pool.
+  platf::steam::autosync::start();
+  auto steam_autosync_guard = util::fail_guard([]() {
+    platf::steam::autosync::stop();
+  });
+
 #ifdef _WIN32
   // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
   // the Web UI toggle authoritative over the installer's unconditional registration and self-heals
@@ -796,7 +806,10 @@ int main(int argc, char *argv[]) {
 
 #ifdef _WIN32
   // Start Playnite integration (IPC + handlers)
-  auto playnite_integration_guard = platf::playnite::start();
+  std::unique_ptr<platf::deinit_t> playnite_integration_guard;
+  if (config::playnite.enabled) {
+    playnite_integration_guard = platf::playnite::start();
+  }
 #endif
 
   std::thread configThread {confighttp::start};
@@ -875,6 +888,9 @@ int main(int argc, char *argv[]) {
   httpThread.join();
   configThread.join();
   rtspThread.join();
+
+  platf::steam::autosync::stop();
+  steam_autosync_guard.disable();
 
 #ifdef _WIN32
   // Full process shutdown cannot leave the paused-session watchdog running.

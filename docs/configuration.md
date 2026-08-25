@@ -4296,7 +4296,59 @@ runtime version is written to the log on every AMD HDR HEVC attempt (search for
     </tr>
 </table>
 
+## Steam Integration
+
+### steam_enabled
+
+Enables local Steam library discovery, synchronization, and launch support. This setting is always enabled on Linux. On other platforms it can be combined with `playnite_enabled` or used by itself.
+
+Default: `true`
+
+### steam_auto_sync
+
+Synchronizes installed Steam games into `apps.json` when configuration is
+applied and checks for manifest, library, metadata, and artwork changes every
+30 seconds while Vibeshine is running. Steam-managed entries use stable Steam
+IDs; manual and Playnite-managed entries are preserved.
+
+Default: `true`
+
+### steam_autosync_remove_uninstalled
+
+When enabled, Steam-managed entries whose installed manifest disappears are
+removed during synchronization. Manual and Playnite-managed entries are never
+removed by this provider.
+
+Default: `true`
+
+### steam_exclude_games
+
+JSON array of Steam app IDs (or objects containing `id` and optional `name`) to
+exclude from Steam synchronization. A legacy comma-separated list is accepted
+as well. Object names are used only when no ID is supplied, so a game rename
+cannot accidentally exclude a different app. Example:
+
+`steam_exclude_games = [{"id":"228980","name":"Steamworks Common Redistributables"},{"id":"570"}]`
+
+Steam compatibility/runtime/tool manifests are also excluded by default based
+on their manifest type and known runtime IDs. Set `steam_include_tools = true`
+to import those records intentionally.
+
+### steam_include_tools
+
+Includes Steam manifests marked as tools, runtimes, configuration, DLC, music,
+or video. This is intended for users who deliberately want those records in
+their catalog.
+
+Default: `false`
+
 ## Playnite Integration
+
+### playnite_enabled
+
+Enables Playnite library synchronization and launch support on Windows. Disable this setting to use Steam by itself, or leave both providers enabled to combine their catalogs. Playnite is unavailable on Linux.
+
+Default: `true` on Windows
 
 ### playnite_sync_all_installed
 

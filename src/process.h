@@ -27,6 +27,7 @@
 #include "config.h"
 #include "platform/common.h"
 #include "rtsp.h"
+#include "steam_process_tracker.h"
 #include "utility.h"
 
 #ifdef _WIN32
@@ -130,6 +131,11 @@ namespace proc {
     std::string gamepad;
     std::string art_version;
     std::vector<std::string> id_aliases;
+    // Provider metadata used by the Steam-owned process lifecycle boundary.
+    // These remain strings because the catalog/API stores Steam IDs and paths
+    // as JSON strings for compatibility with older app entries.
+    std::string steam_id;
+    std::string steam_install_dir;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
@@ -263,6 +269,14 @@ namespace proc {
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};
+
+    platf::steam::lifecycle::tracker _steam_tracker;
+    std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
+    bool _steam_tracking_active {false};
+    bool _steam_tracking_associated {false};
+    platf::steam::lifecycle::exit_latch _steam_tracking_exit;
+    std::chrono::steady_clock::time_point _steam_tracking_deadline {};
+    std::chrono::steady_clock::time_point _steam_last_tracking_poll {};
 
 #ifdef _WIN32
     bool _deferred_launch {false};

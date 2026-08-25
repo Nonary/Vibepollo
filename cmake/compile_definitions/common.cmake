@@ -110,6 +110,7 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/confighttp.cpp"
         "${CMAKE_SOURCE_DIR}/src/config_http_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/confighttp_playnite.cpp"
+        "${CMAKE_SOURCE_DIR}/src/confighttp_steam.cpp"
         "${CMAKE_SOURCE_DIR}/src/confighttp_rtss.cpp"
         "${CMAKE_SOURCE_DIR}/src/confighttp.h"
         "${CMAKE_SOURCE_DIR}/src/webrtc_stream.cpp"
@@ -139,6 +140,20 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/common_services.h"
         "${CMAKE_SOURCE_DIR}/src/app_catalog_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/app_catalog_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_artwork.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_artwork.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_sync_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_sync_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_auto_sync.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_auto_sync.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_auto_sync_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_auto_sync_policy.h"
+        "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.cpp"
+        "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.h"
+        "${CMAKE_SOURCE_DIR}/src/config_steam.cpp"
+        "${CMAKE_SOURCE_DIR}/src/config_steam.h"
         "${CMAKE_SOURCE_DIR}/src/app_framegen_config.cpp"
         "${CMAKE_SOURCE_DIR}/src/app_framegen_config.h"
         "${CMAKE_SOURCE_DIR}/src/deferred_action.h"
@@ -204,6 +219,24 @@ list(APPEND SUNSHINE_DEFINITIONS SETUP_LIBDISPLAYDEVICE_LOGGING="1")
 include_directories(BEFORE "${CMAKE_SOURCE_DIR}")
 
 set(SUNSHINE_FFMPEG_INCLUDE_DIRS ${FFMPEG_INCLUDE_DIRS})
+
+# Minimal FFmpeg bundles used by Vibeshine intentionally omit still-image
+# codecs. These system codecs are only a fallback for Steam artwork; the
+# normal path remains FFmpeg/libswscale. Keep the feature optional so targets
+# on platforms without these development libraries still build.
+find_package(PNG QUIET)
+find_package(JPEG QUIET)
+find_library(STEAM_ARTWORK_WEBP_LIBRARY NAMES webp)
+if(PNG_FOUND AND JPEG_FOUND AND STEAM_ARTWORK_WEBP_LIBRARY)
+    list(APPEND SUNSHINE_DEFINITIONS VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS=1)
+    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES PNG::PNG JPEG::JPEG ${STEAM_ARTWORK_WEBP_LIBRARY})
+    set(STEAM_ARTWORK_TEST_DEFINITIONS VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS=1)
+    set(STEAM_ARTWORK_TEST_LIBRARIES PNG::PNG JPEG::JPEG ${STEAM_ARTWORK_WEBP_LIBRARY})
+endif()
+# Enable the bounded official Steam CDN fallback in the application target.
+# Focused component tests intentionally omit this definition and inject their
+# own byte fetcher, so they never require network access.
+list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_STEAM_ARTWORK_NETWORK=1)
 if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # The prepared FFmpeg headers must win over MSYS2's system FFmpeg headers
     # (which can be older and lack macros like AV_HAS_ATTRIBUTE used by the
