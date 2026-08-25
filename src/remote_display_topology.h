@@ -98,6 +98,7 @@ namespace remote_display_topology {
     activation_result_t activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode);
     activation_result_t resume_remote_monitor(const std::string &client_uuid);
     normal_game_reservation_t reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode);
+    bool reapply_composed_topology();
     void rollback_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
     void release_normal_game_identity(const std::string &client_uuid, std::uint64_t token);
     void note_lease_lost(const std::string &client_uuid);

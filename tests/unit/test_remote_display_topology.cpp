@@ -159,6 +159,25 @@ TEST(RemoteDisplayTopology, NormalReservationRejectsBeforeCreateAndRollsBackOnly
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 4);
 }
 
+TEST(RemoteDisplayTopology, NormalReservationCanRecomposeThroughPlatformRuntime) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_runtime_callbacks({
+    .apply_composed_topology = [&composed](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("normal", "Normal Game", {2560, 1440, 120}).accepted);
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  ASSERT_EQ(composed.size(), 1);
+  EXPECT_EQ(composed.front().id, "normal");
+  EXPECT_EQ(composed.front().configured_mode.width, 2560);
+  EXPECT_EQ(composed.front().configured_mode.height, 1440);
+  EXPECT_EQ(composed.front().configured_mode.refresh_hz, 120);
+}
+
 TEST(RemoteDisplayTopology, SharedNormalAndMonitorIdentityCountsOnceAndReleasesIndependently) {
   remote_display_topology::coordinator_t coordinator;
   coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});

@@ -4,12 +4,13 @@
  */
 #pragma once
 
+#include "src/remote_display_topology.h"
+
 #include <chrono>
+#include <display_device/types.h>
 #include <optional>
 #include <string>
 #include <vector>
-
-#include <display_device/types.h>
 
 namespace rtsp_stream {
   struct launch_session_t;
@@ -35,6 +36,30 @@ namespace platf::linux_private_display {
 
   /** Apply resolution, refresh, HDR, scale, primary-output, and layout policy. */
   bool apply_session(const rtsp_stream::launch_session_t &session);
+
+  /** Reserve or reclaim the stable private connector owned by a paired client. */
+  bool remote_create_or_reclaim(
+    const std::string &client_uuid,
+    const remote_display_topology::mode_t &mode
+  );
+
+  /** Atomically apply the coordinator's complete physical/client desktop graph. */
+  bool remote_apply_composed_topology(
+    const std::vector<remote_display_topology::node_t> &nodes
+  );
+
+  /** Verify that a client's exact connector has the requested mode and is capture-enumerated. */
+  std::optional<std::string> remote_exact_capture_output(
+    const std::string &client_uuid,
+    const remote_display_topology::mode_t &mode
+  );
+
+  /** Release only this client's connector reservation; topology apply performs the disable. */
+  void remote_remove_owned_display(const std::string &client_uuid);
+
+  /** Inspect stable ownership while constructing the Remote Monitor baseline. */
+  bool is_private_output(const std::string &output_name);
+  std::optional<std::string> output_for_client(const std::string &client_uuid);
 
   /** Restore the pre-stream topology and release all private-output reservations. */
   bool revert();

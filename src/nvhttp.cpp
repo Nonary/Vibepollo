@@ -393,6 +393,202 @@ namespace nvhttp {
       });
     }
   }  // namespace
+#elif defined(__linux__)
+  namespace {
+    int linux_remote_refresh_hz(const display_device::FloatingPoint &refresh) {
+      if (const auto *ratio = std::get_if<display_device::Rational>(&refresh)) {
+        return ratio->m_denominator == 0 ? 0 : static_cast<int>(std::lround(static_cast<double>(ratio->m_numerator) / ratio->m_denominator));
+      }
+      if (const auto *value = std::get_if<double>(&refresh)) {
+        return static_cast<int>(std::lround(*value));
+      }
+      return 0;
+    }
+
+    void refresh_remote_monitor_baseline(const bool extend_active_stream) {
+      const auto devices = display_helper_integration::enumerate_devices(
+        display_device::DeviceEnumerationDetail::Full
+      );
+      if (!devices) {
+        return;
+      }
+
+      const auto active_stream_output = extend_active_stream ? config::get_active_output_name() : std::string {};
+      const bool active_stream_uses_private =
+        !active_stream_output.empty() && platf::linux_private_display::is_private_output(active_stream_output);
+      const auto managed_client_ids = remote_display_topology::instance().managed_client_identity_ids();
+      std::vector<std::string> managed_outputs;
+      managed_outputs.reserve(managed_client_ids.size());
+      for (const auto &client_id : managed_client_ids) {
+        if (const auto output = platf::linux_private_display::output_for_client(client_id)) {
+          managed_outputs.push_back(*output);
+        }
+      }
+
+      const auto active_game = proc::proc.active_session_guard();
+      std::vector<remote_display_topology::node_t> baseline;
+      for (const auto &device : *devices) {
+        if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info) {
+          continue;
+        }
+        const bool is_private = platf::linux_private_display::is_private_output(device.m_device_id);
+        if (is_private) {
+          // Coordinator-managed normal/Remote Monitor identities are emitted by
+          // compose_locked(). Only an older or shared private stream that is not
+          // in the coordinator remains a pre-existing baseline anchor.
+          if (!active_stream_uses_private || (device.m_device_id != active_stream_output && device.m_display_name != active_stream_output) || std::find(managed_outputs.begin(), managed_outputs.end(), device.m_device_id) != managed_outputs.end()) {
+            continue;
+          }
+        } else if (active_stream_uses_private) {
+          // An existing private stream defines the desktop being extended; do
+          // not expose physical outputs that its exclusive policy hid.
+          continue;
+        }
+
+        remote_display_topology::node_t node;
+        const bool owner_already_managed =
+          std::find(managed_client_ids.begin(), managed_client_ids.end(), active_game.client_uuid) != managed_client_ids.end();
+        node.id = is_private && !active_game.client_uuid.empty() ?
+                    active_game.client_uuid + (owner_already_managed ? ":streamed" : "") :
+                    device.m_device_id;
+        node.device_id = device.m_device_id;
+        node.label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name;
+        node.preexisting = true;
+        node.physical = !is_private;
+        node.active = true;
+        node.primary = device.m_info->m_primary;
+        node.x = device.m_info->m_origin_point.m_x;
+        node.y = device.m_info->m_origin_point.m_y;
+        node.configured_mode = {
+          .width = static_cast<int>(device.m_info->m_resolution.m_width),
+          .height = static_cast<int>(device.m_info->m_resolution.m_height),
+          .refresh_hz = linux_remote_refresh_hz(device.m_info->m_refresh_rate),
+        };
+        baseline.push_back(std::move(node));
+      }
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
+    }
+
+    enum class linux_normal_identity_result_e {
+      not_needed,
+      ready,
+      capacity_rejected,
+      topology_failed,
+    };
+
+    linux_normal_identity_result_e reserve_linux_normal_display_identity(
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session
+    ) {
+      const auto mode = launch_session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      if (!launch_session->virtual_display || mode == config::video_t::virtual_display_mode_e::shared || launch_session->role != remote_session::role_e::game) {
+        return linux_normal_identity_result_e::not_needed;
+      }
+      if (launch_session->normal_vdd_identity_token != 0) {
+        return linux_normal_identity_result_e::ready;
+      }
+
+      const auto reservation = remote_display_topology::instance().reserve_normal_game_identity(
+        launch_session->client_uuid,
+        launch_session->client_name,
+        {
+          .width = launch_session->width,
+          .height = launch_session->height,
+          .refresh_hz = launch_session->fps,
+        }
+      );
+      if (!reservation.accepted) {
+        launch_session->normal_vdd_capacity_rejected = true;
+        launch_session->virtual_display_failed = true;
+        platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+        return linux_normal_identity_result_e::capacity_rejected;
+      }
+
+      launch_session->normal_vdd_identity_token = reservation.token;
+      launch_session->normal_vdd_identity_newly_reserved = reservation.newly_reserved;
+      refresh_remote_monitor_baseline(has_stream_session_activity());
+      if (!remote_display_topology::instance().reapply_composed_topology()) {
+        if (reservation.newly_reserved) {
+          remote_display_topology::instance().rollback_normal_game_identity(
+            launch_session->client_uuid,
+            reservation.token
+          );
+          const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
+          if (std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
+            platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+          }
+          (void) remote_display_topology::instance().reapply_composed_topology();
+        }
+        launch_session->normal_vdd_identity_token = 0;
+        launch_session->normal_vdd_identity_newly_reserved = false;
+        launch_session->virtual_display_failed = true;
+        return linux_normal_identity_result_e::topology_failed;
+      }
+      return linux_normal_identity_result_e::ready;
+    }
+
+    void rollback_linux_normal_display_identity(
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session
+    ) {
+      if (!launch_session->normal_vdd_identity_newly_reserved) {
+        return;
+      }
+      remote_display_topology::instance().rollback_normal_game_identity(
+        launch_session->client_uuid,
+        launch_session->normal_vdd_identity_token
+      );
+      const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
+      if (std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
+        platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
+      }
+      (void) remote_display_topology::instance().reapply_composed_topology();
+    }
+
+    void register_remote_monitor_runtime() {
+      remote_display_topology::instance().set_runtime_callbacks({
+        .create_or_reclaim = [](const std::string &client_uuid, const std::string &, const remote_display_topology::mode_t &mode) {
+          return platf::linux_private_display::remote_create_or_reclaim(client_uuid, mode);
+        },
+        .apply_composed_topology = platf::linux_private_display::remote_apply_composed_topology,
+        .exact_target_has_current_mode_and_dxgi = platf::linux_private_display::remote_exact_capture_output,
+        .remove_owned_display = platf::linux_private_display::remote_remove_owned_display,
+      });
+      remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
+        return rtsp_stream::plaintext_route_warning();
+      });
+      remote_session::register_monitor_runtime_hooks({
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
+          remote_display_topology::mode_t mode;
+          if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 || mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
+            return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
+          }
+          refresh_remote_monitor_baseline(has_stream_session_activity());
+          const auto state = remote_display_topology::instance().activate_or_resume(
+            std::string {uuid},
+            std::string {label},
+            mode,
+            generation
+          );
+          return {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+        },
+        .snapshot = [](std::string_view uuid, std::uint64_t generation) {
+          const auto state = remote_display_topology::instance().snapshot(std::string {uuid}, generation);
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+        },
+        .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
+          remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
+        },
+        .transport_lost = [](std::string_view uuid, std::uint64_t generation) {
+          remote_display_topology::instance().transport_lost(std::string {uuid}, generation);
+        },
+        .unpair = [](std::string_view uuid) {
+          remote_display_topology::instance().unpair_client(std::string {uuid});
+        },
+        .shutdown = [] {
+          remote_display_topology::instance().shutdown();
+        },
+      });
+    }
+  }  // namespace
 #endif
 
   std::string cert_subject_name_for_log(const crypto::x509_t &cert) {
@@ -1462,6 +1658,36 @@ namespace nvhttp {
       }
     }
     }  // namespace
+#endif
+
+#ifdef __linux__
+  namespace {
+    void cleanup_virtual_display_if_idle_locked() {
+      try {
+        if (has_stream_session_activity()) {
+          BOOST_LOG(info) << "Skipping Linux private-display cleanup because a streaming session is active or stopping.";
+          return;
+        }
+        if (!remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+          BOOST_LOG(info) << "Deferring Linux private-display cleanup until the remaining managed client identities release ownership.";
+          return;
+        }
+        if (stream::session::finalize_shared_runtime_if_idle("managed_display_owner_release")) {
+          return;
+        }
+        (void) platf::linux_private_display::revert();
+      } catch (const std::exception &error) {
+        BOOST_LOG(warning) << "Linux private-display cleanup failed: " << error.what();
+      } catch (...) {
+        BOOST_LOG(warning) << "Linux private-display cleanup failed with an unknown exception.";
+      }
+    }
+
+    void cleanup_virtual_display_if_idle() {
+      std::unique_lock<std::mutex> lifecycle_lock(stream_lifecycle_mutex());
+      cleanup_virtual_display_if_idle_locked();
+    }
+  }  // namespace
 #endif
 
 #ifndef _WIN32
@@ -3809,7 +4035,7 @@ namespace nvhttp {
             remote_session::release_monitor(request_client_identity.uuid, *generation, "Disconnect Monitor");
           }
           forget_remote_owner(request_client_identity.uuid, role, *generation);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
           if (role == remote_session::role_e::monitor) {
             cleanup_virtual_display_if_idle_locked();
           }
@@ -3954,6 +4180,9 @@ namespace nvhttp {
           if (launch_session->role == remote_session::role_e::monitor) {
             remote_session::release_monitor(request_client_identity.uuid, launch_session->role_generation, "RTSP admission rejected");
             forget_remote_owner(request_client_identity.uuid, launch_session->role, launch_session->role_generation);
+#if defined(_WIN32) || defined(__linux__)
+            cleanup_virtual_display_if_idle_locked();
+#endif
           }
           tree.put("root.resume", 0);
           tree.put("root.<xmlattr>.status_code", 409);
@@ -4247,26 +4476,44 @@ namespace nvhttp {
       }
 
 #elif defined(__linux__)
+    platf::linux_private_display::prepare_result_t prepared;
     if (!launch_session->input_only) {
-      const auto prepared = platf::linux_private_display::prepare_session(
+      prepared = platf::linux_private_display::prepare_session(
         *launch_session, no_active_sessions, allow_display_changes
       );
-      if (prepared.active) {
-        config::set_runtime_output_name_override(prepared.output_name);
-        pending_output_override = prepared.output_name;
-      } else if (prepared.requested) {
+      if (!prepared.active && prepared.requested) {
+        tree.put("root.gamesession", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", prepared.error);
-        tree.put("root.gamesession", 0);
         return;
       }
     }
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
       stream::session::cleanup_reservation_t cleanup_reservation;
-      if (!has_stream_session_activity() && launch_session->virtual_display) {
+      if (!has_stream_session_activity() && launch_session->virtual_display &&
+          remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
         (void) platf::linux_private_display::revert();
       }
     });
+    auto normal_vdd_identity_guard = util::fail_guard([&] {
+      rollback_linux_normal_display_identity(launch_session);
+    });
+    const auto normal_identity = !launch_session->input_only ?
+      reserve_linux_normal_display_identity(launch_session) : linux_normal_identity_result_e::not_needed;
+    if (normal_identity == linux_normal_identity_result_e::capacity_rejected ||
+        normal_identity == linux_normal_identity_result_e::topology_failed) {
+      const bool capacity_rejected = normal_identity == linux_normal_identity_result_e::capacity_rejected;
+      tree.put("root.gamesession", 0);
+      tree.put("root.<xmlattr>.status_code", capacity_rejected ? 409 : 503);
+      tree.put("root.<xmlattr>.status_message", capacity_rejected ?
+        "Remote display capacity is four paired-client identities" :
+        "Failed to compose the Linux private streaming displays");
+      return;
+    }
+    if (prepared.active) {
+      config::set_runtime_output_name_override(prepared.output_name);
+      pending_output_override = prepared.output_name;
+    }
 #endif
 
       // The display should be restored in case something fails as there are no other sessions.
@@ -4485,7 +4732,7 @@ namespace nvhttp {
 #if defined(_WIN32) || defined(__linux__)
       virtual_display_teardown_guard.disable();
 #endif
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       normal_vdd_identity_guard.disable();
 #endif
       revert_display_configuration = false;
@@ -4800,26 +5047,44 @@ namespace nvhttp {
     }
 
 #elif defined(__linux__)
+    platf::linux_private_display::prepare_result_t prepared;
     if (!joining_existing_game_output) {
-      const auto prepared = platf::linux_private_display::prepare_session(
+      prepared = platf::linux_private_display::prepare_session(
         *launch_session, no_active_sessions, allow_session_display_changes
       );
-      if (prepared.active) {
-        config::set_runtime_output_name_override(prepared.output_name);
-        pending_output_override = prepared.output_name;
-      } else if (prepared.requested) {
+      if (!prepared.active && prepared.requested) {
+        tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", prepared.error);
-        tree.put("root.resume", 0);
         return;
       }
     }
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
       stream::session::cleanup_reservation_t cleanup_reservation;
-      if (!has_stream_session_activity() && launch_session->virtual_display) {
+      if (!has_stream_session_activity() && launch_session->virtual_display &&
+          remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
         (void) platf::linux_private_display::revert();
       }
     });
+    auto normal_vdd_identity_guard = util::fail_guard([&] {
+      rollback_linux_normal_display_identity(launch_session);
+    });
+    const auto normal_identity = !joining_existing_game_output ?
+      reserve_linux_normal_display_identity(launch_session) : linux_normal_identity_result_e::not_needed;
+    if (normal_identity == linux_normal_identity_result_e::capacity_rejected ||
+        normal_identity == linux_normal_identity_result_e::topology_failed) {
+      const bool capacity_rejected = normal_identity == linux_normal_identity_result_e::capacity_rejected;
+      tree.put("root.resume", 0);
+      tree.put("root.<xmlattr>.status_code", capacity_rejected ? 409 : 503);
+      tree.put("root.<xmlattr>.status_message", capacity_rejected ?
+        "Remote display capacity is four paired-client identities" :
+        "Failed to compose the Linux private streaming displays");
+      return;
+    }
+    if (prepared.active) {
+      config::set_runtime_output_name_override(prepared.output_name);
+      pending_output_override = prepared.output_name;
+    }
 #endif
 
     if (no_active_sessions) {
@@ -5016,7 +5281,7 @@ namespace nvhttp {
 #if defined(_WIN32) || defined(__linux__)
     virtual_display_teardown_guard.disable();
 #endif
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     normal_vdd_identity_guard.disable();
 #endif
     output_override_guard.disable();
@@ -5040,7 +5305,7 @@ namespace nvhttp {
         proc::proc.terminate(immediate);
       }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       // Session joins complete before this final owner check. Any display
       // cleanup that remains is therefore ordered after transport teardown.
       cleanup_virtual_display_if_idle();
@@ -5401,7 +5666,7 @@ namespace nvhttp {
 
   void start() {
     platf::set_thread_name("nvhttp");
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     register_remote_monitor_runtime();
 #endif
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
@@ -5682,7 +5947,7 @@ namespace nvhttp {
     discovery_route_pool.join();
     rtsp_stream::terminate_sessions(false);
     remote_session::notify_monitor_shutdown();
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     cleanup_virtual_display_if_idle();
 #endif
     remote_session::register_monitor_runtime_hooks({});
@@ -5710,7 +5975,7 @@ namespace nvhttp {
       remote_session::notify_monitor_unpair(client->uuid);
       forget_remote_client(client->uuid);
     }
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     cleanup_virtual_display_if_idle();
 #endif
     {
@@ -5773,7 +6038,7 @@ namespace nvhttp {
       }
       remote_session::release_monitor(uuid, *monitor_generation, "Paired client disconnected");
       forget_remote_owner(uuid, remote_session::role_e::monitor, *monitor_generation);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       cleanup_virtual_display_if_idle_locked();
 #endif
       monitor_disconnected = true;
@@ -6012,7 +6277,7 @@ namespace nvhttp {
       if (empty) {
         proc::proc.terminate();
       }
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       cleanup_virtual_display_if_idle();
 #endif
     }

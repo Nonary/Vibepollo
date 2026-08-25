@@ -2615,7 +2615,12 @@ namespace confighttp {
       for (const auto &device : devices) {
         const auto id = device.value("device_id", "");
         const auto label = device.value("friendly_name", device.value("display_name", id));
-        if (id.empty() || boost::algorithm::icontains(label, "virtual display")) continue;
+        if (id.empty()) continue;
+#ifdef __linux__
+        if (platf::linux_private_display::is_private_output(id)) continue;
+#else
+        if (boost::algorithm::icontains(label, "virtual display")) continue;
+#endif
         remote_display_topology::node_t node;
         node.id = id;
         node.label = label;

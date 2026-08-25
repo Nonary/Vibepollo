@@ -2548,13 +2548,13 @@ namespace proc {
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
     placebo = false;
+    std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
     _deferred_launch = false;
     _lossless_should_start_support = false;
     stop_lossless_scaling_support();
 #endif
     // For Playnite-managed apps, request a graceful stop via Playnite first
-    std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
     if (had_active_app && !_app.playnite_id.empty()) {
       bool should_request_playnite_stop = true;
@@ -2649,7 +2649,7 @@ namespace proc {
 
     _pipe.reset();
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     // Release only this app's normal-display role before deciding whether the
     // process-wide display restore is now allowed. A retained Remote Monitor
     // role for the same client keeps that display protected.

@@ -5,25 +5,24 @@
 
 #include "private_display.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <map>
-#include <mutex>
-#include <set>
-#include <thread>
-
-#include <gio/gio.h>
-#include <nlohmann/json.hpp>
-
-#include <display_device/json.h>
-
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
+#include "src/platform/common.h"
 #include "src/rtsp.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <display_device/json.h>
+#include <filesystem>
+#include <fstream>
+#include <gio/gio.h>
+#include <map>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <set>
+#include <thread>
 
 namespace platf::linux_private_display {
   namespace {
@@ -359,24 +358,37 @@ namespace platf::linux_private_display {
       return "session:" + std::to_string(session.id);
     }
 
+    std::string client_reservation_identity(const std::string &client_uuid) {
+      return "client:" + client_uuid;
+    }
+
+    void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
+      if (manager.snapshot) {
+        return;
+      }
+      auto snapshot = configuration;
+      const auto private_names = private_output_set();
+      const bool has_active_physical = std::ranges::any_of(snapshot["outputs"], [&](const json &output) {
+        return connected(output) && enabled(output) &&
+               !private_names.contains(output.value("name", std::string {}));
+      });
+      if (has_active_physical) {
+        for (auto &output : snapshot["outputs"]) {
+          if (private_names.contains(output.value("name", std::string {}))) {
+            output["enabled"] = false;
+          }
+        }
+      }
+      manager.snapshot = std::move(snapshot);
+    }
+
     std::optional<std::string> reserve_output(
       state_t &manager,
       const json &configuration,
       const std::string &identity,
-      const bool no_active_sessions
+      const bool no_active_sessions,
+      const bool reuse_active_reservation = true
     ) {
-      if (no_active_sessions) {
-        const auto retained = manager.reservations.find(identity);
-        if (retained != manager.reservations.end()) {
-          const auto retained_output = retained->second;
-          manager.reservations.clear();
-          if (const auto *output = find_output(configuration, retained_output); output && connected(*output)) {
-            manager.reservations.emplace(identity, retained_output);
-            return retained_output;
-          }
-        }
-        manager.reservations.clear();
-      }
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
         if (const auto *output = find_output(configuration, existing->second); output && connected(*output)) {
           return existing->second;
@@ -387,7 +399,7 @@ namespace platf::linux_private_display {
       // A Linux compositor owns one global desktop topology. While another stream is
       // active, keep capturing the already-active private desktop instead of modesetting
       // a second per-client connector and invalidating the first stream's exclusive layout.
-      if (!no_active_sessions && !manager.reservations.empty()) {
+      if (reuse_active_reservation && !no_active_sessions && !manager.reservations.empty()) {
         const auto &active_output = manager.reservations.begin()->second;
         if (const auto *output = find_output(configuration, active_output); output && connected(*output) && enabled(*output)) {
           manager.reservations.emplace(identity, active_output);
@@ -481,7 +493,7 @@ namespace platf::linux_private_display {
       std::lock_guard lock {manager.mutex};
       const bool shared = mode == config::video_t::virtual_display_mode_e::shared;
       const auto identity = reservation_identity(session, shared);
-      const auto output_name = reserve_output(manager, *configuration, identity, no_active_sessions);
+      const auto output_name = reserve_output(manager, *configuration, identity, no_active_sessions, shared);
       if (!output_name) {
         result.error = "No unreserved Linux private display is connected";
       } else {
@@ -529,23 +541,12 @@ namespace platf::linux_private_display {
     }
 
     auto &manager = state();
+    std::set<std::string> reserved_outputs;
     {
       std::lock_guard lock {manager.mutex};
-      if (!manager.snapshot) {
-        auto snapshot = *configuration;
-        const auto private_names = private_output_set();
-        const bool has_active_physical = std::ranges::any_of(snapshot["outputs"], [&](const json &output) {
-          return connected(output) && enabled(output) &&
-                 !private_names.contains(output.value("name", std::string {}));
-        });
-        if (has_active_physical) {
-          for (auto &output : snapshot["outputs"]) {
-            if (private_names.contains(output.value("name", std::string {}))) {
-              output["enabled"] = false;
-            }
-          }
-        }
-        manager.snapshot = std::move(snapshot);
+      snapshot_configuration_if_needed(manager, *configuration);
+      for (const auto &[_, output_name] : manager.reservations) {
+        reserved_outputs.insert(output_name);
       }
     }
 
@@ -602,7 +603,13 @@ namespace platf::linux_private_display {
 
     const auto private_names = private_output_set();
     const auto layout = session.virtual_display_layout_override.value_or(config::video.virtual_display_layout);
-    const bool exclusive = layout == config::video_t::virtual_display_layout_e::exclusive;
+    // Remote Monitor peers retain their own connectors independently of the
+    // normal game's exclusive preference. With no peer, preserve the ordinary
+    // exclusive behavior.
+    const bool has_reserved_peer = std::any_of(reserved_outputs.begin(), reserved_outputs.end(), [&](const auto &name) {
+      return name != session.virtual_display_device_id;
+    });
+    const bool exclusive = layout == config::video_t::virtual_display_layout_e::exclusive && !has_reserved_peer;
     const bool primary = layout == config::video_t::virtual_display_layout_e::extended_primary ||
                          layout == config::video_t::virtual_display_layout_e::extended_primary_isolated;
     const bool isolated = layout == config::video_t::virtual_display_layout_e::extended_isolated ||
@@ -631,7 +638,17 @@ namespace platf::linux_private_display {
       }
       const auto prefix = "output." + name + ".";
       if (private_names.contains(name)) {
-        arguments.push_back(prefix + "disable");
+        if (!reserved_outputs.contains(name)) {
+          arguments.push_back(prefix + "disable");
+          continue;
+        }
+        if (enabled(output)) {
+          const auto pos = output.value("pos", json::object());
+          const auto [width, height] = logical_size(output);
+          right_edge = std::max(right_edge, pos.value("x", 0) + width);
+          bottom_edge = std::max(bottom_edge, pos.value("y", 0) + height);
+          last_priority = std::max(last_priority, output.value("priority", 0));
+        }
         continue;
       }
       if (exclusive) {
@@ -695,6 +712,288 @@ namespace platf::linux_private_display {
     }
     BOOST_LOG(info) << "Linux private display: applied private output " << session.virtual_display_device_id << ".";
     return true;
+  }
+
+  bool remote_create_or_reclaim(
+    const std::string &client_uuid,
+    const remote_display_topology::mode_t &mode
+  ) {
+    (void) mode;
+    if (client_uuid.empty()) {
+      return false;
+    }
+    const auto configuration = query_configuration();
+    if (!configuration) {
+      return false;
+    }
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    const auto output = reserve_output(
+      manager,
+      *configuration,
+      client_reservation_identity(client_uuid),
+      false,
+      false
+    );
+    if (!output) {
+      BOOST_LOG(error) << "Linux Remote Monitor: no private connector is available for client '"
+                       << client_uuid << "'.";
+      return false;
+    }
+    BOOST_LOG(info) << "Linux Remote Monitor: client '" << client_uuid
+                    << "' owns private connector " << *output << ".";
+    return true;
+  }
+
+  bool remote_apply_composed_topology(
+    const std::vector<remote_display_topology::node_t> &nodes
+  ) {
+    // An empty composition occurs when a headless final owner releases. The
+    // saved pre-stream topology is the authoritative way to disable its output.
+    if (nodes.empty()) {
+      return revert();
+    }
+
+    auto configuration = query_configuration();
+    if (!configuration) {
+      return false;
+    }
+
+    struct desired_output_t {
+      std::string name;
+      remote_display_topology::node_t node;
+      bool owned_client {false};
+      std::string mode_id;
+    };
+
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    snapshot_configuration_if_needed(manager, *configuration);
+
+    std::vector<desired_output_t> desired;
+    std::map<std::string, std::size_t> desired_indexes;
+    for (const auto &node : nodes) {
+      std::string output_name;
+      const bool owned_client = !node.physical && !node.preexisting;
+      if (owned_client) {
+        const auto reservation = manager.reservations.find(client_reservation_identity(node.id));
+        if (reservation == manager.reservations.end()) {
+          BOOST_LOG(error) << "Linux Remote Monitor: composed client '" << node.id
+                           << "' has no private connector reservation.";
+          return false;
+        }
+        output_name = reservation->second;
+      } else {
+        output_name = node.device_id.empty() ? node.id : node.device_id;
+      }
+
+      const auto *output = find_output(*configuration, output_name);
+      if (!output || !connected(*output)) {
+        BOOST_LOG(error) << "Linux Remote Monitor: composed output disappeared: " << output_name;
+        return false;
+      }
+
+      desired_output_t entry {
+        .name = output_name,
+        .node = node,
+        .owned_client = owned_client,
+      };
+      if (const auto existing = desired_indexes.find(output_name); existing != desired_indexes.end()) {
+        // A normal stream and Remote Monitor owned by the same paired client
+        // deliberately resolve to one connector. The explicit client node owns
+        // its requested mode and placement.
+        if (owned_client || !desired[existing->second].owned_client) {
+          desired[existing->second] = std::move(entry);
+        }
+      } else {
+        desired_indexes.emplace(output_name, desired.size());
+        desired.push_back(std::move(entry));
+      }
+    }
+
+    std::vector<std::string> custom_modes;
+    for (auto &entry : desired) {
+      if (!entry.owned_client) {
+        continue;
+      }
+      const auto *output = find_output(*configuration, entry.name);
+      const auto resolution = display_device::Resolution {
+        static_cast<unsigned int>(std::max(1, entry.node.configured_mode.width)),
+        static_cast<unsigned int>(std::max(1, entry.node.configured_mode.height)),
+      };
+      const display_device::FloatingPoint refresh = display_device::Rational {
+        static_cast<unsigned int>(std::max(1, entry.node.configured_mode.refresh_hz)),
+        1,
+      };
+      entry.mode_id = best_mode_id(*output, resolution, refresh);
+      if (entry.mode_id.empty() && is_managed_output(entry.name)) {
+        custom_modes.push_back(
+          "output." + entry.name + ".addCustomMode." +
+          std::to_string(resolution.m_width) + "." +
+          std::to_string(resolution.m_height) + "." +
+          std::to_string(static_cast<unsigned int>(entry.node.configured_mode.refresh_hz * 1000)) +
+          ".reduced"
+        );
+      }
+    }
+
+    if (!custom_modes.empty()) {
+      if (!execute_configuration(custom_modes, "Remote Monitor custom-mode creation")) {
+        return false;
+      }
+      configuration = query_configuration();
+      if (!configuration) {
+        return false;
+      }
+      for (auto &entry : desired) {
+        if (!entry.owned_client || !entry.mode_id.empty()) {
+          continue;
+        }
+        const auto *output = find_output(*configuration, entry.name);
+        if (!output) {
+          return false;
+        }
+        const auto resolution = display_device::Resolution {
+          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.width)),
+          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.height)),
+        };
+        const display_device::FloatingPoint refresh = display_device::Rational {
+          static_cast<unsigned int>(std::max(1, entry.node.configured_mode.refresh_hz)),
+          1,
+        };
+        entry.mode_id = best_mode_id(*output, resolution, refresh);
+      }
+    }
+
+    for (const auto &entry : desired) {
+      if (entry.owned_client && entry.mode_id.empty()) {
+        BOOST_LOG(error) << "Linux Remote Monitor: no " << entry.node.configured_mode.width
+                         << 'x' << entry.node.configured_mode.height << '@'
+                         << entry.node.configured_mode.refresh_hz << " mode is available on "
+                         << entry.name << ".";
+        return false;
+      }
+    }
+
+    const auto min_x = std::min_element(desired.begin(), desired.end(), [](const auto &lhs, const auto &rhs) {
+                         return lhs.node.x < rhs.node.x;
+                       })->node.x;
+    const auto min_y = std::min_element(desired.begin(), desired.end(), [](const auto &lhs, const auto &rhs) {
+                         return lhs.node.y < rhs.node.y;
+                       })->node.y;
+
+    std::size_t primary_index = desired.size();
+    for (std::size_t i = 0; i < desired.size(); ++i) {
+      if (desired[i].node.primary) {
+        primary_index = i;
+        break;
+      }
+    }
+    if (primary_index == desired.size()) {
+      for (std::size_t i = 0; i < desired.size(); ++i) {
+        if (const auto *output = find_output(*configuration, desired[i].name); output && output->value("priority", 0) == 1) {
+          primary_index = i;
+          break;
+        }
+      }
+    }
+    if (primary_index == desired.size()) {
+      primary_index = 0;
+    }
+
+    std::set<std::string> desired_names;
+    std::vector<std::string> arguments;
+    int next_priority = 2;
+    for (std::size_t i = 0; i < desired.size(); ++i) {
+      auto &entry = desired[i];
+      desired_names.insert(entry.name);
+      const auto prefix = "output." + entry.name + ".";
+      arguments.push_back(prefix + "enable");
+      if (entry.owned_client) {
+        arguments.push_back(prefix + "mode." + entry.mode_id);
+        double scale = 1.0;
+        if (config::video.dd.virtual_display_scale_percent > 0) {
+          scale = config::video.dd.virtual_display_scale_percent / 100.0;
+        } else if (config::video.dd.virtual_display_scale_percent == 0) {
+          if (const auto *output = find_output(*configuration, entry.name)) {
+            scale = output->value("scale", 1.0);
+          }
+        }
+        arguments.push_back(prefix + "scale." + std::to_string(scale));
+        if (const auto *output = find_output(*configuration, entry.name); output && output->contains("hdr")) {
+          arguments.push_back(prefix + "hdr.disable");
+        }
+      }
+      arguments.push_back(prefix + "position." + std::to_string(entry.node.x - min_x) + "," + std::to_string(entry.node.y - min_y));
+      arguments.push_back(prefix + "priority." + std::to_string(i == primary_index ? 1 : next_priority++));
+    }
+
+    for (const auto &output : (*configuration)["outputs"]) {
+      const auto name = output.value("name", std::string {});
+      if (connected(output) && !desired_names.contains(name)) {
+        arguments.push_back("output." + name + ".disable");
+      }
+    }
+
+    if (!execute_configuration(arguments, "Remote Monitor topology apply")) {
+      return false;
+    }
+    BOOST_LOG(info) << "Linux Remote Monitor: applied a " << desired.size()
+                    << "-output composed desktop.";
+    return true;
+  }
+
+  std::optional<std::string> remote_exact_capture_output(
+    const std::string &client_uuid,
+    const remote_display_topology::mode_t &mode
+  ) {
+    const auto owned_output = output_for_client(client_uuid);
+    if (!owned_output) {
+      return std::nullopt;
+    }
+
+    // KScreen's command is synchronous, but KWin's screencast output registry
+    // can trail it briefly. Readiness is exact and bounded; never fall back to
+    // another connector while the requested one is still publishing.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+      const auto configuration = query_configuration();
+      if (configuration) {
+        if (const auto *output = find_output(*configuration, *owned_output); output && connected(*output) && enabled(*output)) {
+          const auto size = output->value("size", json::object());
+          const bool mode_matches =
+            size.value("width", 0) == mode.width &&
+            size.value("height", 0) == mode.height &&
+            static_cast<int>(std::lround(output_refresh(*output))) == mode.refresh_hz;
+          if (mode_matches) {
+            const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+            if (std::find(capture_outputs.begin(), capture_outputs.end(), *owned_output) != capture_outputs.end()) {
+              return owned_output;
+            }
+          }
+        }
+      }
+      if (attempt + 1 < 20) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    }
+    return std::nullopt;
+  }
+
+  void remote_remove_owned_display(const std::string &client_uuid) {
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    manager.reservations.erase(client_reservation_identity(client_uuid));
+  }
+
+  bool is_private_output(const std::string &output_name) {
+    return private_output_set().contains(output_name);
+  }
+
+  std::optional<std::string> output_for_client(const std::string &client_uuid) {
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    const auto reservation = manager.reservations.find(client_reservation_identity(client_uuid));
+    return reservation == manager.reservations.end() ? std::nullopt : std::make_optional(reservation->second);
   }
 
   bool revert() {
