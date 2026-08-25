@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { captureOptionsForPlatform, settingsCategories } from '../configs/settingsSchema.ts';
 import {
   displayFieldVisibility,
   downsampleHostHistory,
@@ -10,6 +11,73 @@ import {
   preserveHiddenDisplayValues,
   serializeCommandRows,
 } from '../utils/v2Parity.ts';
+
+test('capture options follow the host platform', () => {
+  assert.deepEqual(
+    captureOptionsForPlatform('linux').map((option) => option.value),
+    ['', 'kms', 'kwin', 'portal', 'wlr', 'x11', 'nvfbc'],
+  );
+  assert.deepEqual(
+    captureOptionsForPlatform('windows').map((option) => option.value),
+    ['', 'wgc', 'wgcc', 'ddx'],
+  );
+  assert.deepEqual(
+    captureOptionsForPlatform('macos').map((option) => option.value),
+    [''],
+  );
+});
+
+test('Linux keeps common virtual-display policy and hides Windows display internals', () => {
+  const fields = settingsCategories.flatMap((category) =>
+    category.groups.flatMap((group) => group.fields),
+  );
+  const commonKeys = new Set([
+    'virtual_display_mode',
+    'virtual_display_layout',
+    'dd_resolution_option',
+    'dd_refresh_rate_option',
+    'dd_hdr_option',
+    'dd_hdr_request_override',
+  ]);
+  const windowsOnlyKeys = new Set([
+    'dd_use_sunshine_virtual_display_driver',
+    'dd_activate_virtual_display',
+    'dd_virtual_display_permanent_count',
+    'dd_display_helper_engine',
+    'vulkan_hdr_layer',
+    'dd_wa_dummy_plug_hdr10',
+    'dd_always_restore_from_golden',
+    'dd_snapshot_restore_hotkey',
+    'dd_snapshot_restore_hotkey_modifiers',
+    'wgc_pacing_smoothing',
+  ]);
+
+  for (const field of fields.filter((candidate) => commonKeys.has(candidate.key))) {
+    assert.equal(field.platform, undefined, `${field.key} must remain cross-platform`);
+  }
+  for (const field of fields.filter((candidate) => windowsOnlyKeys.has(candidate.key))) {
+    assert.equal(field.platform, 'windows', `${field.key} must remain Windows-only`);
+  }
+  for (const key of [
+    'dd_virtual_display_scale',
+    'dd_config_revert_delay',
+    'dd_config_revert_on_disconnect',
+    'dd_paused_virtual_display_timeout_secs',
+  ]) {
+    const field = fields.find((candidate) => candidate.key === key);
+    assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux cleanup`);
+  }
+});
+
+test('Linux uses display enumeration and persistence reset', () => {
+  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
+  assert.match(settingsView, /isWindowsHost\.value \|\| isLinuxHost\.value/);
+  assert.match(settingsView, /v-if="supportsDisplayDeviceEnumeration"/);
+  assert.match(
+    settingsView,
+    /v-if="\(isWindowsHost \|\| isLinuxHost\) && activeCategory === 'display' && !isSearching"/,
+  );
+});
 
 test('global command rows preserve order, verbatim text, and Windows elevation', () => {
   const source = [

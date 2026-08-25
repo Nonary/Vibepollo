@@ -343,9 +343,13 @@ fi
 %files
 # Executables
 %caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
+%{_libexecdir}/vibepollo/vibepollo-vkms
 
 # Systemd unit files for user services
 %{_userunitdir}/*.service
+
+# Privileged virtual-display provisioning service
+%{_unitdir}/vibepollo-vkms.service
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules

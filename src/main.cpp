@@ -46,6 +46,8 @@
   #include "src/platform/windows/startup_encoder_probe_policy.h"
   #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/virtual_display_cleanup.h"
+#elif defined(__linux__)
+  #include "src/platform/linux/private_display.h"
 #endif
 
 #ifdef _WIN32
@@ -563,6 +565,12 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+#ifdef __linux__
+  (void) platf::linux_private_display::initialize();
+  auto linux_private_display_guard = util::fail_guard([]() {
+    (void) platf::linux_private_display::revert();
+  });
+#endif
 #ifdef _WIN32
   // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
   // the Web UI toggle authoritative over the installer's unconditional registration and self-heals

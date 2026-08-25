@@ -26,6 +26,11 @@ elseif(UNIX)
 
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Privileged system service that provisions private VKMS outputs before
+        # the display manager enumerates DRM devices.
+        configure_file(packaging/linux/vibepollo-vkms.service.in vibepollo-vkms.service @ONLY)
+    endif()
 
     # configure kwin desktop permission file
     if (${SUNSHINE_ENABLE_KWIN})

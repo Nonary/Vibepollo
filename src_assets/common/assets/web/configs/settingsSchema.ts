@@ -37,7 +37,7 @@ export interface SettingsField {
   stacked?: boolean;
   recommended?: boolean;
   simple?: boolean;
-  platform?: 'windows' | 'linux' | 'macos';
+  platform?: 'windows' | 'linux' | 'macos' | Array<'windows' | 'linux' | 'macos'>;
   visibleWhen?: SettingsVisibility;
   source?: 'gpu';
   encoderFamily?: 'nvidia' | 'intel' | 'amd';
@@ -88,6 +88,7 @@ export const clientOverrideableKeys = new Set([
   'dd_activate_virtual_display',
   'dd_virtual_display_scale',
   'dd_virtual_display_permanent_count',
+  'virtual_display_outputs',
   'dd_mode_remapping',
   'dd_wa_dummy_plug_hdr10',
   'max_bitrate',
@@ -231,7 +232,23 @@ const captureOptions = [
   option('wgc', 'ui.settings.options.capture.wgc'),
   option('wgcc', 'ui.settings.options.capture.wgcc'),
   option('ddx', 'ui.settings.options.capture.ddx'),
+  option('kms', 'ui.settings.options.capture.kms'),
+  option('kwin', 'ui.settings.options.capture.kwin'),
+  option('portal', 'ui.settings.options.capture.portal'),
+  option('wlr', 'ui.settings.options.capture.wlr'),
+  option('x11', 'ui.settings.options.capture.x11'),
+  option('nvfbc', 'ui.settings.options.capture.nvfbc'),
 ];
+
+export function captureOptionsForPlatform(platform: string): SettingsOption[] {
+  const normalized = platform.toLocaleLowerCase();
+  const supportedValues = normalized.includes('windows')
+    ? new Set(['', 'wgc', 'wgcc', 'ddx'])
+    : normalized.includes('linux')
+      ? new Set(['', 'kms', 'kwin', 'portal', 'wlr', 'x11', 'nvfbc'])
+      : new Set(['']);
+  return captureOptions.filter((candidate) => supportedValues.has(candidate.value));
+}
 
 const nvencPresetOptions = [
   option('1', 'ui.settings.options.nvenc_preset.p1'),
@@ -351,6 +368,7 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
   select('dd_virtual_display_scale', virtualScaleOptions, {
     labelKey: 'ui.settings.fields.dd_virtual_display_scale.label',
     descriptionKey: 'ui.settings.fields.dd_virtual_display_scale.description',
+    platform: ['windows', 'linux'],
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];
@@ -411,7 +429,6 @@ export const settingsCategories: SettingsCategory[] = [
           select('capture', captureOptions, {
             labelKey: 'ui.settings.fields.capture.label',
             descriptionKey: 'ui.settings.fields.capture.description',
-            platform: 'windows',
             recommended: true,
           }),
         ],
@@ -476,6 +493,7 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('dd_config_revert_on_disconnect', {
             labelKey: 'ui.settings.fields.dd_config_revert_on_disconnect.label',
             descriptionKey: 'ui.settings.fields.dd_config_revert_on_disconnect.description',
+            platform: ['windows', 'linux'],
           }),
           duration(
             'dd_paused_virtual_display_timeout_secs',
@@ -492,6 +510,7 @@ export const settingsCategories: SettingsCategory[] = [
                 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
               warningKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.warning',
               recommended: true,
+              platform: ['windows', 'linux'],
               visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
             },
           ),
@@ -574,27 +593,42 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'display_driver',
         fields: [
+          text('virtual_display_outputs', {
+            platform: 'linux',
+            monospace: true,
+            stacked: true,
+            labelKey: 'ui.settings.fields.virtual_display_outputs.label',
+            descriptionKey: 'ui.settings.fields.virtual_display_outputs.description',
+          }),
           boolean('dd_use_sunshine_virtual_display_driver', {
             labelKey: 'ui.settings.fields.dd_use_sunshine_virtual_display_driver.label',
             descriptionKey: 'ui.settings.fields.dd_use_sunshine_virtual_display_driver.description',
             recommended: true,
+            platform: 'windows',
           }),
           boolean('dd_activate_virtual_display', {
+            platform: 'windows',
             visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
           }),
           number('dd_virtual_display_permanent_count', {
             min: 0,
             max: 4,
             step: 1,
+            platform: 'windows',
             visibleWhen: { key: 'dd_use_sunshine_virtual_display_driver', equals: true },
           }),
-          select('dd_display_helper_engine', [
-            option('auto', '_common.auto'),
-            option('v2', 'ui.settings.options.display_engine.current'),
-            option('legacy', 'ui.settings.options.display_engine.legacy'),
-          ]),
-          boolean('vulkan_hdr_layer'),
+          select(
+            'dd_display_helper_engine',
+            [
+              option('auto', '_common.auto'),
+              option('v2', 'ui.settings.options.display_engine.current'),
+              option('legacy', 'ui.settings.options.display_engine.legacy'),
+            ],
+            { platform: 'windows' },
+          ),
+          boolean('vulkan_hdr_layer', { platform: 'windows' }),
           boolean('dd_wa_dummy_plug_hdr10', {
+            platform: 'windows',
             visibleWhen: { key: 'virtual_display_mode', equals: 'disabled' },
           }),
         ],
@@ -602,11 +636,22 @@ export const settingsCategories: SettingsCategory[] = [
       {
         id: 'display_recovery',
         fields: [
-          boolean('dd_config_revert_on_disconnect'),
-          boolean('dd_always_restore_from_golden'),
-          number('dd_paused_virtual_display_timeout_secs', { min: 0, step: 1 }),
-          text('dd_snapshot_restore_hotkey'),
-          text('dd_snapshot_restore_hotkey_modifiers'),
+          boolean('dd_config_revert_on_disconnect', { platform: ['windows', 'linux'] }),
+          number('dd_config_revert_delay', {
+            min: 0,
+            step: 100,
+            platform: ['windows', 'linux'],
+            labelKey: 'ui.settings.fields.dd_config_revert_delay.label',
+            descriptionKey: 'ui.settings.fields.dd_config_revert_delay.description',
+          }),
+          boolean('dd_always_restore_from_golden', { platform: 'windows' }),
+          number('dd_paused_virtual_display_timeout_secs', {
+            min: 0,
+            step: 1,
+            platform: ['windows', 'linux'],
+          }),
+          text('dd_snapshot_restore_hotkey', { platform: 'windows' }),
+          text('dd_snapshot_restore_hotkey_modifiers', { platform: 'windows' }),
         ],
       },
     ],
@@ -616,7 +661,10 @@ export const settingsCategories: SettingsCategory[] = [
     groups: [
       {
         id: 'pacing_capture',
-        fields: [select('capture', captureOptions), boolean('wgc_pacing_smoothing')],
+        fields: [
+          select('capture', captureOptions),
+          boolean('wgc_pacing_smoothing', { platform: 'windows' }),
+        ],
       },
       { id: 'pacing_limiter', fields: everydayPacingFields() },
       {
@@ -712,7 +760,7 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           select('encoder', [option('', '_common.auto')]),
           nvencPresetField(),
-          boolean('wgc_pacing_smoothing'),
+          boolean('wgc_pacing_smoothing', { platform: 'windows' }),
         ],
       },
       {
@@ -886,10 +934,12 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_use_sunshine_virtual_display_driver: true,
   dd_activate_virtual_display: false,
   dd_virtual_display_permanent_count: 0,
+  virtual_display_outputs: '',
   dd_display_helper_engine: 'auto',
   vulkan_hdr_layer: true,
   dd_wa_dummy_plug_hdr10: false,
   dd_config_revert_on_disconnect: false,
+  dd_config_revert_delay: 3000,
   dd_always_restore_from_golden: true,
   dd_paused_virtual_display_timeout_secs: 7200,
   dd_snapshot_restore_hotkey: '',

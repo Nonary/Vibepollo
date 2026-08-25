@@ -9,6 +9,7 @@ import GlobalPrepCommands from '@/components/settings/GlobalPrepCommands.vue';
 import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPath.vue';
 import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
+  captureOptionsForPlatform,
   restartRequiredKeys,
   settingsCategories,
   settingsDefaults,
@@ -181,6 +182,12 @@ const isWindowsHost = computed(() =>
     .toLocaleLowerCase()
     .includes('windows'),
 );
+const isLinuxHost = computed(() =>
+  String(hostMetadata.value.platform ?? '')
+    .toLocaleLowerCase()
+    .includes('linux'),
+);
+const supportsDisplayDeviceEnumeration = computed(() => isWindowsHost.value || isLinuxHost.value);
 
 const physicalDisplaySelected = computed(
   () => String(values.virtual_display_mode ?? '') === 'disabled',
@@ -189,7 +196,13 @@ const physicalDisplaySelected = computed(
 const hostPlatform = computed(() => String(hostMetadata.value.platform ?? ''));
 
 const physicalDisplayDescription = computed(() =>
-  t(isWindowsHost.value ? 'config.output_name_desc_windows' : 'config.output_name_desc_unix'),
+  t(
+    isWindowsHost.value
+      ? 'config.output_name_desc_windows'
+      : isLinuxHost.value
+        ? 'config.output_name_desc_linux'
+        : 'config.output_name_desc_unix',
+  ),
 );
 
 const displayDeviceOptions = computed(() => {
@@ -369,7 +382,8 @@ function valuesMatch(current: unknown, expected: string | boolean): boolean {
 function fieldMatchesPlatform(field: SettingsField): boolean {
   if (field.platform) {
     const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
-    return platform.includes(field.platform);
+    const supported = Array.isArray(field.platform) ? field.platform : [field.platform];
+    return supported.some((candidate) => platform.includes(candidate));
   }
   return true;
 }
@@ -503,8 +517,8 @@ function optionsFor(field: SettingsField): SettingsOption[] {
         localizedOption('software', 'ui.settings.options.encoder.software'),
       ];
     }
-  } else if (field.key === 'capture' && !platform.includes('windows')) {
-    options = [localizedOption('', '_common.auto')];
+  } else if (field.key === 'capture') {
+    options = captureOptionsForPlatform(platform);
   }
 
   if (current && !options.some((option) => option.value === current)) {
@@ -971,7 +985,7 @@ onMounted(() => void load());
                     </label>
                     <div class="settings-physical-display__control">
                       <select
-                        v-if="isWindowsHost"
+                        v-if="supportsDisplayDeviceEnumeration"
                         id="setting-output_name"
                         class="vs-select"
                         :value="String(values.output_name ?? '')"
@@ -1006,7 +1020,7 @@ onMounted(() => void load());
                         @input="updateValue('output_name', $event)"
                       />
                       <button
-                        v-if="isWindowsHost"
+                        v-if="supportsDisplayDeviceEnumeration"
                         class="button button--secondary button--compact"
                         type="button"
                         :disabled="displayDevicesLoading"
@@ -1032,7 +1046,7 @@ onMounted(() => void load());
         </template>
 
         <section
-          v-if="activeCategory === 'display' && !isSearching"
+          v-if="(isWindowsHost || isLinuxHost) && activeCategory === 'display' && !isSearching"
           class="danger-zone"
           aria-labelledby="display-recovery-title"
         >

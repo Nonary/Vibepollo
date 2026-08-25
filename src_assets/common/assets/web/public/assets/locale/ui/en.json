@@ -1264,7 +1264,7 @@
           "label": "Audio"
         },
         "display": {
-          "description": "Virtual screens, physical display targeting, HDR, and recovery behavior.",
+          "description": "Virtual screens, physical display targeting, resolution, refresh rate, and HDR.",
           "label": "Displays"
         },
         "everyday": {
@@ -1351,6 +1351,10 @@
         "dd_manual_refresh_rate": {
           "description": "Enter a whole or decimal refresh rate in hertz."
         },
+        "dd_config_revert_delay": {
+          "description": "Wait this many milliseconds after the last stream or app ends before restoring the previous display layout.",
+          "label": "Display restore delay"
+        },
         "dd_manual_resolution": {
           "description": "Use WIDTHxHEIGHT, for example 2560x1440."
         },
@@ -1375,7 +1379,11 @@
         },
         "dd_virtual_display_scale": {
           "description": "Adjust interface size without changing the resolution requested by the client.",
-          "label": "Windows scaling"
+          "label": "Display scaling"
+        },
+        "virtual_display_outputs": {
+          "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the Vibepollo-managed VKMS pool.",
+          "label": "Linux private display connectors"
         },
         "remote_monitor_mute_audio": {
           "description": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
@@ -1394,7 +1402,7 @@
           "label": "Terminate on the first request"
         },
         "capture": {
-          "description": "Automatic follows the capture backend Vibepollo already chooses for this Windows version. Override it only for compatibility or a specific pacing behavior.",
+          "description": "Automatic follows the capture backend Vibepollo chooses for this host. Override it only for compatibility or a specific capture path.",
           "label": "Capture method"
         },
         "encoder": {
@@ -1451,7 +1459,7 @@
           "label": "RTSS installation folder"
         },
         "virtual_display_layout": {
-          "description": "Choose whether physical displays remain part of the Windows desktop while streaming.",
+          "description": "Choose whether physical displays remain part of the host desktop while streaming.",
           "label": "How it joins the desktop"
         },
         "virtual_display_mode": {
@@ -1531,7 +1539,7 @@
           "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
-          "description": "Choose the streaming screen, how it joins the Windows desktop, and how Windows captures it.",
+          "description": "Choose the streaming screen, how it joins the host desktop, and how Vibepollo captures it.",
           "title": "Screen used for streaming"
         },
         "everyday_encoding": {
@@ -1626,8 +1634,14 @@
           "auto_ddx": "Automatic · Desktop Duplication",
           "auto_wgc": "Automatic · Windows Graphics Capture · Variable",
           "ddx": "Desktop Duplication · Compatibility",
+          "kms": "DRM/KMS",
+          "kwin": "KDE/KWin screencasting",
+          "nvfbc": "NVIDIA NvFBC",
+          "portal": "XDG Desktop Portal",
           "wgc": "Windows Graphics Capture · Variable",
-          "wgcc": "Windows Graphics Capture · Constant"
+          "wgcc": "Windows Graphics Capture · Constant",
+          "wlr": "wlroots screencopy",
+          "x11": "X11 (XCB)"
         },
         "codec": {
           "eight_bit": "8-bit",

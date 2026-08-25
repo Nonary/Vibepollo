@@ -58,6 +58,9 @@
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#ifdef __linux__
+  #include "src/platform/linux/private_display.h"
+#endif
 #include "vaapi.h"
 
 #ifdef __linux__
@@ -1314,6 +1317,19 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_WAYLAND
     if (((config::video.capture.empty() && sources.none()) || config::video.capture == "wlr") && verify_wl()) {
       sources[source::WAYLAND] = true;
+    }
+#endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_KWIN)
+    // Managed VKMS framebuffers do not have a render node and are commonly on
+    // a different DRM card than the encoder. Let KWin compose/copy that output
+    // so automatic capture retains hardware encoding on hybrid systems.
+    const bool prefer_kwin_for_private_display =
+      config::video.capture.empty() &&
+      config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled &&
+      linux_private_display::kernel_pool_available();
+    if (prefer_kwin_for_private_display && sources.none() && verify_kwin()) {
+      BOOST_LOG(info) << "Preferring KWin ScreenCast for the managed Linux private display pool."sv;
+      sources[source::KWIN] = true;
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM

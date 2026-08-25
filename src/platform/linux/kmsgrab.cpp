@@ -20,6 +20,7 @@
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "kmsgrab_selection.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -131,8 +132,6 @@ namespace platf {
     using prop_blob_t = util::safe_ptr<drmModePropertyBlobRes, drmModeFreePropertyBlob>;
     using version_t = util::safe_ptr<drmVersion, drmFreeVersion>;
 
-    using conn_type_count_t = std::map<std::uint32_t, std::uint32_t>;
-
     static int env_width;
     static int env_height;
 
@@ -162,6 +161,9 @@ namespace platf {
       // For example HDMI-A-{index} or HDMI-{index}
       std::uint32_t index;
 
+      // Kernel/Wayland connector name, for example HDMI-A-1 or Virtual-1
+      std::string name;
+
       // ID of the connector
       std::uint32_t connector_id;
 
@@ -172,9 +174,10 @@ namespace platf {
       // Connector attributes
       std::uint32_t type;
       std::uint32_t index;
+      std::string connector_name;
 
       // Monitor index in the global list
-      std::uint32_t monitor_index;
+      std::optional<std::uint32_t> monitor_index;
 
       platf::touch_port_t viewport;
     };
@@ -186,6 +189,7 @@ namespace platf {
     };
 
     static std::vector<card_descriptor_t> card_descriptors;
+    static std::vector<selection::named_monitor_t> named_monitors;
 
     static std::uint32_t from_view(const std::string_view &string) {
 #define _CONVERT(x, y) \
@@ -455,7 +459,7 @@ namespace platf {
         return drmModeGetConnector(fd.el, id);
       }
 
-      std::vector<connector_t> monitors(conn_type_count_t &conn_type_count) {
+      std::vector<connector_t> monitors() {
         auto resources = res();
         if (!resources) {
           BOOST_LOG(error) << "Couldn't get connector resources"sv;
@@ -463,8 +467,12 @@ namespace platf {
         }
 
         std::vector<connector_t> monitors;
-        std::for_each_n(resources->connectors, resources->count_connectors, [this, &conn_type_count, &monitors](std::uint32_t id) {
+        std::for_each_n(resources->connectors, resources->count_connectors, [this, &monitors](std::uint32_t id) {
           auto conn = connector(id);
+          if (!conn) {
+            BOOST_LOG(error) << "Couldn't get drm connector ["sv << id << "]: "sv << strerror(errno);
+            return;
+          }
 
           std::uint32_t crtc_id = 0;
 
@@ -475,12 +483,16 @@ namespace platf {
             }
           }
 
-          auto index = ++conn_type_count[conn->connector_type];
+          const auto *type_name = drmModeGetConnectorTypeName(conn->connector_type);
+          std::string connector_name = type_name ? type_name : "Unknown";
+          connector_name += '-';
+          connector_name += std::to_string(conn->connector_type_id);
 
           monitors.emplace_back(connector_t {
             conn->connector_type,
             crtc_id,
-            index,
+            conn->connector_type_id,
+            std::move(connector_name),
             conn->connector_id,
             conn->connection == DRM_MODE_CONNECTED,
           });
@@ -553,9 +565,15 @@ namespace platf {
       std::map<std::uint32_t, monitor_t> result;
 
       for (auto &connector : connectors) {
+        // Disconnected connectors have no CRTC and would all collide at key 0.
+        // Only an active CRTC can have a framebuffer that kmsgrab can capture.
+        if (!connector.crtc_id) {
+          continue;
+        }
         result.emplace(connector.crtc_id, monitor_t {
                                             connector.type,
                                             connector.index,
+                                            connector.name,
                                           });
       }
 
@@ -611,8 +629,23 @@ namespace platf {
       int init(const std::string &display_name, const ::video::config_t &config) {
         delay = std::chrono::nanoseconds {1s} / config.framerate;
 
-        int monitor_index = util::from_view(display_name);
-        int monitor = 0;
+        // Empty historically selected monitor 0. Explicit decimal names remain
+        // legacy aliases, while every other value resolves through the stable
+        // connector names produced by kms_display_names().
+        auto numeric_alias = display_name.empty() ? std::optional<std::uint32_t> {0} : selection::parse_numeric_alias(display_name);
+        std::optional<selection::monitor_t> selected_monitor;
+        if (!numeric_alias) {
+          selected_monitor = selection::resolve_named_monitor(display_name, named_monitors);
+          if (!selected_monitor) {
+            BOOST_LOG(error) << "Couldn't resolve DRM connector ["sv << display_name << "]";
+            return -1;
+          }
+
+          BOOST_LOG(debug) << "Resolved DRM connector ["sv << display_name << "] to monitor ["sv
+                           << selected_monitor->monitor_index << "] on "sv << selected_monitor->card_path;
+        }
+
+        std::uint32_t monitor = 0;
 
         fs::path card_dir {"/dev/dri"sv};
         for (auto &entry : fs::directory_iterator {card_dir}) {
@@ -620,6 +653,9 @@ namespace platf {
 
           auto filestring = file.generic_string();
           if (filestring.size() < 4 || std::string_view {filestring}.substr(0, 4) != "card"sv) {
+            continue;
+          }
+          if (selected_monitor && selected_monitor->card_path != filestring) {
             continue;
           }
 
@@ -656,9 +692,15 @@ namespace platf {
               continue;
             }
 
-            if (monitor != monitor_index) {
-              ++monitor;
-              continue;
+            if (selected_monitor) {
+              if (plane->crtc_id != selected_monitor->crtc_id) {
+                continue;
+              }
+            } else {
+              if (monitor != *numeric_alias) {
+                ++monitor;
+                continue;
+              }
             }
 
             auto fb = card.fb(plane.get());
@@ -760,8 +802,7 @@ namespace platf {
             crtc_index = card.get_crtc_index_by_id(plane->crtc_id);
 
             // Find the connector for this CRTC
-            kms::conn_type_count_t conn_type_count;
-            for (auto &connector : card.monitors(conn_type_count)) {
+            for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
 
@@ -777,7 +818,7 @@ namespace platf {
           }
         }
 
-        BOOST_LOG(error) << "Couldn't find monitor ["sv << monitor_index << ']';
+        BOOST_LOG(error) << "Couldn't find monitor ["sv << display_name << ']';
         return -1;
 
       // Neatly break from nested for loop
@@ -1564,49 +1605,68 @@ namespace platf {
 
     for (auto &monitor : monitors) {
       std::string_view name = monitor->name;
+      std::vector<kms::monitor_t *> candidates;
 
-      // Try to convert names in the format:
-      // {type}-{index}
-      // {index} is n'th occurrence of {type}
-      auto index_begin = name.find_last_of('-');
-
-      std::uint32_t index;
-      if (index_begin == std::string_view::npos) {
-        index = 1;
-      } else {
-        index = std::max<int64_t>(1, util::from_view(name.substr(index_begin + 1)));
-      }
-
-      auto type = kms::from_view(name.substr(0, index_begin));
-
+      // Prefer the kernel connector name. This uses connector_type_id rather
+      // than an enumeration counter, so it remains correct across DRM cards.
       for (auto &card_descriptor : cds) {
         for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
-          if (monitor_descriptor.index == index && monitor_descriptor.type == type) {
-            monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
-            monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
-            monitor_descriptor.viewport.logical_width = monitor->viewport.logical_width;
-            monitor_descriptor.viewport.logical_height = monitor->viewport.logical_height;
-
-            // A sanity check, it's guesswork after all.
-            if (
-              monitor_descriptor.viewport.width != monitor->viewport.width ||
-              monitor_descriptor.viewport.height != monitor->viewport.height
-            ) {
-              BOOST_LOG(warning)
-                << "Mismatch on expected Resolution compared to actual resolution: "sv
-                << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
-                << " vs "sv
-                << monitor->viewport.width << 'x' << monitor->viewport.height;
-            }
-
-            BOOST_LOG(info) << "Monitor " << monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;
-            goto break_for_loop;
+          if (monitor_descriptor.monitor_index && kms::selection::ascii_iequals(monitor_descriptor.connector_name, name)) {
+            candidates.emplace_back(&monitor_descriptor);
           }
         }
       }
-    break_for_loop:
 
-      BOOST_LOG(verbose) << "Reduced to name: "sv << name << ": "sv << index;
+      // Some compositors use connector type aliases (for example HDMI-1).
+      // Retain the old type/index fallback, now backed by the DRM-provided
+      // connector_type_id rather than a process-global occurrence count.
+      if (candidates.empty()) {
+        const auto index_begin = name.find_last_of('-');
+        const auto index = index_begin == std::string_view::npos ? 1 : std::max<int64_t>(1, util::from_view(name.substr(index_begin + 1)));
+        const auto type = kms::from_view(name.substr(0, index_begin));
+
+        for (auto &card_descriptor : cds) {
+          for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+            if (monitor_descriptor.monitor_index && monitor_descriptor.index == index && monitor_descriptor.type == type) {
+              candidates.emplace_back(&monitor_descriptor);
+            }
+          }
+        }
+      }
+
+      // Matching dimensions can safely disambiguate identical connector names
+      // exposed by different GPUs. If that is still ambiguous, do not attach
+      // one output's desktop coordinates to another output.
+      if (candidates.size() > 1) {
+        std::erase_if(candidates, [&](const auto *candidate) {
+          return candidate->viewport.width != monitor->viewport.width || candidate->viewport.height != monitor->viewport.height;
+        });
+      }
+
+      if (candidates.size() != 1) {
+        BOOST_LOG(warning) << "Couldn't uniquely correlate Wayland output ["sv << name << "] to a DRM connector"sv;
+        continue;
+      }
+
+      auto &monitor_descriptor = *candidates.front();
+      monitor_descriptor.viewport.offset_x = monitor->viewport.offset_x;
+      monitor_descriptor.viewport.offset_y = monitor->viewport.offset_y;
+      monitor_descriptor.viewport.logical_width = monitor->viewport.logical_width;
+      monitor_descriptor.viewport.logical_height = monitor->viewport.logical_height;
+
+      // A sanity check, it's guesswork after all.
+      if (
+        monitor_descriptor.viewport.width != monitor->viewport.width ||
+        monitor_descriptor.viewport.height != monitor->viewport.height
+      ) {
+        BOOST_LOG(warning)
+          << "Mismatch on expected Resolution compared to actual resolution: "sv
+          << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height
+          << " vs "sv
+          << monitor->viewport.width << 'x' << monitor->viewport.height;
+      }
+
+      BOOST_LOG(info) << "Monitor " << *monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;
     }
 
     BOOST_LOG(info) << "--------- End of KMS monitor list ---------"sv;
@@ -1614,7 +1674,7 @@ namespace platf {
 
   // A list of names of displays accepted as display_name
   std::vector<std::string> kms_display_names(mem_type_e hwdevice_type) {
-    int count = 0;
+    std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
       BOOST_LOG(warning) << "Couldn't find /dev/dri, kmsgrab won't be enabled"sv;
@@ -1626,10 +1686,7 @@ namespace platf {
       return {};
     }
 
-    kms::conn_type_count_t conn_type_count;
-
     std::vector<kms::card_descriptor_t> cds;
-    std::vector<std::string> display_names;
 
     fs::path card_dir {"/dev/dri"sv};
     for (auto &entry : fs::directory_iterator {card_dir}) {
@@ -1664,7 +1721,7 @@ namespace platf {
         continue;
       }
 
-      auto crtc_to_monitor = kms::map_crtc_to_monitor(card.monitors(conn_type_count));
+      auto crtc_to_monitor = kms::map_crtc_to_monitor(card.monitors());
 
       auto end = std::end(card);
       for (auto plane = std::begin(card); plane != end; ++plane) {
@@ -1707,7 +1764,9 @@ namespace platf {
             (int) crtc->width,
             (int) crtc->height,
           };
-          it->second.monitor_index = count;
+          if (!it->second.monitor_index) {
+            it->second.monitor_index = count;
+          }
         }
 
         kms::env_width = std::max(kms::env_width, (int) (crtc->x + crtc->width));
@@ -1715,7 +1774,7 @@ namespace platf {
 
         kms::print(plane.get(), fb.get(), crtc.get());
 
-        display_names.emplace_back(std::to_string(count++));
+        ++count;
       }
 
       cds.emplace_back(kms::card_descriptor_t {
@@ -1737,6 +1796,9 @@ namespace platf {
 
     for (auto &card_descriptor : cds) {
       for (auto &[_, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+        if (!monitor_descriptor.monitor_index) {
+          continue;
+        }
         BOOST_LOG(debug) << "Monitor description"sv;
         BOOST_LOG(debug) << "Resolution: "sv << monitor_descriptor.viewport.width << 'x' << monitor_descriptor.viewport.height;
         BOOST_LOG(debug) << "Offset: "sv << monitor_descriptor.viewport.offset_x << 'x' << monitor_descriptor.viewport.offset_y;
@@ -1751,7 +1813,44 @@ namespace platf {
 
     BOOST_LOG(debug) << "Desktop resolution: "sv << kms::env_width << 'x' << kms::env_height;
 
+    std::vector<kms::selection::monitor_t> active_monitors;
+    for (const auto &card_descriptor : cds) {
+      for (const auto &[crtc_id, monitor_descriptor] : card_descriptor.crtc_to_monitor) {
+        if (!monitor_descriptor.monitor_index) {
+          continue;
+        }
+        active_monitors.emplace_back(kms::selection::monitor_t {
+          card_descriptor.path,
+          monitor_descriptor.connector_name,
+          crtc_id,
+          *monitor_descriptor.monitor_index,
+        });
+      }
+    }
+
+    auto named_monitors = kms::selection::name_monitors(std::move(active_monitors));
+
+    // The generic capture loop selects configured outputs by comparing them to
+    // this name list. Keep an old numeric configuration working without
+    // publishing duplicate numeric entries: move that monitor's stable name to
+    // the default position for this enumeration.
+    if (const auto numeric_alias = kms::selection::parse_numeric_alias(config::get_active_output_name()); numeric_alias) {
+      const auto selected = std::ranges::find(named_monitors, *numeric_alias, [](const auto &named_monitor) {
+        return named_monitor.monitor.monitor_index;
+      });
+      if (selected != named_monitors.end()) {
+        std::rotate(named_monitors.begin(), selected, std::next(selected));
+      }
+    }
+
+    std::vector<std::string> display_names;
+    display_names.reserve(named_monitors.size());
+    for (const auto &named_monitor : named_monitors) {
+      display_names.emplace_back(named_monitor.display_name);
+    }
+
     kms::card_descriptors = std::move(cds);
+    kms::named_monitors = std::move(named_monitors);
 
     return display_names;
   }
