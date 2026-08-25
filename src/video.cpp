@@ -111,6 +111,15 @@ namespace video {
     // process shutdown. Deliberately give the runtime fence process lifetime.
     auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
 
+    // Serializes destruction of encode sessions (and, on Windows, the async release of shared
+    // D3D capture surfaces). When two clients share one capture target, a capture reinit makes
+    // both video threads tear down their encoder session at the same instant.
+    std::mutex encode_session_teardown_mutex;
+    // A host restart is the recovery boundary after a vendor call times out.
+    // Detached watchdog workers can outlive ordinary static destruction during
+    // process shutdown. Deliberately give the runtime fence process lifetime.
+    auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
+
 #ifdef _WIN32
     void wait_for_recent_display_apply_stability() {
       constexpr auto kFallbackSettleWindow = std::chrono::milliseconds(1500);

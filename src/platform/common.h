@@ -1003,6 +1003,7 @@ namespace platf {
   std::unique_ptr<host_stats_provider_t>
     create_host_stats_provider();
 
+  /** Resolve the render device path used for hardware encoding. */
   std::string resolve_render_device();
   bool has_elevated_privileges(bool all_caps = true);
   void drop_elevated_privileges(bool all_caps = true);

@@ -160,6 +160,15 @@ namespace remote_display_topology {
     return {true, true, state.normal_game_token};
   }
 
+  bool coordinator_t::reapply_composed_topology() {
+    std::lock_guard lock(mutex_);
+    if (!callbacks_.apply_composed_topology) {
+      return false;
+    }
+    std::vector<std::string> ignored;
+    return callbacks_.apply_composed_topology(compose_locked(ignored));
+  }
+
   void coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);

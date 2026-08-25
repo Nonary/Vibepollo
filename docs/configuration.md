@@ -1274,6 +1274,28 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### remote_monitor_mute_audio
+
+Do not capture or transmit host audio for Remote Monitor sessions. Video and
+input continue normally. The default is `false`.
+
+### remote_monitor_disconnect_on_stream_end
+
+Release a client's owned Remote Monitor display when its RTSP stream ends. The
+default is `false`, which retains the display identity and requested topology
+after transport loss so that the paired client can Resume it.
+
+### remote_monitor_disconnect_on_client_disconnect
+
+Release a retained Remote Monitor when the paired client explicitly
+disconnects. The default is `false`.
+
+### remote_monitor_terminate_on_first_request
+
+Allow an additional paired client to terminate the active game with its first
+Terminate request. The original game client is unaffected. The default is
+`false`.
+
 ### dd_configuration_option
 
 <table>
