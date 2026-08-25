@@ -68,6 +68,8 @@
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
+#elif defined(__linux__)
+  #include "platform/linux/private_display.h"
 #endif
 #include "process.h"
 #include "rtsp.h"
@@ -3244,6 +3246,9 @@ namespace nvhttp {
       // paired and unpaired discovery requests.
       tree.put("root.VirtualDisplayCapable", true);
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
+#elif defined(__linux__)
+      tree.put("root.VirtualDisplayCapable", platf::linux_private_display::capable());
+      tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
 #else
       tree.put("root.VirtualDisplayCapable", false);
       tree.put("root.VirtualDisplayDriverReady", false);
@@ -4191,6 +4196,9 @@ namespace nvhttp {
       no_active_sessions = !has_stream_session_activity();
       if (no_active_sessions) {
         config::set_runtime_output_name_override(std::nullopt);
+#if defined(_WIN32) || defined(__linux__)
+        stream::cancel_paused_display_cleanup();
+#endif
       }
 
 #ifdef _WIN32
@@ -4238,6 +4246,27 @@ namespace nvhttp {
         return;
       }
 
+#elif defined(__linux__)
+    if (!launch_session->input_only) {
+      const auto prepared = platf::linux_private_display::prepare_session(
+        *launch_session, no_active_sessions, allow_display_changes
+      );
+      if (prepared.active) {
+        config::set_runtime_output_name_override(prepared.output_name);
+        pending_output_override = prepared.output_name;
+      } else if (prepared.requested) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", prepared.error);
+        tree.put("root.gamesession", 0);
+        return;
+      }
+    }
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      if (!has_stream_session_activity() && launch_session->virtual_display) {
+        (void) platf::linux_private_display::revert();
+      }
+    });
 #endif
 
       // The display should be restored in case something fails as there are no other sessions.
@@ -4311,6 +4340,12 @@ namespace nvhttp {
       display_helper_integration::DisplayApplyBuilder noop_builder;
       noop_builder.set_session(*launch_session);
       if (!display_helper_integration::apply(noop_builder.build())) {
+        if (launch_session->virtual_display) {
+          tree.put("root.gamesession", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "Failed to activate the Linux private streaming display.");
+          return;
+        }
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
@@ -4428,6 +4463,8 @@ namespace nvhttp {
       tree.put("root.gamesession", 1);
 #ifdef _WIN32
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
+#elif defined(__linux__)
+      tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
 #else
       tree.put("root.VirtualDisplayDriverReady", false);
 #endif
@@ -4445,8 +4482,10 @@ namespace nvhttp {
         tree.put("root.gamesession", 0);
         return;
       }
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       virtual_display_teardown_guard.disable();
+#endif
+#ifdef _WIN32
       normal_vdd_identity_guard.disable();
 #endif
       revert_display_configuration = false;
@@ -4618,7 +4657,7 @@ namespace nvhttp {
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     if (no_active_sessions) {
       stream::cancel_paused_display_cleanup();
     }
@@ -4760,6 +4799,27 @@ namespace nvhttp {
       return;
     }
 
+#elif defined(__linux__)
+    if (!joining_existing_game_output) {
+      const auto prepared = platf::linux_private_display::prepare_session(
+        *launch_session, no_active_sessions, allow_session_display_changes
+      );
+      if (prepared.active) {
+        config::set_runtime_output_name_override(prepared.output_name);
+        pending_output_override = prepared.output_name;
+      } else if (prepared.requested) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", prepared.error);
+        tree.put("root.resume", 0);
+        return;
+      }
+    }
+    auto virtual_display_teardown_guard = util::fail_guard([&]() {
+      stream::session::cleanup_reservation_t cleanup_reservation;
+      if (!has_stream_session_activity() && launch_session->virtual_display) {
+        (void) platf::linux_private_display::revert();
+      }
+    });
 #endif
 
     if (no_active_sessions) {
@@ -4844,6 +4904,12 @@ namespace nvhttp {
       display_helper_integration::DisplayApplyBuilder noop_builder;
       noop_builder.set_session(*launch_session);
       if (!display_helper_integration::apply(noop_builder.build())) {
+        if (launch_session->virtual_display) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 503);
+          tree.put("root.<xmlattr>.status_message", "Failed to activate the Linux private streaming display.");
+          return;
+        }
         BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
       }
 #endif
@@ -4856,6 +4922,12 @@ namespace nvhttp {
         display_helper_integration::DisplayApplyBuilder noop_builder;
         noop_builder.set_session(*launch_session);
         if (!display_helper_integration::apply(noop_builder.build())) {
+          if (launch_session->virtual_display) {
+            tree.put("root.resume", 0);
+            tree.put("root.<xmlattr>.status_code", 503);
+            tree.put("root.<xmlattr>.status_message", "Failed to activate the Linux private streaming display.");
+            return;
+          }
           BOOST_LOG(warning) << "Display helper: failed to apply display configuration; continuing with existing display.";
         }
 #endif
@@ -4926,6 +4998,8 @@ namespace nvhttp {
 #ifdef _WIN32
 
     tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
+#elif defined(__linux__)
+    tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
 #else
     tree.put("root.VirtualDisplayDriverReady", false);
 #endif
@@ -4939,8 +5013,10 @@ namespace nvhttp {
       tree.put("root.<xmlattr>.status_message", "RTSP pending session admission was rejected");
       return;
     }
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     virtual_display_teardown_guard.disable();
+#endif
+#ifdef _WIN32
     normal_vdd_identity_guard.disable();
 #endif
     output_override_guard.disable();

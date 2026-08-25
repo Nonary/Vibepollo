@@ -50,7 +50,8 @@
 #include "display_device.h"
 #include "deferred_action.h"
 #include "file_handler.h"
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
+  #include "display_helper_integration.h"
   #include "remote_display_topology.h"
 #endif
 #include "logging.h"
@@ -2713,6 +2714,15 @@ namespace proc {
       if (reverted && rtsp_stream::session_count_no_cleanup() == 0) {
         BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
         display_helper_integration::stop_watchdog();
+      }
+#elif defined(__linux__)
+      platf::linux_private_display::cancel_scheduled_revert();
+      if (config::video.dd.config_revert_delay.count() > 0) {
+        platf::linux_private_display::schedule_revert(
+          config::video.dd.config_revert_delay
+        );
+      } else {
+        (void) display_helper_integration::revert();
       }
 #endif
     } else if (should_dispatch_revert && other_streaming_session_active) {

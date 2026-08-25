@@ -948,6 +948,7 @@ namespace config {
       -1,  // virtual_display_scale_percent
       0,  // virtual_display_permanent_count
       false,  // virtual_display_permanent_count_configured
+      {},  // virtual_display_outputs (Linux; empty auto-discovers Vibepollo VKMS connectors)
       {},  // snapshot_exclude_devices
       {},  // mode_remapping
       {false},  // wa
@@ -1883,6 +1884,16 @@ namespace config {
     if (!virtual_display_mode_specified && !platf::is_windows_11_or_later()) {
       video.virtual_display_mode = video_t::virtual_display_mode_e::disabled;
     }
+#elif defined(__linux__)
+    // Preserve upgrades on hosts that have not installed/provisioned a private
+    // connector yet. An explicit mode or connector list remains authoritative.
+    const auto linux_private_outputs = vars.find("virtual_display_outputs");
+    const bool linux_private_outputs_specified =
+      linux_private_outputs != vars.end() && !linux_private_outputs->second.empty();
+    if (!virtual_display_mode_specified && !linux_private_outputs_specified &&
+        !platf::linux_private_display::kernel_pool_available()) {
+      video.virtual_display_mode = video_t::virtual_display_mode_e::disabled;
+    }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
@@ -1939,6 +1950,7 @@ namespace config {
         video.dd.virtual_display_permanent_count = std::clamp(value, 0, SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT);
       }
     }
+    generic_f(vars, "virtual_display_outputs", video.dd.virtual_display_outputs, dd::snapshot_exclude_devices_from_view);
     generic_f(vars, "dd_snapshot_exclude_devices", video.dd.snapshot_exclude_devices, dd::snapshot_exclude_devices_from_view);
     {
       auto it = vars.find("dd_snapshot_restore_hotkey");
@@ -2472,10 +2484,10 @@ namespace config {
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
     std::shared_mutex g_output_override_mutex;
     std::optional<std::string> g_runtime_output_name_override;
-#ifdef _WIN32
-    std::optional<std::string> g_deferred_virtual_output_name_override;
     std::uint64_t g_next_runtime_output_override_lease {0};
     std::uint64_t g_runtime_output_override_lease {0};
+#ifdef _WIN32
+    std::optional<std::string> g_deferred_virtual_output_name_override;
     std::uint64_t g_deferred_virtual_output_override_lease {0};
 #endif
 
@@ -2612,6 +2624,7 @@ namespace config {
         "dd_activate_virtual_display",
         "dd_virtual_display_scale",
         "dd_virtual_display_permanent_count",
+        "virtual_display_outputs",
         "dd_mode_remapping",
         "dd_wa_dummy_plug_hdr10",
         "max_bitrate",
@@ -2894,20 +2907,20 @@ namespace config {
 #endif
 
     std::uint64_t set_runtime_output_name_override_impl(std::optional<std::string> output_name) {
+#ifdef _WIN32
       bool should_schedule_deferred_reapply = false;
+#endif
       std::uint64_t lease = 0;
 
       std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
-#ifdef _WIN32
       // Increment for every publication or clear. A recovery rollback can
       // therefore clear only the exact override it published, even if a
       // newer session selects the same device id.
       lease = ++g_next_runtime_output_override_lease;
-#endif
       if (!output_name) {
         g_runtime_output_name_override.reset();
-#ifdef _WIN32
         g_runtime_output_override_lease = 0;
+#ifdef _WIN32
         g_deferred_virtual_output_name_override.reset();
         g_deferred_virtual_output_override_lease = 0;
 #endif
@@ -2936,6 +2949,7 @@ namespace config {
       }
 #else
       g_runtime_output_name_override = std::move(output_name);
+      g_runtime_output_override_lease = lease;
 #endif
 
 #ifdef _WIN32
@@ -3034,7 +3048,6 @@ namespace config {
     (void) set_runtime_output_name_override_impl(std::move(output_name));
   }
 
-#ifdef _WIN32
   runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name) {
     return set_runtime_output_name_override_impl(std::move(output_name));
   }
@@ -3051,14 +3064,17 @@ namespace config {
       g_runtime_output_override_lease = 0;
       cleared = true;
     }
+#ifdef _WIN32
     if (g_deferred_virtual_output_override_lease == lease) {
       g_deferred_virtual_output_name_override.reset();
       g_deferred_virtual_output_override_lease = 0;
       cleared = true;
     }
+#endif
     return cleared;
   }
 
+#ifdef _WIN32
   void request_deferred_virtual_output_reapply_shutdown() {
     auto &worker = deferred_virtual_output_reapply_worker();
     {
@@ -3120,6 +3136,7 @@ namespace config {
       const auto prev_dd_virtual_display_scale_percent = video.dd.virtual_display_scale_percent;
       const auto prev_dd_virtual_display_permanent_count = video.dd.virtual_display_permanent_count;
       const auto prev_dd_virtual_display_permanent_count_configured = video.dd.virtual_display_permanent_count_configured;
+      const auto prev_virtual_display_outputs = video.dd.virtual_display_outputs;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
       const auto prev_rtx_hdr_enabled = video.rtx_hdr.enabled;
@@ -3194,6 +3211,7 @@ namespace config {
                                      (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
                                      (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
                                      (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
+                                     (prev_virtual_display_outputs != video.dd.virtual_display_outputs) ||
                                      (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
                                      (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
 

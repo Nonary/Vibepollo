@@ -1,0 +1,17 @@
+[Unit]
+Description=Vibepollo private VKMS display pool
+Documentation=https://docs.kernel.org/gpu/vkms.html
+After=systemd-modules-load.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@CMAKE_INSTALL_FULL_LIBEXECDIR@/vibeshine/vibeshine-vkms start
+ExecStop=@CMAKE_INSTALL_FULL_LIBEXECDIR@/vibeshine/vibeshine-vkms stop
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

@@ -34,7 +34,7 @@ import {
 test('capture options follow the host platform', () => {
   assert.deepEqual(
     captureOptionsForPlatform('linux').map((option) => option.value),
-    [''],
+    ['', 'kms', 'kwin', 'portal', 'wlr', 'x11', 'nvfbc'],
   );
   assert.deepEqual(
     captureOptionsForPlatform('windows').map((option) => option.value),

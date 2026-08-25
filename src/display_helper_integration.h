@@ -26,6 +26,50 @@ namespace display_helper_integration {
   std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail);
 }  // namespace display_helper_integration
 
+#elif defined(__linux__)
+
+  #include "src/platform/linux/private_display.h"
+
+namespace display_helper_integration {
+  inline bool apply(const DisplayApplyRequest &request) {
+    if (request.action == DisplayApplyAction::Revert) {
+      return platf::linux_private_display::revert();
+    }
+    if (!request.session) {
+      return request.action == DisplayApplyAction::Skip;
+    }
+    return platf::linux_private_display::apply_session(*request.session);
+  }
+
+  inline bool revert(bool = false) {
+    return platf::linux_private_display::revert();
+  }
+
+  inline bool export_golden_restore() {
+    return false;
+  }
+
+  inline bool reset_persistence() {
+    return platf::linux_private_display::reset_persistence();
+  }
+
+  inline bool suppress_fallback() {
+    return true;
+  }
+
+  inline std::string enumerate_devices_json(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
+  ) {
+    return platf::linux_private_display::enumerate_devices_json(detail);
+  }
+
+  inline std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
+    display_device::DeviceEnumerationDetail detail = display_device::DeviceEnumerationDetail::Minimal
+  ) {
+    return platf::linux_private_display::enumerate_devices(detail);
+  }
+}  // namespace display_helper_integration
+
 #else
 
 namespace display_helper_integration {

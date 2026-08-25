@@ -236,9 +236,10 @@ namespace config {
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
-      int virtual_display_scale_percent;  ///< Windows scale for virtual displays (-1 is resolution-based; 0 preserves Windows' choice).
+      int virtual_display_scale_percent;  ///< Virtual-display scale percent (-1 is automatic; 0 preserves the compositor's choice).
       int virtual_display_permanent_count;  ///< Number of always-present Sunshine virtual displays to request when explicitly configured.
       bool virtual_display_permanent_count_configured;  ///< False preserves installs that predate this setting.
+      std::vector<std::string> virtual_display_outputs;  ///< Linux connector names reserved for private streaming displays; empty enables managed-VKMS discovery.
       std::vector<std::string> snapshot_exclude_devices;  ///< Device IDs to skip when saving display snapshots.
       mode_remapping_t mode_remapping;
       workarounds_t wa;
@@ -531,7 +532,6 @@ namespace config {
   std::optional<std::string> runtime_output_name_override();
   std::string get_active_output_name();
 
-#ifdef _WIN32
   // A recovery worker can publish a temporary virtual-output override.  The
   // lease makes rollback conditional so an older recovery cannot erase an
   // override installed by a newer session.
@@ -539,6 +539,7 @@ namespace config {
   runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
+#ifdef _WIN32
   // The lock-screen virtual-output retry worker is owned work.  Main stops
   // and joins it before configuration, display-helper, and mail teardown.
   void request_deferred_virtual_output_reapply_shutdown();

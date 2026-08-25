@@ -1225,6 +1225,42 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### virtual_display_outputs
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Linux-only list of DRM connector names reserved for private streaming displays.
+            Separate names with commas, or provide a JSON string array. Leave this empty to
+            auto-discover outputs created by the packaged <code>vibeshine-vkms.service</code>.
+            Explicit connector names are useful for a forced-EDID or hardware dummy output.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">Empty (auto-discover the managed VKMS pool)</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_outputs = Virtual-1, Virtual-2
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Linux setup</td>
+        <td colspan="2">@code{}
+            sudo systemctl enable --now vibeshine-vkms.service
+            @endcode
+            The unit creates four independent VKMS outputs before the display manager starts.
+            Vibepollo enables one only for a stream, applies the requested mode and layout through
+            KScreen, captures that exact connector, and restores the prior topology afterward.
+            VKMS outputs are SDR-only; configure a connector with HDR metadata explicitly when HDR
+            is required. KDE Plasma/KWin and <code>kscreen-doctor</code> are required by this backend.
+        </td>
+    </tr>
+</table>
+
 ### virtual_display_layout
 
 <table>
@@ -1271,7 +1307,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
 
 ### remote_monitor_confirm_app_replacement
 
-Protect a running app while Vibeshine advertises the host as available for
+Protect a running app while Vibepollo advertises the host as available for
 warning-free Remote Input and Remote Monitor attachment. Selecting a different
 normal app is rejected once and temporarily advertises the running app as
 resumable to that paired client, allowing Moonlight to show its native close-app
@@ -1285,7 +1321,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Perform mandatory verification and additional configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Applies to Windows and to Linux private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1331,7 +1367,7 @@ this option to replace the running app immediately. The default is `true`.
         <td colspan="2">
             Perform additional resolution configuration for the display device.
             @note{"Optimize game settings" must be enabled in Moonlight for this option to work.}
-            @note{Applies to Windows only.}
+            @note{On Linux, this applies to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1367,7 +1403,7 @@ this option to replace the running app immediately. The default is `true`.
         <td colspan="2">
             Specify manual resolution to be used.
             @note{[dd_resolution_option](#dd_resolution_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{On Linux, this applies to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1389,7 +1425,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Perform additional refresh rate configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{On Linux, this applies to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1429,7 +1465,7 @@ this option to replace the running app immediately. The default is `true`.
         <td colspan="2">
             Specify manual refresh rate to be used.
             @note{[dd_refresh_rate_option](#dd_refresh_rate_option) must be set to `manual`}
-            @note{Applies to Windows only.}
+            @note{On Linux, this applies to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1452,7 +1488,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{Applies to Windows only.}
+            @note{Linux VKMS private displays are SDR-only; unsupported HDR requests are safely downgraded to SDR.}
         </td>
     </tr>
     <tr>
@@ -1483,7 +1519,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Override the HDR request coming from the client.
-            @note{Applies to Windows only.}
+            @note{Linux applies this to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -1519,7 +1555,7 @@ this option to replace the running app immediately. The default is `true`.
         <td colspan="2">
             Additional delay in milliseconds to wait before reverting configuration when the app has been closed or the last session terminated.
             Main purpose is to provide a smoother transition when quickly switching between apps.
-            @note{Applies to Windows only.}
+            @note{On Linux, this delay also governs restoration of the physical desktop.}
         </td>
     </tr>
     <tr>
@@ -1543,7 +1579,7 @@ this option to replace the running app immediately. The default is `true`.
             When enabled, display configuration is reverted upon disconnect of all clients instead of app close or last session termination.
             This can be useful for returning to physical usage of the host machine without closing the active app.
             @warning{Some applications may not function properly when display configuration is changed while active.}
-            @note{Applies to Windows only.}
+            @note{On Linux, this restores the physical desktop and releases the private display.}
         </td>
     </tr>
     <tr>
@@ -1783,7 +1819,7 @@ this option to replace the running app immediately. The default is `true`.
             @note{First entry to be matched in the list is the one that will be used.}
             @tip{`requested_resolution` and `final_resolution` can be omitted for `refresh_rate_only` group.}
             @tip{`requested_fps` and `final_refresh_rate` can be omitted for `resolution_only` group.}
-            @note{Applies to Windows only.}
+            @note{Linux applies remapped modes to private displays managed through KScreen.}
         </td>
     </tr>
     <tr>
@@ -2454,7 +2490,7 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The file used by new Vibeshine features to persist web authentication tokens and notification state.
+            The file used by new Vibepollo features to persist web authentication tokens and notification state.
             If left unset, it defaults to <code>vibeshine_state.json</code> in the same directory as other Sunshine data.
         </td>
     </tr>
@@ -2658,7 +2694,7 @@ this option to replace the running app immediately. The default is `true`.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="9">Choices</td>
         <td>nvfbc</td>
         <td>Use NVIDIA Frame Buffer Capture to capture direct to GPU memory. This is usually the fastest method for
             NVIDIA cards. NvFBC does not have native Wayland support and does not work with XWayland.
@@ -2678,6 +2714,11 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td>kwin</td>
         <td>Capture with KDE/KWin Wayland compositor via KDE screencasting.
+            @note{Applies to Linux only.}</td>
+    </tr>
+    <tr>
+        <td>portal</td>
+        <td>Capture a selected Wayland display through the XDG Desktop Portal and PipeWire.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

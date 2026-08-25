@@ -73,6 +73,8 @@
 
 #ifdef _WIN32
   #include "platform/windows/virtual_display_cleanup.h"
+#elif defined(__linux__)
+  #include "platform/linux/private_display.h"
 #endif
 
 #include <nlohmann/json.hpp>
@@ -3061,6 +3063,20 @@ namespace confighttp {
       {"hevc", probe_complete && encoder_caps.hevc_mode >= 2},
       {"av1", probe_complete && encoder_caps.av1_mode >= 2},
     };
+#if defined(__linux__)
+    output_tree["virtual_display"] = {
+      {"capable", platf::linux_private_display::capable()},
+      {"ready", platf::linux_private_display::ready()},
+      {"backend", "kscreen-vkms"},
+      {"modes", {"per_client", "shared"}},
+      {"layouts", {"exclusive", "extended", "extended_primary", "extended_isolated", "extended_primary_isolated"}},
+      {"display_enumeration", true},
+      {"dynamic_modes", true},
+      {"hdr", "per_output"},
+      {"scale", true},
+      {"reset_persistence", true},
+    };
+#endif
 #if defined(_WIN32)
     try {
       const auto gpus = platf::enumerate_gpus();

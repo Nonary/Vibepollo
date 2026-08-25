@@ -412,6 +412,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             TEST_SOURCE unit/platform/linux/test_pipewire_format.cpp
             LINK_LIBRARIES PkgConfig::TEST_PIPEWIRE)
     endif()
+    sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp)
 endif()
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp")
@@ -437,6 +438,20 @@ sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOU
 sunshine_register_component(NAME test_component_external_command_policy TEST_SOURCE integration/test_external_commands.cpp)
 sunshine_register_component(NAME test_component_virtual_display_manifest TEST_SOURCE integration/test_virtual_display_packaging.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    find_program(SUNSHINE_TEST_BASH_EXECUTABLE bash)
+    if(SUNSHINE_TEST_BASH_EXECUTABLE)
+        add_test(
+            NAME test_component_linux_vkms_setup
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibeshine-vkms.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-vkms")
+        set_tests_properties(test_component_linux_vkms_setup PROPERTIES LABELS "component")
+    else()
+        message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")
+    endif()
+endif()
 
 if(WIN32)
     sunshine_register_component(NAME test_component_playnite_protocol TEST_SOURCE test_playnite_protocol.cpp

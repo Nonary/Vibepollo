@@ -1,0 +1,572 @@
+#!/usr/bin/env bash
+# Provision the private DRM outputs used by Vibeshine's Linux virtual-display
+# backend. This helper is intentionally root-run: mounting configfs, loading
+# VKMS, and changing configfs objects are privileged operations.
+
+set -uo pipefail
+
+PROGRAM_NAME="vibeshine-vkms"
+VKMS_DEVICE_NAME="vibeshine"
+VKMS_OUTPUT_COUNT=4
+
+# These are reset to the production path by main(). Keeping path setup in one
+# function lets the shell tests source this file and use a disposable tree.
+CONFIGFS_MOUNTPOINT=""
+VKMS_CONFIGFS_ROOT=""
+VKMS_DEVICE_DIR=""
+FAKE_CONFIGFS=0
+
+log() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*"
+}
+
+error() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+}
+
+configure_paths() {
+  local configfs_mountpoint=$1
+
+  CONFIGFS_MOUNTPOINT=$configfs_mountpoint
+  VKMS_CONFIGFS_ROOT="${CONFIGFS_MOUNTPOINT}/vkms"
+  VKMS_DEVICE_DIR="${VKMS_CONFIGFS_ROOT}/${VKMS_DEVICE_NAME}"
+}
+
+require_root() {
+  if ((EUID != 0)); then
+    error "this action must be run as root"
+    return 1
+  fi
+}
+
+require_command() {
+  local command_name=$1
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    error "required command not found: ${command_name}"
+    return 1
+  fi
+}
+
+configfs_is_mounted() {
+  # mountinfo field 5 is the mount point and the filesystem type follows the
+  # " - " separator. The production path contains no mountinfo escapes.
+  awk -v target="$CONFIGFS_MOUNTPOINT" '
+    $5 == target {
+      for (i = 6; i <= NF; ++i) {
+        if ($i == "-" && $(i + 1) == "configfs") {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  ' /proc/self/mountinfo
+}
+
+ensure_configfs() {
+  if configfs_is_mounted; then
+    return 0
+  fi
+
+  if [[ ! -d "$CONFIGFS_MOUNTPOINT" ]]; then
+    error "configfs mount point is unavailable: ${CONFIGFS_MOUNTPOINT}"
+    return 1
+  fi
+
+  log "mounting configfs at ${CONFIGFS_MOUNTPOINT}"
+  if ! mount -t configfs configfs "$CONFIGFS_MOUNTPOINT"; then
+    error "could not mount configfs; ensure the kernel supports CONFIG_CONFIGFS_FS"
+    return 1
+  fi
+
+  if ! configfs_is_mounted; then
+    error "${CONFIGFS_MOUNTPOINT} is not a configfs mount after mount completed"
+    return 1
+  fi
+}
+
+ensure_modern_vkms() {
+  if [[ ! -d "$VKMS_CONFIGFS_ROOT" ]]; then
+    log "loading VKMS with configfs plane-pipeline support"
+    if ! modprobe vkms create_default_dev=0 enable_plane_pipeline=1; then
+      error "could not load the vkms kernel module"
+      return 1
+    fi
+  fi
+
+  if [[ ! -d "$VKMS_CONFIGFS_ROOT" ]]; then
+    error "modern configfs VKMS is unavailable at ${VKMS_CONFIGFS_ROOT}"
+    error "a kernel with CONFIG_DRM_VKMS and VKMS configfs support is required"
+    return 1
+  fi
+}
+
+write_attribute() {
+  local path=$1
+  local value=$2
+
+  if ! printf '%s\n' "$value" >"$path"; then
+    error "could not write '${value}' to ${path}"
+    return 1
+  fi
+}
+
+attribute_equals() {
+  local path=$1
+  local expected=$2
+  local actual
+
+  if [[ ! -f "$path" ]]; then
+    error "required VKMS attribute is missing: ${path}"
+    return 1
+  fi
+
+  actual=$(<"$path")
+  if [[ "$actual" != "$expected" ]]; then
+    error "unexpected value in ${path}: expected '${expected}', found '${actual}'"
+    return 1
+  fi
+}
+
+create_configfs_item() {
+  local path=$1
+  local kind=$2
+
+  if ! mkdir -- "$path"; then
+    error "could not create VKMS ${kind}: ${path}"
+    return 1
+  fi
+
+  # A real configfs item creates its attributes and link groups in the kernel.
+  # The sourced shell test enables this branch to model those generated nodes.
+  if ((FAKE_CONFIGFS)); then
+    case "$kind" in
+      device)
+        mkdir -- "$path/planes" "$path/crtcs" "$path/encoders" "$path/connectors" || return 1
+        printf '0' >"$path/enabled" || return 1
+        ;;
+      plane)
+        mkdir -- "$path/possible_crtcs" || return 1
+        : >"$path/type" || return 1
+        ;;
+      crtc)
+        : >"$path/writeback" || return 1
+        ;;
+      encoder)
+        mkdir -- "$path/possible_crtcs" || return 1
+        ;;
+      connector)
+        mkdir -- "$path/possible_encoders" || return 1
+        : >"$path/status" || return 1
+        ;;
+      *)
+        error "internal error: unknown configfs item kind '${kind}'"
+        return 1
+        ;;
+    esac
+  fi
+}
+
+validate_device_layout() {
+  local group
+
+  if [[ ! -d "$VKMS_DEVICE_DIR" || -L "$VKMS_DEVICE_DIR" ||
+        ! -f "$VKMS_DEVICE_DIR/enabled" || -L "$VKMS_DEVICE_DIR/enabled" ]]; then
+    error "VKMS did not create the expected configfs device layout"
+    return 1
+  fi
+
+  for group in planes crtcs encoders connectors; do
+    if [[ ! -d "$VKMS_DEVICE_DIR/$group" || -L "$VKMS_DEVICE_DIR/$group" ]]; then
+      error "VKMS configfs group is missing: ${VKMS_DEVICE_DIR}/${group}"
+      return 1
+    fi
+  done
+}
+
+resource_name_is_managed() {
+  local group=$1
+  local name=$2
+  local index
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    case "$group:$name" in
+      "planes:plane${index}" | "crtcs:crtc${index}" | "encoders:encoder${index}")
+        return 0
+        ;;
+      "connectors:Virtual-$((index + 1))")
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+link_directory_is_managed() {
+  local directory=$1
+  local expected_name=$2
+  local entry name
+
+  [[ -e "$directory" || -L "$directory" ]] || return 0
+  if [[ ! -d "$directory" || -L "$directory" ]]; then
+    error "refusing cleanup because the VKMS link group is not a directory: ${directory}"
+    return 1
+  fi
+  for entry in "$directory"/*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    name=${entry##*/}
+    if [[ "$name" != "$expected_name" ]]; then
+      error "refusing cleanup because ${directory} contains unmanaged entry '${name}'"
+      return 1
+    fi
+  done
+}
+
+cleanup_is_safe() {
+  local group group_dir entry name index
+
+  # Cleanup never accepts a caller-provided instance name and only works below
+  # the path derived from the fixed "vibeshine" instance identifier.
+  if [[ "$VKMS_DEVICE_DIR" != "${VKMS_CONFIGFS_ROOT}/${VKMS_DEVICE_NAME}" ]]; then
+    error "refusing cleanup of unexpected path: ${VKMS_DEVICE_DIR}"
+    return 1
+  fi
+  if [[ -L "$VKMS_DEVICE_DIR" ]]; then
+    error "refusing cleanup because the managed instance path is a symbolic link"
+    return 1
+  fi
+  if [[ -L "$VKMS_DEVICE_DIR/enabled" ]]; then
+    error "refusing cleanup because the managed enabled attribute is a symbolic link"
+    return 1
+  fi
+
+  for group in planes crtcs encoders connectors; do
+    group_dir="$VKMS_DEVICE_DIR/$group"
+    [[ -e "$group_dir" || -L "$group_dir" ]] || continue
+    if [[ ! -d "$group_dir" || -L "$group_dir" ]]; then
+      error "refusing cleanup because the VKMS group is not a directory: ${group_dir}"
+      return 1
+    fi
+    for entry in "$group_dir"/*; do
+      [[ -e "$entry" || -L "$entry" ]] || continue
+      name=${entry##*/}
+      if [[ ! -d "$entry" || -L "$entry" ]] || ! resource_name_is_managed "$group" "$name"; then
+        error "refusing cleanup because ${group_dir} contains unmanaged entry '${name}'"
+        return 1
+      fi
+    done
+  done
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    link_directory_is_managed \
+      "$VKMS_DEVICE_DIR/planes/plane${index}/possible_crtcs" "crtc${index}" || return 1
+    link_directory_is_managed \
+      "$VKMS_DEVICE_DIR/encoders/encoder${index}/possible_crtcs" "crtc${index}" || return 1
+    link_directory_is_managed \
+      "$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))/possible_encoders" "encoder${index}" || return 1
+  done
+}
+
+remove_link_if_present() {
+  local path=$1
+
+  if [[ -L "$path" ]]; then
+    if ! unlink -- "$path"; then
+      error "could not remove VKMS link: ${path}"
+      return 1
+    fi
+  elif [[ -e "$path" ]]; then
+    error "refusing to unlink non-symbolic-link path: ${path}"
+    return 1
+  fi
+}
+
+prepare_fake_item_for_removal() {
+  local path=$1
+  local kind=$2
+
+  ((FAKE_CONFIGFS)) || return 0
+  case "$kind" in
+    plane)
+      rm -f -- "$path/type"
+      rmdir -- "$path/possible_crtcs" 2>/dev/null || true
+      ;;
+    crtc)
+      rm -f -- "$path/writeback"
+      ;;
+    encoder)
+      rmdir -- "$path/possible_crtcs" 2>/dev/null || true
+      ;;
+    connector)
+      rm -f -- "$path/status"
+      rmdir -- "$path/possible_encoders" 2>/dev/null || true
+      ;;
+  esac
+}
+
+remove_configfs_item() {
+  local path=$1
+  local kind=$2
+
+  [[ -e "$path" || -L "$path" ]] || return 0
+  if [[ ! -d "$path" || -L "$path" ]]; then
+    error "refusing to remove non-directory VKMS ${kind}: ${path}"
+    return 1
+  fi
+  prepare_fake_item_for_removal "$path" "$kind"
+  if ! rmdir -- "$path"; then
+    error "could not remove VKMS ${kind}: ${path}"
+    return 1
+  fi
+}
+
+remove_pool() {
+  local index rc=0
+
+  if [[ ! -d "$VKMS_DEVICE_DIR" ]]; then
+    log "VKMS pool is already stopped"
+    return 0
+  fi
+
+  cleanup_is_safe || return 1
+
+  if [[ -f "$VKMS_DEVICE_DIR/enabled" ]]; then
+    write_attribute "$VKMS_DEVICE_DIR/enabled" 0 || return 1
+  fi
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    remove_link_if_present \
+      "$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))/possible_encoders/encoder${index}" || rc=1
+    remove_link_if_present \
+      "$VKMS_DEVICE_DIR/encoders/encoder${index}/possible_crtcs/crtc${index}" || rc=1
+    remove_link_if_present \
+      "$VKMS_DEVICE_DIR/planes/plane${index}/possible_crtcs/crtc${index}" || rc=1
+  done
+  ((rc == 0)) || return "$rc"
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    remove_configfs_item "$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))" connector || rc=1
+    remove_configfs_item "$VKMS_DEVICE_DIR/encoders/encoder${index}" encoder || rc=1
+    remove_configfs_item "$VKMS_DEVICE_DIR/planes/plane${index}" plane || rc=1
+    remove_configfs_item "$VKMS_DEVICE_DIR/crtcs/crtc${index}" crtc || rc=1
+  done
+  ((rc == 0)) || return "$rc"
+
+  if ((FAKE_CONFIGFS)); then
+    rm -f -- "$VKMS_DEVICE_DIR/enabled"
+    rmdir -- "$VKMS_DEVICE_DIR/planes" "$VKMS_DEVICE_DIR/crtcs" \
+      "$VKMS_DEVICE_DIR/encoders" "$VKMS_DEVICE_DIR/connectors" || return 1
+  fi
+
+  if ! rmdir -- "$VKMS_DEVICE_DIR"; then
+    error "could not remove VKMS instance: ${VKMS_DEVICE_DIR}"
+    return 1
+  fi
+
+  log "removed private VKMS display pool"
+}
+
+validate_link() {
+  local path=$1
+  local expected_target=$2
+  local actual_target
+
+  if [[ ! -L "$path" ]]; then
+    error "required VKMS pipeline link is missing: ${path}"
+    return 1
+  fi
+  if ! actual_target=$(readlink -f -- "$path"); then
+    error "could not resolve VKMS pipeline link: ${path}"
+    return 1
+  fi
+  if [[ "$actual_target" != "$expected_target" ]]; then
+    error "VKMS pipeline link ${path} points to ${actual_target}, not ${expected_target}"
+    return 1
+  fi
+}
+
+validate_topology() {
+  local index plane crtc encoder connector
+
+  validate_device_layout || return 1
+  cleanup_is_safe || return 1
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    plane="$VKMS_DEVICE_DIR/planes/plane${index}"
+    crtc="$VKMS_DEVICE_DIR/crtcs/crtc${index}"
+    encoder="$VKMS_DEVICE_DIR/encoders/encoder${index}"
+    connector="$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))"
+
+    [[ -d "$plane" && -d "$crtc" && -d "$encoder" && -d "$connector" ]] || {
+      error "VKMS pipeline ${index} is incomplete"
+      return 1
+    }
+    attribute_equals "$plane/type" 1 || return 1
+    attribute_equals "$crtc/writeback" 0 || return 1
+    attribute_equals "$connector/status" 1 || return 1
+    validate_link "$plane/possible_crtcs/crtc${index}" "$crtc" || return 1
+    validate_link "$encoder/possible_crtcs/crtc${index}" "$crtc" || return 1
+    validate_link "$connector/possible_encoders/encoder${index}" "$encoder" || return 1
+  done
+}
+
+create_pipeline_items() {
+  local index
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    create_configfs_item "$VKMS_DEVICE_DIR/planes/plane${index}" plane || return 1
+    write_attribute "$VKMS_DEVICE_DIR/planes/plane${index}/type" 1 || return 1
+  done
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    create_configfs_item "$VKMS_DEVICE_DIR/crtcs/crtc${index}" crtc || return 1
+    write_attribute "$VKMS_DEVICE_DIR/crtcs/crtc${index}/writeback" 0 || return 1
+  done
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    create_configfs_item "$VKMS_DEVICE_DIR/encoders/encoder${index}" encoder || return 1
+  done
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    create_configfs_item "$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))" connector || return 1
+    write_attribute "$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))/status" 1 || return 1
+  done
+}
+
+create_pipeline_links() {
+  local index plane crtc encoder connector
+
+  for ((index = 0; index < VKMS_OUTPUT_COUNT; ++index)); do
+    plane="$VKMS_DEVICE_DIR/planes/plane${index}"
+    crtc="$VKMS_DEVICE_DIR/crtcs/crtc${index}"
+    encoder="$VKMS_DEVICE_DIR/encoders/encoder${index}"
+    connector="$VKMS_DEVICE_DIR/connectors/Virtual-$((index + 1))"
+
+    ln -s -- "$crtc" "$plane/possible_crtcs/crtc${index}" || return 1
+    ln -s -- "$crtc" "$encoder/possible_crtcs/crtc${index}" || return 1
+    ln -s -- "$encoder" "$connector/possible_encoders/encoder${index}" || return 1
+  done
+}
+
+build_new_pool() {
+  create_configfs_item "$VKMS_DEVICE_DIR" device || return 1
+  validate_device_layout || return 1
+  create_pipeline_items || return 1
+  create_pipeline_links || return 1
+  validate_topology || return 1
+  write_attribute "$VKMS_DEVICE_DIR/enabled" 1 || return 1
+  attribute_equals "$VKMS_DEVICE_DIR/enabled" 1 || return 1
+}
+
+create_pool() {
+  local enabled_value
+
+  if [[ -d "$VKMS_DEVICE_DIR" ]]; then
+    if validate_topology; then
+      enabled_value=$(<"$VKMS_DEVICE_DIR/enabled")
+      case "$enabled_value" in
+        1)
+          log "private VKMS display pool is already ready (${VKMS_OUTPUT_COUNT} outputs)"
+          return 0
+          ;;
+        0)
+          write_attribute "$VKMS_DEVICE_DIR/enabled" 1 || return 1
+          log "enabled existing private VKMS display pool (${VKMS_OUTPUT_COUNT} outputs)"
+          return 0
+          ;;
+        *)
+          error "unexpected enabled state '${enabled_value}'; rebuilding the managed instance"
+          ;;
+      esac
+    else
+      log "managed VKMS instance is incomplete; rebuilding it"
+    fi
+    remove_pool || return 1
+  fi
+
+  if ! build_new_pool; then
+    error "failed to create the private VKMS display pool; rolling back"
+    remove_pool || error "rollback was incomplete; inspect ${VKMS_DEVICE_DIR}"
+    return 1
+  fi
+
+  log "created ${VKMS_OUTPUT_COUNT} connected private VKMS outputs"
+}
+
+status_pool() {
+  if [[ ! -d "$VKMS_DEVICE_DIR" ]]; then
+    log "private VKMS display pool is not present"
+    return 3
+  fi
+  validate_topology || return 1
+  attribute_equals "$VKMS_DEVICE_DIR/enabled" 1 || return 3
+  log "private VKMS display pool is ready (${VKMS_OUTPUT_COUNT} outputs)"
+}
+
+usage() {
+  printf 'Usage: %s {start|stop|restart|status}\n' "$PROGRAM_NAME" >&2
+}
+
+main() {
+  local action=${1:-}
+
+  # Do not accept an environment override for this privileged path. Cleanup is
+  # deliberately restricted to one exact configfs instance.
+  configure_paths /sys/kernel/config
+  FAKE_CONFIGFS=0
+
+  require_command awk || return 1
+  case "$action" in
+    start)
+      require_root || return 1
+      require_command mount || return 1
+      require_command modprobe || return 1
+      require_command mkdir || return 1
+      require_command ln || return 1
+      require_command readlink || return 1
+      require_command unlink || return 1
+      require_command rmdir || return 1
+      ensure_configfs || return 1
+      ensure_modern_vkms || return 1
+      create_pool
+      ;;
+    stop)
+      require_root || return 1
+      require_command unlink || return 1
+      require_command rmdir || return 1
+      if ! configfs_is_mounted; then
+        log "configfs is not mounted; VKMS pool is already stopped"
+        return 0
+      fi
+      remove_pool
+      ;;
+    restart)
+      require_root || return 1
+      require_command mount || return 1
+      require_command modprobe || return 1
+      require_command mkdir || return 1
+      require_command ln || return 1
+      require_command readlink || return 1
+      require_command unlink || return 1
+      require_command rmdir || return 1
+      if configfs_is_mounted; then
+        remove_pool || return 1
+      fi
+      ensure_configfs || return 1
+      ensure_modern_vkms || return 1
+      create_pool
+      ;;
+    status)
+      if ! configfs_is_mounted; then
+        log "configfs is not mounted; VKMS pool is not present"
+        return 3
+      fi
+      status_pool
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

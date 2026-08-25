@@ -22,6 +22,11 @@ else()
     find_package(Systemd)
     find_package(Udev)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-vkms"
+                DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/vibeshine")
+    endif()
+
     if(UDEV_FOUND)
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.rules"
                 DESTINATION "${UDEV_RULES_INSTALL_DIR}")
@@ -31,6 +36,10 @@ else()
                 DESTINATION "${SYSTEMD_USER_UNIT_INSTALL_DIR}")
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.conf"
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms.service"
+                    DESTINATION "${SYSTEMD_SYSTEM_UNIT_INSTALL_DIR}")
+        endif()
     endif()
 endif()
 

@@ -235,7 +235,13 @@ const physicalDisplaySelected = computed(
 const hostPlatform = computed(() => String(hostMetadata.value.platform ?? ''));
 
 const physicalDisplayDescription = computed(() =>
-  t(isWindowsHost.value ? 'config.output_name_desc_windows' : 'config.output_name_desc_unix'),
+  t(
+    isWindowsHost.value
+      ? 'config.output_name_desc_windows'
+      : isLinuxHost.value
+        ? 'config.output_name_desc_linux'
+        : 'config.output_name_desc_unix',
+  ),
 );
 
 const displayDeviceOptions = computed(() => {
@@ -1220,7 +1226,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                         @input="updateValue('output_name', $event)"
                       />
                       <button
-                        v-if="isWindowsHost"
+                        v-if="supportsDisplayDeviceEnumeration"
                         class="button button--secondary button--compact"
                         type="button"
                         :disabled="displayDevicesLoading"
@@ -1260,7 +1266,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
         </template>
 
         <section
-          v-if="activeCategory === 'display' && !isSearching"
+          v-if="supportsDisplayDeviceEnumeration && activeCategory === 'display' && !isSearching"
           class="danger-zone"
           aria-labelledby="display-recovery-title"
         >
