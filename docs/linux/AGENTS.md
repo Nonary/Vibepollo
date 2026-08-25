@@ -27,7 +27,7 @@ sudo pacman -S cmake ninja gcc cuda nvidia-utils libva libdrm \
 
 ### Build commands
 ```bash
-cd ~/vibeshine-build
+cd ~/vibepollo-build
 mkdir -p build && cd build
 cmake .. \
   -DCMAKE_INSTALL_PREFIX=~/.local \
@@ -300,7 +300,7 @@ avahi-browse -r _nvstream._tcp -t
 | `/etc/kernel/cmdline` | Persistent kernel boot params (Limine) |
 | `/usr/lib/firmware/edid/samsung-q800t-hdmi2.1` | Patched EDID (2560x1600@120 as DTD2) |
 | `/etc/mkinitcpio.conf` | Must include EDID in `FILES=` |
-| `~/vibeshine-build/LEARNINGS.md` | Full detailed learnings log |
+| `~/vibepollo-build/LEARNINGS.md` | Full detailed learnings log |
 
 ---
 

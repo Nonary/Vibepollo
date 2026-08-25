@@ -94,6 +94,7 @@
     "exclude_from_autosync": "Exclude from auto-sync",
     "remove_exclusion": "Remove exclusion",
     "playnite_badge": "Playnite",
+    "steam_badge": "Steam",
     "playnite_source_recent": "Auto-sync: Recent",
     "playnite_source_category": "Auto-sync: Category",
     "playnite_source_both": "Auto-sync: Recent + Category",

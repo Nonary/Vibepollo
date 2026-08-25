@@ -365,6 +365,26 @@ sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_config_playnite TEST_SOURCE test_config_playnite.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_playnite_parse.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_steam_integration TEST_SOURCE test_steam_integration.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp")
+sunshine_register_component(NAME test_component_steam_artwork TEST_SOURCE test_steam_artwork.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_artwork.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
+    INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE_DIRS}
+    LINK_LIBRARIES ${FFMPEG_LIBRARIES} ${STEAM_ARTWORK_TEST_LIBRARIES}
+    DEFINITIONS ${STEAM_ARTWORK_TEST_DEFINITIONS})
+sunshine_register_component(NAME test_component_config_steam TEST_SOURCE test_config_steam.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_steam.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_steam_sync TEST_SOURCE test_steam_sync.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_sync_policy.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_steam_process_tracker TEST_SOURCE test_steam_process_tracker.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_process_tracker.cpp")
+sunshine_register_component(NAME test_component_steam_auto_sync TEST_SOURCE test_steam_auto_sync.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_auto_sync_policy.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp")
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp

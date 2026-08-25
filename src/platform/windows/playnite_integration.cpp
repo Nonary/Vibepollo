@@ -962,6 +962,7 @@ namespace platf::playnite {
 
     SyncStats sync_apps_metadata() try {
       using nlohmann::json;
+      std::lock_guard apps_lock {confighttp::apps_file_mutex()};
       const std::string path = config::stream.file_apps;
       SyncStats stats;
 
@@ -1622,6 +1623,10 @@ namespace platf::playnite {
   }
 
   bool force_sync(const bool wait_for_snapshot) {
+    if (!config::playnite.enabled) {
+      BOOST_LOG(debug) << "Playnite: sync skipped because integration is disabled";
+      return false;
+    }
     if (!is_plugin_installed()) {
       BOOST_LOG(debug) << "Playnite: sync skipped because the plugin is not installed";
       return false;

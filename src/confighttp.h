@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -69,7 +70,10 @@ namespace confighttp {
   nlohmann::json get_windows_drives();
 #endif
 
-  // Writes the apps file and refreshes the client-visible app cache/list.
+  // Writes the apps file and refreshes the client-visible app cache/list
+  // Callers that perform a read-modify-write transaction should hold this
+  // recursive mutex from the initial read through refresh.
+  std::recursive_mutex &apps_file_mutex();
   bool refresh_client_apps_cache(nlohmann::json &file_tree, bool sort_by_name = true);
 
 }  // namespace confighttp

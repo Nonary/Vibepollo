@@ -53,6 +53,19 @@ interface EditorForm {
   playniteIconPath: string;
   playniteId: string;
   playniteManaged: string;
+  steamId: string;
+  steamManaged: string;
+  steamSource: string;
+  steamInstallDir: string;
+  steamLibraryPath: string;
+  steamIconPath: string;
+  steamHeaderPath: string;
+  steamBoxartPath: string;
+  steamArtworkPath: string;
+  steamArtworkClientPath: string;
+  steamArtworkFormat: string;
+  steamAppType: string;
+  steamArtworkClientCompatible: boolean | null;
   elevated: boolean;
   autoDetach: boolean;
   waitAll: boolean;
@@ -119,6 +132,25 @@ interface PlayniteGame {
 interface PlayniteStatus {
   active?: boolean;
   installed?: boolean | null;
+}
+
+interface SteamGame {
+  appid: number | string;
+  steamId: string;
+  stableId: string;
+  name: string;
+  installDir: string;
+  libraryPath: string;
+  iconPath: string;
+  headerPath: string;
+  portraitPath: string;
+  boxartPath: string;
+  artworkPath: string;
+  artworkClientPath: string;
+  artworkFormat: string;
+  artworkClientCompatible: boolean | null;
+  appType: string;
+  launchUri: string;
 }
 
 interface FrameGenConfig extends Record<string, unknown> {
@@ -255,6 +287,13 @@ const playniteGamesLoading = ref(false);
 const playniteGamesError = ref('');
 const playniteGamesUnavailable = ref(false);
 const playniteActiveIndex = ref(-1);
+const steamPickerOpen = ref(false);
+const steamGames = ref<SteamGame[]>([]);
+const steamGamesLoaded = ref(false);
+const steamGamesLoading = ref(false);
+const steamGamesError = ref('');
+const steamGamesUnavailable = ref(false);
+const steamActiveIndex = ref(-1);
 const frameGenHealth = ref<FrameGenHealth | null>(null);
 const frameGenHealthError = ref('');
 const frameGenHealthLoading = ref(false);
@@ -263,6 +302,7 @@ let frameGenHealthRequest: { epoch: number; promise: Promise<void> } | null = nu
 let formHydrating = false;
 let formHydrationEpoch = 0;
 let playniteCloseTimer: number | null = null;
+let steamCloseTimer: number | null = null;
 const form = reactive<EditorForm>(emptyForm());
 const overrideMetadata = ref<FrameGenMetadata>({});
 const originalRtxHdrLiveOverrides = ref<Record<string, unknown>>({});
@@ -428,10 +468,17 @@ const rtxHdrCalibrationFields = computed<RtxHdrCalibrationField[]>(() => [
   },
 ]);
 const isPlayniteLinked = computed(() => Boolean(form.playniteId.trim()));
+const isSteamLinked = computed(() => Boolean(form.steamId.trim()));
 const filteredPlayniteGames = computed(() => {
   const query = form.name.trim().toLocaleLowerCase();
   const games = playniteGames.value.filter((game) => game.installed !== false);
   return query ? games.filter((game) => game.name.toLocaleLowerCase().includes(query)) : games;
+});
+const filteredSteamGames = computed(() => {
+  const query = form.name.trim().toLocaleLowerCase();
+  return query
+    ? steamGames.value.filter((game) => game.name.toLocaleLowerCase().includes(query))
+    : steamGames.value;
 });
 const frameGenerationEnabled = computed(() => {
   if (form.frameGenerationMode === 'off') return false;
@@ -1061,6 +1108,19 @@ const editableKeys = new Set([
   'playnite-icon-path',
   'playnite-id',
   'playnite-managed',
+  'steam-id',
+  'steam-managed',
+  'steam-source',
+  'steam-install-dir',
+  'steam-library-path',
+  'steam-icon-path',
+  'steam-header-path',
+  'steam-boxart-path',
+  'steam-artwork-path',
+  'steam-artwork-client-path',
+  'steam-artwork-format',
+  'steam-artwork-client-compatible',
+  'steam-app-type',
   'elevated',
   'auto-detach',
   'wait-all',
@@ -1103,6 +1163,19 @@ function emptyForm(): EditorForm {
     playniteIconPath: '',
     playniteId: '',
     playniteManaged: '',
+    steamId: '',
+    steamManaged: '',
+    steamSource: '',
+    steamInstallDir: '',
+    steamLibraryPath: '',
+    steamIconPath: '',
+    steamHeaderPath: '',
+    steamBoxartPath: '',
+    steamArtworkPath: '',
+    steamArtworkClientPath: '',
+    steamArtworkFormat: '',
+    steamAppType: '',
+    steamArtworkClientCompatible: null,
     elevated: false,
     autoDetach: false,
     waitAll: false,
@@ -1326,6 +1399,22 @@ function hydrate(app: AppRecord): void {
     playniteIconPath: asString(app['playnite-icon-path']),
     playniteId: asString(app['playnite-id']),
     playniteManaged: asString(app['playnite-managed']),
+    steamId: asString(app['steam-id']),
+    steamManaged: asString(app['steam-managed']),
+    steamSource: asString(app['steam-source']),
+    steamInstallDir: asString(app['steam-install-dir']),
+    steamLibraryPath: asString(app['steam-library-path']),
+    steamIconPath: asString(app['steam-icon-path']),
+    steamHeaderPath: asString(app['steam-header-path']),
+    steamBoxartPath: asString(app['steam-boxart-path']),
+    steamArtworkPath: asString(app['steam-artwork-path']),
+    steamArtworkClientPath: asString(app['steam-artwork-client-path']),
+    steamArtworkFormat: asString(app['steam-artwork-format']),
+    steamAppType: asString(app['steam-app-type']),
+    steamArtworkClientCompatible:
+      typeof app['steam-artwork-client-compatible'] === 'boolean'
+        ? app['steam-artwork-client-compatible']
+        : null,
     elevated: asBoolean(app.elevated),
     autoDetach: asBoolean(app['auto-detach']),
     waitAll: asBoolean(app['wait-all']),
@@ -1368,6 +1457,9 @@ function hydrate(app: AppRecord): void {
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
+  cancelSteamClose();
+  steamPickerOpen.value = false;
+  steamActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(app);
@@ -1391,6 +1483,9 @@ function hydrateNew(): void {
   cancelPlayniteClose();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
+  cancelSteamClose();
+  steamPickerOpen.value = false;
+  steamActiveIndex.value = -1;
   clearFrameGenHealth();
   liveRtxHdrSuppress = true;
   primeLiveRtxHdrState(null);
@@ -1458,6 +1553,11 @@ function setOptionalInteger(payload: AppRecord, key: string, value: string): voi
   else delete payload[key];
 }
 
+function setOptionalBoolean(payload: AppRecord, key: string, value: boolean | null): void {
+  if (value === null) delete payload[key];
+  else payload[key] = value;
+}
+
 function buildPayload(): AppRecord {
   const advanced = JSON.parse(form.advancedJson || '{}') as Record<string, unknown>;
   const configOverrides = buildRtxHdrConfigOverrides(
@@ -1502,6 +1602,23 @@ function buildPayload(): AppRecord {
   setOptionalString(payload, 'playnite-icon-path', form.playniteIconPath);
   setOptionalString(payload, 'playnite-id', form.playniteId);
   setOptionalString(payload, 'playnite-managed', form.playniteManaged);
+  setOptionalString(payload, 'steam-id', form.steamId);
+  setOptionalString(payload, 'steam-managed', form.steamManaged);
+  setOptionalString(payload, 'steam-source', form.steamSource);
+  setOptionalString(payload, 'steam-install-dir', form.steamInstallDir);
+  setOptionalString(payload, 'steam-library-path', form.steamLibraryPath);
+  setOptionalString(payload, 'steam-icon-path', form.steamIconPath);
+  setOptionalString(payload, 'steam-header-path', form.steamHeaderPath);
+  setOptionalString(payload, 'steam-boxart-path', form.steamBoxartPath);
+  setOptionalString(payload, 'steam-artwork-path', form.steamArtworkPath);
+  setOptionalString(payload, 'steam-artwork-client-path', form.steamArtworkClientPath);
+  setOptionalString(payload, 'steam-artwork-format', form.steamArtworkFormat);
+  setOptionalString(payload, 'steam-app-type', form.steamAppType);
+  setOptionalBoolean(
+    payload,
+    'steam-artwork-client-compatible',
+    form.steamArtworkClientCompatible,
+  );
   setOptionalString(payload, 'virtual-display-mode', form.virtualDisplayMode);
   setOptionalString(payload, 'virtual-display-layout', form.virtualDisplayLayout);
   setOptionalString(payload, 'dd-configuration-option', form.ddConfigurationOption);
@@ -1516,14 +1633,46 @@ function buildPayload(): AppRecord {
 }
 
 function clearPlayniteLink(): void {
+  form.playniteIconPath = '';
   form.playniteId = '';
   form.playniteManaged = '';
+}
+
+function canonicalSteamUuid(steamId: string): string {
+  try {
+    const suffix = BigInt(steamId).toString(16).padStart(12, '0').slice(-12);
+    return `53544541-4d00-5000-8000-${suffix}`;
+  } catch {
+    return '';
+  }
+}
+
+function clearSteamLink(): void {
+  form.steamId = '';
+  form.steamManaged = '';
+  form.steamSource = '';
+  form.steamInstallDir = '';
+  form.steamLibraryPath = '';
+  form.steamIconPath = '';
+  form.steamHeaderPath = '';
+  form.steamBoxartPath = '';
+  form.steamArtworkPath = '';
+  form.steamArtworkClientPath = '';
+  form.steamArtworkFormat = '';
+  form.steamAppType = '';
+  form.steamArtworkClientCompatible = null;
 }
 
 function cancelPlayniteClose(): void {
   if (playniteCloseTimer === null) return;
   window.clearTimeout(playniteCloseTimer);
   playniteCloseTimer = null;
+}
+
+function cancelSteamClose(): void {
+  if (steamCloseTimer === null) return;
+  window.clearTimeout(steamCloseTimer);
+  steamCloseTimer = null;
 }
 
 function waitForPlaynite(milliseconds: number): Promise<void> {
@@ -1578,8 +1727,67 @@ async function loadPlayniteGames(): Promise<void> {
   }
 }
 
+function steamGame(value: unknown): SteamGame | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const game = value as Record<string, unknown>;
+  const rawId = game.appid ?? game.steam_id;
+  const appid = typeof rawId === 'number' || typeof rawId === 'string' ? rawId : '';
+  const steamId = asString(game.steam_id) || String(appid);
+  const name = asString(game.name) || (steamId ? `Steam ${steamId}` : '');
+  if (!steamId || !name) return null;
+  return {
+    appid,
+    steamId,
+    stableId: asString(game.stable_id),
+    name,
+    installDir: asString(game.install_dir),
+    libraryPath: asString(game.library_path),
+    iconPath: asString(game.icon_path),
+    headerPath: asString(game.header_path),
+    portraitPath: asString(game.portrait_path),
+    boxartPath: asString(game.boxart_path),
+    artworkPath: asString(game.artwork_path),
+    artworkClientPath: asString(game.artwork_client_path),
+    artworkFormat: asString(game.artwork_format),
+    artworkClientCompatible:
+      typeof game.artwork_client_compatible === 'boolean'
+        ? game.artwork_client_compatible
+        : null,
+    appType: asString(game.app_type),
+    launchUri: asString(game.launch_uri) || `steam://rungameid/${steamId}`,
+  };
+}
+
+async function loadSteamGames(): Promise<void> {
+  if (steamGamesLoading.value || steamGamesLoaded.value) return;
+  steamGamesLoading.value = true;
+  steamGamesError.value = '';
+  steamGamesUnavailable.value = false;
+  try {
+    const payload = await apiGet<unknown>('/api/steam/games');
+    const rawGames =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as { games?: unknown }).games
+        : payload;
+    steamGames.value = (Array.isArray(rawGames) ? rawGames : [])
+      .map(steamGame)
+      .filter((game): game is SteamGame => Boolean(game))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    steamGamesUnavailable.value = false;
+    steamGamesLoaded.value = true;
+  } catch {
+    steamGamesError.value = t('ui.application.steam.loadFailed');
+    steamGamesUnavailable.value = true;
+  } finally {
+    steamGamesLoading.value = false;
+  }
+}
+
 function openPlaynitePicker(): void {
   if (!isNew.value) return;
+  cancelSteamClose();
+  steamPickerOpen.value = false;
+  steamActiveIndex.value = -1;
   cancelPlayniteClose();
   if (playniteGamesUnavailable.value) playniteGamesLoaded.value = false;
   playnitePickerOpen.value = true;
@@ -1596,8 +1804,65 @@ function closePlaynitePicker(): void {
   }, 120);
 }
 
+function openSteamPicker(): void {
+  if (!isNew.value) return;
+  cancelPlayniteClose();
+  playnitePickerOpen.value = false;
+  playniteActiveIndex.value = -1;
+  cancelSteamClose();
+  if (steamGamesUnavailable.value) steamGamesLoaded.value = false;
+  steamPickerOpen.value = true;
+  steamActiveIndex.value = -1;
+  void loadSteamGames();
+}
+
+function closeSteamPicker(): void {
+  cancelSteamClose();
+  steamCloseTimer = window.setTimeout(() => {
+    steamPickerOpen.value = false;
+    steamActiveIndex.value = -1;
+    steamCloseTimer = null;
+  }, 120);
+}
+
+function steamCommand(uri: string): string {
+  const platform = asString(overrideMetadata.value.platform).toLocaleLowerCase();
+  if (platform.includes('windows')) return `cmd /c start "" ${uri}`;
+  if (platform.includes('mac') || platform.includes('darwin')) return `open ${uri}`;
+  return `xdg-open ${uri}`;
+}
+
+function selectSteamGame(game: SteamGame): void {
+  cancelSteamClose();
+  clearPlayniteLink();
+  form.name = game.name;
+  form.uuid = canonicalSteamUuid(game.steamId) || newUuid();
+  form.steamId = game.steamId;
+  form.steamManaged = 'manual';
+  form.steamSource = 'installed';
+  form.steamInstallDir = game.installDir;
+  form.steamLibraryPath = game.libraryPath;
+  form.steamIconPath = game.iconPath;
+  form.steamHeaderPath = game.headerPath;
+  form.steamBoxartPath = game.boxartPath || game.portraitPath;
+  form.steamArtworkPath = game.artworkPath;
+  form.steamArtworkClientPath = game.artworkClientPath;
+  form.steamArtworkFormat = game.artworkFormat;
+  form.steamAppType = game.appType;
+  form.steamArtworkClientCompatible = game.artworkClientCompatible;
+  form.playniteIconPath = '';
+  form.cmd = steamCommand(game.launchUri);
+  form.workingDir = game.installDir;
+  form.imagePath = game.artworkClientPath || './assets/steam.png';
+  selectedCoverPreview.value = '';
+  coverPickerOpen.value = false;
+  steamPickerOpen.value = false;
+  steamActiveIndex.value = -1;
+}
+
 function selectPlayniteGame(game: PlayniteGame): void {
   cancelPlayniteClose();
+  clearSteamLink();
   form.name = game.name;
   form.playniteId = game.id;
   form.playniteManaged = 'manual';
@@ -1663,10 +1928,15 @@ function useCustomApplication(): void {
   clearPlayniteLink();
   playnitePickerOpen.value = false;
   playniteActiveIndex.value = -1;
+  cancelSteamClose();
+  clearSteamLink();
+  steamPickerOpen.value = false;
+  steamActiveIndex.value = -1;
 }
 
 function handleNameInput(): void {
   if (isPlayniteLinked.value) clearPlayniteLink();
+  if (isSteamLinked.value) clearSteamLink();
   if (!isNew.value) return;
   playniteActiveIndex.value = -1;
   openPlaynitePicker();
@@ -2386,6 +2656,15 @@ onBeforeUnmount(() => {
                 @mousedown.prevent
                 @click="openPlaynitePicker"
               />
+              <AppButton
+                v-if="isNew"
+                size="compact"
+                icon="gamepad"
+                :label="t('ui.application.steam.browse')"
+                :aria-label="t('ui.application.steam.browse')"
+                @mousedown.prevent
+                @click="openSteamPicker"
+              />
             </div>
             <span id="app-name-help" class="vs-field__helper">
               {{
@@ -2437,6 +2716,46 @@ onBeforeUnmount(() => {
               </template>
             </div>
 
+            <div
+              v-if="isNew && steamPickerOpen"
+              id="app-steam-options"
+              class="editor-playnite-picker"
+              role="listbox"
+              :aria-label="t('ui.application.steam.resultsLabel')"
+            >
+              <p v-if="steamGamesLoading" class="editor-playnite-picker__notice">
+                {{ t('ui.application.steam.loading') }}
+              </p>
+              <p v-else-if="steamGamesError" class="editor-playnite-picker__notice">
+                {{ steamGamesError }}
+              </p>
+              <p v-else-if="steamGamesUnavailable" class="editor-playnite-picker__notice">
+                {{ t('ui.application.steam.unavailable') }}
+              </p>
+              <template v-else>
+                <button
+                  v-for="(game, index) in filteredSteamGames"
+                  :id="`app-steam-option-${index}`"
+                  :key="game.steamId"
+                  class="editor-playnite-option"
+                  :class="{ 'editor-playnite-option--active': steamActiveIndex === index }"
+                  type="button"
+                  role="option"
+                  :aria-selected="steamActiveIndex === index"
+                  @mousedown.prevent
+                  @click="selectSteamGame(game)"
+                  @mouseenter="steamActiveIndex = index"
+                >
+                  <UiIcon name="gamepad" :size="16" aria-hidden="true" />
+                  <span>{{ game.name }}</span>
+                  <span v-if="game.installDir" class="editor-steam-option__path">{{ game.installDir }}</span>
+                </button>
+                <p v-if="!filteredSteamGames.length" class="editor-playnite-picker__notice">
+                  {{ t('ui.application.steam.empty') }}
+                </p>
+              </template>
+            </div>
+
             <div v-if="isPlayniteLinked" class="editor-playnite-link vs-cluster">
               <StatusBadge :label="t('apps.playnite_badge')" tone="info" compact />
               <span>{{ form.playniteId }}</span>
@@ -2446,6 +2765,17 @@ onBeforeUnmount(() => {
                 variant="tertiary"
                 icon="x"
                 :label="t('ui.application.playnite.useCustom')"
+                @click="useCustomApplication"
+              />
+            </div>
+            <div v-if="isSteamLinked" class="editor-playnite-link vs-cluster">
+              <StatusBadge :label="t('apps.steam_badge')" tone="info" compact />
+              <span>{{ form.steamId }}</span>
+              <AppButton
+                size="compact"
+                variant="tertiary"
+                icon="x"
+                :label="t('ui.application.steam.useCustom')"
                 @click="useCustomApplication"
               />
             </div>
@@ -2588,6 +2918,14 @@ onBeforeUnmount(() => {
               :title="t('apps.playnite_badge')"
             >
               {{ t('apps.playnite_edit_notice') }}
+            </InlineAlert>
+            <InlineAlert
+              v-if="isSteamLinked"
+              class="editor-field editor-field--full"
+              tone="info"
+              :title="t('apps.steam_badge')"
+            >
+              {{ t('ui.application.steam.editNotice') }}
             </InlineAlert>
           </div>
         </div>
@@ -3548,6 +3886,15 @@ onBeforeUnmount(() => {
 .editor-playnite-option:hover,
 .editor-playnite-option--active {
   background: var(--vs-color-bg-subtle);
+}
+
+.editor-steam-option__path {
+  overflow: hidden;
+  margin-inline-start: auto;
+  color: var(--vs-color-text-tertiary);
+  font-size: var(--vs-type-size-metadata);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-playnite-option:focus-visible {
