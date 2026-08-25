@@ -113,7 +113,11 @@ namespace video {
 
     // Serializes destruction of encode sessions (and, on Windows, the async release of shared
     // D3D capture surfaces). When two clients share one capture target, a capture reinit makes
-    // both video threads tear down their encoder session at the same instant.
+    // both video threads tear down their NVENC session + D3D11 device at the same instant. Both
+    // devices have the same shared capture textures open, and the NVIDIA UMD's cross-device
+    // shared-resource dependency cleanup (DestroyDriverInstance) is not safe against a concurrent
+    // teardown of the other device: it faults walking freed dependency entries. Funnel all
+    // encoder teardown through this mutex so only one device is ever mid-destruction.
     std::mutex encode_session_teardown_mutex;
     // A host restart is the recovery boundary after a vendor call times out.
     // Detached watchdog workers can outlive ordinary static destruction during
