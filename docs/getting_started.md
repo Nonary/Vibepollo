@@ -667,10 +667,10 @@ Additional information:
   Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
   `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
-  provisions four dormant private outputs and uses the custom HDR backend when it loads. If the module cannot be built or
-  loaded, it falls back to the kernel's stock VKMS backend: private SDR streaming still works, but
-  HDR requests are downgraded to SDR. Secure Boot systems must sign the module with a key trusted
-  by the machine before it can load.
+  provisions four dormant private outputs using the custom GPU-attached backend. If the module
+  cannot be built or loaded, managed virtual displays remain unavailable rather than falling back
+  to CPU-backed stock VKMS. Secure Boot systems must sign the module with a key trusted by the
+  machine before it can load.
 
   @seealso{[Arch wiki on HDR Support for Linux](https://wiki.archlinux.org/title/HDR_monitor_support) and
   [Reddit Guide for HDR Support for AMD GPUs](https://www.reddit.com/r/linux_gaming/comments/10m2gyx/guide_alpha_test_hdr_on_linux)}

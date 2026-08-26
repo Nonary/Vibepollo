@@ -12,12 +12,15 @@ namespace selection = platf::kms::selection;
 TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
   EXPECT_TRUE(selection::driver_supports_cuda_import("nvidia-drm"));
   EXPECT_TRUE(selection::driver_supports_cuda_import("nvidia-drm-extra"));
-  EXPECT_TRUE(selection::driver_supports_cuda_import("vibepollo_drm"));
+  EXPECT_TRUE(selection::driver_supports_cuda_import("vibeshine_drm"));
 
   EXPECT_FALSE(selection::driver_supports_cuda_import("vkms"));
   EXPECT_FALSE(selection::driver_supports_cuda_import("i915"));
   EXPECT_FALSE(selection::driver_supports_cuda_import(""));
-  EXPECT_FALSE(selection::driver_is_nvidia("vibepollo_drm"));
+  EXPECT_FALSE(selection::driver_is_nvidia("vibeshine_drm"));
+  EXPECT_TRUE(selection::driver_requires_direct_import("vibeshine_drm"));
+  EXPECT_FALSE(selection::driver_requires_direct_import("nvidia-drm"));
+  EXPECT_FALSE(selection::driver_requires_direct_import("vkms"));
 }
 
 TEST(KmsgrabSelection, ParsesOnlyCompleteUnsignedNumericAliases) {

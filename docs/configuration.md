@@ -1238,9 +1238,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
             the encoder. KWin ScreenCast remains the recommended compositor capture path for SDR.
             <br><br>
             If the custom module cannot be built or loaded (including on older kernels or when
-            Secure Boot rejects an unsigned module), the service falls back to the kernel's stock
-            <code>vkms</code> module. The private display and requested SDR modes remain available,
-            but HDR requests are safely downgraded to SDR.
+            Secure Boot rejects an unsigned module), managed virtual displays remain unavailable.
+            Vibeshine deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
         </td>
     </tr>
 </table>
@@ -1485,7 +1484,7 @@ Terminate request. The original game client is unaffected. The default is
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{On Linux 7.2 or newer, the managed <code>vibeshine_drm</code> output supplied by <code>libvirtualdisplay</code> advertises HDR10 and 10-bit formats. The stock VKMS fallback remains SDR-only, and unsupported HDR requests are safely downgraded to SDR.}
+            @note{On Linux 7.2 or newer, the managed <code>vibeshine_drm</code> output supplied by <code>libvirtualdisplay</code> advertises GPU-attached HDR10 and 10-bit formats. Managed display creation fails if that driver is unavailable rather than using CPU-backed stock VKMS.}
         </td>
     </tr>
     <tr>

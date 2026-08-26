@@ -1,9 +1,9 @@
 @VIBESHINE_BASE_POSTINST@
 
-# Build/register the optional HDR virtual-display module. Failure is not fatal:
-# The libvirtualdisplay pool helper will retry at boot and can use upstream VKMS as an SDR fallback.
+# Build/register the managed virtual-display module. Package installation may
+# continue on failure, but managed displays remain unavailable until it loads.
 if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
   echo "Installing the Vibepollo HDR DRM module."
   "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" install || \
-    echo "warning: Vibepollo HDR DRM installation failed; upstream VKMS fallback remains available."
+    echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
 fi

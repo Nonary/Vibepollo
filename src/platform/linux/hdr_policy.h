@@ -88,6 +88,11 @@ namespace platf::linux_hdr {
     return private_display ? private_display_mastering_metadata : generic_pipewire_mastering_metadata;
   }
 
+  /** KMS capture supports HDR10/PQ, not traditional-gamma HDR or HLG. */
+  [[nodiscard]] constexpr bool is_hdr10_eotf(const std::uint8_t eotf) noexcept {
+    return eotf == 2;  // HDMI_EOTF_SMPTE_ST2084
+  }
+
   /** Return true when an EDID advertises PQ and static metadata type 1. */
   [[nodiscard]] constexpr bool edid_supports_hdr10(const std::span<const std::uint8_t> edid) {
     constexpr std::size_t block_size = 128;

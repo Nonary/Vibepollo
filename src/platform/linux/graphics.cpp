@@ -626,6 +626,10 @@ namespace egl {
       BOOST_LOG(error) << "glEGLImageTargetTexture2DOES is not available; cannot import RGB DMA-BUF"sv;
       return std::nullopt;
     }
+    // GL errors are sticky. Discard errors from earlier conversion work so
+    // only this DMA-BUF binding decides whether the import succeeded.
+    while (gl::ctx.GetError() != GL_NO_ERROR) {
+    }
     gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, rgb->xrgb8);
     const auto import_error = gl::ctx.GetError();
     gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
@@ -636,7 +640,7 @@ namespace egl {
         BOOST_LOG(warning) << "GL rejected imported RGB DMA-BUF texture (fourcc="
                            << util::hex(xrgb.fourcc).to_string_view() << ", error="
                            << util::hex(import_error).to_string_view()
-                           << "); falling back to CPU upload.";
+                           << ", modifier=" << util::hex(xrgb.modifier).to_string_view() << ").";
       }
       return std::nullopt;
     }
@@ -645,6 +649,17 @@ namespace egl {
   }
 
   std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
+    if (xrgb.direct_import_required) {
+      BOOST_LOG(error) << "Managed virtual framebuffer rejected direct GPU import (fourcc="
+                       << util::hex(xrgb.fourcc).to_string_view() << ", modifier="
+                       << util::hex(xrgb.modifier).to_string_view()
+                       << "); refusing CPU upload fallback.";
+      return std::nullopt;
+    }
+    if (xrgb.modifier != 0 && xrgb.modifier != DRM_FORMAT_MOD_INVALID) {
+      BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer modifier.";
+      return std::nullopt;
+    }
     if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
       return std::nullopt;
     }
@@ -1061,6 +1076,7 @@ namespace egl {
 
     sws.cursor_framebuffer = gl::frame_buf_t::make(1);
     sws.cursor_framebuffer.bind(&sws.tex[0], &sws.tex[1]);
+    sws.copy_framebuffer = gl::frame_buf_t::make(1);
 
     sws.program[0].bind(sws.color_matrix);
     sws.program[1].bind(sws.color_matrix);
@@ -1131,11 +1147,10 @@ namespace egl {
     // When only a sub-part of the image must be encoded...
     const bool copy = offset_x || offset_y || img.sd.width != in_width || img.sd.height != in_height;
     if (copy) {
-      auto framebuf = gl::frame_buf_t::make(1);
-      framebuf.bind(&texture, &texture + 1);
+      copy_framebuffer.bind(&texture, &texture + 1);
 
       loaded_texture = tex[0];
-      framebuf.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
+      copy_framebuffer.copy(0, loaded_texture, offset_x, offset_y, in_width, in_height);
     } else {
       loaded_texture = texture;
     }

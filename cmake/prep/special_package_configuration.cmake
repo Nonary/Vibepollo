@@ -38,6 +38,7 @@ elseif(UNIX)
         file(GLOB VIBESHINE_DRM_HASH_INPUTS CONFIGURE_DEPENDS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/*.c"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/*.h")
+        list(FILTER VIBESHINE_DRM_HASH_INPUTS EXCLUDE REGEX "\\.mod\\.c$")
         list(APPEND VIBESHINE_DRM_HASH_INPUTS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/Makefile"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
