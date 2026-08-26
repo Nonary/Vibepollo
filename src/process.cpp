@@ -1731,13 +1731,16 @@ namespace proc {
     if (mangohud_policy.enabled) {
       if (bp::search_path("mangohud").empty()) {
         _env["MANGOHUD"] = "";
+        _env["MANGOHUD_CONFIG"] = "";
         _env["MANGOHUD_FPS_LIMIT"] = "";
         _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
         BOOST_LOG(warning) << "MangoHUD frame limiting requested, but mangohud was not found in PATH.";
       } else {
         // MANGOHUD enables the implicit Vulkan layer; the shim preload covers
-        // native OpenGL. The dedicated FPS override preserves the user's config.
+        // native OpenGL. MANGOHUD_CONFIG survives Steam's container boundary;
+        // MANGOHUD_FPS_LIMIT is also set for direct and newer-runtime launches.
         _env["MANGOHUD"] = "1";
+        _env["MANGOHUD_CONFIG"] = platf::mangohud::config_override(mangohud_policy.limit);
         _env["MANGOHUD_FPS_LIMIT"] = mangohud_policy.limit;
         _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
         BOOST_LOG(info) << "MangoHUD frame limiter enabled at " << mangohud_policy.limit << " FPS.";
@@ -1746,6 +1749,7 @@ namespace proc {
       // proc_t reuses its environment between launches, so remove overrides
       // owned by a previous Vibepollo-managed MangoHUD launch.
       _env["MANGOHUD"] = "";
+      _env["MANGOHUD_CONFIG"] = "";
       _env["MANGOHUD_FPS_LIMIT"] = "";
       _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
     }
