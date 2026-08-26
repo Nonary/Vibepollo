@@ -411,6 +411,26 @@ const everydayPacingFields = (): SettingsField[] => [
     placeholderKey: 'ui.settings.placeholders.follow_client',
     descriptionKey: 'ui.settings.fields.frame_limiter_fps_limit.description',
   }),
+  select(
+    'mangohud_preset',
+    [
+      option('custom', 'ui.integrations.mangohud.presetCustom'),
+      option('1', 'ui.integrations.mangohud.presetFpsOnly'),
+      option('2', 'ui.integrations.mangohud.presetHorizontal'),
+      option('3', 'ui.integrations.mangohud.presetExtended'),
+      option('4', 'ui.integrations.mangohud.presetDetailed'),
+    ],
+    {
+      labelKey: 'ui.integrations.mangohud.overlayPreset',
+      descriptionKey: 'ui.integrations.mangohud.overlayPresetDescription',
+      platform: 'linux',
+    },
+  ),
+  boolean('mangohud_always_show_graph', {
+    labelKey: 'ui.integrations.mangohud.alwaysShowGraph',
+    descriptionKey: 'ui.integrations.mangohud.alwaysShowGraphDescription',
+    platform: 'linux',
+  }),
   select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
@@ -908,6 +928,8 @@ export const settingsDefaults: Record<string, unknown> = {
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,
+  mangohud_preset: 'custom',
+  mangohud_always_show_graph: false,
   frame_limiter_auto_virtual_framegen: 'enabled',
   frame_limiter_disable_vsync: false,
   rtss_allow_virtual_display_override: false,

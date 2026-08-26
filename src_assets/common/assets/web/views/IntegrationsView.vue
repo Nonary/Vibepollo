@@ -49,6 +49,8 @@ interface MangoHudStatus {
   active_provider?: string;
   fps_limit?: number;
   fps_limit_millihz?: number;
+  overlay_preset?: string;
+  always_show_graph?: boolean;
   mangohud_available?: boolean;
   resolved_path?: string;
   message?: string;
@@ -168,8 +170,14 @@ const lutrisExclusionDraft = ref<Set<string>>(new Set());
 const lutrisExclusionOriginal = ref<Set<string>>(new Set());
 const lutrisExclusionsSaving = ref(false);
 const mangohud = ref<MangoHudStatus | null>(null);
-const mangoDraft = ref({ enabled: false, provider: 'auto', fpsLimit: 0 });
-const mangoOriginal = ref({ enabled: false, provider: 'auto', fpsLimit: 0 });
+const mangoDraft = ref({
+  enabled: false,
+  provider: 'auto',
+  fpsLimit: 0,
+  overlayPreset: 'custom',
+  alwaysShowGraph: false,
+});
+const mangoOriginal = ref({ ...mangoDraft.value });
 const mangoSaving = ref(false);
 const rtss = ref<RtssStatus | null>(null);
 const lossless = ref<LosslessStatus | null>(null);
@@ -351,6 +359,8 @@ function resetMangoDraft(): void {
     enabled: mangohud.value?.enabled === true,
     provider: String(mangohud.value?.configured_provider || 'auto'),
     fpsLimit: Number(mangohud.value?.fps_limit ?? 0),
+    overlayPreset: String(mangohud.value?.overlay_preset || 'custom'),
+    alwaysShowGraph: mangohud.value?.always_show_graph === true,
   };
   mangoOriginal.value = { ...next };
   mangoDraft.value = { ...next };
@@ -360,7 +370,9 @@ const mangoDirty = computed(
   () =>
     mangoDraft.value.enabled !== mangoOriginal.value.enabled ||
     mangoDraft.value.provider !== mangoOriginal.value.provider ||
-    Number(mangoDraft.value.fpsLimit) !== Number(mangoOriginal.value.fpsLimit),
+    Number(mangoDraft.value.fpsLimit) !== Number(mangoOriginal.value.fpsLimit) ||
+    mangoDraft.value.overlayPreset !== mangoOriginal.value.overlayPreset ||
+    mangoDraft.value.alwaysShowGraph !== mangoOriginal.value.alwaysShowGraph,
 );
 
 function steamAutoSyncEnabled(): boolean {
@@ -1062,6 +1074,8 @@ async function saveMangoSettings(): Promise<void> {
       frame_limiter_enable: mangoDraft.value.enabled,
       frame_limiter_provider: mangoDraft.value.provider,
       frame_limiter_fps_limit: fps,
+      mangohud_preset: mangoDraft.value.overlayPreset,
+      mangohud_always_show_graph: mangoDraft.value.alwaysShowGraph,
     });
     notice.value = t('ui.integrations.notices.mangohudUpdated');
     await load(true);
@@ -1490,6 +1504,35 @@ onMounted(() => void load());
                   />
                   <span>FPS</span>
                 </div>
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.mangohud.overlayPreset')"
+                :description="t('ui.integrations.mangohud.overlayPresetDescription')"
+                control-id="mangohud-overlay-preset"
+              >
+                <select
+                  id="mangohud-overlay-preset"
+                  v-model="mangoDraft.overlayPreset"
+                  class="integration-control"
+                >
+                  <option value="custom">{{ t('ui.integrations.mangohud.presetCustom') }}</option>
+                  <option value="1">{{ t('ui.integrations.mangohud.presetFpsOnly') }}</option>
+                  <option value="2">{{ t('ui.integrations.mangohud.presetHorizontal') }}</option>
+                  <option value="3">{{ t('ui.integrations.mangohud.presetExtended') }}</option>
+                  <option value="4">{{ t('ui.integrations.mangohud.presetDetailed') }}</option>
+                </select>
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.mangohud.alwaysShowGraph')"
+                :description="t('ui.integrations.mangohud.alwaysShowGraphDescription')"
+                control-id="mangohud-always-show-graph"
+              >
+                <input
+                  id="mangohud-always-show-graph"
+                  v-model="mangoDraft.alwaysShowGraph"
+                  class="integration-switch"
+                  type="checkbox"
+                />
               </SettingRow>
             </div>
             <div class="integration-settings__footer">

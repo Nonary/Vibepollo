@@ -560,6 +560,8 @@
         "shortDescription": "Library synchronization and launch integration."
   },
   "mangohud": {
+    "alwaysShowGraph": "Always show frame-time graph",
+    "alwaysShowGraphDescription": "Keep the MangoHud overlay visible and include its live frame-time graph for every managed launch.",
     "alwaysLimit": "Always limit rendered frames",
     "alwaysLimitDescription": "Apply MangoHUD limiting to every game launched during a stream. Automatic virtual-screen pacing can still request MangoHUD when this is off.",
     "description": "Linux frame limiting and pacing for Vulkan and OpenGL games.",
@@ -567,6 +569,13 @@
     "fpsLimit": "Frame-rate limit",
     "fpsLimitDescription": "Use 0 to follow the client stream rate, or enter a fixed limit with up to three decimal places.",
     "name": "MangoHUD",
+    "overlayPreset": "Metrics and layout",
+    "overlayPresetDescription": "Choose one of MangoHud's standard metric layouts, or keep the metrics from your MangoHud configuration.",
+    "presetCustom": "Use MangoHud configuration",
+    "presetDetailed": "Detailed",
+    "presetExtended": "Extended",
+    "presetFpsOnly": "FPS only",
+    "presetHorizontal": "Horizontal",
     "provider": "Limiter provider",
     "providerAuto": "Automatic — use MangoHUD on Linux",
     "providerDescription": "Automatic is recommended. None disables MangoHUD for both manual and automatic pacing policies.",

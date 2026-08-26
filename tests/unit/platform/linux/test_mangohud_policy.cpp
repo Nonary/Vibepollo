@@ -50,6 +50,18 @@ TEST(MangoHudPolicy, AddsAndRemovesOnlyItsOpenGlPreload) {
 TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
   EXPECT_EQ(mangohud::config_override("120"), "read_cfg,fps_limit=120");
   EXPECT_EQ(mangohud::config_override("59.94"), "read_cfg,fps_limit=59.94");
+  EXPECT_EQ(
+    mangohud::config_override("120", "3", false),
+    "read_cfg,preset=3,no_display=0,fps_limit=120"
+  );
+  EXPECT_EQ(
+    mangohud::config_override("120", "custom", true),
+    "read_cfg,no_display=0,frame_timing=1,fps_limit=120"
+  );
+  EXPECT_EQ(
+    mangohud::config_override("120", "4", true),
+    "read_cfg,preset=4,no_display=0,frame_timing=1,fps_limit=120"
+  );
 }
 
 TEST(MangoHudPolicy, AutomaticVirtualLimiterDoesNotEnablePhysicalStreams) {

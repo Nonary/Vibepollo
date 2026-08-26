@@ -384,6 +384,8 @@ namespace confighttp {
       {"active_provider", active ? "mangohud" : "none"},
       {"fps_limit", static_cast<double>(config::frame_limiter.fps_limit_millihz) / 1000.0},
       {"fps_limit_millihz", config::frame_limiter.fps_limit_millihz},
+      {"overlay_preset", config::frame_limiter.mangohud_preset},
+      {"always_show_graph", config::frame_limiter.mangohud_always_show_graph},
       {"mangohud_available", available},
       {"resolved_path", path.string()},
       {"message", available ?
