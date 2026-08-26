@@ -519,6 +519,12 @@ function optionsFor(field: SettingsField): SettingsOption[] {
     }
   } else if (field.key === 'capture') {
     options = captureOptionsForPlatform(platform);
+  } else if (field.key === 'frame_limiter_provider' && platform.includes('linux')) {
+    options = [
+      localizedOption('auto', '_common.auto'),
+      localizedOption('mangohud', 'ui.settings.options.frame_limiter_provider.mangohud'),
+      localizedOption('none', 'ui.settings.options.frame_limiter_provider.none'),
+    ];
   }
 
   if (current && !options.some((option) => option.value === current)) {

@@ -408,6 +408,7 @@ sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp)
     sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
+    sunshine_register_component(NAME test_component_linux_mangohud_policy TEST_SOURCE unit/platform/linux/test_mangohud_policy.cpp)
     sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
     sunshine_register_component(NAME test_component_linux_private_display_capture_policy TEST_SOURCE unit/platform/linux/test_private_display_capture_policy.cpp)
 endif()

@@ -414,7 +414,7 @@ const everydayPacingFields = (): SettingsField[] => [
   select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
-  boolean('frame_limiter_disable_vsync'),
+  boolean('frame_limiter_disable_vsync', { platform: 'windows' }),
 ];
 
 export const settingsCategories: SettingsCategory[] = [

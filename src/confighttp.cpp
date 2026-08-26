@@ -594,6 +594,11 @@ namespace confighttp {
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message);
   void getAppCover(resp_https_t response, req_https_t request);
 
+#if defined(_WIN32) || defined(__linux__)
+  // Platform-neutral frame limiter status (RTSS/NVCP on Windows, MangoHUD on Linux).
+  void getFrameLimiterStatus(resp_https_t response, req_https_t request);
+#endif
+
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
   void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -6032,6 +6037,9 @@ namespace confighttp {
     register_api_route("^/api/vigembus/status$", "GET", getViGEmBusStatus);
     register_api_route("^/api/vigembus/install$", "POST", installViGEmBus);
     register_api_route("^/api/apps/purge_autosync$", "POST", purgeAutoSyncedApps);
+#if defined(_WIN32) || defined(__linux__)
+    register_api_route("^/api/frame-limiter/status$", "GET", getFrameLimiterStatus);
+#endif
 #ifdef _WIN32
     register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
     register_api_route("^/api/rtss/status$", "GET", getRtssStatus);

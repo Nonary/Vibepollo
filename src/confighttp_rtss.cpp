@@ -226,6 +226,10 @@ namespace confighttp {
     send_response(response, out);
   }
 
+  void getFrameLimiterStatus(resp_https_t response, req_https_t request) {
+    getRtssStatus(std::move(response), std::move(request));
+  }
+
   void getLosslessScalingStatus(resp_https_t response, req_https_t request) try {
     if (!authenticate(response, request)) {
       return;
@@ -344,3 +348,48 @@ namespace confighttp {
 }  // namespace confighttp
 
 #endif  // _WIN32
+
+#ifdef __linux__
+
+  #include <boost/process/v1/search_path.hpp>
+  #include <nlohmann/json.hpp>
+  #include <Simple-Web-Server/server_https.hpp>
+
+  #include "confighttp.h"
+  #include "src/config.h"
+  #include "src/platform/linux/mangohud_policy.h"
+
+namespace confighttp {
+
+  using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
+  using req_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request>;
+
+  bool authenticate(resp_https_t response, req_https_t request);
+  void print_req(const req_https_t &request);
+  void send_response(resp_https_t response, const nlohmann::json &output_tree);
+
+  void getFrameLimiterStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+
+    const auto path = boost::process::v1::search_path("mangohud");
+    const bool available = !path.empty();
+    const bool selected = platf::mangohud::provider_selected(config::frame_limiter.provider);
+    const bool active = config::frame_limiter.enable && selected && available;
+    send_response(response, {
+      {"enabled", config::frame_limiter.enable},
+      {"configured_provider", config::frame_limiter.provider.empty() ? "auto" : config::frame_limiter.provider},
+      {"active_provider", active ? "mangohud" : "none"},
+      {"mangohud_available", available},
+      {"resolved_path", path.string()},
+      {"message", available ?
+                    "MangoHUD is installed and ready for launched games." :
+                    "MangoHUD was not found in PATH; install it to enable Linux frame limiting."}
+    });
+  }
+
+}  // namespace confighttp
+
+#endif  // __linux__
