@@ -76,6 +76,10 @@ namespace display_helper_integration {
     bool enable_virtual_display_watchdog {false};
     bool attach_hdr_toggle_flag {false};
     const rtsp_stream::launch_session_t *session {nullptr};
+    // Linux applies synchronously and publishes the verified display/HDR state
+    // back to the live launch session. Kept separate from the read-only
+    // session pointer used by the asynchronous Windows helper.
+    rtsp_stream::launch_session_t *mutable_session {nullptr};
     DisplayTopologyDefinition topology {};
     std::optional<VirtualDisplayArrangement> virtual_display_arrangement;
   };
@@ -85,6 +89,7 @@ namespace display_helper_integration {
    */
   class DisplayApplyBuilder {
   public:
+    DisplayApplyBuilder &set_session(rtsp_stream::launch_session_t &session);
     DisplayApplyBuilder &set_session(const rtsp_stream::launch_session_t &session);
     DisplayApplyBuilder &set_action(DisplayApplyAction action);
     DisplayApplyBuilder &set_configuration(const display_device::SingleDisplayConfiguration &config);
@@ -100,6 +105,7 @@ namespace display_helper_integration {
 
   private:
     const rtsp_stream::launch_session_t *session_ {nullptr};
+    rtsp_stream::launch_session_t *mutable_session_ {nullptr};
     DisplayApplyAction action_ {DisplayApplyAction::Skip};
     std::optional<display_device::SingleDisplayConfiguration> configuration_;
     ActiveSessionState session_overrides_ {};

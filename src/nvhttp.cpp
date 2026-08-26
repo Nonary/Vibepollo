@@ -49,6 +49,7 @@
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
+#include "hdr_request_policy.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -268,6 +269,7 @@ namespace nvhttp {
           .width = static_cast<int>(device.m_info->m_resolution.m_width),
           .height = static_cast<int>(device.m_info->m_resolution.m_height),
           .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
+          .hdr = device.m_info->m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled,
         };
         baseline.push_back(std::move(node));
       }
@@ -351,7 +353,7 @@ namespace nvhttp {
         return rtsp_stream::plaintext_route_warning();
       });
       remote_session::register_monitor_runtime_hooks({
-        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, bool, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
           remote_display_topology::mode_t mode;
           if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 ||
               mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
@@ -446,6 +448,7 @@ namespace nvhttp {
           .width = static_cast<int>(device.m_info->m_resolution.m_width),
           .height = static_cast<int>(device.m_info->m_resolution.m_height),
           .refresh_hz = linux_remote_refresh_hz(device.m_info->m_refresh_rate),
+          .hdr = device.m_info->m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled,
         };
         baseline.push_back(std::move(node));
       }
@@ -477,6 +480,7 @@ namespace nvhttp {
           .width = launch_session->width,
           .height = launch_session->height,
           .refresh_hz = launch_session->fps,
+          .hdr = rtsp_stream::effective_hdr_requested(*launch_session),
         }
       );
       if (!reservation.accepted) {
@@ -499,6 +503,21 @@ namespace nvhttp {
           if (std::find(protected_clients.begin(), protected_clients.end(), launch_session->client_uuid) == protected_clients.end()) {
             platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
           }
+          (void) remote_display_topology::instance().reapply_composed_topology();
+        }
+        launch_session->normal_vdd_identity_token = 0;
+        launch_session->normal_vdd_identity_newly_reserved = false;
+        launch_session->virtual_display_failed = true;
+        return linux_normal_identity_result_e::topology_failed;
+      }
+      if (!platf::linux_private_display::publish_current_session_state(*launch_session)) {
+        BOOST_LOG(error) << "Linux private display: composed output did not publish verified session state.";
+        if (reservation.newly_reserved) {
+          remote_display_topology::instance().rollback_normal_game_identity(
+            launch_session->client_uuid,
+            reservation.token
+          );
+          platf::linux_private_display::remote_remove_owned_display(launch_session->client_uuid);
           (void) remote_display_topology::instance().reapply_composed_topology();
         }
         launch_session->normal_vdd_identity_token = 0;
@@ -531,6 +550,7 @@ namespace nvhttp {
         .create_or_reclaim = [](const std::string &client_uuid, const std::string &, const remote_display_topology::mode_t &mode) {
           return platf::linux_private_display::remote_create_or_reclaim(client_uuid, mode);
         },
+        .resolve_mode = platf::linux_private_display::remote_resolve_mode,
         .apply_composed_topology = platf::linux_private_display::remote_apply_composed_topology,
         .exact_target_has_current_mode_and_dxgi = platf::linux_private_display::remote_exact_capture_output,
         .remove_owned_display = platf::linux_private_display::remote_remove_owned_display,
@@ -539,11 +559,12 @@ namespace nvhttp {
         return rtsp_stream::plaintext_route_warning();
       });
       remote_session::register_monitor_runtime_hooks({
-        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
+        .activate_or_resume = [](std::string_view uuid, std::string_view label, std::string_view requested_mode, const bool hdr_requested, std::uint64_t generation) -> remote_session::monitor_runtime_state_t {
           remote_display_topology::mode_t mode;
           if (std::sscanf(std::string {requested_mode}.c_str(), "%dx%d@%d", &mode.width, &mode.height, &mode.refresh_hz) != 3 || mode.width <= 0 || mode.height <= 0 || mode.refresh_hz <= 0) {
             return remote_session::monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor requested an invalid display mode."};
           }
+          mode.hdr = hdr_requested;
           refresh_remote_monitor_baseline(has_stream_session_activity());
           const auto state = remote_display_topology::instance().activate_or_resume(
             std::string {uuid},
@@ -551,11 +572,11 @@ namespace nvhttp {
             mode,
             generation
           );
-          return {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+          return {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
         },
         .snapshot = [](std::string_view uuid, std::uint64_t generation) {
           const auto state = remote_display_topology::instance().snapshot(std::string {uuid}, generation);
-          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error};
+          return remote_session::monitor_runtime_state_t {.accepted = state.accepted, .ready = state.ready, .retryable = state.retryable, .output = state.output, .error = state.error, .hdr_enabled = state.hdr_enabled};
         },
         .explicit_release = [](std::string_view uuid, std::uint64_t generation, std::string_view reason) {
           remote_display_topology::instance().explicit_release(std::string {uuid}, generation, std::string {reason});
@@ -1010,6 +1031,7 @@ namespace nvhttp {
           .width = launch_session->width,
           .height = launch_session->height,
           .refresh_hz = launch_session->fps,
+          .hdr = rtsp_stream::effective_hdr_requested(*launch_session),
         };
         const auto reservation = remote_display_topology::instance().reserve_normal_game_identity(
           launch_session->client_uuid,
@@ -2648,22 +2670,19 @@ namespace nvhttp {
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
       launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
       launch_session->prefer_sdr_10bit = verified_client->prefer_10bit_sdr;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
       {
-        using override_e = config::video_t::dd_t::hdr_request_override_e;
-        switch (config::video.dd.hdr_request_override) {
-          case override_e::force_on:
-            launch_session->enable_hdr = true;
-            launch_session->prefer_sdr_10bit = false;
-            launch_session->force_sdr = false;
-            break;
-          case override_e::force_off:
-            launch_session->enable_hdr = false;
-            launch_session->force_sdr = true;
-            break;
-          case override_e::automatic:
-            break;
-        }
+        const auto hdr_request = rtsp_stream::hdr_request_policy::apply(
+          {
+            launch_session->enable_hdr,
+            launch_session->prefer_sdr_10bit,
+            launch_session->force_sdr,
+          },
+          config::video.dd.hdr_request_override
+        );
+        launch_session->enable_hdr = hdr_request.enable_hdr;
+        launch_session->prefer_sdr_10bit = hdr_request.prefer_sdr_10bit;
+        launch_session->force_sdr = hdr_request.force_sdr;
       }
 #endif
       if (const auto virtual_display_arg = args.find("virtualDisplay"); virtual_display_arg != std::end(args)) {
@@ -3355,12 +3374,15 @@ namespace nvhttp {
       // paired and unpaired discovery requests.
       tree.put("root.VirtualDisplayCapable", true);
       tree.put("root.VirtualDisplayDriverReady", proc::vDisplayDriverStatus.load(std::memory_order_acquire) == VDISPLAY::DRIVER_STATUS::OK);
+      tree.put("root.VirtualDisplayHDRCapable", true);
 #elif defined(__linux__)
       tree.put("root.VirtualDisplayCapable", platf::linux_private_display::capable());
       tree.put("root.VirtualDisplayDriverReady", platf::linux_private_display::ready());
+      tree.put("root.VirtualDisplayHDRCapable", platf::linux_private_display::hdr_capable());
 #else
       tree.put("root.VirtualDisplayCapable", false);
       tree.put("root.VirtualDisplayDriverReady", false);
+      tree.put("root.VirtualDisplayHDRCapable", false);
 #endif
 
       // Only include the MAC address for requests sent from paired clients over HTTPS.
@@ -4102,6 +4124,7 @@ namespace nvhttp {
             request_client_identity.uuid,
             request_client_identity.name,
             mode,
+            rtsp_stream::effective_hdr_requested(*launch_session),
             launch_session->role_generation
           );
           if (monitor.accepted) {
@@ -4122,6 +4145,10 @@ namespace nvhttp {
               monitor.error.empty() ? "Remote Monitor exact capture target is not ready" : monitor.error
             );
             return;
+          }
+          launch_session->virtual_display_hdr_enabled = monitor.hdr_enabled;
+          if (rtsp_stream::effective_hdr_requested(*launch_session) && !monitor.hdr_enabled) {
+            launch_session->force_sdr = true;
           }
           launch_session->remote_capture_output = monitor.output;
           BOOST_LOG(info) << "Remote Monitor exact capture target for client '"

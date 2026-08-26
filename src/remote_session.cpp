@@ -246,13 +246,13 @@ namespace remote_session {
     monitor_runtime_hooks = std::move(hooks);
   }
 
-  monitor_runtime_state_t activate_or_resume_monitor(const std::string_view client_uuid, const std::string_view client_label, const std::string_view requested_mode, const std::uint64_t generation) {
-    std::function<monitor_runtime_state_t(std::string_view, std::string_view, std::string_view, std::uint64_t)> activate;
+  monitor_runtime_state_t activate_or_resume_monitor(const std::string_view client_uuid, const std::string_view client_label, const std::string_view requested_mode, const bool hdr_requested, const std::uint64_t generation) {
+    std::function<monitor_runtime_state_t(std::string_view, std::string_view, std::string_view, bool, std::uint64_t)> activate;
     {
       std::lock_guard lock {monitor_runtime_hooks_mutex};
       activate = monitor_runtime_hooks.activate_or_resume;
     }
-    return activate ? activate(client_uuid, client_label, requested_mode, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
+    return activate ? activate(client_uuid, client_label, requested_mode, hdr_requested, generation) : monitor_runtime_state_t {.retryable = true, .error = "Remote Monitor topology is not ready."};
   }
 
   monitor_runtime_state_t monitor_runtime_snapshot(const std::string_view client_uuid, const std::uint64_t generation) {

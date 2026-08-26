@@ -1382,7 +1382,7 @@
           "label": "Display scaling"
         },
         "virtual_display_outputs": {
-          "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the Vibepollo-managed VKMS pool.",
+          "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.2+, Vibepollo DRM provides HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and stock VKMS is the SDR fallback.",
           "label": "Linux private display connectors"
         },
         "remote_monitor_mute_audio": {
@@ -1402,7 +1402,7 @@
           "label": "Terminate on the first request"
         },
         "capture": {
-          "description": "Automatic follows the capture backend Vibepollo chooses for this host. Override it only for compatibility or a specific capture path.",
+          "description": "Automatic follows the capture backend Vibepollo chooses for this host. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. Override it only for compatibility or a specific capture path.",
           "label": "Capture method"
         },
         "encoder": {

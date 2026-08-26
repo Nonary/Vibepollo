@@ -17,6 +17,9 @@
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "hdr_policy.h"
+#include "pipewire_cuda_policy.h"
+#include "private_display.h"
 #include "src/main.h"
 #include "src/platform/common.h"
 #include "src/video.h"
@@ -686,6 +689,7 @@ namespace pipewire {
         BOOST_LOG(info) << "[pipewire] Requested frame rate [" << framerate << "fps]";
       }
       mem_type = hwdevice_type;
+      source_is_private_display = platf::linux_private_display::is_private_output(display_name);
 
       if (get_dmabuf_modifiers() < 0) {
         return -1;
@@ -932,24 +936,18 @@ namespace pipewire {
       int transfer_function = shared_state->transfer_function.load();
 
       if (color_primaries == SPA_VIDEO_COLOR_PRIMARIES_BT2020 && transfer_function == SPA_VIDEO_TRANSFER_SMPTE2084) {
-        // Report Rec 2020 primaries
-        metadata.displayPrimaries[0].x = 0.708f * 50000;
-        metadata.displayPrimaries[0].y = 0.292f * 50000;
-        metadata.displayPrimaries[1].x = 0.170f * 50000;
-        metadata.displayPrimaries[1].y = 0.797f * 50000;
-        metadata.displayPrimaries[2].x = 0.131f * 50000;
-        metadata.displayPrimaries[2].y = 0.046f * 50000;
-        metadata.whitePoint.x = 0.3127f * 50000;
-        metadata.whitePoint.y = 0.3290f * 50000;
-
-        // This is according to HDR10+ standards, should probably be based on actual data
-        metadata.maxDisplayLuminance = 4000;
-        metadata.minDisplayLuminance = 1;
-
-        // These are content-specific metadata parameters that this interface doesn't give us
-        metadata.maxContentLightLevel = 0;
-        metadata.maxFrameAverageLightLevel = 0;
-        metadata.maxFullFrameLuminance = 0;
+        const auto &source = platf::linux_hdr::pipewire_mastering_metadata(source_is_private_display);
+        for (std::size_t primary = 0; primary < source.display_primaries.size(); ++primary) {
+          metadata.displayPrimaries[primary].x = source.display_primaries[primary].x;
+          metadata.displayPrimaries[primary].y = source.display_primaries[primary].y;
+        }
+        metadata.whitePoint.x = source.white_point.x;
+        metadata.whitePoint.y = source.white_point.y;
+        metadata.maxDisplayLuminance = source.max_display_luminance;
+        metadata.minDisplayLuminance = source.min_display_luminance;
+        metadata.maxContentLightLevel = source.max_content_light_level;
+        metadata.maxFrameAverageLightLevel = source.max_frame_average_light_level;
+        metadata.maxFullFrameLuminance = source.max_full_frame_luminance;
 
         return true;
       }
@@ -1049,35 +1047,19 @@ namespace pipewire {
         return -1;
       }
 
-      // Detect if this is a pure NVIDIA system (not hybrid Intel+NVIDIA)
-      // On hybrid systems, the wayland compositor typically runs on Intel,
-      // so DMA-BUFs from portal will come from Intel and cannot be imported into CUDA.
-      // Check if Intel GPU exists - if so, assume hybrid system and disable CUDA DMA-BUF.
-      bool has_intel_gpu = std::ifstream("/sys/class/drm/card0/device/vendor").good() ||
-                           std::ifstream("/sys/class/drm/card1/device/vendor").good();
-      if (has_intel_gpu) {
-        // Read vendor IDs to check for Intel (0x8086)
-        auto check_intel = [](const std::string &path) {
-          if (std::ifstream f(path); f.good()) {
-            std::string vendor;
-            f >> vendor;
-            return vendor == "0x8086";
-          }
-          return false;
-        };
-        bool intel_present = check_intel("/sys/class/drm/card0/device/vendor") ||
-                             check_intel("/sys/class/drm/card1/device/vendor");
-        if (intel_present) {
-          BOOST_LOG(info) << "[pipewire] Hybrid GPU system detected (Intel + discrete) - CUDA will use memory buffers"sv;
-          display_is_nvidia = false;
-        } else {
-          // No Intel GPU found, check if NVIDIA is present
-          const char *vendor = eglQueryString(egl_display.get(), EGL_VENDOR);
-          if (vendor && std::string_view(vendor).contains("NVIDIA")) {
-            BOOST_LOG(info) << "[pipewire] Pure NVIDIA system - DMA-BUF will be enabled for CUDA"sv;
-            display_is_nvidia = true;
-          }
-        }
+      // Trust the active Wayland EGL device rather than the machine-wide GPU
+      // inventory. A KWin session can run on NVIDIA while an inactive Intel GPU
+      // is also present; the old inventory heuristic incorrectly forced such
+      // systems through the 8-bit CUDA RAM path. The queried EGL device is also
+      // the one whose importable formats/modifiers we advertise to PipeWire.
+      const char *egl_vendor = eglQueryString(egl_display.get(), EGL_VENDOR);
+      display_is_nvidia = platf::linux_pipewire::egl_vendor_supports_cuda_dmabuf(
+        egl_vendor ? std::string_view {egl_vendor} : std::string_view {}
+      );
+      if (display_is_nvidia) {
+        BOOST_LOG(info) << "[pipewire] NVIDIA Wayland EGL device detected - DMA-BUF will be enabled for CUDA"sv;
+      } else {
+        BOOST_LOG(info) << "[pipewire] Non-NVIDIA Wayland EGL device detected - CUDA will use memory buffers"sv;
       }
 
       if (eglQueryDmaBufFormatsEXT && eglQueryDmaBufModifiersEXT) {
@@ -1090,8 +1072,9 @@ namespace pipewire {
     platf::mem_type_e mem_type;
     wl::display_t wl_display;
     std::array<struct dmabuf_format_info_t, MAX_DMABUF_FORMATS> dmabuf_infos;
-    int n_dmabuf_infos;
+    int n_dmabuf_infos {0};
     bool display_is_nvidia = false;  // Track if display GPU is NVIDIA
+    bool source_is_private_display = false;
     std::chrono::nanoseconds delay;
     std::optional<std::uint64_t> last_pts {};
     std::optional<std::uint64_t> last_seq {};

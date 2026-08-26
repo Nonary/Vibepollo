@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Debian passes "remove" and RPM passes 0 for a final uninstall. Upgrades keep
+# the currently usable module in place; the new package registers its version.
+case "${1:-}" in
+  remove | purge | 0)
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl stop vibepollo-vkms.service 2>/dev/null || true
+    fi
+    if [ -x "@VIBEPOLLO_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-drm-install" ]; then
+      "@VIBEPOLLO_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-drm-install" remove || \
+        echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
+    fi
+    ;;
+esac

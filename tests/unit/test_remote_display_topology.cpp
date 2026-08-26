@@ -65,6 +65,70 @@ TEST(RemoteDisplayTopology, CreationReceivesPairedClientLabel) {
   EXPECT_EQ(observed_label, "Living Room Tablet");
 }
 
+TEST(RemoteDisplayTopology, HdrRequestReachesCreationCompositionAndReadiness) {
+  remote_display_topology::coordinator_t coordinator;
+  remote_display_topology::mode_t created;
+  remote_display_topology::mode_t verified;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&created](const auto &, const auto &, const auto &mode) {
+      created = mode;
+      return true;
+    },
+    .apply_composed_topology = [&composed](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [&verified](const auto &, const auto &mode) {
+      verified = mode;
+      return std::optional<std::string> {"Virtual-1"};
+    },
+  });
+
+  const auto result = coordinator.activate_or_resume("client", "HDR Client", {3840, 2160, 120, true}, 1);
+  ASSERT_TRUE(result.ready);
+  EXPECT_TRUE(result.hdr_enabled);
+  EXPECT_TRUE(created.hdr);
+  EXPECT_TRUE(verified.hdr);
+  ASSERT_EQ(composed.size(), 1u);
+  EXPECT_TRUE(composed.front().configured_mode.hdr);
+  EXPECT_TRUE(coordinator.snapshot({})["nodes"][0]["mode"]["hdr"]);
+}
+
+TEST(RemoteDisplayTopology, PlatformCanDowngradeHdrBeforeApplyAndReadiness) {
+  remote_display_topology::coordinator_t coordinator;
+  remote_display_topology::mode_t applied;
+  remote_display_topology::mode_t verified;
+  bool hdr_available = false;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .resolve_mode = [&hdr_available](const auto &, auto &mode) {
+      mode.hdr = mode.hdr && hdr_available;
+    },
+    .apply_composed_topology = [&applied](const auto &nodes) {
+      applied = nodes.front().configured_mode;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [&verified](const auto &, const auto &mode) {
+      verified = mode;
+      return std::optional<std::string> {"Virtual-1"};
+    },
+  });
+
+  const auto result = coordinator.activate_or_resume("client", "SDR Display", {3840, 2160, 120, true}, 1);
+  ASSERT_TRUE(result.ready);
+  EXPECT_FALSE(result.hdr_enabled);
+  EXPECT_FALSE(applied.hdr);
+  EXPECT_FALSE(verified.hdr);
+
+  // The desired HDR request survives a transient capability miss and is
+  // reconsidered on the next composition.
+  hdr_available = true;
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_TRUE(applied.hdr);
+  EXPECT_TRUE(coordinator.snapshot({})["nodes"][0]["mode"]["hdr"]);
+}
+
 TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<remote_display_topology::node_t> composed;
@@ -178,16 +242,44 @@ TEST(RemoteDisplayTopology, NormalReservationCanRecomposeThroughPlatformRuntime)
   EXPECT_EQ(composed.front().configured_mode.refresh_hz, 120);
 }
 
+TEST(RemoteDisplayTopology, NormalReservationResolvesHdrCapabilityBeforeRecompose) {
+  remote_display_topology::coordinator_t coordinator;
+  remote_display_topology::mode_t applied;
+  coordinator.set_runtime_callbacks({
+    .resolve_mode = [](const auto &, auto &mode) { mode.hdr = false; },
+    .apply_composed_topology = [&applied](const auto &nodes) {
+      applied = nodes.front().configured_mode;
+      return true;
+    },
+  });
+
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("normal", "Normal Game", {3840, 2160, 120, true}).accepted);
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_FALSE(applied.hdr);
+  EXPECT_FALSE(coordinator.snapshot({})["nodes"][0]["mode"]["hdr"]);
+}
+
 TEST(RemoteDisplayTopology, SharedNormalAndMonitorIdentityCountsOnceAndReleasesIndependently) {
   remote_display_topology::coordinator_t coordinator;
-  coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [](const auto &) { return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});
-  const auto normal = coordinator.reserve_normal_game_identity("same", "Same", {});
+  std::vector<remote_display_topology::mode_t> applied;
+  coordinator.set_runtime_callbacks({.create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; }, .apply_composed_topology = [&applied](const auto &nodes) { if (!nodes.empty()) applied.push_back(nodes.front().configured_mode); return true; }, .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; }});
+  const auto normal = coordinator.reserve_normal_game_identity("same", "Same", {2560, 1440, 120, true});
   ASSERT_TRUE(normal.accepted);
-  EXPECT_TRUE(coordinator.activate_or_resume("same", "Same", {}, 7).accepted);
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_TRUE(coordinator.activate_or_resume("same", "Same", {1920, 1080, 60, false}, 7).accepted);
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
+  ASSERT_GE(applied.size(), 2u);
+  EXPECT_EQ(applied.back().width, 1920);
+  EXPECT_FALSE(applied.back().hdr);
+
+  coordinator.explicit_release("same", 7, "monitor done");
+  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
+  EXPECT_EQ(applied.back().width, 2560);
+  EXPECT_EQ(applied.back().height, 1440);
+  EXPECT_EQ(applied.back().refresh_hz, 120);
+  EXPECT_TRUE(applied.back().hdr);
+
   coordinator.release_normal_game_identity("same", normal.token);
-  EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 1);
-  coordinator.explicit_release("same", 7, "done");
   EXPECT_EQ(coordinator.snapshot({})["capacity"]["used"], 0);
 }
 

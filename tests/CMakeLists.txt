@@ -356,6 +356,7 @@ sunshine_register_component(NAME test_component_remote_session TEST_SOURCE unit/
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_session.cpp")
 sunshine_register_component(NAME test_component_rtsp_pending_policy TEST_SOURCE unit/test_rtsp_pending_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rtsp_pending_policy.cpp")
+sunshine_register_component(NAME test_component_hdr_request_policy TEST_SOURCE unit/test_hdr_request_policy.cpp)
 sunshine_register_component(NAME test_component_remote_display_topology TEST_SOURCE unit/test_remote_display_topology.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
@@ -406,6 +407,9 @@ sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/common_services.cpp")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp)
+    sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
+    sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
+    sunshine_register_component(NAME test_component_linux_private_display_capture_policy TEST_SOURCE unit/platform/linux/test_private_display_capture_policy.cpp)
 endif()
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp")
@@ -439,8 +443,32 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibepollo-vkms.sh"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-vkms")
         set_tests_properties(test_component_linux_vkms_setup PROPERTIES LABELS "component")
+        add_test(
+            NAME test_component_linux_vibepollo_drm_install
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibepollo-drm-install.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-drm-install.in")
+        set_tests_properties(test_component_linux_vibepollo_drm_install PROPERTIES LABELS "component")
+        add_test(
+            NAME test_component_linux_vibepollo_drm_build_module
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibepollo-drm-build-module.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-drm/build-module")
+        set_tests_properties(test_component_linux_vibepollo_drm_build_module PROPERTIES LABELS "component")
     else()
         message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")
+    endif()
+
+    find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(
+            NAME test_component_linux_vibepollo_drm_contract
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibepollo-drm-contract.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-drm")
+        set_tests_properties(test_component_linux_vibepollo_drm_contract PROPERTIES LABELS "component")
+    else()
+        message(WARNING "python3 was not found; skipping the Vibepollo DRM source contract test")
     endif()
 endif()
 

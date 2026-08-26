@@ -1,15 +1,15 @@
-# Vibeshine Linux Build & Setup - Learnings
+# Vibepollo Linux Build & Setup - Learnings
 
 ## Overview
 
-This document captures all learnings from building and configuring Vibeshine (a Sunshine fork) on Arch Linux with Boost 1.89+, NVIDIA GPU, and Wayland.
+This document captures all learnings from building and configuring Vibepollo (a Sunshine fork) on Arch Linux with Boost 1.89+, NVIDIA GPU, and Wayland.
 
 ---
 
 ## 1. Build Fixes for Linux (Boost 1.89+)
 
 ### Problem
-Vibeshine/Sunshine fails to build on Linux with Boost 1.89+ due to API changes and Windows-only code not properly guarded.
+Vibepollo/Sunshine fails to build on Linux with Boost 1.89+ due to API changes and Windows-only code not properly guarded.
 
 ### Files Modified
 
@@ -31,11 +31,8 @@ sudo pacman -S cmake ninja gcc cuda nvidia-utils libva libvdpau \
     libevdev libcap libnotify libayatana-appindicator
 
 # Clone and build
-git clone https://github.com/Nonary/vibeshine.git
-cd vibeshine
-git checkout vibe
-git checkout -b fix/linux-build-boost-1.89
-# Apply patches...
+git clone <Vibepollo repository URL>
+cd Vibepollo
 mkdir build && cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=~/.local -DSUNSHINE_ENABLE_CUDA=ON
 cmake --build . --parallel
@@ -47,7 +44,7 @@ cmake --install .
 ## 2. Network Configuration
 
 ### Problem
-Vibeshine not discoverable on other devices - no video streaming working.
+Vibepollo not discoverable on other devices - no video streaming working.
 
 ### Root Causes
 1. **UFW Firewall** was blocking required ports
@@ -245,13 +242,26 @@ groups $USER | grep -E "input|video|render"
 ## 10. References
 
 - [Sunshine Documentation](https://docs.lizardbyte.dev/projects/sunshine/latest/)
-- [Vibeshine GitHub](https://github.com/Nonary/vibeshine)
+- [Vibepollo GitHub](https://github.com/Nonary/Vibepollo)
 - [Moonlight Game Streaming Ports](https://portforward.com/moonlight-game-streaming/)
 - [Sunshine Getting Started](https://docs.lizardbyte.dev/projects/sunshine/latest/md_docs_2getting__started.html)
 
 ---
 
 ## 11. Virtual Display Setup (EDID Method)
+
+> **Preferred current setup:** On Linux 7.2 or newer, native package hooks and
+> `vibepollo-drm-setup.service` attempt to build or register the packaged `vibepollo_drm` module.
+> Run `sudo /usr/libexec/vibepollo/vibepollo-drm-install install` to install or retry it manually,
+> then run `sudo systemctl enable --now vibepollo-vkms.service` to provision four dormant managed
+> private outputs. The privileged helper always remains under the fixed, root-owned
+> `/usr/libexec/vibepollo` path, independent of the application install prefix.
+> These outputs advertise HDR10 (BT.2020, PQ, and static HDR metadata) and expose 10-bit connector
+> and plane support. Managed HDR capture uses direct DRM/KMS so the 10-bit scanout reaches the
+> encoder; KWin ScreenCast remains the recommended SDR path. If the module cannot be built or
+> loaded, the helper falls back to stock VKMS; the private outputs still work in SDR, but HDR
+> requests are downgraded. Secure Boot requires a trusted module signature. The remainder of this
+> section documents the legacy forced-EDID method for a physical connector.
 
 ### Problem
 Need to stream without physical monitor, or stream while monitor is off.
@@ -375,7 +385,7 @@ After all steps, you should have:
 
 | Component | Status | Verification |
 |-----------|--------|--------------|
-| Vibeshine binary | Installed | `which sunshine` |
+| Vibepollo binary | Installed | `which sunshine` |
 | UDP ports | Open | `sudo ufw status` |
 | CAP_SYS_ADMIN | Set | `getcap $(which sunshine)` |
 | User groups | Added | `groups $USER` |
@@ -563,7 +573,7 @@ ExecStopPost=/bin/bash -c 'export WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run
 ## 19. Audio Crackling Fix: PipeWire Quantum Mismatch
 
 ### Root Cause
-Vibeshine reads audio using PulseAudio's `pa_simple` API with `fragsize = frame_size * channels * sizeof(float)`.
+Vibepollo reads audio using PulseAudio's `pa_simple` API with `fragsize = frame_size * channels * sizeof(float)`.
 
 - Sunshine's audio frame size = `packetDuration * sampleRate / 1000` = `5ms * 48000 / 1000` = **240 samples**
 - PipeWire's default quantum was **1024 samples** (~21ms)
@@ -608,7 +618,7 @@ virtual_sink = sink-sunshine-stereo
 ```
 Sunshine will create `sink-sunshine-stereo` (float32le, 2ch, 48kHz) via PulseAudio's `module-null-sink` and manage its lifecycle. No manual sink setup needed.
 
-### How Vibeshine creates the sink (source reference)
+### How Vibepollo creates the sink (source reference)
 In `src/platform/linux/audio.cpp`:
 ```cpp
 // Format: PA_SAMPLE_FLOAT32, 48000 Hz, 2ch (stereo) or 6/8ch (surround)

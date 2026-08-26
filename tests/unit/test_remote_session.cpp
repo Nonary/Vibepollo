@@ -291,7 +291,7 @@ TEST(RemoteSession, NormalAppTransitionGateSerializesProcessStartPublication) {
 
 TEST(RemoteSession, MonitorHooksRejectWithoutTopologyAndPreserveGeneration) {
   remote_session::register_monitor_runtime_hooks({});
-  const auto unavailable = remote_session::activate_or_resume_monitor("client", "Client", "1920x1080@60", 7);
+  const auto unavailable = remote_session::activate_or_resume_monitor("client", "Client", "1920x1080@60", true, 7);
   EXPECT_FALSE(unavailable.accepted);
   EXPECT_TRUE(unavailable.retryable);
 
@@ -301,6 +301,21 @@ TEST(RemoteSession, MonitorHooksRejectWithoutTopologyAndPreserveGeneration) {
   });
   remote_session::release_monitor("client", 7, "disconnect");
   EXPECT_EQ(released_generation, 7u);
+  remote_session::register_monitor_runtime_hooks({});
+}
+
+TEST(RemoteSession, MonitorRuntimeTransportsHdrRequest) {
+  bool observed_hdr = false;
+  remote_session::register_monitor_runtime_hooks({
+    .activate_or_resume = [&observed_hdr](std::string_view, std::string_view, std::string_view, const bool hdr_requested, std::uint64_t) {
+      observed_hdr = hdr_requested;
+      return remote_session::monitor_runtime_state_t {.accepted = true, .ready = true, .hdr_enabled = hdr_requested};
+    },
+  });
+  const auto result = remote_session::activate_or_resume_monitor("client", "Client", "3840x2160@120", true, 8);
+  EXPECT_TRUE(result.ready);
+  EXPECT_TRUE(result.hdr_enabled);
+  EXPECT_TRUE(observed_hdr);
   remote_session::register_monitor_runtime_hooks({});
 }
 

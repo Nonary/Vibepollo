@@ -34,6 +34,8 @@
 #include "cuda.h"
 #include "graphics.h"
 #include "pipewire.cpp"
+#include "private_display.h"
+#include "private_display_capture_policy.h"
 #include "src/platform/common.h"
 #include "src/video.h"
 
@@ -683,13 +685,24 @@ namespace platf {
   }
 
   std::vector<std::string> kwin_display_names() {
-    if (has_elevated_privileges(false)) {
+    const bool retain_kms_capability =
+      platf::linux_private_display_capture::retain_kms_capability(
+        linux_private_display::kernel_hdr_pool_available()
+      );
+    if (platf::linux_private_display_capture::use_dummy_compositor_names(
+          has_elevated_privileges(false),
+          retain_kms_capability
+        )) {
       // We're still in the probing phase of Sunshine startup. Dropping portal security early will break KMS.
       // Just return a dummy screen for now. Display re-enumeration after encoder probing will yield full result.
       std::vector<std::string> display_names;
       display_names.emplace_back("");
       return display_names;
     }
+
+    // A managed HDR pool retains permitted CAP_SYS_ADMIN for future KMS use.
+    // Enumerate KWin directly in that case instead of returning dummy names
+    // forever merely because the permitted capability remains available.
 
     const auto screencast = std::make_unique<kwin::screencast_t>();
     if (screencast->init() < 0) {

@@ -1,6 +1,6 @@
-# Vibeshine Linux Agent Guide
+# Vibepollo Linux Agent Guide
 
-This file is automatically loaded by AI coding assistants (OpenCode, Claude Code, etc.) when working in this repository. It contains authoritative knowledge about building, configuring, and troubleshooting Vibeshine on Linux — specifically Arch Linux / CachyOS with NVIDIA GPU and Wayland.
+This file is automatically loaded by AI coding assistants (OpenCode, Claude Code, etc.) when working in this repository. It contains authoritative knowledge about building, configuring, and troubleshooting Vibepollo on Linux — specifically Arch Linux / CachyOS with NVIDIA GPU and Wayland.
 
 For full details on every topic, see **`LEARNINGS.md`**. This file is the quick-reference distillation.
 
@@ -8,10 +8,10 @@ For full details on every topic, see **`LEARNINGS.md`**. This file is the quick-
 
 ## Repository Context
 
-- **What**: Vibeshine — a Sunshine fork by Nonary with CUDA/NVENC, virtual display, WebRTC, and Playnite integration
-- **Branch**: `vibe` (main development), `fix/linux-build-boost-1.89` (Linux build fixes)
+- **What**: Vibepollo — a Sunshine fork with CUDA/NVENC, virtual display, WebRTC, and Playnite integration
+- **Branch**: `master` for stable downstream releases; `vibe-test` for prerelease migration work
 - **Binary**: Installed at `~/.local/bin/sunshine` (symlink → versioned binary)
-- **Build dir**: `~/vibeshine-build/build/`
+- **Build dir**: `~/vibepollo-build/build/`
 - **Config**: `~/.config/sunshine/sunshine.conf`
 
 ---
@@ -42,7 +42,7 @@ cmake --install .
 sudo setcap cap_sys_admin+p ~/.local/bin/sunshine
 ```
 
-### Boost 1.89+ patches (already applied on `fix/linux-build-boost-1.89`)
+### Boost 1.89+ patches
 If building on a fresh clone and seeing Boost errors:
 
 | File | Fix |
@@ -59,7 +59,37 @@ If building on a fresh clone and seeing Boost errors:
 
 ## 2. Virtual Display Setup
 
-Vibeshine streams to a **virtual display** on HDMI-A-2 (a physically disconnected port) using a custom EDID loaded by the kernel at boot.
+### Preferred managed virtual displays (Linux 7.2+)
+
+Native Vibepollo installations include the `vibepollo_drm` source. Native package hooks and
+`vibepollo-drm-setup.service` attempt to register it with DKMS or build it for the running kernel.
+It targets the Linux 7.2 DRM APIs and provides a separate `/sys/kernel/config/vibepollo-drm`
+namespace, so it can coexist with stock VKMS. Install (or retry) the module and enable the
+four-output private pool with:
+
+```bash
+sudo /usr/libexec/vibepollo/vibepollo-drm-install install
+sudo systemctl enable --now vibepollo-vkms.service
+```
+
+The privileged helper always remains at the fixed, root-owned
+`/usr/libexec/vibepollo` path, even when the application binary uses a custom prefix.
+
+The managed outputs advertise a deterministic HDR10 EDID with BT.2020, PQ/static HDR metadata,
+8-16 bits per component, and 10-bit RGB plane formats. KDE Plasma/KWin and `kscreen-doctor` manage
+their modes, layout, and HDR state. Vibepollo routes managed HDR capture through direct DRM/KMS so
+the 10-bit scanout reaches VAAPI or NVENC; KWin ScreenCast remains recommended for SDR capture. If
+the custom module cannot build or load, the helper falls back to stock VKMS. That
+fallback keeps private SDR streaming available but does not advertise HDR. Secure Boot requires a
+trusted module signature.
+
+### Reference-host forced-EDID setup
+
+The setup below records this repository's older Linux 6.19 reference host. It remains useful for a
+physical dummy connector or a kernel that cannot run `vibepollo_drm`, but it is not required for the
+managed pool on Linux 7.2+.
+
+Vibepollo streams to a **virtual display** on HDMI-A-2 (a physically disconnected port) using a custom EDID loaded by the kernel at boot.
 
 ### How it works
 1. A custom EDID binary is embedded in the initramfs
