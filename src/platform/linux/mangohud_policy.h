@@ -96,6 +96,13 @@ namespace platf::mangohud {
     return result;
   }
 
+  inline std::string config_override(std::string_view limit) {
+    // MANGOHUD_CONFIG is passed through Steam's pressure-vessel runtime, while
+    // older runtimes may discard the newer MANGOHUD_FPS_LIMIT variable. Load
+    // the user's normal config first, then make the stream limit authoritative.
+    return "read_cfg,fps_limit=" + std::string(limit);
+  }
+
   inline launch_policy_t make_launch_policy(
     std::string_view provider,
     bool limiter_enabled,

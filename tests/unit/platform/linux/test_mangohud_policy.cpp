@@ -47,6 +47,11 @@ TEST(MangoHudPolicy, AddsAndRemovesOnlyItsOpenGlPreload) {
   EXPECT_EQ(mangohud::without_preload(existing), existing);
 }
 
+TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
+  EXPECT_EQ(mangohud::config_override("120"), "read_cfg,fps_limit=120");
+  EXPECT_EQ(mangohud::config_override("59.94"), "read_cfg,fps_limit=59.94");
+}
+
 TEST(MangoHudPolicy, AutomaticVirtualLimiterDoesNotEnablePhysicalStreams) {
   framegen::stream_start_policy_t stream_policy;
   stream_policy.fps = 120;
