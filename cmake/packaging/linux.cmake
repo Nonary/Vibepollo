@@ -24,11 +24,11 @@ else()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         install(PROGRAMS
-                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-vkms"
-                "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-drm-install"
-                DESTINATION "${VIBEPOLLO_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
-        install(DIRECTORY "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-drm/"
-                DESTINATION "${VIBEPOLLO_DRM_SOURCE_INSTALL_DIR}"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
+                "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
+                DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 FILES_MATCHING
                 PATTERN "*.c"
                 PATTERN "*.h"
@@ -36,10 +36,10 @@ else()
                 PATTERN "Makefile"
                 PATTERN "README*"
                 PATTERN "LICENSE*")
-        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-drm/build-module"
-                DESTINATION "${VIBEPOLLO_DRM_SOURCE_INSTALL_DIR}")
-        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-drm-dkms.conf"
-                DESTINATION "${VIBEPOLLO_DRM_SOURCE_INSTALL_DIR}"
+        install(PROGRAMS "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-dkms.conf"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 RENAME dkms.conf)
     endif()
 
@@ -54,11 +54,11 @@ else()
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             install(FILES
-                    "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-vkms.service"
-                    "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-drm-setup.service"
-                    "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-vkms-control.socket"
-                    "${CMAKE_CURRENT_BINARY_DIR}/vibepollo-vkms-control@.service"
-                    DESTINATION "${VIBEPOLLO_SYSTEM_UNIT_INSTALL_DIR}")
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms.service"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
+                    DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
     endif()
 endif()

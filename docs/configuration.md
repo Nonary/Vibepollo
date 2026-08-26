@@ -1202,7 +1202,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             Linux-only list of DRM connector names reserved for private streaming displays.
             Separate names with commas, or provide a JSON string array. Leave this empty to
-            auto-discover outputs created by the packaged <code>vibepollo-vkms.service</code>.
+            auto-discover outputs created by the packaged <code>vibeshine-vkms.service</code>.
+            The Linux DRM driver, connector broker, and service assets are supplied by the
+            bundled <code>libvirtualdisplay</code> dependency.
             Explicit connector names are useful for a forced-EDID or hardware dummy output.
         </td>
     </tr>
@@ -1219,13 +1221,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Linux setup</td>
         <td colspan="2">@code{}
-            sudo /usr/libexec/vibepollo/vibepollo-drm-install install
-            sudo systemctl enable --now vibepollo-vkms.service
+            sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+            sudo systemctl enable --now vibeshine-vkms.service
             @endcode
-            Native packages and <code>vibepollo-drm-setup.service</code> attempt this installation
+            Native packages and <code>vibeshine-drm-setup.service</code> attempt this installation
             automatically; use the first command to install or retry it manually. The privileged
             helper always uses the fixed, root-owned
-            <code>/usr/libexec/vibepollo</code> path, independent of the application install prefix.
+            <code>/usr/libexec/vibeshine</code> path, independent of the application install prefix.
             The module targets Linux 7.2 or newer and exposes four independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
@@ -1483,7 +1485,7 @@ Terminate request. The original game client is unaffected. The default is
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{On Linux 7.2 or newer, the managed <code>vibepollo_drm</code> output advertises HDR10 and 10-bit formats. The stock VKMS fallback remains SDR-only, and unsupported HDR requests are safely downgraded to SDR.}
+            @note{On Linux 7.2 or newer, the managed <code>vibeshine_drm</code> output supplied by <code>libvirtualdisplay</code> advertises HDR10 and 10-bit formats. The stock VKMS fallback remains SDR-only, and unsupported HDR requests are safely downgraded to SDR.}
         </td>
     </tr>
     <tr>

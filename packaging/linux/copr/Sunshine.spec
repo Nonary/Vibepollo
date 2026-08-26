@@ -346,7 +346,7 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
     echo "error: udevadm not found or not executable."
   fi
 
-  %{_prefix}/libexec/vibepollo/vibepollo-drm-install install || \
+  %{_prefix}/libexec/vibeshine/vibeshine-drm-install install || \
     echo "warning: Vibepollo HDR DRM installation failed; upstream VKMS fallback remains available."
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
@@ -354,28 +354,28 @@ fi
 
 %preun
 if [ "$1" -eq 0 ]; then
-  systemctl stop vibepollo-vkms.service 2>/dev/null || true
-  %{_prefix}/libexec/vibepollo/vibepollo-drm-install remove || \
+  systemctl stop vibeshine-vkms.service 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 fi
 
 %files
 # Executables
 %caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
-%{_prefix}/libexec/vibepollo/vibepollo-drm-install
-%{_prefix}/libexec/vibepollo/vibepollo-vkms
+%{_prefix}/libexec/vibeshine/vibeshine-drm-install
+%{_prefix}/libexec/vibeshine/vibeshine-vkms
 
 # Versioned DKMS/direct-build source tree
-/usr/src/vibepollo-drm-*
+/usr/src/vibeshine-drm-*
 
 # Systemd unit files for user services
 %{_userunitdir}/*.service
 
 # Privileged virtual-display provisioning service
-%{_unitdir}/vibepollo-drm-setup.service
-%{_unitdir}/vibepollo-vkms-control.socket
-%{_unitdir}/vibepollo-vkms-control@.service
-%{_unitdir}/vibepollo-vkms.service
+%{_unitdir}/vibeshine-drm-setup.service
+%{_unitdir}/vibeshine-vkms-control.socket
+%{_unitdir}/vibeshine-vkms-control@.service
+%{_unitdir}/vibeshine-vkms.service
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules

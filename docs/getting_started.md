@@ -653,20 +653,20 @@ Additional information:
     not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
   - Native Vibepollo installations can provide private HDR10 virtual outputs through the
-    `vibepollo_drm` module. It requires Linux 7.2 or newer and matching kernel headers. Its EDID
+    `vibeshine_drm` compatibility module supplied by `libvirtualdisplay`. It requires Linux 7.2 or newer and matching kernel headers. Its EDID
     advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
 
   Enable the managed virtual-display pool after installation:
 
   ```bash
-  sudo /usr/libexec/vibepollo/vibepollo-drm-install install
-  sudo systemctl enable --now vibepollo-vkms.service
-  modinfo vibepollo_drm
+  sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+  sudo systemctl enable --now vibeshine-vkms.service
+  modinfo vibeshine_drm
   ```
 
-  Native packages and `vibepollo-drm-setup.service` attempt the module build automatically; the
+  Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
-  `/usr/libexec/vibepollo` path even when the application uses a custom prefix. The pool service
+  `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
   provisions four dormant private outputs and uses the custom HDR backend when it loads. If the module cannot be built or
   loaded, it falls back to the kernel's stock VKMS backend: private SDR streaming still works, but
   HDR requests are downgraded to SDR. Secure Boot systems must sign the module with a key trusted
