@@ -440,14 +440,21 @@ export function getConfigSelectOptions(
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'frame_limiter_provider': {
-      const options = [
-        { label: t('frameLimiter.provider.auto'), value: 'auto' },
-        { label: t('frameLimiter.provider.rtss'), value: 'rtss' },
-        {
-          label: t('frameLimiter.provider.nvcp'),
-          value: 'nvidia-control-panel',
-        },
-      ];
+      const options = platform.includes('linux')
+        ? [
+            { label: t('frameLimiter.provider.autoLinux'), value: 'auto' },
+            { label: t('frameLimiter.provider.mangohud'), value: 'mangohud' },
+            { label: t('frameLimiter.provider.none'), value: 'none' },
+          ]
+        : [
+            { label: t('frameLimiter.provider.auto'), value: 'auto' },
+            { label: t('frameLimiter.provider.rtss'), value: 'rtss' },
+            {
+              label: t('frameLimiter.provider.nvcp'),
+              value: 'nvidia-control-panel',
+            },
+            { label: t('frameLimiter.provider.none'), value: 'none' },
+          ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'frame_limiter_auto_virtual_framegen': {

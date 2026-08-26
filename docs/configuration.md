@@ -2847,9 +2847,10 @@ this option to replace the running app immediately. The default is `true`.
     </tr>
 </table>
 
-## Frame Limiter (Windows)
+## Frame Limiter
 
-These options integrate with Windows tooling to manage frame pacing and related behavior during a stream.
+These options integrate with MangoHUD on Linux and RTSS or NVIDIA Control Panel on Windows to
+manage frame pacing and related behavior during a stream.
 They appear in the Frame Limiter section of the settings UI.
 
 ### frame_limiter_enable
@@ -2889,13 +2890,17 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            frame_limiter_provider = rtss
+            frame_limiter_provider = mangohud
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="4">Choices</td>
+        <td rowspan="5">Choices</td>
         <td>auto</td>
-        <td>Auto-detect and prefer RTSS when available, otherwise fall back to NVIDIA Control Panel.</td>
+        <td>Use MangoHUD on Linux. On Windows, prefer RTSS when available and otherwise fall back to NVIDIA Control Panel.</td>
+    </tr>
+    <tr>
+        <td>mangohud</td>
+        <td>Use MangoHUD on Linux. Vibeshine enables it for launched games and supplies the stream-derived FPS limit.</td>
     </tr>
     <tr>
         <td>rtss</td>
@@ -2917,8 +2922,8 @@ They appear in the Frame Limiter section of the settings UI.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Optional FPS limit to apply while streaming. RTSS supports fractional values with up to
-            three decimal places; NVIDIA Control Panel rounds them to the nearest whole FPS.
+            Optional FPS limit to apply while streaming. MangoHUD and RTSS support fractional values
+            with up to three decimal places; NVIDIA Control Panel rounds them to the nearest whole FPS.
             Set to 0 to use a client display-mode override when present, otherwise the stream's requested FPS.
         </td>
     </tr>

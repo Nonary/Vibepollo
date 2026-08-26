@@ -341,7 +341,8 @@ namespace config {
 
     bool enable {false};
 
-    // Provider selector. Supported values: "auto", "nvidia-control-panel", "rtss".
+    // Provider selector. Linux uses MangoHUD; Windows uses RTSS or NVIDIA Control Panel.
+    // Supported values: "auto", "mangohud", "nvidia-control-panel", "rtss", "none".
     std::string provider;
 
     // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.

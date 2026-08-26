@@ -72,6 +72,8 @@
   #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
+#elif defined(__linux__)
+  #include "platform/linux/mangohud_policy.h"
 #endif
 #include "httpcommon.h"
 #include "nvhttp.h"
@@ -1632,6 +1634,48 @@ namespace proc {
     _env["APOLLO_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
     _env["APOLLO_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
 
+#ifdef __linux__
+    const bool mangohud_uses_lossless_limit =
+      _app.lossless_scaling_framegen &&
+      boost::iequals(_app.frame_generation_provider, "lossless-scaling");
+    const auto mangohud_stream_policy = rtsp_stream::make_framegen_stream_start_policy(
+      *launch_session,
+      mangohud_uses_lossless_limit ? launch_session->lossless_scaling_rtss_limit : std::nullopt,
+      config::video.capture,
+      false,
+      config::frame_limiter.virtual_display_limiter_enabled(),
+      config::frame_limiter.fixed_virtual_display_refresh_multiplier()
+    );
+    const auto mangohud_policy = platf::mangohud::make_launch_policy(
+      config::frame_limiter.provider,
+      config::frame_limiter.enable,
+      config::frame_limiter.virtual_display_limiter_enabled(),
+      mangohud_stream_policy,
+      config::frame_limiter.fps_limit_millihz
+    );
+    const auto existing_preload = _env["LD_PRELOAD"].to_string();
+    if (mangohud_policy.enabled) {
+      if (bp::search_path("mangohud").empty()) {
+        _env["MANGOHUD"] = "";
+        _env["MANGOHUD_FPS_LIMIT"] = "";
+        _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+        BOOST_LOG(warning) << "MangoHUD frame limiting requested, but mangohud was not found in PATH.";
+      } else {
+        // MANGOHUD enables the implicit Vulkan layer; the shim preload covers
+        // native OpenGL. The dedicated FPS override preserves the user's config.
+        _env["MANGOHUD"] = "1";
+        _env["MANGOHUD_FPS_LIMIT"] = mangohud_policy.limit;
+        _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
+        BOOST_LOG(info) << "MangoHUD frame limiter enabled at " << mangohud_policy.limit << " FPS.";
+      }
+    } else {
+      // proc_t reuses its environment between launches, so remove overrides
+      // owned by a previous Vibepollo-managed MangoHUD launch.
+      _env["MANGOHUD"] = "";
+      _env["MANGOHUD_FPS_LIMIT"] = "";
+      _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+    }
+#endif
     int channelCount = launch_session->surround_info & 65535;
     switch (channelCount) {
       case 2:

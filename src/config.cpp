@@ -1985,7 +1985,7 @@ namespace config {
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
 
-    // Windows-only frame limiter options
+    // Cross-platform frame limiter options. Provider-specific RTSS settings below remain Windows-only.
     bool_f(vars, "frame_limiter_enable", frame_limiter.enable);
     string_f(vars, "frame_limiter_provider", frame_limiter.provider);
     if (frame_limiter.provider.empty()) {
