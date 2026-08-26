@@ -75,8 +75,8 @@ namespace platf::linux_private_display {
   /** Forget cached topology/reservations after restoring the current session. */
   bool reset_persistence();
 
-  /** Generation-fenced delayed restore used while an application remains paused. */
-  void schedule_revert(std::chrono::milliseconds delay);
+  /** Generation-fenced delayed restore with a lifecycle-specific diagnostic reason. */
+  void schedule_revert(std::chrono::milliseconds delay, std::string reason);
   void cancel_scheduled_revert();
 
   /** Runtime capability/readiness and Web UI display enumeration. */

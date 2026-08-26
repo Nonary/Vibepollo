@@ -2967,13 +2967,17 @@ namespace stream {
       if (delay_virtual_display_cleanup_due_to_pause) {
         BOOST_LOG(info) << "Linux private display: stream paused; scheduling output restore in "
                         << paused_timeout_secs << "s.";
-        platf::linux_private_display::schedule_revert(std::chrono::seconds(paused_timeout_secs));
+        platf::linux_private_display::schedule_revert(
+          std::chrono::seconds(paused_timeout_secs),
+          "paused-session timeout"
+        );
       } else if (keep_virtual_display_due_to_pause) {
         BOOST_LOG(debug) << "Linux private display: keeping the private output active for resume.";
       } else {
         if (config::video.dd.config_revert_delay.count() > 0) {
           platf::linux_private_display::schedule_revert(
-            config::video.dd.config_revert_delay
+            config::video.dd.config_revert_delay,
+            "stream-end delay"
           );
         } else {
           (void) platf::linux_private_display::revert();

@@ -53,6 +53,20 @@ namespace audio::policy {
            selected_sink == configured_sink;
   }
 
+  std::string select_stream_sink(const sink_catalog_t &catalog,
+                                 const std::string &configured_sink,
+                                 const std::string &configured_virtual_sink,
+                                 int channels,
+                                 bool host_audio_enabled) {
+    const bool managed_virtual_sink = !configured_virtual_sink.empty();
+    return select_sink(
+      catalog,
+      managed_virtual_sink ? configured_virtual_sink : configured_sink,
+      channels,
+      host_audio_enabled && !managed_virtual_sink
+    );
+  }
+
   sample_action_e sample_action(sample_status_e status) {
     switch (status) {
       case sample_status_e::ok:

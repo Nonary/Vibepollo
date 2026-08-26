@@ -32,7 +32,7 @@ namespace audio {
   static void stop_audio_control(audio_ctx_t &);
   static void apply_surround_params(opus_stream_config_t &stream, const stream_params_t &params);
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
   struct retained_audio_t {
     std::unique_ptr<platf::audio_control_t> control;
     platf::sink_t sink;
@@ -272,9 +272,10 @@ namespace audio {
       sinks.surround51 = ref->sink.null->surround51;
       sinks.surround71 = ref->sink.null->surround71;
     }
-    const auto sink = policy::select_sink(
+    const auto sink = policy::select_stream_sink(
       sinks,
       config::audio.sink,
+      config::audio.virtual_sink,
       stream.channelCount,
       config.flags[config_t::HOST_AUDIO]
     );
@@ -398,25 +399,25 @@ namespace audio {
   }
 
   void app_termination_requested() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     release_retained_audio();
 #endif
   }
 
   void app_started() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     audio_state.app_started();
 #endif
   }
 
   void audio_owner_acquired() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     audio_state.owner_acquired();
 #endif
   }
 
   void audio_owner_released() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     audio_state.owner_released();
 #endif
   }
@@ -445,7 +446,7 @@ namespace audio {
 
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     audio_state.wait_for_restore();
     if (reclaim_retained_audio(ctx)) {
       BOOST_LOG(info) << "Audio retained for resumable app; reclaimed on reconnect."sv;
@@ -475,11 +476,11 @@ namespace audio {
   }
 
   void stop_audio_control(audio_ctx_t &ctx) {
-#ifdef _WIN32
     if (!ctx.restore_sink) {
       return;
     }
 
+#if defined(_WIN32) || defined(__linux__)
     if (retain_audio_control(ctx)) {
       BOOST_LOG(info) << "Audio retained for resumable app after final transport owner ended."sv;
       return;

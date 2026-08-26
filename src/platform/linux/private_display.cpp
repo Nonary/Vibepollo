@@ -296,6 +296,14 @@ namespace platf::linux_private_display {
         fallback_candidates.push_back(it->path());
       }
 
+      // A unique physical connector needs no broker ownership check. The broker
+      // deliberately recognizes only Vibeshine's Virtual-N pool, so querying it
+      // for HDMI/DP connectors both produces a false error and prevents restore
+      // verification from observing an already-active physical output.
+      if (fallback_candidates.size() == 1 && !name.starts_with("Virtual-")) {
+        return fallback_candidates.front().string();
+      }
+
       // The upstream VKMS fallback has no Vibeshine-specific sysfs ancestry.
       // Broker recognition establishes ownership, then the exact four-output
       // pool shape selects its DRM card. Refuse ambiguity instead of reading an
@@ -1395,14 +1403,14 @@ namespace platf::linux_private_display {
     return true;
   }
 
-  void schedule_revert(const std::chrono::milliseconds delay) {
+  void schedule_revert(const std::chrono::milliseconds delay, std::string reason) {
     auto &manager = state();
     const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
-    std::thread([delay, generation]() {
+    std::thread([delay, generation, reason = std::move(reason)]() {
       std::this_thread::sleep_for(delay);
       auto &delayed_manager = state();
       if (delayed_manager.cleanup_generation.load(std::memory_order_acquire) == generation) {
-        BOOST_LOG(info) << "Linux private display: paused-session timeout elapsed; restoring outputs.";
+        BOOST_LOG(info) << "Linux private display: " << reason << " elapsed; restoring outputs.";
         (void) revert();
       }
     }).detach();

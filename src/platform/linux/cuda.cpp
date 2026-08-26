@@ -392,7 +392,10 @@ namespace cuda {
         auto rgb_opt = egl::import_source(display.get(), descriptor.sd);
 
         if (!rgb_opt) {
-          return -1;
+          rgb_opt = egl::upload_source(display.get(), descriptor.sd);
+          if (!rgb_opt) {
+            return -1;
+          }
         }
 
         rgb = std::move(*rgb_opt);

@@ -174,6 +174,36 @@ TEST(AudioSinkPolicy, CaptureOnlyRequiresExplicitSelectedSinkAndPreservesVirtual
   EXPECT_TRUE(capture_sink_without_routing(true, "host", "", "host"));
 }
 
+TEST(AudioSinkPolicy, ManagedVirtualSinkOverridesHostAudioRequest) {
+  const sink_catalog_t sinks {
+    "host",
+    "sink-sunshine-stereo",
+    "sink-sunshine-surround51",
+    "sink-sunshine-surround71"
+  };
+
+  EXPECT_EQ(
+    select_stream_sink(
+      sinks,
+      "host",
+      "sink-sunshine-stereo",
+      2,
+      true
+    ),
+    "sink-sunshine-stereo"
+  );
+  EXPECT_EQ(
+    select_stream_sink(
+      sinks,
+      "host",
+      "sink-sunshine-stereo",
+      6,
+      true
+    ),
+    "sink-sunshine-surround51"
+  );
+}
+
 namespace {
   class fake_source_t: public sample_source_t {
   public:

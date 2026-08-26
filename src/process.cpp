@@ -2870,7 +2870,8 @@ namespace proc {
       platf::linux_private_display::cancel_scheduled_revert();
       if (config::video.dd.config_revert_delay.count() > 0) {
         platf::linux_private_display::schedule_revert(
-          config::video.dd.config_revert_delay
+          config::video.dd.config_revert_delay,
+          "app-end delay"
         );
       } else {
         (void) display_helper_integration::revert();
