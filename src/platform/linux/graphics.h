@@ -312,6 +312,10 @@ namespace egl {
     // Increment sequence when new rgb_t needs to be created
     std::uint64_t sequence;
 
+    using gamma_lut_t = std::vector<std::array<std::uint16_t, 3>>;
+    std::shared_ptr<const gamma_lut_t> crtc_gamma_lut;
+    std::uint64_t crtc_gamma_lut_serial {};
+
     // Frame is vertically flipped (GL convention)
     bool y_invert {false};
 
@@ -337,10 +341,12 @@ namespace egl {
     void load_vram(img_descriptor_t &img, int offset_x, int offset_y, int texture);
 
     void apply_colorspace(const video::sunshine_colorspace_t &colorspace);
+    void apply_output_lut(const std::shared_ptr<const img_descriptor_t::gamma_lut_t> &lut, std::uint64_t serial);
 
     // The first texture is the monitor image.
     // The second texture is the cursor image
     gl::tex_t tex;
+    gl::tex_t output_lut;
 
     // The cursor image will be blended into this framebuffer
     gl::frame_buf_t cursor_framebuffer;
@@ -362,6 +368,7 @@ namespace egl {
 
     // Store latest cursor for load_vram
     std::uint64_t serial;
+    std::uint64_t output_lut_serial;
   };
 
   bool fail();

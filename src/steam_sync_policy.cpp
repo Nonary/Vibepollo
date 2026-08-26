@@ -99,13 +99,7 @@ namespace platf::steam::sync::policy {
       app["steam-managed"] = "auto";
       app["steam-source"] = "installed";
       set_or_erase(app, "steam-app-type", game.app_type);
-#ifdef _WIN32
-      app["cmd"] = "cmd /c start \"\" " + launch_uri(game.app_id);
-#elif defined(__APPLE__)
-      app["cmd"] = "open " + launch_uri(game.app_id);
-#else
-      app["cmd"] = "xdg-open " + launch_uri(game.app_id);
-#endif
+      app["cmd"] = launch_command(game.app_id);
       app["auto-detach"] = true;
       app["wait-all"] = false;
       set_or_erase(app, "steam-install-dir", game.install_dir);

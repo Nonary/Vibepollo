@@ -469,6 +469,21 @@ namespace platf::steam {
     return app_id == 0 ? std::string {} : "steam://rungameid/" + std::to_string(app_id);
   }
 
+  std::string launch_command(std::uint32_t app_id) {
+    if (app_id == 0) {
+      return {};
+    }
+#ifdef _WIN32
+    return "cmd /c start \"\" " + launch_uri(app_id);
+#elif defined(__APPLE__)
+    return "open " + launch_uri(app_id);
+#else
+    // Send the request directly to Steam. Desktop URI openers can exit
+    // successfully even when KDE drops the handoff during an output switch.
+    return "steam -applaunch " + std::to_string(app_id);
+#endif
+  }
+
   bool launch(std::uint32_t app_id) {
     const auto uri = launch_uri(app_id);
     if (uri.empty()) {
@@ -513,7 +528,8 @@ namespace platf::steam {
   #ifdef __APPLE__
       execlp("open", "open", uri.c_str(), static_cast<char *>(nullptr));
   #else
-      execlp("xdg-open", "xdg-open", uri.c_str(), static_cast<char *>(nullptr));
+      const auto app_id_string = std::to_string(app_id);
+      execlp("steam", "steam", "-applaunch", app_id_string.c_str(), static_cast<char *>(nullptr));
   #endif
       const int error = errno;
       (void) write(exec_error_pipe[1], &error, sizeof(error));

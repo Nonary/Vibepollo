@@ -1179,6 +1179,35 @@ namespace platf {
         return capture_e::ok;
       }
 
+      void update_crtc_gamma_lut(egl::img_descriptor_t &img) {
+        const auto crtc_properties = card.crtc_props(crtc_id);
+        const auto blob_id = card.prop_value_by_name(crtc_properties, "GAMMA_LUT"sv).value_or(0);
+        if (blob_id != crtc_gamma_lut_blob_id) {
+          crtc_gamma_lut_blob_id = blob_id;
+          crtc_gamma_lut.reset();
+
+          if (blob_id != 0) {
+            prop_blob_t blob = drmModeGetPropertyBlob(card.fd.el, blob_id);
+            if (!blob || blob->length < 2 * sizeof(drm_color_lut) || blob->length % sizeof(drm_color_lut) != 0) {
+              BOOST_LOG(warning) << "Ignoring invalid CRTC GAMMA_LUT blob ["sv << blob_id << ']';
+            } else {
+              const auto count = blob->length / sizeof(drm_color_lut);
+              auto lut = std::make_shared<egl::img_descriptor_t::gamma_lut_t>();
+              lut->reserve(count);
+              const auto *entries = static_cast<const drm_color_lut *>(blob->data);
+              for (std::size_t index = 0; index < count; ++index) {
+                lut->push_back({entries[index].red, entries[index].green, entries[index].blue});
+              }
+              crtc_gamma_lut = std::move(lut);
+              BOOST_LOG(info) << "Applying "sv << count << "-entry CRTC GAMMA_LUT during KMS capture."sv;
+            }
+          }
+        }
+
+        img.crtc_gamma_lut = crtc_gamma_lut;
+        img.crtc_gamma_lut_serial = crtc_gamma_lut_blob_id;
+      }
+
       mem_type_e mem_type;
 
       std::chrono::nanoseconds delay;
@@ -1194,6 +1223,8 @@ namespace platf {
 
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
+      std::uint64_t crtc_gamma_lut_blob_id {};
+      std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 
       int cursor_plane_id;
       cursor_t captured_cursor {};
@@ -1521,6 +1552,7 @@ namespace platf {
           return status;
         }
 
+        update_crtc_gamma_lut(*img);
         img->sequence = ++sequence;
 
         if (cursor && captured_cursor.visible) {
