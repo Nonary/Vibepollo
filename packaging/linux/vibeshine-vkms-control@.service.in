@@ -1,0 +1,16 @@
+[Unit]
+Description=Vibeshine virtual-display control connection
+Requires=vibeshine-vkms.service
+After=vibeshine-vkms.service
+
+[Service]
+Type=exec
+User=root
+ExecStart=@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-vkms control
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX

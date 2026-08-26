@@ -1,5 +1,7 @@
+# shellcheck shell=bash
+
 do_setcap() {
-  setcap cap_sys_admin,cap_sys_nice+p $(readlink -f usr/bin/sunshine)
+  setcap cap_sys_admin,cap_sys_nice+p "$(readlink -f usr/bin/sunshine)"
 }
 
 do_udev_reload() {
@@ -14,10 +16,20 @@ post_install() {
   do_setcap
   do_udev_reload
   modprobe uhid
+  /usr/libexec/vibeshine/vibeshine-drm-install install || \
+    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
 }
 
 post_upgrade() {
   do_setcap
   do_udev_reload
   modprobe uhid
+  /usr/libexec/vibeshine/vibeshine-drm-install install || \
+    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
+}
+
+pre_remove() {
+  systemctl stop vibeshine-vkms.service 2>/dev/null || true
+  /usr/libexec/vibeshine/vibeshine-drm-install remove || \
+    echo "warning: could not remove the Vibeshine HDR DRM module cleanly."
 }

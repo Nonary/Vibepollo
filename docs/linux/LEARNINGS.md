@@ -253,6 +253,19 @@ groups $USER | grep -E "input|video|render"
 
 ## 11. Virtual Display Setup (EDID Method)
 
+> **Preferred current setup:** On Linux 7.2 or newer, native package hooks and
+> `vibeshine-drm-setup.service` attempt to build or register the packaged `vibeshine_drm` module.
+> Run `sudo /usr/libexec/vibeshine/vibeshine-drm-install install` to install or retry it manually,
+> then run `sudo systemctl enable --now vibeshine-vkms.service` to provision four dormant managed
+> private outputs. The privileged helper always remains under the fixed, root-owned
+> `/usr/libexec/vibeshine` path, independent of the application install prefix.
+> These outputs advertise HDR10 (BT.2020, PQ, and static HDR metadata) and expose 10-bit connector
+> and plane support. Managed HDR capture uses direct DRM/KMS so the 10-bit scanout reaches the
+> encoder; KWin ScreenCast remains the recommended SDR path. If the module cannot be built or
+> loaded, the helper falls back to stock VKMS; the private outputs still work in SDR, but HDR
+> requests are downgraded. Secure Boot requires a trusted module signature. The remainder of this
+> section documents the legacy forced-EDID method for a physical connector.
+
 ### Problem
 Need to stream without physical monitor, or stream while monitor is off.
 

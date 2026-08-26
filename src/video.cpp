@@ -733,7 +733,12 @@ namespace video {
         },
       };
 #else
+      const auto active_output = display_device::map_output_name(config::get_active_output_name());
       return probe_target_t {
+        .display_name =
+          !active_output.empty() && display_device::output_is_active(active_output) ?
+            active_output :
+            std::string {},
         .adapter_identity = probe_adapter_identity_t {
           .identity = "platform-default",
           .source = "platform-default",

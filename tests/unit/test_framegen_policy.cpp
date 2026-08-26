@@ -10,6 +10,12 @@
 
 namespace {
 
+  TEST(FramegenPolicy, PreservesFractionalSessionRefreshForLinuxDisplayModes) {
+    EXPECT_EQ(framegen::normalize_refresh_millihz(60), 60000u);
+    EXPECT_EQ(framegen::normalize_refresh_millihz(59940), 59940u);
+    EXPECT_DOUBLE_EQ(framegen::normalize_refresh_millihz(59940) / 1000.0, 59.94);
+  }
+
   framegen::stream_start_policy_t make_policy(
     std::string provider,
     bool uses_virtual_display,

@@ -29,10 +29,12 @@ fi
 depends=(
   'avahi'
   'curl'
+  'kmod'
   'libayatana-appindicator'
   'libcap'
   'libdrm'
   'libevdev'
+  'libkscreen'
   'libmfx'
   'libnotify'
   'libpipewire'
@@ -43,6 +45,7 @@ depends=(
   'libxfixes'
   'libxrandr'
   'libxtst'
+  'make'
   'miniupnpc'
   'numactl'
   'openssl'
@@ -66,6 +69,7 @@ makedepends=(
 )
 
 optdepends=(
+  'dkms: rebuild the Vibeshine HDR virtual-display module after kernel updates'
   'libva-mesa-driver: AMD GPU encoding support'
 )
 

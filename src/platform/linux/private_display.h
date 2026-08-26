@@ -35,12 +35,20 @@ namespace platf::linux_private_display {
   );
 
   /** Apply resolution, refresh, HDR, scale, primary-output, and layout policy. */
-  bool apply_session(const rtsp_stream::launch_session_t &session);
+  bool apply_session(rtsp_stream::launch_session_t &session);
+  /** Publish verified current HDR/readiness state after a composed apply. */
+  bool publish_current_session_state(rtsp_stream::launch_session_t &session);
 
   /** Reserve or reclaim the stable private connector owned by a paired client. */
   bool remote_create_or_reclaim(
     const std::string &client_uuid,
     const remote_display_topology::mode_t &mode
+  );
+
+  /** Downgrade requested mode features not supported by the reserved output. */
+  void remote_resolve_mode(
+    const std::string &client_uuid,
+    remote_display_topology::mode_t &mode
   );
 
   /** Atomically apply the coordinator's complete physical/client desktop graph. */
@@ -74,6 +82,9 @@ namespace platf::linux_private_display {
   /** Runtime capability/readiness and Web UI display enumeration. */
   bool capable();
   bool ready();
+  bool hdr_capable();
+  /** Detect an HDR-capable private kernel connector without requiring KScreen state. */
+  bool kernel_hdr_pool_available();
   bool kernel_pool_available();
   std::vector<std::string> private_output_names();
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(

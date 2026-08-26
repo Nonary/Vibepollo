@@ -468,7 +468,7 @@
     "bind_address": "Bind address",
     "bind_address_desc": "Set the specific IP address Sunshine will bind to. If left blank, Sunshine will bind to all available addresses.",
     "capture": "Force a Specific Capture Method",
-    "capture_desc": "On automatic mode Vibepollo will use the first one that works. NvFBC requires patched nvidia drivers.",
+    "capture_desc": "Automatic mode uses the first capture method available on this host. Override it only for compatibility or a specific capture path. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. NvFBC requires a supported NVIDIA driver.",
     "capture_auto_wgc": "Automatic (Windows Graphics Capture)",
     "capture_wgc_auto": "Windows Graphics Capture (variable)",
     "capture_ddx_legacy": "Desktop Duplication API (legacy)",

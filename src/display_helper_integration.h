@@ -38,7 +38,10 @@ namespace display_helper_integration {
     if (!request.session) {
       return request.action == DisplayApplyAction::Skip;
     }
-    return platf::linux_private_display::apply_session(*request.session);
+    // Linux applies and verifies synchronously, then publishes the verified
+    // HDR/readiness state back into the live launch session.
+    return request.mutable_session &&
+           platf::linux_private_display::apply_session(*request.mutable_session);
   }
 
   inline bool revert(bool = false) {

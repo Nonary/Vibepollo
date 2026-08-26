@@ -1250,13 +1250,26 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Linux setup</td>
         <td colspan="2">@code{}
+            sudo /usr/libexec/vibeshine/vibeshine-drm-install install
             sudo systemctl enable --now vibeshine-vkms.service
             @endcode
-            The unit creates four independent VKMS outputs before the display manager starts.
-            Vibepollo enables one only for a stream, applies the requested mode and layout through
-            KScreen, captures that exact connector, and restores the prior topology afterward.
-            VKMS outputs are SDR-only; configure a connector with HDR metadata explicitly when HDR
-            is required. KDE Plasma/KWin and <code>kscreen-doctor</code> are required by this backend.
+            Native packages and <code>vibeshine-drm-setup.service</code> attempt this installation
+            automatically; use the first command to install or retry it manually. The privileged
+            helper always uses the fixed, root-owned
+            <code>/usr/libexec/vibeshine</code> path, independent of the application install prefix.
+            The module targets Linux 7.2 or newer and exposes four independent virtual connectors
+            with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
+            10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
+            mode, layout, and HDR state through KScreen, captures that exact connector, and restores
+            the prior topology afterward.
+            KDE Plasma/KWin and <code>kscreen-doctor</code> are required for managed topology.
+            Vibepollo uses direct DRM/KMS capture for managed HDR output so the 10-bit scanout reaches
+            the encoder. KWin ScreenCast remains the recommended compositor capture path for SDR.
+            <br><br>
+            If the custom module cannot be built or loaded (including on older kernels or when
+            Secure Boot rejects an unsigned module), the service falls back to the kernel's stock
+            <code>vkms</code> module. The private display and requested SDR modes remain available,
+            but HDR requests are safely downgraded to SDR.
         </td>
     </tr>
 </table>
@@ -1488,7 +1501,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{Linux VKMS private displays are SDR-only; unsupported HDR requests are safely downgraded to SDR.}
+            @note{On Linux 7.2 or newer, the managed <code>vibeshine_drm</code> output advertises HDR10 and 10-bit formats. The stock VKMS fallback remains SDR-only, and unsupported HDR requests are safely downgraded to SDR.}
         </td>
     </tr>
     <tr>
@@ -2709,11 +2722,14 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td>kms</td>
         <td>DRM/KMS screen capture from the kernel. This requires that Sunshine has `cap_sys_admin` capability.
+            Managed Linux private HDR sessions use this path automatically to preserve 10-bit scanout,
+            even when KWin is selected globally for SDR capture.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>
         <td>kwin</td>
-        <td>Capture with KDE/KWin Wayland compositor via KDE screencasting.
+        <td>Capture with KDE/KWin Wayland compositor via KDE screencasting. This is recommended for
+            managed private displays in SDR; managed HDR sessions switch to direct DRM/KMS capture.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

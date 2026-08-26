@@ -1,0 +1,12 @@
+[Unit]
+Description=Vibeshine virtual-display control socket
+PartOf=vibeshine-vkms.service
+
+[Socket]
+ListenStream=/run/vibeshine/vkms-control.sock
+SocketMode=0660
+SocketGroup=video
+DirectoryMode=0755
+Accept=yes
+RemoveOnStop=yes
+Service=vibeshine-vkms-control@.service

@@ -27,9 +27,40 @@ elseif(UNIX)
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # Privileged system service that provisions private VKMS outputs before
-        # the display manager enumerates DRM devices.
+        # These files are executed/read by root. They intentionally do not
+        # follow a user-selectable CMAKE_INSTALL_PREFIX.
+        set(VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR "/usr/libexec/vibeshine")
+        set(VIBESHINE_DRM_SOURCE_INSTALL_DIR "/usr/src/vibeshine-drm-${PROJECT_VERSION_NUMERIC}")
+        set(VIBESHINE_SYSTEM_UNIT_INSTALL_DIR "/usr/lib/systemd/system")
+        file(GLOB VIBESHINE_DRM_HASH_INPUTS CONFIGURE_DEPENDS
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/*.c"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/*.h")
+        list(APPEND VIBESHINE_DRM_HASH_INPUTS
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/Makefile"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/build-module"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/dkms.conf.in")
+        list(SORT VIBESHINE_DRM_HASH_INPUTS)
+        set(VIBESHINE_DRM_HASH_MATERIAL "")
+        foreach(VIBESHINE_DRM_HASH_INPUT IN LISTS VIBESHINE_DRM_HASH_INPUTS)
+            file(SHA256 "${VIBESHINE_DRM_HASH_INPUT}" VIBESHINE_DRM_INPUT_HASH)
+            file(RELATIVE_PATH VIBESHINE_DRM_INPUT_NAME
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm"
+                    "${VIBESHINE_DRM_HASH_INPUT}")
+            string(APPEND VIBESHINE_DRM_HASH_MATERIAL
+                    "${VIBESHINE_DRM_INPUT_NAME}:${VIBESHINE_DRM_INPUT_HASH}\n")
+        endforeach()
+        string(SHA256 VIBESHINE_DRM_SOURCE_ID "${VIBESHINE_DRM_HASH_MATERIAL}")
+        # Privileged services that build and provision Vibeshine's virtual
+        # display outputs before the display manager enumerates DRM devices.
         configure_file(packaging/linux/vibeshine-vkms.service.in vibeshine-vkms.service @ONLY)
+        configure_file(packaging/linux/vibeshine-vkms-control.socket.in vibeshine-vkms-control.socket @ONLY)
+        configure_file(packaging/linux/vibeshine-vkms-control@.service.in vibeshine-vkms-control@.service @ONLY)
+        configure_file(packaging/linux/vibeshine-drm-setup.service.in vibeshine-drm-setup.service @ONLY)
+        configure_file(packaging/linux/vibeshine-drm-install.in vibeshine-drm-install @ONLY)
+        configure_file(packaging/linux/vibeshine-drm/dkms.conf.in vibeshine-drm-dkms.conf @ONLY)
+        file(READ "${CMAKE_SOURCE_DIR}/src_assets/linux/misc/postinst" VIBESHINE_BASE_POSTINST)
+        configure_file(packaging/linux/vibeshine-postinst.in postinst @ONLY)
+        configure_file(packaging/linux/vibeshine-prerm.in prerm @ONLY)
     endif()
 
     # configure kwin desktop permission file

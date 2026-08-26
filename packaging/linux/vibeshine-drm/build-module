@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Build the module against one kernel, matching the compiler family recorded in
+# that kernel's configuration. DKMS and the direct installer share this path.
+
+set -uo pipefail
+
+PROGRAM_NAME="vibeshine-drm-build"
+MODULES_ROOT=""
+
+log() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
+}
+
+error() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+}
+
+configure_build_paths() {
+  MODULES_ROOT=$1
+}
+
+validate_kernel_release() {
+  local kernel_release=$1
+
+  case "$kernel_release" in
+    "" | *[!A-Za-z0-9._+-]*)
+      error "unsafe kernel release string: '${kernel_release}'"
+      return 1
+      ;;
+  esac
+}
+
+build_module() {
+  local kernel_release=$1
+  local source_dir=$2
+  local build_dir config_file
+  local -a make_args
+
+  validate_kernel_release "$kernel_release" || return 1
+  if [[ ! -d "$source_dir" || -L "$source_dir" || ! -f "$source_dir/Makefile" ]]; then
+    error "module source directory is unavailable or unsafe: ${source_dir}"
+    return 1
+  fi
+
+  build_dir="$MODULES_ROOT/$kernel_release/build"
+  config_file="$build_dir/.config"
+  if [[ ! -d "$build_dir" || ! -f "$build_dir/Makefile" ]]; then
+    error "kernel build files are unavailable at ${build_dir}"
+    return 1
+  fi
+  if ! command -v make >/dev/null 2>&1; then
+    error "required command not found: make"
+    return 1
+  fi
+
+  make_args=(-C "$build_dir" "M=$source_dir")
+  if [[ -f "$config_file" ]] && grep -q '^CONFIG_CC_IS_CLANG=y$' "$config_file"; then
+    log "kernel ${kernel_release} was built with Clang; enabling LLVM Kbuild mode"
+    make_args+=(LLVM=1)
+  fi
+  make_args+=(modules)
+  make "${make_args[@]}"
+}
+
+main() {
+  local kernel_release=${1:-}
+  local source_dir script_dir
+
+  if [[ $# -gt 2 ]]; then
+    printf 'Usage: %s [kernel-release] [source-directory]\n' "$PROGRAM_NAME" >&2
+    return 2
+  fi
+  if [[ -z "$kernel_release" ]]; then
+    kernel_release=$(uname -r) || return 1
+  fi
+  script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) || return 1
+  source_dir=${2:-$script_dir}
+
+  configure_build_paths /lib/modules
+  build_module "$kernel_release" "$source_dir"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

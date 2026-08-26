@@ -5,15 +5,20 @@
 
 #include "private_display.h"
 
+#include "hdr_policy.h"
+
 #include "src/config.h"
 #include "src/display_device.h"
+#include "src/framegen_policy.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/rtsp.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <display_device/json.h>
 #include <filesystem>
 #include <fstream>
@@ -21,12 +26,21 @@
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <poll.h>
 #include <set>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <thread>
+#include <unistd.h>
 
 namespace platf::linux_private_display {
   namespace {
     using json = nlohmann::json;
+
+    constexpr std::string_view broker_socket_path = "/run/vibeshine/vkms-control.sock";
+    constexpr auto broker_timeout = std::chrono::seconds {2};
+    constexpr auto output_publication_timeout = std::chrono::seconds {3};
+    constexpr auto output_verification_timeout = std::chrono::seconds {3};
 
     struct command_result_t {
       bool success {false};
@@ -44,6 +58,138 @@ namespace platf::linux_private_display {
     state_t &state() {
       static state_t value;
       return value;
+    }
+
+    bool wait_for_fd(const int fd, const short events, const std::chrono::steady_clock::time_point deadline) {
+      while (true) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::milliseconds::zero()) {
+          return false;
+        }
+        pollfd descriptor {.fd = fd, .events = events};
+        const auto result = poll(&descriptor, 1, static_cast<int>(remaining.count()));
+        if (result > 0) {
+          if ((descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
+            return false;
+          }
+          // systemd's per-connection broker writes one line and exits. POLLIN
+          // may therefore arrive together with POLLHUP; recv() must be allowed
+          // to consume the queued reply before treating the close as failure.
+          return (descriptor.revents & events) != 0 ||
+                 (events == POLLIN && (descriptor.revents & POLLHUP) != 0);
+        }
+        if (result < 0 && errno == EINTR) {
+          continue;
+        }
+        return false;
+      }
+    }
+
+    std::optional<std::string> broker_request(const std::string_view command, const std::string_view output_name) {
+      if (output_name.empty() || output_name.contains('\n') || output_name.contains('\r') || output_name.contains(' ')) {
+        return std::nullopt;
+      }
+
+      const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+      if (fd < 0) {
+        BOOST_LOG(error) << "Linux private display: unable to create broker socket: " << std::strerror(errno);
+        return std::nullopt;
+      }
+      const auto close_fd = util::fail_guard([fd]() { close(fd); });
+
+      sockaddr_un address {};
+      address.sun_family = AF_UNIX;
+      if (broker_socket_path.size() >= sizeof(address.sun_path)) {
+        return std::nullopt;
+      }
+      std::memcpy(address.sun_path, broker_socket_path.data(), broker_socket_path.size());
+      address.sun_path[broker_socket_path.size()] = '\0';
+
+      const auto deadline = std::chrono::steady_clock::now() + broker_timeout;
+      if (connect(fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0) {
+        if (errno != EINPROGRESS || !wait_for_fd(fd, POLLOUT, deadline)) {
+          BOOST_LOG(error) << "Linux private display: unable to connect to " << broker_socket_path
+                           << ": " << std::strerror(errno);
+          return std::nullopt;
+        }
+        int socket_error = 0;
+        socklen_t socket_error_size = sizeof(socket_error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_size) != 0 || socket_error != 0) {
+          BOOST_LOG(error) << "Linux private display: broker connection failed: "
+                           << std::strerror(socket_error != 0 ? socket_error : errno);
+          return std::nullopt;
+        }
+      }
+
+      const std::string request = std::string {command} + " " + std::string {output_name} + "\n";
+      std::size_t sent = 0;
+      while (sent < request.size()) {
+        if (!wait_for_fd(fd, POLLOUT, deadline)) {
+          BOOST_LOG(error) << "Linux private display: broker request timed out.";
+          return std::nullopt;
+        }
+        const auto count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
+        if (count > 0) {
+          sent += static_cast<std::size_t>(count);
+        } else if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+          continue;
+        } else {
+          return std::nullopt;
+        }
+      }
+
+      std::string response;
+      response.reserve(96);
+      while (response.size() <= 128) {
+        if (!wait_for_fd(fd, POLLIN, deadline)) {
+          BOOST_LOG(error) << "Linux private display: broker response timed out.";
+          return std::nullopt;
+        }
+        char buffer[64];
+        const auto count = recv(fd, buffer, sizeof(buffer), 0);
+        if (count <= 0) {
+          return std::nullopt;
+        }
+        response.append(buffer, static_cast<std::size_t>(count));
+        if (const auto newline = response.find('\n'); newline != std::string::npos) {
+          if (newline + 1 != response.size() || response.find('\r') != std::string::npos) {
+            return std::nullopt;
+          }
+          response.resize(newline);
+          return response;
+        }
+      }
+      return std::nullopt;
+    }
+
+    std::optional<bool> broker_connected(const std::string &output_name) {
+      const auto response = broker_request("status", output_name);
+      if (!response) {
+        return std::nullopt;
+      }
+      if (*response == "STATUS connected " + output_name) {
+        return true;
+      }
+      if (*response == "STATUS disconnected " + output_name) {
+        return false;
+      }
+      BOOST_LOG(error) << "Linux private display: invalid broker status response: " << *response;
+      return std::nullopt;
+    }
+
+    bool broker_set_connected(const std::string &output_name, const bool connected) {
+      if (const auto current = broker_connected(output_name); current && *current == connected) {
+        return true;
+      }
+      const std::string_view verb = connected ? "connect" : "disconnect";
+      const auto response = broker_request(verb, output_name);
+      const auto expected = std::string {"OK "} + (connected ? "connected " : "disconnected ") + output_name;
+      if (!response || *response != expected) {
+        BOOST_LOG(error) << "Linux private display: broker rejected " << verb << " for " << output_name
+                         << (response ? ": " + *response : std::string {});
+        return false;
+      }
+      return true;
     }
 
     std::optional<std::string> doctor_path() {
@@ -178,6 +324,20 @@ namespace platf::linux_private_display {
         }
         result.push_back(filename.substr(separator + 1));
       }
+      if (result.empty()) {
+        // The broker owns one exact configfs pool and is authoritative for the
+        // stock-VKMS SDR fallback, whose sysfs ancestry is not distinguishable
+        // from an unrelated VKMS device. Never infer fallback ownership from a
+        // generic driver/name match; accept only connectors the broker recognizes.
+        // Skip these socket roundtrips when the Vibeshine driver already gave
+        // us an unambiguous sysfs identity.
+        for (int index = 1; index <= 4; ++index) {
+          const auto candidate = "Virtual-" + std::to_string(index);
+          if (broker_connected(candidate).has_value()) {
+            result.push_back(candidate);
+          }
+        }
+      }
       std::sort(result.begin(), result.end());
       result.erase(std::unique(result.begin(), result.end()), result.end());
       return result;
@@ -195,17 +355,83 @@ namespace platf::linux_private_display {
       return std::find(managed.begin(), managed.end(), name) != managed.end();
     }
 
+    std::optional<json> wait_for_output_publication(const std::string &name) {
+      const auto deadline = std::chrono::steady_clock::now() + output_publication_timeout;
+      do {
+        if (auto configuration = query_configuration()) {
+          if (const auto *output = find_output(*configuration, name); output && connected(*output)) {
+            return configuration;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return std::nullopt;
+    }
+
+    bool connect_managed_output(const std::string &name) {
+      if (!broker_set_connected(name, true)) {
+        return false;
+      }
+      if (wait_for_output_publication(name)) {
+        return true;
+      }
+      BOOST_LOG(error) << "Linux private display: " << name
+                       << " did not publish in KScreen after broker connection.";
+      (void) broker_set_connected(name, false);
+      return false;
+    }
+
+    bool disconnect_managed_output(const std::string &name) {
+      return !is_managed_output(name) || broker_set_connected(name, false);
+    }
+
     std::string connector_sysfs_path(const std::string &name) {
       std::error_code error;
       const std::filesystem::path drm_class {"/sys/class/drm"};
       const auto suffix = "-" + name;
+      std::vector<std::filesystem::path> fallback_candidates;
       for (std::filesystem::directory_iterator it {drm_class, error}, end; !error && it != end; it.increment(error)) {
         const auto filename = it->path().filename().string();
-        if (filename.ends_with(suffix)) {
+        if (!filename.ends_with(suffix)) {
+          continue;
+        }
+        const auto card_name = filename.substr(0, filename.size() - suffix.size());
+        if (!card_name.starts_with("card") || card_name.size() == 4 ||
+            !std::ranges::all_of(card_name.substr(4), [](const unsigned char value) { return std::isdigit(value); })) {
+          continue;
+        }
+        const auto resolved = std::filesystem::canonical(it->path(), error);
+        if (!error && resolved.string().find("/devices/faux/vibeshine/") != std::string::npos) {
           return it->path().string();
         }
+        error.clear();
+        fallback_candidates.push_back(it->path());
       }
-      return {};
+
+      // The upstream VKMS fallback has no Vibeshine-specific sysfs ancestry.
+      // Broker recognition establishes ownership, then the exact four-output
+      // pool shape selects its DRM card. Refuse ambiguity instead of reading an
+      // unrelated card's same-suffix connector.
+      if (!broker_connected(name).has_value()) {
+        return {};
+      }
+      std::vector<std::filesystem::path> pool_candidates;
+      for (const auto &candidate : fallback_candidates) {
+        const auto filename = candidate.filename().string();
+        const auto card_name = filename.substr(0, filename.size() - suffix.size());
+        bool complete_pool = true;
+        for (int index = 1; index <= 4; ++index) {
+          complete_pool = complete_pool && std::filesystem::exists(
+            drm_class / (card_name + "-Virtual-" + std::to_string(index)),
+            error
+          );
+          error.clear();
+        }
+        if (complete_pool) {
+          pool_candidates.push_back(candidate);
+        }
+      }
+      return pool_candidates.size() == 1 ? pool_candidates.front().string() : std::string {};
     }
 
     bool connector_is_connected(const std::string &name) {
@@ -216,6 +442,34 @@ namespace platf::linux_private_display {
       std::ifstream status {std::filesystem::path {path} / "status"};
       std::string value;
       return status >> value && value == "connected";
+    }
+
+    bool connector_hdr_capable(const std::string &name) {
+      const auto path = connector_sysfs_path(name);
+      if (path.empty()) {
+        return false;
+      }
+      std::ifstream input {std::filesystem::path {path} / "edid", std::ios::binary};
+      std::vector<std::uint8_t> edid;
+      char value;
+      while (input.get(value)) {
+        edid.push_back(static_cast<std::uint8_t>(value));
+      }
+      if (linux_hdr::edid_supports_hdr10(edid)) {
+        return true;
+      }
+
+      // The managed Vibeshine DRM device has a fixed HDR10 EDID. Keep its
+      // capability stable while the connector is deliberately disconnected:
+      // the kernel exposes no EDID bytes in that dormant state.
+      std::error_code error;
+      const auto resolved = std::filesystem::canonical(path, error);
+      return !error && resolved.string().find("/devices/faux/vibeshine/") != std::string::npos;
+    }
+
+    bool output_hdr_capable(const json *output, const std::string &name) {
+      (void) output;
+      return connector_hdr_capable(name);
     }
 
     std::set<std::string> private_output_set() {
@@ -294,8 +548,13 @@ namespace platf::linux_private_display {
       };
     }
 
-    std::vector<std::string> restore_arguments(const json &snapshot, const json &current) {
-      std::vector<std::string> arguments;
+    struct phased_configuration_t {
+      std::vector<std::string> activate;
+      std::vector<std::string> deactivate;
+    };
+
+    phased_configuration_t restore_arguments(const json &snapshot, const json &current) {
+      phased_configuration_t arguments;
       const auto private_names = private_output_set();
       bool restored_non_private = false;
       std::set<std::string> snapshot_names;
@@ -312,24 +571,24 @@ namespace platf::linux_private_display {
         }
         const auto prefix = "output." + name + ".";
         if (!enabled(saved)) {
-          arguments.push_back(prefix + "disable");
+          arguments.deactivate.push_back(prefix + "disable");
           continue;
         }
         restored_non_private = restored_non_private || !private_names.contains(name);
-        arguments.push_back(prefix + "enable");
+        arguments.activate.push_back(prefix + "enable");
         const auto mode = saved.value("currentModeId", std::string {});
         if (!mode.empty()) {
-          arguments.push_back(prefix + "mode." + mode);
+          arguments.activate.push_back(prefix + "mode." + mode);
         }
-        arguments.push_back(prefix + "scale." + std::to_string(saved.value("scale", 1.0)));
+        arguments.activate.push_back(prefix + "scale." + std::to_string(saved.value("scale", 1.0)));
         const auto pos = saved.value("pos", json::object());
-        arguments.push_back(prefix + "position." + std::to_string(pos.value("x", 0)) + "," + std::to_string(pos.value("y", 0)));
+        arguments.activate.push_back(prefix + "position." + std::to_string(pos.value("x", 0)) + "," + std::to_string(pos.value("y", 0)));
         const auto priority = saved.value("priority", 0);
         if (priority > 0) {
-          arguments.push_back(prefix + "priority." + std::to_string(priority));
+          arguments.activate.push_back(prefix + "priority." + std::to_string(priority));
         }
-        if (saved.contains("hdr") && present->contains("hdr")) {
-          arguments.push_back(prefix + "hdr." + std::string(saved.value("hdr", false) ? "enable" : "disable"));
+        if (saved.contains("hdr") && output_hdr_capable(present, name)) {
+          arguments.activate.push_back(prefix + "hdr." + std::string(saved.value("hdr", false) ? "enable" : "disable"));
         }
       }
 
@@ -337,12 +596,36 @@ namespace platf::linux_private_display {
         for (const auto &name : private_names) {
           if (!snapshot_names.contains(name)) {
             if (const auto *present = find_output(current, name); present && connected(*present)) {
-              arguments.push_back("output." + name + ".disable");
+              arguments.deactivate.push_back("output." + name + ".disable");
             }
           }
         }
       }
       return arguments;
+    }
+
+    bool wait_for_snapshot_activation(const json &snapshot) {
+      const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+      do {
+        if (const auto current = query_configuration()) {
+          const bool active = std::ranges::all_of(snapshot["outputs"], [&](const json &saved) {
+            if (!enabled(saved)) {
+              return true;
+            }
+            const auto *output = find_output(*current, saved.value("name", std::string {}));
+            if (!output || !connected(*output) || !enabled(*output)) {
+              return false;
+            }
+            const auto saved_mode = saved.value("currentModeId", std::string {});
+            return saved_mode.empty() || output->value("currentModeId", std::string {}) == saved_mode;
+          });
+          if (active) {
+            return true;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return false;
     }
 
     std::string reservation_identity(const rtsp_stream::launch_session_t &session, const bool shared) {
@@ -384,13 +667,17 @@ namespace platf::linux_private_display {
 
     std::optional<std::string> reserve_output(
       state_t &manager,
-      const json &configuration,
       const std::string &identity,
       const bool no_active_sessions,
       const bool reuse_active_reservation = true
     ) {
       if (const auto existing = manager.reservations.find(identity); existing != manager.reservations.end()) {
-        if (const auto *output = find_output(configuration, existing->second); output && connected(*output)) {
+        if (const auto configuration = query_configuration()) {
+          if (const auto *output = find_output(*configuration, existing->second); output && connected(*output)) {
+            return existing->second;
+          }
+        }
+        if (is_managed_output(existing->second) && connect_managed_output(existing->second)) {
           return existing->second;
         }
         manager.reservations.erase(existing);
@@ -401,9 +688,11 @@ namespace platf::linux_private_display {
       // a second per-client connector and invalidating the first stream's exclusive layout.
       if (reuse_active_reservation && !no_active_sessions && !manager.reservations.empty()) {
         const auto &active_output = manager.reservations.begin()->second;
-        if (const auto *output = find_output(configuration, active_output); output && connected(*output) && enabled(*output)) {
-          manager.reservations.emplace(identity, active_output);
-          return active_output;
+        if (const auto configuration = query_configuration()) {
+          if (const auto *output = find_output(*configuration, active_output); output && connected(*output) && enabled(*output)) {
+            manager.reservations.emplace(identity, active_output);
+            return active_output;
+          }
         }
       }
 
@@ -412,10 +701,21 @@ namespace platf::linux_private_display {
         used.insert(output);
       }
       for (const auto &candidate : configured_outputs()) {
-        const auto *output = find_output(configuration, candidate);
-        if (output && connected(*output) && !used.contains(candidate)) {
-          manager.reservations.emplace(identity, candidate);
-          return candidate;
+        if (used.contains(candidate)) {
+          continue;
+        }
+        if (is_managed_output(candidate)) {
+          if (connect_managed_output(candidate)) {
+            manager.reservations.emplace(identity, candidate);
+            return candidate;
+          }
+          continue;
+        }
+        if (const auto configuration = query_configuration()) {
+          if (const auto *output = find_output(*configuration, candidate); output && connected(*output)) {
+            manager.reservations.emplace(identity, candidate);
+            return candidate;
+          }
         }
       }
       return std::nullopt;
@@ -423,13 +723,26 @@ namespace platf::linux_private_display {
   }  // namespace
 
   bool initialize() {
-    auto configuration = query_configuration();
-    if (!configuration) {
-      return false;
-    }
     const auto private_names = private_output_set();
     if (private_names.empty()) {
-      BOOST_LOG(info) << "Linux private display: no managed or explicitly reserved outputs are connected.";
+      BOOST_LOG(info) << "Linux private display: no managed or explicitly reserved outputs are provisioned.";
+      return false;
+    }
+
+    // A provisioned pool is dormant. A connector is hotplugged only after a
+    // session owns its reservation; stale connectors from a crash/reboot must
+    // not appear as attached desktop monitors.
+    const auto managed_outputs = discover_managed_outputs();
+    const std::set<std::string> managed_names {managed_outputs.begin(), managed_outputs.end()};
+    for (const auto &name : managed_outputs) {
+      if (!disconnect_managed_output(name)) {
+        BOOST_LOG(error) << "Linux private display: failed to disconnect stale pool output " << name << '.';
+        return false;
+      }
+    }
+
+    auto configuration = query_configuration();
+    if (!configuration) {
       return false;
     }
 
@@ -443,6 +756,12 @@ namespace platf::linux_private_display {
     if (has_active_physical) {
       std::vector<std::string> disable_stale;
       for (const auto &name : private_names) {
+        // Managed connectors were already hot-unplugged through the broker.
+        // KScreen can briefly retain a stale JSON object after that hotplug;
+        // do not send a modeset to an output which no longer exists.
+        if (managed_names.contains(name)) {
+          continue;
+        }
         if (const auto *output = find_output(*configuration, name); output && connected(*output) && enabled(*output)) {
           disable_stale.push_back("output." + name + ".disable");
         }
@@ -460,7 +779,6 @@ namespace platf::linux_private_display {
     const bool no_active_sessions,
     const bool allow_display_changes
   ) {
-    (void) allow_display_changes;
     cancel_scheduled_revert();
     prepare_result_t result;
 
@@ -485,33 +803,37 @@ namespace platf::linux_private_display {
       return result;
     }
 
-    auto configuration = query_configuration();
-    if (!configuration) {
-      result.error = "KScreen is unavailable; a private display cannot be prepared";
-    } else {
+    {
       auto &manager = state();
       std::lock_guard lock {manager.mutex};
       const bool shared = mode == config::video_t::virtual_display_mode_e::shared;
       const auto identity = reservation_identity(session, shared);
-      const auto output_name = reserve_output(manager, *configuration, identity, no_active_sessions, shared);
+      const auto output_name = reserve_output(manager, identity, no_active_sessions, shared);
       if (!output_name) {
-        result.error = "No unreserved Linux private display is connected";
+        result.error = "No unreserved Linux private display could be connected";
       } else {
-        const auto *output = find_output(*configuration, *output_name);
+        const auto configuration = query_configuration();
+        const auto *output = configuration ? find_output(*configuration, *output_name) : nullptr;
+        if (!output || !connected(*output)) {
+          manager.reservations.erase(identity);
+          (void) disconnect_managed_output(*output_name);
+          result.error = "The leased Linux private display was not published by KScreen";
+          session.virtual_display_failed = true;
+          return result;
+        }
         result.active = true;
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
-        session.virtual_display_ready_since = std::chrono::steady_clock::now();
-        const bool hdr_capable = output && output->contains("hdr");
-        session.virtual_display_hdr_enabled = hdr_capable && rtsp_stream::effective_hdr_requested(session);
-        if (!hdr_capable && rtsp_stream::effective_hdr_requested(session)) {
-          session.force_sdr = true;
-          BOOST_LOG(warning) << "Linux private display: " << *output_name
-                             << " has no HDR capability; downgrading the session to SDR.";
-        }
         session.virtual_display_recreated_on_demand = output && !enabled(*output);
         session.virtual_display_needs_resume_apply = session.virtual_display_recreated_on_demand;
+        if (enabled(*output) && (!allow_display_changes || shared)) {
+          const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
+          const bool current_hdr = output_hdr_capable(output, *output_name) && output->value("hdr", false);
+          if (requested_hdr && !current_hdr) session.force_sdr = true;
+          session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
+          session.virtual_display_ready_since = std::chrono::steady_clock::now();
+        }
       }
     }
 
@@ -525,7 +847,7 @@ namespace platf::linux_private_display {
     return result;
   }
 
-  bool apply_session(const rtsp_stream::launch_session_t &session) {
+  bool apply_session(rtsp_stream::launch_session_t &session) {
     if (!session.virtual_display || session.virtual_display_device_id.empty()) {
       return true;
     }
@@ -563,15 +885,19 @@ namespace platf::linux_private_display {
 
     std::optional<display_device::Resolution> resolution;
     std::optional<display_device::FloatingPoint> refresh;
+    std::optional<bool> parsed_hdr_state;
     if (const auto *request = std::get_if<display_device::SingleDisplayConfiguration>(&parsed)) {
       resolution = request->m_resolution;
       refresh = request->m_refresh_rate;
+      if (request->m_hdr_state) {
+        parsed_hdr_state = *request->m_hdr_state == display_device::HdrState::Enabled;
+      }
     } else {
       resolution = display_device::Resolution {
         static_cast<unsigned int>(std::max(1, session.resolution_override ? session.resolution_override->width : session.width)),
         static_cast<unsigned int>(std::max(1, session.resolution_override ? session.resolution_override->height : session.height))
       };
-      refresh = display_device::Rational {static_cast<unsigned int>(std::max(1, session.fps)), 1};
+      refresh = display_device::Rational {framegen::normalize_refresh_millihz(std::max(1, session.fps)), 1000};
     }
 
     auto mode_id = best_mode_id(*target_before, resolution, refresh);
@@ -687,11 +1013,17 @@ namespace platf::linux_private_display {
     }
 
     const bool hdr_requested = rtsp_stream::effective_hdr_requested(session);
-    if (target_before->contains("hdr")) {
-      arguments.push_back(target_prefix + "hdr." + std::string(hdr_requested ? "enable" : "disable"));
-    } else if (hdr_requested) {
+    const bool hdr_capable = output_hdr_capable(target_before, session.virtual_display_device_id);
+    const auto hdr_policy = linux_hdr::resolve_output_state(
+      parsed_hdr_state,
+      hdr_capable,
+      hdr_capable && target_before->value("hdr", false)
+    );
+    if (hdr_policy.command) {
+      arguments.push_back(target_prefix + "hdr." + std::string(*hdr_policy.command ? "enable" : "disable"));
+    } else if (parsed_hdr_state.value_or(false) && !hdr_capable) {
       BOOST_LOG(warning) << "Linux private display: " << session.virtual_display_device_id
-                         << " does not expose HDR; streaming this session in SDR.";
+                         << " does not advertise HDR10; the verified session will use SDR.";
     }
 
     if (!execute_configuration(arguments, "apply")) {
@@ -710,7 +1042,58 @@ namespace platf::linux_private_display {
         return false;
       }
     }
+
+    // kscreen-doctor returning success only means KWin accepted the request.
+    // Do not admit capture until the exact mode and requested HDR state have
+    // actually become current on the leased connector.
+    const auto verification_deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+    bool verified = false;
+    bool verified_hdr_enabled = false;
+    do {
+      if (const auto current = query_configuration()) {
+        if (const auto *output = find_output(*current, session.virtual_display_device_id);
+            output && connected(*output) && enabled(*output) &&
+            output->value("currentModeId", std::string {}) == mode_id &&
+            (!hdr_policy.command || output->value("hdr", false) == *hdr_policy.command)) {
+          verified_hdr_enabled = hdr_capable && output->value("hdr", false);
+          verified = true;
+          break;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    } while (std::chrono::steady_clock::now() < verification_deadline);
+
+    if (!verified) {
+      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR state on "
+                       << session.virtual_display_device_id << '.';
+      return false;
+    }
+
+    if (hdr_requested && !verified_hdr_enabled) {
+      session.force_sdr = true;
+    }
+    session.virtual_display_hdr_enabled = verified_hdr_enabled;
+    session.virtual_display_ready_since = std::chrono::steady_clock::now();
+    session.virtual_display_recreated_on_demand = false;
+    session.virtual_display_needs_resume_apply = false;
     BOOST_LOG(info) << "Linux private display: applied private output " << session.virtual_display_device_id << ".";
+    return true;
+  }
+
+  bool publish_current_session_state(rtsp_stream::launch_session_t &session) {
+    if (!session.virtual_display || session.virtual_display_device_id.empty()) {
+      return false;
+    }
+    const auto configuration = query_configuration();
+    const auto *output = configuration ? find_output(*configuration, session.virtual_display_device_id) : nullptr;
+    if (!output || !connected(*output) || !enabled(*output)) {
+      return false;
+    }
+    const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
+    const bool current_hdr = output_hdr_capable(output, session.virtual_display_device_id) && output->value("hdr", false);
+    if (requested_hdr && !current_hdr) session.force_sdr = true;
+    session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
+    session.virtual_display_ready_since = std::chrono::steady_clock::now();
     return true;
   }
 
@@ -722,15 +1105,10 @@ namespace platf::linux_private_display {
     if (client_uuid.empty()) {
       return false;
     }
-    const auto configuration = query_configuration();
-    if (!configuration) {
-      return false;
-    }
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
     const auto output = reserve_output(
       manager,
-      *configuration,
       client_reservation_identity(client_uuid),
       false,
       false
@@ -743,6 +1121,34 @@ namespace platf::linux_private_display {
     BOOST_LOG(info) << "Linux Remote Monitor: client '" << client_uuid
                     << "' owns private connector " << *output << ".";
     return true;
+  }
+
+  void remote_resolve_mode(
+    const std::string &client_uuid,
+    remote_display_topology::mode_t &mode
+  ) {
+    const auto output_name = output_for_client(client_uuid);
+    const auto configuration = query_configuration();
+    const auto *output = output_name && configuration ? find_output(*configuration, *output_name) : nullptr;
+    const bool capable = output_name && output_hdr_capable(output, *output_name);
+
+    // Mirror display_device::parse_configuration() on the coordinator's
+    // effective copy. In particular, disabled means preserve the current host
+    // state; it must not be reinterpreted as the retained client's desired HDR.
+    if (rtsp_stream::rtx_hdr_enabled(config::video)) {
+      mode.hdr = false;
+    } else if (config::video.dd.wa.dummy_plug_hdr10) {
+      mode.hdr = true;
+    } else if (config::video.dd.hdr_option == config::video_t::dd_t::hdr_option_e::disabled) {
+      mode.hdr = capable && output && output->value("hdr", false);
+      return;
+    }
+
+    if (mode.hdr && !capable) {
+      mode.hdr = false;
+      BOOST_LOG(warning) << "Linux Remote Monitor: the reserved private output for client '"
+                         << client_uuid << "' cannot apply HDR; downgrading this stream to SDR.";
+    }
   }
 
   bool remote_apply_composed_topology(
@@ -902,15 +1308,16 @@ namespace platf::linux_private_display {
     }
 
     std::set<std::string> desired_names;
-    std::vector<std::string> arguments;
+    std::vector<std::string> activate_arguments;
+    std::vector<std::string> deactivate_arguments;
     int next_priority = 2;
     for (std::size_t i = 0; i < desired.size(); ++i) {
       auto &entry = desired[i];
       desired_names.insert(entry.name);
       const auto prefix = "output." + entry.name + ".";
-      arguments.push_back(prefix + "enable");
+      activate_arguments.push_back(prefix + "enable");
       if (entry.owned_client) {
-        arguments.push_back(prefix + "mode." + entry.mode_id);
+        activate_arguments.push_back(prefix + "mode." + entry.mode_id);
         double scale = 1.0;
         if (config::video.dd.virtual_display_scale_percent > 0) {
           scale = config::video.dd.virtual_display_scale_percent / 100.0;
@@ -919,23 +1326,59 @@ namespace platf::linux_private_display {
             scale = output->value("scale", 1.0);
           }
         }
-        arguments.push_back(prefix + "scale." + std::to_string(scale));
-        if (const auto *output = find_output(*configuration, entry.name); output && output->contains("hdr")) {
-          arguments.push_back(prefix + "hdr.disable");
+        activate_arguments.push_back(prefix + "scale." + std::to_string(scale));
+        if (const auto *output = find_output(*configuration, entry.name); output_hdr_capable(output, entry.name)) {
+          activate_arguments.push_back(prefix + "hdr." + std::string(entry.node.configured_mode.hdr ? "enable" : "disable"));
+        } else if (entry.node.configured_mode.hdr) {
+          BOOST_LOG(error) << "Linux Remote Monitor: " << entry.name
+                           << " does not advertise HDR10 capability.";
+          return false;
         }
       }
-      arguments.push_back(prefix + "position." + std::to_string(entry.node.x - min_x) + "," + std::to_string(entry.node.y - min_y));
-      arguments.push_back(prefix + "priority." + std::to_string(i == primary_index ? 1 : next_priority++));
+      activate_arguments.push_back(prefix + "position." + std::to_string(entry.node.x - min_x) + "," + std::to_string(entry.node.y - min_y));
+      activate_arguments.push_back(prefix + "priority." + std::to_string(i == primary_index ? 1 : next_priority++));
     }
 
     for (const auto &output : (*configuration)["outputs"]) {
       const auto name = output.value("name", std::string {});
       if (connected(output) && !desired_names.contains(name)) {
-        arguments.push_back("output." + name + ".disable");
+        deactivate_arguments.push_back("output." + name + ".disable");
       }
     }
 
-    if (!execute_configuration(arguments, "Remote Monitor topology apply")) {
+    // KScreen may process one command line in connector order rather than the
+    // order supplied. Activating the destination first prevents KWin from
+    // publishing a transient zero-output desktop while an exclusive topology
+    // replaces the physical display.
+    if (!execute_configuration(activate_arguments, "Remote Monitor topology activation")) {
+      return false;
+    }
+
+    const auto verification_deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+    bool verified = false;
+    do {
+      if (const auto current = query_configuration()) {
+        verified = std::ranges::all_of(desired, [&](const auto &entry) {
+          const auto *output = find_output(*current, entry.name);
+          if (!output || !connected(*output) || !enabled(*output)) {
+            return false;
+          }
+          return !entry.owned_client ||
+                 (output->value("currentModeId", std::string {}) == entry.mode_id &&
+                  (!output_hdr_capable(output, entry.name) ||
+                   output->value("hdr", false) == entry.node.configured_mode.hdr));
+        });
+        if (verified) {
+          break;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    } while (std::chrono::steady_clock::now() < verification_deadline);
+    if (!verified) {
+      BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR state.";
+      return false;
+    }
+    if (!execute_configuration(deactivate_arguments, "Remote Monitor topology retirement")) {
       return false;
     }
     BOOST_LOG(info) << "Linux Remote Monitor: applied a " << desired.size()
@@ -963,7 +1406,8 @@ namespace platf::linux_private_display {
           const bool mode_matches =
             size.value("width", 0) == mode.width &&
             size.value("height", 0) == mode.height &&
-            static_cast<int>(std::lround(output_refresh(*output))) == mode.refresh_hz;
+            static_cast<int>(std::lround(output_refresh(*output))) == mode.refresh_hz &&
+            output->value("hdr", false) == mode.hdr;
           if (mode_matches) {
             const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
             if (std::find(capture_outputs.begin(), capture_outputs.end(), *owned_output) != capture_outputs.end()) {
@@ -982,7 +1426,18 @@ namespace platf::linux_private_display {
   void remote_remove_owned_display(const std::string &client_uuid) {
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
-    manager.reservations.erase(client_reservation_identity(client_uuid));
+    const auto reservation = manager.reservations.find(client_reservation_identity(client_uuid));
+    if (reservation == manager.reservations.end()) {
+      return;
+    }
+    const auto output_name = reservation->second;
+    manager.reservations.erase(reservation);
+    const bool still_reserved = std::ranges::any_of(manager.reservations, [&](const auto &entry) {
+      return entry.second == output_name;
+    });
+    if (!still_reserved && !disconnect_managed_output(output_name)) {
+      BOOST_LOG(error) << "Linux private display: failed to disconnect released output " << output_name << '.';
+    }
   }
 
   bool is_private_output(const std::string &output_name) {
@@ -1000,20 +1455,43 @@ namespace platf::linux_private_display {
     cancel_scheduled_revert();
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
+    std::set<std::string> reserved_outputs;
+    for (const auto &[_, output_name] : manager.reservations) {
+      reserved_outputs.insert(output_name);
+    }
     if (!manager.snapshot) {
       manager.reservations.clear();
-      return true;
+      bool disconnected = true;
+      for (const auto &output_name : reserved_outputs) {
+        disconnected = disconnect_managed_output(output_name) && disconnected;
+      }
+      return disconnected;
     }
     const auto current = query_configuration();
     if (!current) {
       return false;
     }
     const auto arguments = restore_arguments(*manager.snapshot, *current);
-    if (!execute_configuration(arguments, "restore")) {
+    if (!execute_configuration(arguments.activate, "restore activation")) {
+      return false;
+    }
+    if (!wait_for_snapshot_activation(*manager.snapshot)) {
+      BOOST_LOG(error) << "Linux private display: timed out activating the saved output topology.";
+      return false;
+    }
+    if (!execute_configuration(arguments.deactivate, "restore retirement")) {
       return false;
     }
     manager.snapshot.reset();
     manager.reservations.clear();
+    bool disconnected = true;
+    for (const auto &output_name : reserved_outputs) {
+      disconnected = disconnect_managed_output(output_name) && disconnected;
+    }
+    if (!disconnected) {
+      BOOST_LOG(error) << "Linux private display: restored topology but failed to disconnect one or more released outputs.";
+      return false;
+    }
     BOOST_LOG(info) << "Linux private display: restored the pre-stream output topology.";
     return true;
   }
@@ -1055,11 +1533,27 @@ namespace platf::linux_private_display {
       return false;
     }
     for (const auto &name : configured_outputs()) {
+      if (is_managed_output(name)) {
+        // A dormant connector is the healthy idle state. A successful status
+        // exchange proves the provisioned pool and privileged broker are ready.
+        if (broker_connected(name).has_value()) {
+          return true;
+        }
+        continue;
+      }
       if (connector_is_connected(name)) {
         return true;
       }
     }
     return false;
+  }
+
+  bool hdr_capable() {
+    return std::ranges::any_of(configured_outputs(), connector_hdr_capable);
+  }
+
+  bool kernel_hdr_pool_available() {
+    return std::ranges::any_of(configured_outputs(), connector_hdr_capable);
   }
 
   bool kernel_pool_available() {
@@ -1101,7 +1595,7 @@ namespace platf::linux_private_display {
         info.m_primary = output.value("priority", 0) == 1;
         const auto pos = output.value("pos", json::object());
         info.m_origin_point = {pos.value("x", 0), pos.value("y", 0)};
-        if (output.contains("hdr")) {
+        if (output_hdr_capable(&output, device.m_device_id)) {
           info.m_hdr_state = output.value("hdr", false) ? display_device::HdrState::Enabled : display_device::HdrState::Disabled;
         }
         device.m_info = info;

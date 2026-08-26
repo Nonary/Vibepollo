@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# Debian passes "remove" and RPM passes 0 for a final uninstall. Upgrades keep
+# the currently usable module in place; the new package registers its version.
+case "${1:-}" in
+  remove | purge | 0)
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl stop vibeshine-vkms.service 2>/dev/null || true
+    fi
+    if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
+      "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" remove || \
+        echo "warning: could not remove the Vibeshine HDR DRM module cleanly."
+    fi
+    ;;
+esac

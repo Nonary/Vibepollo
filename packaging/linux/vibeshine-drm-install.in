@@ -1,0 +1,645 @@
+#!/usr/bin/env bash
+# Install Vibeshine's out-of-tree DRM module. DKMS is preferred so kernel
+# updates rebuild the module; a current-kernel direct build is the fallback.
+
+set -uo pipefail
+umask 022
+
+PROGRAM_NAME="vibeshine-drm-install"
+DKMS_NAME="vibeshine-drm"
+MODULE_NAME="vibeshine_drm"
+MODULE_VERSION="@PROJECT_VERSION_NUMERIC@"
+MODULE_SOURCE_ID="@VIBESHINE_DRM_SOURCE_ID@"
+
+SOURCE_DIR=""
+STATE_DIR=""
+MODULES_ROOT=""
+SYS_MODULE_ROOT=""
+BUILD_TMP_ROOT=""
+KERNEL_RELEASE_OVERRIDE=""
+
+log() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*"
+}
+
+error() {
+  printf '%s: error: %s\n' "$PROGRAM_NAME" "$*" >&2
+}
+
+configure_install_paths() {
+  SOURCE_DIR=$1
+  STATE_DIR=$2
+  MODULES_ROOT=$3
+  SYS_MODULE_ROOT=$4
+  BUILD_TMP_ROOT=$5
+}
+
+require_root() {
+  if ((EUID != 0)); then
+    error "this action must be run as root"
+    return 1
+  fi
+}
+
+require_command() {
+  local command_name=$1
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    error "required command not found: ${command_name}"
+    return 1
+  fi
+}
+
+current_kernel_release() {
+  if [[ -n "$KERNEL_RELEASE_OVERRIDE" ]]; then
+    printf '%s\n' "$KERNEL_RELEASE_OVERRIDE"
+  else
+    uname -r
+  fi
+}
+
+validate_kernel_release() {
+  local kernel_release=$1
+
+  case "$kernel_release" in
+    "" | *[!A-Za-z0-9._+-]*)
+      error "unsafe kernel release string: '${kernel_release}'"
+      return 1
+      ;;
+  esac
+}
+
+validate_source_tree() {
+  local required_file
+
+  if [[ ! -d "$SOURCE_DIR" || -L "$SOURCE_DIR" ]]; then
+    error "module source directory is unavailable or unsafe: ${SOURCE_DIR}"
+    return 1
+  fi
+  for required_file in Makefile build-module dkms.conf vkms_drv.c; do
+    if [[ ! -f "$SOURCE_DIR/$required_file" || -L "$SOURCE_DIR/$required_file" ]]; then
+      error "module source file is unavailable or unsafe: ${SOURCE_DIR}/${required_file}"
+      return 1
+    fi
+  done
+  if [[ ! -x "$SOURCE_DIR/build-module" ]]; then
+    error "module build helper is not executable: ${SOURCE_DIR}/build-module"
+    return 1
+  fi
+  case "$MODULE_SOURCE_ID" in
+    "" | *[!0-9A-Fa-f]*)
+      error "configured module source identity is invalid"
+      return 1
+      ;;
+  esac
+  if ((${#MODULE_SOURCE_ID} != 64)); then
+    error "configured module source identity has an unexpected length"
+    return 1
+  fi
+}
+
+ensure_state_dir() {
+  if [[ -L "$STATE_DIR" ]]; then
+    error "refusing to use symbolic-link state directory: ${STATE_DIR}"
+    return 1
+  fi
+  if ! mkdir -p -- "$STATE_DIR"; then
+    error "could not create module state directory: ${STATE_DIR}"
+    return 1
+  fi
+  if [[ ! -d "$STATE_DIR" || -L "$STATE_DIR" ]]; then
+    error "module state directory is unavailable or unsafe: ${STATE_DIR}"
+    return 1
+  fi
+}
+
+state_marker_matches_source() {
+  local marker=$1
+  local recorded_id
+
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  IFS= read -r recorded_id <"$marker" || return 1
+  [[ "$recorded_id" == "$MODULE_SOURCE_ID" ]]
+}
+
+write_state_marker() {
+  local marker=$1
+  shift
+
+  ensure_state_dir || return 1
+  if [[ -L "$marker" ]]; then
+    error "refusing symbolic-link module state marker: ${marker}"
+    return 1
+  fi
+  if ! printf '%s\n' "$MODULE_SOURCE_ID" "$@" >"$marker"; then
+    error "could not record module state at ${marker}"
+    return 1
+  fi
+}
+
+dkms_status() {
+  dkms status -m "$DKMS_NAME" -v "$MODULE_VERSION" 2>/dev/null || true
+}
+
+dkms_all_status() {
+  dkms status -m "$DKMS_NAME" 2>/dev/null || true
+}
+
+dkms_available() {
+  command -v dkms >/dev/null 2>&1
+}
+
+dkms_is_registered() {
+  local status_output line
+
+  status_output=$(dkms_status)
+  while IFS= read -r line; do
+    case "$line" in
+      "${DKMS_NAME}/${MODULE_VERSION},"* | "${DKMS_NAME}/${MODULE_VERSION}:"*)
+        return 0
+        ;;
+    esac
+  done <<<"$status_output"
+  return 1
+}
+
+dkms_is_installed_for_kernel() {
+  local kernel_release=$1
+  local status_output line
+
+  status_output=$(dkms_status)
+  while IFS= read -r line; do
+    if [[ "$line" == "${DKMS_NAME}/${MODULE_VERSION}, ${kernel_release}, "*": installed"* ]]; then
+      return 0
+    fi
+  done <<<"$status_output"
+  return 1
+}
+
+install_with_dkms() {
+  local kernel_release=$1
+  local marker
+
+  marker=$(dkms_marker "$kernel_release")
+
+  if dkms_is_installed_for_kernel "$kernel_release" &&
+     state_marker_matches_source "$marker"; then
+    log "DKMS module ${DKMS_NAME}/${MODULE_VERSION} is already installed for ${kernel_release}"
+    return 0
+  fi
+
+  if dkms_is_installed_for_kernel "$kernel_release"; then
+    log "refreshing stale DKMS module for ${kernel_release}"
+    if ! dkms remove -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release"; then
+      error "could not remove stale DKMS module for ${kernel_release}"
+      return 1
+    fi
+  fi
+
+  if ! dkms_is_registered; then
+    log "registering ${DKMS_NAME}/${MODULE_VERSION} with DKMS"
+    if ! dkms add -m "$DKMS_NAME" -v "$MODULE_VERSION"; then
+      error "DKMS registration failed"
+      return 1
+    fi
+  fi
+
+  log "building ${DKMS_NAME}/${MODULE_VERSION} with DKMS for ${kernel_release}"
+  if ! dkms build -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release"; then
+    error "DKMS build failed for ${kernel_release}"
+    return 1
+  fi
+  if ! dkms install -m "$DKMS_NAME" -v "$MODULE_VERSION" -k "$kernel_release"; then
+    error "DKMS install failed for ${kernel_release}"
+    return 1
+  fi
+
+  if ! dkms_is_installed_for_kernel "$kernel_release"; then
+    error "DKMS did not report an installed module after a successful install"
+    return 1
+  fi
+  write_state_marker "$marker" dkms "$kernel_release" || return 1
+  if ! remove_direct_installations; then
+    error "current-version direct-build cleanup was incomplete"
+  fi
+  log "installed HDR DRM module with DKMS for ${kernel_release}"
+}
+
+direct_destination() {
+  local kernel_release=$1
+
+  printf '%s/%s/updates/vibeshine/%s.ko\n' "$MODULES_ROOT" "$kernel_release" "$MODULE_NAME"
+}
+
+direct_marker() {
+  local kernel_release=$1
+
+  printf '%s/direct-%s-%s\n' "$STATE_DIR" "$MODULE_VERSION" "$kernel_release"
+}
+
+dkms_marker() {
+  local kernel_release=$1
+
+  printf '%s/dkms-%s-%s\n' "$STATE_DIR" "$MODULE_VERSION" "$kernel_release"
+}
+
+direct_is_installed_for_kernel() {
+  local kernel_release=$1
+  local destination marker
+
+  destination=$(direct_destination "$kernel_release")
+  marker=$(direct_marker "$kernel_release")
+  [[ -f "$destination" && ! -L "$destination" ]] && state_marker_matches_source "$marker"
+}
+
+install_direct() (
+  local kernel_release=$1
+  local build_dir destination marker build_workdir
+
+  build_dir="$MODULES_ROOT/$kernel_release/build"
+  destination=$(direct_destination "$kernel_release")
+  marker=$(direct_marker "$kernel_release")
+
+  if direct_is_installed_for_kernel "$kernel_release"; then
+    log "direct-built module is already installed for ${kernel_release}"
+    return 0
+  fi
+  if [[ ! -d "$build_dir" || ! -f "$build_dir/Makefile" ]]; then
+    error "kernel build files are unavailable at ${build_dir}"
+    error "install matching kernel headers or DKMS, then retry"
+    return 1
+  fi
+  require_command make || return 1
+  require_command install || return 1
+  require_command depmod || return 1
+  require_command cp || return 1
+  require_command mktemp || return 1
+  require_command rm || return 1
+
+  if [[ ! -d "$BUILD_TMP_ROOT" || -L "$BUILD_TMP_ROOT" ]]; then
+    error "temporary build root is unavailable or unsafe: ${BUILD_TMP_ROOT}"
+    return 1
+  fi
+  if ! build_workdir=$(mktemp -d "$BUILD_TMP_ROOT/vibeshine-drm-build.XXXXXX"); then
+    error "could not create a temporary module build directory"
+    return 1
+  fi
+  trap 'cleanup_build_directory "$build_workdir"' EXIT
+  trap 'cleanup_build_directory "$build_workdir"; exit 1' HUP INT TERM
+  if ! cp -a -- "$SOURCE_DIR/." "$build_workdir/"; then
+    error "could not copy module sources to ${build_workdir}"
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+
+  log "building ${MODULE_NAME} directly for ${kernel_release}"
+  if ! run_build_helper "$build_workdir" "$kernel_release"; then
+    error "direct kernel-module build failed for ${kernel_release}"
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+  if [[ ! -f "$build_workdir/${MODULE_NAME}.ko" || -L "$build_workdir/${MODULE_NAME}.ko" ]]; then
+    error "kernel build completed without ${build_workdir}/${MODULE_NAME}.ko"
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+
+  ensure_state_dir || return 1
+  if ! install -D -m 0644 -- "$build_workdir/${MODULE_NAME}.ko" "$destination"; then
+    error "could not install module at ${destination}"
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+  if ! depmod -a "$kernel_release"; then
+    error "depmod failed for ${kernel_release}"
+    rm -f -- "$destination"
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+  if ! write_state_marker "$marker" direct "$destination"; then
+    rm -f -- "$destination"
+    depmod -a "$kernel_release" || true
+    cleanup_build_directory "$build_workdir"
+    return 1
+  fi
+  cleanup_build_directory "$build_workdir" || return 1
+  log "installed directly built HDR DRM module for ${kernel_release}"
+)
+
+run_build_helper() {
+  local build_workdir=$1
+  local kernel_release=$2
+
+  "$build_workdir/build-module" "$kernel_release" "$build_workdir"
+}
+
+cleanup_build_directory() {
+  local build_workdir=$1
+
+  case "$build_workdir" in
+    "$BUILD_TMP_ROOT"/vibeshine-drm-build.*)
+      ;;
+    *)
+      error "refusing cleanup of unexpected temporary path: ${build_workdir}"
+      return 1
+      ;;
+  esac
+  if [[ -L "$build_workdir" ]]; then
+    error "refusing cleanup of symbolic-link build directory: ${build_workdir}"
+    return 1
+  fi
+  rm -rf -- "$build_workdir"
+}
+
+install_module() {
+  local kernel_release cleanup_rc=0
+
+  kernel_release=$(current_kernel_release) || return 1
+  validate_kernel_release "$kernel_release" || return 1
+  validate_source_tree || return 1
+  cleanup_obsolete_installations || cleanup_rc=1
+
+  if dkms_available; then
+    if install_with_dkms "$kernel_release"; then
+      ((cleanup_rc == 0)) || log "obsolete module cleanup was incomplete; current DKMS module is ready"
+      return 0
+    fi
+    log "DKMS installation failed; attempting a current-kernel direct build"
+  else
+    log "DKMS is unavailable; attempting a current-kernel direct build"
+  fi
+  install_direct "$kernel_release" || return 1
+  ((cleanup_rc == 0)) || log "obsolete module cleanup was incomplete; current direct-built module is ready"
+}
+
+unload_module() {
+  if [[ ! -d "$SYS_MODULE_ROOT/$MODULE_NAME" ]]; then
+    return 0
+  fi
+  require_command modprobe || return 1
+  log "unloading ${MODULE_NAME}"
+  if ! modprobe -r "$MODULE_NAME"; then
+    error "could not unload ${MODULE_NAME}; stop the virtual-display service first"
+    return 1
+  fi
+}
+
+remove_direct_marker() {
+  local marker=$1
+  local line destination="" relative kernel_release expected_destination
+
+  if [[ ! -f "$marker" || -L "$marker" ]]; then
+    error "refusing unsafe direct-install marker: ${marker}"
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    destination=$line
+  done <"$marker"
+
+  case "$destination" in
+    "$MODULES_ROOT"/*"/updates/vibeshine/${MODULE_NAME}.ko")
+      ;;
+    *)
+      error "refusing unsafe direct-install destination in ${marker}: ${destination}"
+      return 1
+      ;;
+  esac
+  relative=${destination#"$MODULES_ROOT"/}
+  kernel_release=${relative%%/*}
+  validate_kernel_release "$kernel_release" || return 1
+  expected_destination=$(direct_destination "$kernel_release")
+  if [[ "$destination" != "$expected_destination" ]]; then
+    error "refusing unexpected direct-install destination: ${destination}"
+    return 1
+  fi
+
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    if ! rm -f -- "$destination"; then
+      error "could not remove direct-built module: ${destination}"
+      return 1
+    fi
+  fi
+  if ! rm -f -- "$marker"; then
+    error "could not remove direct-install marker: ${marker}"
+    return 1
+  fi
+  if command -v depmod >/dev/null 2>&1; then
+    depmod -a "$kernel_release" || return 1
+  fi
+  log "removed directly built module for ${kernel_release}"
+}
+
+remove_direct_installations() {
+  local marker rc=0
+
+  [[ -d "$STATE_DIR" ]] || return 0
+  if [[ -L "$STATE_DIR" ]]; then
+    error "refusing to traverse symbolic-link state directory: ${STATE_DIR}"
+    return 1
+  fi
+
+  for marker in "$STATE_DIR/direct-${MODULE_VERSION}-"*; do
+    [[ -e "$marker" || -L "$marker" ]] || continue
+    remove_direct_marker "$marker" || rc=1
+  done
+  return "$rc"
+}
+
+remove_obsolete_direct_installations() {
+  local marker marker_name rc=0
+
+  [[ -d "$STATE_DIR" ]] || return 0
+  if [[ -L "$STATE_DIR" ]]; then
+    error "refusing to traverse symbolic-link state directory: ${STATE_DIR}"
+    return 1
+  fi
+  for marker in "$STATE_DIR"/direct-*; do
+    [[ -e "$marker" || -L "$marker" ]] || continue
+    marker_name=${marker##*/}
+    case "$marker_name" in
+      direct-"$MODULE_VERSION"-*) continue ;;
+    esac
+    remove_direct_marker "$marker" || rc=1
+  done
+  return "$rc"
+}
+
+remove_dkms_state_markers_for_version() {
+  local version=$1
+  local marker rc=0
+
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 0
+  for marker in "$STATE_DIR"/dkms-"$version"-*; do
+    [[ -e "$marker" || -L "$marker" ]] || continue
+    if [[ ! -f "$marker" || -L "$marker" ]] || ! rm -f -- "$marker"; then
+      error "could not remove obsolete DKMS state marker: ${marker}"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+remove_obsolete_dkms_registrations() {
+  local status_output line version seen=" " rc=0
+
+  dkms_available || return 0
+  status_output=$(dkms_all_status)
+  while IFS= read -r line; do
+    [[ "$line" == "$DKMS_NAME/"* ]] || continue
+    version=${line#"$DKMS_NAME"/}
+    version=${version%%,*}
+    version=${version%%:*}
+    case "$version" in
+      "" | *[!A-Za-z0-9._+-]*)
+        error "refusing unsafe DKMS version from status: ${version}"
+        rc=1
+        continue
+        ;;
+    esac
+    [[ "$version" == "$MODULE_VERSION" ]] && continue
+    [[ "$seen" == *" ${version} "* ]] && continue
+    seen+="${version} "
+    log "removing obsolete ${DKMS_NAME}/${version} registration"
+    if dkms remove -m "$DKMS_NAME" -v "$version" --all; then
+      remove_dkms_state_markers_for_version "$version" || rc=1
+    else
+      error "could not remove obsolete DKMS registration ${DKMS_NAME}/${version}"
+      rc=1
+    fi
+  done <<<"$status_output"
+  return "$rc"
+}
+
+remove_obsolete_source_trees() {
+  local source_parent source_name candidate candidate_name candidate_version rc=0
+
+  source_parent=${SOURCE_DIR%/*}
+  source_name=${SOURCE_DIR##*/}
+  if [[ "$source_name" != "${DKMS_NAME}-${MODULE_VERSION}" ||
+        ! -d "$source_parent" || -L "$source_parent" ]]; then
+    return 0
+  fi
+
+  for candidate in "$source_parent"/"$DKMS_NAME"-*; do
+    [[ -e "$candidate" || -L "$candidate" ]] || continue
+    [[ "$candidate" == "$SOURCE_DIR" ]] && continue
+    candidate_name=${candidate##*/}
+    candidate_version=${candidate_name#"$DKMS_NAME"-}
+    case "$candidate_version" in
+      "" | [!0-9]* | *[!A-Za-z0-9._+-]*)
+        continue
+        ;;
+    esac
+    if [[ ! -d "$candidate" || -L "$candidate" ]]; then
+      error "refusing unsafe obsolete source tree: ${candidate}"
+      rc=1
+      continue
+    fi
+    log "removing obsolete module source tree ${candidate}"
+    rm -rf -- "$candidate" || rc=1
+  done
+  return "$rc"
+}
+
+cleanup_obsolete_installations() {
+  local rc=0
+
+  if ! remove_obsolete_dkms_registrations; then
+    rc=1
+  else
+    remove_obsolete_source_trees || rc=1
+  fi
+  remove_obsolete_direct_installations || rc=1
+  return "$rc"
+}
+
+remove_module() {
+  local marker rc=0
+
+  unload_module || rc=1
+  if dkms_available && dkms_is_registered; then
+    log "removing ${DKMS_NAME}/${MODULE_VERSION} from DKMS"
+    dkms remove -m "$DKMS_NAME" -v "$MODULE_VERSION" --all || rc=1
+  fi
+  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+    for marker in "$STATE_DIR"/dkms-"$MODULE_VERSION"-*; do
+      [[ -e "$marker" || -L "$marker" ]] || continue
+      if [[ ! -f "$marker" || -L "$marker" ]] || ! rm -f -- "$marker"; then
+        error "could not remove DKMS state marker: ${marker}"
+        rc=1
+      fi
+    done
+  fi
+  remove_obsolete_dkms_registrations || rc=1
+  remove_direct_installations || rc=1
+  remove_obsolete_direct_installations || rc=1
+  remove_obsolete_source_trees || rc=1
+  return "$rc"
+}
+
+module_status() {
+  local kernel_release installed=0
+
+  kernel_release=$(current_kernel_release) || return 1
+  validate_kernel_release "$kernel_release" || return 1
+  if [[ -d "$SYS_MODULE_ROOT/$MODULE_NAME" ]]; then
+    log "${MODULE_NAME} is loaded"
+    installed=1
+  fi
+  if dkms_available && dkms_is_installed_for_kernel "$kernel_release"; then
+    log "DKMS module is installed for ${kernel_release}"
+    installed=1
+  fi
+  if direct_is_installed_for_kernel "$kernel_release"; then
+    log "direct-built module is installed for ${kernel_release}"
+    installed=1
+  fi
+  if ((installed == 0)); then
+    log "HDR DRM module is not installed for ${kernel_release}"
+    return 3
+  fi
+}
+
+usage() {
+  printf 'Usage: %s {install|remove|status}\n' "$PROGRAM_NAME" >&2
+}
+
+main() {
+  local action=${1:-}
+
+  # Privileged production paths are fixed at configure time and cannot be
+  # redirected through the environment. Tests source the functions directly.
+  configure_install_paths \
+    "@VIBESHINE_DRM_SOURCE_INSTALL_DIR@" \
+    /var/lib/vibeshine-drm \
+    /lib/modules \
+    /sys/module \
+    /var/tmp
+  KERNEL_RELEASE_OVERRIDE=""
+
+  case "$action" in
+    install)
+      require_root || return 1
+      require_command uname || return 1
+      require_command rm || return 1
+      install_module
+      ;;
+    remove)
+      require_root || return 1
+      require_command rm || return 1
+      remove_module
+      ;;
+    status)
+      require_command uname || return 1
+      module_status
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

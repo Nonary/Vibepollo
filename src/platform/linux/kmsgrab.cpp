@@ -407,7 +407,12 @@ namespace platf {
 
       bool is_nvidia() {
         version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && strncmp(ver->name, "nvidia-drm", 10) == 0;
+        return ver && ver->name && selection::driver_is_nvidia(ver->name);
+      }
+
+      bool supports_cuda_import() {
+        version_t ver {drmGetVersion(fd.el)};
+        return ver && ver->name && selection::driver_supports_cuda_import(ver->name);
       }
 
       bool is_cursor(std::uint32_t plane_id) {
@@ -664,10 +669,10 @@ namespace platf {
             continue;
           }
 
-          // Skip non-Nvidia cards if we're looking for CUDA devices
-          // unless NVENC is selected manually by the user
-          if (mem_type == mem_type_e::cuda && !card.is_nvidia()) {
-            BOOST_LOG(debug) << file << " is not a CUDA device"sv;
+          // Skip cards whose scanout buffers are not known to support the CUDA
+          // import path unless NVENC was explicitly selected by the user.
+          if (mem_type == mem_type_e::cuda && !card.supports_cuda_import()) {
+            BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
             if (config::video.encoder != "nvenc") {
               continue;
             }
@@ -1702,10 +1707,10 @@ namespace platf {
         continue;
       }
 
-      // Skip non-Nvidia cards if we're looking for CUDA devices
-      // unless NVENC is selected manually by the user
-      if (hwdevice_type == mem_type_e::cuda && !card.is_nvidia()) {
-        BOOST_LOG(debug) << file << " is not a CUDA device"sv;
+      // Skip cards whose scanout buffers are not known to support the CUDA
+      // import path unless NVENC was explicitly selected by the user.
+      if (hwdevice_type == mem_type_e::cuda && !card.supports_cuda_import()) {
+        BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
         if (config::video.encoder == "nvenc") {
           BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
         } else {

@@ -21,6 +21,7 @@ namespace remote_display_topology {
     int width = 1920;
     int height = 1080;
     int refresh_hz = 60;
+    bool hdr = false;
   };
 
   struct node_t {
@@ -43,6 +44,9 @@ namespace remote_display_topology {
 
   struct runtime_callbacks_t {
     std::function<bool(const std::string &client_uuid, const std::string &client_label, const mode_t &mode)> create_or_reclaim;
+    // Resolve platform capability after the stable output has been reclaimed.
+    // Implementations may safely downgrade requested state such as HDR.
+    std::function<void(const std::string &client_uuid, mode_t &mode)> resolve_mode;
     std::function<bool(const std::vector<node_t> &composed)> apply_composed_topology;
     // The output is accepted only after this exact client identity has both the
     // requested mode and a capture-enumerated DXGI name.  Passing the mode here
@@ -63,6 +67,7 @@ namespace remote_display_topology {
     bool retryable = false;
     std::string output;
     std::string error;
+    bool hdr_enabled = false;
   };
 
   struct normal_game_reservation_t {
@@ -110,7 +115,12 @@ namespace remote_display_topology {
   private:
     struct client_state_t {
       std::string label;
-      mode_t requested_mode;
+      std::optional<mode_t> normal_requested_mode;
+      std::optional<mode_t> monitor_requested_mode;
+      // Platform resolution is applied to a copy. Desired per-role modes remain
+      // intact so a transient capability miss can recover and ending a Remote
+      // Monitor restores the normal game's mode.
+      mode_t effective_mode;
       bool normal_game = false;
       std::uint64_t normal_game_token = 0;
       bool remote_monitor = false;
@@ -127,6 +137,8 @@ namespace remote_display_topology {
 
     activation_result_t activate_locked(const std::string &client_uuid, client_state_t &state);
     void release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason);
+    static mode_t desired_mode(const client_state_t &state);
+    void resolve_effective_mode_locked(const std::string &client_uuid, client_state_t &state);
     std::vector<node_t> compose_locked(std::vector<std::string> &warnings) const;
     static mode_t effective_mode(const node_t &node);
     mutable std::mutex mutex_;

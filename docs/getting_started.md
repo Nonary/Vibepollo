@@ -625,8 +625,8 @@ Streaming HDR content is officially supported on Windows hosts and experimentall
 
 * General HDR support information and requirements:
 
-  * HDR must be activated in the host OS, which may require an HDR-capable display or EDID emulator dongle
-    connected to your host PC.
+  * HDR must be activated in the host OS, which may require an HDR-capable physical display, an EDID
+    emulator dongle, or a managed Vibeshine HDR virtual display connected to the desktop session.
   * You must also enable the HDR option in your Moonlight client settings, otherwise the stream will be SDR
     (and probably overexposed if your host is HDR).
   * A good HDR experience relies on proper HDR display calibration both in the OS and in game. HDR calibration can
@@ -646,9 +646,31 @@ Additional information:
   }
 
 @tab{ Linux |
-  - HDR streaming is supported for Intel and AMD GPUs that support encoding HEVC Main 10 or AV1 10-bit profiles using VAAPI.
-  - The KMS capture backend is required for HDR capture. Other capture methods, like NvFBC or X11, do not support HDR.
+  - HDR streaming is supported for Intel and AMD GPUs using VAAPI and NVIDIA GPUs using NVENC when
+    the encoder supports HEVC Main 10 or AV1 10-bit profiles.
+  - Managed HDR virtual displays use direct DRM/KMS capture so their 10-bit scanout reaches the
+    encoder. KWin ScreenCast remains recommended for managed SDR capture. NvFBC and X11 capture do
+    not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
+  - Native Vibeshine installations can provide private HDR10 virtual outputs through the
+    `vibeshine_drm` module. It requires Linux 7.2 or newer and matching kernel headers. Its EDID
+    advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
+
+  Enable the managed virtual-display pool after installation:
+
+  ```bash
+  sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+  sudo systemctl enable --now vibeshine-vkms.service
+  modinfo vibeshine_drm
+  ```
+
+  Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
+  first command retries it manually. Privileged helpers always install under the fixed, root-owned
+  `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
+  provisions four dormant private outputs and uses the custom HDR backend when it loads. If the module cannot be built or
+  loaded, it falls back to the kernel's stock VKMS backend: private SDR streaming still works, but
+  HDR requests are downgraded to SDR. Secure Boot systems must sign the module with a key trusted
+  by the machine before it can load.
 
   @seealso{[Arch wiki on HDR Support for Linux](https://wiki.archlinux.org/title/HDR_monitor_support) and
   [Reddit Guide for HDR Support for AMD GPUs](https://www.reddit.com/r/linux_gaming/comments/10m2gyx/guide_alpha_test_hdr_on_linux)}

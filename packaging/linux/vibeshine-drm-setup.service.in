@@ -1,0 +1,11 @@
+[Unit]
+Description=Build and install Vibeshine HDR DRM module
+Documentation=https://github.com/Nonary/vibeshine
+After=local-fs.target
+Before=vibeshine-vkms.service display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install install
+TimeoutStartSec=10min
+UMask=0022

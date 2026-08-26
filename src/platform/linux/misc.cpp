@@ -58,7 +58,9 @@
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/video.h"
 #ifdef __linux__
+  #include "src/platform/linux/private_display_capture_policy.h"
   #include "src/platform/linux/private_display.h"
 #endif
 #include "vaapi.h"
@@ -1179,7 +1181,8 @@ namespace platf {
   std::shared_ptr<display_t> kwin_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_kwin() {
-    // Note: The separate kwin_available check is necessary because with CAP_SYS_ADMIN kwin_display_names is never empty during startup
+    // The separate availability check is necessary because startup may use a
+    // dummy KWin name while CAP_SYS_ADMIN is awaiting its normal permanent drop.
     return window_system == window_system_e::WAYLAND && kwin_available() && !kwin_display_names().empty();
   }
 #endif
@@ -1237,15 +1240,56 @@ namespace platf {
     (void) required_adapter;
     // Keep KMS as first element to check before dropping CAP_SYS_ADMIN
 #ifdef SUNSHINE_BUILD_DRM
+    const bool prefer_private_hdr_kms =
+      !sources[source::KMS] &&
+      platf::linux_private_display_capture::prefer_kms(
+        config.dynamicRange,
+        config.force_sdr,
+        config.prefer_sdr_10bit,
+        linux_private_display::is_private_output(display_name)
+      );
+    if (prefer_private_hdr_kms) {
+      BOOST_LOG(info) << "Linux private HDR display detected; preferring direct KMS capture over the configured compositor capture path."sv;
+
+      // KMS display initialization resolves stable connector names through the
+      // state populated by enumeration. This must run while CAP_SYS_ADMIN is
+      // still available, before the normal compositor path drops it below.
+      const auto kms_outputs = kms_display_names(hwdevice_type);
+      if (kms_outputs.empty()) {
+        BOOST_LOG(error) << "Direct KMS capture is unavailable for private HDR display ["sv
+                         << display_name << "]; refusing an HDR compositor fallback."sv;
+        return nullptr;
+      } else if (auto kms = kms_display(hwdevice_type, display_name, config)) {
+        BOOST_LOG(info) << "Screencasting private HDR display ["sv << display_name << "] with KMS"sv;
+        return kms;
+      } else {
+        BOOST_LOG(error) << "Direct KMS capture failed for private HDR display ["sv
+                         << display_name << "]; refusing an HDR compositor fallback."sv;
+        return nullptr;
+      }
+    }
+
     if (sources[source::KMS]) {
       BOOST_LOG(info) << "Screencasting with KMS"sv;
       return kms_display(hwdevice_type, display_name, config);
     }
 #endif
 
-    // KMS capture was passed; drop CAP_SYS_ADMIN only.
+    // KMS capture was passed. Preserve CAP_SYS_ADMIN in the permitted set when
+    // the managed HDR pool is available, because a later private HDR session
+    // must still be able to raise it temporarily for direct KMS capture.
     if (has_elevated_privileges(false)) {
-      drop_elevated_privileges(false);
+      if (platf::linux_private_display_capture::retain_kms_capability(
+            linux_private_display::kernel_hdr_pool_available()
+          )) {
+        if (!drop_effective_elevated_privileges(false)) {
+          BOOST_LOG(error) << "Failed to clear effective CAP_SYS_ADMIN while retaining it for managed private HDR capture."sv;
+          return nullptr;
+        }
+        BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for managed private HDR KMS capture."sv;
+      } else {
+        drop_elevated_privileges(false);
+      }
     }
 
 #ifdef SUNSHINE_BUILD_CUDA
@@ -1472,6 +1516,7 @@ namespace platf {
       cap_get_flag(caps, c, CAP_EFFECTIVE, &cap_flags_value);
       if (cap_flags_value == CAP_SET) {
         BOOST_LOG(debug) << "[misc] has_elevated_privileges found effective cap:"sv << c;
+        cap_free(caps);
         return true;
       }
     }
@@ -1480,12 +1525,63 @@ namespace platf {
       cap_get_flag(caps, c, CAP_PERMITTED, &cap_flags_value);
       if (cap_flags_value == CAP_SET) {
         BOOST_LOG(debug) << "[misc] has_elevated_privileges found permitted cap:"sv << c;
+        cap_free(caps);
         return true;
       }
     }
     cap_free(caps);
 #endif
     return false;
+  }
+
+  bool drop_effective_elevated_privileges(bool all_caps) {
+#if !defined(__FreeBSD__)
+    const auto caps_to_drop = all_caps ? ELEVATED_PRIVILEGES_FULL : ELEVATED_PRIVILEGES_ADMIN;
+    const cap_t caps = cap_get_proc();
+    if (!caps) {
+      BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges failed to get process capabilities"sv;
+      return false;
+    }
+
+    if (cap_set_flag(caps, CAP_EFFECTIVE, caps_to_drop.size(), caps_to_drop.data(), CAP_CLEAR) != 0) {
+      BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges failed to update the capability set: "sv << std::strerror(errno);
+      cap_free(caps);
+      return false;
+    }
+    if (cap_set_proc(caps) != 0) {
+      BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges failed to clear effective capabilities: "sv << std::strerror(errno);
+      cap_free(caps);
+      return false;
+    }
+    cap_free(caps);
+
+    const cap_t verified_caps = cap_get_proc();
+    if (!verified_caps) {
+      BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges failed to verify process capabilities"sv;
+      return false;
+    }
+    for (const auto capability : caps_to_drop) {
+      cap_flag_value_t effective_value;
+      if (cap_get_flag(verified_caps, capability, CAP_EFFECTIVE, &effective_value) != 0 ||
+          effective_value != CAP_CLEAR) {
+        BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges verification found effective capability: "sv << capability;
+        cap_free(verified_caps);
+        return false;
+      }
+    }
+    cap_free(verified_caps);
+
+    // Executing a binary with file capabilities clears the process dumpable
+    // flag. KWin uses /proc/<pid>/exe to authorize its privileged ScreenCast
+    // protocol, so restore normal same-user inspection after clearing the
+    // effective set. CAP_SYS_ADMIN remains permitted and is raised only inside
+    // the short-lived KMS operations guarded by cap_sys_admin.
+    if (prctl(PR_SET_DUMPABLE, 1) != 0) {
+      BOOST_LOG(error) << "[misc] drop_effective_elevated_privileges failed to set PR_SET_DUMPABLE: "sv << std::strerror(errno);
+      return false;
+    }
+#endif
+    return true;
   }
 
   void drop_elevated_privileges(bool all_caps) {

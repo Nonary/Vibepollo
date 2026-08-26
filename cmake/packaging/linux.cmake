@@ -23,8 +23,24 @@ else()
     find_package(Udev)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-vkms"
-                DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/vibeshine")
+        install(PROGRAMS
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-vkms"
+                "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
+                DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(DIRECTORY "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
+                FILES_MATCHING
+                PATTERN "*.c"
+                PATTERN "*.h"
+                PATTERN "*.py"
+                PATTERN "Makefile"
+                PATTERN "README*"
+                PATTERN "LICENSE*")
+        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/build-module"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-dkms.conf"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
+                RENAME dkms.conf)
     endif()
 
     if(UDEV_FOUND)
@@ -37,8 +53,12 @@ else()
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.conf"
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms.service"
-                    DESTINATION "${SYSTEMD_SYSTEM_UNIT_INSTALL_DIR}")
+            install(FILES
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms.service"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
+                    "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
+                    DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
     endif()
 endif()
@@ -51,9 +71,17 @@ set(CPACK_FREEBSD_PACKAGE_MAINTAINER "${CPACK_PACKAGE_VENDOR}")
 set(CPACK_FREEBSD_PACKAGE_ORIGIN "misc/${CPACK_PACKAGE_NAME}")
 set(CPACK_FREEBSD_PACKAGE_LICENSE "GPLv3")
 
-# Post install
-set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
-set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
+# Native package lifecycle hooks build the HDR module on a best-effort basis.
+# The system service retries on boot and can fall back to upstream VKMS.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+            "${CMAKE_CURRENT_BINARY_DIR}/postinst;${CMAKE_CURRENT_BINARY_DIR}/prerm")
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/postinst")
+    set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/prerm")
+else()
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
+endif()
 
 # FreeBSD post install/deinstall scripts
 if(FREEBSD)
@@ -85,6 +113,9 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             libdrm2, \
             libgbm1, \
             libevdev2, \
+            kmod, \
+            libkscreen-bin | libkf5screen-bin, \
+            make, \
             libnuma1, \
             libopus0, \
             libpulse0, \
@@ -100,6 +131,9 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             libcurl >= 7.0, \
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
+            kmod, \
+            libkscreen, \
+            make, \
             libopusenc >= 0.2.1, \
             libva >= 2.14.0, \
             libwayland-client >= 1.20.0, \
@@ -110,6 +144,8 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             openssl >= 3.0.2, \
             pulseaudio-libs >= 10.0, \
             which >= 2.21")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")
+set(CPACK_RPM_PACKAGE_SUGGESTS "dkms, gcc, kernel-devel")
 list(APPEND CPACK_FREEBSD_PACKAGE_DEPS
         audio/opus
         ftp/curl

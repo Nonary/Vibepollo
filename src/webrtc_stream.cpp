@@ -3253,15 +3253,15 @@ namespace webrtc_stream {
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
         }
-        if (launch_session->virtual_display_hdr_enabled == false) {
-          video_config.dynamicRange = 0;
-          video_config.force_sdr = true;
-        }
         if (launch_session->virtual_display &&
             (allow_display_changes || launch_session->virtual_display_recreated_on_demand ||
              launch_session->virtual_display_needs_resume_apply) &&
             !platf::linux_private_display::apply_session(*launch_session)) {
           return std::string {"Failed to activate the Linux private streaming display."};
+        }
+        if (launch_session->virtual_display_hdr_enabled == false) {
+          video_config.dynamicRange = 0;
+          video_config.force_sdr = true;
         }
 #endif
 

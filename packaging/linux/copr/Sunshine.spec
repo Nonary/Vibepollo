@@ -138,6 +138,11 @@ BuildRequires: gcc14-c++
 # Common runtime requirements
 Requires: miniupnpc >= 2.2.4
 Requires: which >= 2.21
+Requires: kmod
+Recommends: dkms
+Recommends: gcc
+Recommends: kernel-devel
+Recommends: make
 
 %if 0%{?fedora}
 # Fedora runtime requirements
@@ -146,6 +151,7 @@ Requires: libcap >= 2.22
 Requires: libcurl >= 7.0
 Requires: libdrm > 2.4.97
 Requires: libevdev >= 1.5.6
+Requires: libkscreen
 Requires: libopusenc >= 0.2.1
 Requires: libva >= 2.14.0
 Requires: libwayland-client >= 1.20.0
@@ -163,6 +169,9 @@ Requires: libcap2
 Requires: libcurl4
 Requires: libdrm2
 Requires: libevdev2
+# The binary moved between openSUSE KScreen package generations; use the RPM
+# file capability so zypper selects the provider for the active release.
+Requires: /usr/bin/kscreen-doctor
 Requires: libopusenc0
 Requires: libva2
 Requires: libwayland-client0
@@ -336,19 +345,36 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
   else
     echo "error: udevadm not found or not executable."
   fi
+
+  %{_prefix}/libexec/vibeshine/vibeshine-drm-install install || \
+    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
+fi
+
+%preun
+if [ "$1" -eq 0 ]; then
+  systemctl stop vibeshine-vkms.service 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
+    echo "warning: could not remove the Vibeshine HDR DRM module cleanly."
 fi
 
 %files
 # Executables
 %caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
-%{_libexecdir}/vibeshine/vibeshine-vkms
+%{_prefix}/libexec/vibeshine/vibeshine-drm-install
+%{_prefix}/libexec/vibeshine/vibeshine-vkms
+
+# Versioned DKMS/direct-build source tree
+/usr/src/vibeshine-drm-*
 
 # Systemd unit files for user services
 %{_userunitdir}/*.service
 
 # Privileged virtual-display provisioning service
+%{_unitdir}/vibeshine-drm-setup.service
+%{_unitdir}/vibeshine-vkms-control.socket
+%{_unitdir}/vibeshine-vkms-control@.service
 %{_unitdir}/vibeshine-vkms.service
 
 # Udev rules

@@ -16,6 +16,21 @@
 
 namespace platf::kms::selection {
 
+  inline bool driver_is_nvidia(std::string_view driver_name) {
+    return driver_name.starts_with("nvidia-drm");
+  }
+
+  /**
+   * @brief Whether a KMS card's scanout DMA-BUFs can use the CUDA import path.
+   *
+   * Vibeshine DRM is intentionally a display-only device. Its exported linear
+   * framebuffers were validated with cross-device import on NVIDIA, so it must
+   * not be rejected merely because its DRM driver is not nvidia-drm.
+   */
+  inline bool driver_supports_cuda_import(std::string_view driver_name) {
+    return driver_is_nvidia(driver_name) || driver_name == "vibeshine_drm";
+  }
+
   struct monitor_t {
     std::string card_path;
     std::string connector_name;

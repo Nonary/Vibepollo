@@ -1,0 +1,10 @@
+PACKAGE_NAME="vibeshine-drm"
+PACKAGE_VERSION="@PROJECT_VERSION_NUMERIC@"
+
+BUILT_MODULE_NAME[0]="vibeshine_drm"
+DEST_MODULE_LOCATION[0]="/updates/dkms"
+AUTOINSTALL="yes"
+REMAKE_INITRD="no"
+
+MAKE[0]="${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build/build-module ${kernelver}"
+CLEAN="make -C /lib/modules/${kernelver}/build M=${dkms_tree}/${PACKAGE_NAME}/${PACKAGE_VERSION}/build clean"
