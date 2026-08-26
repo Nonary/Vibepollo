@@ -7,8 +7,16 @@ namespace rtsp_stream::pending_policy {
     return initial_route_e::reject;
   }
 
-  bool control_server_should_remain_alive(const bool process_running, const bool has_live_session, const bool launch_or_startup_pending) {
-    return process_running || has_live_session || launch_or_startup_pending;
+  bool game_session_requires_shutdown(const bool game_runtime_active, const remote_session::role_e role) {
+    return !game_runtime_active && role == remote_session::role_e::game;
+  }
+
+  bool control_server_should_remain_alive(
+    const bool game_runtime_active,
+    const bool has_processless_live_session,
+    const bool has_game_session_pending_or_draining
+  ) {
+    return game_runtime_active || has_processless_live_session || has_game_session_pending_or_draining;
   }
 
   bool disconnect_scope_matches(const remote_session::role_e candidate_role, const remote_session::role_e requested_role, const bool client_matches, const bool all_clients) {
