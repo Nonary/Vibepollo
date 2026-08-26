@@ -470,6 +470,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LINK_LIBRARIES GTest::gtest sunshine_libvirtualdisplay_uapi)
     sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp
         LINK_LIBRARIES sunshine_libvirtualdisplay_uapi)
+    find_package(Boost CONFIG REQUIRED COMPONENTS process)
+    sunshine_register_component(NAME test_component_linux_boost_process_shim TEST_SOURCE unit/platform/linux/test_boost_process_shim.cpp
+        LINK_LIBRARIES Boost::process)
     sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
     sunshine_register_component(NAME test_component_linux_mangohud_policy TEST_SOURCE unit/platform/linux/test_mangohud_policy.cpp)
     sunshine_register_component(NAME test_component_linux_smooth_motion_policy TEST_SOURCE unit/platform/linux/test_smooth_motion_policy.cpp)

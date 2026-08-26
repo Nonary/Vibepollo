@@ -238,10 +238,15 @@ namespace boost_process_shim {
         }
         return process_environment_t(env_buffer);
 #else
-        std::vector<std::string> env_buffer;
+        // process_environment's string-range overload stores pointers into the
+        // supplied strings. Those strings are local to this function, so the
+        // pointers would dangle before the child is spawned. A pair range is
+        // not convertible to Boost's string view and therefore selects the
+        // overload that copies entries into the process_environment instance.
+        std::vector<std::pair<std::string, std::string>> env_buffer;
         env_buffer.reserve(_entries.size());
         for (const auto &entry : _entries) {
-          env_buffer.push_back(entry.get_name() + "=" + entry.to_string());
+          env_buffer.emplace_back(entry.get_name(), entry.to_string());
         }
         return v2::process_environment(env_buffer);
 #endif
