@@ -161,6 +161,38 @@ TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
   EXPECT_EQ(composed[1].x, 2020);
 }
 
+TEST(RemoteDisplayTopology, RemoteMonitorUsesLogicalFootprintOfScaledPhysicalDesktop) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  remote_display_topology::node_t physical {
+    .id = "scaled-physical",
+    .label = "Scaled 4K Display",
+    .physical = true,
+    .active = true,
+    .x = 0,
+    .y = 0,
+    .configured_mode = {3840, 2160, 120},
+  };
+  physical.layout_width = 1920;
+  physical.layout_height = 1080;
+  coordinator.set_physical_baseline({physical});
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&composed](const auto &nodes) {
+      composed = nodes;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) {
+      return std::optional<std::string> {"Virtual-1"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {3024, 1890, 120}, 1).ready);
+  ASSERT_EQ(composed.size(), 2);
+  EXPECT_EQ(composed[0].configured_mode.width, 3840);
+  EXPECT_EQ(composed[1].x, 1920);
+}
+
 TEST(RemoteDisplayTopology, RemoteMonitorExtendsPreexistingStreamedVirtualDisplay) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<remote_display_topology::node_t> composed;

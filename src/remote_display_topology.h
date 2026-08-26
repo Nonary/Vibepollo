@@ -40,6 +40,11 @@ namespace remote_display_topology {
     mode_t configured_mode;
     std::optional<mode_t> last_requested_mode;
     std::optional<mode_t> current_mode;
+    // Desktop coordinates can use a logical footprint that differs from the
+    // capture mode (for example, a 3840x2160 KWin output at 200% scale occupies
+    // 1920x1080). Keep mode reporting native while composing in desktop units.
+    std::optional<int> layout_width;
+    std::optional<int> layout_height;
   };
 
   struct runtime_callbacks_t {
@@ -141,6 +146,8 @@ namespace remote_display_topology {
     void resolve_effective_mode_locked(const std::string &client_uuid, client_state_t &state);
     std::vector<node_t> compose_locked(std::vector<std::string> &warnings) const;
     static mode_t effective_mode(const node_t &node);
+    static int layout_width(const node_t &node);
+    static int layout_height(const node_t &node);
     mutable std::mutex mutex_;
     runtime_callbacks_t callbacks_;
     std::function<std::string(const std::string &)> plaintext_rtsp_warning_provider_;

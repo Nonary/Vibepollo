@@ -390,6 +390,18 @@ namespace nvhttp {
       return 0;
     }
 
+    int linux_remote_logical_dimension(const unsigned int pixels, const display_device::FloatingPoint &scale) {
+      double factor = 1.0;
+      if (const auto *ratio = std::get_if<display_device::Rational>(&scale)) {
+        if (ratio->m_denominator != 0) {
+          factor = static_cast<double>(ratio->m_numerator) / ratio->m_denominator;
+        }
+      } else if (const auto *value = std::get_if<double>(&scale)) {
+        factor = *value;
+      }
+      return static_cast<int>(std::lround(pixels / std::max(factor, 0.01)));
+    }
+
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
       const auto devices = display_helper_integration::enumerate_devices(
         display_device::DeviceEnumerationDetail::Full
@@ -450,6 +462,14 @@ namespace nvhttp {
           .refresh_hz = linux_remote_refresh_hz(device.m_info->m_refresh_rate),
           .hdr = device.m_info->m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled,
         };
+        node.layout_width = linux_remote_logical_dimension(
+          device.m_info->m_resolution.m_width,
+          device.m_info->m_resolution_scale
+        );
+        node.layout_height = linux_remote_logical_dimension(
+          device.m_info->m_resolution.m_height,
+          device.m_info->m_resolution_scale
+        );
         baseline.push_back(std::move(node));
       }
       remote_display_topology::instance().set_physical_baseline(std::move(baseline));

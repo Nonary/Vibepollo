@@ -370,6 +370,14 @@ namespace remote_display_topology {
 
   mode_t coordinator_t::effective_mode(const node_t &node) { return node.current_mode.value_or(node.last_requested_mode.value_or(node.configured_mode)); }
 
+  int coordinator_t::layout_width(const node_t &node) {
+    return node.layout_width.value_or(effective_mode(node).width);
+  }
+
+  int coordinator_t::layout_height(const node_t &node) {
+    return node.layout_height.value_or(effective_mode(node).height);
+  }
+
   mode_t coordinator_t::desired_mode(const client_state_t &state) {
     if (state.remote_monitor && state.monitor_requested_mode) return *state.monitor_requested_mode;
     if (state.normal_game && state.normal_requested_mode) return *state.normal_requested_mode;
@@ -384,7 +392,7 @@ namespace remote_display_topology {
   std::vector<node_t> coordinator_t::compose_locked(std::vector<std::string> &warnings) const {
     auto nodes = physical_baseline_;
     int rightmost = 0;
-    for (const auto &node : nodes) rightmost = std::max(rightmost, node.x + effective_mode(node).width);
+    for (const auto &node : nodes) rightmost = std::max(rightmost, node.x + layout_width(node));
 
     std::vector<std::string> active_ids;
     for (const auto &[uuid, state] : clients_) {
@@ -412,7 +420,7 @@ namespace remote_display_topology {
       };
       const auto append_right = [&](const std::string &warning) {
         node.x = rightmost;
-        rightmost += effective_mode(node).width;
+        rightmost += layout_width(node);
         if (!warning.empty()) warnings.push_back(warning);
         nodes.push_back(std::move(node));
         emitted.insert(uuid);
@@ -448,18 +456,20 @@ namespace remote_display_topology {
         return;
       }
 
-      const auto anchor_mode = effective_mode(*anchor);
-      const auto mode = effective_mode(node);
+      const auto anchor_width = layout_width(*anchor);
+      const auto anchor_height = layout_height(*anchor);
+      const auto width = layout_width(node);
+      const auto height = layout_height(node);
       const auto gap = placement.value("gap_px", 0);
       const auto edge = placement.value("edge", "right");
       const auto alignment = placement.value("alignment", "center");
-      if (edge == "left") node.x = anchor->x - mode.width - gap;
-      if (edge == "right") node.x = anchor->x + anchor_mode.width + gap;
-      if (edge == "above") node.y = anchor->y - mode.height - gap;
-      if (edge == "below") node.y = anchor->y + anchor_mode.height + gap;
-      if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_mode.height - mode.height : anchor->y + (anchor_mode.height - mode.height) / 2;
-      if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_mode.width - mode.width : anchor->x + (anchor_mode.width - mode.width) / 2;
-      rightmost = std::max(rightmost, node.x + mode.width);
+      if (edge == "left") node.x = anchor->x - width - gap;
+      if (edge == "right") node.x = anchor->x + anchor_width + gap;
+      if (edge == "above") node.y = anchor->y - height - gap;
+      if (edge == "below") node.y = anchor->y + anchor_height + gap;
+      if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_height - height : anchor->y + (anchor_height - height) / 2;
+      if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_width - width : anchor->x + (anchor_width - width) / 2;
+      rightmost = std::max(rightmost, node.x + width);
       nodes.push_back(std::move(node));
       emitted.insert(uuid);
       visiting.erase(uuid);
