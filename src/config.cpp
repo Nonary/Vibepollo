@@ -1034,6 +1034,8 @@ namespace config {
     false,  // enable
     "auto",  // provider
     0,  // fps_limit
+    "custom",  // mangohud_preset
+    false,  // mangohud_always_show_graph
     false,  // disable_vsync
     frame_limiter_t::virtual_display_capture_mode_e::enabled
   };
@@ -1994,6 +1996,19 @@ namespace config {
       frame_limiter.provider = "auto";
     }
     frame_limit_millihz_f(vars, "frame_limiter_fps_limit", frame_limiter.fps_limit_millihz);
+    string_f(vars, "mangohud_preset", frame_limiter.mangohud_preset);
+    boost::algorithm::to_lower(frame_limiter.mangohud_preset);
+    boost::algorithm::trim(frame_limiter.mangohud_preset);
+    if (frame_limiter.mangohud_preset != "custom" &&
+        frame_limiter.mangohud_preset != "1" &&
+        frame_limiter.mangohud_preset != "2" &&
+        frame_limiter.mangohud_preset != "3" &&
+        frame_limiter.mangohud_preset != "4") {
+      BOOST_LOG(warning) << "config: Unknown mangohud_preset '"
+                         << frame_limiter.mangohud_preset << "'; using custom.";
+      frame_limiter.mangohud_preset = "custom";
+    }
+    bool_f(vars, "mangohud_always_show_graph", frame_limiter.mangohud_always_show_graph);
     bool_f(vars, "frame_limiter_disable_vsync", frame_limiter.disable_vsync);
     bool_f(vars, "rtss_disable_vsync_ullm", frame_limiter.disable_vsync);
     {

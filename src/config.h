@@ -348,6 +348,11 @@ namespace config {
     // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
     std::uint32_t fps_limit_millihz {0};
 
+    // Linux MangoHUD overlay presentation. "custom" preserves the user's
+    // configuration; 1-4 select MangoHUD's standard built-in presets.
+    std::string mangohud_preset {"custom"};
+    bool mangohud_always_show_graph {false};
+
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.
     // Restores the previous VSYNC state when streaming stops.

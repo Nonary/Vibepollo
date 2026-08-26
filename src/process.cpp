@@ -1740,7 +1740,11 @@ namespace proc {
         // native OpenGL. MANGOHUD_CONFIG survives Steam's container boundary;
         // MANGOHUD_FPS_LIMIT is also set for direct and newer-runtime launches.
         _env["MANGOHUD"] = "1";
-        _env["MANGOHUD_CONFIG"] = platf::mangohud::config_override(mangohud_policy.limit);
+        _env["MANGOHUD_CONFIG"] = platf::mangohud::config_override(
+          mangohud_policy.limit,
+          config::frame_limiter.mangohud_preset,
+          config::frame_limiter.mangohud_always_show_graph
+        );
         _env["MANGOHUD_FPS_LIMIT"] = mangohud_policy.limit;
         _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
         BOOST_LOG(info) << "MangoHUD frame limiter enabled at " << mangohud_policy.limit << " FPS.";

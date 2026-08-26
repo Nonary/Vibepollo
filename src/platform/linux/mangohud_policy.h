@@ -96,11 +96,29 @@ namespace platf::mangohud {
     return result;
   }
 
-  inline std::string config_override(std::string_view limit) {
+  inline std::string config_override(
+    std::string_view limit,
+    std::string_view preset = "custom",
+    bool always_show_graph = false
+  ) {
     // MANGOHUD_CONFIG is passed through Steam's pressure-vessel runtime, while
     // older runtimes may discard the newer MANGOHUD_FPS_LIMIT variable. Load
     // the user's normal config first, then make the stream limit authoritative.
-    return "read_cfg,fps_limit=" + std::string(limit);
+    std::string config = "read_cfg";
+    const bool standard_preset = preset == "1" || preset == "2" || preset == "3" || preset == "4";
+    if (standard_preset) {
+      config += ",preset=";
+      config += preset;
+    }
+    if (standard_preset || always_show_graph) {
+      config += ",no_display=0";
+    }
+    if (always_show_graph) {
+      config += ",frame_timing=1";
+    }
+    config += ",fps_limit=";
+    config += limit;
+    return config;
   }
 
   inline launch_policy_t make_launch_policy(

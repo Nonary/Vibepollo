@@ -2939,6 +2939,59 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### mangohud_preset
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Linux-only MangoHUD metrics and layout preset used for games launched during a stream.
+            Use <code>custom</code> to retain the metrics from the user's MangoHud configuration,
+            or select one of MangoHud's standard built-in presets.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}custom@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            mangohud_preset = 3
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="5">Choices</td>
+        <td>custom</td><td>Use the metrics and layout from the user's MangoHud configuration.</td>
+    </tr>
+    <tr><td>1</td><td>FPS only.</td></tr>
+    <tr><td>2</td><td>Horizontal.</td></tr>
+    <tr><td>3</td><td>Extended.</td></tr>
+    <tr><td>4</td><td>Detailed.</td></tr>
+</table>
+
+### mangohud_always_show_graph
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Linux-only option that keeps the MangoHud overlay visible and enables its live
+            frame-time graph for every managed game launch.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            mangohud_always_show_graph = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### frame_limiter_auto_virtual_framegen
 
 <table>
