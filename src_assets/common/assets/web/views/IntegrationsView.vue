@@ -9,6 +9,7 @@ import {
   InlineAlert,
   LoadingSkeleton,
   PageHeader,
+  SettingRow,
   StatusBadge,
   UiIcon,
   type StatusTone,
@@ -31,12 +32,26 @@ interface SteamStatus {
   forced?: boolean;
   available?: boolean;
   game_count?: number;
+  importable_game_count?: number;
+  excluded_game_count?: number;
+  tool_game_count?: number;
   playnite_available?: boolean;
   auto_sync?: boolean;
   autosync_remove_uninstalled?: boolean;
   remove_uninstalled?: boolean;
   include_tools?: boolean;
   exclude_games?: Array<{ id?: string; name?: string }> | string[] | number;
+}
+
+interface MangoHudStatus {
+  enabled?: boolean;
+  configured_provider?: string;
+  active_provider?: string;
+  fps_limit?: number;
+  fps_limit_millihz?: number;
+  mangohud_available?: boolean;
+  resolved_path?: string;
+  message?: string;
 }
 
 interface SteamGame {
@@ -46,6 +61,7 @@ interface SteamGame {
   install_dir?: string;
   excluded?: boolean;
   filtered?: boolean;
+  app_type?: string;
 }
 
 interface RtssStatus {
@@ -88,8 +104,13 @@ interface MutationResult {
   error?: string;
 }
 
-type IntegrationId = 'steam' | 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
-type PendingAction = 'playnite-install' | 'playnite-uninstall' | 'vigem-install' | 'vulkan-register';
+type IntegrationId = 'steam' | 'mangohud' | 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
+type SteamGameFilter = 'all' | 'included' | 'excluded';
+type PendingAction =
+  | 'playnite-install'
+  | 'playnite-uninstall'
+  | 'vigem-install'
+  | 'vulkan-register';
 
 interface IntegrationSummary {
   id: IntegrationId;
@@ -107,7 +128,15 @@ const steam = ref<SteamStatus | null>(null);
 const steamGames = ref<SteamGame[]>([]);
 const steamGamesLoading = ref(false);
 const steamGamesError = ref('');
-const steamExclusionBusy = ref<string | null>(null);
+const steamGameSearch = ref('');
+const steamGameFilter = ref<SteamGameFilter>('all');
+const steamExclusionDraft = ref<Set<string>>(new Set());
+const steamExclusionOriginal = ref<Set<string>>(new Set());
+const steamExclusionsSaving = ref(false);
+const mangohud = ref<MangoHudStatus | null>(null);
+const mangoDraft = ref({ enabled: false, provider: 'auto', fpsLimit: 0 });
+const mangoOriginal = ref({ enabled: false, provider: 'auto', fpsLimit: 0 });
+const mangoSaving = ref(false);
 const rtss = ref<RtssStatus | null>(null);
 const lossless = ref<LosslessStatus | null>(null);
 const vigem = ref<VigemStatus | null>(null);
@@ -126,6 +155,11 @@ const isWindows = computed(() =>
     .toLocaleLowerCase()
     .includes('windows'),
 );
+const isLinux = computed(() =>
+  String(system.metadata?.platform ?? '')
+    .toLocaleLowerCase()
+    .includes('linux'),
+);
 
 function message(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
@@ -136,18 +170,21 @@ function steamGameId(game: SteamGame): string {
 }
 
 function steamGameName(game: SteamGame): string {
-  return String(game.name ?? '').trim() || t('ui.integrations.steam.unknownGame', { id: steamGameId(game) });
+  return (
+    String(game.name ?? '').trim() ||
+    t('ui.integrations.steam.unknownGame', { id: steamGameId(game) })
+  );
 }
 
 function exclusionEntries(): Array<{ id: string; name: string }> {
   const entries = steam.value?.exclude_games;
   if (Array.isArray(entries)) {
     return entries
-    .map((entry) => {
-      if (typeof entry === 'string') return { id: entry, name: '' };
-      return { id: String(entry?.id ?? '').trim(), name: String(entry?.name ?? '').trim() };
-    })
-    .filter((entry) => entry.id || entry.name);
+      .map((entry) => {
+        if (typeof entry === 'string') return { id: entry, name: '' };
+        return { id: String(entry?.id ?? '').trim(), name: String(entry?.name ?? '').trim() };
+      })
+      .filter((entry) => entry.id || entry.name);
   }
   // Older status responses only exposed an exclusion count. Preserve the
   // discovered per-game flags until the newer metadata field is available.
@@ -156,24 +193,94 @@ function exclusionEntries(): Array<{ id: string; name: string }> {
     .map((game) => ({ id: steamGameId(game), name: steamGameName(game) }));
 }
 
-function gameExcluded(game: SteamGame): boolean {
-  const id = steamGameId(game);
-  return game.excluded === true || exclusionEntries().some((entry) => entry.id === id);
+function resetSteamExclusionDraft(): void {
+  const ids = new Set(
+    exclusionEntries()
+      .map((entry) => entry.id)
+      .filter(Boolean),
+  );
+  steamExclusionOriginal.value = new Set(ids);
+  steamExclusionDraft.value = new Set(ids);
 }
+
+function gameExcluded(game: SteamGame): boolean {
+  return steamExclusionDraft.value.has(steamGameId(game));
+}
+
+const steamExcludedCount = computed(() => steamExclusionDraft.value.size);
+const steamExclusionsDirty = computed(() => {
+  const current = steamExclusionDraft.value;
+  const original = steamExclusionOriginal.value;
+  return current.size !== original.size || [...current].some((id) => !original.has(id));
+});
+
+const filteredSteamGames = computed(() => {
+  const query = steamGameSearch.value.trim().toLocaleLowerCase();
+  return [...steamGames.value]
+    .filter((game) => {
+      const excluded = gameExcluded(game);
+      if (steamGameFilter.value === 'included' && excluded) return false;
+      if (steamGameFilter.value === 'excluded' && !excluded) return false;
+      if (!query) return true;
+      return (
+        steamGameName(game).toLocaleLowerCase().includes(query) || steamGameId(game).includes(query)
+      );
+    })
+    .sort((left, right) => steamGameName(left).localeCompare(steamGameName(right)));
+});
+
+function setDraftExclusion(game: SteamGame, excluded: boolean): void {
+  const id = steamGameId(game);
+  if (!id) return;
+  const next = new Set(steamExclusionDraft.value);
+  if (excluded) next.add(id);
+  else next.delete(id);
+  steamExclusionDraft.value = next;
+}
+
+function setVisibleDraftExclusions(excluded: boolean): void {
+  const next = new Set(steamExclusionDraft.value);
+  for (const game of filteredSteamGames.value) {
+    const id = steamGameId(game);
+    if (!id) continue;
+    if (excluded) next.add(id);
+    else next.delete(id);
+  }
+  steamExclusionDraft.value = next;
+}
+
+function resetMangoDraft(): void {
+  const next = {
+    enabled: mangohud.value?.enabled === true,
+    provider: String(mangohud.value?.configured_provider || 'auto'),
+    fpsLimit: Number(mangohud.value?.fps_limit ?? 0),
+  };
+  mangoOriginal.value = { ...next };
+  mangoDraft.value = { ...next };
+}
+
+const mangoDirty = computed(
+  () =>
+    mangoDraft.value.enabled !== mangoOriginal.value.enabled ||
+    mangoDraft.value.provider !== mangoOriginal.value.provider ||
+    Number(mangoDraft.value.fpsLimit) !== Number(mangoOriginal.value.fpsLimit),
+);
 
 function steamAutoSyncEnabled(): boolean {
   return steam.value?.auto_sync !== false;
 }
 
 function steamRemoveUninstalledEnabled(): boolean {
-  return steam.value?.autosync_remove_uninstalled === true || steam.value?.remove_uninstalled === true;
+  return (
+    steam.value?.autosync_remove_uninstalled === true || steam.value?.remove_uninstalled === true
+  );
 }
 
 function steamIncludeToolsEnabled(): boolean {
   return steam.value?.include_tools === true;
 }
 
-async function loadSteamGames(): Promise<void> {
+async function loadSteamGames(resetDraft = true): Promise<void> {
   steamGamesLoading.value = true;
   steamGamesError.value = '';
   try {
@@ -183,8 +290,10 @@ async function loadSteamGames(): Promise<void> {
         ? (payload as { games?: unknown }).games
         : payload;
     steamGames.value = (Array.isArray(games) ? games : []).filter(
-      (game): game is SteamGame => Boolean(game) && typeof game === 'object' && !Array.isArray(game),
+      (game): game is SteamGame =>
+        Boolean(game) && typeof game === 'object' && !Array.isArray(game),
     );
+    if (resetDraft) resetSteamExclusionDraft();
   } catch (cause) {
     steamGames.value = [];
     steamGamesError.value = message(cause, t('ui.integrations.errors.steamGames'));
@@ -202,6 +311,9 @@ async function load(preserveNotice = false): Promise<void> {
   if (!system.metadata) await system.refreshHost();
 
   const steamResult = (await Promise.allSettled([apiGet<SteamStatus>('/api/steam/status')]))[0];
+  const mangoResult = isLinux.value
+    ? (await Promise.allSettled([apiGet<MangoHudStatus>('/api/frame-limiter/status')]))[0]
+    : undefined;
   const windowsResults = isWindows.value
     ? await Promise.allSettled([
         apiGet<PlayniteStatus>('/api/playnite/status'),
@@ -216,20 +328,38 @@ async function load(preserveNotice = false): Promise<void> {
   if (steamResult.status === 'fulfilled') steam.value = steamResult.value;
   else nextErrors.steam = message(steamResult.reason, t('ui.integrations.errors.steamStatus'));
 
+  if (mangoResult?.status === 'fulfilled') {
+    mangohud.value = mangoResult.value;
+    resetMangoDraft();
+  } else if (mangoResult) {
+    nextErrors.mangohud = message(mangoResult.reason, t('ui.integrations.errors.mangohudStatus'));
+  }
+
   if (playniteResult?.status === 'fulfilled') playnite.value = playniteResult.value;
-  else if (playniteResult) nextErrors.playnite = message(playniteResult.reason, t('ui.integrations.errors.playniteStatus'));
+  else if (playniteResult)
+    nextErrors.playnite = message(
+      playniteResult.reason,
+      t('ui.integrations.errors.playniteStatus'),
+    );
 
   if (rtssResult?.status === 'fulfilled') rtss.value = rtssResult.value;
-  else if (rtssResult) nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
+  else if (rtssResult)
+    nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
 
   if (losslessResult?.status === 'fulfilled') lossless.value = losslessResult.value;
-  else if (losslessResult) nextErrors.lossless = message(losslessResult.reason, t('ui.integrations.errors.losslessStatus'));
+  else if (losslessResult)
+    nextErrors.lossless = message(
+      losslessResult.reason,
+      t('ui.integrations.errors.losslessStatus'),
+    );
 
   if (vigemResult?.status === 'fulfilled') vigem.value = vigemResult.value;
-  else if (vigemResult) nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
+  else if (vigemResult)
+    nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
 
   if (vulkanResult?.status === 'fulfilled') vulkan.value = vulkanResult.value;
-  else if (vulkanResult) nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
+  else if (vulkanResult)
+    nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
 
   if (steamResult.status === 'fulfilled') await loadSteamGames();
 
@@ -309,8 +439,43 @@ function steamSummary(): IntegrationSummary {
     status,
     tone: enabled && value.available ? 'success' : enabled ? 'info' : 'neutral',
     details: [
-      value.game_count !== undefined ? t('ui.integrations.steam.gameCount', { count: value.game_count }) : '',
+      value.game_count !== undefined
+        ? t('ui.integrations.steam.gameCount', { count: value.game_count })
+        : '',
+      value.importable_game_count !== undefined
+        ? t('ui.integrations.steam.importableCount', { count: value.importable_game_count })
+        : '',
       value.forced ? t('ui.integrations.steam.linuxForced') : '',
+    ].filter(Boolean),
+  };
+}
+
+function mangoHudSummary(): IntegrationSummary {
+  const value = mangohud.value;
+  const name = t('ui.integrations.mangohud.name');
+  const description = t('ui.integrations.mangohud.description');
+  if (!isLinux.value) return unavailableSummary('mangohud', name, description);
+  if (!value) return failedSummary('mangohud', name, description);
+  const selected = value.configured_provider === 'auto' || value.configured_provider === 'mangohud';
+  const available = value.mangohud_available === true;
+  const enabled = value.enabled === true && selected;
+  return {
+    id: 'mangohud',
+    name,
+    description,
+    status: !available
+      ? t('ui.integrations.status.notDetected')
+      : enabled
+        ? t('_common.active')
+        : selected
+          ? t('ui.integrations.status.ready')
+          : t('_common.disabled'),
+    tone: !available ? 'warning' : enabled ? 'success' : selected ? 'info' : 'neutral',
+    details: [
+      value.fps_limit
+        ? t('ui.integrations.mangohud.fixedLimit', { fps: value.fps_limit })
+        : t('ui.integrations.mangohud.streamLimit'),
+      value.resolved_path || '',
     ].filter(Boolean),
   };
 }
@@ -322,14 +487,16 @@ function rtssSummary(): IntegrationSummary {
   if (!isWindows.value) return unavailableSummary('rtss', name, shortDescription);
   if (!value) return failedSummary('rtss', name, shortDescription);
   const ready = Boolean(value.path_exists && value.hooks_found);
-  const status = value.active_provider === 'rtss'
-    ? t('_common.active')
-    : ready
-      ? t('ui.integrations.status.ready')
-      : value.path_exists
-        ? t('ui.integrations.status.repairNeeded')
-        : t('ui.integrations.status.notDetected');
-  const tone: StatusTone = value.active_provider === 'rtss' || ready ? 'success' : value.enabled ? 'warning' : 'neutral';
+  const status =
+    value.active_provider === 'rtss'
+      ? t('_common.active')
+      : ready
+        ? t('ui.integrations.status.ready')
+        : value.path_exists
+          ? t('ui.integrations.status.repairNeeded')
+          : t('ui.integrations.status.notDetected');
+  const tone: StatusTone =
+    value.active_provider === 'rtss' || ready ? 'success' : value.enabled ? 'warning' : 'neutral';
   return {
     id: 'rtss',
     name,
@@ -367,7 +534,9 @@ function losslessSummary(): IntegrationSummary {
     description: t('ui.integrations.lossless.description'),
     status: labels[value.status ?? 'unavailable'] ?? t('config.lossless.status_unavailable'),
     tone: detected ? 'success' : problematic ? 'warning' : 'neutral',
-    details: [value.resolved_path || value.configured_path || value.suggested_path || ''].filter(Boolean),
+    details: [value.resolved_path || value.configured_path || value.suggested_path || ''].filter(
+      Boolean,
+    ),
   };
 }
 
@@ -398,7 +567,9 @@ function vigemSummary(): IntegrationSummary {
           : t('ui.integrations.status.notInstalled'),
     tone: compatible ? 'success' : notNeeded ? 'neutral' : 'warning',
     details: [
-      value.version ? t('ui.integrations.details.installedVersion', { version: value.version }) : '',
+      value.version
+        ? t('ui.integrations.details.installedVersion', { version: value.version })
+        : '',
       value.packaged_version
         ? t('ui.integrations.details.bundledVersion', { version: value.packaged_version })
         : '',
@@ -434,8 +605,19 @@ function vulkanSummary(): IntegrationSummary {
   };
 }
 
-function unavailableSummary(id: IntegrationId, name: string, description: string): IntegrationSummary {
-  return { id, name, description, status: t('ui.integrations.status.windowsOnly'), tone: 'neutral', details: [] };
+function unavailableSummary(
+  id: IntegrationId,
+  name: string,
+  description: string,
+): IntegrationSummary {
+  return {
+    id,
+    name,
+    description,
+    status: t('ui.integrations.status.windowsOnly'),
+    tone: 'neutral',
+    details: [],
+  };
 }
 
 function failedSummary(id: IntegrationId, name: string, description: string): IntegrationSummary {
@@ -449,14 +631,20 @@ function failedSummary(id: IntegrationId, name: string, description: string): In
   };
 }
 
-const summaries = computed(() => [
-  steamSummary(),
-  playniteSummary(),
-  rtssSummary(),
-  losslessSummary(),
-  vigemSummary(),
-  vulkanSummary(),
-]);
+const summaries = computed(() => {
+  if (isLinux.value) return [steamSummary(), mangoHudSummary()];
+  if (isWindows.value) {
+    return [
+      steamSummary(),
+      playniteSummary(),
+      rtssSummary(),
+      losslessSummary(),
+      vigemSummary(),
+      vulkanSummary(),
+    ];
+  }
+  return [steamSummary()];
+});
 
 const errorCount = computed(() => Object.keys(errors.value).length);
 
@@ -546,8 +734,11 @@ async function runConfirmedAction(): Promise<void> {
     notice.value = '';
     errors.value = {
       ...errors.value,
-      [action.startsWith('playnite') ? 'playnite' : action.startsWith('vigem') ? 'vigem' : 'vulkan']:
-        message(cause, t('ui.integrations.errors.actionFailed')),
+      [action.startsWith('playnite')
+        ? 'playnite'
+        : action.startsWith('vigem')
+          ? 'vigem'
+          : 'vulkan']: message(cause, t('ui.integrations.errors.actionFailed')),
     };
   } finally {
     actionBusy.value = false;
@@ -582,11 +773,15 @@ async function syncSteam(): Promise<void> {
   notice.value = '';
   try {
     const result = await apiPost<MutationResult>('/api/steam/force_sync', {});
-    if (result.status === false) throw new Error(result.error || t('ui.integrations.errors.steamSyncRejected'));
+    if (result.status === false)
+      throw new Error(result.error || t('ui.integrations.errors.steamSyncRejected'));
     notice.value = t('ui.integrations.notices.steamSynced');
     await load(true);
   } catch (cause) {
-    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.steamSyncFailed')) };
+    errors.value = {
+      ...errors.value,
+      steam: message(cause, t('ui.integrations.errors.steamSyncFailed')),
+    };
   } finally {
     syncing.value = false;
   }
@@ -599,44 +794,90 @@ async function setProviderEnabled(provider: 'steam' | 'playnite', enabled: boole
     notice.value = t('ui.integrations.notices.providerUpdated');
     await load(true);
   } catch (cause) {
-    errors.value = { ...errors.value, [provider]: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+    errors.value = {
+      ...errors.value,
+      [provider]: message(cause, t('ui.integrations.errors.providerUpdateFailed')),
+    };
   }
 }
 
-async function setSteamPolicy(key: 'steam_auto_sync' | 'steam_autosync_remove_uninstalled', value: boolean): Promise<void> {
+async function setSteamPolicy(
+  key: 'steam_auto_sync' | 'steam_autosync_remove_uninstalled',
+  value: boolean,
+): Promise<void> {
   try {
     await apiPatch('/api/config', { [key]: value });
+    if (steam.value) {
+      if (key === 'steam_auto_sync') steam.value.auto_sync = value;
+      else steam.value.autosync_remove_uninstalled = value;
+    }
     notice.value = t('ui.integrations.notices.providerUpdated');
-    await load(true);
   } catch (cause) {
-    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+    errors.value = {
+      ...errors.value,
+      steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')),
+    };
   }
 }
 
 async function setSteamIncludeTools(value: boolean): Promise<void> {
   try {
     await apiPatch('/api/config', { steam_include_tools: value });
+    if (steam.value) steam.value.include_tools = value;
     notice.value = t('ui.integrations.notices.providerUpdated');
-    await load(true);
+    await loadSteamGames(false);
   } catch (cause) {
-    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')) };
+    errors.value = {
+      ...errors.value,
+      steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')),
+    };
   }
 }
 
-async function setSteamExclusion(game: SteamGame, excluded: boolean): Promise<void> {
-  const id = steamGameId(game);
-  if (!id || steamExclusionBusy.value) return;
-  steamExclusionBusy.value = id;
+async function saveSteamExclusions(): Promise<void> {
+  if (!steamExclusionsDirty.value || steamExclusionsSaving.value) return;
+  steamExclusionsSaving.value = true;
   try {
-    const next = exclusionEntries().filter((entry) => entry.id !== id);
-    if (excluded) next.push({ id, name: steamGameName(game) });
+    const gamesById = new Map(steamGames.value.map((game) => [steamGameId(game), game]));
+    const next = [...steamExclusionDraft.value]
+      .map((id) => ({ id, name: gamesById.has(id) ? steamGameName(gamesById.get(id)!) : '' }))
+      .sort(
+        (left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+      );
     await apiPatch('/api/config', { steam_exclude_games: next });
     if (steam.value) steam.value.exclude_games = next;
+    steamExclusionOriginal.value = new Set(steamExclusionDraft.value);
     notice.value = t('ui.integrations.notices.exclusionsUpdated');
   } catch (cause) {
-    errors.value = { ...errors.value, steam: message(cause, t('ui.integrations.errors.exclusionsUpdateFailed')) };
+    errors.value = {
+      ...errors.value,
+      steam: message(cause, t('ui.integrations.errors.exclusionsUpdateFailed')),
+    };
   } finally {
-    steamExclusionBusy.value = null;
+    steamExclusionsSaving.value = false;
+  }
+}
+
+async function saveMangoSettings(): Promise<void> {
+  if (!mangoDirty.value || mangoSaving.value) return;
+  mangoSaving.value = true;
+  try {
+    const fps = Math.max(0, Math.min(1000, Number(mangoDraft.value.fpsLimit) || 0));
+    mangoDraft.value.fpsLimit = fps;
+    await apiPatch('/api/config', {
+      frame_limiter_enable: mangoDraft.value.enabled,
+      frame_limiter_provider: mangoDraft.value.provider,
+      frame_limiter_fps_limit: fps,
+    });
+    notice.value = t('ui.integrations.notices.mangohudUpdated');
+    await load(true);
+  } catch (cause) {
+    errors.value = {
+      ...errors.value,
+      mangohud: message(cause, t('ui.integrations.errors.mangohudUpdateFailed')),
+    };
+  } finally {
+    mangoSaving.value = false;
   }
 }
 
@@ -645,10 +886,7 @@ onMounted(() => void load());
 
 <template>
   <div class="page page--narrow integrations-page">
-    <PageHeader
-      :title="t('ui.integrations.title')"
-      :description="t('ui.integrations.description')"
-    >
+    <PageHeader :title="t('ui.integrations.title')" :description="t('ui.integrations.description')">
       <template #actions>
         <AppButton
           icon="refresh"
@@ -669,11 +907,7 @@ onMounted(() => void load());
     >
       {{ notice }}
     </InlineAlert>
-    <InlineAlert
-      v-if="errorCount"
-      tone="warning"
-      :title="t('ui.integrations.checksFailed')"
-    >
+    <InlineAlert v-if="errorCount" tone="warning" :title="t('ui.integrations.checksFailed')">
       {{
         t(
           errorCount === 1
@@ -684,11 +918,7 @@ onMounted(() => void load());
       }}
     </InlineAlert>
 
-    <div
-      v-if="loading"
-      class="integration-list"
-      :aria-label="t('ui.integrations.loadingStatus')"
-    >
+    <div v-if="loading" class="integration-list" :aria-label="t('ui.integrations.loadingStatus')">
       <LoadingSkeleton v-for="index in 5" :key="index" variant="block" height="112px" />
     </div>
 
@@ -704,7 +934,16 @@ onMounted(() => void load());
         :aria-labelledby="`integration-${summary.id}`"
       >
         <span class="integration-row__icon" aria-hidden="true">
-          <UiIcon :name="summary.id === 'vigem' || summary.id === 'steam' ? 'gamepad' : summary.id === 'playnite' ? 'library' : 'integrations'" :size="20" />
+          <UiIcon
+            :name="
+              summary.id === 'vigem' || summary.id === 'steam'
+                ? 'gamepad'
+                : summary.id === 'playnite'
+                  ? 'library'
+                  : 'integrations'
+            "
+            :size="20"
+          />
         </span>
         <div class="integration-row__main">
           <div class="integration-row__title">
@@ -715,69 +954,302 @@ onMounted(() => void load());
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>
-          <div v-if="summary.id === 'steam'" class="steam-policy" aria-labelledby="steam-policy-heading">
-            <h3 id="steam-policy-heading">{{ t('ui.integrations.steam.policyTitle') }}</h3>
-            <label class="steam-policy__toggle">
-              <input
-                type="checkbox"
-                :checked="steamAutoSyncEnabled()"
-                @change="setSteamPolicy('steam_auto_sync', ($event.target as HTMLInputElement).checked)"
-              />
-              <span>
-                <strong>{{ t('ui.integrations.steam.autoSync') }}</strong>
-                <small>{{ t('ui.integrations.steam.autoSyncDescription') }}</small>
-              </span>
-            </label>
-            <label class="steam-policy__toggle">
-              <input
-                type="checkbox"
-                :checked="steamRemoveUninstalledEnabled()"
-                @change="setSteamPolicy('steam_autosync_remove_uninstalled', ($event.target as HTMLInputElement).checked)"
-              />
-              <span>
-                <strong>{{ t('ui.integrations.steam.removeUninstalled') }}</strong>
-                <small>{{ t('ui.integrations.steam.removeUninstalledDescription') }}</small>
-              </span>
-            </label>
-            <label class="steam-policy__toggle steam-policy__toggle--advanced">
-              <input
-                type="checkbox"
-                :checked="steamIncludeToolsEnabled()"
-                @change="setSteamIncludeTools(($event.target as HTMLInputElement).checked)"
-              />
-              <span>
-                <strong>{{ t('ui.integrations.steam.includeTools') }}</strong>
-                <small>{{ t('ui.integrations.steam.includeToolsDescription') }}</small>
-              </span>
-            </label>
-            <div class="steam-policy__exclusions">
-              <strong>{{ t('ui.integrations.steam.exclusionsTitle') }}</strong>
-              <small>{{ t('ui.integrations.steam.exclusionsDescription') }}</small>
-              <p v-if="steamGamesLoading" class="steam-policy__notice">{{ t('ui.integrations.steam.loadingGames') }}</p>
-              <p v-else-if="steamGamesError" class="steam-policy__notice steam-policy__notice--error">{{ steamGamesError }}</p>
-              <p v-else-if="!steamGames.length" class="steam-policy__notice">{{ t('ui.integrations.steam.noGames') }}</p>
-              <label v-for="game in steamGames" v-else :key="steamGameId(game)" class="steam-policy__game">
-                <input
-                  type="checkbox"
-                  :checked="gameExcluded(game)"
-                  :disabled="steamExclusionBusy === steamGameId(game)"
-                  :aria-label="t('ui.integrations.steam.excludeGame', { name: steamGameName(game) })"
-                  @change="setSteamExclusion(game, ($event.target as HTMLInputElement).checked)"
-                />
-                <span>{{ steamGameName(game) }}</span>
-                <small v-if="game.filtered && !game.excluded" class="steam-policy__game-filtered">
-                  {{ t('ui.integrations.steam.filteredTool') }}
-                </small>
-                <code>{{ steamGameId(game) }}</code>
-              </label>
+          <section
+            v-if="summary.id === 'steam'"
+            class="integration-settings"
+            aria-labelledby="steam-policy-heading"
+          >
+            <div class="integration-settings__heading">
+              <div>
+                <h3 id="steam-policy-heading">{{ t('ui.integrations.steam.policyTitle') }}</h3>
+                <small>{{ t('ui.integrations.steam.policyDescription') }}</small>
+              </div>
             </div>
-          </div>
+
+            <div class="integration-settings__rows">
+              <SettingRow
+                :label="t('ui.integrations.steam.autoSync')"
+                :description="t('ui.integrations.steam.autoSyncDescription')"
+                control-id="steam-auto-sync"
+              >
+                <input
+                  id="steam-auto-sync"
+                  class="integration-switch"
+                  type="checkbox"
+                  :checked="steamAutoSyncEnabled()"
+                  @change="
+                    setSteamPolicy('steam_auto_sync', ($event.target as HTMLInputElement).checked)
+                  "
+                />
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.steam.removeUninstalled')"
+                :description="t('ui.integrations.steam.removeUninstalledDescription')"
+                control-id="steam-remove-uninstalled"
+              >
+                <input
+                  id="steam-remove-uninstalled"
+                  class="integration-switch"
+                  type="checkbox"
+                  :checked="steamRemoveUninstalledEnabled()"
+                  @change="
+                    setSteamPolicy(
+                      'steam_autosync_remove_uninstalled',
+                      ($event.target as HTMLInputElement).checked,
+                    )
+                  "
+                />
+              </SettingRow>
+              <details class="integration-advanced">
+                <summary>{{ t('ui.integrations.steam.advancedSettings') }}</summary>
+                <SettingRow
+                  :label="t('ui.integrations.steam.includeTools')"
+                  :description="t('ui.integrations.steam.includeToolsDescription')"
+                  control-id="steam-include-tools"
+                >
+                  <input
+                    id="steam-include-tools"
+                    class="integration-switch"
+                    type="checkbox"
+                    :checked="steamIncludeToolsEnabled()"
+                    @change="setSteamIncludeTools(($event.target as HTMLInputElement).checked)"
+                  />
+                </SettingRow>
+              </details>
+            </div>
+
+            <div class="game-manager" aria-labelledby="steam-exclusions-heading">
+              <div class="game-manager__heading">
+                <div>
+                  <h4 id="steam-exclusions-heading">
+                    {{ t('ui.integrations.steam.exclusionsTitle') }}
+                  </h4>
+                  <small>{{ t('ui.integrations.steam.exclusionsDescription') }}</small>
+                </div>
+                <StatusBadge
+                  :label="t('ui.integrations.steam.excludedCount', { count: steamExcludedCount })"
+                  :tone="steamExclusionsDirty ? 'warning' : 'neutral'"
+                  compact
+                />
+              </div>
+              <div class="game-manager__toolbar">
+                <label class="game-manager__search">
+                  <span class="vs-sr-only">{{ t('ui.integrations.steam.searchGames') }}</span>
+                  <UiIcon name="search" :size="16" aria-hidden="true" />
+                  <input
+                    v-model="steamGameSearch"
+                    type="search"
+                    :placeholder="t('ui.integrations.steam.searchGames')"
+                  />
+                </label>
+                <label class="game-manager__filter">
+                  <span class="vs-sr-only">{{ t('ui.integrations.steam.filterGames') }}</span>
+                  <select v-model="steamGameFilter">
+                    <option value="all">{{ t('ui.integrations.steam.filters.all') }}</option>
+                    <option value="included">
+                      {{ t('ui.integrations.steam.filters.included') }}
+                    </option>
+                    <option value="excluded">
+                      {{ t('ui.integrations.steam.filters.excluded') }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <div class="game-manager__bulk">
+                <span>{{
+                  t('ui.integrations.steam.resultCount', { count: filteredSteamGames.length })
+                }}</span>
+                <div>
+                  <AppButton
+                    :label="t('ui.integrations.steam.includeResults')"
+                    variant="tertiary"
+                    size="compact"
+                    :disabled="!filteredSteamGames.length"
+                    @click="setVisibleDraftExclusions(false)"
+                  />
+                  <AppButton
+                    :label="t('ui.integrations.steam.excludeResults')"
+                    variant="tertiary"
+                    size="compact"
+                    :disabled="!filteredSteamGames.length"
+                    @click="setVisibleDraftExclusions(true)"
+                  />
+                </div>
+              </div>
+              <p v-if="steamGamesLoading" class="game-manager__notice">
+                {{ t('ui.integrations.steam.loadingGames') }}
+              </p>
+              <p
+                v-else-if="steamGamesError"
+                class="game-manager__notice game-manager__notice--error"
+              >
+                {{ steamGamesError }}
+              </p>
+              <p v-else-if="!steamGames.length" class="game-manager__notice">
+                {{ t('ui.integrations.steam.noGames') }}
+              </p>
+              <p v-else-if="!filteredSteamGames.length" class="game-manager__notice">
+                {{ t('ui.integrations.steam.noMatchingGames') }}
+              </p>
+              <div v-else class="game-manager__list">
+                <div
+                  v-for="game in filteredSteamGames"
+                  :key="steamGameId(game)"
+                  class="game-manager__game"
+                >
+                  <span class="game-manager__game-icon" aria-hidden="true"
+                    ><UiIcon name="gamepad" :size="16"
+                  /></span>
+                  <span class="game-manager__game-copy">
+                    <strong>{{ steamGameName(game) }}</strong>
+                    <small>
+                      {{ t('ui.integrations.steam.appId', { id: steamGameId(game) }) }}
+                      <template v-if="game.filtered">
+                        · {{ t('ui.integrations.steam.filteredTool') }}</template
+                      >
+                    </small>
+                  </span>
+                  <StatusBadge
+                    :label="
+                      gameExcluded(game)
+                        ? t('ui.integrations.steam.excluded')
+                        : t('ui.integrations.steam.included')
+                    "
+                    :tone="gameExcluded(game) ? 'neutral' : 'success'"
+                    compact
+                  />
+                  <AppButton
+                    :label="
+                      gameExcluded(game)
+                        ? t('ui.integrations.steam.include')
+                        : t('ui.integrations.steam.exclude')
+                    "
+                    variant="tertiary"
+                    size="compact"
+                    @click="setDraftExclusion(game, !gameExcluded(game))"
+                  />
+                </div>
+              </div>
+              <div class="game-manager__footer">
+                <span v-if="steamExclusionsDirty">{{ t('ui.integrations.unsavedChanges') }}</span>
+                <span v-else>{{ t('ui.integrations.saved') }}</span>
+                <div>
+                  <AppButton
+                    :label="t('_common.cancel')"
+                    variant="tertiary"
+                    size="compact"
+                    :disabled="!steamExclusionsDirty"
+                    @click="resetSteamExclusionDraft"
+                  />
+                  <AppButton
+                    :label="t('_common.apply')"
+                    variant="primary"
+                    size="compact"
+                    :busy="steamExclusionsSaving"
+                    :busy-label="t('ui.integrations.applying')"
+                    :disabled="!steamExclusionsDirty"
+                    @click="saveSteamExclusions"
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section
+            v-else-if="summary.id === 'mangohud'"
+            class="integration-settings"
+            aria-labelledby="mangohud-settings-heading"
+          >
+            <div class="integration-settings__heading">
+              <div>
+                <h3 id="mangohud-settings-heading">
+                  {{ t('ui.integrations.mangohud.settingsTitle') }}
+                </h3>
+                <small>{{ t('ui.integrations.mangohud.settingsDescription') }}</small>
+              </div>
+            </div>
+            <div class="integration-settings__rows">
+              <SettingRow
+                :label="t('ui.integrations.mangohud.alwaysLimit')"
+                :description="t('ui.integrations.mangohud.alwaysLimitDescription')"
+                control-id="mangohud-enabled"
+              >
+                <input
+                  id="mangohud-enabled"
+                  v-model="mangoDraft.enabled"
+                  class="integration-switch"
+                  type="checkbox"
+                />
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.mangohud.provider')"
+                :description="t('ui.integrations.mangohud.providerDescription')"
+                control-id="mangohud-provider"
+              >
+                <select
+                  id="mangohud-provider"
+                  v-model="mangoDraft.provider"
+                  class="integration-control"
+                >
+                  <option value="auto">{{ t('ui.integrations.mangohud.providerAuto') }}</option>
+                  <option value="mangohud">
+                    {{ t('ui.integrations.mangohud.providerMangoHud') }}
+                  </option>
+                  <option value="none">{{ t('ui.integrations.mangohud.providerNone') }}</option>
+                </select>
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.mangohud.fpsLimit')"
+                :description="t('ui.integrations.mangohud.fpsLimitDescription')"
+                control-id="mangohud-fps-limit"
+              >
+                <div class="integration-number">
+                  <input
+                    id="mangohud-fps-limit"
+                    v-model.number="mangoDraft.fpsLimit"
+                    class="integration-control"
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="0.001"
+                  />
+                  <span>FPS</span>
+                </div>
+              </SettingRow>
+            </div>
+            <div class="integration-settings__footer">
+              <span v-if="mangoDirty">{{ t('ui.integrations.unsavedChanges') }}</span>
+              <span v-else>{{ t('ui.integrations.saved') }}</span>
+              <div>
+                <AppButton
+                  :label="t('_common.cancel')"
+                  variant="tertiary"
+                  size="compact"
+                  :disabled="!mangoDirty"
+                  @click="resetMangoDraft"
+                />
+                <AppButton
+                  :label="t('_common.apply')"
+                  variant="primary"
+                  size="compact"
+                  :busy="mangoSaving"
+                  :busy-label="t('ui.integrations.applying')"
+                  :disabled="!mangoDirty"
+                  @click="saveMangoSettings"
+                />
+              </div>
+            </div>
+          </section>
         </div>
         <div v-if="summary.id === 'steam' || isWindows" class="integration-row__actions">
           <template v-if="summary.id === 'steam'">
             <AppButton
               v-if="!steam?.forced"
-              :label="steam?.enabled === false ? t('ui.integrations.actions.enable') : t('ui.integrations.actions.disable')"
+              :label="
+                steam?.enabled === false
+                  ? t('ui.integrations.actions.enable')
+                  : t('ui.integrations.actions.disable')
+              "
               variant="tertiary"
               size="compact"
               @click="setProviderEnabled('steam', steam?.enabled === false)"
@@ -795,14 +1267,25 @@ onMounted(() => void load());
           </template>
           <template v-else-if="summary.id === 'playnite'">
             <AppButton
-              :label="playnite?.enabled === false ? t('ui.integrations.actions.enable') : t('ui.integrations.actions.disable')"
+              :label="
+                playnite?.enabled === false
+                  ? t('ui.integrations.actions.enable')
+                  : t('ui.integrations.actions.disable')
+              "
               variant="tertiary"
               size="compact"
               @click="setProviderEnabled('playnite', playnite?.enabled === false)"
             />
             <AppButton
-              v-if="playnite?.enabled !== false && (playnite?.installed !== true || playnite?.update_available)"
-              :label="playnite?.update_available ? t('ui.integrations.actions.update') : t('ui.integrations.actions.install')"
+              v-if="
+                playnite?.enabled !== false &&
+                (playnite?.installed !== true || playnite?.update_available)
+              "
+              :label="
+                playnite?.update_available
+                  ? t('ui.integrations.actions.update')
+                  : t('ui.integrations.actions.install')
+              "
               variant="secondary"
               size="compact"
               @click="requestAction('playnite-install')"
@@ -829,7 +1312,11 @@ onMounted(() => void load());
           </template>
           <AppButton
             v-else-if="summary.id === 'vigem' && (!vigem?.installed || !vigem?.version_compatible)"
-            :label="vigem?.installed ? t('ui.integrations.actions.repair') : t('ui.integrations.actions.install')"
+            :label="
+              vigem?.installed
+                ? t('ui.integrations.actions.repair')
+                : t('ui.integrations.actions.install')
+            "
             variant="secondary"
             size="compact"
             @click="requestAction('vigem-install')"
@@ -935,69 +1422,235 @@ onMounted(() => void load());
   overflow-wrap: anywhere;
 }
 
-.steam-policy {
+.integration-settings {
   display: grid;
-  max-width: 42rem;
-  gap: var(--vs-space-8);
-  padding-top: var(--vs-space-8);
+  max-width: 52rem;
+  gap: var(--vs-space-16);
+  padding-top: var(--vs-space-16);
 }
 
-.steam-policy h3 {
+.integration-settings__heading,
+.game-manager__heading,
+.game-manager__footer,
+.integration-settings__footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vs-space-12);
+}
+
+.integration-settings h3,
+.integration-settings h4 {
   font-size: var(--vs-type-size-label);
 }
 
-.steam-policy__toggle,
-.steam-policy__game {
+.integration-settings small,
+.game-manager small {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.integration-settings__rows {
+  overflow: hidden;
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+}
+
+.integration-settings__rows :deep(.vs-setting-row) {
+  padding: var(--vs-space-12);
+}
+
+.integration-settings__rows :deep(.vs-setting-row + .vs-setting-row) {
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.integration-switch {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--vs-color-accent);
+}
+
+.integration-advanced {
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.integration-advanced summary {
+  padding: var(--vs-space-12);
+  color: var(--vs-color-text-secondary);
+  cursor: pointer;
+  font-size: var(--vs-type-size-metadata);
+  font-weight: 600;
+}
+
+.integration-advanced :deep(.vs-setting-row) {
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.integration-control,
+.game-manager input,
+.game-manager select {
+  min-height: 2.25rem;
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-surface);
+  color: var(--vs-color-text-primary);
+  padding: var(--vs-space-4) var(--vs-space-8);
+}
+
+.integration-control:focus-visible,
+.game-manager input:focus-visible,
+.game-manager select:focus-visible,
+.integration-advanced summary:focus-visible {
+  outline: var(--vs-focus-width) solid var(--vs-color-focus);
+  outline-offset: var(--vs-focus-offset);
+}
+
+.integration-number {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--vs-space-8);
 }
 
-.steam-policy__toggle input,
-.steam-policy__game input {
-  flex: 0 0 auto;
-  margin-top: 0.2rem;
+.integration-number input {
+  width: 8rem;
 }
 
-.steam-policy__toggle span,
-.steam-policy__exclusions {
+.integration-number span {
+  color: var(--vs-color-text-tertiary);
+  font-size: var(--vs-type-size-metadata);
+  font-weight: 600;
+}
+
+.game-manager {
+  display: grid;
+  overflow: hidden;
+  gap: 0;
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+}
+
+.game-manager__heading {
+  padding: var(--vs-space-12);
+  background: var(--vs-color-bg-subtle);
+}
+
+.game-manager__heading > div,
+.integration-settings__heading > div {
   display: grid;
   gap: var(--vs-space-2);
 }
 
-.steam-policy small {
-  color: var(--vs-color-text-secondary);
-  font-size: var(--vs-type-size-metadata);
+.game-manager__toolbar {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+  gap: var(--vs-space-8);
+  padding: var(--vs-space-12);
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
 }
 
-.steam-policy__exclusions {
-  gap: var(--vs-space-4);
-  padding-top: var(--vs-space-4);
-}
-
-.steam-policy__game {
+.game-manager__search {
+  display: flex;
   align-items: center;
-  padding: var(--vs-space-4) 0;
-}
-
-.steam-policy__game code {
-  margin-inline-start: auto;
+  gap: var(--vs-space-8);
+  min-height: 2.25rem;
+  padding-inline-start: var(--vs-space-8);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
   color: var(--vs-color-text-tertiary);
-  font-size: var(--vs-type-size-metadata);
 }
 
-.steam-policy__game-filtered {
-  color: var(--vs-color-text-tertiary);
-  font-style: italic;
+.game-manager__search input {
+  width: 100%;
+  min-height: 2rem;
+  padding-inline-start: 0;
+  border: 0;
+  outline: 0;
 }
 
-.steam-policy__notice {
+.game-manager__bulk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vs-space-8);
+  padding: var(--vs-space-4) var(--vs-space-12) var(--vs-space-8);
   color: var(--vs-color-text-secondary);
   font-size: var(--vs-type-size-metadata);
 }
 
-.steam-policy__notice--error {
+.game-manager__bulk > div,
+.game-manager__footer > div,
+.integration-settings__footer > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vs-space-4);
+}
+
+.game-manager__list {
+  display: grid;
+  overflow-y: auto;
+  max-height: 23rem;
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.game-manager__game {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--vs-space-8);
+  min-height: 3.5rem;
+  padding: var(--vs-space-8) var(--vs-space-12);
+}
+
+.game-manager__game + .game-manager__game {
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.game-manager__game-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+  color: var(--vs-color-text-secondary);
+}
+
+.game-manager__game-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--vs-space-2);
+}
+
+.game-manager__game-copy strong,
+.game-manager__game-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-manager__notice {
+  padding: var(--vs-space-16);
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.game-manager__notice--error {
   color: var(--vs-color-status-danger);
+}
+
+.game-manager__footer,
+.integration-settings__footer {
+  align-items: center;
+  padding: var(--vs-space-12);
+  border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-metadata);
+}
+
+.integration-settings__footer {
+  padding-inline: 0;
 }
 
 .integration-row__actions {
@@ -1024,6 +1677,10 @@ onMounted(() => void load());
     justify-content: flex-start;
     padding-inline-start: calc(2.5rem + var(--vs-space-16));
   }
+
+  .integration-settings {
+    max-width: none;
+  }
 }
 
 @media (max-width: 29.999rem) {
@@ -1037,6 +1694,37 @@ onMounted(() => void load());
 
   .integration-row__actions {
     padding-inline-start: 0;
+  }
+
+  .game-manager__toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .game-manager__filter select {
+    width: 100%;
+  }
+
+  .game-manager__bulk,
+  .game-manager__heading,
+  .game-manager__footer,
+  .integration-settings__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .game-manager__bulk > div,
+  .game-manager__footer > div,
+  .integration-settings__footer > div {
+    justify-content: flex-start;
+  }
+
+  .game-manager__game {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .game-manager__game > :deep(.vs-button) {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 }
 

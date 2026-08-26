@@ -512,7 +512,9 @@
       "errors": {
         "actionFailed": "The integration action failed.",
         "actionIncomplete": "The integration action did not complete.",
-        "losslessStatus": "Lossless Scaling status is unavailable.",
+    "losslessStatus": "Lossless Scaling status is unavailable.",
+    "mangohudStatus": "MangoHUD status is unavailable.",
+    "mangohudUpdateFailed": "Unable to update MangoHUD settings.",
         "playniteStatus": "Playnite status is unavailable.",
         "playniteSyncFailed": "Unable to synchronize Playnite.",
         "playniteSyncRejected": "Playnite did not accept the synchronization request.",
@@ -543,7 +545,8 @@
       "notices": {
         "playniteInstalled": "The Playnite extension was installed.",
         "playniteRemoved": "The Playnite extension was removed.",
-        "playniteSynced": "Playnite synchronization completed.",
+    "playniteSynced": "Playnite synchronization completed.",
+    "mangohudUpdated": "MangoHUD settings updated.",
         "providerUpdated": "Integration settings updated.",
         "exclusionsUpdated": "Steam game exclusions updated.",
         "steamSynced": "Steam synchronization completed.",
@@ -553,26 +556,63 @@
       "playnite": {
         "description": "Synchronizes installed games and metadata through the Vibepollo extension.",
         "shortDescription": "Library synchronization and launch integration."
-      },
-      "steam": {
+  },
+  "mangohud": {
+    "alwaysLimit": "Always limit rendered frames",
+    "alwaysLimitDescription": "Apply MangoHUD limiting to every game launched during a stream. Automatic virtual-screen pacing can still request MangoHUD when this is off.",
+    "description": "Linux frame limiting and pacing for Vulkan and OpenGL games.",
+    "fixedLimit": "Fixed limit: {fps} FPS",
+    "fpsLimit": "Frame-rate limit",
+    "fpsLimitDescription": "Use 0 to follow the client stream rate, or enter a fixed limit with up to three decimal places.",
+    "name": "MangoHUD",
+    "provider": "Limiter provider",
+    "providerAuto": "Automatic — use MangoHUD on Linux",
+    "providerDescription": "Automatic is recommended. None disables MangoHUD for both manual and automatic pacing policies.",
+    "providerMangoHud": "MangoHUD",
+    "providerNone": "None",
+    "settingsDescription": "Choose when Vibepollo injects MangoHUD and how its frame limit is calculated.",
+    "settingsTitle": "Frame-limiter settings",
+    "streamLimit": "Limit follows the client stream rate"
+  },
+  "steam": {
+    "advancedSettings": "Advanced discovery settings",
+    "appId": "Steam app {id}",
         "autoSync": "Synchronize installed games automatically",
         "autoSyncDescription": "Keep installed Steam games synchronized with the streaming library.",
         "description": "Discovers installed games from local Steam libraries.",
-        "excludeGame": "Exclude {name} from automatic synchronization",
+    "excludeGame": "Exclude {name} from automatic synchronization",
+    "exclude": "Exclude",
+    "excluded": "Excluded",
+    "excludedCount": "{count} excluded",
+    "excludeResults": "Exclude results",
         "exclusionsDescription": "Excluded games remain available for manual applications but are not added by Steam auto-sync.",
         "exclusionsTitle": "Excluded games",
-        "filteredTool": "Filtered by app type",
+    "filteredTool": "Filtered by app type",
+    "filterGames": "Filter games",
+    "filters": {
+      "all": "All games",
+      "excluded": "Excluded",
+      "included": "Included"
+    },
         "forced": "Enabled (Linux policy)",
         "gameCount": "{count} installed games",
-        "includeTools": "Advanced: include tools and runtimes",
-        "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
+    "includeTools": "Advanced: include tools and runtimes",
+    "includeToolsDescription": "Also import Proton runtimes, redistributables, DLC, and other non-game Steam app types.",
+    "include": "Include",
+    "included": "Included",
+    "includeResults": "Include results",
+    "importableCount": "{count} selected for synchronization",
         "loadingGames": "Loading discovered Steam games...",
         "linuxForced": "Steam is required on Linux.",
         "name": "Steam",
-        "noGames": "No Steam games were discovered.",
-        "policyTitle": "Synchronization policy",
+    "noGames": "No Steam games were discovered.",
+    "noMatchingGames": "No games match this search and filter.",
+    "policyDescription": "Control automatic library updates and advanced Steam discovery behavior.",
+    "policyTitle": "Synchronization policy",
         "removeUninstalled": "Remove uninstalled games automatically",
-        "removeUninstalledDescription": "Remove Steam-managed applications when their game is no longer installed.",
+    "removeUninstalledDescription": "Remove Steam-managed applications when their game is no longer installed.",
+    "resultCount": "{count} results",
+    "searchGames": "Search games or app IDs...",
         "unknownGame": "Steam game {id}"
       },
       "refreshing": "Refreshing",
@@ -596,8 +636,10 @@
         "updateRequired": "Update required",
         "windowsOnly": "Windows only"
       },
-      "syncing": "Syncing",
-      "title": "Integrations",
+  "syncing": "Syncing",
+  "saved": "All changes saved",
+  "title": "Integrations",
+  "unsavedChanges": "Unsaved changes",
       "updated": "Integration updated",
       "vigem": {
         "description": "Provides virtual Xbox and DualShock controllers to streamed applications.",
@@ -802,7 +844,7 @@
         "restartTitle": "Restart Vibepollo?",
         "revokeSessionDescription": "That browser will need to sign in again before it can manage this host.",
         "revokeSessionTitle": "Revoke {browser}?",
-        "terminateVirtualDisplayDescription": "Vibeshine will disengage automatic recovery, try to restore the physical display layout, remove every managed virtual display, and stop display watchdogs. Active streams using a virtual display will lose video.",
+        "terminateVirtualDisplayDescription": "Vibepollo will disengage automatic recovery, try to restore the physical display layout, remove every managed virtual display, and stop display watchdogs. Active streams using a virtual display will lose video.",
         "terminateVirtualDisplayTitle": "Terminate every virtual display?"
       },
       "crash": {
@@ -1436,7 +1478,7 @@
           "label": "Remove it when the client disconnects"
         },
         "remote_monitor_terminate_on_first_request": {
-          "description": "Moonlight needs Vibeshine to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
+          "description": "Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
           "label": "Terminate on the first request"
         },
         "remote_monitor_confirm_app_replacement": {
