@@ -4342,6 +4342,44 @@ their catalog.
 
 Default: `false`
 
+## Lutris Integration
+
+### lutris_enabled
+
+Enables local Lutris library discovery, synchronization, and launch support on
+Linux. Steam remains enabled independently and is authoritative for Steam games.
+
+Default: `true` on Linux
+
+### lutris_auto_sync
+
+Synchronizes installed Lutris games into `apps.json` when configuration is
+applied and checks the Lutris database every 30 seconds.
+
+Default: `true`
+
+### lutris_autosync_remove_uninstalled
+
+Removes Lutris-managed applications when their installed record disappears.
+Manual, Steam-managed, and Playnite-managed entries are preserved.
+
+Default: `true`
+
+### lutris_exclude_games
+
+JSON array of Lutris numeric game IDs, or objects containing `id` and optional
+`name`, to exclude from synchronization. A legacy comma-separated list is also
+accepted.
+
+### lutris_include_steam
+
+Includes Lutris records backed by Steam. This is disabled by default because
+the direct Steam provider has richer metadata and lifecycle information. If
+enabled, a direct Steam entry with the same Steam app ID wins, so duplicate
+catalog entries are not created.
+
+Default: `false`
+
 ## Playnite Integration
 
 ### playnite_enabled

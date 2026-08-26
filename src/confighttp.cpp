@@ -605,6 +605,13 @@ namespace confighttp {
   void postSteamForceSync(resp_https_t response, req_https_t request);
   void postSteamLaunch(resp_https_t response, req_https_t request);
 
+#ifdef __linux__
+  void getLutrisStatus(resp_https_t response, req_https_t request);
+  void getLutrisGames(resp_https_t response, req_https_t request);
+  void postLutrisForceSync(resp_https_t response, req_https_t request);
+  void postLutrisLaunch(resp_https_t response, req_https_t request);
+#endif
+
 #ifdef _WIN32
   // Forward declarations for Playnite handlers implemented in confighttp_playnite.cpp
   void getPlayniteStatus(std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> request);
@@ -3093,6 +3100,7 @@ namespace confighttp {
     };
     output_tree["providers"]["steam"] = true;
 #if defined(__linux__)
+    output_tree["providers"]["lutris"] = true;
     output_tree["providers"]["mangohud"] = true;
     output_tree["virtual_display"] = {
       {"capable", platf::linux_private_display::capable()},
@@ -6064,6 +6072,12 @@ namespace confighttp {
     register_api_route("^/api/steam/games$", "GET", getSteamGames);
     register_api_route("^/api/steam/force_sync$", "POST", postSteamForceSync);
     register_api_route("^/api/steam/launch$", "POST", postSteamLaunch);
+#ifdef __linux__
+    register_api_route("^/api/lutris/status$", "GET", getLutrisStatus);
+    register_api_route("^/api/lutris/games$", "GET", getLutrisGames);
+    register_api_route("^/api/lutris/force_sync$", "POST", postLutrisForceSync);
+    register_api_route("^/api/lutris/launch$", "POST", postLutrisLaunch);
+#endif
 #ifdef _WIN32
     register_api_route("^/api/playnite/status$", "GET", getPlayniteStatus);
     register_api_route("^/api/rtss/status$", "GET", getRtssStatus);

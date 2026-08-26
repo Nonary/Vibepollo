@@ -37,6 +37,7 @@
 #include "config.h"
 #include "config_key.h"
 #include "config_playnite.h"
+#include "config_lutris.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "config_steam.h"
@@ -2243,6 +2244,9 @@ namespace config {
     // Provider settings are cross-platform. Playnite remains Windows-only,
     // while Steam's parser enforces the Linux Steam-only policy.
     config::apply_steam(vars);
+#ifdef __linux__
+    config::apply_lutris(vars);
+#endif
 #ifdef _WIN32
     config::apply_playnite(vars);
 #endif

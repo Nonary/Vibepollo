@@ -136,6 +136,10 @@ namespace proc {
     // as JSON strings for compatibility with older app entries.
     std::string steam_id;
     std::string steam_install_dir;
+    // Lutris also launches through a short-lived broker. Its game directory
+    // lets the shared process tracker own the real Wine/native process.
+    std::string lutris_id;
+    std::string lutris_directory;
     // When present, this app should be launched via Playnite instead of direct cmd.
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
