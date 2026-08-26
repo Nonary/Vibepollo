@@ -385,6 +385,16 @@ sunshine_register_component(NAME test_component_steam_process_tracker TEST_SOURC
 sunshine_register_component(NAME test_component_steam_auto_sync TEST_SOURCE test_steam_auto_sync.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_auto_sync_policy.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_integration.cpp")
+sunshine_register_component(NAME test_component_config_lutris TEST_SOURCE test_config_lutris.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_lutris.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_lutris_integration TEST_SOURCE test_lutris_integration.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_integration.cpp"
+    LINK_LIBRARIES ${SQLITE3_LIBRARIES})
+sunshine_register_component(NAME test_component_lutris_sync TEST_SOURCE test_lutris_sync.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_sync_policy.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/lutris_integration.cpp"
+    LINK_LIBRARIES nlohmann_json::nlohmann_json ${SQLITE3_LIBRARIES})
 sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/test_file_handler.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/file_handler_core.cpp")
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp

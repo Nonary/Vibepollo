@@ -35,6 +35,9 @@
 #include "session_history.h"
 #include "state_storage.h"
 #include "steam_auto_sync.h"
+#ifdef __linux__
+  #include "lutris_auto_sync.h"
+#endif
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include <shobjidl.h>
@@ -580,6 +583,12 @@ int main(int argc, char *argv[]) {
   auto steam_autosync_guard = util::fail_guard([]() {
     platf::steam::autosync::stop();
   });
+#ifdef __linux__
+  platf::lutris::autosync::start();
+  auto lutris_autosync_guard = util::fail_guard([]() {
+    platf::lutris::autosync::stop();
+  });
+#endif
 
 #ifdef _WIN32
   // Reconcile the Vulkan HDR implicit-layer registration with the configured preference. This makes
@@ -889,6 +898,10 @@ int main(int argc, char *argv[]) {
   configThread.join();
   rtspThread.join();
 
+#ifdef __linux__
+  platf::lutris::autosync::stop();
+  lutris_autosync_guard.disable();
+#endif
   platf::steam::autosync::stop();
   steam_autosync_guard.disable();
 
