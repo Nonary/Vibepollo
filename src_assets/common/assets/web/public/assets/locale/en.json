@@ -173,7 +173,7 @@
       "use_virtual_display": "Use Virtual Display",
       "kind_label": "Frame Generation Kind",
       "mode_none": "None",
-      "kind_hint": "None keeps Vibepollo out of the loop, Game Provided trusts in-game frame generation, Lossless Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch.",
+      "kind_hint": "None keeps Vibepollo out of the loop, Game Provided trusts in-game frame generation, Lossless Scaling wraps LSFG, and NVIDIA Smooth Motion configures the driver each launch. On Linux, Steam games also need NVPRESENT_ENABLE_SMOOTH_MOTION=1 %command% in Steam Launch Options because a running Steam client cannot inherit Vibepollo's launch environment.",
       "lossless_title": "Lossless Scaling Frame Generation",
       "lossless_subtitle": "Use Vibepollo's tuned profile or your Lossless Scaling defaults, then fine-tune the runtime targets.",
       "reset_profile": "Reset to Profile Defaults",

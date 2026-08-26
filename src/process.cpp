@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -74,6 +75,7 @@
   #include <Psapi.h>
 #elif defined(__linux__)
   #include "platform/linux/mangohud_policy.h"
+  #include "platform/linux/smooth_motion_policy.h"
 #endif
 #include "httpcommon.h"
 #include "nvhttp.h"
@@ -230,6 +232,42 @@ namespace proc {
       }
       return "lossless-scaling";
     }
+
+#ifdef __linux__
+    bool nvidia_present_layer_installed() {
+      static const bool installed = []() {
+        constexpr std::array<std::string_view, 3> manifest_directories {
+          "/etc/vulkan/implicit_layer.d",
+          "/usr/local/share/vulkan/implicit_layer.d",
+          "/usr/share/vulkan/implicit_layer.d",
+        };
+        for (const auto directory : manifest_directories) {
+          std::error_code ec;
+          for (const auto &entry : std::filesystem::directory_iterator(directory, ec)) {
+            if (ec) {
+              break;
+            }
+            if (!entry.is_regular_file(ec) || entry.path().extension() != ".json") {
+              continue;
+            }
+            std::ifstream manifest(entry.path());
+            std::string contents(
+              (std::istreambuf_iterator<char>(manifest)),
+              std::istreambuf_iterator<char>()
+            );
+            if (
+              contents.find("VK_LAYER_NV_present") != std::string::npos &&
+              contents.find("libnvidia-present") != std::string::npos
+            ) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }();
+      return installed;
+    }
+#endif
 
     struct lossless_profile_defaults_t {
       bool performance_mode;
@@ -1667,6 +1705,28 @@ namespace proc {
       mangohud_stream_policy,
       config::frame_limiter.fps_limit_millihz
     );
+    const auto smooth_motion_policy = platf::smooth_motion::make_launch_policy(
+      _app.frame_generation_enabled,
+      _app.frame_generation_provider,
+      mangohud_policy.enabled
+    );
+    _env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = smooth_motion_policy.enabled ? "1" : "";
+    _env["NVPRESENT_QUEUE_FAMILY"] = smooth_motion_policy.use_graphics_queue ? "1" : "";
+    if (smooth_motion_policy.enabled) {
+      BOOST_LOG(info) << "NVIDIA Smooth Motion enabled for the application launch.";
+      if (!nvidia_present_layer_installed()) {
+        BOOST_LOG(error)
+          << "NVIDIA Smooth Motion was selected, but the VK_LAYER_NV_present implicit Vulkan layer "
+             "was not found. Install a current NVIDIA Linux driver before launching this app.";
+      }
+      if (!_app.steam_id.empty()) {
+        BOOST_LOG(warning)
+          << "NVIDIA Smooth Motion was selected for Steam app " << _app.steam_id
+          << ", but an already-running Steam client does not inherit the URI launcher's environment. "
+             "Add 'NVPRESENT_ENABLE_SMOOTH_MOTION=1 %command%' to this game's Steam Launch Options "
+             "to guarantee activation.";
+      }
+    }
     const auto existing_preload = _env["LD_PRELOAD"].to_string();
     if (mangohud_policy.enabled) {
       if (bp::search_path("mangohud").empty()) {
