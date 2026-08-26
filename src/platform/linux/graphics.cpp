@@ -3,7 +3,9 @@
  * @brief Definitions for graphics related functions.
  */
 // standard includes
+#include <atomic>
 #include <fcntl.h>
+#include <limits>
 
 // local includes
 #include "graphics.h"
@@ -15,6 +17,9 @@
 #if !defined(__FreeBSD__)
   #include <sys/capability.h>
 #endif
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 
 extern "C" {
 #include <libavutil/pixdesc.h>
@@ -27,6 +32,14 @@ extern "C" {
 #define fourcc_code(a, b, c, d) ((std::uint32_t) (a) | ((std::uint32_t) (b) << 8) | ((std::uint32_t) (c) << 16) | ((std::uint32_t) (d) << 24))
 #define fourcc_mod_code(vendor, val) ((((uint64_t) vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
 #define DRM_FORMAT_MOD_INVALID fourcc_mod_code(0, ((1ULL << 56) - 1))
+#define DRM_FORMAT_ARGB8888 fourcc_code('A', 'R', '2', '4')
+#define DRM_FORMAT_XRGB8888 fourcc_code('X', 'R', '2', '4')
+#define DRM_FORMAT_ABGR8888 fourcc_code('A', 'B', '2', '4')
+#define DRM_FORMAT_XBGR8888 fourcc_code('X', 'B', '2', '4')
+#define DRM_FORMAT_ARGB2101010 fourcc_code('A', 'R', '3', '0')
+#define DRM_FORMAT_XRGB2101010 fourcc_code('X', 'R', '3', '0')
+#define DRM_FORMAT_ABGR2101010 fourcc_code('A', 'B', '3', '0')
+#define DRM_FORMAT_XBGR2101010 fourcc_code('X', 'B', '3', '0')
 
 #if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
   #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/opengl"
@@ -614,11 +627,115 @@ namespace egl {
       return std::nullopt;
     }
     gl::egl_image_target_texture_2d()(GL_TEXTURE_2D, rgb->xrgb8);
-
+    const auto import_error = gl::ctx.GetError();
     gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
 
-    gl_drain_errors;
+    if (import_error != GL_NO_ERROR) {
+      static std::atomic_bool warned {false};
+      if (!warned.exchange(true, std::memory_order_relaxed)) {
+        BOOST_LOG(warning) << "GL rejected imported RGB DMA-BUF texture (fourcc="
+                           << util::hex(xrgb.fourcc).to_string_view() << ", error="
+                           << util::hex(import_error).to_string_view()
+                           << "); falling back to CPU upload.";
+      }
+      return std::nullopt;
+    }
 
+    return rgb;
+  }
+
+  std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
+    if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
+      return std::nullopt;
+    }
+
+    GLenum internal_format;
+    GLenum external_format;
+    GLenum external_type;
+    switch (xrgb.fourcc) {
+      case DRM_FORMAT_ARGB8888:
+      case DRM_FORMAT_XRGB8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_BGRA;
+        external_type = GL_UNSIGNED_BYTE;
+        break;
+      case DRM_FORMAT_ABGR8888:
+      case DRM_FORMAT_XBGR8888:
+        internal_format = GL_RGBA8;
+        external_format = GL_RGBA;
+        external_type = GL_UNSIGNED_BYTE;
+        break;
+      case DRM_FORMAT_ARGB2101010:
+      case DRM_FORMAT_XRGB2101010:
+        internal_format = GL_RGB10_A2;
+        external_format = GL_BGRA;
+        external_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        break;
+      case DRM_FORMAT_ABGR2101010:
+      case DRM_FORMAT_XBGR2101010:
+        internal_format = GL_RGB10_A2;
+        external_format = GL_RGBA;
+        external_type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        break;
+      default:
+        BOOST_LOG(error) << "CPU DMA-BUF upload does not support fourcc "
+                         << util::hex(xrgb.fourcc).to_string_view();
+        return std::nullopt;
+    }
+
+    const auto row_bytes = static_cast<std::size_t>(xrgb.pitches[0]);
+    const auto height = static_cast<std::size_t>(xrgb.height);
+    const auto offset = static_cast<std::size_t>(xrgb.offsets[0]);
+    if (height > std::numeric_limits<std::size_t>::max() / row_bytes || offset > std::numeric_limits<std::size_t>::max() - row_bytes * height) {
+      return std::nullopt;
+    }
+    const auto mapped_size = offset + row_bytes * height;
+    void *mapped = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, xrgb.fds[0], 0);
+    if (mapped == MAP_FAILED) {
+      BOOST_LOG(error) << "Couldn't map RGB DMA-BUF for CPU upload: " << strerror(errno);
+      return std::nullopt;
+    }
+
+    dma_buf_sync sync {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+    (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+    auto cleanup = util::fail_guard([&]() {
+      sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+      (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+      munmap(mapped, mapped_size);
+      gl::ctx.PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+      gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
+    });
+
+    rgb_t rgb {
+      egl_display,
+      EGL_NO_IMAGE,
+      gl::tex_t::make(1)
+    };
+    gl::ctx.BindTexture(GL_TEXTURE_2D, rgb->tex[0]);
+    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, internal_format, xrgb.width, xrgb.height);
+    gl::ctx.PixelStorei(GL_UNPACK_ROW_LENGTH, xrgb.pitches[0] / sizeof(std::uint32_t));
+    gl::ctx.TexSubImage2D(
+      GL_TEXTURE_2D,
+      0,
+      0,
+      0,
+      xrgb.width,
+      xrgb.height,
+      external_format,
+      external_type,
+      static_cast<const std::uint8_t *>(mapped) + offset
+    );
+    const auto upload_error = gl::ctx.GetError();
+    if (upload_error != GL_NO_ERROR) {
+      BOOST_LOG(error) << "CPU DMA-BUF texture upload failed: "
+                       << util::hex(upload_error).to_string_view();
+      return std::nullopt;
+    }
+
+    static std::atomic_bool warned {false};
+    if (!warned.exchange(true, std::memory_order_relaxed)) {
+      BOOST_LOG(warning) << "Using CPU DMA-BUF upload fallback for cross-device KMS capture.";
+    }
     return rgb;
   }
 

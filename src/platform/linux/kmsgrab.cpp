@@ -1361,7 +1361,10 @@ namespace platf {
         auto rgb_opt = egl::import_source(display.get(), sd);
 
         if (!rgb_opt) {
-          return capture_e::error;
+          rgb_opt = egl::upload_source(display.get(), sd);
+          if (!rgb_opt) {
+            return capture_e::error;
+          }
         }
 
         auto &rgb = *rgb_opt;

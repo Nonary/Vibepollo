@@ -253,6 +253,13 @@ namespace egl {
       const surface_descriptor_t &xrgb
     );
 
+  /** Upload a linear DMA-BUF through the CPU when cross-device EGL import fails. */
+  std::optional<rgb_t>
+    upload_source(
+      display_t::pointer egl_display,
+      const surface_descriptor_t &xrgb
+    );
+
   rgb_t create_blank(platf::img_t &img);
 
   std::optional<nv12_t> import_target(
