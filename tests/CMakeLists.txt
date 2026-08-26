@@ -508,6 +508,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-drm-contract.py"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm")
         set_tests_properties(test_component_linux_vibeshine_drm_contract PROPERTIES LABELS "component")
+        add_test(
+            NAME test_component_linux_kwin_gpu_bridge_contract
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-kwin-gpu-bridge-contract.py"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}")
+        set_tests_properties(test_component_linux_kwin_gpu_bridge_contract PROPERTIES LABELS "component")
     else()
         message(WARNING "python3 was not found; skipping the Vibeshine DRM source contract test")
     endif()

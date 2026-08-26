@@ -81,6 +81,35 @@ namespace cuda {
 
   using registered_resource_t = util::safe_ptr<CUgraphicsResource_st, unregisterResource>;
 
+  class context_guard_t {
+  public:
+    explicit context_guard_t(CUcontext context) {
+      if (context && cdf->cuCtxPushCurrent(context) == CUDA_SUCCESS) {
+        active_ = true;
+      } else {
+        BOOST_LOG(error) << "Couldn't make CUDA interop context current.";
+      }
+    }
+
+    context_guard_t(const context_guard_t &) = delete;
+    context_guard_t &operator=(const context_guard_t &) = delete;
+
+    ~context_guard_t() {
+      if (!active_) {
+        return;
+      }
+      CUcontext popped {};
+      CU_CHECK_IGNORE(cdf->cuCtxPopCurrent(&popped), "Couldn't restore CUDA context");
+    }
+
+    explicit operator bool() const noexcept {
+      return active_;
+    }
+
+  private:
+    bool active_ {false};
+  };
+
   class img_t: public platf::img_t {
   public:
     tex_t tex;
@@ -276,6 +305,33 @@ namespace cuda {
 
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {
   public:
+    ~gl_cuda_vram_t() override {
+      if (!y_res && !uv_res) {
+        return;
+      }
+
+      const auto raw_context = std::get<1>(ctx.el);
+      if (eglGetCurrentContext() != raw_context) {
+        // Encoder probes can destroy this object from a different thread while
+        // the worker still owns the GL context. EGL forbids stealing it; the
+        // CUDA/EGL context teardown will reclaim its registered resources.
+        (void) y_res.release();
+        (void) uv_res.release();
+        return;
+      }
+
+      // NVIDIA requires both the registering OpenGL context and its CUDA
+      // interop context to be current while resources are unregistered.
+      context_guard_t guard {cuda_context};
+      if (guard) {
+        y_res.reset();
+        uv_res.reset();
+      } else {
+        (void) y_res.release();
+        (void) uv_res.release();
+      }
+    }
+
     /**
      * @brief Initialize the GL->CUDA encoding device.
      * @param in_width Width of captured frames.
@@ -359,6 +415,11 @@ namespace cuda {
       this->nv12 = std::move(*nv12_opt);
 
       auto cuda_ctx = (AVCUDADeviceContext *) hw_frames_ctx->device_ctx->hwctx;
+      cuda_context = cuda_ctx->cuda_ctx;
+      context_guard_t context_guard {cuda_context};
+      if (!context_guard) {
+        return -1;
+      }
 
       stream = make_stream();
       if (!stream) {
@@ -460,6 +521,7 @@ namespace cuda {
 
     registered_resource_t y_res;
     registered_resource_t uv_res;
+    CUcontext cuda_context {};
 
     int offset_x;
     int offset_y;

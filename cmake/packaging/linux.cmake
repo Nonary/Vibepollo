@@ -31,6 +31,7 @@ else()
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 FILES_MATCHING
                 PATTERN "*.c"
+                PATTERN "*.mod.c" EXCLUDE
                 PATTERN "*.h"
                 PATTERN "*.py"
                 PATTERN "Makefile"
@@ -71,8 +72,8 @@ set(CPACK_FREEBSD_PACKAGE_MAINTAINER "${CPACK_PACKAGE_VENDOR}")
 set(CPACK_FREEBSD_PACKAGE_ORIGIN "misc/${CPACK_PACKAGE_NAME}")
 set(CPACK_FREEBSD_PACKAGE_LICENSE "GPLv3")
 
-# Native package lifecycle hooks build the HDR module on a best-effort basis.
-# The system service retries on boot and can fall back to upstream VKMS.
+# Native package lifecycle hooks build the managed-display module on a
+# best-effort basis. The system service retries the custom module on boot.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
             "${CMAKE_CURRENT_BINARY_DIR}/postinst;${CMAKE_CURRENT_BINARY_DIR}/prerm")

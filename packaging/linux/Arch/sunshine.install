@@ -17,7 +17,7 @@ post_install() {
   do_udev_reload
   modprobe uhid
   /usr/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
+    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
 }
 
 post_upgrade() {
@@ -25,7 +25,7 @@ post_upgrade() {
   do_udev_reload
   modprobe uhid
   /usr/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
+    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
 }
 
 pre_remove() {

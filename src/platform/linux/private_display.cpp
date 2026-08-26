@@ -212,20 +212,6 @@ namespace platf::linux_private_display {
         }
         result.push_back(filename.substr(separator + 1));
       }
-      if (result.empty()) {
-        // The broker owns one exact configfs pool and is authoritative for the
-        // stock-VKMS SDR fallback, whose sysfs ancestry is not distinguishable
-        // from an unrelated VKMS device. Never infer fallback ownership from a
-        // generic driver/name match; accept only connectors the broker recognizes.
-        // Skip these socket roundtrips when the Vibeshine driver already gave
-        // us an unambiguous sysfs identity.
-        for (int index = 1; index <= 4; ++index) {
-          const auto candidate = "Virtual-" + std::to_string(index);
-          if (broker_connected(candidate).has_value()) {
-            result.push_back(candidate);
-          }
-        }
-      }
       std::sort(result.begin(), result.end());
       result.erase(std::unique(result.begin(), result.end()), result.end());
       return result;
@@ -277,7 +263,7 @@ namespace platf::linux_private_display {
       std::error_code error;
       const std::filesystem::path drm_class {"/sys/class/drm"};
       const auto suffix = "-" + name;
-      std::vector<std::filesystem::path> fallback_candidates;
+      std::vector<std::filesystem::path> matching_connectors;
       for (std::filesystem::directory_iterator it {drm_class, error}, end; !error && it != end; it.increment(error)) {
         const auto filename = it->path().filename().string();
         if (!filename.ends_with(suffix)) {
@@ -293,41 +279,17 @@ namespace platf::linux_private_display {
           return it->path().string();
         }
         error.clear();
-        fallback_candidates.push_back(it->path());
+        matching_connectors.push_back(it->path());
       }
 
       // A unique physical connector needs no broker ownership check. The broker
       // deliberately recognizes only Vibeshine's Virtual-N pool, so querying it
       // for HDMI/DP connectors both produces a false error and prevents restore
       // verification from observing an already-active physical output.
-      if (fallback_candidates.size() == 1 && !name.starts_with("Virtual-")) {
-        return fallback_candidates.front().string();
+      if (matching_connectors.size() == 1 && !name.starts_with("Virtual-")) {
+        return matching_connectors.front().string();
       }
-
-      // The upstream VKMS fallback has no Vibeshine-specific sysfs ancestry.
-      // Broker recognition establishes ownership, then the exact four-output
-      // pool shape selects its DRM card. Refuse ambiguity instead of reading an
-      // unrelated card's same-suffix connector.
-      if (!broker_connected(name).has_value()) {
-        return {};
-      }
-      std::vector<std::filesystem::path> pool_candidates;
-      for (const auto &candidate : fallback_candidates) {
-        const auto filename = candidate.filename().string();
-        const auto card_name = filename.substr(0, filename.size() - suffix.size());
-        bool complete_pool = true;
-        for (int index = 1; index <= 4; ++index) {
-          complete_pool = complete_pool && std::filesystem::exists(
-            drm_class / (card_name + "-Virtual-" + std::to_string(index)),
-            error
-          );
-          error.clear();
-        }
-        if (complete_pool) {
-          pool_candidates.push_back(candidate);
-        }
-      }
-      return pool_candidates.size() == 1 ? pool_candidates.front().string() : std::string {};
+      return {};
     }
 
     bool connector_is_connected(const std::string &name) {
@@ -513,7 +475,25 @@ namespace platf::linux_private_display {
               return false;
             }
             const auto saved_mode = saved.value("currentModeId", std::string {});
-            return saved_mode.empty() || output->value("currentModeId", std::string {}) == saved_mode;
+            const bool exact_mode_id = saved_mode.empty() ||
+              output->value("currentModeId", std::string {}) == saved_mode;
+            const auto saved_size = saved.value("size", json::object());
+            const auto current_size = output->value("size", json::object());
+            const bool equivalent_mode =
+              saved_size.value("width", 0) == current_size.value("width", 0) &&
+              saved_size.value("height", 0) == current_size.value("height", 0) &&
+              std::abs(output_refresh(saved) - output_refresh(*output)) < 0.2;
+            if (!exact_mode_id && !equivalent_mode) {
+              return false;
+            }
+
+            const auto saved_position = saved.value("pos", json::object());
+            const auto current_position = output->value("pos", json::object());
+            return std::abs(saved.value("scale", 1.0) - output->value("scale", 1.0)) < 0.01 &&
+              saved_position.value("x", 0) == current_position.value("x", 0) &&
+              saved_position.value("y", 0) == current_position.value("y", 0) &&
+              saved.value("priority", 0) == output->value("priority", 0) &&
+              (!saved.contains("hdr") || saved.value("hdr", false) == output->value("hdr", false));
           });
           if (active) {
             return true;
@@ -1368,14 +1348,16 @@ namespace platf::linux_private_display {
       return false;
     }
     const auto arguments = restore_arguments(*manager.snapshot, *current);
-    if (!execute_configuration(arguments.activate, "restore activation")) {
+    // Apply retirement and activation as one KScreen transaction. Activating
+    // every saved output before retiring the private output can exceed the
+    // compositor's max-active-output limit and can never reach verification.
+    auto restore = arguments.deactivate;
+    restore.insert(restore.end(), arguments.activate.begin(), arguments.activate.end());
+    if (!execute_configuration(restore, "topology restore")) {
       return false;
     }
     if (!wait_for_snapshot_activation(*manager.snapshot)) {
       BOOST_LOG(error) << "Linux private display: timed out activating the saved output topology.";
-      return false;
-    }
-    if (!execute_configuration(arguments.deactivate, "restore retirement")) {
       return false;
     }
     manager.snapshot.reset();

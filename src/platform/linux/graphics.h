@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <array>
 #include <optional>
 #include <string_view>
 
@@ -242,6 +243,7 @@ namespace egl {
     std::uint64_t modifier;
     std::uint32_t pitches[4];
     std::uint32_t offsets[4];
+    bool direct_import_required {};
   };
 
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display);
@@ -253,7 +255,7 @@ namespace egl {
       const surface_descriptor_t &xrgb
     );
 
-  /** Upload a linear DMA-BUF through the CPU when cross-device EGL import fails. */
+  /** Upload a linear DMA-BUF through the CPU for explicitly compatible capture sources. */
   std::optional<rgb_t>
     upload_source(
       display_t::pointer egl_display,

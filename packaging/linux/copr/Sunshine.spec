@@ -347,7 +347,7 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
   fi
 
   %{_prefix}/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine HDR DRM installation failed; upstream VKMS fallback remains available."
+    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
 fi
@@ -364,12 +364,15 @@ fi
 %caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
+%{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
+%{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
 
 # Versioned DKMS/direct-build source tree
 /usr/src/vibeshine-drm-*
 
 # Systemd unit files for user services
 %{_userunitdir}/*.service
+%{_userunitdir}/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
 
 # Privileged virtual-display provisioning service
 %{_unitdir}/vibeshine-drm-setup.service

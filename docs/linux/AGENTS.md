@@ -79,9 +79,9 @@ The managed outputs advertise a deterministic HDR10 EDID with BT.2020, PQ/static
 8-16 bits per component, and 10-bit RGB plane formats. KDE Plasma/KWin and `kscreen-doctor` manage
 their modes, layout, and HDR state. Vibeshine routes managed HDR capture through direct DRM/KMS so
 the 10-bit scanout reaches VAAPI or NVENC; KWin ScreenCast remains recommended for SDR capture. If
-the custom module cannot build or load, the helper falls back to stock VKMS. That
-fallback keeps private SDR streaming available but does not advertise HDR. Secure Boot requires a
-trusted module signature.
+the custom module cannot build or load, managed virtual displays remain unavailable. The helper
+does not use stock VKMS because its CPU-backed scanout violates the managed-display latency
+contract. Secure Boot requires a trusted module signature.
 
 ### Reference-host forced-EDID setup
 

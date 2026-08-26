@@ -20,6 +20,7 @@
 // local includes
 #include "cuda.h"
 #include "graphics.h"
+#include "hdr_policy.h"
 #include "kmsgrab_selection.h"
 #include "src/config.h"
 #include "src/logging.h"
@@ -415,6 +416,11 @@ namespace platf {
         return ver && ver->name && selection::driver_supports_cuda_import(ver->name);
       }
 
+      bool requires_direct_import() {
+        version_t ver {drmGetVersion(fd.el)};
+        return ver && ver->name && selection::driver_requires_direct_import(ver->name);
+      }
+
       bool is_cursor(std::uint32_t plane_id) {
         auto props = plane_props(plane_id);
         for (auto &[prop, val] : props) {
@@ -509,7 +515,14 @@ namespace platf {
       file_t handleFD(std::uint32_t handle) {
         file_t fb_fd;
 
-        auto status = drmPrimeHandleToFD(fd.el, handle, 0 /* flags */, &fb_fd.el);
+        // For an imported GEM, DRM core deliberately returns
+        // obj->import_attach->dmabuf here rather than exporting a new
+        // shmem-backed object. Keep this PRIME step as the capture boundary:
+        // the encoder GPU receives the original producer's DMA-BUF and its
+        // modifier, preserving zero-copy NVIDIA scanout when EGL can import
+        // that modifier. CLOEXEC prevents the per-frame fd from escaping into
+        // child processes; it does not alter the underlying DMA-BUF object.
+        auto status = drmPrimeHandleToFD(fd.el, handle, DRM_CLOEXEC /* flags */, &fb_fd.el);
         if (status) {
           return {};
         }
@@ -818,6 +831,7 @@ namespace platf {
               }
             }
 
+            direct_import_required = card.requires_direct_import();
             this->card = std::move(card);
             goto break_loop;
           }
@@ -889,22 +903,22 @@ namespace platf {
           return false;
         }
 
-        // We only support Traditional Gamma SDR or SMPTE 2084 PQ HDR EOTFs.
-        // Print a warning if we encounter any others.
+        // HDR10 capture requires SMPTE ST 2084. Do not mislabel traditional
+        // gamma HDR or HLG scanout as PQ on the encoded stream.
         switch (raw_metadata->hdmi_metadata_type1.eotf) {
           case 0:  // HDMI_EOTF_TRADITIONAL_GAMMA_SDR
             return false;
           case 1:  // HDMI_EOTF_TRADITIONAL_GAMMA_HDR
             BOOST_LOG(warning) << "Unsupported HDR EOTF: Traditional Gamma"sv;
-            return true;
+            return false;
           case 2:  // HDMI_EOTF_SMPTE_ST2084
-            return true;
+            return linux_hdr::is_hdr10_eotf(raw_metadata->hdmi_metadata_type1.eotf);
           case 3:  // HDMI_EOTF_BT_2100_HLG
             BOOST_LOG(warning) << "Unsupported HDR EOTF: HLG"sv;
-            return true;
+            return false;
           default:
             BOOST_LOG(warning) << "Unsupported HDR EOTF: "sv << raw_metadata->hdmi_metadata_type1.eotf;
-            return true;
+            return false;
         }
       }
 
@@ -1128,6 +1142,12 @@ namespace platf {
         plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
         frame_timestamp = std::chrono::steady_clock::now();
 
+        // A disconnected output temporarily has no plane framebuffer. End this
+        // capture generation instead of retrying and logging at the frame rate.
+        if (!plane || plane->fb_id == 0) {
+          return capture_e::reinit;
+        }
+
         auto fb = card.fb(plane.get());
         if (!fb) {
           // This can happen if the display is being reconfigured while streaming
@@ -1166,6 +1186,7 @@ namespace platf {
         sd->height = fb->height;
         sd->modifier = fb->modifier;
         sd->fourcc = fb->pixel_format;
+        sd->direct_import_required = direct_import_required;
 
         if (
           fb->width != img_width ||
@@ -1223,6 +1244,7 @@ namespace platf {
 
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
+      bool direct_import_required {false};
       std::uint64_t crtc_gamma_lut_blob_id {};
       std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 

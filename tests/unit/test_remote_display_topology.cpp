@@ -129,6 +129,41 @@ TEST(RemoteDisplayTopology, PlatformCanDowngradeHdrBeforeApplyAndReadiness) {
   EXPECT_TRUE(coordinator.snapshot({})["nodes"][0]["mode"]["hdr"]);
 }
 
+TEST(RemoteDisplayTopology, PlatformModeFallbackDoesNotReplaceRetainedClientRequest) {
+  remote_display_topology::coordinator_t coordinator;
+  remote_display_topology::mode_t applied;
+  remote_display_topology::mode_t verified;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .resolve_mode = [](const auto &, auto &mode) {
+      mode.width = 2560;
+      mode.height = 1440;
+      mode.refresh_hz = 120;
+    },
+    .apply_composed_topology = [&applied](const auto &nodes) {
+      applied = nodes.front().configured_mode;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [&verified](const auto &, const auto &mode) {
+      verified = mode;
+      return std::optional<std::string> {"DP-1"};
+    },
+  });
+
+  ASSERT_TRUE(coordinator.activate_or_resume("mac", "Mac", {3024, 1890, 120, false}, 1).ready);
+  EXPECT_EQ(applied.width, 2560);
+  EXPECT_EQ(applied.height, 1440);
+  EXPECT_EQ(applied.refresh_hz, 120);
+  EXPECT_EQ(verified.width, 2560);
+  EXPECT_EQ(verified.height, 1440);
+
+  // A later reapply starts from the retained client request and resolves it
+  // again, rather than permanently replacing it with the platform fallback.
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(applied.width, 2560);
+  EXPECT_EQ(applied.height, 1440);
+}
+
 TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<remote_display_topology::node_t> composed;

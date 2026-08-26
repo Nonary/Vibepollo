@@ -59,6 +59,13 @@ TEST(LinuxHdrPolicy, PhysicalPipeWireSourceKeepsGenericMetadata) {
   EXPECT_EQ(metadata.min_display_luminance, 1);
 }
 
+TEST(LinuxHdrPolicy, KmsHdrAcceptsOnlyPqEotf) {
+  EXPECT_FALSE(hdr::is_hdr10_eotf(0));
+  EXPECT_FALSE(hdr::is_hdr10_eotf(1));
+  EXPECT_TRUE(hdr::is_hdr10_eotf(2));
+  EXPECT_FALSE(hdr::is_hdr10_eotf(3));
+}
+
 TEST(LinuxHdrPolicy, DisabledDisplayHdrPolicyNeverReenablesFromRawClientIntent) {
   const auto disabled_policy = hdr::resolve_output_state(std::nullopt, true, false);
   EXPECT_FALSE(disabled_policy.command.has_value());

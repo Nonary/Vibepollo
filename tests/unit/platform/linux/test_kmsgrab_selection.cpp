@@ -18,6 +18,9 @@ TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
   EXPECT_FALSE(selection::driver_supports_cuda_import("i915"));
   EXPECT_FALSE(selection::driver_supports_cuda_import(""));
   EXPECT_FALSE(selection::driver_is_nvidia("vibeshine_drm"));
+  EXPECT_TRUE(selection::driver_requires_direct_import("vibeshine_drm"));
+  EXPECT_FALSE(selection::driver_requires_direct_import("nvidia-drm"));
+  EXPECT_FALSE(selection::driver_requires_direct_import("vkms"));
 }
 
 TEST(KmsgrabSelection, ParsesOnlyCompleteUnsignedNumericAliases) {

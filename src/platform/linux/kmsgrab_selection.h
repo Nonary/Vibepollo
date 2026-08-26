@@ -23,12 +23,17 @@ namespace platf::kms::selection {
   /**
    * @brief Whether a KMS card's scanout DMA-BUFs can use the CUDA import path.
    *
-   * Vibeshine DRM is intentionally a display-only device. Its exported linear
-   * framebuffers were validated with cross-device import on NVIDIA, so it must
-   * not be rejected merely because its DRM driver is not nvidia-drm.
+   * Vibeshine DRM is intentionally a display-only device. It forwards the
+   * renderer GPU's imported DMA-BUF and modifier, so it must not be rejected
+   * merely because its DRM driver is not nvidia-drm. Capture treats this path
+   * as direct-import-only so a renderer-association regression fails closed.
    */
   inline bool driver_supports_cuda_import(std::string_view driver_name) {
     return driver_is_nvidia(driver_name) || driver_name == "vibeshine_drm";
+  }
+
+  inline bool driver_requires_direct_import(std::string_view driver_name) {
+    return driver_name == "vibeshine_drm";
   }
 
   struct monitor_t {

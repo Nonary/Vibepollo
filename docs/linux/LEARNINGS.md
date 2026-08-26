@@ -265,8 +265,8 @@ groups $USER | grep -E "input|video|render"
 > These outputs advertise HDR10 (BT.2020, PQ, and static HDR metadata) and expose 10-bit connector
 > and plane support. Managed HDR capture uses direct DRM/KMS so the 10-bit scanout reaches the
 > encoder; KWin ScreenCast remains the recommended SDR path. If the module cannot be built or
-> loaded, the helper falls back to stock VKMS; the private outputs still work in SDR, but HDR
-> requests are downgraded. Secure Boot requires a trusted module signature. The remainder of this
+> loaded, managed virtual displays remain unavailable rather than using CPU-backed stock VKMS.
+> Secure Boot requires a trusted module signature. The remainder of this
 > section documents the legacy forced-EDID method for a physical connector.
 
 ### Problem
