@@ -59,6 +59,10 @@ include(${CMAKE_MODULE_PATH}/prep/options.cmake)
 # initial prep
 include(${CMAKE_MODULE_PATH}/prep/init.cmake)
 
+# Resolve libvirtualdisplay before platform package templates consume its
+# driver-owned assets. The dependency target itself is added later.
+include(${CMAKE_MODULE_PATH}/dependencies/libvirtualdisplay_source.cmake)
+
 # configure special package files, such as sunshine.desktop, Flatpak manifest, Portfile , etc.
 include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)
 

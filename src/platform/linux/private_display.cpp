@@ -14,11 +14,12 @@
 #include "src/platform/common.h"
 #include "src/rtsp.h"
 
+#include <virtual_display/driver/linux_control_client.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
-#include <cstring>
 #include <display_device/json.h>
 #include <filesystem>
 #include <fstream>
@@ -26,19 +27,13 @@
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <poll.h>
 #include <set>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <thread>
-#include <unistd.h>
 
 namespace platf::linux_private_display {
   namespace {
     using json = nlohmann::json;
 
-    constexpr std::string_view broker_socket_path = "/run/vibeshine/vkms-control.sock";
-    constexpr auto broker_timeout = std::chrono::seconds {2};
     constexpr auto output_publication_timeout = std::chrono::seconds {3};
     constexpr auto output_verification_timeout = std::chrono::seconds {3};
 
@@ -60,133 +55,26 @@ namespace platf::linux_private_display {
       return value;
     }
 
-    bool wait_for_fd(const int fd, const short events, const std::chrono::steady_clock::time_point deadline) {
-      while (true) {
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (remaining <= std::chrono::milliseconds::zero()) {
-          return false;
-        }
-        pollfd descriptor {.fd = fd, .events = events};
-        const auto result = poll(&descriptor, 1, static_cast<int>(remaining.count()));
-        if (result > 0) {
-          if ((descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
-            return false;
-          }
-          // systemd's per-connection broker writes one line and exits. POLLIN
-          // may therefore arrive together with POLLHUP; recv() must be allowed
-          // to consume the queued reply before treating the close as failure.
-          return (descriptor.revents & events) != 0 ||
-                 (events == POLLIN && (descriptor.revents & POLLHUP) != 0);
-        }
-        if (result < 0 && errno == EINTR) {
-          continue;
-        }
-        return false;
-      }
-    }
-
-    std::optional<std::string> broker_request(const std::string_view command, const std::string_view output_name) {
-      if (output_name.empty() || output_name.contains('\n') || output_name.contains('\r') || output_name.contains(' ')) {
-        return std::nullopt;
-      }
-
-      const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-      if (fd < 0) {
-        BOOST_LOG(error) << "Linux private display: unable to create broker socket: " << std::strerror(errno);
-        return std::nullopt;
-      }
-      const auto close_fd = util::fail_guard([fd]() { close(fd); });
-
-      sockaddr_un address {};
-      address.sun_family = AF_UNIX;
-      if (broker_socket_path.size() >= sizeof(address.sun_path)) {
-        return std::nullopt;
-      }
-      std::memcpy(address.sun_path, broker_socket_path.data(), broker_socket_path.size());
-      address.sun_path[broker_socket_path.size()] = '\0';
-
-      const auto deadline = std::chrono::steady_clock::now() + broker_timeout;
-      if (connect(fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0) {
-        if (errno != EINPROGRESS || !wait_for_fd(fd, POLLOUT, deadline)) {
-          BOOST_LOG(error) << "Linux private display: unable to connect to " << broker_socket_path
-                           << ": " << std::strerror(errno);
-          return std::nullopt;
-        }
-        int socket_error = 0;
-        socklen_t socket_error_size = sizeof(socket_error);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_size) != 0 || socket_error != 0) {
-          BOOST_LOG(error) << "Linux private display: broker connection failed: "
-                           << std::strerror(socket_error != 0 ? socket_error : errno);
-          return std::nullopt;
-        }
-      }
-
-      const std::string request = std::string {command} + " " + std::string {output_name} + "\n";
-      std::size_t sent = 0;
-      while (sent < request.size()) {
-        if (!wait_for_fd(fd, POLLOUT, deadline)) {
-          BOOST_LOG(error) << "Linux private display: broker request timed out.";
-          return std::nullopt;
-        }
-        const auto count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
-        if (count > 0) {
-          sent += static_cast<std::size_t>(count);
-        } else if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
-          continue;
-        } else {
-          return std::nullopt;
-        }
-      }
-
-      std::string response;
-      response.reserve(96);
-      while (response.size() <= 128) {
-        if (!wait_for_fd(fd, POLLIN, deadline)) {
-          BOOST_LOG(error) << "Linux private display: broker response timed out.";
-          return std::nullopt;
-        }
-        char buffer[64];
-        const auto count = recv(fd, buffer, sizeof(buffer), 0);
-        if (count <= 0) {
-          return std::nullopt;
-        }
-        response.append(buffer, static_cast<std::size_t>(count));
-        if (const auto newline = response.find('\n'); newline != std::string::npos) {
-          if (newline + 1 != response.size() || response.find('\r') != std::string::npos) {
-            return std::nullopt;
-          }
-          response.resize(newline);
-          return response;
-        }
-      }
-      return std::nullopt;
-    }
-
     std::optional<bool> broker_connected(const std::string &output_name) {
-      const auto response = broker_request("status", output_name);
-      if (!response) {
+      static const virtual_display::driver::LinuxControlClient client;
+      const auto result = client.query_connector(output_name);
+      if (!result.ok()) {
+        BOOST_LOG(error) << "Linux private display: broker status failed for " << output_name
+                         << ": " << virtual_display::driver::to_string(result.status)
+                         << (result.detail.empty() ? std::string {} : " (" + result.detail + ")");
         return std::nullopt;
       }
-      if (*response == "STATUS connected " + output_name) {
-        return true;
-      }
-      if (*response == "STATUS disconnected " + output_name) {
-        return false;
-      }
-      BOOST_LOG(error) << "Linux private display: invalid broker status response: " << *response;
-      return std::nullopt;
+      return result.connected;
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
-      if (const auto current = broker_connected(output_name); current && *current == connected) {
-        return true;
-      }
-      const std::string_view verb = connected ? "connect" : "disconnect";
-      const auto response = broker_request(verb, output_name);
-      const auto expected = std::string {"OK "} + (connected ? "connected " : "disconnected ") + output_name;
-      if (!response || *response != expected) {
-        BOOST_LOG(error) << "Linux private display: broker rejected " << verb << " for " << output_name
-                         << (response ? ": " + *response : std::string {});
+      static const virtual_display::driver::LinuxControlClient client;
+      const auto result = client.set_connector(output_name, connected);
+      if (!result.ok()) {
+        BOOST_LOG(error) << "Linux private display: broker rejected "
+                         << (connected ? "connect" : "disconnect") << " for " << output_name
+                         << ": " << virtual_display::driver::to_string(result.status)
+                         << (result.detail.empty() ? std::string {} : " (" + result.detail + ")");
         return false;
       }
       return true;

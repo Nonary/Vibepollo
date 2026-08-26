@@ -259,6 +259,9 @@ groups $USER | grep -E "input|video|render"
 > then run `sudo systemctl enable --now vibeshine-vkms.service` to provision four dormant managed
 > private outputs. The privileged helper always remains under the fixed, root-owned
 > `/usr/libexec/vibeshine` path, independent of the application install prefix.
+> The reusable DRM source, installer, connector broker, and systemd templates are owned by the
+> `third-party/libvirtualdisplay` submodule. Vibeshine owns the package wiring and its
+> KScreen/session/capture policy; do not duplicate the driver under `packaging/linux`.
 > These outputs advertise HDR10 (BT.2020, PQ, and static HDR metadata) and expose 10-bit connector
 > and plane support. Managed HDR capture uses direct DRM/KMS so the 10-bit scanout reaches the
 > encoder; KWin ScreenCast remains the recommended SDR path. If the module cannot be built or

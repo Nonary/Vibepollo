@@ -24,10 +24,10 @@ else()
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         install(PROGRAMS
-                "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-vkms"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
-        install(DIRECTORY "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/"
+        install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 FILES_MATCHING
                 PATTERN "*.c"
@@ -36,7 +36,7 @@ else()
                 PATTERN "Makefile"
                 PATTERN "README*"
                 PATTERN "LICENSE*")
-        install(PROGRAMS "${CMAKE_SOURCE_DIR}/packaging/linux/vibeshine-drm/build-module"
+        install(PROGRAMS "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}")
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-dkms.conf"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"

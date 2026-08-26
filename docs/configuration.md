@@ -1234,6 +1234,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Linux-only list of DRM connector names reserved for private streaming displays.
             Separate names with commas, or provide a JSON string array. Leave this empty to
             auto-discover outputs created by the packaged <code>vibeshine-vkms.service</code>.
+            The Linux DRM driver, connector broker, and service assets are supplied by the
+            bundled <code>libvirtualdisplay</code> dependency.
             Explicit connector names are useful for a forced-EDID or hardware dummy output.
         </td>
     </tr>

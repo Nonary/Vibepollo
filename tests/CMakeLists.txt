@@ -449,20 +449,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
         add_test(
             NAME test_component_linux_vkms_setup
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibeshine-vkms.sh"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-vkms")
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-vkms.sh"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms")
         set_tests_properties(test_component_linux_vkms_setup PROPERTIES LABELS "component")
         add_test(
             NAME test_component_linux_vibeshine_drm_install
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibeshine-drm-install.sh"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-drm-install.in")
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-drm-install.sh"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-drm-install.in")
         set_tests_properties(test_component_linux_vibeshine_drm_install PROPERTIES LABELS "component")
         add_test(
             NAME test_component_linux_vibeshine_drm_build_module
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibeshine-drm-build-module.sh"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-drm/build-module")
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-drm-build-module.sh"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module")
         set_tests_properties(test_component_linux_vibeshine_drm_build_module PROPERTIES LABELS "component")
     else()
         message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")
@@ -473,8 +473,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
         add_test(
             NAME test_component_linux_vibeshine_drm_contract
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/tests/test-vibeshine-drm-contract.py"
-                "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibeshine-drm")
+                "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-drm-contract.py"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm")
         set_tests_properties(test_component_linux_vibeshine_drm_contract PROPERTIES LABELS "component")
     else()
         message(WARNING "python3 was not found; skipping the Vibeshine DRM source contract test")
