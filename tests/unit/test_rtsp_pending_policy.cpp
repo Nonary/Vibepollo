@@ -13,10 +13,26 @@ TEST(RtspPendingPolicy, MixedNatEncryptedFramingSelectsAuthenticatedRoute) {
 }
 
 TEST(RtspPendingPolicy, ProcesslessRemoteRolesKeepControlServerAlive) {
-  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, false, true));
+  using remote_session::role_e;
+  EXPECT_FALSE(rtsp_stream::pending_policy::game_session_requires_shutdown(false, role_e::monitor));
+  EXPECT_FALSE(rtsp_stream::pending_policy::game_session_requires_shutdown(false, role_e::input));
   EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, true, false));
-  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(true, false, false));
+}
+
+TEST(RtspPendingPolicy, EndedGameStopsWithoutTakingDownProcesslessRemoteRoles) {
+  using remote_session::role_e;
+  EXPECT_FALSE(rtsp_stream::pending_policy::game_session_requires_shutdown(true, role_e::game));
+  EXPECT_TRUE(rtsp_stream::pending_policy::game_session_requires_shutdown(false, role_e::game));
+
+  // A connected game cannot own its own lifetime after the app ends.
   EXPECT_FALSE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, false, false));
+
+  // A processless peer keeps the shared server alive while the ended game is
+  // removed selectively. A game awaiting its peer or draining after a local
+  // stop keeps one final control iteration for graceful cleanup.
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, true, false));
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(false, false, true));
+  EXPECT_TRUE(rtsp_stream::pending_policy::control_server_should_remain_alive(true, false, false));
 }
 
 TEST(RtspPendingPolicy, EndStreamSelectsEveryGameTransportButNoRemoteRole) {

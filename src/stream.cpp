@@ -1644,15 +1644,43 @@ namespace stream {
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     constexpr auto pending_peer_termination_grace = std::chrono::seconds(1);
     std::optional<std::chrono::steady_clock::time_point> process_terminated_since;
+
+    // Reuse the normal graceful termination packet when an ended game must be
+    // removed without taking down processless Remote Input/Monitor peers that
+    // share this control server.
+    std::uint32_t termination_reason = 0x80030023;
+    control_terminate_t termination_plaintext;
+    termination_plaintext.header.type = packetTypes[IDX_TERMINATION];
+    termination_plaintext.header.payloadLength = sizeof(termination_plaintext.ec);
+    termination_plaintext.ec = util::endian::big<uint32_t>(termination_reason);
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(termination_plaintext)) + crypto::cipher::tag_size>
+      termination_encrypted_payload;
+    auto send_termination = [&](session_t *session) {
+      if (!session->control.peer) {
+        return;
+      }
+      auto payload = encode_control(session, util::view(termination_plaintext), termination_encrypted_payload);
+      if (server->send(payload, session->control.peer)) {
+        TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+        BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
+      }
+    };
+
     while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
-      const bool process_running = proc::proc.running() != 0;
-      bool has_live_session = false;
+      // running() performs synchronous process cleanup when it observes an
+      // exited app. current_app_id() then gives the logical lifetime without
+      // mistaking lifecycle-gate contention for a terminal app exit.
+      (void) proc::proc.running();
+      const bool launch_or_startup_pending = rtsp_stream::has_pending_launch_or_startup();
+      const bool game_runtime_active = proc::proc.current_app_id() > 0 || launch_or_startup_pending;
+      bool has_processless_live_session = false;
+      bool has_game_session_pending_or_draining = false;
 
       {
         auto lg = server->_sessions.lock();
 
         auto now = std::chrono::steady_clock::now();
-        if (process_running) {
+        if (game_runtime_active) {
           process_terminated_since.reset();
         } else if (!process_terminated_since) {
           process_terminated_since = now;
@@ -1704,21 +1732,43 @@ namespace stream {
             continue;
           }
 
-          has_live_session = true;
+          const bool game_session_requires_shutdown =
+            rtsp_stream::pending_policy::game_session_requires_shutdown(
+              game_runtime_active,
+              session->remote_role
+            );
 
           // Remember if we have a session that's waiting for a peer to connect to the
           // control stream. This ensures the clients are properly notified even when
           // the app terminates before they finish connecting.
           if (!session->control.peer) {
-            if (!process_running && process_terminated_since &&
+            if (game_session_requires_shutdown && process_terminated_since &&
                 now - *process_terminated_since >= pending_peer_termination_grace) {
               BOOST_LOG(info) << "Stopping pending control session from ["sv << session->control.expected_peer_address
                               << "] because the app terminated before the peer connected."sv;
               session::stop(*session);
+              has_game_session_pending_or_draining = true;
               ++pos;
               continue;
             }
+            if (session->remote_role == remote_session::role_e::game) {
+              has_game_session_pending_or_draining = true;
+            } else {
+              has_processless_live_session = true;
+            }
           } else {
+            if (game_session_requires_shutdown) {
+              BOOST_LOG(info) << "Stopping game control session because the app terminated."sv;
+              send_termination(session);
+              session::stop(*session);
+              has_game_session_pending_or_draining = true;
+              ++pos;
+              continue;
+            }
+
+            if (session->remote_role != remote_session::role_e::game) {
+              has_processless_live_session = true;
+            }
             auto &feedback_queue = session->control.feedback_queue;
             while (feedback_queue->peek()) {
               auto feedback_msg = feedback_queue->pop();
@@ -1748,11 +1798,10 @@ namespace stream {
       // Remote Input and Remote Monitor deliberately have no configured app
       // process. Keep the shared control server alive across both the gap
       // before RTSP publishes the session and the complete live transport.
-      const bool launch_or_startup_pending = rtsp_stream::has_pending_launch_or_startup();
       if (!rtsp_stream::pending_policy::control_server_should_remain_alive(
-            process_running,
-            has_live_session,
-            launch_or_startup_pending
+            game_runtime_active,
+            has_processless_live_session,
+            has_game_session_pending_or_draining
           )) {
         BOOST_LOG(info) << "Process terminated"sv;
         break;
@@ -1763,29 +1812,12 @@ namespace stream {
 
     // Let all remaining connections know the server is shutting down
     // reason: graceful termination
-    std::uint32_t reason = 0x80030023;
-
-    control_terminate_t plaintext;
-    plaintext.header.type = packetTypes[IDX_TERMINATION];
-    plaintext.header.payloadLength = sizeof(plaintext.ec);
-    plaintext.ec = util::endian::big<uint32_t>(reason);
-
-    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
-      encrypted_payload;
-
     auto lg = server->_sessions.lock();
     for (auto pos = std::begin(*server->_sessions); pos != std::end(*server->_sessions); ++pos) {
       auto session = *pos;
 
-      // We may not have gotten far enough to have an ENet connection yet
-      if (session->control.peer) {
-        auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-
-        if (server->send(payload, session->control.peer)) {
-          TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-          BOOST_LOG(warning) << "Couldn't send termination code to ["sv << addr << ':' << port << ']';
-        }
-      }
+      // We may not have gotten far enough to have an ENet connection yet.
+      send_termination(session);
 
       session->shutdown_event->raise(true);
       session->controlEnd.raise(true);
