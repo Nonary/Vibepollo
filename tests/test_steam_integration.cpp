@@ -89,5 +89,13 @@ TEST(SteamDiscovery, IgnoresManifestWithoutInstalledDirectory) {
 TEST(SteamLaunch, RejectsZeroAndBuildsValidatedUri) {
   EXPECT_TRUE(launch_uri(480).ends_with("steam://rungameid/480"));
   EXPECT_TRUE(launch_uri(0).empty());
+  EXPECT_TRUE(launch_command(0).empty());
+#ifdef _WIN32
+  EXPECT_EQ(launch_command(480), "cmd /c start \"\" steam://rungameid/480");
+#elif defined(__APPLE__)
+  EXPECT_EQ(launch_command(480), "open steam://rungameid/480");
+#else
+  EXPECT_EQ(launch_command(480), "steam -applaunch 480");
+#endif
   EXPECT_FALSE(launch(0));
 }

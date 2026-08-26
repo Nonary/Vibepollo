@@ -59,6 +59,7 @@ namespace platf::steam {
 
   // Return a URI/argv-safe launch target after validating the app ID.
   std::string launch_uri(std::uint32_t app_id);
+  std::string launch_command(std::uint32_t app_id);
   bool launch(std::uint32_t app_id);
 
 }  // namespace platf::steam

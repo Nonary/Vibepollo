@@ -898,6 +898,29 @@ namespace egl {
     program[1].bind(color_matrix);
   }
 
+  void sws_t::apply_output_lut(const std::shared_ptr<const img_descriptor_t::gamma_lut_t> &lut, std::uint64_t serial) {
+    if (serial == output_lut_serial) {
+      return;
+    }
+
+    static constexpr std::array<std::array<std::uint16_t, 3>, 2> identity {{
+      {{0, 0, 0}},
+      {{65535, 65535, 65535}},
+    }};
+    const auto *data = identity.data();
+    auto width = static_cast<GLsizei>(identity.size());
+    if (lut && lut->size() >= 2) {
+      data = lut->data();
+      width = static_cast<GLsizei>(lut->size());
+    }
+
+    gl::ctx.ActiveTexture(GL_TEXTURE1);
+    gl::ctx.BindTexture(GL_TEXTURE_2D, output_lut[0]);
+    gl::ctx.TexImage2D(GL_TEXTURE_2D, 0, GL_RGB16, width, 1, 0, GL_RGB, GL_UNSIGNED_SHORT, data);
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
+    output_lut_serial = serial;
+  }
+
   std::optional<sws_t> sws_t::make(int in_width, int in_height, int out_width, int out_height, gl::tex_t &&tex) {
     sws_t sws;
 
@@ -1012,6 +1035,29 @@ namespace egl {
     sws.color_matrix = std::move(*color_matrix);
 
     sws.tex = std::move(tex);
+
+    sws.output_lut = gl::tex_t::make(1);
+    gl::ctx.ActiveTexture(GL_TEXTURE1);
+    gl::ctx.BindTexture(GL_TEXTURE_2D, sws.output_lut[0]);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl::ctx.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
+    sws.output_lut_serial = std::numeric_limits<std::uint64_t>::max();
+    sws.apply_output_lut({}, 0);
+
+    for (auto index = 0; index < 2; ++index) {
+      gl::ctx.UseProgram(sws.program[index].handle());
+      const auto image_location = gl::ctx.GetUniformLocation(sws.program[index].handle(), "image");
+      const auto lut_location = gl::ctx.GetUniformLocation(sws.program[index].handle(), "output_lut");
+      if (image_location < 0 || lut_location < 0) {
+        BOOST_LOG(error) << "Couldn't bind RGB conversion texture uniforms"sv;
+        return std::nullopt;
+      }
+      gl::ctx.Uniform1i(image_location, 0);
+      gl::ctx.Uniform1i(lut_location, 1);
+    }
 
     sws.cursor_framebuffer = gl::frame_buf_t::make(1);
     sws.cursor_framebuffer.bind(&sws.tex[0], &sws.tex[1]);
@@ -1141,6 +1187,7 @@ namespace egl {
   }
 
   int sws_t::convert(gl::frame_buf_t &fb) {
+    gl::ctx.ActiveTexture(GL_TEXTURE0);
     gl::ctx.BindTexture(GL_TEXTURE_2D, loaded_texture);
 
     GLenum attachments[] {

@@ -403,6 +403,7 @@ namespace cuda {
 
       // Perform the color conversion and scaling in GL
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
+      sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
       sws.convert(nv12->buf);
 
       auto fmt_desc = av_pix_fmt_desc_get(sw_format);
