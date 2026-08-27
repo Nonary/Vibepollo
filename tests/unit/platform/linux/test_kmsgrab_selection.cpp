@@ -102,6 +102,37 @@ TEST(KmsgrabSelection, RepeatedPendingChangesKeepTheirOriginalFallbackDeadline) 
   EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::timeout, true, true));
 }
 
+TEST(KmsgrabSelection, PendingPresentationUsesAHangDeadlineInsteadOfTheOldFallbackWindow) {
+  using namespace std::chrono_literals;
+  using response_e = platf::kms::pacing::presentation_response_e;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_latch_t latch;
+  const auto start = clock_t::time_point {1s};
+  latch.observe_response(response_e::changed, true, start);
+
+  EXPECT_FALSE(latch.pending_timed_out(start + 500ms, platf::kms::pacing::PRESENT_PENDING_HANG_TIMEOUT));
+  EXPECT_TRUE(latch.pending_timed_out(start + 5s, platf::kms::pacing::PRESENT_PENDING_HANG_TIMEOUT));
+}
+
+TEST(KmsgrabSelection, RequiredPresentationModeNeverEnablesFixedRateFallback) {
+  platf::kms::pacing::presentation_mode_t required_mode {true};
+  EXPECT_FALSE(required_mode.event_capture_enabled());
+  EXPECT_FALSE(required_mode.fixed_rate_allowed());
+
+  required_mode.activate();
+  EXPECT_TRUE(required_mode.event_capture_enabled());
+  EXPECT_FALSE(required_mode.fixed_rate_allowed());
+
+  required_mode.deactivate();
+  EXPECT_FALSE(required_mode.event_capture_enabled());
+  EXPECT_FALSE(required_mode.fixed_rate_allowed());
+
+  platf::kms::pacing::presentation_mode_t ordinary_kms;
+  EXPECT_FALSE(ordinary_kms.event_capture_enabled());
+  EXPECT_TRUE(ordinary_kms.fixed_rate_allowed());
+}
+
 TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {
   using namespace std::chrono_literals;
   using response_e = platf::kms::pacing::presentation_response_e;
@@ -163,11 +194,24 @@ TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
   EXPECT_FALSE(selection::driver_supports_cuda_import(""));
   EXPECT_FALSE(selection::driver_is_nvidia("vibeshine_drm"));
   EXPECT_TRUE(selection::driver_requires_direct_import("vibeshine_drm"));
-  EXPECT_TRUE(selection::driver_supports_presentation_events("vibeshine_drm"));
+  EXPECT_TRUE(selection::driver_requires_presentation_events("vibeshine_drm"));
   EXPECT_FALSE(selection::driver_requires_direct_import("nvidia-drm"));
-  EXPECT_FALSE(selection::driver_supports_presentation_events("nvidia-drm"));
+  EXPECT_FALSE(selection::driver_requires_presentation_events("nvidia-drm"));
   EXPECT_FALSE(selection::driver_requires_direct_import("vkms"));
-  EXPECT_FALSE(selection::driver_supports_presentation_events("vkms"));
+  EXPECT_FALSE(selection::driver_requires_presentation_events("vkms"));
+}
+
+TEST(KmsgrabSelection, RejectsMissingOrAmbiguousDriverIdentities) {
+  EXPECT_FALSE(selection::normalize_driver_name(nullptr, 0));
+  EXPECT_FALSE(selection::normalize_driver_name("", 0));
+
+  const char embedded_nul[] {'v', 'k', 'm', 's', '\0', 'x'};
+  EXPECT_FALSE(selection::normalize_driver_name(embedded_nul, sizeof(embedded_nul)));
+
+  const std::string oversized(selection::MAX_DRM_DRIVER_NAME_LENGTH + 1, 'x');
+  EXPECT_FALSE(selection::normalize_driver_name(oversized.data(), oversized.size()));
+
+  EXPECT_EQ(selection::normalize_driver_name("vibeshine_drm", 13), "vibeshine_drm");
 }
 
 TEST(KmsgrabSelection, ParsesOnlyCompleteUnsignedNumericAliases) {
