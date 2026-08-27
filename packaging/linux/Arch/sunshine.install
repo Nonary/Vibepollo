@@ -13,16 +13,22 @@ do_udev_reload() {
 }
 
 do_install_vibeshine_drm() {
-  if /usr/libexec/vibeshine/vibeshine-drm-install install; then
+  if /usr/libexec/vibeshine/vibeshine-drm-install install-package; then
     return 0
   else
     local install_rc=$?
   fi
-  if ((install_rc == 4)); then
-    echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
-  else
-    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
-  fi
+  case $install_rc in
+    4)
+      echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+      ;;
+    5)
+      echo "Vibeshine DRM authorization is queued. Reboot and approve the pending MOK confirmations once."
+      ;;
+    *)
+      echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+      ;;
+  esac
 }
 
 post_install() {

@@ -62,8 +62,12 @@ jobs:
             base-devel \
             cmake \
             cuda \
+            dkms \
             git \
-            namcap
+            kmod \
+            linux-headers \
+            namcap \
+            openssl
           pacman -Scc --noconfirm
 
       - name: Checkout
@@ -72,6 +76,66 @@ jobs:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
           submodules: recursive
+
+      - name: Compile Vibeshine DRM against Arch kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t kernel_build_dirs < <(
+            find /usr/lib/modules -mindepth 2 -maxdepth 2 -type d -name build -print | sort
+          )
+          if (( ${#kernel_build_dirs[@]} != 1 )); then
+            echo "::error::Expected exactly one Arch kernel header tree, found ${#kernel_build_dirs[@]}."
+            printf '%s\n' "${kernel_build_dirs[@]}" >&2
+            exit 1
+          fi
+
+          kernel_release="$(basename "$(dirname "${kernel_build_dirs[0]}")")"
+          module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
+          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
+          MAKEFLAGS="-j$(nproc)" \
+            "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
+          test -s "${module_build_dir}/vibeshine_drm.ko"
+
+          signing_key="${RUNNER_TEMP}/vibeshine-drm-mok.key"
+          signing_certificate="${RUNNER_TEMP}/vibeshine-drm-mok.pub"
+          openssl req -new -x509 -nodes -days 1 \
+            -subj '/CN=Vibeshine CI module signing key/' \
+            -newkey rsa:2048 -keyout "${signing_key}" \
+            -addext 'extendedKeyUsage=codeSigning' \
+            -outform DER -out "${signing_certificate}" >/dev/null 2>&1
+          "${kernel_build_dirs[0]}/scripts/sign-file" sha256 \
+            "${signing_key}" "${signing_certificate}" "${module_build_dir}/vibeshine_drm.ko"
+
+          certificate_serial="$(openssl x509 -inform DER -in "${signing_certificate}" -noout -serial)"
+          certificate_serial="${certificate_serial#serial=}"
+          module_sig_key="$(modinfo -F sig_key "${module_build_dir}/vibeshine_drm.ko")"
+          module_sig_key="${module_sig_key//:/}"
+          [[ "${module_sig_key^^}" == "${certificate_serial^^}" ]]
+          [[ "$(modinfo -F signer "${module_build_dir}/vibeshine_drm.ko")" == \
+             'Vibeshine CI module signing key' ]]
+
+          dkms_ci_version=0.0.1
+          dkms_source="/usr/src/vibeshine-drm-${dkms_ci_version}"
+          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${dkms_source}"
+          sed "s/@PROJECT_VERSION_NUMERIC@/${dkms_ci_version}/g" \
+            "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
+          printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibeshine-ci.conf
+          dkms add -m vibeshine-drm -v "${dkms_ci_version}"
+          MAKEFLAGS="-j$(nproc)" dkms build \
+            -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
+          dkms install -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
+
+          dkms_module="$(modinfo -k "${kernel_release}" -n vibeshine_drm)"
+          dkms_certificate_serial="$(openssl x509 -inform DER \
+            -in /var/lib/dkms/mok.pub -noout -serial)"
+          dkms_certificate_serial="${dkms_certificate_serial#serial=}"
+          dkms_sig_key="$(modinfo -F sig_key "${dkms_module}")"
+          dkms_sig_key="${dkms_sig_key//:/}"
+          [[ -n "$(modinfo -F signer "${dkms_module}")" ]]
+          [[ "${dkms_sig_key^^}" == "${dkms_certificate_serial^^}" ]]
+          dkms remove -m vibeshine-drm -v "${dkms_ci_version}" --all
 
       - name: Fix workspace permissions
         shell: bash
@@ -163,10 +227,13 @@ jobs:
           package_info="$(bsdtar -xOf "${package}" .PKGINFO)"
           package_files="$(bsdtar -tf "${package}")"
           grep -qx 'depend = dkms' <<< "${package_info}"
-          grep -qx 'depend = mokutil' <<< "${package_info}"
+          grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
           grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
           grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
           bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
+          package_install_script="$(bsdtar -xOf "${package}" .INSTALL)"
+          bash -n <<< "${package_install_script}"
+          grep -Fq 'vibeshine-drm-install install-package' <<< "${package_install_script}"
 
       - name: Copy Artifacts
         shell: bash

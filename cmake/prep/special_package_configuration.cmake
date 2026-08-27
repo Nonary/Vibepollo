@@ -74,6 +74,11 @@ elseif(UNIX)
 
     # configure the arch linux pkgbuild
     if(${SUNSHINE_CONFIGURE_PKGBUILD})
+        # Arch forbids hyphens in pkgver. Removing the SemVer prerelease
+        # separator also keeps e.g. 1.19.0beta.4 ordered below 1.19.0.
+        set(SUNSHINE_ARCH_PKGVER "${PROJECT_VERSION_FULL}")
+        string(REPLACE "-" "" SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
+        string(REPLACE "+" "." SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
         configure_file(packaging/linux/Arch/PKGBUILD PKGBUILD @ONLY)
         configure_file(packaging/linux/Arch/sunshine.install sunshine.install @ONLY)
     endif()

@@ -546,7 +546,7 @@
     "dd_virtual_display_scale": "Virtual Display Scale",
     "dd_virtual_display_scale_desc": "Overrides virtual display scaling. Automatic chooses the recommended scale for the requested display mode.",
     "virtual_display_outputs": "Linux private display connectors",
-    "virtual_display_outputs_desc": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.2+, Vibeshine DRM provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
+    "virtual_display_outputs_desc": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.1+, Vibeshine DRM provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
     "remote_monitor_mute_audio": "Mute audio on Remote Monitor",
     "remote_monitor_mute_audio_desc": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
     "remote_monitor_disconnect_on_stream_end": "Remove Remote Monitor when its stream ends",

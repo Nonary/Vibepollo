@@ -653,7 +653,7 @@ Additional information:
     not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
   - Native Vibeshine installations can provide private HDR10 virtual outputs through the
-    `vibeshine_drm` module. It requires Linux 7.2 or newer and matching kernel headers. Its EDID
+    `vibeshine_drm` module. It requires Linux 7.1 or newer and matching kernel headers. Its EDID
     advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
     The driver notifies direct KMS capture when a presentation completes, so sparse changes are captured
     immediately and bursts are coalesced to the stream's requested maximum frame rate. Older module
@@ -682,19 +682,16 @@ Additional information:
 
   On Arch Linux and CachyOS, install the matching headers for every kernel you boot (for example,
   `linux-headers` or `linux-cachyos-headers`). The native package uses DKMS and signs rebuilt
-  modules automatically. A Secure Boot system using shim needs one additional enrollment:
+  modules automatically and verifies the signer embedded in every installed module. On stock Arch
+  and CachyOS kernels this all happens during package installation: accept pacman's normal install
+  confirmation and no separate signing or enrollment command is required, including when Secure
+  Boot uses a direct Limine or systemd-boot chain.
 
-  ```bash
-  sudo /usr/libexec/vibeshine/vibeshine-drm-install enroll-key
-  # Reboot, select "Enroll MOK", and enter the temporary password from the command above.
-  /usr/libexec/vibeshine/vibeshine-drm-install signing-status
-  modinfo -F signer vibeshine_drm
-  ```
-
-  This enrollment survives normal kernel and Vibeshine updates; DKMS continues using the same
-  root-only signing key. The helper refuses to schedule MOK enrollment unless the current boot
-  passed through shim, because direct Limine and systemd-boot paths do not make MOK keys available
-  to the Linux kernel.
+  Only a custom kernel configured to enforce trusted module signatures needs additional
+  authorization. When that is detected, the package installation launches the one-time signing-key
+  confirmation automatically. After confirming it, reboot and approve the pending firmware
+  confirmations once; future kernel and Vibeshine updates remain automatic. If a noninteractive
+  package frontend cannot display the prompt, retry the package installation from a terminal.
 
   @seealso{[Arch wiki on HDR Support for Linux](https://wiki.archlinux.org/title/HDR_monitor_support) and
   [Reddit Guide for HDR Support for AMD GPUs](https://www.reddit.com/r/linux_gaming/comments/10m2gyx/guide_alpha_test_hdr_on_linux)}

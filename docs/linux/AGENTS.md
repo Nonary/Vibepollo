@@ -59,13 +59,13 @@ If building on a fresh clone and seeing Boost errors:
 
 ## 2. Virtual Display Setup
 
-### Preferred managed virtual displays (Linux 7.2+)
+### Preferred managed virtual displays (Linux 7.1+)
 
 Native Vibeshine installations include the `vibeshine_drm` source. Native package hooks and
 `vibeshine-drm-setup.service` attempt to register it with DKMS or build it for the running kernel.
-It targets the Linux 7.2 DRM APIs and provides a separate `/sys/kernel/config/vibeshine-drm`
-namespace, so it can coexist with stock VKMS. Install (or retry) the module and enable the
-four-output private pool with:
+It targets the Linux 7.2 DRM APIs with a Linux 7.1 compatibility shim and provides a separate
+`/sys/kernel/config/vibeshine-drm` namespace, so it can coexist with stock VKMS. Install (or retry)
+the module and enable the four-output private pool with:
 
 ```bash
 sudo /usr/libexec/vibeshine/vibeshine-drm-install install
@@ -87,13 +87,14 @@ their modes, layout, and HDR state. Vibeshine routes managed HDR capture through
 the 10-bit scanout reaches VAAPI or NVENC; KWin ScreenCast remains recommended for SDR capture. If
 the custom module cannot build or load, managed virtual displays remain unavailable. The helper
 does not use stock VKMS because its CPU-backed scanout violates the managed-display latency
-contract. Secure Boot requires a trusted module signature.
+contract. Strict module-signature enforcement requires shim/MOK trust or a custom kernel key;
+stock Arch and CachyOS kernels allow a signed external module with the normal module taint.
 
 ### Reference-host forced-EDID setup
 
 The setup below records this repository's older Linux 6.19 reference host. It remains useful for a
 physical dummy connector or a kernel that cannot run `vibeshine_drm`, but it is not required for the
-managed pool on Linux 7.2+.
+managed pool on Linux 7.1+.
 
 Vibeshine streams to a **virtual display** on HDMI-A-2 (a physically disconnected port) using a custom EDID loaded by the kernel at boot.
 
