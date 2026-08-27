@@ -27,6 +27,9 @@ elseif(UNIX)
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
+if(TARGET sunshine_libvirtualdisplay_uapi)
+    target_link_libraries(sunshine sunshine_libvirtualdisplay_uapi)
+endif()
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 # FFmpeg bundles may also ship ffnvcodec headers. The standalone encoder's
 # compatibility checks require the SDK revision pinned by this repository.

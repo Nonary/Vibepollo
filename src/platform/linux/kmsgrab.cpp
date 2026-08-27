@@ -13,14 +13,18 @@
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
 #include <sys/capability.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+
+#include <vibeshine_drm_uapi.h>
 
 // local includes
 #include "cuda.h"
 #include "graphics.h"
 #include "hdr_policy.h"
+#include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
 #include "src/config.h"
 #include "src/logging.h"
@@ -38,6 +42,14 @@ namespace fs = std::filesystem;
 namespace platf {
 
   namespace kms {
+
+#define DRM_IOCTL_VIBESHINE_WAIT_PRESENT \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_WAIT_PRESENT, struct vibeshine_drm_wait_present)
+
+    static_assert(sizeof(vibeshine_drm_wait_present) == 48);
+
+    constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
+    constexpr auto PRESENT_PENDING_FALLBACK_TIMEOUT = std::chrono::milliseconds(100);
 
     class cap_sys_admin {
     public:
@@ -419,6 +431,11 @@ namespace platf {
       bool requires_direct_import() {
         version_t ver {drmGetVersion(fd.el)};
         return ver && ver->name && selection::driver_requires_direct_import(ver->name);
+      }
+
+      bool supports_presentation_events() {
+        version_t ver {drmGetVersion(fd.el)};
+        return ver && ver->name && selection::driver_supports_presentation_events(ver->name);
       }
 
       bool is_cursor(std::uint32_t plane_id) {
@@ -873,7 +890,30 @@ namespace platf {
           BOOST_LOG(warning) << "No KMS cursor plane found. Cursor may not be displayed while streaming!"sv;
         }
 
+        initialize_presentation_events();
+
         return 0;
+      }
+
+      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+        if (presentation_events_enabled) {
+          if (auto result = capture_presentation_events(push_captured_image_cb, pull_free_image_cb, cursor)) {
+            return *result;
+          }
+          BOOST_LOG(warning) << "Vibeshine DRM presentation events became unavailable; reverting to fixed-rate KMS capture."sv;
+        }
+
+        return capture_fixed_rate(push_captured_image_cb, pull_free_image_cb, cursor);
+      }
+
+      void request_refresh() override {
+        if (presentation_events_enabled) {
+          presentation_latch.request_capture();
+          if (!presentation_pending && presentation_latch.capture_ready()) {
+            presentation_timestamp.reset();
+            presentation_pending = true;
+          }
+        }
       }
 
       bool is_hdr() {
@@ -1229,6 +1269,332 @@ namespace platf {
         img.crtc_gamma_lut_serial = crtc_gamma_lut_blob_id;
       }
 
+      enum class presentation_wait_e {
+        changed,
+        timeout,
+        unsupported,
+      };
+
+      void initialize_presentation_events() {
+        if (!card.supports_presentation_events()) {
+          return;
+        }
+
+        presentation_sequence = 0;
+        if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
+          BOOST_LOG(info) << "Vibeshine DRM presentation events are unavailable or returned an invalid response; using fixed-rate KMS capture."sv;
+          return;
+        }
+
+        presentation_events_enabled = true;
+        presentation_latch.request_capture();
+        presentation_pending = presentation_latch.capture_ready();
+        BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
+      }
+
+      presentation_wait_e wait_for_presentation(std::chrono::milliseconds timeout) {
+        const auto requested_sequence = presentation_sequence;
+        const auto wait_deadline = std::chrono::steady_clock::now() + timeout;
+        unsigned int retry_count = 0;
+
+        while (true) {
+          auto remaining = timeout;
+          if (timeout > 0ms) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= wait_deadline) {
+              if (retry_count > 0) {
+                return wait_for_presentation(0ms);
+              }
+              return presentation_wait_e::timeout;
+            }
+            remaining = std::chrono::ceil<std::chrono::milliseconds>(wait_deadline - now);
+          }
+
+          vibeshine_drm_wait_present request {};
+          const auto requested_timeout_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            remaining.count(),
+            0,
+            VIBESHINE_DRM_PRESENT_MAX_TIMEOUT_MS
+          ));
+          request.abi_version = VIBESHINE_DRM_PRESENT_ABI_VERSION;
+          request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+          request.sequence = requested_sequence;
+          request.timeout_ms = requested_timeout_ms;
+
+          if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_WAIT_PRESENT, &request) < 0) {
+            switch (pacing::classify_ioctl_error(errno, timeout > 0ms)) {
+              case pacing::presentation_ioctl_error_e::retry:
+                {
+                  ++retry_count;
+                  if (retry_count >= 4) {
+                    std::this_thread::sleep_until(wait_deadline);
+                    return wait_for_presentation(0ms);
+                  }
+                  const auto backoff = std::chrono::milliseconds {1U << (retry_count - 1)};
+                  const auto retry_at = std::min(wait_deadline, std::chrono::steady_clock::now() + backoff);
+                  std::this_thread::sleep_until(retry_at);
+                  continue;
+                }
+              case pacing::presentation_ioctl_error_e::transient_timeout:
+                std::this_thread::sleep_until(wait_deadline);
+                return wait_for_presentation(0ms);
+              case pacing::presentation_ioctl_error_e::unsupported:
+                presentation_events_enabled = false;
+                return presentation_wait_e::unsupported;
+            }
+          }
+
+          if (request.abi_version != VIBESHINE_DRM_PRESENT_ABI_VERSION ||
+              request.crtc_id != static_cast<std::uint32_t>(crtc_id) ||
+              request.timeout_ms != requested_timeout_ms ||
+              request.reserved[0] != 0 || request.reserved[1] != 0) {
+            presentation_events_enabled = false;
+            return presentation_wait_e::unsupported;
+          }
+
+          switch (pacing::classify_response(
+            request.flags,
+            VIBESHINE_DRM_PRESENT_CHANGED,
+            VIBESHINE_DRM_PRESENT_TIMEOUT,
+            VIBESHINE_DRM_PRESENT_PENDING,
+            requested_sequence,
+            request.sequence
+          )) {
+            case pacing::presentation_response_e::changed:
+              {
+                auto timestamp = pacing::validate_timestamp(
+                  request.timestamp_ns,
+                  std::chrono::steady_clock::now(),
+                  0ns,
+                  last_presentation_timestamp
+                );
+                if (!timestamp) {
+                  presentation_events_enabled = false;
+                  return presentation_wait_e::unsupported;
+                }
+                presentation_sequence = request.sequence;
+                presentation_timestamp = *timestamp;
+                last_presentation_timestamp = *timestamp;
+                presentation_latch.observe_response(
+                  pacing::presentation_response_e::changed,
+                  (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
+                  std::chrono::steady_clock::now()
+                );
+                if (pacing::hold_pending_response_to_deadline(
+                      pacing::presentation_response_e::changed,
+                      (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
+                      timeout > 0ms
+                    )) {
+                  std::this_thread::sleep_until(wait_deadline);
+                }
+                return presentation_wait_e::changed;
+              }
+            case pacing::presentation_response_e::timeout:
+              presentation_latch.observe_response(
+                pacing::presentation_response_e::timeout,
+                (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
+                std::chrono::steady_clock::now()
+              );
+              if (timeout > 0ms) {
+                std::this_thread::sleep_until(wait_deadline);
+              }
+              return presentation_wait_e::timeout;
+            case pacing::presentation_response_e::invalid:
+              presentation_events_enabled = false;
+              return presentation_wait_e::unsupported;
+          }
+
+          presentation_events_enabled = false;
+          return presentation_wait_e::unsupported;
+        }
+      }
+
+      std::optional<capture_e> capture_presentation_events(
+        const push_captured_image_cb_t &push_captured_image_cb,
+        const pull_free_image_cb_t &pull_free_image_cb,
+        bool *cursor
+      ) {
+        auto next_capture = std::chrono::steady_clock::time_point::min();
+
+        while (presentation_events_enabled) {
+          auto now = std::chrono::steady_clock::now();
+          if (presentation_pending && now < next_capture) {
+            std::this_thread::sleep_until(pacing::coalescing_wake_deadline(
+              now,
+              next_capture,
+              PRESENT_WAIT_IDLE_TIMEOUT
+            ));
+            if (std::chrono::steady_clock::now() < next_capture &&
+                !push_captured_image_cb({}, false)) {
+              return platf::capture_e::ok;
+            }
+            continue;
+          }
+
+          if (pacing::capture_due(presentation_pending, now, next_capture)) {
+            if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
+              return std::nullopt;
+            }
+            if (presentation_latch.state_pending()) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+                return std::nullopt;
+              }
+              presentation_pending = false;
+              if (!push_captured_image_cb({}, false)) {
+                return platf::capture_e::ok;
+              }
+              continue;
+            }
+
+            const auto captured_sequence = presentation_sequence;
+            const auto captured_timestamp = presentation_timestamp;
+            const auto captured_generation = presentation_latch.capture_generation();
+            const auto capture_started = std::chrono::steady_clock::now();
+            std::shared_ptr<platf::img_t> img_out;
+            auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
+            if (status == platf::capture_e::reinit ||
+                status == platf::capture_e::error ||
+                status == platf::capture_e::interrupted) {
+              return status;
+            }
+
+            const auto post_capture_presentation = wait_for_presentation(0ms);
+            if (post_capture_presentation == presentation_wait_e::unsupported) {
+              if (!push_captured_image_cb(std::move(img_out), status == platf::capture_e::ok)) {
+                return platf::capture_e::ok;
+              }
+              return std::nullopt;
+            }
+
+            next_capture = pacing::capture_deadline(capture_started, delay);
+            if (presentation_latch.state_pending()) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+                return std::nullopt;
+              }
+              presentation_pending = false;
+              if (!push_captured_image_cb({}, false)) {
+                return platf::capture_e::ok;
+              }
+              continue;
+            }
+
+            const bool newer_presentation = post_capture_presentation == presentation_wait_e::changed;
+            if (!newer_presentation && presentation_sequence == captured_sequence &&
+                status == platf::capture_e::ok && img_out && captured_timestamp) {
+              img_out->frame_timestamp = captured_timestamp;
+            }
+
+            if (status == platf::capture_e::timeout && next_capture < std::chrono::steady_clock::now()) {
+              next_capture = std::chrono::steady_clock::now() + delay;
+            }
+
+            switch (status) {
+              case platf::capture_e::timeout:
+                if (!push_captured_image_cb(std::move(img_out), false)) {
+                  return platf::capture_e::ok;
+                }
+                break;
+              case platf::capture_e::ok:
+                presentation_latch.mark_delivered(captured_generation);
+                presentation_pending = newer_presentation;
+                if (!newer_presentation) {
+                  presentation_timestamp.reset();
+                }
+                if (!push_captured_image_cb(std::move(img_out), true)) {
+                  return platf::capture_e::ok;
+                }
+                break;
+              case platf::capture_e::reinit:
+              case platf::capture_e::error:
+              case platf::capture_e::interrupted:
+                return status;
+              default:
+                BOOST_LOG(error) << "Unrecognized capture status ["sv << static_cast<int>(status) << ']';
+                return status;
+            }
+            continue;
+          }
+
+          switch (wait_for_presentation(PRESENT_WAIT_IDLE_TIMEOUT)) {
+            case presentation_wait_e::changed:
+            case presentation_wait_e::timeout:
+              if (presentation_latch.state_pending() &&
+                  presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+                return std::nullopt;
+              }
+              if (presentation_latch.state_pending()) {
+                presentation_pending = false;
+                if (!push_captured_image_cb({}, false)) {
+                  return platf::capture_e::ok;
+                }
+              } else if (presentation_latch.capture_ready()) {
+                presentation_pending = true;
+              } else if (!presentation_pending && !push_captured_image_cb({}, false)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            case presentation_wait_e::unsupported:
+              return std::nullopt;
+          }
+        }
+
+        return std::nullopt;
+      }
+
+      capture_e capture_fixed_rate(
+        const push_captured_image_cb_t &push_captured_image_cb,
+        const pull_free_image_cb_t &pull_free_image_cb,
+        bool *cursor
+      ) {
+        auto next_frame = std::chrono::steady_clock::now();
+
+        sleep_overshoot_logger.reset();
+
+        while (true) {
+          auto now = std::chrono::steady_clock::now();
+
+          if (next_frame > now) {
+            std::this_thread::sleep_for(next_frame - now);
+            sleep_overshoot_logger.first_point(next_frame);
+            sleep_overshoot_logger.second_point_now_and_log();
+          }
+
+          next_frame += delay;
+          if (next_frame < now) {
+            next_frame = now + delay;
+          }
+
+          std::shared_ptr<platf::img_t> img_out;
+          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
+          switch (status) {
+            case platf::capture_e::reinit:
+            case platf::capture_e::error:
+            case platf::capture_e::interrupted:
+              return status;
+            case platf::capture_e::timeout:
+              if (!push_captured_image_cb(std::move(img_out), false)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            case platf::capture_e::ok:
+              if (!push_captured_image_cb(std::move(img_out), true)) {
+                return platf::capture_e::ok;
+              }
+              break;
+            default:
+              BOOST_LOG(error) << "Unrecognized capture status ["sv << static_cast<int>(status) << ']';
+              return status;
+          }
+        }
+      }
+
+      virtual capture_e snapshot(
+        const pull_free_image_cb_t &pull_free_image_cb,
+        std::shared_ptr<platf::img_t> &img_out,
+        std::chrono::milliseconds timeout,
+        bool cursor
+      ) = 0;
+
       mem_type_e mem_type;
 
       std::chrono::nanoseconds delay;
@@ -1245,6 +1611,12 @@ namespace platf {
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
       bool direct_import_required {false};
+      bool presentation_events_enabled {false};
+      bool presentation_pending {false};
+      pacing::presentation_latch_t presentation_latch;
+      std::uint64_t presentation_sequence {};
+      std::optional<std::chrono::steady_clock::time_point> presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
       std::uint64_t crtc_gamma_lut_blob_id {};
       std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 
@@ -1289,51 +1661,6 @@ namespace platf {
         ctx = std::move(*ctx_opt);
 
         return 0;
-      }
-
-      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-        auto next_frame = std::chrono::steady_clock::now();
-
-        sleep_overshoot_logger.reset();
-
-        while (true) {
-          auto now = std::chrono::steady_clock::now();
-
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay;
-          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-            next_frame = now + delay;
-          }
-
-          std::shared_ptr<platf::img_t> img_out;
-          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-          switch (status) {
-            case platf::capture_e::reinit:
-            case platf::capture_e::error:
-            case platf::capture_e::interrupted:
-              return status;
-            case platf::capture_e::timeout:
-              if (!push_captured_image_cb(std::move(img_out), false)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            case platf::capture_e::ok:
-              if (!push_captured_image_cb(std::move(img_out), true)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            default:
-              BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-              return status;
-          }
-        }
-
-        return capture_e::ok;
       }
 
       std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) override {
@@ -1400,7 +1727,8 @@ namespace platf {
         }
       }
 
-      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) {
+      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor) override {
+        const auto host_processing_timestamp = std::chrono::steady_clock::now();
         file_t fb_fd[4];
 
         egl::surface_descriptor_t sd;
@@ -1438,6 +1766,7 @@ namespace platf {
         gl::ctx.GetTextureSubImage(rgb->tex[0], 0, img_offset_x, img_offset_y, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
 
         img_out->frame_timestamp = frame_timestamp;
+        img_out->host_processing_timestamp = host_processing_timestamp;
 
         if (cursor && captured_cursor.visible) {
           blend_cursor(*img_out);
@@ -1515,52 +1844,8 @@ namespace platf {
         return 0;
       }
 
-      capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
-        auto next_frame = std::chrono::steady_clock::now();
-
-        sleep_overshoot_logger.reset();
-
-        while (true) {
-          auto now = std::chrono::steady_clock::now();
-
-          if (next_frame > now) {
-            std::this_thread::sleep_for(next_frame - now);
-            sleep_overshoot_logger.first_point(next_frame);
-            sleep_overshoot_logger.second_point_now_and_log();
-          }
-
-          next_frame += delay;
-          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
-            next_frame = now + delay;
-          }
-
-          std::shared_ptr<platf::img_t> img_out;
-          auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
-          switch (status) {
-            case platf::capture_e::reinit:
-            case platf::capture_e::error:
-            case platf::capture_e::interrupted:
-              return status;
-            case platf::capture_e::timeout:
-              if (!push_captured_image_cb(std::move(img_out), false)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            case platf::capture_e::ok:
-              if (!push_captured_image_cb(std::move(img_out), true)) {
-                return platf::capture_e::ok;
-              }
-              break;
-            default:
-              BOOST_LOG(error) << "Unrecognized capture status ["sv << (int) status << ']';
-              return status;
-          }
-        }
-
-        return capture_e::ok;
-      }
-
-      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds /* timeout */, bool cursor) {
+      capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds /* timeout */, bool cursor) override {
+        const auto host_processing_timestamp = std::chrono::steady_clock::now();
         file_t fb_fd[4];
 
         if (!pull_free_image_cb(img_out)) {
@@ -1575,6 +1860,7 @@ namespace platf {
         }
 
         update_crtc_gamma_lut(*img);
+        img->host_processing_timestamp = host_processing_timestamp;
         img->sequence = ++sequence;
 
         if (cursor && captured_cursor.visible) {

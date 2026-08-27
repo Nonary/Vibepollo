@@ -15,3 +15,17 @@ if(NOT SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR OR
 endif()
 
 set(LIBVIRTUALDISPLAY_LINUX_ROOT "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/linux")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LIBVIRTUALDISPLAY_LINUX_UAPI_INCLUDE_DIR
+            "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm")
+    if(NOT EXISTS "${LIBVIRTUALDISPLAY_LINUX_UAPI_INCLUDE_DIR}/vibeshine_drm_uapi.h")
+        message(FATAL_ERROR
+                "libvirtualdisplay DRM UAPI header not found: "
+                "${LIBVIRTUALDISPLAY_LINUX_UAPI_INCLUDE_DIR}/vibeshine_drm_uapi.h")
+    endif()
+
+    add_library(sunshine_libvirtualdisplay_uapi INTERFACE)
+    target_include_directories(sunshine_libvirtualdisplay_uapi SYSTEM INTERFACE
+            "${LIBVIRTUALDISPLAY_LINUX_UAPI_INCLUDE_DIR}")
+endif()

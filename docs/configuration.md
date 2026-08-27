@@ -1266,7 +1266,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
             the prior topology afterward.
             KDE Plasma/KWin and <code>kscreen-doctor</code> are required for managed topology.
             Vibepollo uses direct DRM/KMS capture for managed HDR output so the 10-bit scanout reaches
-            the encoder. KWin ScreenCast remains the recommended compositor capture path for SDR.
+            the encoder. The custom driver also notifies capture after completed presentation changes:
+            sparse changes are captured immediately, while faster changes are coalesced to the stream's
+            requested maximum frame rate. An older module without this notification ABI falls back to
+            fixed-rate KMS polling. KWin ScreenCast remains the recommended compositor capture path for SDR.
             <br><br>
             If the custom module cannot be built or loaded (including on older kernels or when
             Secure Boot rejects an unsigned module), managed virtual displays remain unavailable.
@@ -2731,6 +2734,9 @@ this option to replace the running app immediately. The default is `true`.
         <td>DRM/KMS screen capture from the kernel. This requires that Sunshine has `cap_sys_admin` capability.
             Managed Linux private HDR sessions use this path automatically to preserve 10-bit scanout,
             even when KWin is selected globally for SDR capture.
+            With the <code>vibeshine_drm</code> presentation ABI, capture is change-driven and coalesces
+            bursts to the client-requested maximum frame rate; ordinary KMS drivers and older module
+            versions retain fixed-rate polling.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>

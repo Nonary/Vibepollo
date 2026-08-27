@@ -36,6 +36,10 @@ namespace platf::kms::selection {
     return driver_name == "vibeshine_drm";
   }
 
+  inline bool driver_supports_presentation_events(std::string_view driver_name) {
+    return driver_name == "vibeshine_drm";
+  }
+
   struct monitor_t {
     std::string card_path;
     std::string connector_name;

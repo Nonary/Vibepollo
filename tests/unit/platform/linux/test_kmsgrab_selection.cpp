@@ -4,10 +4,154 @@
  */
 #include "../../../tests_common.h"
 
+#include <cstddef>
 #include <limits>
+#include <src/platform/linux/kmsgrab_pacing.h>
 #include <src/platform/linux/kmsgrab_selection.h>
+#include <vibeshine_drm_uapi.h>
 
 namespace selection = platf::kms::selection;
+
+TEST(KmsgrabSelection, CoalescesPresentationsToTheCaptureDeadline) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  const auto now = clock_t::time_point {1s};
+  const auto next_capture = now + 7500us;
+
+  EXPECT_FALSE(platf::kms::pacing::capture_due(false, now, now));
+  EXPECT_FALSE(platf::kms::pacing::capture_due(true, now, next_capture));
+  EXPECT_TRUE(platf::kms::pacing::capture_due(true, next_capture, next_capture));
+
+  EXPECT_EQ(platf::kms::pacing::capture_deadline(now, 8333333ns), now + 8333333ns);
+  EXPECT_EQ(platf::kms::pacing::coalescing_wake_deadline(now, next_capture, 16ms), next_capture);
+  EXPECT_EQ(platf::kms::pacing::coalescing_wake_deadline(now, now + 50ms, 16ms), now + 16ms);
+}
+
+TEST(KmsgrabSelection, RejectsInconsistentPresentationResponses) {
+  using platf::kms::pacing::classify_response;
+  using response_e = platf::kms::pacing::presentation_response_e;
+
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::changed);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED | VIBESHINE_DRM_PRESENT_PENDING, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::changed);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::timeout);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_TIMEOUT | VIBESHINE_DRM_PRESENT_PENDING, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::timeout);
+
+  EXPECT_EQ(classify_response(0, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::invalid);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_PENDING, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::invalid);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED | VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::invalid);
+  EXPECT_EQ(classify_response(1U << 31, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::invalid);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::invalid);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 4), response_e::invalid);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::invalid);
+}
+
+TEST(KmsgrabSelection, BoundsPresentationIoctlErrorHandling) {
+  using error_e = platf::kms::pacing::presentation_ioctl_error_e;
+  using platf::kms::pacing::classify_ioctl_error;
+
+  EXPECT_EQ(classify_ioctl_error(EINTR, true), error_e::retry);
+  EXPECT_EQ(classify_ioctl_error(EAGAIN, true), error_e::retry);
+  EXPECT_EQ(classify_ioctl_error(EBUSY, true), error_e::transient_timeout);
+  EXPECT_EQ(classify_ioctl_error(ENOTTY, true), error_e::unsupported);
+
+  EXPECT_EQ(classify_ioctl_error(EINTR, false), error_e::unsupported);
+  EXPECT_EQ(classify_ioctl_error(EAGAIN, false), error_e::unsupported);
+  EXPECT_EQ(classify_ioctl_error(EBUSY, false), error_e::unsupported);
+}
+
+TEST(KmsgrabSelection, RetainsCaptureAcrossPendingCommitTransitions) {
+  using namespace std::chrono_literals;
+  using response_e = platf::kms::pacing::presentation_response_e;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_latch_t latch;
+  const auto start = clock_t::time_point {1s};
+
+  latch.observe_response(response_e::changed, true, start);
+  EXPECT_TRUE(latch.state_pending());
+  EXPECT_FALSE(latch.capture_ready());
+  EXPECT_FALSE(latch.pending_timed_out(start + 99ms, 100ms));
+  EXPECT_TRUE(latch.pending_timed_out(start + 100ms, 100ms));
+
+  latch.observe_response(response_e::timeout, false, start + 100ms);
+  EXPECT_FALSE(latch.state_pending());
+  EXPECT_TRUE(latch.capture_ready());
+
+  latch.mark_delivered(latch.capture_generation());
+  EXPECT_FALSE(latch.capture_ready());
+}
+
+TEST(KmsgrabSelection, RepeatedPendingChangesKeepTheirOriginalFallbackDeadline) {
+  using namespace std::chrono_literals;
+  using response_e = platf::kms::pacing::presentation_response_e;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_latch_t latch;
+  const auto start = clock_t::time_point {1s};
+
+  for (int elapsed_ms = 0; elapsed_ms <= 96; elapsed_ms += 16) {
+    latch.observe_response(response_e::changed, true, start + std::chrono::milliseconds {elapsed_ms});
+  }
+  EXPECT_FALSE(latch.pending_timed_out(start + 99ms, 100ms));
+  EXPECT_TRUE(latch.pending_timed_out(start + 100ms, 100ms));
+
+  EXPECT_TRUE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, true, true));
+  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, true, false));
+  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, false, true));
+  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::timeout, true, true));
+}
+
+TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {
+  using namespace std::chrono_literals;
+  using response_e = platf::kms::pacing::presentation_response_e;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_latch_t latch;
+  const auto start = clock_t::time_point {1s};
+
+  latch.request_capture();
+  const auto snapshot_generation = latch.capture_generation();
+
+  latch.observe_response(response_e::changed, false, start);
+  latch.mark_delivered(snapshot_generation);
+  EXPECT_TRUE(latch.capture_ready());
+
+  latch.observe_response(response_e::changed, true, start + 1ms);
+  EXPECT_FALSE(latch.capture_ready());
+  latch.observe_response(response_e::timeout, false, start + 2ms);
+  EXPECT_TRUE(latch.capture_ready());
+
+  latch.mark_delivered(latch.capture_generation());
+  EXPECT_FALSE(latch.capture_ready());
+}
+
+TEST(KmsgrabSelection, RejectsUnsafePresentationTimestamps) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  const auto now = clock_t::time_point {10s};
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(0, now, 1s), std::nullopt);
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(std::numeric_limits<std::uint64_t>::max(), now, 1s), std::nullopt);
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(std::chrono::duration_cast<std::chrono::nanoseconds>(12s).count(), now, 1s), std::nullopt);
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(std::chrono::duration_cast<std::chrono::nanoseconds>(10001ms).count(), now, 0ns), std::nullopt);
+
+  const auto valid_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(9500ms).count();
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(valid_ns, now, 1s), clock_t::time_point {9500ms});
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(valid_ns, now, 0ns, clock_t::time_point {9600ms}), std::nullopt);
+  EXPECT_EQ(platf::kms::pacing::validate_timestamp(valid_ns, now, 0ns, clock_t::time_point {9500ms}), clock_t::time_point {9500ms});
+}
+
+TEST(KmsgrabSelection, UsesStableVibeshinePresentationAbi) {
+  EXPECT_EQ(VIBESHINE_DRM_PRESENT_ABI_VERSION, 1u);
+  EXPECT_EQ(VIBESHINE_DRM_PRESENT_MAX_TIMEOUT_MS, 1000u);
+  EXPECT_EQ(DRM_VIBESHINE_WAIT_PRESENT, 0u);
+  EXPECT_EQ(sizeof(vibeshine_drm_wait_present), 48u);
+  EXPECT_EQ(offsetof(vibeshine_drm_wait_present, sequence), 8u);
+  EXPECT_EQ(offsetof(vibeshine_drm_wait_present, timestamp_ns), 16u);
+  EXPECT_EQ(offsetof(vibeshine_drm_wait_present, timeout_ms), 24u);
+  EXPECT_EQ(offsetof(vibeshine_drm_wait_present, reserved), 32u);
+}
 
 TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
   EXPECT_TRUE(selection::driver_supports_cuda_import("nvidia-drm"));
@@ -19,8 +163,11 @@ TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
   EXPECT_FALSE(selection::driver_supports_cuda_import(""));
   EXPECT_FALSE(selection::driver_is_nvidia("vibeshine_drm"));
   EXPECT_TRUE(selection::driver_requires_direct_import("vibeshine_drm"));
+  EXPECT_TRUE(selection::driver_supports_presentation_events("vibeshine_drm"));
   EXPECT_FALSE(selection::driver_requires_direct_import("nvidia-drm"));
+  EXPECT_FALSE(selection::driver_supports_presentation_events("nvidia-drm"));
   EXPECT_FALSE(selection::driver_requires_direct_import("vkms"));
+  EXPECT_FALSE(selection::driver_supports_presentation_events("vkms"));
 }
 
 TEST(KmsgrabSelection, ParsesOnlyCompleteUnsignedNumericAliases) {
