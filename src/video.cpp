@@ -5271,6 +5271,8 @@ namespace video {
       uint64_t popped_placeholder = 0;
       uint64_t pop_timeouts = 0;
       uint64_t gate_skipped = 0;
+      uint64_t converted = 0;
+      uint64_t duplicate_detected = 0;
       uint64_t encoded = 0;
       uint64_t dropped_submissions = 0;
       uint64_t duplicate_suppressed = 0;
@@ -5284,9 +5286,11 @@ namespace video {
                          << " popped_placeholder=" << loop_stats.popped_placeholder
                          << " pop_timeouts=" << loop_stats.pop_timeouts
                          << " gate_skipped=" << loop_stats.gate_skipped
+                         << " converted=" << loop_stats.converted
+                         << " duplicate_detected=" << loop_stats.duplicate_detected
+                         << " duplicate_suppressed=" << loop_stats.duplicate_suppressed
                          << " encoded=" << loop_stats.encoded
                          << " dropped_submissions=" << loop_stats.dropped_submissions
-                         << " duplicate_suppressed=" << loop_stats.duplicate_suppressed
                          << " frame_nr=" << frame_nr;
         loop_stats = {};
         loop_stats.last_log = now;
@@ -5447,6 +5451,7 @@ namespace video {
             break;
           }
           converted_capture = true;
+          ++loop_stats.converted;
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(
@@ -5498,9 +5503,11 @@ namespace video {
       }
 
       const auto encode_started_at = std::chrono::steady_clock::now();
+      const bool converted_frame_duplicate = converted_capture && session->last_frame_is_duplicate();
+      loop_stats.duplicate_detected += converted_frame_duplicate;
       const auto keepalive_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(max_frametime);
       if (converted_capture && !video::policy::should_encode_converted_frame(
-                                 session->last_frame_is_duplicate(),
+                                 converted_frame_duplicate,
                                  force_duplicate_encode,
                                  last_encoded_at,
                                  encode_started_at,

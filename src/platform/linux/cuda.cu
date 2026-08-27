@@ -210,26 +210,29 @@ namespace cuda {
     const std::uint8_t *previous,
     std::size_t pitch,
     std::size_t row_bytes,
-    std::size_t chunks_per_row,
-    std::size_t rows,
+    std::uint32_t chunks_per_row,
+    std::uint32_t rows,
     std::uint32_t *changed
   ) {
-    __shared__ std::uint32_t block_changed;
+    __shared__ std::uint32_t skip_block;
     if (threadIdx.x == 0) {
-      block_changed = 0;
+      // Once any earlier block finds a difference, later blocks can stop.
+      skip_block = atomicAdd(changed, 0U);
     }
     __syncthreads();
+    if (skip_block) {
+      return;
+    }
 
     constexpr std::size_t chunk_bytes = sizeof(uint4);
-    const auto chunk_index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const auto total_chunks = chunks_per_row * rows;
-    if (chunk_index < total_chunks) {
-      const auto row = chunk_index / chunks_per_row;
-      const auto column = (chunk_index % chunks_per_row) * chunk_bytes;
-      const auto *current_row = current + row * pitch;
-      const auto *previous_row = previous + row * pitch;
+    const auto chunk = blockIdx.x * blockDim.x + threadIdx.x;
+    const auto row = blockIdx.y;
+    bool differs = false;
+    if (chunk < chunks_per_row && row < rows) {
+      const auto column = static_cast<std::size_t>(chunk) * chunk_bytes;
+      const auto *current_row = current + static_cast<std::size_t>(row) * pitch;
+      const auto *previous_row = previous + static_cast<std::size_t>(row) * pitch;
 
-      bool differs = false;
       if (column + chunk_bytes <= row_bytes) {
         const auto current_chunk = *reinterpret_cast<const uint4 *>(current_row + column);
         const auto previous_chunk = *reinterpret_cast<const uint4 *>(previous_row + column);
@@ -242,14 +245,9 @@ namespace cuda {
           differs |= current_row[byte] != previous_row[byte];
         }
       }
-
-      if (differs) {
-        atomicExch(&block_changed, 1U);
-      }
     }
 
-    __syncthreads();
-    if (threadIdx.x == 0 && block_changed) {
+    if (__syncthreads_or(differs) && threadIdx.x == 0) {
       atomicExch(changed, 1U);
     }
   }
@@ -271,8 +269,16 @@ namespace cuda {
     constexpr std::size_t chunk_bytes = sizeof(uint4);
     constexpr unsigned int threads_per_block = 256;
     const auto chunks_per_row = div_align(row_bytes, chunk_bytes);
-    const auto total_chunks = chunks_per_row * rows;
-    const auto blocks = static_cast<unsigned int>(div_align(total_chunks, static_cast<std::size_t>(threads_per_block)));
+    // CUDA grid Y is limited to 65535 on supported devices. Video frame row
+    // counts are far below that, but reject an invalid launch rather than
+    // narrowing dimensions and risking a false duplicate.
+    if (chunks_per_row > std::numeric_limits<std::uint32_t>::max() || rows > 65535U) {
+      return -1;
+    }
+    const dim3 blocks(
+      static_cast<unsigned int>(div_align(chunks_per_row, static_cast<std::size_t>(threads_per_block))),
+      static_cast<unsigned int>(rows)
+    );
 
     CU_CHECK(cudaMemsetAsync(changed_device, 0, sizeof(*changed_device), stream), "Couldn't reset CUDA duplicate-frame flag");
     detect_pitched_frame_change<<<blocks, threads_per_block, 0, stream>>>(
@@ -280,8 +286,8 @@ namespace cuda {
       previous,
       pitch,
       row_bytes,
-      chunks_per_row,
-      rows,
+      static_cast<std::uint32_t>(chunks_per_row),
+      static_cast<std::uint32_t>(rows),
       changed_device
     );
     CU_CHECK(cudaGetLastError(), "Couldn't launch CUDA duplicate-frame comparison");

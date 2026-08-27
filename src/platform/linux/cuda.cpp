@@ -5,6 +5,7 @@
 // standard includes
 #include <algorithm>
 #include <bitset>
+#include <chrono>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -778,6 +779,9 @@ namespace cuda {
         return -1;
       }
 
+      const auto convert_started = filter_stats_enabled ?
+                                     std::chrono::steady_clock::now() :
+                                     std::chrono::steady_clock::time_point {};
       context_guard_t guard {cuda_context};
       if (!guard) {
         return -1;
@@ -847,17 +851,28 @@ namespace cuda {
       CU_CHECK(unmap_status, "Couldn't unmap native NVENC GL textures from CUDA");
 
       bool changed = true;
-      if (previous_frame_valid && compare_pitched_frames(
-                                    reinterpret_cast<const std::uint8_t *>(input_buffer),
-                                    reinterpret_cast<const std::uint8_t *>(previous_input_buffer),
-                                    input_pitch,
-                                    frame_row_bytes,
-                                    frame_rows,
-                                    reinterpret_cast<std::uint32_t *>(changed_device),
-                                    stream,
-                                    changed
-                                  )) {
-        return -1;
+      std::optional<double> comparison_sync_ms;
+      if (previous_frame_valid) {
+        const auto comparison_started = filter_stats_enabled ?
+                                            std::chrono::steady_clock::now() :
+                                            std::chrono::steady_clock::time_point {};
+        if (compare_pitched_frames(
+              reinterpret_cast<const std::uint8_t *>(input_buffer),
+              reinterpret_cast<const std::uint8_t *>(previous_input_buffer),
+              input_pitch,
+              frame_row_bytes,
+              frame_rows,
+              reinterpret_cast<std::uint32_t *>(changed_device),
+              stream,
+              changed
+            )) {
+          return -1;
+        }
+        if (filter_stats_enabled) {
+          comparison_sync_ms = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - comparison_started
+          ).count();
+        }
       }
 
       last_frame_duplicate = previous_frame_valid && !changed;
@@ -874,10 +889,66 @@ namespace cuda {
         CU_CHECK(cdf->cuMemcpy2DAsync(&history_copy, stream), "Couldn't preserve native NVENC frame for duplicate detection");
         previous_frame_valid = true;
       }
+      if (filter_stats_enabled) {
+        record_duplicate_filter_stats(
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_started).count(),
+          comparison_sync_ms,
+          last_frame_duplicate
+        );
+      }
       return 0;
     }
 
   private:
+    void record_duplicate_filter_stats(
+      const double conversion_host_ms,
+      const std::optional<double> comparison_sync_ms,
+      const bool duplicate
+    ) {
+      ++filter_calls;
+      filter_duplicates += duplicate;
+      conversion_host_total_ms += conversion_host_ms;
+      conversion_host_max_ms = std::max(conversion_host_max_ms, conversion_host_ms);
+      if (comparison_sync_ms) {
+        ++comparison_calls;
+        comparison_sync_total_ms += *comparison_sync_ms;
+        comparison_sync_max_ms = std::max(comparison_sync_max_ms, *comparison_sync_ms);
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      constexpr auto log_interval = 20s;
+      const auto elapsed = now - filter_last_log;
+      if (elapsed < log_interval) {
+        return;
+      }
+
+      const auto duplicate_percent = filter_calls ?
+                                       100.0 * static_cast<double>(filter_duplicates) / static_cast<double>(filter_calls) :
+                                       0.0;
+      const auto comparison_avg_ms = comparison_calls ?
+                                        comparison_sync_total_ms / static_cast<double>(comparison_calls) :
+                                        0.0;
+      BOOST_LOG(info) << "NvEnc: exact duplicate filter " << output_width << 'x' << output_height
+                      << ": interval=" << std::chrono::duration<double>(elapsed).count() << " s"
+                      << " convert_calls=" << filter_calls
+                      << " duplicates_detected=" << filter_duplicates
+                      << " (" << duplicate_percent << "%)"
+                      << " convert-host avg/max="
+                      << conversion_host_total_ms / static_cast<double>(filter_calls) << '/'
+                      << conversion_host_max_ms << " ms"
+                      << " check-drain avg/max=" << comparison_avg_ms << '/'
+                      << comparison_sync_max_ms << " ms";
+
+      filter_calls = 0;
+      filter_duplicates = 0;
+      comparison_calls = 0;
+      conversion_host_total_ms = 0.0;
+      conversion_host_max_ms = 0.0;
+      comparison_sync_total_ms = 0.0;
+      comparison_sync_max_ms = 0.0;
+      filter_last_log = now;
+    }
+
     int native_width() const noexcept {
       return output_width;
     }
@@ -909,6 +980,15 @@ namespace cuda {
     std::size_t frame_rows {};
     bool previous_frame_valid {false};
     bool last_frame_duplicate {false};
+    bool filter_stats_enabled {config::sunshine.min_log_level <= info.default_severity()};
+    std::uint64_t filter_calls {};
+    std::uint64_t filter_duplicates {};
+    std::uint64_t comparison_calls {};
+    double conversion_host_total_ms {};
+    double conversion_host_max_ms {};
+    double comparison_sync_total_ms {};
+    double comparison_sync_max_ms {};
+    std::chrono::steady_clock::time_point filter_last_log {std::chrono::steady_clock::now()};
 
     AVPixelFormat sw_format {AV_PIX_FMT_NONE};
     NV_ENC_BUFFER_FORMAT buffer_format {NV_ENC_BUFFER_FORMAT_UNDEFINED};
