@@ -346,8 +346,16 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
     echo "error: udevadm not found or not executable."
   fi
 
-  %{_prefix}/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+  if %{_prefix}/libexec/vibeshine/vibeshine-drm-install install; then
+    :
+  else
+    vibeshine_drm_rc=$?
+    if [ "$vibeshine_drm_rc" -eq 4 ]; then
+      echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+    else
+      echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+    fi
+  fi
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
 fi

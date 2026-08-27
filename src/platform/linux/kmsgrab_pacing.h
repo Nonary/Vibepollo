@@ -14,6 +14,7 @@
 namespace platf::kms::pacing {
 
   using clock_t = std::chrono::steady_clock;
+  constexpr auto PRESENT_PENDING_HANG_TIMEOUT = std::chrono::seconds {5};
 
   enum class presentation_response_e {
     changed,
@@ -25,6 +26,33 @@ namespace platf::kms::pacing {
     retry,
     transient_timeout,
     unsupported,
+  };
+
+  class presentation_mode_t {
+  public:
+    explicit presentation_mode_t(bool required = false):
+        required_ {required} {
+    }
+
+    void activate() {
+      enabled_ = true;
+    }
+
+    void deactivate() {
+      enabled_ = false;
+    }
+
+    [[nodiscard]] bool event_capture_enabled() const {
+      return enabled_;
+    }
+
+    [[nodiscard]] bool fixed_rate_allowed() const {
+      return !required_;
+    }
+
+  private:
+    bool required_ {false};
+    bool enabled_ {false};
   };
 
   class presentation_latch_t {

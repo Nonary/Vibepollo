@@ -667,6 +667,12 @@ Additional information:
   modinfo vibeshine_drm
   ```
 
+  Updating the module on disk does not replace one already held open by the
+  compositor. Compare `modinfo -F version vibeshine_drm` with
+  `cat /sys/module/vibeshine_drm/version`; reboot before testing when they
+  differ. A working event-capable stream logs `Using event-driven KMS capture
+  for Vibeshine DRM CRTC`.
+
   Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
   `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service

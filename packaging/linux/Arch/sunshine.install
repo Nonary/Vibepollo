@@ -12,20 +12,31 @@ do_udev_reload() {
   modprobe uhid || true
 }
 
+do_install_vibeshine_drm() {
+  if /usr/libexec/vibeshine/vibeshine-drm-install install; then
+    return 0
+  else
+    local install_rc=$?
+  fi
+  if ((install_rc == 4)); then
+    echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+  else
+    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+  fi
+}
+
 post_install() {
   do_setcap
   do_udev_reload
   modprobe uhid
-  /usr/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+  do_install_vibeshine_drm
 }
 
 post_upgrade() {
   do_setcap
   do_udev_reload
   modprobe uhid
-  /usr/libexec/vibeshine/vibeshine-drm-install install || \
-    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+  do_install_vibeshine_drm
 }
 
 pre_remove() {

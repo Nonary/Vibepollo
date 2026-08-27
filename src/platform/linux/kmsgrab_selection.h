@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -15,6 +16,20 @@
 #include <vector>
 
 namespace platf::kms::selection {
+
+  constexpr std::size_t MAX_DRM_DRIVER_NAME_LENGTH = 128;
+
+  inline std::optional<std::string> normalize_driver_name(const char *name, std::size_t length) {
+    if (!name || length == 0 || length > MAX_DRM_DRIVER_NAME_LENGTH) {
+      return std::nullopt;
+    }
+
+    const std::string_view value {name, length};
+    if (value.find('\0') != std::string_view::npos) {
+      return std::nullopt;
+    }
+    return std::string {value};
+  }
 
   inline bool driver_is_nvidia(std::string_view driver_name) {
     return driver_name.starts_with("nvidia-drm");
@@ -36,7 +51,7 @@ namespace platf::kms::selection {
     return driver_name == "vibeshine_drm";
   }
 
-  inline bool driver_supports_presentation_events(std::string_view driver_name) {
+  inline bool driver_requires_presentation_events(std::string_view driver_name) {
     return driver_name == "vibeshine_drm";
   }
 

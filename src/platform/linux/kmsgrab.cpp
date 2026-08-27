@@ -49,7 +49,6 @@ namespace platf {
     static_assert(sizeof(vibeshine_drm_wait_present) == 48);
 
     constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
-    constexpr auto PRESENT_PENDING_FALLBACK_TIMEOUT = std::chrono::milliseconds(100);
 
     class cap_sys_admin {
     public:
@@ -345,7 +344,17 @@ namespace platf {
         }
 
         version_t ver {drmGetVersion(fd.el)};
-        BOOST_LOG(info) << path << " -> "sv << ((ver && ver->name) ? ver->name : "UNKNOWN");
+        auto validated_driver_name = selection::normalize_driver_name(
+          ver ? ver->name : nullptr,
+          ver ? static_cast<std::size_t>(ver->name_len) : 0
+        );
+        if (!validated_driver_name) {
+          BOOST_LOG(error) << "Couldn't obtain a valid DRM driver identity for: "sv << path;
+          return -1;
+        }
+        driver_name = std::move(*validated_driver_name);
+        BOOST_LOG(info) << path << " -> "sv << driver_name << " "sv
+                        << ver->version_major << '.' << ver->version_minor << '.' << ver->version_patchlevel;
 
         // Open the render node for this card to share with libva.
         // If it fails, we'll just share the primary node instead.
@@ -419,23 +428,19 @@ namespace platf {
       }
 
       bool is_nvidia() {
-        version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && selection::driver_is_nvidia(ver->name);
+        return selection::driver_is_nvidia(driver_name);
       }
 
       bool supports_cuda_import() {
-        version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && selection::driver_supports_cuda_import(ver->name);
+        return selection::driver_supports_cuda_import(driver_name);
       }
 
       bool requires_direct_import() {
-        version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && selection::driver_requires_direct_import(ver->name);
+        return selection::driver_requires_direct_import(driver_name);
       }
 
-      bool supports_presentation_events() {
-        version_t ver {drmGetVersion(fd.el)};
-        return ver && ver->name && selection::driver_supports_presentation_events(ver->name);
+      bool requires_presentation_events() {
+        return selection::driver_requires_presentation_events(driver_name);
       }
 
       bool is_cursor(std::uint32_t plane_id) {
@@ -594,6 +599,7 @@ namespace platf {
       file_t fd;
       file_t render_fd;
       plane_res_t plane_res;
+      std::string driver_name;
     };
 
     std::map<std::uint32_t, monitor_t> map_crtc_to_monitor(const std::vector<connector_t> &connectors) {
@@ -896,18 +902,24 @@ namespace platf {
       }
 
       capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-        if (presentation_events_enabled) {
+        if (presentation_mode.event_capture_enabled()) {
           if (auto result = capture_presentation_events(push_captured_image_cb, pull_free_image_cb, cursor)) {
             return *result;
           }
-          BOOST_LOG(warning) << "Vibeshine DRM presentation events became unavailable; reverting to fixed-rate KMS capture."sv;
+          BOOST_LOG(error) << "Vibeshine DRM presentation events became unavailable; refusing fixed-rate KMS fallback."sv;
+          presentation_mode.deactivate();
+          return capture_e::error;
+        }
+
+        if (!presentation_mode.fixed_rate_allowed()) {
+          return capture_e::error;
         }
 
         return capture_fixed_rate(push_captured_image_cb, pull_free_image_cb, cursor);
       }
 
       void request_refresh() override {
-        if (presentation_events_enabled) {
+        if (presentation_mode.event_capture_enabled()) {
           presentation_latch.request_capture();
           if (!presentation_pending && presentation_latch.capture_ready()) {
             presentation_timestamp.reset();
@@ -1276,17 +1288,18 @@ namespace platf {
       };
 
       void initialize_presentation_events() {
-        if (!card.supports_presentation_events()) {
+        presentation_mode = pacing::presentation_mode_t {card.requires_presentation_events()};
+        if (presentation_mode.fixed_rate_allowed()) {
           return;
         }
 
         presentation_sequence = 0;
         if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
-          BOOST_LOG(info) << "Vibeshine DRM presentation events are unavailable or returned an invalid response; using fixed-rate KMS capture."sv;
+          BOOST_LOG(error) << "The loaded vibeshine_drm module does not provide a valid presentation ABI. Rebuild and reload the module; refusing fixed-rate KMS fallback."sv;
           return;
         }
 
-        presentation_events_enabled = true;
+        presentation_mode.activate();
         presentation_latch.request_capture();
         presentation_pending = presentation_latch.capture_ready();
         BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
@@ -1339,7 +1352,7 @@ namespace platf {
                 std::this_thread::sleep_until(wait_deadline);
                 return wait_for_presentation(0ms);
               case pacing::presentation_ioctl_error_e::unsupported:
-                presentation_events_enabled = false;
+                presentation_mode.deactivate();
                 return presentation_wait_e::unsupported;
             }
           }
@@ -1348,7 +1361,7 @@ namespace platf {
               request.crtc_id != static_cast<std::uint32_t>(crtc_id) ||
               request.timeout_ms != requested_timeout_ms ||
               request.reserved[0] != 0 || request.reserved[1] != 0) {
-            presentation_events_enabled = false;
+            presentation_mode.deactivate();
             return presentation_wait_e::unsupported;
           }
 
@@ -1369,7 +1382,7 @@ namespace platf {
                   last_presentation_timestamp
                 );
                 if (!timestamp) {
-                  presentation_events_enabled = false;
+                  presentation_mode.deactivate();
                   return presentation_wait_e::unsupported;
                 }
                 presentation_sequence = request.sequence;
@@ -1400,11 +1413,11 @@ namespace platf {
               }
               return presentation_wait_e::timeout;
             case pacing::presentation_response_e::invalid:
-              presentation_events_enabled = false;
+              presentation_mode.deactivate();
               return presentation_wait_e::unsupported;
           }
 
-          presentation_events_enabled = false;
+          presentation_mode.deactivate();
           return presentation_wait_e::unsupported;
         }
       }
@@ -1416,7 +1429,7 @@ namespace platf {
       ) {
         auto next_capture = std::chrono::steady_clock::time_point::min();
 
-        while (presentation_events_enabled) {
+        while (presentation_mode.event_capture_enabled()) {
           auto now = std::chrono::steady_clock::now();
           if (presentation_pending && now < next_capture) {
             std::this_thread::sleep_until(pacing::coalescing_wake_deadline(
@@ -1436,7 +1449,7 @@ namespace platf {
               return std::nullopt;
             }
             if (presentation_latch.state_pending()) {
-              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
               presentation_pending = false;
@@ -1460,7 +1473,8 @@ namespace platf {
 
             const auto post_capture_presentation = wait_for_presentation(0ms);
             if (post_capture_presentation == presentation_wait_e::unsupported) {
-              if (!push_captured_image_cb(std::move(img_out), status == platf::capture_e::ok)) {
+              img_out.reset();
+              if (!push_captured_image_cb({}, false)) {
                 return platf::capture_e::ok;
               }
               return std::nullopt;
@@ -1468,7 +1482,7 @@ namespace platf {
 
             next_capture = pacing::capture_deadline(capture_started, delay);
             if (presentation_latch.state_pending()) {
-              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+              if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
               presentation_pending = false;
@@ -1519,7 +1533,7 @@ namespace platf {
             case presentation_wait_e::changed:
             case presentation_wait_e::timeout:
               if (presentation_latch.state_pending() &&
-                  presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), PRESENT_PENDING_FALLBACK_TIMEOUT)) {
+                  presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
               if (presentation_latch.state_pending()) {
@@ -1611,7 +1625,7 @@ namespace platf {
       std::optional<uint32_t> connector_id;
       std::optional<uint64_t> hdr_metadata_blob_id;
       bool direct_import_required {false};
-      bool presentation_events_enabled {false};
+      pacing::presentation_mode_t presentation_mode;
       bool presentation_pending {false};
       pacing::presentation_latch_t presentation_latch;
       std::uint64_t presentation_sequence {};

@@ -1259,6 +1259,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
             automatically; use the first command to install or retry it manually. The privileged
             helper always uses the fixed, root-owned
             <code>/usr/libexec/vibeshine</code> path, independent of the application install prefix.
+            Replacing the module file does not replace a module already loaded by the compositor.
+            Compare <code>modinfo -F version vibeshine_drm</code> with
+            <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
             The module targets Linux 7.2 or newer and exposes four independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested

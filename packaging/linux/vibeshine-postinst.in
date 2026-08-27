@@ -4,6 +4,14 @@
 # continue on failure, but managed displays remain unavailable until it loads.
 if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
   echo "Installing the Vibeshine HDR DRM module."
-  "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" install || \
-    echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+  if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" install; then
+    :
+  else
+    vibeshine_drm_rc=$?
+    if [ "$vibeshine_drm_rc" -eq 4 ]; then
+      echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+    else
+      echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+    fi
+  fi
 fi

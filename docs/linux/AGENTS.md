@@ -72,6 +72,12 @@ sudo /usr/libexec/vibeshine/vibeshine-drm-install install
 sudo systemctl enable --now vibeshine-vkms.service
 ```
 
+Installing a new module file does not replace an already loaded module. Compare
+`modinfo -F version vibeshine_drm` with
+`cat /sys/module/vibeshine_drm/version`; if they differ, reboot before testing
+capture. Event-capable Vibeshine capture must log `Using event-driven KMS
+capture`, not a fixed-rate fallback.
+
 The privileged helper always remains at the fixed, root-owned
 `/usr/libexec/vibeshine` path, even when the application binary uses a custom prefix.
 
