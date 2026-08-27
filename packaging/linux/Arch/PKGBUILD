@@ -6,7 +6,7 @@
 
 : "${_commit:=@GITHUB_COMMIT@}"
 
-pkgname='sunshine'
+pkgname='vibepollo'
 pkgver=@PROJECT_VERSION@@SUNSHINE_SUB_VERSION@
 pkgrel=1
 pkgdesc="@PROJECT_DESCRIPTION@"
@@ -29,6 +29,7 @@ fi
 depends=(
   'avahi'
   'curl'
+  'dkms'
   'kmod'
   'libayatana-appindicator'
   'libcap'
@@ -47,6 +48,7 @@ depends=(
   'libxtst'
   'make'
   'miniupnpc'
+  'mokutil'
   'numactl'
   'openssl'
   'opus'
@@ -69,12 +71,14 @@ makedepends=(
 )
 
 optdepends=(
-  'dkms: rebuild the Vibeshine HDR virtual-display module after kernel updates'
   'libva-mesa-driver: AMD GPU encoding support'
+  'linux-cachyos-headers: build the virtual-display module for the standard CachyOS kernel'
+  'linux-headers: build the virtual-display module for the standard Arch kernel'
+  'shim-signed: make enrolled MOK keys available to the Linux kernel under Secure Boot'
 )
 
-provides=()
-conflicts=()
+provides=('sunshine')
+conflicts=('sunshine' 'vibeshine')
 
 source=("$pkgname::git+@GITHUB_CLONE_URL@#commit=${_commit}")
 sha256sums=('SKIP')
@@ -168,6 +172,7 @@ build() {
 check() {
     cd "${srcdir}/build"
     ./sunshine --version
+    ctest --test-dir . --output-on-failure -j2
 }
 
 package() {

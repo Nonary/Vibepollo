@@ -669,8 +669,23 @@ Additional information:
   `/usr/libexec/vibeshine` path even when the application uses a custom prefix. The pool service
   provisions four dormant private outputs using the custom GPU-attached backend. If the module
   cannot be built or loaded, managed virtual displays remain unavailable rather than falling back
-  to CPU-backed stock VKMS. Secure Boot systems must sign the module with a key trusted by the
-  machine before it can load.
+  to CPU-backed stock VKMS.
+
+  On Arch Linux and CachyOS, install the matching headers for every kernel you boot (for example,
+  `linux-headers` or `linux-cachyos-headers`). The native package uses DKMS and signs rebuilt
+  modules automatically. A Secure Boot system using shim needs one additional enrollment:
+
+  ```bash
+  sudo /usr/libexec/vibeshine/vibeshine-drm-install enroll-key
+  # Reboot, select "Enroll MOK", and enter the temporary password from the command above.
+  /usr/libexec/vibeshine/vibeshine-drm-install signing-status
+  modinfo -F signer vibeshine_drm
+  ```
+
+  This enrollment survives normal kernel and Vibeshine updates; DKMS continues using the same
+  root-only signing key. The helper refuses to schedule MOK enrollment unless the current boot
+  passed through shim, because direct Limine and systemd-boot paths do not make MOK keys available
+  to the Linux kernel.
 
   @seealso{[Arch wiki on HDR Support for Linux](https://wiki.archlinux.org/title/HDR_monitor_support) and
   [Reddit Guide for HDR Support for AMD GPUs](https://www.reddit.com/r/linux_gaming/comments/10m2gyx/guide_alpha_test_hdr_on_linux)}

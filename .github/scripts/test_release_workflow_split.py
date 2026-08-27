@@ -23,7 +23,9 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
 
         self.assertNotIn("release", jobs)
+        self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
+        self.assertIn("build-archlinux", awaiting_signing["needs"])
         self.assertIn("should_release", build_inputs["build_only"])
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
@@ -47,6 +49,50 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             workflow_text,
         )
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_arch_package_is_built_and_carried_into_release(self) -> None:
+        pkgbuild = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text(encoding="utf-8")
+        self.assertIn("pkgname='vibepollo'", pkgbuild)
+        self.assertIn("conflicts=('sunshine' 'vibeshine')", pkgbuild)
+        ci_workflow = load_workflow("ci.yml")
+        arch_workflow = load_workflow("ci-archlinux.yml")
+        release_workflow = load_workflow("sign-release.yml")
+
+        arch_call = ci_workflow["jobs"]["build-archlinux"]
+        self.assertEqual(arch_call["uses"], "./.github/workflows/ci-archlinux.yml")
+        self.assertEqual(
+            arch_call["with"]["release_commit"],
+            "${{ needs.release-candidate.outputs.release_commit || github.sha }}",
+        )
+        self.assertEqual(
+            arch_call["with"]["artifact_retention_days"],
+            "${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}",
+        )
+
+        checkout = next(
+            step
+            for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
+            if step["name"] == "Checkout"
+        )
+        self.assertEqual(checkout["with"]["submodules"], "recursive")
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
+
+        resolver = release_workflow["jobs"]["resolve_release"]
+        self.assertIn("arch_artifact_id", resolver["outputs"])
+        release_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"build-Archlinux"', release_text)
+        self.assertIn(".assets[$name] = $hash", release_text)
+        release_steps = release_workflow["jobs"]["release"]["steps"]
+        self.assertIn(
+            "Download Arch Linux artifacts",
+            {step["name"] for step in release_steps},
+        )
+        self.assertIn(
+            "Include Arch Linux package",
+            {step["name"] for step in release_steps},
+        )
 
     def test_manual_workflow_auto_resolves_an_exact_valid_build(self) -> None:
         workflow = load_workflow("sign-release.yml")

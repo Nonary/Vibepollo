@@ -1271,6 +1271,12 @@ editing the `conf` file in a text editor. Use the examples as reference.
             If the custom module cannot be built or loaded (including on older kernels or when
             Secure Boot rejects an unsigned module), managed virtual displays remain unavailable.
             Vibeshine deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
+            Arch Linux and CachyOS packages use DKMS to sign future rebuilds with a persistent local
+            key. When Secure Boot is enabled through shim, enroll that key once with
+            <code>sudo /usr/libexec/vibeshine/vibeshine-drm-install enroll-key</code>, reboot into the
+            MOK manager, and verify it afterward with
+            <code>/usr/libexec/vibeshine/vibeshine-drm-install signing-status</code>. Install the
+            matching kernel headers before retrying a failed module build.
         </td>
     </tr>
 </table>
