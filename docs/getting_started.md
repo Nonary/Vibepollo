@@ -655,9 +655,11 @@ Additional information:
   - Native Vibeshine installations can provide private HDR10 virtual outputs through the
     `vibeshine_drm` module. It requires Linux 7.1 or newer and matching kernel headers. Its EDID
     advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
-    The driver notifies direct KMS capture when a presentation completes, so sparse changes are captured
-    immediately and bursts are coalesced to the stream's requested maximum frame rate. Older module
-    versions fall back to fixed-rate KMS polling.
+    The driver notifies direct KMS capture when a presentation completes and exports the exact pinned
+    primary-plane DMA-BUF for that sequence, so sparse changes are captured immediately and bursts are
+    coalesced to the stream's requested maximum frame rate without re-querying KMS state. The managed
+    output exposes only a primary plane, forcing the compositor to include cursors and overlays in that
+    final framebuffer. Older modules without the frame-export ABI are rejected rather than polled.
 
   Enable the managed virtual-display pool after installation:
 

@@ -3,6 +3,7 @@
  * @brief Definitions for KMS screen capture.
  */
 // standard includes
+#include <array>
 #include <errno.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -45,8 +46,11 @@ namespace platf {
 
 #define DRM_IOCTL_VIBESHINE_WAIT_PRESENT \
   DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_WAIT_PRESENT, struct vibeshine_drm_wait_present)
+#define DRM_IOCTL_VIBESHINE_GET_FRAME \
+  DRM_IOWR(DRM_COMMAND_BASE + DRM_VIBESHINE_GET_FRAME, struct vibeshine_drm_frame)
 
     static_assert(sizeof(vibeshine_drm_wait_present) == 48);
+    static_assert(sizeof(vibeshine_drm_frame) == 152);
 
     constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
 
@@ -662,6 +666,19 @@ namespace platf {
 
     class display_t: public platf::display_t {
     public:
+      struct exported_frame_t {
+        vibeshine_drm_frame descriptor {};
+        std::array<file_t, VIBESHINE_DRM_FRAME_MAX_PLANES> dma_buf_fds;
+        std::array<file_t, VIBESHINE_DRM_FRAME_MAX_PLANES> sync_files;
+        std::chrono::steady_clock::time_point timestamp;
+      };
+
+      enum class frame_export_e {
+        ready,
+        empty,
+        unsupported,
+      };
+
       display_t(mem_type_e mem_type):
           platf::display_t(),
           mem_type {mem_type} {
@@ -1191,6 +1208,34 @@ namespace platf {
           }
         }
 
+        if (pending_exported_frame) {
+          auto exported = std::move(*pending_exported_frame);
+          pending_exported_frame.reset();
+          const auto &frame = exported.descriptor;
+
+          std::fill_n(sd->fds, VIBESHINE_DRM_FRAME_MAX_PLANES, -1);
+          for (std::uint32_t plane = 0; plane < frame.plane_count; ++plane) {
+            file[plane] = std::move(exported.dma_buf_fds[plane]);
+            sd->fds[plane] = file[plane].el;
+            sd->offsets[plane] = frame.offsets[plane];
+            sd->pitches[plane] = frame.pitches[plane];
+          }
+
+          sd->width = frame.width;
+          sd->height = frame.height;
+          sd->modifier = frame.modifier;
+          sd->fourcc = frame.fourcc;
+          sd->direct_import_required = true;
+          frame_timestamp = exported.timestamp;
+
+          if (frame.width != img_width || frame.height != img_height) {
+            return capture_e::reinit;
+          }
+
+          update_cursor();
+          return capture_e::ok;
+        }
+
         plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
         frame_timestamp = std::chrono::steady_clock::now();
 
@@ -1287,6 +1332,86 @@ namespace platf {
         unsupported,
       };
 
+      frame_export_e dequeue_presentation_frame() {
+        vibeshine_drm_frame request {};
+        request.abi_version = VIBESHINE_DRM_FRAME_ABI_VERSION;
+        request.crtc_id = static_cast<std::uint32_t>(crtc_id);
+
+        cap_sys_admin admin;
+        if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_FRAME, &request) < 0) {
+          BOOST_LOG(error) << "Failed to export Vibeshine DRM presentation frame: "sv << strerror(errno);
+          return frame_export_e::unsupported;
+        }
+
+        exported_frame_t exported;
+        exported.descriptor = request;
+        for (std::size_t plane = 0; plane < exported.dma_buf_fds.size(); ++plane) {
+          exported.dma_buf_fds[plane].el = request.dma_buf_fds[plane];
+          exported.sync_files[plane].el = request.sync_file_fds[plane];
+        }
+
+        const bool common_fields_valid =
+          request.abi_version == VIBESHINE_DRM_FRAME_ABI_VERSION &&
+          request.crtc_id == static_cast<std::uint32_t>(crtc_id) &&
+          request.reserved_u32 == 0 &&
+          std::ranges::all_of(request.reserved, [](std::uint64_t value) { return value == 0; });
+        if (!common_fields_valid) {
+          BOOST_LOG(error) << "Vibeshine DRM returned an invalid frame ABI response."sv;
+          return frame_export_e::unsupported;
+        }
+
+        if (request.flags == VIBESHINE_DRM_FRAME_EMPTY) {
+          const bool empty_descriptor = request.width == 0 && request.height == 0 &&
+                                        request.fourcc == 0 && request.modifier == 0 &&
+                                        request.plane_count == 0 &&
+                                        std::ranges::all_of(request.dma_buf_fds, [](std::int32_t fd) { return fd == -1; }) &&
+                                        std::ranges::all_of(request.sync_file_fds, [](std::int32_t fd) { return fd == -1; }) &&
+                                        std::ranges::all_of(request.pitches, [](std::uint32_t value) { return value == 0; }) &&
+                                        std::ranges::all_of(request.offsets, [](std::uint32_t value) { return value == 0; });
+          if (!empty_descriptor) {
+            BOOST_LOG(error) << "Vibeshine DRM returned a malformed empty frame."sv;
+            return frame_export_e::unsupported;
+          }
+          pending_exported_frame.reset();
+          return frame_export_e::empty;
+        }
+
+        if (request.flags != VIBESHINE_DRM_FRAME_READY || request.sequence == 0 ||
+            request.width == 0 || request.height == 0 || request.fourcc == 0 ||
+            request.plane_count == 0 || request.plane_count > VIBESHINE_DRM_FRAME_MAX_PLANES) {
+          BOOST_LOG(error) << "Vibeshine DRM returned a malformed presentation frame."sv;
+          return frame_export_e::unsupported;
+        }
+
+        for (std::uint32_t plane = 0; plane < VIBESHINE_DRM_FRAME_MAX_PLANES; ++plane) {
+          const bool active = plane < request.plane_count;
+          if ((active && (request.dma_buf_fds[plane] < 0 || request.sync_file_fds[plane] < -1)) ||
+              (!active && (request.dma_buf_fds[plane] != -1 || request.sync_file_fds[plane] != -1 ||
+                           request.pitches[plane] != 0 || request.offsets[plane] != 0))) {
+            BOOST_LOG(error) << "Vibeshine DRM returned an invalid DMA-BUF plane descriptor."sv;
+            return frame_export_e::unsupported;
+          }
+        }
+
+        auto timestamp = pacing::validate_timestamp(
+          request.timestamp_ns,
+          std::chrono::steady_clock::now(),
+          0ns,
+          last_presentation_timestamp
+        );
+        if (!timestamp) {
+          BOOST_LOG(error) << "Vibeshine DRM returned an invalid frame presentation timestamp."sv;
+          return frame_export_e::unsupported;
+        }
+
+        exported.timestamp = *timestamp;
+        presentation_sequence = request.sequence;
+        presentation_timestamp = *timestamp;
+        last_presentation_timestamp = *timestamp;
+        pending_exported_frame = std::move(exported);
+        return frame_export_e::ready;
+      }
+
       void initialize_presentation_events() {
         presentation_mode = pacing::presentation_mode_t {card.requires_presentation_events()};
         if (presentation_mode.fixed_rate_allowed()) {
@@ -1296,6 +1421,10 @@ namespace platf {
         presentation_sequence = 0;
         if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
           BOOST_LOG(error) << "The loaded vibeshine_drm module does not provide a valid presentation ABI. Rebuild and reload the module; refusing fixed-rate KMS fallback."sv;
+          return;
+        }
+        if (dequeue_presentation_frame() != frame_export_e::ready) {
+          BOOST_LOG(error) << "The loaded vibeshine_drm module cannot export its completed primary framebuffer; refusing KMS polling fallback."sv;
           return;
         }
 
@@ -1457,6 +1586,17 @@ namespace platf {
                 return platf::capture_e::ok;
               }
               continue;
+            }
+
+            if (!pending_exported_frame) {
+              switch (dequeue_presentation_frame()) {
+                case frame_export_e::ready:
+                  break;
+                case frame_export_e::empty:
+                  return platf::capture_e::reinit;
+                case frame_export_e::unsupported:
+                  return std::nullopt;
+              }
             }
 
             const auto captured_sequence = presentation_sequence;
@@ -1631,6 +1771,7 @@ namespace platf {
       std::uint64_t presentation_sequence {};
       std::optional<std::chrono::steady_clock::time_point> presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
+      std::optional<exported_frame_t> pending_exported_frame;
       std::uint64_t crtc_gamma_lut_blob_id {};
       std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 
