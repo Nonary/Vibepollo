@@ -2,7 +2,27 @@
 
 #include "src/rtsp_pending_policy.h"
 
+#include <limits>
 #include <set>
+
+TEST(RtspPendingPolicy, ValidatesAndNormalizesClientCaptureFramerate) {
+  using rtsp_stream::pending_policy::normalize_requested_framerate;
+  using rtsp_stream::pending_policy::parse_requested_framerate;
+  using normalized_t = rtsp_stream::pending_policy::normalized_framerate_t;
+
+  EXPECT_FALSE(normalize_requested_framerate(0));
+  EXPECT_FALSE(normalize_requested_framerate(-1));
+  EXPECT_FALSE(normalize_requested_framerate(std::numeric_limits<std::int64_t>::max()));
+  EXPECT_EQ(normalize_requested_framerate(60), (normalized_t {.capture_framerate = 60, .encoding_framerate = 60000}));
+  EXPECT_EQ(normalize_requested_framerate(59940), (normalized_t {.capture_framerate = 60, .encoding_framerate = 59940}));
+  EXPECT_EQ(normalize_requested_framerate(4000), (normalized_t {.capture_framerate = 4000, .encoding_framerate = 4000}));
+  EXPECT_EQ(normalize_requested_framerate(4000000), (normalized_t {.capture_framerate = 4000, .encoding_framerate = 4000000}));
+  EXPECT_FALSE(normalize_requested_framerate(4001000));
+  EXPECT_EQ(parse_requested_framerate("120"), (normalized_t {.capture_framerate = 120, .encoding_framerate = 120000}));
+  EXPECT_FALSE(parse_requested_framerate(""));
+  EXPECT_FALSE(parse_requested_framerate("60fps"));
+  EXPECT_FALSE(parse_requested_framerate("999999999999999999999999999999999999"));
+}
 
 TEST(RtspPendingPolicy, MixedNatEncryptedFramingSelectsAuthenticatedRoute) {
   const std::array<std::uint8_t, 4> encrypted_word {0x80, 0x00, 0x00, 0x10};

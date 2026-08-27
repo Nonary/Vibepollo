@@ -1840,7 +1840,15 @@ namespace rtsp_stream {
 
       config.monitor.height = (int) util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
       config.monitor.width = (int) util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
-      config.monitor.framerate = (int) util::from_view(args.at("x-nv-video[0].maxFPS"sv));
+      const auto requested_framerate = args.at("x-nv-video[0].maxFPS"sv);
+      const auto normalized_framerate = pending_policy::parse_requested_framerate(requested_framerate);
+      if (!normalized_framerate) {
+        BOOST_LOG(warning) << "Rejecting invalid client maxFPS ["sv << requested_framerate << "]"sv;
+        respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return false;
+      }
+      config.monitor.framerate = normalized_framerate->capture_framerate;
+      config.monitor.encodingFramerate = normalized_framerate->encoding_framerate;
       config.monitor.framerateX100 = (int) util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
       config.monitor.bitrate = (int) util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
       config.monitor.client_requested_bitrate = config.monitor.bitrate;
@@ -1852,18 +1860,6 @@ namespace rtsp_stream {
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
       config.monitor.vrr_low_latency = session->client_vrr_requested;
-
-      if (config.monitor.framerate > 1000) {
-        config.monitor.encodingFramerate = config.monitor.framerate;
-      } else {
-        config.monitor.encodingFramerate = config.monitor.framerate * 1000;
-      }
-
-      // When fractional refresh rate requested from client side, it should be well above 1000fps.
-      // 4000fps is when Warp2 Mode is enabled on the client, requested framerate can be actual * 4.
-      if (config.monitor.framerate > 4000) {
-        config.monitor.framerate = std::round((float) config.monitor.framerate / 1000);
-      }
 
       // Validate that clientRefreshRateX100 is consistent with maxFPS.
       // Some clients send a stale or incorrect clientRefreshRateX100 (e.g. 6000 = 60fps)

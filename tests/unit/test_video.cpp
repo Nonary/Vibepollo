@@ -1,6 +1,7 @@
 #include "../tests_common.h"
 
 #include "src/video_policy.h"
+#include "src/thread_safe.h"
 
 #include <array>
 #include <map>
@@ -37,6 +38,64 @@ TEST(CapturePolicy, PersistentDisplayFailureBacksOffWithoutDelayingInitialRecove
   EXPECT_FALSE(video::policy::should_log_display_retry(3));
   EXPECT_TRUE(video::policy::should_log_display_retry(16));
   EXPECT_FALSE(video::policy::should_log_display_retry(17));
+}
+
+TEST(CapturePolicy, ExactOutputRejectsManualSwitchAndActiveOutputKeepsStableIdentity) {
+  const std::array<std::string, 2> original_order {"Display-A", "Display-B"};
+  const std::array<std::string, 2> reordered {"Display-B", "Display-A"};
+
+  EXPECT_FALSE(video::policy::select_manual_display_output(
+    video::policy::capture_selection_e::exact_output,
+    1,
+    original_order
+  ));
+
+  const auto selected = video::policy::select_manual_display_output(
+    video::policy::capture_selection_e::process_preferred,
+    1,
+    original_order
+  );
+  ASSERT_EQ(selected, "Display-B");
+  EXPECT_EQ(video::policy::resolve_display_output(*selected, reordered), 0);
+  EXPECT_FALSE(video::policy::resolve_display_output(*selected, std::array<std::string, 1> {"Display-A"}));
+}
+
+TEST(CapturePolicy, QueueOverflowRejectsAndSignalsWithoutDiscardingPriorSession) {
+  using namespace std::chrono_literals;
+
+  safe::queue_t<int> queue {1};
+  safe::signal_t shutdown_signal;
+  safe::signal_t join_signal;
+  ASSERT_TRUE(queue.try_raise(7));
+
+  EXPECT_FALSE(video::policy::try_admit_capture_session(
+    queue,
+    9,
+    shutdown_signal,
+    join_signal
+  ));
+  EXPECT_TRUE(shutdown_signal.peek());
+  EXPECT_TRUE(join_signal.peek());
+  EXPECT_EQ(queue.pop(0ms), 7);
+  EXPECT_FALSE(queue.pop(0ms));
+}
+
+TEST(CapturePolicy, AcceptedSessionAdmissionLeavesSignalsForTheWorker) {
+  using namespace std::chrono_literals;
+
+  safe::queue_t<int> queue {1};
+  safe::signal_t shutdown_signal;
+  safe::signal_t join_signal;
+
+  EXPECT_TRUE(video::policy::try_admit_capture_session(
+    queue,
+    7,
+    shutdown_signal,
+    join_signal
+  ));
+  EXPECT_FALSE(shutdown_signal.peek());
+  EXPECT_FALSE(join_signal.peek());
+  EXPECT_EQ(queue.pop(0ms), 7);
 }
 
 TEST(EncoderPolicy, SelectsFirstAvailableCapableEncoderWithoutHardwareProbe) {

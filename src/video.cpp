@@ -2986,6 +2986,8 @@ namespace video {
     });
 
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    std::uint64_t switch_display_generation {switch_display_event->generation()};
+    std::optional<std::string> pending_switch_output;
 
     // Wait for the initial capture context or a request to stop the queue
     auto initial_capture_ctx = capture_ctx_queue->pop();
@@ -2993,6 +2995,10 @@ namespace video {
       return;
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
+    const auto manual_switch_selection =
+      capture_ctxs.front().config.capture_source == capture_source_e::active_output ?
+        video::policy::capture_selection_e::process_preferred :
+        video::policy::capture_selection_e::exact_output;
 
     std::vector<std::string> display_names;
     int display_p = -1;
@@ -3021,6 +3027,20 @@ namespace video {
       if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
         wait_before_display_retry(display_retry_failures);
         continue;
+      }
+
+      if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
+        pending_switch_output = video::policy::select_manual_display_output(
+          manual_switch_selection,
+          *requested,
+          display_names
+        );
+      }
+      if (pending_switch_output) {
+        if (auto requested_index = video::policy::resolve_display_output(*pending_switch_output, display_names)) {
+          display_p = *requested_index;
+        }
+        pending_switch_output.reset();
       }
 
       if (log_display_retry) {
@@ -3202,6 +3222,19 @@ namespace video {
       bool artificial_reinit = false;
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
+        bool new_context_needs_frame = false;
+        while (auto pending_context = capture_ctx_queue->pop(0ms)) {
+          auto new_context = std::move(*pending_context);
+          if (!frame_captured && new_context.images->running()) {
+            new_context_needs_frame = true;
+          }
+          capture_ctxs.emplace_back(std::move(new_context));
+        }
+
+        if (new_context_needs_frame) {
+          disp->request_refresh();
+        }
+
         KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
           if (!capture_ctx->images->running()) {
             capture_ctx = capture_ctxs.erase(capture_ctx);
@@ -3219,14 +3252,20 @@ namespace video {
         if (!capture_ctx_queue->running()) {
           return false;
         }
-
-        while (capture_ctx_queue->peek()) {
-          capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
+        if (capture_ctxs.empty()) {
+          return false;
         }
 
-        if (switch_display_event->peek()) {
-          artificial_reinit = true;
-          return false;
+        if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
+          pending_switch_output = video::policy::select_manual_display_output(
+            manual_switch_selection,
+            *requested,
+            display_names
+          );
+          if (*requested < 0 || pending_switch_output) {
+            artificial_reinit = true;
+            return false;
+          }
         }
 
         return true;
@@ -3293,9 +3332,7 @@ namespace video {
                   continue;
                 }
 
-                while (capture_ctx->images->peek()) {
-                  capture_ctx->images->pop();
-                }
+                while (capture_ctx->images->pop(0ms)) {}
 
                 ++capture_ctx;
               });
@@ -3315,6 +3352,15 @@ namespace video {
               deferred_d3d_images.clear();
             }
 #endif
+
+            while (auto pending_context = capture_ctx_queue->pop(0ms)) {
+              if (pending_context->images->running()) {
+                capture_ctxs.emplace_back(std::move(*pending_context));
+              }
+            }
+            if (capture_ctxs.empty()) {
+              return;
+            }
 
             std::size_t display_retry_failures = 0;
             while (capture_ctx_queue->running()) {
@@ -3348,11 +3394,18 @@ namespace video {
 
               // Process any pending display switch with the new list of displays.
               // Negative values mean "reinit only; keep display selection logic intact".
-              if (switch_display_event->peek()) {
-                const int requested = *switch_display_event->pop();
-                if (requested >= 0) {
-                  display_p = std::clamp(requested, 0, (int) display_names.size() - 1);
+              if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
+                pending_switch_output = video::policy::select_manual_display_output(
+                  manual_switch_selection,
+                  *requested,
+                  display_names
+                );
+              }
+              if (pending_switch_output) {
+                if (auto requested_index = video::policy::resolve_display_output(*pending_switch_output, display_names)) {
+                  display_p = *requested_index;
                 }
+                pending_switch_output.reset();
               }
 
               // reset_display() will sleep between retries
@@ -5612,7 +5665,9 @@ namespace video {
     std::vector<std::unique_ptr<sync_session_ctx_t>> &synced_session_ctxs,
     encode_session_ctx_queue_t &encode_session_ctx_queue,
     std::vector<std::string> &display_names,
-    int &display_p
+    int &display_p,
+    std::uint64_t &switch_display_generation,
+    std::optional<std::string> &pending_switch_output
   ) {
     const auto *enc_ptr = chosen_encoder;
     if (!enc_ptr) {
@@ -5633,6 +5688,10 @@ namespace video {
 
       synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
     }
+    const auto manual_switch_selection =
+      synced_session_ctxs.front()->config.capture_source == capture_source_e::active_output ?
+        video::policy::capture_selection_e::process_preferred :
+        video::policy::capture_selection_e::exact_output;
 
     std::size_t display_retry_failures = 0;
     while (encode_session_ctx_queue.running()) {
@@ -5678,11 +5737,18 @@ namespace video {
 
       // Process any pending display switch with the new list of displays.
       // Negative values mean "reinit only; keep display selection logic intact".
-      if (switch_display_event->peek()) {
-        const int requested = *switch_display_event->pop();
-        if (requested >= 0) {
-          display_p = std::clamp(requested, 0, (int) display_names.size() - 1);
+      if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
+        pending_switch_output = video::policy::select_manual_display_output(
+          manual_switch_selection,
+          *requested,
+          display_names
+        );
+      }
+      if (pending_switch_output) {
+        if (auto requested_index = video::policy::resolve_display_output(*pending_switch_output, display_names)) {
+          display_p = *requested_index;
         }
+        pending_switch_output.reset();
       }
 
       // reset_display() will sleep between retries
@@ -5715,11 +5781,19 @@ namespace video {
     auto ec = platf::capture_e::ok;
     while (encode_session_ctx_queue.running()) {
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
-        while (encode_session_ctx_queue.peek()) {
-          auto encode_session_ctx = encode_session_ctx_queue.pop();
-          if (!encode_session_ctx) {
-            return false;
-          }
+        if (frame_captured && !img) {
+          BOOST_LOG(error) << "Capture backend reported a frame without an image"sv;
+          ec = platf::capture_e::error;
+          return false;
+        }
+
+        if (!frame_captured && encode_session_ctx_queue.peek()) {
+          disp->request_refresh();
+        }
+
+        while (frame_captured) {
+          auto encode_session_ctx = encode_session_ctx_queue.pop(0ms);
+          if (!encode_session_ctx) break;
 
           synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*encode_session_ctx)));
 
@@ -5744,7 +5818,10 @@ namespace video {
             }));
 
             if (synced_sessions.empty()) {
-              return false;
+              if (!encode_session_ctx_queue.wait_for_data(50ms)) {
+                return false;
+              }
+              disp->request_refresh();
             }
 
             continue;
@@ -5843,8 +5920,19 @@ namespace video {
           ++pos;
         })
 
-        if (switch_display_event->peek()) {
-          ec = platf::capture_e::reinit;
+        if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
+          pending_switch_output = video::policy::select_manual_display_output(
+            manual_switch_selection,
+            *requested,
+            display_names
+          );
+          if (*requested < 0 || pending_switch_output) {
+            ec = platf::capture_e::reinit;
+            return false;
+          }
+        }
+
+        if (!encode_session_ctx_queue.running()) {
           return false;
         }
 
@@ -5901,7 +5989,17 @@ namespace video {
 
     std::vector<std::string> display_names;
     int display_p = -1;
-    while (encode_run_sync(synced_session_ctxs, ctx, display_names, display_p) == encode_e::reinit) {}
+    auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    std::uint64_t switch_display_generation {switch_display_event->generation()};
+    std::optional<std::string> pending_switch_output;
+    while (encode_run_sync(
+             synced_session_ctxs,
+             ctx,
+             display_names,
+             display_p,
+             switch_display_generation,
+             pending_switch_output
+           ) == encode_e::reinit) {}
   }
 
   void capture_async(
@@ -6125,9 +6223,10 @@ namespace video {
     } else {
       safe::signal_t join_event;
       auto ref = capture_thread_sync.ref();
-      ref->encode_session_ctx_queue.raise(sync_session_ctx_t {
+      auto shutdown_event = mail->event<bool>(mail::shutdown);
+      sync_session_ctx_t session_ctx {
         &join_event,
-        mail->event<bool>(mail::shutdown),
+        shutdown_event,
         mail::man->queue<packet_t>(mail::video_packets),
         std::move(idr_events),
         mail->event<hdr_info_t>(mail::hdr),
@@ -6136,7 +6235,16 @@ namespace video {
         config,
         1,
         channel_data,
-      });
+      };
+      if (!video::policy::try_admit_capture_session(
+            ref->encode_session_ctx_queue,
+            std::move(session_ctx),
+            *shutdown_event,
+            join_event
+          )) {
+        BOOST_LOG(error) << "Shared capture session queue is full or stopped; rejecting the session."sv;
+        return;
+      }
 
       // Wait for join signal
       join_event.view();
