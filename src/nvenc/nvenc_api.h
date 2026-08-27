@@ -15,6 +15,12 @@ namespace nvenc::api {
 
   constexpr uint32_t compiled_api_version = make_api_version(NVENCAPI_MAJOR_VERSION, NVENCAPI_MINOR_VERSION);
 
+  // NvEncodeAPIGetMaxSupportedVersion() uses a distinct packed representation:
+  // the low nibble is the minor version and all higher bits are the major.
+  constexpr uint32_t driver_max_to_api_version(uint32_t driver_max_version) {
+    return make_api_version(driver_max_version >> 4, driver_max_version & 0xFu);
+  }
+
   constexpr uint32_t api_version_major(uint32_t api_version) {
     return api_version & 0xFFu;
   }

@@ -36,6 +36,11 @@ TEST(NvencApiTest, SemanticVersionComparisonUsesMajorThenMinor) {
   EXPECT_TRUE(nvenc::api::api_version_greater(kApi13_0, kApi12_2));
 }
 
+TEST(NvencApiTest, DriverMaximumVersionUsesPackedNibbleRepresentation) {
+  EXPECT_EQ(nvenc::api::driver_max_to_api_version(0xD1U), nvenc::api::make_api_version(13U, 1U));
+  EXPECT_EQ(nvenc::api::driver_max_to_api_version(0xC2U), nvenc::api::make_api_version(12U, 2U));
+}
+
 TEST(NvencApiTest, FilterToApiVersionRetainsReviewedFallbacksForSdk130) {
   EXPECT_THAT(
     nvenc::api::filter_to_api_version({kApi13_0, kApi12_2, kApi12_1, kApi12_0, kApi11_0}, kApi13_0),
