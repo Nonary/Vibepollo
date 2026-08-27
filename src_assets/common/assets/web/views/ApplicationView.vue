@@ -988,7 +988,20 @@ function overrideSelectOptions(key: string): Array<{ label: string; value: strin
         : platform
           ? [
               auto,
-              { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc' },
+              {
+                value: 'nvenc',
+                labelKey: platform.includes('linux')
+                  ? 'ui.settings.options.encoder.nvenc_ffmpeg'
+                  : 'ui.settings.options.encoder.nvenc',
+              },
+              ...(platform.includes('linux')
+                ? [
+                    {
+                      value: 'nvenc_experimental',
+                      labelKey: 'ui.settings.options.encoder.nvenc_experimental',
+                    },
+                  ]
+                : []),
               { value: 'vulkan', labelKey: 'ui.settings.options.encoder.vulkan' },
               { value: 'vaapi', labelKey: 'ui.settings.options.encoder.vaapi' },
               { value: 'software', labelKey: 'ui.settings.options.encoder.software' },

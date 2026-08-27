@@ -81,6 +81,23 @@ TEST(CapturePolicy, AcceptedSessionAdmissionLeavesSignalsForTheWorker) {
   EXPECT_EQ(queue.pop(0ms), 7);
 }
 
+TEST(CapturePolicy, SuppressesExactDuplicatesUntilKeepaliveIsDue) {
+  using namespace std::chrono_literals;
+
+  const auto started = std::chrono::steady_clock::time_point {1s};
+  EXPECT_TRUE(video::policy::should_encode_converted_frame(false, false, started, started + 1ms, 100ms));
+  EXPECT_FALSE(video::policy::should_encode_converted_frame(true, false, started, started + 99ms, 100ms));
+  EXPECT_TRUE(video::policy::should_encode_converted_frame(true, false, started, started + 100ms, 100ms));
+}
+
+TEST(CapturePolicy, NeverSuppressesFirstOrForcedFrame) {
+  using namespace std::chrono_literals;
+
+  const auto now = std::chrono::steady_clock::time_point {1s};
+  EXPECT_TRUE(video::policy::should_encode_converted_frame(true, false, std::nullopt, now, 100ms));
+  EXPECT_TRUE(video::policy::should_encode_converted_frame(true, true, now, now + 1ms, 100ms));
+}
+
 TEST(EncoderPolicy, SelectsFirstAvailableCapableEncoderWithoutHardwareProbe) {
   FakeEncoderProvider provider;
   provider.values["nvenc"] = {false, true, true};

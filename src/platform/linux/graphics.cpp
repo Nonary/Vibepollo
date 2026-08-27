@@ -6,6 +6,7 @@
 #include <atomic>
 #include <fcntl.h>
 #include <limits>
+#include <mutex>
 
 // local includes
 #include "graphics.h"
@@ -48,9 +49,46 @@ extern "C" {
 using namespace std::literals;
 
 namespace gl {
-  GladGLContext ctx;
+  namespace {
+    std::mutex context_seed_mutex;
+    GladGLContext context_seed {};
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_seed = nullptr;
 
-  static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_fn = nullptr;
+    GladGLContext initial_context_dispatch() {
+      std::lock_guard lock {context_seed_mutex};
+      return context_seed;
+    }
+
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC initial_egl_image_target_texture_2d() {
+      std::lock_guard lock {context_seed_mutex};
+      return egl_image_target_texture_2d_seed;
+    }
+  }  // namespace
+
+  // OpenGL dispatch is context/vendor-specific. Each owner thread loads its own
+  // table instead of rewriting pointers underneath active encoder threads. The
+  // seed leaves legacy cross-thread cleanup with callable dispatch stubs even
+  // though GL objects are still expected to be destroyed by their owner.
+  thread_local GladGLContext ctx = initial_context_dispatch();
+
+  static thread_local PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d_fn = initial_egl_image_target_texture_2d();
+
+  bool load_context_dispatch() {
+    GladGLContext loaded_context {};
+    if (!gladLoadGLContext(&loaded_context, eglGetProcAddress)) {
+      return false;
+    }
+
+    auto loaded_egl_image_target =
+      (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLADapiproc) eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    ctx = loaded_context;
+    egl_image_target_texture_2d_fn = loaded_egl_image_target;
+
+    std::lock_guard lock {context_seed_mutex};
+    context_seed = loaded_context;
+    egl_image_target_texture_2d_seed = loaded_egl_image_target;
+    return true;
+  }
 
   PFNGLEGLIMAGETARGETTEXTURE2DOESPROC egl_image_target_texture_2d() {
     return egl_image_target_texture_2d_fn;
@@ -322,6 +360,33 @@ namespace gbm {
 
 namespace egl {
 
+  namespace {
+    // GLAD's EGL and GL dispatch tables are process-global. Load each table
+    // exactly once after a real display/context is available so a second
+    // encoder session cannot rewrite function pointers while another session
+    // is using them. Failed first attempts remain retryable.
+    std::mutex egl_dispatch_mutex;
+    bool egl_client_dispatch_loaded = false;
+    bool egl_display_dispatch_loaded = false;
+
+    bool ensure_loader_locked() {
+      if (egl_client_dispatch_loaded) {
+        return true;
+      }
+      if (!gladLoaderLoadEGL(EGL_NO_DISPLAY)) {
+        BOOST_LOG(error) << "Failed to load EGL library symbols"sv;
+        return false;
+      }
+      egl_client_dispatch_loaded = true;
+      return true;
+    }
+  }  // namespace
+
+  bool ensure_loader() {
+    std::lock_guard lock {egl_dispatch_mutex};
+    return ensure_loader_locked();
+  }
+
   bool fail() {
     return eglGetError() != EGL_SUCCESS;
   }
@@ -330,6 +395,14 @@ namespace egl {
    * @memberof egl::display_t
    */
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display) {
+    // Keep initial display creation behind the same lock as the one process-wide
+    // initialized-display reload. Once it succeeds, later calls skip the GLAD
+    // write and the short initialization-only critical section is harmless.
+    std::lock_guard dispatch_lock {egl_dispatch_mutex};
+    if (!ensure_loader_locked()) {
+      return nullptr;
+    }
+
     int egl_platform;
     void *native_display_p;
 
@@ -374,15 +447,22 @@ namespace egl {
       return nullptr;
     }
 
-    if (!gladLoaderLoadEGL(display.get())) {
-      BOOST_LOG(error) << "Failed to reload EGL for initialized display"sv;
-      return nullptr;
+    if (!egl_display_dispatch_loaded) {
+      if (!gladLoaderLoadEGL(display.get())) {
+        BOOST_LOG(error) << "Failed to reload EGL for initialized display"sv;
+        return nullptr;
+      }
     }
 
     const char *extension_st = eglQueryString(display.get(), EGL_EXTENSIONS);
     const char *version = eglQueryString(display.get(), EGL_VERSION);
     const char *vendor = eglQueryString(display.get(), EGL_VENDOR);
     const char *apis = eglQueryString(display.get(), EGL_CLIENT_APIS);
+
+    if (!extension_st) {
+      BOOST_LOG(error) << "Couldn't query EGL display extensions"sv;
+      return nullptr;
+    }
 
     BOOST_LOG(debug) << "EGL: ["sv << vendor << "]: version ["sv << version << ']';
     BOOST_LOG(debug) << "API's supported: ["sv << apis << ']';
@@ -400,6 +480,7 @@ namespace egl {
         return nullptr;
       }
     }
+    egl_display_dispatch_loaded = true;
 
     return display;
   }
@@ -475,14 +556,11 @@ namespace egl {
       return std::nullopt;
     }
 
-    if (!gladLoadGLContext(&gl::ctx, eglGetProcAddress)) {
+    if (!gl::load_context_dispatch()) {
       BOOST_LOG(error) << "Couldn't load OpenGL library"sv;
       return std::nullopt;
     }
-
-    gl::egl_image_target_texture_2d_fn =
-      (gl::PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLADapiproc) eglGetProcAddress("glEGLImageTargetTexture2DOES");
-    if (!gl::egl_image_target_texture_2d_fn) {
+    if (!gl::egl_image_target_texture_2d()) {
       BOOST_LOG(warning) << "GL: glEGLImageTargetTexture2DOES not available; DMA-BUF import will fail"sv;
     }
 

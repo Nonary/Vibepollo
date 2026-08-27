@@ -205,6 +205,97 @@ namespace cuda {
     dstY1[1] = calcY(rgb_rb, color_matrix) * 245.0f;  // 245.0f is a magic number to ensure slight changes in luminosity are more visible
   }
 
+  __global__ void detect_pitched_frame_change(
+    const std::uint8_t *current,
+    const std::uint8_t *previous,
+    std::size_t pitch,
+    std::size_t row_bytes,
+    std::size_t chunks_per_row,
+    std::size_t rows,
+    std::uint32_t *changed
+  ) {
+    __shared__ std::uint32_t block_changed;
+    if (threadIdx.x == 0) {
+      block_changed = 0;
+    }
+    __syncthreads();
+
+    constexpr std::size_t chunk_bytes = sizeof(uint4);
+    const auto chunk_index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const auto total_chunks = chunks_per_row * rows;
+    if (chunk_index < total_chunks) {
+      const auto row = chunk_index / chunks_per_row;
+      const auto column = (chunk_index % chunks_per_row) * chunk_bytes;
+      const auto *current_row = current + row * pitch;
+      const auto *previous_row = previous + row * pitch;
+
+      bool differs = false;
+      if (column + chunk_bytes <= row_bytes) {
+        const auto current_chunk = *reinterpret_cast<const uint4 *>(current_row + column);
+        const auto previous_chunk = *reinterpret_cast<const uint4 *>(previous_row + column);
+        differs = current_chunk.x != previous_chunk.x ||
+                  current_chunk.y != previous_chunk.y ||
+                  current_chunk.z != previous_chunk.z ||
+                  current_chunk.w != previous_chunk.w;
+      } else if (column < row_bytes) {
+        for (auto byte = column; byte < row_bytes; ++byte) {
+          differs |= current_row[byte] != previous_row[byte];
+        }
+      }
+
+      if (differs) {
+        atomicExch(&block_changed, 1U);
+      }
+    }
+
+    __syncthreads();
+    if (threadIdx.x == 0 && block_changed) {
+      atomicExch(changed, 1U);
+    }
+  }
+
+  int compare_pitched_frames(
+    const std::uint8_t *current,
+    const std::uint8_t *previous,
+    const std::size_t pitch,
+    const std::size_t row_bytes,
+    const std::size_t rows,
+    std::uint32_t *changed_device,
+    cudaStream_t stream,
+    bool &changed
+  ) {
+    if (!current || !previous || !changed_device || !stream || !pitch || !row_bytes || !rows || row_bytes > pitch) {
+      return -1;
+    }
+
+    constexpr std::size_t chunk_bytes = sizeof(uint4);
+    constexpr unsigned int threads_per_block = 256;
+    const auto chunks_per_row = div_align(row_bytes, chunk_bytes);
+    const auto total_chunks = chunks_per_row * rows;
+    const auto blocks = static_cast<unsigned int>(div_align(total_chunks, static_cast<std::size_t>(threads_per_block)));
+
+    CU_CHECK(cudaMemsetAsync(changed_device, 0, sizeof(*changed_device), stream), "Couldn't reset CUDA duplicate-frame flag");
+    detect_pitched_frame_change<<<blocks, threads_per_block, 0, stream>>>(
+      current,
+      previous,
+      pitch,
+      row_bytes,
+      chunks_per_row,
+      rows,
+      changed_device
+    );
+    CU_CHECK(cudaGetLastError(), "Couldn't launch CUDA duplicate-frame comparison");
+
+    std::uint32_t host_changed = 0;
+    CU_CHECK(
+      cudaMemcpyAsync(&host_changed, changed_device, sizeof(host_changed), cudaMemcpyDeviceToHost, stream),
+      "Couldn't read CUDA duplicate-frame result"
+    );
+    CU_CHECK(cudaStreamSynchronize(stream), "Couldn't synchronize CUDA duplicate-frame comparison");
+    changed = host_changed != 0;
+    return 0;
+  }
+
   int tex_t::copy(std::uint8_t *src, int height, int pitch) {
     CU_CHECK(cudaMemcpy2DToArray(array, 0, 0, src, pitch, pitch, height, cudaMemcpyDeviceToDevice), "Couldn't copy to cuda array from deviceptr");
 

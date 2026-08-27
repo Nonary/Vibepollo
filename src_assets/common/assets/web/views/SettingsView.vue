@@ -122,7 +122,7 @@ const preferredGpu = computed<GpuMetadata | null>(() => {
 });
 
 function encoderFamily(encoder: string): SettingsField['encoderFamily'] | undefined {
-  if (encoder === 'nvenc') return 'nvidia';
+  if (encoder === 'nvenc' || encoder === 'nvenc_experimental') return 'nvidia';
   if (encoder === 'quicksync') return 'intel';
   if (encoder === 'amdvce_experimental' || encoder === 'amdvce_ffmpeg') return 'amd';
   return undefined;
@@ -511,7 +511,20 @@ function optionsFor(field: SettingsField): SettingsOption[] {
     } else if (platform) {
       options = [
         ...common,
-        localizedOption('nvenc', 'ui.settings.options.encoder.nvenc'),
+        localizedOption(
+          'nvenc',
+          platform.includes('linux')
+            ? 'ui.settings.options.encoder.nvenc_ffmpeg'
+            : 'ui.settings.options.encoder.nvenc',
+        ),
+        ...(platform.includes('linux')
+          ? [
+              localizedOption(
+                'nvenc_experimental',
+                'ui.settings.options.encoder.nvenc_experimental',
+              ),
+            ]
+          : []),
         localizedOption('vulkan', 'ui.settings.options.encoder.vulkan'),
         localizedOption('vaapi', 'ui.settings.options.encoder.vaapi'),
         localizedOption('software', 'ui.settings.options.encoder.software'),

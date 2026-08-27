@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -46,6 +47,19 @@ namespace video::policy {
   };
 
   rational_t framerate_x100_to_rational(std::int32_t value);
+
+  /**
+   * Decide whether a converted frame should be encoded. Exact duplicates may
+   * be suppressed until the keepalive interval expires, but a forced frame or
+   * the first frame is always encoded.
+   */
+  bool should_encode_converted_frame(
+    bool duplicate,
+    bool force,
+    std::optional<std::chrono::steady_clock::time_point> last_encoded_at,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::duration keepalive_interval
+  );
 
   struct encoder_requirements_t {
     bool hdr = false;

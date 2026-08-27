@@ -57,6 +57,16 @@ namespace video::policy {
     return {value / divisor, 100 / divisor};
   }
 
+  bool should_encode_converted_frame(
+    const bool duplicate,
+    const bool force,
+    const std::optional<std::chrono::steady_clock::time_point> last_encoded_at,
+    const std::chrono::steady_clock::time_point now,
+    const std::chrono::steady_clock::duration keepalive_interval
+  ) {
+    return !duplicate || force || !last_encoded_at || now - *last_encoded_at >= keepalive_interval;
+  }
+
   std::optional<std::string> select_encoder(
     std::span<const std::string_view> preference,
     encoder_requirements_t requirements,

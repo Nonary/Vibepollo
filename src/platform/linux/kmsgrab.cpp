@@ -709,7 +709,7 @@ namespace platf {
           // import path unless NVENC was explicitly selected by the user.
           if (mem_type == mem_type_e::cuda && !card.supports_cuda_import()) {
             BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
-            if (config::video.encoder != "nvenc") {
+            if (config::video.encoder != "nvenc" && config::video.encoder != "nvenc_experimental") {
               continue;
             }
           }
@@ -1838,6 +1838,15 @@ namespace platf {
         return nullptr;
       }
 
+      std::unique_ptr<nvenc_encode_device_t> make_nvenc_encode_device(pix_fmt_e pix_fmt) override {
+#ifdef SUNSHINE_BUILD_CUDA
+        if (mem_type == mem_type_e::cuda) {
+          return cuda::make_nvenc_gl_encode_device(width, height, img_offset_x, img_offset_y, pix_fmt);
+        }
+#endif
+        return nullptr;
+      }
+
       std::shared_ptr<img_t> alloc_img() override {
         auto img = std::make_shared<egl::img_descriptor_t>();
 
@@ -2068,7 +2077,7 @@ namespace platf {
       // import path unless NVENC was explicitly selected by the user.
       if (hwdevice_type == mem_type_e::cuda && !card.supports_cuda_import()) {
         BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
-        if (config::video.encoder == "nvenc") {
+        if (config::video.encoder == "nvenc" || config::video.encoder == "nvenc_experimental") {
           BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
         } else {
           continue;

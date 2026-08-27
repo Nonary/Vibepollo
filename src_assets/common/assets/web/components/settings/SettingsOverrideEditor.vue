@@ -300,7 +300,19 @@ function selectOptions(key: string): Array<{ label: string; value: string }> {
           { value: 'mediafoundation', labelKey: 'ui.settings.options.encoder.mediafoundation' },
           { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
         ]
-      : [auto, { value: 'software', labelKey: 'ui.settings.options.encoder.software' }];
+      : platform.includes('linux')
+        ? [
+            auto,
+            { value: 'nvenc', labelKey: 'ui.settings.options.encoder.nvenc_ffmpeg' },
+            {
+              value: 'nvenc_experimental',
+              labelKey: 'ui.settings.options.encoder.nvenc_experimental',
+            },
+            { value: 'vulkan', labelKey: 'ui.settings.options.encoder.vulkan' },
+            { value: 'vaapi', labelKey: 'ui.settings.options.encoder.vaapi' },
+            { value: 'software', labelKey: 'ui.settings.options.encoder.software' },
+          ]
+        : [auto, { value: 'software', labelKey: 'ui.settings.options.encoder.software' }];
   }
 
   const options = declaredOptions.map((option) => ({

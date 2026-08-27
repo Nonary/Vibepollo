@@ -5,6 +5,7 @@
 #include <gmock/gmock.h>
 
 #include "src/nvenc/nvenc_api.h"
+#include "src/nvenc/nvenc_config.h"
 
 namespace {
 
@@ -34,6 +35,24 @@ TEST(NvencApiTest, SemanticVersionComparisonUsesMajorThenMinor) {
   EXPECT_TRUE(nvenc::api::api_version_less_or_equal(kApi12_2, kApi13_0));
   EXPECT_TRUE(nvenc::api::api_version_less_or_equal(kApi13_0, kApi13_0));
   EXPECT_TRUE(nvenc::api::api_version_greater(kApi13_0, kApi12_2));
+}
+
+TEST(NvencApiTest, DriverMaximumVersionUsesPackedNibbleRepresentation) {
+  EXPECT_EQ(nvenc::api::driver_max_to_api_version(0xD1U), nvenc::api::make_api_version(13U, 1U));
+  EXPECT_EQ(nvenc::api::driver_max_to_api_version(0xC2U), nvenc::api::make_api_version(12U, 2U));
+}
+
+TEST(NvencApiTest, ExperimentalLinuxBackendIsExplicitOnlyAndFailClosed) {
+  const auto automatic = nvenc::encoder_selection_policy("");
+  const auto stable = nvenc::encoder_selection_policy("nvenc");
+  const auto experimental = nvenc::encoder_selection_policy("nvenc_experimental");
+
+  EXPECT_FALSE(automatic.include_experimental);
+  EXPECT_FALSE(automatic.fail_closed);
+  EXPECT_FALSE(stable.include_experimental);
+  EXPECT_FALSE(stable.fail_closed);
+  EXPECT_TRUE(experimental.include_experimental);
+  EXPECT_TRUE(experimental.fail_closed);
 }
 
 TEST(NvencApiTest, FilterToApiVersionRetainsReviewedFallbacksForSdk130) {
