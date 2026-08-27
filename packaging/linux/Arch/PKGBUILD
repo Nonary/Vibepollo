@@ -7,7 +7,7 @@
 : "${_commit:=@GITHUB_COMMIT@}"
 
 pkgname='sunshine'
-pkgver=@PROJECT_VERSION@@SUNSHINE_SUB_VERSION@
+pkgver=@SUNSHINE_ARCH_PKGVER@@SUNSHINE_SUB_VERSION@
 pkgrel=1
 pkgdesc="@PROJECT_DESCRIPTION@"
 arch=('x86_64' 'aarch64')
@@ -48,7 +48,7 @@ depends=(
   'libxtst'
   'make'
   'miniupnpc'
-  'mokutil'
+  'mokutil>=0.7.2'
   'numactl'
   'openssl'
   'opus'
@@ -74,7 +74,7 @@ optdepends=(
   'libva-mesa-driver: AMD GPU encoding support'
   'linux-cachyos-headers: build the virtual-display module for the standard CachyOS kernel'
   'linux-headers: build the virtual-display module for the standard Arch kernel'
-  'shim-signed: make enrolled MOK keys available to the Linux kernel under Secure Boot'
+  'shim-signed: provide a signed shim boot chain for MOK trust on strict Secure Boot systems'
 )
 
 provides=()

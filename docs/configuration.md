@@ -1231,7 +1231,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Replacing the module file does not replace a module already loaded by the compositor.
             Compare <code>modinfo -F version vibeshine_drm</code> with
             <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
-            The module targets Linux 7.2 or newer and exposes four independent virtual connectors
+            The module supports Linux 7.1 or newer and exposes four independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
             mode, layout, and HDR state through KScreen, captures that exact connector, and restores
@@ -1244,14 +1244,16 @@ editing the `conf` file in a text editor. Use the examples as reference.
             fixed-rate KMS polling. KWin ScreenCast remains the recommended compositor capture path for SDR.
             <br><br>
             If the custom module cannot be built or loaded (including on older kernels or when
-            Secure Boot rejects an unsigned module), managed virtual displays remain unavailable.
+            the kernel rejects an untrusted module signature), managed virtual displays remain unavailable.
             Vibepollo deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
             Arch Linux and CachyOS packages use DKMS to sign future rebuilds with a persistent local
-            key. When Secure Boot is enabled through shim, enroll that key once with
-            <code>sudo /usr/libexec/vibeshine/vibeshine-drm-install enroll-key</code>, reboot into the
-            MOK manager, and verify it afterward with
-            <code>/usr/libexec/vibeshine/vibeshine-drm-install signing-status</code>. Install the
-            matching kernel headers before retrying a failed module build.
+            key and verify the embedded signer before accepting the module. Stock Arch and CachyOS
+            kernels need no separate signing step: accepting the normal package-install confirmation
+            is enough, including with Secure Boot through Limine or systemd-boot. Only a custom kernel
+            that enforces trusted module signatures requires shim. The package installation detects
+            this and launches the one-time signing-key authorization prompt automatically; reboot and
+            approve the pending firmware confirmations once. Future updates remain automatic. Install
+            the matching kernel headers before retrying a failed module build.
         </td>
     </tr>
 </table>
@@ -1496,7 +1498,7 @@ Terminate request. The original game client is unaffected. The default is
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{On Linux 7.2 or newer, the managed <code>vibeshine_drm</code> output supplied by <code>libvirtualdisplay</code> advertises GPU-attached HDR10 and 10-bit formats. Managed display creation fails if that driver is unavailable rather than using CPU-backed stock VKMS.}
+            @note{On Linux 7.1 or newer, the managed <code>vibeshine_drm</code> output supplied by <code>libvirtualdisplay</code> advertises GPU-attached HDR10 and 10-bit formats. Managed display creation fails if that driver is unavailable rather than using CPU-backed stock VKMS.}
         </td>
     </tr>
     <tr>
