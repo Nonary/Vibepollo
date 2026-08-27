@@ -226,11 +226,25 @@ jobs:
       symbol_token: ${{ secrets.SYMBOL_TOKEN }}
       truehdr_runtime_token: ${{ secrets.TRUEHDR_RUNTIME_TOKEN }}
 
+  build-archlinux:
+    name: Arch Linux
+    needs:
+      - release-candidate
+    if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-archlinux.yml
+    with:
+      artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
+      release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
+
   awaiting-signing:
     name: Awaiting manual signing
     if: needs.release-candidate.outputs.should_release == 'true'
     needs:
       - release-candidate
+      - build-archlinux
       - build-windows
     permissions: {}
     runs-on: ubuntu-latest

@@ -23,7 +23,9 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
 
         self.assertNotIn("release", jobs)
+        self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
+        self.assertIn("build-archlinux", awaiting_signing["needs"])
         self.assertIn("should_release", build_inputs["build_only"])
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
@@ -47,6 +49,47 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             workflow_text,
         )
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_arch_package_is_built_and_carried_into_release(self) -> None:
+        ci_workflow = load_workflow("ci.yml")
+        arch_workflow = load_workflow("ci-archlinux.yml")
+        release_workflow = load_workflow("sign-release.yml")
+
+        arch_call = ci_workflow["jobs"]["build-archlinux"]
+        self.assertEqual(arch_call["uses"], "./.github/workflows/ci-archlinux.yml")
+        self.assertEqual(
+            arch_call["with"]["release_commit"],
+            "${{ needs.release-candidate.outputs.release_commit || github.sha }}",
+        )
+        self.assertEqual(
+            arch_call["with"]["artifact_retention_days"],
+            "${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}",
+        )
+
+        checkout = next(
+            step
+            for step in arch_workflow["jobs"]["build_archlinux"]["steps"]
+            if step["name"] == "Checkout"
+        )
+        self.assertEqual(checkout["with"]["submodules"], "recursive")
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
+
+        resolver = release_workflow["jobs"]["resolve_release"]
+        self.assertIn("arch_artifact_id", resolver["outputs"])
+        release_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"build-Archlinux"', release_text)
+        self.assertIn(".assets[$name] = $hash", release_text)
+        release_steps = release_workflow["jobs"]["release"]["steps"]
+        self.assertIn(
+            "Download Arch Linux artifacts",
+            {step["name"] for step in release_steps},
+        )
+        self.assertIn(
+            "Include Arch Linux package",
+            {step["name"] for step in release_steps},
+        )
 
     def test_manual_workflow_auto_resolves_an_exact_valid_build(self) -> None:
         workflow = load_workflow("sign-release.yml")
@@ -349,6 +392,63 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             bootstrapper,
         )
 
+    def test_release_build_uses_shallow_cached_dependencies(self) -> None:
+        workflow = load_workflow("ci-windows.yml")
+        workflow_text = (ROOT / ".github" / "workflows" / "ci-windows.yml").read_text(
+            encoding="utf-8"
+        )
+        build_steps = workflow["jobs"]["build_windows"]["steps"]
+        package_steps = workflow["jobs"]["package_windows"]["steps"]
+
+        build_checkout = next(step for step in build_steps if step["name"] == "Checkout")
+        package_checkout = next(step for step in package_steps if step["name"] == "Checkout")
+        self.assertEqual(build_checkout["with"]["fetch-depth"], "1")
+        self.assertEqual(build_checkout["with"]["submodules"], "recursive")
+        self.assertEqual(package_checkout["with"]["fetch-depth"], "1")
+
+        self.assertNotIn(
+            "Update Windows dependencies",
+            {step["name"] for step in build_steps},
+        )
+        setup = next(
+            step for step in build_steps if step["name"] == "Setup Dependencies Windows"
+        )
+        self.assertEqual(setup["with"]["cache"], "true")
+        install = setup["with"]["install"]
+        packages = (
+            "git",
+            "mingw-w64-${{ matrix.toolchain }}-boost",
+            "mingw-w64-${{ matrix.toolchain }}-cmake",
+            "mingw-w64-${{ matrix.toolchain }}-cppwinrt",
+            "mingw-w64-${{ matrix.toolchain }}-curl-winssl",
+            "mingw-w64-${{ matrix.toolchain }}-gcc",
+            "mingw-w64-${{ matrix.toolchain }}-MinHook",
+            "mingw-w64-${{ matrix.toolchain }}-miniupnpc",
+            "mingw-w64-${{ matrix.toolchain }}-ninja",
+            "mingw-w64-${{ matrix.toolchain }}-nlohmann-json",
+            "mingw-w64-${{ matrix.toolchain }}-onevpl",
+            "mingw-w64-${{ matrix.toolchain }}-openssl",
+            "mingw-w64-${{ matrix.toolchain }}-opus",
+            "mingw-w64-${{ matrix.toolchain }}-sqlite3",
+            "mingw-w64-${{ matrix.toolchain }}-tools",
+        )
+        for package in packages:
+            self.assertIn(package, install)
+        self.assertNotIn("wget", install)
+        self.assertNotIn("-toolchain", install)
+        self.assertNotIn(
+            "-DBUILD_WERROR=ON \\\n            # Release tag builds",
+            workflow_text,
+        )
+        self.assertIn(
+            "          # Release tag builds omit test targets; ordinary reusable-workflow calls retain them.\n"
+            "          cmake \\",
+            workflow_text,
+        )
+        self.assertIn(
+            "-DBUILD_TESTS=${{ inputs.build_tests && 'ON' || 'OFF' }}",
+            workflow_text,
+        )
 
 if __name__ == "__main__":
     unittest.main()

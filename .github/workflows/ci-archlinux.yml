@@ -5,6 +5,10 @@ permissions: {}
 on:
   workflow_call:
     inputs:
+      artifact_retention_days:
+        required: false
+        type: number
+        default: 1
       release_commit:
         required: true
         type: string
@@ -64,6 +68,10 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ inputs.release_commit }}
+          fetch-depth: 1
+          submodules: recursive
 
       - name: Fix workspace permissions
         shell: bash
@@ -76,7 +84,7 @@ jobs:
         run: |
           # Calculate sub_version
           sub_version=""
-          if [[ "${BRANCH}" != "master" ]]; then
+          if [[ "${BUILD_VERSION}" == "0.0.0" && "${BRANCH}" != "master" ]]; then
             sub_version=".r${COMMIT}"
           fi
 
@@ -138,6 +146,28 @@ jobs:
           # Remove problem matcher
           echo "::remove-matcher owner=gcc::"
 
+      - name: Verify Arch package contract
+        shell: bash
+        working-directory: pkg
+        run: |
+          set -euo pipefail
+
+          mapfile -t packages < <(find . -maxdepth 1 -type f -name 'sunshine-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
+          if (( ${#packages[@]} != 1 )); then
+            echo "::error::Expected exactly one non-debug Arch package, found ${#packages[@]}."
+            printf '%s\n' "${packages[@]}" >&2
+            exit 1
+          fi
+
+          package="${packages[0]}"
+          package_info="$(bsdtar -xOf "${package}" .PKGINFO)"
+          package_files="$(bsdtar -tf "${package}")"
+          grep -qx 'depend = dkms' <<< "${package_info}"
+          grep -qx 'depend = mokutil' <<< "${package_info}"
+          grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
+          grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
+
       - name: Copy Artifacts
         shell: bash
         run: |
@@ -157,3 +187,4 @@ jobs:
           name: build-Archlinux
           path: artifacts/
           if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
