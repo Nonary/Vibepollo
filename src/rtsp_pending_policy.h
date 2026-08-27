@@ -4,10 +4,22 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace rtsp_stream::pending_policy {
+  constexpr int MAX_CAPTURE_FRAMERATE = 4000;
+
+  struct normalized_framerate_t {
+    int capture_framerate;
+    int encoding_framerate;
+    friend bool operator==(const normalized_framerate_t &, const normalized_framerate_t &) = default;
+  };
+
+  std::optional<normalized_framerate_t> normalize_requested_framerate(std::int64_t requested_framerate);
+  std::optional<normalized_framerate_t> parse_requested_framerate(std::string_view requested_framerate);
+
   enum class initial_route_e { reject, plaintext, encrypted };
 
   struct pending_owner_t {

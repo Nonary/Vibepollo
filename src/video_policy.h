@@ -5,11 +5,39 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace video::policy {
+  template<class Queue, class Context, class ShutdownSignal, class JoinSignal>
+  bool try_admit_capture_session(
+    Queue &queue,
+    Context &&context,
+    ShutdownSignal &shutdown_signal,
+    JoinSignal &join_signal
+  ) {
+    if (queue.try_raise(std::forward<Context>(context))) {
+      return true;
+    }
+
+    shutdown_signal.raise(true);
+    join_signal.raise(true);
+    return false;
+  }
+
   enum class capture_selection_e : std::uint8_t { process_preferred, exact_output, synthetic_black };
 
   [[nodiscard]] bool may_apply_process_display_preference(capture_selection_e selection);
+
+  std::optional<std::string> select_manual_display_output(
+    capture_selection_e selection,
+    int requested_index,
+    std::span<const std::string> display_names
+  );
+
+  std::optional<int> resolve_display_output(
+    std::string_view output_identity,
+    std::span<const std::string> display_names
+  );
 
   struct rational_t {
     int numerator;

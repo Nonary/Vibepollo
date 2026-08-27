@@ -5,8 +5,49 @@
 #include <numeric>
 
 namespace video::policy {
+  namespace {
+    bool equals_case_insensitive(std::string_view left, std::string_view right) {
+      return left.size() == right.size() && std::equal(
+        left.begin(),
+        left.end(),
+        right.begin(),
+        [](const char lhs, const char rhs) {
+          return std::tolower(static_cast<unsigned char>(lhs)) ==
+                 std::tolower(static_cast<unsigned char>(rhs));
+        }
+      );
+    }
+  }  // namespace
+
   bool may_apply_process_display_preference(const capture_selection_e selection) {
     return selection == capture_selection_e::process_preferred;
+  }
+
+  std::optional<std::string> select_manual_display_output(
+    const capture_selection_e selection,
+    const int requested_index,
+    const std::span<const std::string> display_names
+  ) {
+    if (selection != capture_selection_e::process_preferred ||
+        requested_index < 0 || display_names.empty()) {
+      return std::nullopt;
+    }
+
+    const auto index = std::clamp(requested_index, 0, static_cast<int>(display_names.size()) - 1);
+    return display_names[static_cast<std::size_t>(index)];
+  }
+
+  std::optional<int> resolve_display_output(
+    const std::string_view output_identity,
+    const std::span<const std::string> display_names
+  ) {
+    const auto found = std::find_if(display_names.begin(), display_names.end(), [&](const std::string &name) {
+      return equals_case_insensitive(name, output_identity);
+    });
+    if (found == display_names.end()) {
+      return std::nullopt;
+    }
+    return static_cast<int>(std::distance(display_names.begin(), found));
   }
 
   rational_t framerate_x100_to_rational(std::int32_t value) {
@@ -35,17 +76,6 @@ namespace video::policy {
     std::span<const std::string> active_virtual_outputs,
     std::span<const std::string> all_virtual_outputs
   ) {
-    const auto equals_case_insensitive = [](std::string_view left, std::string_view right) {
-      return left.size() == right.size() && std::equal(
-        left.begin(),
-        left.end(),
-        right.begin(),
-        [](const char lhs, const char rhs) {
-          return std::tolower(static_cast<unsigned char>(lhs)) ==
-                 std::tolower(static_cast<unsigned char>(rhs));
-        }
-      );
-    };
     const auto find_configured = [&](std::span<const std::string> outputs) -> std::optional<std::string> {
       if (configured_output.empty()) {
         return std::nullopt;

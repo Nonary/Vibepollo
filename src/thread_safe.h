@@ -34,6 +34,7 @@ namespace safe {
       } else {
         _status = status_t {std::forward<Args>(args)...};
       }
+      ++_generation;
 
       _cv.notify_all();
     }
@@ -114,7 +115,23 @@ namespace safe {
     }
 
     bool peek() {
+      std::lock_guard lg {_lock};
       return _continue && (bool) _status;
+    }
+
+    [[nodiscard]] std::uint64_t generation() const {
+      std::lock_guard lg {_lock};
+      return _generation;
+    }
+
+    status_t view_if_newer(std::uint64_t &observed_generation) {
+      std::lock_guard lg {_lock};
+      if (!_continue || !_status || observed_generation == _generation) {
+        return util::false_v<status_t>;
+      }
+
+      observed_generation = _generation;
+      return _status;
     }
 
     void stop() {
@@ -134,15 +151,17 @@ namespace safe {
     }
 
     [[nodiscard]] bool running() const {
+      std::lock_guard lg {_lock};
       return _continue;
     }
 
   private:
     bool _continue {true};
     status_t _status {util::false_v<status_t>};
+    std::uint64_t _generation {};
 
     std::condition_variable _cv;
-    std::mutex _lock;
+    mutable std::mutex _lock;
   };
 
   template<class T>
@@ -272,8 +291,30 @@ namespace safe {
       _cv.notify_all();
     }
 
+    template<class... Args>
+    bool try_raise(Args &&...args) {
+      std::lock_guard ul {_lock};
+
+      if (!_continue || _queue.size() >= _max_elements) {
+        return false;
+      }
+
+      _queue.emplace_back(std::forward<Args>(args)...);
+      _cv.notify_all();
+      return true;
+    }
+
     bool peek() {
+      std::lock_guard lg {_lock};
       return _continue && !_queue.empty();
+    }
+
+    template<class Rep, class Period>
+    bool wait_for_data(std::chrono::duration<Rep, Period> delay) {
+      std::unique_lock ul {_lock};
+      return _cv.wait_for(ul, delay, [this] {
+        return !_queue.empty() || !_continue;
+      }) && _continue && !_queue.empty();
     }
 
     template<class Rep, class Period>
@@ -337,6 +378,7 @@ namespace safe {
     }
 
     [[nodiscard]] bool running() const {
+      std::lock_guard lg {_lock};
       return _continue;
     }
 
@@ -344,7 +386,7 @@ namespace safe {
     bool _continue {true};
     std::uint32_t _max_elements;
 
-    std::mutex _lock;
+    mutable std::mutex _lock;
     std::condition_variable _cv;
 
     std::vector<T> _queue;

@@ -586,6 +586,14 @@ namespace platf {
     virtual void prepare_for_reinit() {
     }
 
+    /**
+     * @brief Ask a sparse capture source for one fresh image.
+     * @details Fixed-rate sources may ignore this because another image is
+     *          already scheduled.
+     */
+    virtual void request_refresh() {
+    }
+
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) {
       std::memset(&metadata, 0, sizeof(metadata));
       return false;

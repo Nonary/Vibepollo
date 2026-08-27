@@ -436,9 +436,35 @@ sunshine_register_component(NAME test_component_mouse_policy TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_platform_common TEST_SOURCE unit/platform/test_common.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/common_services.cpp")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT TARGET sunshine_libvirtualdisplay_uapi)
+        if(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR)
+            set(_sunshine_test_libvirtualdisplay_source "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}")
+        else()
+            set(_sunshine_test_libvirtualdisplay_source
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualdisplay")
+        endif()
+        set(_sunshine_test_vibeshine_drm_uapi_dir
+                "${_sunshine_test_libvirtualdisplay_source}/linux/vibeshine-drm")
+        if(NOT EXISTS "${_sunshine_test_vibeshine_drm_uapi_dir}/vibeshine_drm_uapi.h")
+            message(FATAL_ERROR
+                    "libvirtualdisplay DRM UAPI header not found: "
+                    "${_sunshine_test_vibeshine_drm_uapi_dir}/vibeshine_drm_uapi.h")
+        endif()
+        add_library(sunshine_libvirtualdisplay_uapi INTERFACE)
+        target_include_directories(sunshine_libvirtualdisplay_uapi SYSTEM INTERFACE
+                "${_sunshine_test_vibeshine_drm_uapi_dir}")
+    endif()
+    sunshine_add_test_target(
+        NAME test_fast_vibeshine_present_policy
+        CATEGORY fast
+        TEST_SOURCES
+            "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_vibeshine_present_policy.cpp"
+        LINK_LIBRARIES GTest::gtest sunshine_libvirtualdisplay_uapi)
     sunshine_register_component(NAME test_component_linux_boost_process_shim TEST_SOURCE unit/platform/linux/test_boost_process_shim.cpp
         LINK_LIBRARIES Boost::process)
-    sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp)
+    sunshine_register_component(NAME test_component_linux_kmsgrab_selection TEST_SOURCE unit/platform/linux/test_kmsgrab_selection.cpp
+        LINK_LIBRARIES sunshine_libvirtualdisplay_uapi)
     sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
     sunshine_register_component(NAME test_component_linux_mangohud_policy TEST_SOURCE unit/platform/linux/test_mangohud_policy.cpp)
     sunshine_register_component(NAME test_component_linux_smooth_motion_policy TEST_SOURCE unit/platform/linux/test_smooth_motion_policy.cpp)
