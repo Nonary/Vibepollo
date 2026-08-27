@@ -1950,6 +1950,8 @@
           "auto_selected": "Automatic · {encoder}",
           "mediafoundation": "Windows Media Foundation",
           "nvenc": "NVIDIA NVENC",
+          "nvenc_ffmpeg": "NVIDIA NVENC (FFmpeg)",
+          "nvenc_experimental": "NVIDIA NVENC (Native, Experimental)",
           "quicksync": "Intel Quick Sync",
           "software": "Software",
           "vaapi": "VA-API",

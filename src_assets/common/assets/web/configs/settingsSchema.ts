@@ -1161,7 +1161,7 @@ export function encoderOptionsForPlatform(platform: string): SettingsOption[] {
   const encoders = p.includes('windows')
     ? ['nvenc', 'quicksync', 'amdvce_ffmpeg', 'amdvce_experimental', 'mediafoundation', 'software']
     : p.includes('linux')
-      ? ['nvenc', 'nvenc_legacy', 'vulkan', 'vaapi', 'software']
+      ? ['nvenc', 'nvenc_experimental', 'nvenc_legacy', 'vulkan', 'vaapi', 'software']
       : p.includes('mac')
         ? ['videotoolbox', 'software']
         : [];

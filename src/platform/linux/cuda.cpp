@@ -3,9 +3,12 @@
  * @brief Definitions for CUDA encoding.
  */
 // standard includes
+#include <algorithm>
 #include <bitset>
 #include <fcntl.h>
 #include <filesystem>
+#include <limits>
+#include <mutex>
 #include <thread>
 
 // lib includes
@@ -22,6 +25,8 @@ extern "C" {
 #include "cuda.h"
 #include "graphics.h"
 #include "src/logging.h"
+#include "src/nvenc/nvenc_cuda.h"
+#include "src/nvenc/nvenc_utils.h"
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
@@ -54,7 +59,15 @@ namespace cuda {
 
   using cdf_t = util::safe_ptr<CudaFunctions, cff>;
 
+  // cuda_load_functions() frees any table passed to it before loading a new
+  // one. Publish exactly one successful table so active devices may safely
+  // retain borrowed pointers to it for their complete lifetime.
   static cdf_t cdf;
+  static std::mutex cdf_init_mutex;
+
+  bool ensure_egl_loader() {
+    return egl::ensure_loader();
+  }
 
   inline static int check(CUresult result, const std::string_view &sv) {
     if (result != CUDA_SUCCESS) {
@@ -116,6 +129,11 @@ namespace cuda {
   };
 
   int init() {
+    std::lock_guard lock {cdf_init_mutex};
+    if (cdf) {
+      return 0;
+    }
+
     auto status = cuda_load_functions(&cdf, nullptr);
     if (status) {
       BOOST_LOG(error) << "Couldn't load cuda: "sv << status;
@@ -123,7 +141,10 @@ namespace cuda {
       return -1;
     }
 
-    CU_CHECK(cdf->cuInit(0), "Couldn't initialize cuda");
+    if (check(cdf->cuInit(0), "Couldn't initialize cuda: "sv)) {
+      cdf.reset();
+      return -1;
+    }
 
     return 0;
   }
@@ -352,6 +373,14 @@ namespace cuda {
         return -1;
       }
 
+      if (!ensure_egl_loader()) {
+        return -1;
+      }
+
+      if (!gbm::create_device || !gbm::device_destroy) {
+        BOOST_LOG(error) << "Couldn't initialize GBM symbols for CUDA/GL interop"sv;
+        return -1;
+      }
       gbm.reset(gbm::create_device(file.el));
       if (!gbm) {
         BOOST_LOG(error) << "Couldn't create GBM device: ["sv << util::hex(eglGetError()).to_string_view() << ']';
@@ -527,6 +556,444 @@ namespace cuda {
     int offset_y;
   };
 
+  class gl_cuda_nvenc_t: public platf::nvenc_encode_device_t {
+  public:
+    ~gl_cuda_nvenc_t() override {
+      const auto owned_gl_context = std::get<1>(ctx.el);
+      const bool owns_gl_context = eglGetCurrentContext &&
+                                   owned_gl_context != EGL_NO_CONTEXT &&
+                                   eglGetCurrentContext() == owned_gl_context;
+      {
+        context_guard_t guard {cuda_context};
+
+        // The NVENC session must release its registered CUDA pointer before the
+        // primary context and conversion stream disappear.
+        nvenc = nullptr;
+        native_encoder.reset();
+
+        bool duplicate_resources_safe_to_free = static_cast<bool>(guard);
+        if (duplicate_resources_safe_to_free && stream && (previous_input_buffer || changed_device) &&
+            cdf->cuStreamSynchronize(stream) != CUDA_SUCCESS) {
+          duplicate_resources_safe_to_free = false;
+          BOOST_LOG(error) << "Couldn't synchronize native NVENC duplicate-frame work; leaking its CUDA buffers for safe teardown"sv;
+        }
+        if (duplicate_resources_safe_to_free) {
+          if (previous_input_buffer) {
+            CU_CHECK_IGNORE(cdf->cuMemFree(previous_input_buffer), "Couldn't free native NVENC duplicate-frame history");
+            previous_input_buffer = {};
+          }
+          if (changed_device) {
+            CU_CHECK_IGNORE(cdf->cuMemFree(changed_device), "Couldn't free native NVENC duplicate-frame flag");
+            changed_device = {};
+          }
+        } else if (!guard && (previous_input_buffer || changed_device)) {
+          BOOST_LOG(error) << "Couldn't enter CUDA context; leaking native NVENC duplicate-frame resources for safe teardown"sv;
+        }
+
+        if (owns_gl_context && guard) {
+          y_res.reset();
+          uv_res.reset();
+        } else {
+          // Encoder probes may tear down on a worker that cannot steal EGL's
+          // context. Releasing ownership lets CUDA/EGL reclaim registrations
+          // when their contexts are destroyed.
+          (void) y_res.release();
+          (void) uv_res.release();
+        }
+
+        if (stream && guard) {
+          if (cdf->cuStreamDestroy(stream) != CUDA_SUCCESS) {
+            BOOST_LOG(error) << "Couldn't destroy native NVENC CUDA stream"sv;
+          }
+          stream = nullptr;
+        }
+      }
+
+      if (primary_context_retained && cdf) {
+        if (cdf->cuDevicePrimaryCtxRelease(cuda_device) != CUDA_SUCCESS) {
+          BOOST_LOG(error) << "Couldn't release native NVENC CUDA context"sv;
+        }
+      }
+    }
+
+    int init(int in_width, int in_height, int in_offset_x, int in_offset_y, platf::pix_fmt_e pix_fmt) {
+      buffer_format = nvenc::nvenc_format_from_sunshine_format(pix_fmt);
+      switch (buffer_format) {
+        case NV_ENC_BUFFER_FORMAT_NV12:
+          sw_format = AV_PIX_FMT_NV12;
+          break;
+        case NV_ENC_BUFFER_FORMAT_YUV420_10BIT:
+          sw_format = AV_PIX_FMT_P010;
+          break;
+        default:
+          BOOST_LOG(error) << "Unexpected native NVENC pixel format ["sv << platf::from_pix_fmt(pix_fmt) << ']';
+          return -1;
+      }
+
+      file = std::move(open_drm_fd_for_cuda_device(0));
+      if (file.el < 0) {
+        BOOST_LOG(error) << "Couldn't open DRM FD for native NVENC CUDA device: "sv << strerror(errno);
+        return -1;
+      }
+
+      if (!ensure_egl_loader()) {
+        return -1;
+      }
+
+      if (!gbm::create_device || !gbm::device_destroy) {
+        BOOST_LOG(error) << "Couldn't initialize GBM symbols for native NVENC CUDA/GL interop"sv;
+        return -1;
+      }
+      gbm.reset(gbm::create_device(file.el));
+      if (!gbm) {
+        BOOST_LOG(error) << "Couldn't create native NVENC GBM device: ["sv << util::hex(eglGetError()).to_string_view() << ']';
+        return -1;
+      }
+
+      display = egl::make_display(gbm.get());
+      if (!display) {
+        return -1;
+      }
+
+      auto ctx_opt = egl::make_ctx(display.get());
+      if (!ctx_opt) {
+        return -1;
+      }
+      ctx = std::move(*ctx_opt);
+
+      CU_CHECK(cdf->cuDeviceGet(&cuda_device, 0), "Couldn't get native NVENC CUDA device");
+      CU_CHECK(cdf->cuDevicePrimaryCtxRetain(&cuda_context, cuda_device), "Couldn't retain native NVENC CUDA context");
+      primary_context_retained = true;
+
+      context_guard_t guard {cuda_context};
+      if (!guard) {
+        return -1;
+      }
+      CU_CHECK(cdf->cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING), "Couldn't create native NVENC CUDA stream");
+
+      width = in_width;
+      height = in_height;
+      offset_x = in_offset_x;
+      offset_y = in_offset_y;
+      return 0;
+    }
+
+    bool init_encoder(const ::video::config_t &client_config, const ::video::sunshine_colorspace_t &colorspace) override {
+      context_guard_t guard {cuda_context};
+      if (!guard) {
+        return false;
+      }
+
+      native_encoder = std::make_unique<nvenc::nvenc_cuda>(cuda_context, cdf.get(), stream);
+      nvenc = native_encoder.get();
+      output_width = client_config.width;
+      output_height = client_config.height;
+
+      const auto nvenc_colorspace = nvenc::nvenc_colorspace_from_sunshine_colorspace(colorspace);
+      if (!native_encoder->create_encoder(
+            config::video.nv,
+            client_config,
+            nvenc_colorspace,
+            buffer_format,
+            hdr_metadata_valid ? &hdr_metadata : nullptr
+          )) {
+        nvenc = nullptr;
+        // Keep the encoder object owned until the outer device teardown has
+        // checked whether the driver session was actually destroyed.  If
+        // NvEncDestroyEncoder failed, releasing only this object would let the
+        // platform device tear down CUDA/GL state still referenced by NVENC.
+        return false;
+      }
+      native_encoder->enable_io_streams();
+
+      const auto bytes_per_sample = buffer_format == NV_ENC_BUFFER_FORMAT_YUV420_10BIT ? 2U : 1U;
+      frame_row_bytes = static_cast<std::size_t>(output_width) * bytes_per_sample;
+      frame_rows = static_cast<std::size_t>(output_height) + static_cast<std::size_t>(output_height) / 2;
+      const auto input_pitch = native_encoder->input_pitch();
+      if (!frame_row_bytes || !frame_rows || frame_row_bytes > input_pitch) {
+        BOOST_LOG(error) << "NvEnc: invalid converted-frame layout for duplicate detection"sv;
+        return false;
+      }
+      if (check(
+            cdf->cuMemAlloc(&previous_input_buffer, input_pitch * frame_rows),
+            "Couldn't allocate native NVENC duplicate-frame history: "sv
+          ) ||
+          check(
+            cdf->cuMemAlloc(&changed_device, sizeof(std::uint32_t)),
+            "Couldn't allocate native NVENC duplicate-frame flag: "sv
+          )) {
+        return false;
+      }
+
+      auto target = egl::create_target(client_config.width, client_config.height, sw_format);
+      if (!target) {
+        return false;
+      }
+      nv12 = std::move(*target);
+
+      auto scaler = egl::sws_t::make(width, height, client_config.width, client_config.height, sw_format);
+      if (!scaler) {
+        return false;
+      }
+      sws = std::move(*scaler);
+      sws.apply_colorspace(colorspace);
+
+      if (check(
+            cdf->cuGraphicsGLRegisterImage(
+              &y_res,
+              nv12->tex[0],
+              GL_TEXTURE_2D,
+              CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY
+            ),
+            "Couldn't register native NVENC Y texture: "sv
+          )) {
+        return false;
+      }
+      if (check(
+            cdf->cuGraphicsGLRegisterImage(
+              &uv_res,
+              nv12->tex[1],
+              GL_TEXTURE_2D,
+              CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY
+            ),
+            "Couldn't register native NVENC UV texture: "sv
+          )) {
+        return false;
+      }
+
+      BOOST_LOG(info) << "NvEnc: experimental native CUDA backend initialized"sv;
+      return true;
+    }
+
+    bool prepare_to_destroy() override {
+      return !native_encoder || native_encoder->prepare_to_destroy();
+    }
+
+    bool last_frame_is_duplicate() const override {
+      return last_frame_duplicate;
+    }
+
+    int convert(platf::img_t &img) override {
+      if (!native_encoder) {
+        return -1;
+      }
+
+      context_guard_t guard {cuda_context};
+      if (!guard) {
+        return -1;
+      }
+
+      auto &descriptor = static_cast<egl::img_descriptor_t &>(img);
+      if (descriptor.sequence == 0) {
+        rgb = egl::create_blank(img);
+      } else if (descriptor.sequence > sequence) {
+        sequence = descriptor.sequence;
+        rgb = {};
+
+        auto imported = egl::import_source(display.get(), descriptor.sd);
+        if (!imported) {
+          imported = egl::upload_source(display.get(), descriptor.sd);
+          if (!imported) {
+            return -1;
+          }
+        }
+        rgb = std::move(*imported);
+      }
+
+      sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
+      sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
+      if (sws.convert(nv12->buf)) {
+        return -1;
+      }
+
+      CUgraphicsResource resources[2] = {y_res.get(), uv_res.get()};
+      CU_CHECK(cdf->cuGraphicsMapResources(2, resources, stream), "Couldn't map native NVENC GL textures in CUDA");
+      auto unmap_guard = util::fail_guard([&] {
+        (void) check(
+          cdf->cuGraphicsUnmapResources(2, resources, stream),
+          "Couldn't unmap native NVENC GL textures after conversion failure: "sv
+        );
+      });
+
+      const auto *format = av_pix_fmt_desc_get(sw_format);
+      const auto input_buffer = native_encoder->input_buffer();
+      const auto input_pitch = native_encoder->input_pitch();
+
+      for (int plane = 0; plane < 2; ++plane) {
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+        CU_CHECK(cdf->cuGraphicsSubResourceGetMappedArray(
+                   &copy.srcArray,
+                   resources[plane],
+                   0,
+                   0
+                 ),
+                 "Couldn't get native NVENC mapped plane");
+
+        copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = input_buffer + (plane == 0 ? 0 : input_pitch * native_height());
+        copy.dstPitch = input_pitch;
+        copy.WidthInBytes = (native_width() * format->comp[plane].step) >>
+                            (plane ? format->log2_chroma_w : 0);
+        copy.Height = native_height() >> (plane ? format->log2_chroma_h : 0);
+
+        CU_CHECK(cdf->cuMemcpy2DAsync(&copy, stream), "Couldn't copy converted frame into native NVENC input");
+      }
+
+      const auto unmap_status = cdf->cuGraphicsUnmapResources(2, resources, stream);
+      if (unmap_status == CUDA_SUCCESS) {
+        unmap_guard.disable();
+      }
+      CU_CHECK(unmap_status, "Couldn't unmap native NVENC GL textures from CUDA");
+
+      bool changed = true;
+      if (previous_frame_valid && compare_pitched_frames(
+                                    reinterpret_cast<const std::uint8_t *>(input_buffer),
+                                    reinterpret_cast<const std::uint8_t *>(previous_input_buffer),
+                                    input_pitch,
+                                    frame_row_bytes,
+                                    frame_rows,
+                                    reinterpret_cast<std::uint32_t *>(changed_device),
+                                    stream,
+                                    changed
+                                  )) {
+        return -1;
+      }
+
+      last_frame_duplicate = previous_frame_valid && !changed;
+      if (!previous_frame_valid || changed) {
+        CUDA_MEMCPY2D history_copy {};
+        history_copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        history_copy.srcDevice = input_buffer;
+        history_copy.srcPitch = input_pitch;
+        history_copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        history_copy.dstDevice = previous_input_buffer;
+        history_copy.dstPitch = input_pitch;
+        history_copy.WidthInBytes = frame_row_bytes;
+        history_copy.Height = frame_rows;
+        CU_CHECK(cdf->cuMemcpy2DAsync(&history_copy, stream), "Couldn't preserve native NVENC frame for duplicate detection");
+        previous_frame_valid = true;
+      }
+      return 0;
+    }
+
+  private:
+    int native_width() const noexcept {
+      return output_width;
+    }
+
+    int native_height() const noexcept {
+      return output_height;
+    }
+
+    file_t file;
+    gbm::gbm_t gbm;
+    egl::display_t display;
+    egl::ctx_t ctx;
+
+    CUdevice cuda_device {};
+    CUcontext cuda_context {};
+    CUstream stream {};
+    bool primary_context_retained {false};
+
+    int width {};
+    int height {};
+    int offset_x {};
+    int offset_y {};
+    int output_width {};
+    int output_height {};
+    std::uint64_t sequence {};
+    CUdeviceptr previous_input_buffer {};
+    CUdeviceptr changed_device {};
+    std::size_t frame_row_bytes {};
+    std::size_t frame_rows {};
+    bool previous_frame_valid {false};
+    bool last_frame_duplicate {false};
+
+    AVPixelFormat sw_format {AV_PIX_FMT_NONE};
+    NV_ENC_BUFFER_FORMAT buffer_format {NV_ENC_BUFFER_FORMAT_UNDEFINED};
+    egl::sws_t sws;
+    egl::nv12_t nv12;
+    egl::rgb_t rgb;
+    registered_resource_t y_res;
+    registered_resource_t uv_res;
+
+    std::unique_ptr<nvenc::nvenc_cuda> native_encoder;
+  };
+
+  class nvenc_probe_display_t final: public platf::display_t {
+  public:
+    explicit nvenc_probe_display_t(const video::config_t &config):
+        hdr(config.dynamicRange > 0 && !config.force_sdr) {
+      width = std::max(1, config.width);
+      height = std::max(1, config.height);
+      logical_width = width;
+      logical_height = height;
+      env_width = width;
+      env_height = height;
+      env_logical_width = width;
+      env_logical_height = height;
+    }
+
+    platf::capture_e capture(
+      const push_captured_image_cb_t &,
+      const pull_free_image_cb_t &,
+      bool *
+    ) override {
+      return platf::capture_e::error;
+    }
+
+    std::shared_ptr<platf::img_t> alloc_img() override {
+      auto img = std::make_shared<egl::img_descriptor_t>();
+      img->width = width;
+      img->height = height;
+      img->data = nullptr;
+      img->pixel_pitch = 4;
+      img->row_pitch = width * img->pixel_pitch;
+      img->serial = std::numeric_limits<decltype(img->serial)>::max();
+      img->sequence = 0;
+      img->sd = {};
+      img->sd.width = width;
+      img->sd.height = height;
+      std::fill_n(img->sd.fds, 4, -1);
+      return img;
+    }
+
+    int dummy_img(platf::img_t *) override {
+      return 0;
+    }
+
+    std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(platf::pix_fmt_e pix_fmt) override {
+      return make_nvenc_gl_encode_device(width, height, 0, 0, pix_fmt);
+    }
+
+    bool is_hdr() override {
+      return hdr;
+    }
+
+    bool get_hdr_metadata(SS_HDR_METADATA &metadata) override {
+      if (!hdr) {
+        metadata = {};
+        return false;
+      }
+
+      metadata = {};
+      metadata.displayPrimaries[0] = {35400, 14600};
+      metadata.displayPrimaries[1] = {8500, 39850};
+      metadata.displayPrimaries[2] = {6550, 2300};
+      metadata.whitePoint = {15635, 16450};
+      metadata.maxDisplayLuminance = 1000;
+      metadata.minDisplayLuminance = 1;
+      metadata.maxContentLightLevel = 1000;
+      metadata.maxFrameAverageLightLevel = 250;
+      metadata.maxFullFrameLuminance = 400;
+      return true;
+    }
+
+  private:
+    bool hdr;
+  };
+
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(int width, int height, bool vram) {
     if (init()) {
       return nullptr;
@@ -567,6 +1034,28 @@ namespace cuda {
     }
 
     return cuda;
+  }
+
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_gl_encode_device(
+    int width,
+    int height,
+    int offset_x,
+    int offset_y,
+    platf::pix_fmt_e pix_fmt
+  ) {
+    if (init()) {
+      return nullptr;
+    }
+
+    auto cuda = std::make_unique<gl_cuda_nvenc_t>();
+    if (cuda->init(width, height, offset_x, offset_y, pix_fmt)) {
+      return nullptr;
+    }
+    return cuda;
+  }
+
+  std::shared_ptr<platf::display_t> make_nvenc_probe_display(const video::config_t &config) {
+    return std::make_shared<nvenc_probe_display_t>(config);
   }
 
   namespace nvfbc {

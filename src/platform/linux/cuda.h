@@ -6,6 +6,7 @@
 
 #if defined(SUNSHINE_BUILD_CUDA)
   // standard includes
+  #include <cstddef>
   #include <cstdint>
   #include <memory>
   #include <optional>
@@ -17,8 +18,15 @@
 
 namespace platf {
   struct avcodec_encode_device_t;
+  class display_t;
+  struct nvenc_encode_device_t;
   struct img_t;
+  enum class pix_fmt_e;
 }  // namespace platf
+
+namespace video {
+  struct config_t;
+}
 
 namespace cuda {
 
@@ -38,6 +46,18 @@ namespace cuda {
    */
   std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_gl_encode_device(int width, int height, int offset_x, int offset_y);
 
+  /** Create the experimental native NVENC device for a GL/DMA-BUF capture source. */
+  std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_gl_encode_device(
+    int width,
+    int height,
+    int offset_x,
+    int offset_y,
+    platf::pix_fmt_e pix_fmt
+  );
+
+  /** Create a blank GL/CUDA display used only for hardware encoder probing. */
+  std::shared_ptr<platf::display_t> make_nvenc_probe_display(const video::config_t &config);
+
   int init();
 }  // namespace cuda
 
@@ -52,6 +72,30 @@ typedef __location__(device_builtin) unsigned long long cudaTextureObject_t;
   #endif /* !defined(__CUDACC__) */
 
 namespace cuda {
+
+  /**
+   * Compare two pitched GPU frames byte-for-byte on a CUDA stream.
+   *
+   * @param current Current converted frame in device memory.
+   * @param previous Previous converted frame in device memory.
+   * @param pitch Byte pitch shared by both frames.
+   * @param row_bytes Meaningful bytes in each row (padding is ignored).
+   * @param rows Total luma plus chroma rows.
+   * @param changed_device One device-resident uint32_t scratch flag.
+   * @param stream Stream that produced the current frame.
+   * @param changed Receives true when any meaningful byte differs.
+   * @return 0 on success, -1 on CUDA failure.
+   */
+  int compare_pitched_frames(
+    const std::uint8_t *current,
+    const std::uint8_t *previous,
+    std::size_t pitch,
+    std::size_t row_bytes,
+    std::size_t rows,
+    std::uint32_t *changed_device,
+    cudaStream_t stream,
+    bool &changed
+  );
 
   class freeCudaPtr_t {
   public:

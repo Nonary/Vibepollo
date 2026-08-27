@@ -36,7 +36,7 @@ void free_frame(AVFrame *frame);
 using frame_t = util::safe_ptr<AVFrame, free_frame>;
 
 namespace gl {
-  extern GladGLContext ctx;
+  extern thread_local GladGLContext ctx;
 
   // glEGLImageTargetTexture2DOES (GL_OES_EGL_image) is not part of desktop GL —
   // it is a GLES extension that must be loaded manually via eglGetProcAddress.
@@ -245,6 +245,9 @@ namespace egl {
     std::uint32_t offsets[4];
     bool direct_import_required {};
   };
+
+  /** Load the process-wide EGL dispatch table when platform initialization did not. */
+  bool ensure_loader();
 
   display_t make_display(std::variant<gbm::gbm_t::pointer, wl_display *, _XDisplay *> native_display);
   std::optional<ctx_t> make_ctx(display_t::pointer display);

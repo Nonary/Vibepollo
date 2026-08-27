@@ -2822,9 +2822,18 @@ this option to replace the running app immediately. The default is `true`.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="7">Choices</td>
+        <td rowspan="8">Choices</td>
         <td>nvenc</td>
-        <td>For NVIDIA graphics cards</td>
+        <td>For NVIDIA graphics cards. On Linux this is the supported FFmpeg-based NVENC
+            implementation and the implementation used by automatic selection. On Windows it uses
+            Vibeshine's native NVENC implementation.</td>
+    </tr>
+    <tr>
+        <td>nvenc_experimental</td>
+        <td>Experimental native NVIDIA NVENC encoder. It is not selected automatically, has limited
+            Linux driver and capture-path test coverage, and may not work with every capture method.
+            Explicit selection fails closed instead of silently changing encoder implementations.
+            @note{Applies to Linux only and requires a CUDA-enabled build.}</td>
     </tr>
     <tr>
         <td>quicksync</td>
@@ -3148,6 +3157,10 @@ They appear in the Frame Limiter section of the settings UI.
 
 ## NVIDIA NVENC Encoder
 
+The options in this section are shared by both NVENC implementations. On Linux, @code{nvenc} uses
+FFmpeg while @code{nvenc_experimental} talks directly to the NVIDIA Video Codec SDK. The native
+implementation is opt-in and never replaces the supported FFmpeg encoder during automatic probing.
+
 ### nvenc_preset
 
 <table>
@@ -3316,6 +3329,8 @@ They appear in the Frame Limiter section of the settings UI.
             Set it to disabled to prevent split-frame encoding even when the driver would normally use it automatically.
             @note{Applies to NVENC HEVC or AV1 only. H.264 does not use split-frame encoding.}
             @note{Requires NVENC API 12.1 or newer.}
+            @note{On Linux, both the supported FFmpeg @code{nvenc} encoder and the native
+            @code{nvenc_experimental} encoder honor the configured auto, enabled, or disabled mode.}
         </td>
     </tr>
     <tr>
@@ -3366,46 +3381,6 @@ They appear in the Frame Limiter section of the settings UI.
         <td colspan="2">@code{}
             nvenc_realtime_hags = enabled
             @endcode</td>
-    </tr>
-</table>
-
-### nvenc_split_encode
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Split the encoding of each video frame over multiple NVENC hardware units.
-            Significantly reduces encoding latency with a marginal compression efficiency penalty.
-            This option is ignored if your GPU has a singular NVENC unit.
-            @note{This option only applies when using NVENC [encoder](#encoder) with HEVC or AV1.}
-            @note{Applies to Windows only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}
-            driver_decides
-            @endcode</td>
-    </tr>
-    <tr>
-        <td>Example</td>
-        <td colspan="2">@code{}
-            nvenc_split_encode = driver_decides
-            @endcode</td>
-    </tr>
-    <tr>
-        <td rowspan="3">Choices</td>
-        <td>disabled</td>
-        <td>Disabled</td>
-    </tr>
-    <tr>
-        <td>driver_decides</td>
-        <td>The NVIDIA driver will automatically enable split frame encoding when the following conditions are met: 2+ NVENC units, resolution is at least 4K, and the preset is P1-P4.</td>
-    </tr>
-    <tr>
-        <td>enabled</td>
-        <td>Enabled</td>
     </tr>
 </table>
 

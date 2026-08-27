@@ -1773,6 +1773,9 @@ namespace config {
     video.nv_legacy.h264_coder = video.nv.h264_cavlc ? NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC : NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
     video.nv_legacy.aq = video.nv.adaptive_quantization;
     video.nv_legacy.vbv_percentage_increase = video.nv.vbv_percentage_increase;
+    video.nv_legacy.split_encode_mode = video.nv.split_encode_mode == nvenc::split_encode_mode::enabled ? NV_ENC_SPLIT_AUTO_FORCED_MODE :
+                                        video.nv.split_encode_mode == nvenc::split_encode_mode::disabled ? NV_ENC_SPLIT_DISABLE_MODE :
+                                                                                                          NV_ENC_SPLIT_AUTO_MODE;
 #endif
 
     int_f(vars, "qsv_preset", video.qsv.qsv_preset, qsv::preset_from_view);

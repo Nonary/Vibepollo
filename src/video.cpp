@@ -52,6 +52,10 @@ extern "C" {
 #include "video_policy.h"
 #include "webrtc_stream.h"
 
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  #include "platform/linux/cuda.h"
+#endif
+
 #ifdef _WIN32
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
@@ -118,6 +122,14 @@ namespace video {
     // Detached watchdog workers can outlive ordinary static destruction during
     // process shutdown. Deliberately give the runtime fence process lifetime.
     auto &native_amf_lifecycle_gate = *new amf::lifecycle::native_runtime_gate_t();
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    // A failed native NVENC teardown leaves a live driver session referencing
+    // the quarantined CUDA/GL device. Refuse to create more native sessions in
+    // this process so repeated failures cannot exhaust the GPU's finite NVENC
+    // session capacity. FFmpeg NVENC remains a separate explicit choice.
+    std::atomic_bool native_nvenc_runtime_quarantined {false};
+#endif
 
 #ifdef _WIN32
     void wait_for_recent_display_apply_stability() {
@@ -1208,6 +1220,10 @@ namespace video {
       return device->convert(img);
     }
 
+    bool last_frame_is_duplicate() const override {
+      return device && device->last_frame_is_duplicate();
+    }
+
     void request_idr_frame() override {
       if (device && device->frame) {
         auto &frame = device->frame;
@@ -1288,11 +1304,25 @@ namespace video {
         device(std::move(encode_device)) {
     }
 
+    ~nvenc_encode_session_t() override {
+      if (device && !device->prepare_to_destroy()) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+        native_nvenc_runtime_quarantined.store(true, std::memory_order_release);
+#endif
+        (void) device.release();
+        BOOST_LOG(error) << "NvEnc: encoder teardown failed; quarantining native NVENC and the complete device until process exit"sv;
+      }
+    }
+
     int convert(platf::img_t &img) override {
       if (!device) {
         return -1;
       }
       return device->convert(img);
+    }
+
+    bool last_frame_is_duplicate() const override {
+      return device && device->last_frame_is_duplicate();
     }
 
     void request_idr_frame() override {
@@ -1587,6 +1617,8 @@ namespace video {
     sync_session_ctx_t *ctx;
     std::unique_ptr<encode_session_t> session;
     encode_bootstrap_state_t bootstrap;
+    std::optional<std::chrono::steady_clock::time_point> last_encoded_at;
+    std::chrono::steady_clock::duration keepalive_interval {};
   };
 
   using encode_session_ctx_queue_t = safe::queue_t<sync_session_ctx_t>;
@@ -1928,6 +1960,7 @@ namespace video {
         {"rc"s, NV_ENC_PARAMS_RC_CBR},
         {"multipass"s, &config::video.nv_legacy.multipass},
         {"aq"s, &config::video.nv_legacy.aq},
+        {"split_encode_mode"s, &config::video.nv_legacy.split_encode_mode},
       },
       {},  // SDR-specific options
       {},  // HDR-specific options
@@ -1949,6 +1982,7 @@ namespace video {
         {"rc"s, NV_ENC_PARAMS_RC_CBR},
         {"multipass"s, &config::video.nv_legacy.multipass},
         {"aq"s, &config::video.nv_legacy.aq},
+        {"split_encode_mode"s, &config::video.nv_legacy.split_encode_mode},
       },
       {
         // SDR-specific options
@@ -1988,6 +2022,32 @@ namespace video {
       "h264_nvenc"s,
     },
     PARALLEL_ENCODING
+  };
+#endif
+
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  // Experimental native Linux NVENC encoder. The stable `nvenc` choice keeps
+  // using FFmpeg; this explicit backend talks directly to the Video Codec SDK
+  // and consumes the same CUDA NV12/P010 conversion surface.
+  encoder_t nvenc_experimental {
+    "nvenc_experimental"sv,
+    std::make_unique<encoder_platform_formats_nvenc>(
+      platf::mem_type_e::cuda,
+      platf::pix_fmt_e::nv12,
+      platf::pix_fmt_e::p010,
+      platf::pix_fmt_e::unknown,
+      platf::pix_fmt_e::unknown
+    ),
+    {
+      {}, {}, {}, {}, {}, {}, "av1_nvenc"s,
+    },
+    {
+      {}, {}, {}, {}, {}, {}, "hevc_nvenc"s,
+    },
+    {
+      {}, {}, {}, {}, {}, {}, "h264_nvenc"s,
+    },
+    PARALLEL_ENCODING | REF_FRAMES_INVALIDATION
   };
 #endif
 
@@ -2621,6 +2681,9 @@ namespace video {
   static const std::vector<encoder_t *> encoders {
 #ifndef __APPLE__
     &nvenc,
+#endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    &nvenc_experimental,
 #endif
 #ifdef _WIN32
     &quicksync,
@@ -4311,6 +4374,13 @@ namespace video {
 
   std::unique_ptr<nvenc_encode_session_t> make_nvenc_encode_session(const config_t &client_config, std::unique_ptr<platf::nvenc_encode_device_t> encode_device) {
     if (!encode_device->init_encoder(client_config, encode_device->colorspace)) {
+      if (!encode_device->prepare_to_destroy()) {
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+        native_nvenc_runtime_quarantined.store(true, std::memory_order_release);
+#endif
+        (void) encode_device.release();
+        BOOST_LOG(error) << "NvEnc: failed initialization could not be torn down; quarantining native NVENC and the complete device until process exit"sv;
+      }
       return nullptr;
     }
 
@@ -4866,6 +4936,11 @@ namespace video {
       BOOST_LOG(error) << "AMF: native session initialization failed; refusing silent amdvce_ffmpeg fallback"sv;
     }
 #endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (!session && &encoder == &nvenc_experimental) {
+      BOOST_LOG(error) << "NvEnc: native session initialization failed; refusing silent FFmpeg NVENC fallback"sv;
+    }
+#endif
     if (!session) {
       if (initialization_gate_contended) return encode_run_result_e::temporarily_busy;
       return encode_run_result_e::initialization_failed;
@@ -5153,6 +5228,7 @@ namespace video {
 
     std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
     encode_bootstrap_state_t bootstrap_state {.allow_placeholder_before_first_real = frame_nr <= 1};
+    std::optional<std::chrono::steady_clock::time_point> last_encoded_at;
 
     // Per-session encode-loop accounting. When several clients share one capture target, a
     // single client can freeze while the others stream fine, and nothing else in the log
@@ -5165,6 +5241,7 @@ namespace video {
       uint64_t gate_skipped = 0;
       uint64_t encoded = 0;
       uint64_t dropped_submissions = 0;
+      uint64_t duplicate_suppressed = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
 
@@ -5177,6 +5254,7 @@ namespace video {
                          << " gate_skipped=" << loop_stats.gate_skipped
                          << " encoded=" << loop_stats.encoded
                          << " dropped_submissions=" << loop_stats.dropped_submissions
+                         << " duplicate_suppressed=" << loop_stats.duplicate_suppressed
                          << " frame_nr=" << frame_nr;
         loop_stats = {};
         loop_stats.last_log = now;
@@ -5216,10 +5294,12 @@ namespace video {
       }
 
       bool requested_idr_frame = false;
+      bool force_duplicate_encode = false;
 
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
           session->invalidate_ref_frames(frames->first, frames->second);
+          force_duplicate_encode = true;
         }
       }
 
@@ -5230,12 +5310,14 @@ namespace video {
 
       if (requested_idr_frame) {
         session->request_idr_frame();
+        force_duplicate_encode = true;
       }
 
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
       bool placeholder_input = bootstrap_state.current_input_placeholder;
+      bool converted_capture = false;
 
       // Encode at a minimum FPS to avoid image quality issues with static content
       if (!requested_idr_frame || images->peek()) {
@@ -5320,6 +5402,7 @@ namespace video {
           }
           if (!placeholder_input && bootstrap_state.current_input_placeholder) {
             session->request_idr_frame();
+            force_duplicate_encode = true;
           }
           if (!placeholder_input) {
             capture_timestamp = img->frame_timestamp;
@@ -5331,6 +5414,7 @@ namespace video {
             native_amf_runtime_failed = native_amf_session;
             break;
           }
+          converted_capture = true;
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
           if (refresh_rtx_hdr_metadata_if_needed(
@@ -5341,6 +5425,7 @@ namespace video {
                 rtx_hdr_metadata_refresh
               )) {
             session->request_idr_frame();
+            force_duplicate_encode = true;
           }
 #endif
 
@@ -5380,12 +5465,26 @@ namespace video {
         continue;
       }
 
+      const auto encode_started_at = std::chrono::steady_clock::now();
+      const auto keepalive_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(max_frametime);
+      if (converted_capture && !video::policy::should_encode_converted_frame(
+                                 session->last_frame_is_duplicate(),
+                                 force_duplicate_encode,
+                                 last_encoded_at,
+                                 encode_started_at,
+                                 keepalive_interval
+                               )) {
+        ++loop_stats.duplicate_suppressed;
+        continue;
+      }
+
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         native_amf_runtime_failed = native_amf_session;
         break;
       }
       ++loop_stats.encoded;
+      last_encoded_at = encode_started_at;
 
       // A dropped submission leaves a hole in the wire frameIndex sequence, which
       // the client reads as loss. Reusing the index instead is NOT safe: several
@@ -5475,6 +5574,12 @@ namespace video {
 #ifdef _WIN32
     if (&encoder == &amdvce_ffmpeg && native_amf_lifecycle_gate.is_quarantined()) {
       BOOST_LOG(error) << "AMF: refusing FFmpeg initialization while the AMD runtime is quarantined"sv;
+      return nullptr;
+    }
+#endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    if (&encoder == &nvenc_experimental && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
+      BOOST_LOG(error) << "NvEnc: native runtime is quarantined after an unsafe teardown; refusing to create another native session until host restart"sv;
       return nullptr;
     }
 #endif
@@ -5654,6 +5759,12 @@ namespace video {
     }
 
     encode_session.bootstrap.allow_placeholder_before_first_real = ctx.frame_nr <= 1;
+    const double minimum_fps_target = config::video.minimum_fps_target > 0.0 ?
+                                        config::video.minimum_fps_target :
+                                        std::max(1, ctx.config.framerate);
+    encode_session.keepalive_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double, std::milli> {1000.0 / minimum_fps_target}
+    );
     encode_session.session = std::move(session);
 
     return encode_session;
@@ -5825,9 +5936,11 @@ namespace video {
             continue;
           }
 
+          bool force_duplicate_encode = false;
           if (ctx->idr_events->peek()) {
             pos->session->request_idr_frame();
             ctx->idr_events->pop();
+            force_duplicate_encode = true;
           }
           if (ctx->bitrate_events->peek()) {
             // Coalesce rapid ABR updates to the latest requested value.
@@ -5860,6 +5973,7 @@ namespace video {
             placeholder_input = is_placeholder_capture_image(*img);
             if (!placeholder_input && pos->bootstrap.current_input_placeholder) {
               pos->session->request_idr_frame();
+              force_duplicate_encode = true;
             }
 
             if (!placeholder_input) {
@@ -5881,8 +5995,9 @@ namespace video {
                   ctx->hdr_events,
                   ctx->last_hdr_info,
                   ctx->rtx_hdr_metadata_refresh
-                )) {
+                  )) {
               pos->session->request_idr_frame();
+              force_duplicate_encode = true;
             }
 #endif
 
@@ -5901,12 +6016,25 @@ namespace video {
             continue;
           }
 
+          const auto encode_started_at = std::chrono::steady_clock::now();
+          if (!video::policy::should_encode_converted_frame(
+                frame_captured && pos->session->last_frame_is_duplicate(),
+                force_duplicate_encode,
+                pos->last_encoded_at,
+                encode_started_at,
+                pos->keepalive_interval
+              )) {
+            ++pos;
+            continue;
+          }
+
           if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
             BOOST_LOG(error) << "Could not encode video packet"sv;
             ctx->shutdown_event->raise(true);
 
             continue;
           }
+          pos->last_encoded_at = encode_started_at;
 
           if (placeholder_input) {
             auto *amf_session = dynamic_cast<amf_encode_session_t *>(pos->session.get());
@@ -6110,6 +6238,20 @@ namespace video {
         BOOST_LOG(error) << "AMF: native device creation failed; refusing silent amdvce_ffmpeg fallback"sv;
       }
 #endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      if (!encode_device && !prepared_session && &encoder == &nvenc_experimental) {
+        ++consecutive_encoder_initialization_failures;
+        if (consecutive_encoder_initialization_failures >= 3) {
+          BOOST_LOG(error) << "NvEnc: native device creation failed 3 times; ending the stream without changing encoder implementations"sv;
+          return;
+        }
+        const auto retry_delay = std::chrono::milliseconds(100 * (1 << (consecutive_encoder_initialization_failures - 1)));
+        BOOST_LOG(warning) << "NvEnc: native device creation failed; retrying in " << retry_delay.count()
+                           << "ms without falling back to FFmpeg NVENC"sv;
+        std::this_thread::sleep_for(retry_delay);
+        continue;
+      }
+#endif
       if (initialization_was_cancelled) continue;
       if (initialization_gate_contended && !encode_device && !prepared_session) {
         std::this_thread::sleep_for(100ms);
@@ -6187,6 +6329,19 @@ namespace video {
         std::this_thread::sleep_for(retry_delay);
         continue;
 #else
+  #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+        if (&session_encoder == &nvenc_experimental) {
+          ++consecutive_encoder_initialization_failures;
+          if (consecutive_encoder_initialization_failures >= 3) {
+            BOOST_LOG(error) << "NvEnc: native session initialization failed 3 times; ending the stream without changing encoder implementations"sv;
+            return;
+          }
+          const auto retry_delay = std::chrono::milliseconds(100 * (1 << (consecutive_encoder_initialization_failures - 1)));
+          BOOST_LOG(warning) << "NvEnc: native session initialization failed; retrying in " << retry_delay.count()
+                             << "ms without falling back to FFmpeg NVENC"sv;
+          std::this_thread::sleep_for(retry_delay);
+        }
+  #endif
         continue;
 #endif
       }
@@ -6315,6 +6470,17 @@ namespace video {
             return;
           }
 #endif
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+          if (&encoder == &nvenc_experimental) {
+            // The native CUDA device owns an EGL context made current on this
+            // probe thread. EGL contexts cannot be handed to the generic
+            // bounded teardown worker while still current here, so release all
+            // GL/CUDA/NVENC resources synchronously on their owning thread.
+            std::lock_guard lock {encode_session_teardown_mutex};
+            session.reset();
+            return;
+          }
+#endif
           destroy_encode_session_bounded(session, "probe"sv);
         });
 
@@ -6386,6 +6552,12 @@ namespace video {
       };
 
       auto result = validate_once();
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      if (&encoder == &nvenc_experimental && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
+        BOOST_LOG(error) << "NvEnc: native probe teardown was unsafe; rejecting the probe result and quarantining native NVENC until process restart"sv;
+        return -1;
+      }
+#endif
       if (result) {
         return *result;
       }
@@ -6404,6 +6576,9 @@ namespace video {
 
   static thread_local std::shared_ptr<platf::display_t> cached_probe_display;
   static thread_local platf::mem_type_e cached_display_type = platf::mem_type_e::system;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  static thread_local bool cached_display_is_native_nvenc_probe = false;
+#endif
 
   bool validate_encoder(
     encoder_t &encoder,
@@ -6456,13 +6631,24 @@ namespace video {
         }
       }
 #else
-      reset_display(
-        disp,
-        encoder.platform_formats->dev_type,
-        probe_display_name,
-        probe_config,
-        required_adapter
-      );
+  #if defined(SUNSHINE_BUILD_CUDA)
+      if (&encoder == &nvenc_experimental && !required_adapter) {
+        // Encoder capability probing does not need access to a scanout
+        // framebuffer. A blank GL/CUDA source isolates the native API probe
+        // from KMS privileges while the real stream still uses KMS capture.
+        BOOST_LOG(info) << "NvEnc: using a synthetic GL/CUDA source for encoder-only probing; KMS capture readiness is validated separately"sv;
+        disp = ::cuda::make_nvenc_probe_display(probe_config);
+      } else
+  #endif
+      {
+        reset_display(
+          disp,
+          encoder.platform_formats->dev_type,
+          probe_display_name,
+          probe_config,
+          required_adapter
+        );
+      }
 #endif
     };
 
@@ -6475,14 +6661,30 @@ namespace video {
     const auto cached_adapter = cached_probe_display ? cached_probe_display->capture_adapter_id() : std::nullopt;
     const bool cached_display_matches_required =
       !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
+    const bool wants_native_nvenc_probe =
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      &encoder == &nvenc_experimental && !required_adapter;
+#else
+      false;
+#endif
+    const bool cached_probe_kind_matches =
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      cached_display_is_native_nvenc_probe == wants_native_nvenc_probe;
+#else
+      true;
+#endif
     if (cached_probe_display &&
         cached_display_type == encoder.platform_formats->dev_type &&
+        cached_probe_kind_matches &&
         cached_display_matches_required) {
       disp = cached_probe_display;
     } else {
       reset_probe_display(config_autoselect);
       cached_probe_display = disp;
       cached_display_type = encoder.platform_formats->dev_type;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+      cached_display_is_native_nvenc_probe = wants_native_nvenc_probe;
+#endif
     }
 
     if (!disp) {
@@ -6754,6 +6956,14 @@ namespace video {
     });
 
     auto encoder_list = encoders;
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+    const auto nvenc_selection_policy = nvenc::encoder_selection_policy(config::video.encoder);
+    // Native CUDA NVENC is opt-in until it has broad driver and capture-source
+    // coverage. Never let automatic probing select an experimental backend.
+    if (!nvenc_selection_policy.include_experimental) {
+      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &nvenc_experimental), encoder_list.end());
+    }
+#endif
 #ifdef _WIN32
     const auto amf_selection_policy = amf::lifecycle::encoder_selection_policy(config::video.encoder);
     // The native encoder is experimental and must never be selected implicitly.
@@ -6829,6 +7039,12 @@ namespace video {
 
       if (new_encoder == nullptr) {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
+#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+        if (nvenc_selection_policy.fail_closed) {
+          BOOST_LOG(error) << "Experimental native NVENC was explicitly selected; refusing automatic fallback to FFmpeg NVENC or another encoder"sv;
+          return -1;
+        }
+#endif
 #ifdef _WIN32
         if (amf_selection_policy.fail_closed) {
           BOOST_LOG(error) << "Experimental native AMF was explicitly selected; refusing automatic fallback to amdvce_ffmpeg or another encoder"sv;
