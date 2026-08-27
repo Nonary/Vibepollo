@@ -182,6 +182,16 @@ TEST(KmsgrabSelection, UsesStableVibeshinePresentationAbi) {
   EXPECT_EQ(offsetof(vibeshine_drm_wait_present, timestamp_ns), 16u);
   EXPECT_EQ(offsetof(vibeshine_drm_wait_present, timeout_ms), 24u);
   EXPECT_EQ(offsetof(vibeshine_drm_wait_present, reserved), 32u);
+
+  EXPECT_EQ(VIBESHINE_DRM_FRAME_ABI_VERSION, 1u);
+  EXPECT_EQ(VIBESHINE_DRM_FRAME_MAX_PLANES, 4u);
+  EXPECT_EQ(DRM_VIBESHINE_GET_FRAME, 1u);
+  EXPECT_EQ(sizeof(vibeshine_drm_frame), 152u);
+  EXPECT_EQ(offsetof(vibeshine_drm_frame, sequence), 8u);
+  EXPECT_EQ(offsetof(vibeshine_drm_frame, modifier), 40u);
+  EXPECT_EQ(offsetof(vibeshine_drm_frame, dma_buf_fds), 52u);
+  EXPECT_EQ(offsetof(vibeshine_drm_frame, sync_file_fds), 100u);
+  EXPECT_EQ(offsetof(vibeshine_drm_frame, reserved), 120u);
 }
 
 TEST(KmsgrabSelection, RecognizesCudaImportableDisplayDrivers) {
