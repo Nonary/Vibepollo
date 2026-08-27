@@ -655,11 +655,13 @@ namespace egl {
 
   std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
     if (xrgb.direct_import_required) {
-      BOOST_LOG(error) << "Managed Vibeshine framebuffer rejected direct GPU import (fourcc="
-                       << util::hex(xrgb.fourcc).to_string_view() << ", modifier="
-                       << util::hex(xrgb.modifier).to_string_view()
-                       << "); refusing CPU upload fallback.";
-      return std::nullopt;
+      static std::atomic_bool warned {false};
+      if (!warned.exchange(true, std::memory_order_relaxed)) {
+        BOOST_LOG(warning) << "Managed Vibeshine framebuffer rejected direct GPU import (fourcc="
+                           << util::hex(xrgb.fourcc).to_string_view() << ", modifier="
+                           << util::hex(xrgb.modifier).to_string_view()
+                           << "); using the linear CPU upload fallback.";
+      }
     }
     if (xrgb.modifier != 0 && xrgb.modifier != DRM_FORMAT_MOD_INVALID) {
       BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer modifier.";
