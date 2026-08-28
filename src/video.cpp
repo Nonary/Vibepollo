@@ -1222,10 +1222,6 @@ namespace video {
       return device->convert(img);
     }
 
-    bool last_frame_is_duplicate() const override {
-      return device && device->last_frame_is_duplicate();
-    }
-
     void request_idr_frame() override {
       if (device && device->frame) {
         auto &frame = device->frame;
@@ -1321,10 +1317,6 @@ namespace video {
         return -1;
       }
       return device->convert(img);
-    }
-
-    bool last_frame_is_duplicate() const override {
-      return device && device->last_frame_is_duplicate();
     }
 
     void request_idr_frame() override {
@@ -1619,8 +1611,6 @@ namespace video {
     sync_session_ctx_t *ctx;
     std::unique_ptr<encode_session_t> session;
     encode_bootstrap_state_t bootstrap;
-    std::optional<std::chrono::steady_clock::time_point> last_encoded_at;
-    std::chrono::steady_clock::duration keepalive_interval {};
   };
 
   using encode_session_ctx_queue_t = safe::queue_t<sync_session_ctx_t>;
@@ -5260,7 +5250,6 @@ namespace video {
 
     std::optional<std::chrono::steady_clock::time_point> encode_frame_timestamp;
     encode_bootstrap_state_t bootstrap_state {.allow_placeholder_before_first_real = frame_nr <= 1};
-    std::optional<std::chrono::steady_clock::time_point> last_encoded_at;
 
     // Per-session encode-loop accounting. When several clients share one capture target, a
     // single client can freeze while the others stream fine, and nothing else in the log
@@ -5272,10 +5261,8 @@ namespace video {
       uint64_t pop_timeouts = 0;
       uint64_t gate_skipped = 0;
       uint64_t converted = 0;
-      uint64_t duplicate_detected = 0;
       uint64_t encoded = 0;
       uint64_t dropped_submissions = 0;
-      uint64_t duplicate_suppressed = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
 
@@ -5287,8 +5274,6 @@ namespace video {
                          << " pop_timeouts=" << loop_stats.pop_timeouts
                          << " gate_skipped=" << loop_stats.gate_skipped
                          << " converted=" << loop_stats.converted
-                         << " duplicate_detected=" << loop_stats.duplicate_detected
-                         << " duplicate_suppressed=" << loop_stats.duplicate_suppressed
                          << " encoded=" << loop_stats.encoded
                          << " dropped_submissions=" << loop_stats.dropped_submissions
                          << " frame_nr=" << frame_nr;
@@ -5330,12 +5315,10 @@ namespace video {
       }
 
       bool requested_idr_frame = false;
-      bool force_duplicate_encode = false;
 
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
           session->invalidate_ref_frames(frames->first, frames->second);
-          force_duplicate_encode = true;
         }
       }
 
@@ -5346,14 +5329,12 @@ namespace video {
 
       if (requested_idr_frame) {
         session->request_idr_frame();
-        force_duplicate_encode = true;
       }
 
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
       bool placeholder_input = bootstrap_state.current_input_placeholder;
-      bool converted_capture = false;
 
       // Encode at a minimum FPS to avoid image quality issues with static content
       if (!requested_idr_frame || images->peek()) {
@@ -5438,7 +5419,6 @@ namespace video {
           }
           if (!placeholder_input && bootstrap_state.current_input_placeholder) {
             session->request_idr_frame();
-            force_duplicate_encode = true;
           }
           if (!placeholder_input) {
             capture_timestamp = img->frame_timestamp;
@@ -5450,7 +5430,6 @@ namespace video {
             native_amf_runtime_failed = native_amf_session;
             break;
           }
-          converted_capture = true;
           ++loop_stats.converted;
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
@@ -5462,7 +5441,6 @@ namespace video {
                 rtx_hdr_metadata_refresh
               )) {
             session->request_idr_frame();
-            force_duplicate_encode = true;
           }
 #endif
 
@@ -5502,28 +5480,12 @@ namespace video {
         continue;
       }
 
-      const auto encode_started_at = std::chrono::steady_clock::now();
-      const bool converted_frame_duplicate = converted_capture && session->last_frame_is_duplicate();
-      loop_stats.duplicate_detected += converted_frame_duplicate;
-      const auto keepalive_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(max_frametime);
-      if (converted_capture && !video::policy::should_encode_converted_frame(
-                                 converted_frame_duplicate,
-                                 force_duplicate_encode,
-                                 last_encoded_at,
-                                 encode_started_at,
-                                 keepalive_interval
-                               )) {
-        ++loop_stats.duplicate_suppressed;
-        continue;
-      }
-
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         native_amf_runtime_failed = native_amf_session;
         break;
       }
       ++loop_stats.encoded;
-      last_encoded_at = encode_started_at;
 
       // A dropped submission leaves a hole in the wire frameIndex sequence, which
       // the client reads as loss. Reusing the index instead is NOT safe: several
@@ -5798,12 +5760,6 @@ namespace video {
     }
 
     encode_session.bootstrap.allow_placeholder_before_first_real = ctx.frame_nr <= 1;
-    const double minimum_fps_target = config::video.minimum_fps_target > 0.0 ?
-                                        config::video.minimum_fps_target :
-                                        std::max(1, ctx.config.framerate);
-    encode_session.keepalive_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double, std::milli> {1000.0 / minimum_fps_target}
-    );
     encode_session.session = std::move(session);
 
     return encode_session;
@@ -5951,11 +5907,9 @@ namespace video {
             continue;
           }
 
-          bool force_duplicate_encode = false;
           if (ctx->idr_events->peek()) {
             pos->session->request_idr_frame();
             ctx->idr_events->pop();
-            force_duplicate_encode = true;
           }
           if (ctx->bitrate_events->peek()) {
             // Coalesce rapid ABR updates to the latest requested value.
@@ -5988,7 +5942,6 @@ namespace video {
             placeholder_input = is_placeholder_capture_image(*img);
             if (!placeholder_input && pos->bootstrap.current_input_placeholder) {
               pos->session->request_idr_frame();
-              force_duplicate_encode = true;
             }
 
             if (!placeholder_input) {
@@ -6012,7 +5965,6 @@ namespace video {
                   ctx->rtx_hdr_metadata_refresh
                   )) {
               pos->session->request_idr_frame();
-              force_duplicate_encode = true;
             }
 #endif
 
@@ -6031,25 +5983,12 @@ namespace video {
             continue;
           }
 
-          const auto encode_started_at = std::chrono::steady_clock::now();
-          if (!video::policy::should_encode_converted_frame(
-                frame_captured && pos->session->last_frame_is_duplicate(),
-                force_duplicate_encode,
-                pos->last_encoded_at,
-                encode_started_at,
-                pos->keepalive_interval
-              )) {
-            ++pos;
-            continue;
-          }
-
           if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
             BOOST_LOG(error) << "Could not encode video packet"sv;
             ctx->shutdown_event->raise(true);
 
             continue;
           }
-          pos->last_encoded_at = encode_started_at;
 
           if (placeholder_input) {
             auto *amf_session = dynamic_cast<amf_encode_session_t *>(pos->session.get());

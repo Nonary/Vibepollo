@@ -72,31 +72,6 @@ typedef __location__(device_builtin) unsigned long long cudaTextureObject_t;
   #endif /* !defined(__CUDACC__) */
 
 namespace cuda {
-
-  /**
-   * Compare two pitched GPU frames byte-for-byte on a CUDA stream.
-   *
-   * @param current Current converted frame in device memory.
-   * @param previous Previous converted frame in device memory.
-   * @param pitch Byte pitch shared by both frames.
-   * @param row_bytes Meaningful bytes in each row (padding is ignored).
-   * @param rows Total luma plus chroma rows.
-   * @param changed_device One device-resident uint32_t scratch flag.
-   * @param stream Stream that produced the current frame.
-   * @param changed Receives true when any meaningful byte differs.
-   * @return 0 on success, -1 on CUDA failure.
-   */
-  int compare_pitched_frames(
-    const std::uint8_t *current,
-    const std::uint8_t *previous,
-    std::size_t pitch,
-    std::size_t row_bytes,
-    std::size_t rows,
-    std::uint32_t *changed_device,
-    cudaStream_t stream,
-    bool &changed
-  );
-
   class freeCudaPtr_t {
   public:
     void operator()(void *ptr);

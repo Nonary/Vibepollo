@@ -572,25 +572,6 @@ namespace cuda {
         nvenc = nullptr;
         native_encoder.reset();
 
-        bool duplicate_resources_safe_to_free = static_cast<bool>(guard);
-        if (duplicate_resources_safe_to_free && stream && (previous_input_buffer || changed_device) &&
-            cdf->cuStreamSynchronize(stream) != CUDA_SUCCESS) {
-          duplicate_resources_safe_to_free = false;
-          BOOST_LOG(error) << "Couldn't synchronize native NVENC duplicate-frame work; leaking its CUDA buffers for safe teardown"sv;
-        }
-        if (duplicate_resources_safe_to_free) {
-          if (previous_input_buffer) {
-            CU_CHECK_IGNORE(cdf->cuMemFree(previous_input_buffer), "Couldn't free native NVENC duplicate-frame history");
-            previous_input_buffer = {};
-          }
-          if (changed_device) {
-            CU_CHECK_IGNORE(cdf->cuMemFree(changed_device), "Couldn't free native NVENC duplicate-frame flag");
-            changed_device = {};
-          }
-        } else if (!guard && (previous_input_buffer || changed_device)) {
-          BOOST_LOG(error) << "Couldn't enter CUDA context; leaking native NVENC duplicate-frame resources for safe teardown"sv;
-        }
-
         if (owns_gl_context && guard) {
           y_res.reset();
           uv_res.reset();
@@ -707,25 +688,6 @@ namespace cuda {
       }
       native_encoder->enable_io_streams();
 
-      const auto bytes_per_sample = buffer_format == NV_ENC_BUFFER_FORMAT_YUV420_10BIT ? 2U : 1U;
-      frame_row_bytes = static_cast<std::size_t>(output_width) * bytes_per_sample;
-      frame_rows = static_cast<std::size_t>(output_height) + static_cast<std::size_t>(output_height) / 2;
-      const auto input_pitch = native_encoder->input_pitch();
-      if (!frame_row_bytes || !frame_rows || frame_row_bytes > input_pitch) {
-        BOOST_LOG(error) << "NvEnc: invalid converted-frame layout for duplicate detection"sv;
-        return false;
-      }
-      if (check(
-            cdf->cuMemAlloc(&previous_input_buffer, input_pitch * frame_rows),
-            "Couldn't allocate native NVENC duplicate-frame history: "sv
-          ) ||
-          check(
-            cdf->cuMemAlloc(&changed_device, sizeof(std::uint32_t)),
-            "Couldn't allocate native NVENC duplicate-frame flag: "sv
-          )) {
-        return false;
-      }
-
       auto target = egl::create_target(client_config.width, client_config.height, sw_format);
       if (!target) {
         return false;
@@ -770,18 +732,10 @@ namespace cuda {
       return !native_encoder || native_encoder->prepare_to_destroy();
     }
 
-    bool last_frame_is_duplicate() const override {
-      return last_frame_duplicate;
-    }
-
     int convert(platf::img_t &img) override {
       if (!native_encoder) {
         return -1;
       }
-
-      const auto convert_started = filter_stats_enabled ?
-                                     std::chrono::steady_clock::now() :
-                                     std::chrono::steady_clock::time_point {};
       context_guard_t guard {cuda_context};
       if (!guard) {
         return -1;
@@ -849,106 +803,10 @@ namespace cuda {
         unmap_guard.disable();
       }
       CU_CHECK(unmap_status, "Couldn't unmap native NVENC GL textures from CUDA");
-
-      bool changed = true;
-      std::optional<double> comparison_sync_ms;
-      if (previous_frame_valid) {
-        const auto comparison_started = filter_stats_enabled ?
-                                            std::chrono::steady_clock::now() :
-                                            std::chrono::steady_clock::time_point {};
-        if (compare_pitched_frames(
-              reinterpret_cast<const std::uint8_t *>(input_buffer),
-              reinterpret_cast<const std::uint8_t *>(previous_input_buffer),
-              input_pitch,
-              frame_row_bytes,
-              frame_rows,
-              reinterpret_cast<std::uint32_t *>(changed_device),
-              stream,
-              changed
-            )) {
-          return -1;
-        }
-        if (filter_stats_enabled) {
-          comparison_sync_ms = std::chrono::duration<double, std::milli>(
-                                 std::chrono::steady_clock::now() - comparison_started
-          ).count();
-        }
-      }
-
-      last_frame_duplicate = previous_frame_valid && !changed;
-      if (!previous_frame_valid || changed) {
-        CUDA_MEMCPY2D history_copy {};
-        history_copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        history_copy.srcDevice = input_buffer;
-        history_copy.srcPitch = input_pitch;
-        history_copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-        history_copy.dstDevice = previous_input_buffer;
-        history_copy.dstPitch = input_pitch;
-        history_copy.WidthInBytes = frame_row_bytes;
-        history_copy.Height = frame_rows;
-        CU_CHECK(cdf->cuMemcpy2DAsync(&history_copy, stream), "Couldn't preserve native NVENC frame for duplicate detection");
-        previous_frame_valid = true;
-      }
-      if (filter_stats_enabled) {
-        record_duplicate_filter_stats(
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - convert_started).count(),
-          comparison_sync_ms,
-          last_frame_duplicate
-        );
-      }
       return 0;
     }
 
   private:
-    void record_duplicate_filter_stats(
-      const double conversion_host_ms,
-      const std::optional<double> comparison_sync_ms,
-      const bool duplicate
-    ) {
-      ++filter_calls;
-      filter_duplicates += duplicate;
-      conversion_host_total_ms += conversion_host_ms;
-      conversion_host_max_ms = std::max(conversion_host_max_ms, conversion_host_ms);
-      if (comparison_sync_ms) {
-        ++comparison_calls;
-        comparison_sync_total_ms += *comparison_sync_ms;
-        comparison_sync_max_ms = std::max(comparison_sync_max_ms, *comparison_sync_ms);
-      }
-
-      const auto now = std::chrono::steady_clock::now();
-      constexpr auto log_interval = 20s;
-      const auto elapsed = now - filter_last_log;
-      if (elapsed < log_interval) {
-        return;
-      }
-
-      const auto duplicate_percent = filter_calls ?
-                                       100.0 * static_cast<double>(filter_duplicates) / static_cast<double>(filter_calls) :
-                                       0.0;
-      const auto comparison_avg_ms = comparison_calls ?
-                                        comparison_sync_total_ms / static_cast<double>(comparison_calls) :
-                                        0.0;
-      BOOST_LOG(info) << "NvEnc: exact duplicate filter " << output_width << 'x' << output_height
-                      << ": interval=" << std::chrono::duration<double>(elapsed).count() << " s"
-                      << " convert_calls=" << filter_calls
-                      << " duplicates_detected=" << filter_duplicates
-                      << " (" << duplicate_percent << "%)"
-                      << " convert-host avg/max="
-                      << conversion_host_total_ms / static_cast<double>(filter_calls) << '/'
-                      << conversion_host_max_ms << " ms"
-                      << " check-drain avg/max=" << comparison_avg_ms << '/'
-                      << comparison_sync_max_ms << " ms";
-
-      filter_calls = 0;
-      filter_duplicates = 0;
-      comparison_calls = 0;
-      conversion_host_total_ms = 0.0;
-      conversion_host_max_ms = 0.0;
-      comparison_sync_total_ms = 0.0;
-      comparison_sync_max_ms = 0.0;
-      filter_last_log = now;
-    }
-
     int native_width() const noexcept {
       return output_width;
     }
@@ -974,21 +832,6 @@ namespace cuda {
     int output_width {};
     int output_height {};
     std::uint64_t sequence {};
-    CUdeviceptr previous_input_buffer {};
-    CUdeviceptr changed_device {};
-    std::size_t frame_row_bytes {};
-    std::size_t frame_rows {};
-    bool previous_frame_valid {false};
-    bool last_frame_duplicate {false};
-    bool filter_stats_enabled {config::sunshine.min_log_level <= info.default_severity()};
-    std::uint64_t filter_calls {};
-    std::uint64_t filter_duplicates {};
-    std::uint64_t comparison_calls {};
-    double conversion_host_total_ms {};
-    double conversion_host_max_ms {};
-    double comparison_sync_total_ms {};
-    double comparison_sync_max_ms {};
-    std::chrono::steady_clock::time_point filter_last_log {std::chrono::steady_clock::now()};
 
     AVPixelFormat sw_format {AV_PIX_FMT_NONE};
     NV_ENC_BUFFER_FORMAT buffer_format {NV_ENC_BUFFER_FORMAT_UNDEFINED};

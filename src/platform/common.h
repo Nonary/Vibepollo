@@ -400,18 +400,6 @@ namespace platf {
 
     virtual int convert(platf::img_t &img) = 0;
 
-    /**
-     * @brief Report whether the most recently converted image exactly matched
-     *        the previous converted image.
-     *
-     * Backends that do not perform content comparison keep the default false.
-     * The encode loop uses this hint only to suppress redundant captures; IDR
-     * requests and minimum-FPS keepalives still force an encode.
-     */
-    virtual bool last_frame_is_duplicate() const {
-      return false;
-    }
-
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active = false;
 
