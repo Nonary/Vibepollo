@@ -3,12 +3,12 @@ app-id: "@PROJECT_FQDN@"
 runtime: org.freedesktop.Platform
 runtime-version: "24.08"
 sdk: org.freedesktop.Sdk
-command: sunshine
+command: vibepollo
 separate-locales: false
 finish-args:
   - --device=all  # access all devices
   - --env=PULSE_PROP_media.category=Manager  # allow sunshine to manage audio sinks
-  - --env=SUNSHINE_MIGRATE_CONFIG=1  # migrate config files to the new location
+  - --env=VIBEPOLLO_MIGRATE_CONFIG=1  # migrate config files to the XDG location
   - --filesystem=home  # need to save files in user's home directory
   - --filesystem=xdg-run/pipewire-0  # required for XDG portal grab audio
   - --share=ipc  # required for X11 shared memory extension
@@ -69,22 +69,22 @@ modules:
       - -DCMAKE_CUDA_COMPILER=/app/cuda/bin/nvcc
       - -DFFMPEG_PREPARED_BINARIES=/app/ffmpeg
       - -DGLAD_SKIP_PIP_INSTALL=ON
-      - -DSUNSHINE_ASSETS_DIR=share/sunshine
+      - -DSUNSHINE_ASSETS_DIR=share/vibepollo
       - -DSUNSHINE_BUILD_FLATPAK=ON
-      - -DSUNSHINE_EXECUTABLE_PATH=/app/bin/sunshine
+      - -DSUNSHINE_EXECUTABLE_PATH=/app/bin/vibepollo
       - -DSUNSHINE_ENABLE_CUDA=ON
       - -DSUNSHINE_ENABLE_DRM=ON
       - -DSUNSHINE_ENABLE_KWIN=ON
       - -DSUNSHINE_ENABLE_PORTAL=ON
       - -DSUNSHINE_ENABLE_WAYLAND=ON
       - -DSUNSHINE_ENABLE_X11=ON
-      - -DSUNSHINE_PUBLISHER_NAME='LizardByte'
-      - -DSUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
-      - -DSUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
+      - -DSUNSHINE_PUBLISHER_NAME='Nonary'
+      - -DSUNSHINE_PUBLISHER_WEBSITE='https://github.com/Nonary/Vibepollo'
+      - -DSUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/Nonary/Vibepollo/issues'
     no-make-install: false
     post-install:
       - install -D $FLATPAK_BUILDER_BUILDDIR/packaging/linux/flatpak/scripts/* /app/bin
-      - install -D $FLATPAK_BUILDER_BUILDDIR/packaging/linux/flatpak/apps.json /app/share/sunshine/apps.json
+      - install -D $FLATPAK_BUILDER_BUILDDIR/packaging/linux/flatpak/apps.json /app/share/vibepollo/apps.json
     run-tests: false
     sources:
       - type: git

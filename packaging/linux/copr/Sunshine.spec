@@ -14,12 +14,12 @@
 %endif
 %endif
 
-Name: Sunshine
+Name: vibepollo
 Version: %{build_version}
 Release: 1%{?dist}
 Summary: Self-hosted game stream host for Moonlight.
 License: GPLv3-only
-URL: https://github.com/LizardByte/Sunshine
+URL: https://github.com/Nonary/Vibepollo
 Source0: tarball.tar.gz
 
 # Common BuildRequires
@@ -214,16 +214,16 @@ cmake_args=(
   "-DBUILD_WERROR=ON"
   "-DCMAKE_BUILD_TYPE=Release"
   "-DCMAKE_INSTALL_PREFIX=%{_prefix}"
-  "-DSUNSHINE_ASSETS_DIR=%{_datadir}/sunshine"
-  "-DSUNSHINE_EXECUTABLE_PATH=%{_bindir}/sunshine"
+  "-DSUNSHINE_ASSETS_DIR=%{_datadir}/vibepollo"
+  "-DSUNSHINE_EXECUTABLE_PATH=%{_bindir}/vibepollo"
   "-DSUNSHINE_ENABLE_DRM=ON"
   "-DSUNSHINE_ENABLE_KWIN=ON"
   "-DSUNSHINE_ENABLE_PORTAL=ON"
   "-DSUNSHINE_ENABLE_WAYLAND=ON"
   "-DSUNSHINE_ENABLE_X11=ON"
-  "-DSUNSHINE_PUBLISHER_NAME=LizardByte"
-  "-DSUNSHINE_PUBLISHER_WEBSITE=https://app.lizardbyte.dev"
-  "-DSUNSHINE_PUBLISHER_ISSUE_URL=https://app.lizardbyte.dev/support"
+  "-DSUNSHINE_PUBLISHER_NAME=Nonary"
+  "-DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/Nonary/Vibepollo"
+  "-DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/Nonary/Vibepollo/issues"
 )
 
 export CC=gcc-%{gcc_version}
@@ -369,7 +369,7 @@ fi
 
 %files
 # Executables
-%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
+%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/vibepollo
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
@@ -398,13 +398,13 @@ fi
 %{_datadir}/applications/*.desktop
 
 # Icons
-%{_datadir}/icons/hicolor/scalable/apps/apollo.svg
-%{_datadir}/icons/hicolor/scalable/status/apollo*.svg
+%{_datadir}/icons/hicolor/scalable/apps/io.github.Nonary.vibepollo.svg
+%{_datadir}/icons/hicolor/scalable/status/io.github.Nonary.vibepollo-*.svg
 
 # Metainfo
 %{_datadir}/metainfo/*.metainfo.xml
 
 # Assets
-%{_datadir}/sunshine/**
+%{_datadir}/vibepollo/**
 
 %changelog

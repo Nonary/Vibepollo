@@ -230,7 +230,12 @@ jobs:
     name: Arch Linux
     needs:
       - release-candidate
-    if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
+    # vibe-test is the Linux release-candidate branch. Build its installable
+    # Arch/CachyOS artifact on every push without opening a production release.
+    if: >-
+      ${{ github.event_name != 'push' ||
+          github.ref == 'refs/heads/vibe-test' ||
+          needs.release-candidate.outputs.should_release == 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci-archlinux.yml

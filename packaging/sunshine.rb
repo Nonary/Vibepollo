@@ -169,9 +169,9 @@ class Sunshine < Formula
       -DOPENSSL_ROOT_DIR=#{Formula["openssl"].opt_prefix}
       -DSUNSHINE_ASSETS_DIR=sunshine/assets
       -DSUNSHINE_BUILD_HOMEBREW=ON
-      -DSUNSHINE_PUBLISHER_NAME='LizardByte'
-      -DSUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
-      -DSUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'
+      -DSUNSHINE_PUBLISHER_NAME='Nonary'
+      -DSUNSHINE_PUBLISHER_WEBSITE='https://github.com/Nonary/Vibepollo'
+      -DSUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/Nonary/Vibepollo/issues'
     ]
     # Point cmake at the venv Python that has jinja2 installed (set up in setup_build_environment)
     args << "-DPython_EXECUTABLE=#{@glad_python}" if @glad_python

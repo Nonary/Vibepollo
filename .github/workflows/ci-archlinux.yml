@@ -170,7 +170,7 @@ jobs:
           # Create pkg directory and move files (as root)
           mkdir -p pkg
           mv build/PKGBUILD pkg/
-          mv build/sunshine.install pkg/
+          mv build/vibepollo.install pkg/
 
           # Change ownership to builder
           chown -R builder:builder pkg
@@ -181,7 +181,7 @@ jobs:
 
           # create a PKGBUILD archive
           cd ..
-          tar -czf sunshine.pkg.tar.gz -C pkg .
+          tar -czf vibepollo.pkg.tar.gz -C pkg .
 
       - name: Build PKGBUILD
         id: build
@@ -205,7 +205,7 @@ jobs:
             makepkg -si --noconfirm
 
           # Remove debug package
-          rm -f sunshine-debug*.pkg.tar.zst
+          rm -f vibepollo-debug*.pkg.tar.zst
 
           # Remove problem matcher
           echo "::remove-matcher owner=gcc::"
@@ -216,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t packages < <(find . -maxdepth 1 -type f -name 'sunshine-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
+          mapfile -t packages < <(find . -maxdepth 1 -type f -name 'vibepollo-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
           if (( ${#packages[@]} != 1 )); then
             echo "::error::Expected exactly one non-debug Arch package, found ${#packages[@]}."
             printf '%s\n' "${packages[@]}" >&2
@@ -226,8 +226,18 @@ jobs:
           package="${packages[0]}"
           package_info="$(bsdtar -xOf "${package}" .PKGINFO)"
           package_files="$(bsdtar -tf "${package}")"
+          grep -qx 'pkgname = vibepollo' <<< "${package_info}"
+          grep -qx 'provides = sunshine' <<< "${package_info}"
+          grep -qx 'conflict = sunshine' <<< "${package_info}"
           grep -qx 'depend = dkms' <<< "${package_info}"
           grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
+          grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
+          if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
+            echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
+            exit 1
+          fi
+          grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/share/applications/io.github.Nonary.vibepollo.desktop' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
           grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
           bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
@@ -242,8 +252,8 @@ jobs:
           mkdir -p artifacts
 
           # Copy built packages to artifacts
-          cp pkg/sunshine*.pkg.tar.zst artifacts/
-          cp sunshine.pkg.tar.gz artifacts/
+          cp pkg/vibepollo*.pkg.tar.zst artifacts/
+          cp vibepollo.pkg.tar.gz artifacts/
 
           # List artifacts
           ls -la artifacts/

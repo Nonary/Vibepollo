@@ -50,6 +50,10 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'dd_snapshot_restore_hotkey',
     'dd_snapshot_restore_hotkey_modifiers',
     'wgc_pacing_smoothing',
+    'ds4_back_as_touchpad_click',
+    'always_send_scancodes',
+    'native_pen_touch',
+    'install_steam_audio_drivers',
   ]);
 
   for (const field of fields.filter((candidate) => commonKeys.has(candidate.key))) {
@@ -67,6 +71,16 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     const field = fields.find((candidate) => candidate.key === key);
     assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux cleanup`);
   }
+});
+
+test('Linux maintenance omits Windows-only support and recovery sections', () => {
+  const maintenanceView = readFileSync(
+    new URL('../views/MaintenanceView.vue', import.meta.url),
+    'utf8',
+  );
+  assert.match(maintenanceView, /v-if="isWindows"[\s\S]*aria-labelledby="display-recovery-title"/);
+  assert.match(maintenanceView, /v-if="isWindows"[^>]*aria-labelledby="support-title"/);
+  assert.doesNotMatch(maintenanceView, /ui\.maintenance\.support\.windowsUnavailable/);
 });
 
 test('Linux uses display enumeration and persistence reset', () => {

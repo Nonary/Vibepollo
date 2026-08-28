@@ -27,7 +27,7 @@ location by modifying the configuration file.
 |---------|-------------------------------------------------|
 | Docker  | @code{}/config@endcode                          |
 | FreeBSD | @code{}~/.config/sunshine@endcode               |
-| Linux   | @code{}~/.config/sunshine@endcode               |
+| Linux   | @code{}~/.config/vibepollo@endcode              |
 | macOS   | @code{}~/.config/sunshine@endcode               |
 | Windows | @code{}%ProgramFiles%\\Sunshine\\config@endcode |
 
@@ -2504,7 +2504,7 @@ Terminate request. The original game client is unaffected. The default is
         <td>Description</td>
         <td colspan="2">
             The file used by new Vibepollo features to persist web authentication tokens and notification state.
-            If left unset, it defaults to <code>vibeshine_state.json</code> in the same directory as other Sunshine data.
+            If left unset, it defaults to <code>vibeshine_state.json</code> in the same directory as other Vibepollo data.
         </td>
     </tr>
     <tr>

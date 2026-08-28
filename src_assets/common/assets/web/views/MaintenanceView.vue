@@ -113,7 +113,10 @@ function message(cause: unknown, fallback: string): string {
   return cause instanceof ApiError ? fallback : cause instanceof Error ? cause.message : fallback;
 }
 
-function reconcileSessions(current: BrowserSession[], incoming: BrowserSession[]): BrowserSession[] {
+function reconcileSessions(
+  current: BrowserSession[],
+  incoming: BrowserSession[],
+): BrowserSession[] {
   const byId = new Map(incoming.map((session) => [session.id, session]));
   const stable = current.flatMap((session) => {
     const replacement = byId.get(session.id);
@@ -144,7 +147,9 @@ async function load(): Promise<void> {
   }
 
   if (sessionsResult.status === 'fulfilled') {
-    const incoming = Array.isArray(sessionsResult.value.sessions) ? sessionsResult.value.sessions : [];
+    const incoming = Array.isArray(sessionsResult.value.sessions)
+      ? sessionsResult.value.sessions
+      : [];
     browserSessions.value = reconcileSessions(browserSessions.value, incoming);
     const current = incoming.find((session) => session.current);
     if (current && !credentials.username) credentials.username = current.username;
@@ -211,8 +216,10 @@ const goldenState = computed<{ label: string; tone: StatusTone; detail: string }
 const crashState = computed<{ label: string; tone: StatusTone }>(() => {
   if (!isWindows.value) return { label: t('ui.maintenance.status.windowsOnly'), tone: 'neutral' };
   if (!crashDump.value) return { label: t('ui.maintenance.status.unavailable'), tone: 'danger' };
-  if (!crashDump.value.available) return { label: t('ui.maintenance.crash.noneRecent'), tone: 'success' };
-  if (crashDump.value.dismissed) return { label: t('ui.maintenance.crash.acknowledged'), tone: 'neutral' };
+  if (!crashDump.value.available)
+    return { label: t('ui.maintenance.crash.noneRecent'), tone: 'success' };
+  if (crashDump.value.dismissed)
+    return { label: t('ui.maintenance.crash.acknowledged'), tone: 'neutral' };
   return { label: t('ui.maintenance.crash.detected'), tone: 'warning' };
 });
 
@@ -247,7 +254,12 @@ function formatDate(value: string | null | undefined): string {
 }
 
 function sessionName(session: BrowserSession): string {
-  return session.device_label || session.remote_address || session.user_agent || t('ui.maintenance.sessions.trustedBrowser');
+  return (
+    session.device_label ||
+    session.remote_address ||
+    session.user_agent ||
+    t('ui.maintenance.sessions.trustedBrowser')
+  );
 }
 
 function sessionLastSeen(session: BrowserSession): string {
@@ -368,7 +380,10 @@ async function runConfirmedAction(): Promise<void> {
       }
       notice.value = t('ui.maintenance.notices.virtualDisplayTerminated');
     } else if (action.kind === 'revoke-session') {
-      await apiDelete<MutationResponse>(`/api/auth/sessions/${encodeURIComponent(action.session.id)}`, {});
+      await apiDelete<MutationResponse>(
+        `/api/auth/sessions/${encodeURIComponent(action.session.id)}`,
+        {},
+      );
       notice.value = t('ui.maintenance.notices.sessionRevoked', {
         browser: sessionName(action.session),
       });
@@ -462,10 +477,7 @@ onMounted(() => void load());
 
 <template>
   <div class="page page--narrow maintenance-page">
-    <PageHeader
-      :title="t('ui.maintenance.title')"
-      :description="t('ui.maintenance.description')"
-    >
+    <PageHeader :title="t('ui.maintenance.title')" :description="t('ui.maintenance.description')">
       <template #actions>
         <AppButton
           icon="refresh"
@@ -514,20 +526,39 @@ onMounted(() => void load());
             <p>{{ t('ui.maintenance.version.description') }}</p>
           </div>
           <StatusBadge
-            :label="metadata?.status === false ? t('ui.maintenance.version.metadataIncomplete') : t('changelog.installed')"
+            :label="
+              metadata?.status === false
+                ? t('ui.maintenance.version.metadataIncomplete')
+                : t('changelog.installed')
+            "
             :tone="metadata?.status === false ? 'warning' : 'info'"
           />
         </div>
         <dl class="metadata-grid">
-          <div><dt>{{ t('ui.maintenance.version.version') }}</dt><dd>{{ versionLabel() }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.version.platform') }}</dt><dd>{{ metadata?.platform || t('_common.unknown') }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.version.branch') }}</dt><dd>{{ metadata?.branch || t('_common.unknown') }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.version.commit') }}</dt><dd class="monospace">{{ metadata?.commit || t('_common.unknown') }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.version.releaseDate') }}</dt><dd>{{ formatDate(metadata?.release_date) }}</dd></div>
+          <div>
+            <dt>{{ t('ui.maintenance.version.version') }}</dt>
+            <dd>{{ versionLabel() }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.version.platform') }}</dt>
+            <dd>{{ metadata?.platform || t('_common.unknown') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.version.branch') }}</dt>
+            <dd>{{ metadata?.branch || t('_common.unknown') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.version.commit') }}</dt>
+            <dd class="monospace">{{ metadata?.commit || t('_common.unknown') }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.version.releaseDate') }}</dt>
+            <dd>{{ formatDate(metadata?.release_date) }}</dd>
+          </div>
         </dl>
       </section>
 
-      <section class="maintenance-section" aria-labelledby="support-title">
+      <section v-if="isWindows" class="maintenance-section" aria-labelledby="support-title">
         <div class="maintenance-section__heading">
           <div>
             <h2 id="support-title">{{ t('ui.maintenance.support.title') }}</h2>
@@ -535,7 +566,7 @@ onMounted(() => void load());
           </div>
           <StatusBadge :label="crashState.label" :tone="crashState.tone" />
         </div>
-        <div v-if="isWindows" class="support-actions">
+        <div class="support-actions">
           <a class="button button--secondary" href="/api/logs/export" download>
             <UiIcon name="download" aria-hidden="true" />
             {{ t('ui.maintenance.support.downloadLogs') }}
@@ -569,15 +600,16 @@ onMounted(() => void load());
             @click="dismissCrash"
           />
         </div>
-        <p v-else-if="isWindows" class="maintenance-muted">
-          {{ t('ui.maintenance.crash.noneFound') }}
-        </p>
         <p v-else class="maintenance-muted">
-          {{ t('ui.maintenance.support.windowsUnavailable') }}
+          {{ t('ui.maintenance.crash.noneFound') }}
         </p>
       </section>
 
-      <section class="maintenance-section" aria-labelledby="display-recovery-title">
+      <section
+        v-if="isWindows"
+        class="maintenance-section"
+        aria-labelledby="display-recovery-title"
+      >
         <div class="maintenance-section__heading">
           <div>
             <h2 id="display-recovery-title">{{ t('ui.maintenance.recovery.title') }}</h2>
@@ -588,15 +620,33 @@ onMounted(() => void load());
         <dl v-if="golden?.exists" class="recovery-facts">
           <div>
             <dt>{{ t('ui.maintenance.recovery.snapshotSchema') }}</dt>
-            <dd>{{ golden.snapshot_version ?? t('_common.unknown') }} / {{ golden.latest_snapshot_version ?? t('_common.unknown') }}</dd>
+            <dd>
+              {{ golden.snapshot_version ?? t('_common.unknown') }} /
+              {{ golden.latest_snapshot_version ?? t('_common.unknown') }}
+            </dd>
           </div>
-          <div><dt>{{ t('ui.maintenance.recovery.unresolvedRestores') }}</dt><dd>{{ golden.restore_failure_count ?? 0 }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.recovery.lastFailure') }}</dt><dd>{{ golden.restore_last_failure_reason || t('ui.maintenance.recovery.noneRecorded') }}</dd></div>
-          <div><dt>{{ t('ui.maintenance.recovery.statusUpdated') }}</dt><dd>{{ formatTimestamp(golden.restore_status_updated_at_unix_ms) }}</dd></div>
+          <div>
+            <dt>{{ t('ui.maintenance.recovery.unresolvedRestores') }}</dt>
+            <dd>{{ golden.restore_failure_count ?? 0 }}</dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.recovery.lastFailure') }}</dt>
+            <dd>
+              {{ golden.restore_last_failure_reason || t('ui.maintenance.recovery.noneRecorded') }}
+            </dd>
+          </div>
+          <div>
+            <dt>{{ t('ui.maintenance.recovery.statusUpdated') }}</dt>
+            <dd>{{ formatTimestamp(golden.restore_status_updated_at_unix_ms) }}</dd>
+          </div>
         </dl>
         <div v-if="isWindows" class="maintenance-actions">
           <AppButton
-            :label="golden?.exists ? t('ui.maintenance.actions.replaceSnapshot') : t('ui.maintenance.actions.captureSnapshot')"
+            :label="
+              golden?.exists
+                ? t('ui.maintenance.actions.replaceSnapshot')
+                : t('ui.maintenance.actions.captureSnapshot')
+            "
             variant="secondary"
             @click="requestAction({ kind: 'golden-export' })"
           />
@@ -634,7 +684,9 @@ onMounted(() => void load());
                 <th>{{ t('ui.maintenance.sessions.browser') }}</th>
                 <th>{{ t('ui.maintenance.sessions.lastSeen') }}</th>
                 <th>{{ t('ui.maintenance.sessions.expires') }}</th>
-                <th><span class="visually-hidden">{{ t('auth.sessions_actions') }}</span></th>
+                <th>
+                  <span class="visually-hidden">{{ t('auth.sessions_actions') }}</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -655,8 +707,12 @@ onMounted(() => void load());
                     </span>
                   </div>
                 </td>
-                <td :data-label="t('ui.maintenance.sessions.lastSeen')">{{ sessionLastSeen(sessionItem) }}</td>
-                <td :data-label="t('ui.maintenance.sessions.expires')">{{ formatTimestamp(sessionItem.refresh_expires_at || sessionItem.expires_at) }}</td>
+                <td :data-label="t('ui.maintenance.sessions.lastSeen')">
+                  {{ sessionLastSeen(sessionItem) }}
+                </td>
+                <td :data-label="t('ui.maintenance.sessions.expires')">
+                  {{ formatTimestamp(sessionItem.refresh_expires_at || sessionItem.expires_at) }}
+                </td>
                 <td :data-label="t('auth.sessions_actions')" class="vs-table__actions">
                   <AppButton
                     v-if="!sessionItem.current"
@@ -666,7 +722,9 @@ onMounted(() => void load());
                     size="compact"
                     @click="requestAction({ kind: 'revoke-session', session: sessionItem })"
                   />
-                  <span v-else class="maintenance-muted">{{ t('ui.maintenance.sessions.current') }}</span>
+                  <span v-else class="maintenance-muted">{{
+                    t('ui.maintenance.sessions.current')
+                  }}</span>
                 </td>
               </tr>
             </tbody>
@@ -691,20 +749,45 @@ onMounted(() => void load());
         <form class="credentials-form" @submit.prevent="changePassword">
           <label class="vs-field">
             <span class="vs-field__label">{{ t('_common.username') }}</span>
-            <input v-model.trim="credentials.username" class="vs-input" autocomplete="username" required />
+            <input
+              v-model.trim="credentials.username"
+              class="vs-input"
+              autocomplete="username"
+              required
+            />
           </label>
           <label class="vs-field">
-            <span class="vs-field__label">{{ t('ui.maintenance.credentials.currentPassword') }}</span>
-            <input v-model="credentials.currentPassword" class="vs-input" type="password" autocomplete="current-password" required />
+            <span class="vs-field__label">{{
+              t('ui.maintenance.credentials.currentPassword')
+            }}</span>
+            <input
+              v-model="credentials.currentPassword"
+              class="vs-input"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
           </label>
           <div class="credentials-form__new-password">
             <label class="vs-field">
               <span class="vs-field__label">{{ t('auth.new_password') }}</span>
-              <input v-model="credentials.newPassword" class="vs-input" type="password" autocomplete="new-password" required />
+              <input
+                v-model="credentials.newPassword"
+                class="vs-input"
+                type="password"
+                autocomplete="new-password"
+                required
+              />
             </label>
             <label class="vs-field">
               <span class="vs-field__label">{{ t('auth.confirm_new_password') }}</span>
-              <input v-model="credentials.confirmPassword" class="vs-input" type="password" autocomplete="new-password" required />
+              <input
+                v-model="credentials.confirmPassword"
+                class="vs-input"
+                type="password"
+                autocomplete="new-password"
+                required
+              />
             </label>
           </div>
           <div class="maintenance-actions">
@@ -873,7 +956,8 @@ onMounted(() => void load());
   justify-content: space-between;
   gap: var(--vs-space-20);
   padding: var(--vs-space-20);
-  border: var(--vs-border-emphasis-width) solid color-mix(in srgb, var(--vs-color-status-danger) 58%, var(--vs-color-border-subtle));
+  border: var(--vs-border-emphasis-width) solid
+    color-mix(in srgb, var(--vs-color-status-danger) 58%, var(--vs-color-border-subtle));
   border-radius: var(--vs-radius-card);
   background: color-mix(in srgb, var(--vs-color-status-danger) 6%, var(--vs-color-bg-surface));
 }

@@ -1,0 +1,65 @@
+---
+name: Deploy GitHub Pages
+permissions: {}
+
+on:
+  push:
+    branches:
+      - master
+      - arch-repo
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble Pages site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Vibepollo site
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Assemble static site and Arch repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          cp -a gh-pages-template/. _site/
+          rm -f _site/.readthedocs.yaml _site/_config.yml
+
+          if git fetch --depth=1 origin refs/heads/arch-repo; then
+            mkdir -p _site/arch
+            git archive --format=tar FETCH_HEAD | tar -xf - -C _site/arch
+          else
+            echo 'The Arch repository has not been published yet.' >_site/arch-repository-pending.txt
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0

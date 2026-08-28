@@ -86,7 +86,7 @@ TEST(HostNameService, UsesValueAndFallsBackForEmptyOrFailure) {
   EXPECT_EQ(platf::services::host_name_or(provider), "deterministic-host");
 
   provider.value = "";
-  EXPECT_EQ(platf::services::host_name_or(provider), "Sunshine");
+  EXPECT_EQ(platf::services::host_name_or(provider), "Vibepollo");
 
   provider.throws = true;
   EXPECT_EQ(platf::services::host_name_or(provider, "fallback"), "fallback");
@@ -95,10 +95,10 @@ TEST(HostNameService, UsesValueAndFallsBackForEmptyOrFailure) {
 TEST(AppDataRootPolicy, PrefersProvidedHomeAndUsesFallbackWhenMissing) {
   EXPECT_EQ(
     platf::services::home_config_root(std::filesystem::path {"/provided"}, "/fallback"),
-    std::filesystem::path {"/provided/.config/sunshine"}
+    std::filesystem::path {"/provided/.config/vibepollo"}
   );
   EXPECT_EQ(
     platf::services::home_config_root(std::nullopt, "/fallback"),
-    std::filesystem::path {"/fallback/.config/sunshine"}
+    std::filesystem::path {"/fallback/.config/vibepollo"}
   );
 }

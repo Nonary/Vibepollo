@@ -85,7 +85,7 @@ elseif(UNIX)
         string(REPLACE "-" "" SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
         string(REPLACE "+" "." SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
         configure_file(packaging/linux/Arch/PKGBUILD PKGBUILD @ONLY)
-        configure_file(packaging/linux/Arch/sunshine.install sunshine.install @ONLY)
+        configure_file(packaging/linux/Arch/vibepollo.install vibepollo.install @ONLY)
     endif()
 
     # configure the flatpak manifest

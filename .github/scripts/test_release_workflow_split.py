@@ -26,6 +26,9 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
         self.assertIn("build-archlinux", awaiting_signing["needs"])
+        self.assertIn(
+            "github.ref == 'refs/heads/vibe-test'", jobs["build-archlinux"]["if"]
+        )
         self.assertIn("should_release", build_inputs["build_only"])
         self.assertNotIn("require_signpath_signing", build_inputs)
         self.assertEqual(
