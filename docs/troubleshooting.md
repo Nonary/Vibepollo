@@ -7,7 +7,7 @@ If you forgot your credentials to the web UI, try this.
 
 @tabs{
   @tab{General | ```bash
-    sunshine --creds {new-username} {new-password}
+    vibepollo --creds {new-username} {new-password}
     ```
   }
   @tab{AppImage | ```bash
@@ -15,7 +15,7 @@ If you forgot your credentials to the web UI, try this.
     ```
   }
   @tab{Flatpak | ```bash
-    flatpak run --command=sunshine dev.lizardbyte.app.Sunshine --creds {new-username} {new-password}
+    flatpak run --command=vibepollo io.github.Nonary.vibepollo --creds {new-username} {new-password}
     ```
   }
 }

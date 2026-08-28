@@ -27,7 +27,7 @@ location by modifying the configuration file.
 |---------|-------------------------------------------------|
 | Docker  | @code{}/config@endcode                          |
 | FreeBSD | @code{}~/.config/sunshine@endcode               |
-| Linux   | @code{}~/.config/sunshine@endcode               |
+| Linux   | @code{}~/.config/vibepollo@endcode              |
 | macOS   | @code{}~/.config/sunshine@endcode               |
 | Windows | @code{}%ProgramFiles%\\Sunshine\\config@endcode |
 
@@ -1279,7 +1279,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br><br>
             If the custom module cannot be built or loaded (including on older kernels or when
             the kernel rejects an untrusted module signature), managed virtual displays remain unavailable.
-            Vibeshine deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
+            Vibepollo deliberately does not fall back to CPU-backed stock <code>vkms</code> scanout.
             Arch Linux and CachyOS packages use DKMS to sign future rebuilds with a persistent local
             key and verify the embedded signer before accepting the module. Stock Arch and CachyOS
             kernels need no separate signing step: accepting the normal package-install confirmation
@@ -2745,7 +2745,7 @@ this option to replace the running app immediately. The default is `true`.
             With the <code>vibeshine_drm</code> presentation ABI, capture is change-driven, imports the exact
             pinned DMA-BUF associated with each completed sequence, and coalesces bursts to the
             client-requested maximum frame rate. Ordinary KMS drivers retain fixed-rate polling; older
-            Vibeshine DRM modules without the frame-export ABI are rejected.
+            Vibepollo DRM modules without the frame-export ABI are rejected.
             @note{Applies to Linux only.}</td>
     </tr>
     <tr>
@@ -2832,7 +2832,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>nvenc</td>
         <td>For NVIDIA graphics cards. On Linux this is the supported FFmpeg-based NVENC
             implementation and the implementation used by automatic selection. On Windows it uses
-            Vibeshine's native NVENC implementation.</td>
+            Vibepollo's native NVENC implementation.</td>
     </tr>
     <tr>
         <td>nvenc_experimental</td>
@@ -2929,7 +2929,7 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
     <tr>
         <td>mangohud</td>
-        <td>Use MangoHUD on Linux. Vibeshine enables it for launched games and supplies the stream-derived FPS limit.</td>
+        <td>Use MangoHUD on Linux. Vibepollo enables it for launched games and supplies the stream-derived FPS limit.</td>
     </tr>
     <tr>
         <td>rtss</td>
@@ -4356,7 +4356,7 @@ Default: `true`
 
 Synchronizes installed Steam games into `apps.json` when configuration is
 applied and checks for manifest, library, metadata, and artwork changes every
-30 seconds while Vibeshine is running. Steam-managed entries use stable Steam
+30 seconds while Vibepollo is running. Steam-managed entries use stable Steam
 IDs; manual and Playnite-managed entries are preserved.
 
 Default: `true`

@@ -17,7 +17,7 @@ endif()
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
-set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
+set(PROJECT_FQDN "io.github.Nonary.vibepollo")
 set(WINDOWS_APP_USER_MODEL_ID "Nonary.Vibepollo")
 
 set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Artemis")  # must be <= 35 characters

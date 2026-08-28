@@ -177,8 +177,8 @@ jobs:
             -DSUNSHINE_ENABLE_WAYLAND=ON \
             -DSUNSHINE_ENABLE_X11=ON \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
-            -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
-            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support"
+            -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/Nonary/Vibepollo" \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/Nonary/Vibepollo/issues"
 
       - name: Build
         shell: freebsd {0}

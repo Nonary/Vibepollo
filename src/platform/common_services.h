@@ -47,7 +47,7 @@ namespace platf::services {
     reader_t _reader;
   };
 
-  std::string host_name_or(const host_name_provider_t &provider, std::string fallback = "Sunshine");
+  std::string host_name_or(const host_name_provider_t &provider, std::string fallback = "Vibepollo");
 
   std::filesystem::path home_config_root(const std::optional<std::filesystem::path> &home,
                                          const std::filesystem::path &fallback_home);

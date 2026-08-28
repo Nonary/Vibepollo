@@ -1,14 +1,14 @@
 # Getting Started
 
-The recommended method for running Sunshine is to use the [binaries](#binaries) included in the
+The recommended method for running Vibepollo is to use the [binaries](#binaries) included in the
 [latest release][latest-release], unless otherwise specified.
 
-[Pre-releases](https://github.com/LizardByte/Sunshine/releases) are also available. These should be considered beta,
+[Pre-releases](https://github.com/Nonary/Vibepollo/releases) are also available. These should be considered beta,
 and release artifacts may be missing when merging changes on a faster cadence.
 
 ## Binaries
 
-Binaries of Sunshine are created for each release. They are available for FreeBSD, Linux, macOS, and Windows.
+Binaries of Vibepollo are created for each release. Availability varies by platform while the distribution channels are being established.
 Binaries can be found in the [latest release][latest-release].
 
 > [!NOTE]
@@ -92,7 +92,7 @@ CUDA is used for NVFBC capture.
         <td>Sunshine (copr - OpenSUSE)</td>
     </tr>
     <tr>
-        <td>sunshine.pkg.tar.zst</td>
+        <td>vibepollo.pkg.tar.zst</td>
     </tr>
 </table>
 
@@ -127,24 +127,48 @@ CUDA is used for NVFBC capture.
 ./sunshine.AppImage --remove
 ```
 
-#### ArchLinux
+#### Arch Linux and CachyOS
 
-> [!CAUTION]
-> Use AUR packages at your own risk.
+##### Install from the signed repository
 
-##### Install Prebuilt Packages
-Follow the instructions at LizardByte's [pacman-repo](https://github.com/LizardByte/pacman-repo) to add
-the repository. Then run the following command.
+Import and locally trust the Nonary repository key:
+
 ```bash
-pacman -S sunshine
+curl -fsSLo /tmp/nonary-vibepollo.gpg \
+  https://nonary.github.io/Vibepollo/arch/x86_64/nonary-vibepollo.gpg
+curl -fsSLo /tmp/nonary-vibepollo-fingerprint.txt \
+  https://nonary.github.io/Vibepollo/arch/x86_64/nonary-vibepollo-fingerprint.txt
+sudo pacman-key --add /tmp/nonary-vibepollo.gpg
+sudo pacman-key --lsign-key "$(tr -d '[:space:]' </tmp/nonary-vibepollo-fingerprint.txt)"
 ```
+
+Add the repository and install Vibepollo:
+
+```bash
+sudo install -Dm644 /dev/stdin /etc/pacman.d/vibepollo.conf <<'EOF'
+[vibepollo]
+SigLevel = Required
+Server = https://nonary.github.io/Vibepollo/arch/x86_64
+EOF
+grep -qxF 'Include = /etc/pacman.d/vibepollo.conf' /etc/pacman.conf || \
+  printf '\nInclude = /etc/pacman.d/vibepollo.conf\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu vibepollo
+```
+
+Future releases then arrive through the normal `pacman -Syu` upgrade process. Install only one
+streaming host at a time: Vibepollo replaces Sunshine or Vibeshine. Preserve existing configuration
+and pairing data when transitioning, including earlier manually built Vibepollo installations.
+
+As a fallback, download the `vibepollo-<version>-1-x86_64.pkg.tar.zst` asset from the
+[Vibepollo release page](https://github.com/Nonary/Vibepollo/releases) and install it with
+`sudo pacman -U ./vibepollo-<version>-1-x86_64.pkg.tar.zst`.
 
 ##### Install PKGBUILD Archive
 Open terminal and run the following command.
 ```bash
-wget https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine.pkg.tar.gz
-tar -xvf sunshine.pkg.tar.gz
-cd sunshine
+wget https://github.com/Nonary/Vibepollo/releases/latest/download/vibepollo.pkg.tar.gz
+tar -xvf vibepollo.pkg.tar.gz
+cd vibepollo
 
 # install optional dependencies
 pacman -S cuda  # Nvidia GPU encoding support
@@ -155,7 +179,7 @@ makepkg -si
 
 ##### Uninstall
 ```bash
-pacman -R sunshine
+sudo pacman -R vibepollo
 ```
 
 #### Debian/Ubuntu
@@ -237,47 +261,35 @@ sudo dnf remove Sunshine
 Using this package requires that you have [Flatpak](https://flatpak.org/setup) installed.
 
 ##### Download (local option)
-1. Download `sunshine_{arch}.flatpak` and run the following command.
+1. Download `vibeshine_{arch}.flatpak` and run the following command.
 
    > [!NOTE]
    > Replace `{arch}` with your system architecture.
 
 ##### Install (system level)
-**Flathub**
 ```bash
-flatpak install --system flathub dev.lizardbyte.app.Sunshine
-```
-
-**Local**
-```bash
-flatpak install --system ./sunshine_{arch}.flatpak
+flatpak install --system ./vibeshine_{arch}.flatpak
 ```
 
 ##### Install (user level)
-**Flathub**
 ```bash
-flatpak install --user flathub dev.lizardbyte.app.Sunshine
-```
-
-**Local**
-```bash
-flatpak install --user ./sunshine_{arch}.flatpak
+flatpak install --user ./vibeshine_{arch}.flatpak
 ```
 
 ##### Additional installation (required)
 ```bash
-flatpak run --command=additional-install.sh dev.lizardbyte.app.Sunshine
+flatpak run --command=additional-install.sh io.github.Nonary.vibepollo
 ```
 
 ##### Run with NVFBC capture (X11 Only) or XDG Portal (Wayland Only)
 ```bash
-flatpak run dev.lizardbyte.app.Sunshine
+flatpak run io.github.Nonary.vibepollo
 ```
 
 ##### Uninstall
 ```bash
-flatpak run --command=remove-additional-install.sh dev.lizardbyte.app.Sunshine
-flatpak uninstall --delete-data dev.lizardbyte.app.Sunshine
+flatpak run --command=remove-additional-install.sh io.github.Nonary.vibepollo
+flatpak uninstall --delete-data io.github.Nonary.vibepollo
 ```
 
 #### Homebrew
@@ -449,17 +461,17 @@ After adding yourself to the group, log out and log back in for the changes to t
 
 **Start once**
 ```bash
-systemctl --user start app-dev.lizardbyte.app.Sunshine
+systemctl --user start app-io.github.Nonary.vibepollo
 ```
 
 **Start on boot**
 ```bash
-systemctl --user --now enable app-dev.lizardbyte.app.Sunshine
+systemctl --user --now enable app-io.github.Nonary.vibepollo
 ```
 
 > [!NOTE]
-> The service has been renamed to "app-dev.lizardbyte.app.Sunshine" in order to increase compatibility with
-> XDG Desktop Portal, but it is also aliased to "sunshine.service" for convenience.
+> The full service name follows the application ID, `app-io.github.Nonary.vibepollo`, and it is also
+> aliased to `vibepollo.service` for convenience.
 
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.
@@ -501,7 +513,7 @@ sunshine
 
 ### Specify config file
 ```bash
-sunshine <directory of conf file>/sunshine.conf
+vibepollo <directory of conf file>/vibepollo.conf
 ```
 
 > [!NOTE]
@@ -568,13 +580,13 @@ To get a list of available arguments, run the following command.
 
 @tabs{
    @tab{ General | ```bash
-      sunshine --help
+      vibepollo --help
       ```}
    @tab{ AppImage | ```bash
       ./sunshine.AppImage --help
       ```}
    @tab{ Flatpak | ```bash
-      flatpak run --command=sunshine dev.lizardbyte.app.Sunshine --help
+      flatpak run --command=vibepollo io.github.Nonary.vibepollo --help
       ```}
 }
 
@@ -626,7 +638,7 @@ Streaming HDR content is officially supported on Windows hosts and experimentall
 * General HDR support information and requirements:
 
   * HDR must be activated in the host OS, which may require an HDR-capable physical display, an EDID
-    emulator dongle, or a managed Vibeshine HDR virtual display connected to the desktop session.
+    emulator dongle, or a managed Vibepollo HDR virtual display connected to the desktop session.
   * You must also enable the HDR option in your Moonlight client settings, otherwise the stream will be SDR
     (and probably overexposed if your host is HDR).
   * A good HDR experience relies on proper HDR display calibration both in the OS and in game. HDR calibration can
@@ -652,7 +664,7 @@ Additional information:
     encoder. KWin ScreenCast remains recommended for managed SDR capture. NvFBC and X11 capture do
     not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
-  - Native Vibeshine installations can provide private HDR10 virtual outputs through the
+  - Native Vibepollo installations can provide private HDR10 virtual outputs through the
     `vibeshine_drm` module. It requires Linux 7.1 or newer and matching kernel headers. Its EDID
     advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
     The driver notifies direct KMS capture when a presentation completes and exports the exact pinned
@@ -673,7 +685,7 @@ Additional information:
   compositor. Compare `modinfo -F version vibeshine_drm` with
   `cat /sys/module/vibeshine_drm/version`; reboot before testing when they
   differ. A working event-capable stream logs `Using event-driven KMS capture
-  for Vibeshine DRM CRTC`.
+  for Vibepollo DRM CRTC`.
 
   Native packages and `vibeshine-drm-setup.service` attempt the module build automatically; the
   first command retries it manually. Privileged helpers always install under the fixed, root-owned
@@ -692,7 +704,7 @@ Additional information:
   Only a custom kernel configured to enforce trusted module signatures needs additional
   authorization. When that is detected, the package installation launches the one-time signing-key
   confirmation automatically. After confirming it, reboot and approve the pending firmware
-  confirmations once; future kernel and Vibeshine updates remain automatic. If a noninteractive
+  confirmations once; future kernel and Vibepollo updates remain automatic. If a noninteractive
   package frontend cannot display the prompt, retry the package installation from a terminal.
 
   @seealso{[Arch wiki on HDR Support for Linux](https://wiki.archlinux.org/title/HDR_monitor_support) and
@@ -731,4 +743,4 @@ Commit distance is determined using the GitHub compare endpoint between the late
   [TOC]
 </details>
 
-[latest-release]: https://github.com/LizardByte/Sunshine/releases/latest
+[latest-release]: https://github.com/Nonary/Vibepollo/releases/latest

@@ -54,7 +54,7 @@ elseif(UNIX)
                     "${VIBESHINE_DRM_INPUT_NAME}:${VIBESHINE_DRM_INPUT_HASH}\n")
         endforeach()
         string(SHA256 VIBESHINE_DRM_SOURCE_ID "${VIBESHINE_DRM_HASH_MATERIAL}")
-        # Privileged services that build and provision Vibeshine's virtual
+        # Privileged services that build and provision Vibepollo's virtual
         # display outputs before the display manager enumerates DRM devices.
         configure_file("${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.service.in" vibeshine-vkms.service @ONLY)
         configure_file("${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-control.socket.in" vibeshine-vkms-control.socket @ONLY)
@@ -80,7 +80,7 @@ elseif(UNIX)
         string(REPLACE "-" "" SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
         string(REPLACE "+" "." SUNSHINE_ARCH_PKGVER "${SUNSHINE_ARCH_PKGVER}")
         configure_file(packaging/linux/Arch/PKGBUILD PKGBUILD @ONLY)
-        configure_file(packaging/linux/Arch/sunshine.install sunshine.install @ONLY)
+        configure_file(packaging/linux/Arch/vibepollo.install vibepollo.install @ONLY)
     endif()
 
     # configure the flatpak manifest

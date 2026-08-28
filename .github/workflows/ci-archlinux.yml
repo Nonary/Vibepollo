@@ -77,7 +77,7 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      - name: Compile Vibeshine DRM against Arch kernel
+      - name: Compile Vibepollo DRM against Arch kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -101,7 +101,7 @@ jobs:
           signing_key="${RUNNER_TEMP}/vibeshine-drm-mok.key"
           signing_certificate="${RUNNER_TEMP}/vibeshine-drm-mok.pub"
           openssl req -new -x509 -nodes -days 1 \
-            -subj '/CN=Vibeshine CI module signing key/' \
+            -subj '/CN=Vibepollo CI module signing key/' \
             -newkey rsa:2048 -keyout "${signing_key}" \
             -addext 'extendedKeyUsage=codeSigning' \
             -outform DER -out "${signing_certificate}" >/dev/null 2>&1
@@ -114,14 +114,14 @@ jobs:
           module_sig_key="${module_sig_key//:/}"
           [[ "${module_sig_key^^}" == "${certificate_serial^^}" ]]
           [[ "$(modinfo -F signer "${module_build_dir}/vibeshine_drm.ko")" == \
-             'Vibeshine CI module signing key' ]]
+             'Vibepollo CI module signing key' ]]
 
           dkms_ci_version=0.0.1
           dkms_source="/usr/src/vibeshine-drm-${dkms_ci_version}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${dkms_source}"
           sed "s/@PROJECT_VERSION_NUMERIC@/${dkms_ci_version}/g" \
             "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
-          printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibeshine-ci.conf
+          printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibepollo-ci.conf
           dkms add -m vibeshine-drm -v "${dkms_ci_version}"
           MAKEFLAGS="-j$(nproc)" dkms build \
             -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
@@ -170,7 +170,7 @@ jobs:
           # Create pkg directory and move files (as root)
           mkdir -p pkg
           mv build/PKGBUILD pkg/
-          mv build/sunshine.install pkg/
+          mv build/vibepollo.install pkg/
 
           # Change ownership to builder
           chown -R builder:builder pkg
@@ -181,7 +181,7 @@ jobs:
 
           # create a PKGBUILD archive
           cd ..
-          tar -czf sunshine.pkg.tar.gz -C pkg .
+          tar -czf vibepollo.pkg.tar.gz -C pkg .
 
       - name: Build PKGBUILD
         id: build
@@ -226,8 +226,19 @@ jobs:
           package="${packages[0]}"
           package_info="$(bsdtar -xOf "${package}" .PKGINFO)"
           package_files="$(bsdtar -tf "${package}")"
+          grep -qx 'pkgname = vibepollo' <<< "${package_info}"
+          grep -qx 'provides = sunshine' <<< "${package_info}"
+          grep -qx 'conflict = sunshine' <<< "${package_info}"
+          grep -qx 'conflict = vibeshine' <<< "${package_info}"
           grep -qx 'depend = dkms' <<< "${package_info}"
           grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
+          grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
+          if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
+            echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
+            exit 1
+          fi
+          grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/share/applications/io.github.Nonary.vibepollo.desktop' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
           grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
           bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
@@ -242,8 +253,8 @@ jobs:
           mkdir -p artifacts
 
           # Copy built packages to artifacts
-          cp pkg/sunshine*.pkg.tar.zst artifacts/
-          cp sunshine.pkg.tar.gz artifacts/
+          cp pkg/vibepollo*.pkg.tar.zst artifacts/
+          cp vibepollo.pkg.tar.gz artifacts/
 
           # List artifacts
           ls -la artifacts/

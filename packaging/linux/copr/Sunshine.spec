@@ -14,12 +14,12 @@
 %endif
 %endif
 
-Name: Sunshine
+Name: vibepollo
 Version: %{build_version}
 Release: 1%{?dist}
 Summary: Self-hosted game stream host for Moonlight.
 License: GPLv3-only
-URL: https://github.com/LizardByte/Sunshine
+URL: https://github.com/Nonary/Vibepollo
 Source0: tarball.tar.gz
 
 # Common BuildRequires
@@ -214,16 +214,16 @@ cmake_args=(
   "-DBUILD_WERROR=ON"
   "-DCMAKE_BUILD_TYPE=Release"
   "-DCMAKE_INSTALL_PREFIX=%{_prefix}"
-  "-DSUNSHINE_ASSETS_DIR=%{_datadir}/sunshine"
-  "-DSUNSHINE_EXECUTABLE_PATH=%{_bindir}/sunshine"
+  "-DSUNSHINE_ASSETS_DIR=%{_datadir}/vibepollo"
+  "-DSUNSHINE_EXECUTABLE_PATH=%{_bindir}/vibepollo"
   "-DSUNSHINE_ENABLE_DRM=ON"
   "-DSUNSHINE_ENABLE_KWIN=ON"
   "-DSUNSHINE_ENABLE_PORTAL=ON"
   "-DSUNSHINE_ENABLE_WAYLAND=ON"
   "-DSUNSHINE_ENABLE_X11=ON"
-  "-DSUNSHINE_PUBLISHER_NAME=LizardByte"
-  "-DSUNSHINE_PUBLISHER_WEBSITE=https://app.lizardbyte.dev"
-  "-DSUNSHINE_PUBLISHER_ISSUE_URL=https://app.lizardbyte.dev/support"
+  "-DSUNSHINE_PUBLISHER_NAME=Nonary"
+  "-DSUNSHINE_PUBLISHER_WEBSITE=https://github.com/Nonary/Vibepollo"
+  "-DSUNSHINE_PUBLISHER_ISSUE_URL=https://github.com/Nonary/Vibepollo/issues"
 )
 
 export CC=gcc-%{gcc_version}
@@ -351,9 +351,9 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
   else
     vibeshine_drm_rc=$?
     if [ "$vibeshine_drm_rc" -eq 4 ]; then
-      echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+      echo "warning: Vibepollo DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
     else
-      echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+      echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
     fi
   fi
 else
@@ -364,12 +364,12 @@ fi
 if [ "$1" -eq 0 ]; then
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
-    echo "warning: could not remove the Vibeshine HDR DRM module cleanly."
+    echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 fi
 
 %files
 # Executables
-%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
+%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/vibepollo
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
@@ -405,6 +405,6 @@ fi
 %{_datadir}/metainfo/*.metainfo.xml
 
 # Assets
-%{_datadir}/sunshine/**
+%{_datadir}/vibepollo/**
 
 %changelog

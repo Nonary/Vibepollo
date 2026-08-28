@@ -21,9 +21,9 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_tuple("shortname-123", "shortname-123"),
     std::make_tuple("space 123", "space-123"),
     std::make_tuple("hostname.domain.test", "hostname"),
-    std::make_tuple("&", "Sunshine"),
-    std::make_tuple("", "Sunshine"),
-    std::make_tuple("😁", "Sunshine"),
+    std::make_tuple("&", "Vibepollo"),
+    std::make_tuple("", "Vibepollo"),
+    std::make_tuple("😁", "Vibepollo"),
     std::make_tuple(std::string(128, 'a'), std::string(63, 'a'))
   )
 );

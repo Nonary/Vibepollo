@@ -100,8 +100,8 @@ jobs:
             -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3 2>/dev/null)" \
             -DOpus_ROOT_DIR="$(brew --prefix opus 2>/dev/null)" \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
-            -DSUNSHINE_PUBLISHER_WEBSITE="https://app.lizardbyte.dev" \
-            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://app.lizardbyte.dev/support" \
+            -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/Nonary/Vibepollo" \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/Nonary/Vibepollo/issues" \
             -DAPPLE_CODESIGN_IDENTITY="${APPLE_CODESIGN_IDENTITY}"
 
       - name: Build

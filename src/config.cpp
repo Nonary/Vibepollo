@@ -1054,6 +1054,14 @@ namespace config {
   };
 
   namespace {
+    #ifdef __linux__
+    constexpr std::string_view default_config_filename = "vibepollo.conf";
+    constexpr std::string_view default_log_filename = "vibepollo.log";
+    #else
+    constexpr std::string_view default_config_filename = "sunshine.conf";
+    constexpr std::string_view default_log_filename = "sunshine.log";
+    #endif
+
     int default_min_log_level() {
       if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
         return 1;
@@ -1074,12 +1082,12 @@ namespace config {
     {},  // Username
     {},  // Password
     {},  // Password Salt
-    platf::appdata().string() + "/sunshine.conf",  // config file
+    (platf::appdata() / default_config_filename).string(),  // config file
     {},  // cmd args
     47989,  // Base port number
     "ipv4",  // Address family
     {},  // Bind address
-    platf::appdata().string() + "/sunshine.log",  // log file
+    (platf::appdata() / default_log_filename).string(),  // log file
     false,  // notify_pre_releases
     false,  // legacy_ordering
     true,  // system_tray

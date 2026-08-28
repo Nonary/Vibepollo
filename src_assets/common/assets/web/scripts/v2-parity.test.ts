@@ -57,6 +57,27 @@ test('gamepad options follow the host platform', () => {
   );
 });
 
+test('Linux hides Windows-only input and audio installation controls', () => {
+  for (const key of [
+    'ds4_back_as_touchpad_click',
+    'always_send_scancodes',
+    'native_pen_touch',
+    'install_steam_audio_drivers',
+  ]) {
+    assert.equal(settingsFields.get(key)?.platform, 'windows', key);
+  }
+});
+
+test('Linux maintenance omits Windows-only support and recovery sections', () => {
+  const maintenanceView = readFileSync(
+    new URL('../views/MaintenanceView.vue', import.meta.url),
+    'utf8',
+  );
+  assert.match(maintenanceView, /v-if="isWindows"[\s\S]*aria-labelledby="display-recovery-title"/);
+  assert.match(maintenanceView, /v-if="isWindows"[^>]*aria-labelledby="support-title"/);
+  assert.doesNotMatch(maintenanceView, /ui\.maintenance\.support\.windowsUnavailable/);
+});
+
 test('Settings protects drafts and keeps restart actions available', () => {
   const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
   assert.match(settingsView, /<form[\s\S]*@submit\.prevent="save"/);

@@ -124,7 +124,7 @@ namespace {
         }
       }
     }
-    return "sunshine";
+    return "vibepollo";
   }
 
   std::string make_session_label(const std::string &base_name) {
@@ -797,7 +797,7 @@ namespace logging {
       << std::endl
       << "    --help                    | print help"sv << std::endl
       << "    --creds username password | set user credentials for the Web manager"sv << std::endl
-      << "    --version                 | print the version of sunshine"sv << std::endl
+      << "    --version                 | print the version of Vibepollo"sv << std::endl
       << std::endl
       << "    flags"sv << std::endl
       << "        -0 | Read PIN from stdin"sv << std::endl
