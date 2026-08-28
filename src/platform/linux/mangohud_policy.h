@@ -149,10 +149,6 @@ namespace platf::mangohud {
     return limit_millihz % 1000 == 0 ? std::string(formatted_limit) : std::string {};
   }
 
-  inline std::string steam_launch_option(std::string_view app_id) {
-    return "vibepollo-mangohud --appid " + std::string(app_id) + " -- %command%";
-  }
-
   inline launch_policy_t make_launch_policy(
     std::string_view provider,
     bool limiter_enabled,

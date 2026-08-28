@@ -46,6 +46,26 @@ TEST(SteamSync, IdenticalManagedEntryDoesNotReportChange) {
   EXPECT_FALSE(platf::steam::sync::policy::reconcile(root, {game}));
 }
 
+#ifdef __linux__
+TEST(SteamSync, PublishesResolvedDirectCommandAndWorkingDirectory) {
+  nlohmann::json root = {{"apps", nlohmann::json::array()}};
+  platf::steam::game_t game;
+  game.app_id = 42;
+  game.name = "Direct";
+  game.launch_executable = "/games/Direct/direct";
+  game.launch_working_dir = "/games/Direct";
+  game.launch_os = "linux";
+  game.launch_options = "mangohud %command%";
+
+  ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
+  ASSERT_EQ(root["apps"].size(), 1U);
+  EXPECT_EQ(root["apps"][0]["cmd"],
+            "mangohud vibepollo-mangohud --appid 42 -- env SteamAppId=42 SteamGameId=42 "
+            "'/games/Direct/direct'");
+  EXPECT_EQ(root["apps"][0]["working-dir"], "/games/Direct");
+}
+#endif
+
 TEST(SteamSync, FiltersRuntimeByManifestTypeAndExplicitExclusion) {
   platf::steam::game_t game;
   game.app_id = 100;
