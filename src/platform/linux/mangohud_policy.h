@@ -121,6 +121,38 @@ namespace platf::mangohud {
     return config;
   }
 
+  inline std::string config_override(
+    std::string_view inherited_config,
+    std::string_view limit,
+    std::string_view preset,
+    bool always_show_graph
+  ) {
+    std::string config = "read_cfg";
+    if (!inherited_config.empty()) {
+      config.push_back(',');
+      config += inherited_config;
+    }
+
+    const auto managed = config_override(limit, preset, always_show_graph);
+    // The first token in the managed fragment is already supplied above.
+    config.append(managed, std::string_view("read_cfg").size());
+    return config;
+  }
+
+  inline std::string fps_limit_environment_override(
+    std::uint32_t limit_millihz,
+    std::string_view formatted_limit
+  ) {
+    // MangoHud 0.8.4 (and current upstream as of 2026-08) parses this variable
+    // through an int. Let MANGOHUD_CONFIG carry fractional limits exactly so
+    // the compatibility variable cannot silently turn 59.94 into 59.
+    return limit_millihz % 1000 == 0 ? std::string(formatted_limit) : std::string {};
+  }
+
+  inline std::string steam_launch_option(std::string_view app_id) {
+    return "vibepollo-mangohud --appid " + std::string(app_id) + " -- %command%";
+  }
+
   inline launch_policy_t make_launch_policy(
     std::string_view provider,
     bool limiter_enabled,

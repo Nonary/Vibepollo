@@ -1,0 +1,96 @@
+#!/bin/sh
+# Last-mile Steam wrapper for Vibepollo's stream-owned MangoHud frame limit.
+set -eu
+
+if [ "${1-}" != "--appid" ] || [ "$#" -lt 4 ] || [ "${3-}" != "--" ]; then
+  echo "usage: vibepollo-mangohud --appid APPID -- COMMAND [ARG ...]" >&2
+  exit 64
+fi
+
+appid=$2
+case "$appid" in
+  ''|0|*[!0-9]*)
+    echo "vibepollo-mangohud: invalid Steam app ID" >&2
+    exit 64
+    ;;
+esac
+shift 3
+
+if [ -n "${VIBEPOLLO_MANGOHUD_STATE_DIR-}" ]; then
+  state_dir=$VIBEPOLLO_MANGOHUD_STATE_DIR
+elif [ -n "${XDG_RUNTIME_DIR-}" ]; then
+  state_dir=$XDG_RUNTIME_DIR/vibepollo/mangohud
+elif [ -n "${XDG_CONFIG_HOME-}" ]; then
+  state_dir=$XDG_CONFIG_HOME/vibepollo/mangohud-runtime
+else
+  state_dir=${HOME:?}/.config/vibepollo/mangohud-runtime
+fi
+state_file=$state_dir/$appid.state
+
+# With no active Vibepollo stream, this wrapper is a transparent pass-through.
+if [ ! -f "$state_file" ]; then
+  exec "$@"
+fi
+
+version=
+limit=
+preset=custom
+always_show_graph=0
+owner_pid=0
+expires=0
+while IFS='=' read -r key value; do
+  case "$key" in
+    version) version=$value ;;
+    limit) limit=$value ;;
+    preset) preset=$value ;;
+    always_show_graph) always_show_graph=$value ;;
+    owner_pid) owner_pid=$value ;;
+    expires) expires=$value ;;
+  esac
+done < "$state_file"
+
+case "$limit" in
+  ''|.*|*[^0-9.]*|*.*.*) exec "$@" ;;
+esac
+case "$expires" in
+  ''|*[!0-9]*) exec "$@" ;;
+esac
+case "$owner_pid" in
+  ''|0|*[!0-9]*) exec "$@" ;;
+esac
+now=$(date +%s)
+if [ "$version" != 1 ] || [ "$expires" -lt "$now" ] || ! kill -0 "$owner_pid" 2>/dev/null; then
+  exec "$@"
+fi
+
+# Preserve the user's HUD choices, then append Vibepollo's settings so its
+# stream-owned limit is the final value parsed by MangoHud.
+managed_config=read_cfg
+if [ -n "${MANGOHUD_CONFIG-}" ]; then
+  managed_config=$managed_config,$MANGOHUD_CONFIG
+fi
+case "$preset" in
+  1|2|3|4) managed_config=$managed_config,preset=$preset,no_display=0 ;;
+esac
+if [ "$always_show_graph" = 1 ]; then
+  managed_config=$managed_config,no_display=0,frame_timing=1
+fi
+MANGOHUD_CONFIG=$managed_config,fps_limit=$limit
+MANGOHUD=1
+export MANGOHUD_CONFIG MANGOHUD
+
+# MangoHud 0.8.4 truncates this compatibility variable to an integer. Exact
+# fractional limits are carried solely by MANGOHUD_CONFIG.
+case "$limit" in
+  *.*) unset MANGOHUD_FPS_LIMIT ;;
+  *) MANGOHUD_FPS_LIMIT=$limit; export MANGOHUD_FPS_LIMIT ;;
+esac
+
+shim='/usr/$LIB/mangohud/libMangoHud_shim.so'
+case ":${LD_PRELOAD-}:" in
+  *":$shim:"*) ;;
+  ::) LD_PRELOAD=$shim ;;
+  *) LD_PRELOAD=${LD_PRELOAD}:$shim ;;
+esac
+export LD_PRELOAD
+exec "$@"

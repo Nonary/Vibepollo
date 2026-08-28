@@ -476,6 +476,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         LINK_LIBRARIES Boost::process)
     sunshine_register_component(NAME test_component_linux_hdr_policy TEST_SOURCE unit/platform/linux/test_hdr_policy.cpp)
     sunshine_register_component(NAME test_component_linux_mangohud_policy TEST_SOURCE unit/platform/linux/test_mangohud_policy.cpp)
+    add_test(
+        NAME test_component_linux_mangohud_wrapper
+        COMMAND sh
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_mangohud_wrapper.sh"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src_assets/linux/misc/vibepollo-mangohud")
+    set_tests_properties(test_component_linux_mangohud_wrapper PROPERTIES LABELS "component")
     sunshine_register_component(NAME test_component_linux_smooth_motion_policy TEST_SOURCE unit/platform/linux/test_smooth_motion_policy.cpp)
     sunshine_register_component(NAME test_component_linux_pipewire_cuda_policy TEST_SOURCE unit/platform/linux/test_pipewire_cuda_policy.cpp)
     sunshine_register_component(NAME test_component_linux_private_display_capture_policy TEST_SOURCE unit/platform/linux/test_private_display_capture_policy.cpp)

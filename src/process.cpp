@@ -75,6 +75,7 @@
   #include <Psapi.h>
 #elif defined(__linux__)
   #include "platform/linux/mangohud_policy.h"
+  #include "platform/linux/mangohud_state.h"
   #include "platform/linux/smooth_motion_policy.h"
 #endif
 #include "httpcommon.h"
@@ -1745,9 +1746,28 @@ namespace proc {
           config::frame_limiter.mangohud_preset,
           config::frame_limiter.mangohud_always_show_graph
         );
-        _env["MANGOHUD_FPS_LIMIT"] = mangohud_policy.limit;
+        _env["MANGOHUD_FPS_LIMIT"] = platf::mangohud::fps_limit_environment_override(
+          mangohud_policy.limit_millihz,
+          mangohud_policy.limit
+        );
         _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
         BOOST_LOG(info) << "MangoHUD frame limiter enabled at " << mangohud_policy.limit << " FPS.";
+        if (!_app.steam_id.empty()) {
+          const auto state_path = platf::mangohud::write_state(
+            _app.steam_id,
+            mangohud_policy.limit,
+            config::frame_limiter.mangohud_preset,
+            config::frame_limiter.mangohud_always_show_graph
+          );
+          if (state_path.empty()) {
+            BOOST_LOG(warning) << "Could not write the Steam MangoHUD handoff state for app "
+                               << _app.steam_id << ".";
+          } else {
+            BOOST_LOG(info) << "Steam MangoHUD handoff ready for app " << _app.steam_id
+                            << ". Its Steam Launch Options must wrap %command% with: "
+                            << platf::mangohud::steam_launch_option(_app.steam_id);
+          }
+        }
       }
     } else {
       // proc_t reuses its environment between launches, so remove overrides
@@ -2744,6 +2764,11 @@ namespace proc {
 
     std::error_code ec;
     const bool had_active_app = _app_id > 0;
+#ifdef __linux__
+    if (!_app.steam_id.empty()) {
+      platf::mangohud::remove_state(_app.steam_id);
+    }
+#endif
     placebo = false;
     std::chrono::seconds remaining_timeout = _app.exit_timeout;
 #ifdef _WIN32
