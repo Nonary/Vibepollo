@@ -77,6 +77,12 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertEqual(checkout["with"]["submodules"], "recursive")
         self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_commit }}")
 
+        arch_text = (ROOT / ".github" / "workflows" / "ci-archlinux.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('find "/usr/lib/modules/${kernel_release}"', arch_text)
+        self.assertNotIn('modinfo -k "${kernel_release}" -n vibeshine_drm', arch_text)
+
         resolver = release_workflow["jobs"]["resolve_release"]
         self.assertIn("arch_artifact_id", resolver["outputs"])
         release_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(

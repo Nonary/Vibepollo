@@ -127,7 +127,17 @@ jobs:
             -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
           dkms install -m vibeshine-drm -v "${dkms_ci_version}" -k "${kernel_release}"
 
-          dkms_module="$(modinfo -k "${kernel_release}" -n vibeshine_drm)"
+          mapfile -t dkms_modules < <(
+            find "/usr/lib/modules/${kernel_release}" -type f \
+              \( -name 'vibeshine_drm.ko' -o -name 'vibeshine_drm.ko.*' \) \
+              -print | sort
+          )
+          if (( ${#dkms_modules[@]} != 1 )); then
+            echo "::error::Expected exactly one DKMS-installed Vibeshine DRM module, found ${#dkms_modules[@]}."
+            printf '%s\n' "${dkms_modules[@]}" >&2
+            exit 1
+          fi
+          dkms_module="${dkms_modules[0]}"
           dkms_certificate_serial="$(openssl x509 -inform DER \
             -in /var/lib/dkms/mok.pub -noout -serial)"
           dkms_certificate_serial="${dkms_certificate_serial#serial=}"
