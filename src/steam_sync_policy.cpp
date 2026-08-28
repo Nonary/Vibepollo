@@ -99,11 +99,12 @@ namespace platf::steam::sync::policy {
       app["steam-managed"] = "auto";
       app["steam-source"] = "installed";
       set_or_erase(app, "steam-app-type", game.app_type);
-      app["cmd"] = launch_command(game.app_id);
+      app["cmd"] = launch_command(game);
       app["auto-detach"] = true;
       app["wait-all"] = false;
       set_or_erase(app, "steam-install-dir", game.install_dir);
       set_or_erase(app, "steam-library-path", game.library_path);
+      set_or_erase(app, "working-dir", game.launch_working_dir);
       set_or_erase(app, "steam-icon-path", game.icon_path);
       set_or_erase(app, "steam-header-path", game.header_path);
       const auto &boxart = !game.boxart_path.empty() ? game.boxart_path : game.portrait_path;

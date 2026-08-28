@@ -1764,8 +1764,7 @@ namespace proc {
                                << _app.steam_id << ".";
           } else {
             BOOST_LOG(info) << "Steam MangoHUD handoff ready for app " << _app.steam_id
-                            << ". Its Steam Launch Options must wrap %command% with: "
-                            << platf::mangohud::steam_launch_option(_app.steam_id);
+                            << "; the direct game command will apply the stream limit after inherited Steam Launch Options.";
           }
         }
       }

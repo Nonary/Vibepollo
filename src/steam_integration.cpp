@@ -6,9 +6,11 @@
 #include <cerrno>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -106,8 +108,9 @@ namespace {
       }
       auto key = lex.token();
       if (!key) {
-        // An unexpected opening brace cannot form a valid pair.
-        if (lex.pos < lex.s.size() && lex.s[lex.pos] == '{') {
+        // A stray brace cannot form a valid pair. Always consume it so a
+        // malformed localconfig cannot stall Steam discovery indefinitely.
+        if (lex.pos < lex.s.size() && (lex.s[lex.pos] == '{' || lex.s[lex.pos] == '}')) {
           ++lex.pos;
         }
         continue;
@@ -308,6 +311,224 @@ namespace {
     if (!out.format.empty() && out.format.front() == '.') out.format.erase(0, 1);
     return out;
   }
+
+#ifndef _WIN32
+  std::uint32_t read_u32(const std::vector<std::uint8_t> &data, std::size_t offset) {
+    if (offset + 4 > data.size()) throw std::out_of_range("Steam appinfo u32");
+    return static_cast<std::uint32_t>(data[offset]) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+  }
+
+  std::uint64_t read_u64(const std::vector<std::uint8_t> &data, std::size_t offset) {
+    if (offset + 8 > data.size()) throw std::out_of_range("Steam appinfo u64");
+    std::uint64_t value = 0;
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      value |= static_cast<std::uint64_t>(data[offset++]) << shift;
+    }
+    return value;
+  }
+
+  std::string read_cstring(const std::vector<std::uint8_t> &data, std::size_t &offset, std::size_t end) {
+    const auto begin = offset;
+    while (offset < end && data[offset] != 0) ++offset;
+    if (offset >= end) throw std::out_of_range("Steam appinfo string");
+    std::string value(reinterpret_cast<const char *>(data.data() + begin), offset - begin);
+    ++offset;
+    return value;
+  }
+
+  vdf_node parse_binary_vdf(
+    const std::vector<std::uint8_t> &data,
+    std::size_t &offset,
+    std::size_t end,
+    const std::vector<std::string> &keys
+  ) {
+    vdf_node result;
+    while (offset < end) {
+      const auto type = data[offset++];
+      if (type == 0x08) return result;
+      const auto key_index = read_u32(data, offset);
+      offset += 4;
+      if (key_index >= keys.size()) throw std::out_of_range("Steam appinfo key");
+      vdf_node value;
+      switch (type) {
+        case 0x00:
+          value = parse_binary_vdf(data, offset, end, keys);
+          break;
+        case 0x01:
+          value.value = read_cstring(data, offset, end);
+          break;
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x06:
+          value.value = std::to_string(read_u32(data, offset));
+          offset += 4;
+          break;
+        case 0x05: {
+          const auto begin = offset;
+          while (offset + 1 < end && (data[offset] != 0 || data[offset + 1] != 0)) offset += 2;
+          if (offset + 1 >= end) throw std::out_of_range("Steam appinfo wide string");
+          // Launch metadata is UTF-8. Preserve a readable ASCII subset for
+          // the uncommon wide-string values without adding a codec dependency.
+          for (auto cursor = begin; cursor < offset; cursor += 2) {
+            value.value.push_back(data[cursor] < 0x80 && data[cursor + 1] == 0 ?
+                                    static_cast<char>(data[cursor]) : '?');
+          }
+          offset += 2;
+          break;
+        }
+        case 0x07:
+        case 0x0a:
+          value.value = std::to_string(read_u64(data, offset));
+          offset += 8;
+          break;
+        default:
+          throw std::runtime_error("Unsupported Steam appinfo value type");
+      }
+      result.children.emplace_back(keys[key_index], std::move(value));
+    }
+    throw std::out_of_range("Unterminated Steam appinfo object");
+  }
+
+  std::string normalized_os(const vdf_node &launch) {
+    const auto *config = launch.find("config");
+    const auto *os = config ? config->find("oslist") : nullptr;
+    auto value = os ? os->value : std::string {};
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    if (value.find("linux") != std::string::npos) return "linux";
+    if (value.empty() || value.find("windows") != std::string::npos) return "windows";
+    return {};
+  }
+
+  void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo) {
+    const auto *config = appinfo.find("config");
+    const auto *launches = config ? config->find("launch") : nullptr;
+    if (!launches) return;
+
+    const vdf_node *selected = nullptr;
+    int selected_score = -1;
+    for (const auto &[index, launch] : launches->children) {
+      const auto *executable = launch.find("executable");
+      const auto os = normalized_os(launch);
+      if (!executable || executable->value.empty() || os.empty()) continue;
+      int score = os == "linux" ? 200 : 100;
+      if (index == "0") score += 20;
+      if (const auto *type = launch.find("type"); type && (type->value == "default" || type->value == "none")) score += 10;
+      if (score > selected_score) {
+        selected = &launch;
+        selected_score = score;
+      }
+    }
+    if (!selected) return;
+
+    auto relative = selected->find("executable")->value;
+    std::replace(relative.begin(), relative.end(), '\\', '/');
+    game.launch_executable = game.install_dir / relative;
+    game.launch_os = normalized_os(*selected);
+    if (const auto *arguments = selected->find("arguments")) game.launch_arguments = arguments->value;
+    if (const auto *working = selected->find("workingdir"); working && !working->value.empty()) {
+      auto directory = working->value;
+      std::replace(directory.begin(), directory.end(), '\\', '/');
+      game.launch_working_dir = game.install_dir / directory;
+    } else {
+      game.launch_working_dir = game.launch_executable.parent_path();
+    }
+  }
+
+  void enrich_from_appinfo(const fs::path &path, std::map<std::uint32_t, platf::steam::game_t> &games) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return;
+    std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(input)), {});
+    if (data.size() < 20 || read_u32(data, 0) != 0x07564429) return;
+    const auto string_table_offset = read_u64(data, 8);
+    if (string_table_offset > data.size() - 4) return;
+
+    std::size_t strings_offset = static_cast<std::size_t>(string_table_offset);
+    const auto string_count = read_u32(data, strings_offset);
+    strings_offset += 4;
+    if (string_count > data.size() - strings_offset) return;
+    std::vector<std::string> keys;
+    keys.reserve(string_count);
+    for (std::uint32_t i = 0; i < string_count; ++i) {
+      keys.push_back(read_cstring(data, strings_offset, data.size()));
+    }
+
+    std::size_t offset = 16;
+    while (offset + 4 <= string_table_offset) {
+      const auto app_id = read_u32(data, offset);
+      if (app_id == 0) break;
+      if (offset + 68 > string_table_offset) return;
+      const auto entry_size = read_u32(data, offset + 4);
+      if (entry_size > string_table_offset - offset - 8) return;
+      const auto entry_end = offset + 8 + static_cast<std::size_t>(entry_size);
+      const auto value_offset = offset + 68;
+      if (entry_size < 60 || entry_end > string_table_offset || value_offset > entry_end) return;
+      if (const auto found = games.find(app_id); found != games.end()) {
+        try {
+          auto cursor = value_offset;
+          const auto root = parse_binary_vdf(data, cursor, entry_end, keys);
+          const auto *appinfo = root.find("appinfo");
+          apply_launch_node(found->second, appinfo ? *appinfo : root);
+        } catch (...) {
+          // A single malformed/cache-version entry must not suppress the rest
+          // of Steam discovery; unresolved games keep the broker fallback.
+        }
+      }
+      offset = entry_end;
+    }
+  }
+
+  void apply_launch_options(const fs::path &steam_root, std::map<std::uint32_t, platf::steam::game_t> &games) {
+    std::error_code ec;
+    const auto userdata = steam_root / "userdata";
+    if (!fs::is_directory(userdata, ec)) return;
+    for (const auto &user : fs::directory_iterator(userdata, ec)) {
+      if (ec || !user.is_directory(ec)) continue;
+      std::ifstream input(user.path() / "config/localconfig.vdf");
+      if (!input) continue;
+      std::stringstream buffer;
+      buffer << input.rdbuf();
+      const auto doc = platf::steam::parse_vdf(buffer.str());
+      const vdf_node *apps = doc.find("UserLocalConfigStore");
+      apps = apps ? apps->find("Software") : nullptr;
+      apps = apps ? apps->find("Valve") : nullptr;
+      apps = apps ? apps->find("Steam") : nullptr;
+      apps = apps ? apps->find("apps") : nullptr;
+      if (!apps) continue;
+      for (auto &[app_id, game] : games) {
+        if (const auto *app = apps->find(std::to_string(app_id))) {
+          if (const auto *options = app->find("LaunchOptions")) game.launch_options = options->value;
+        }
+      }
+    }
+  }
+
+  void apply_proton_metadata(platf::steam::game_t &game) {
+    if (game.launch_os != "windows") return;
+    game.compatdata_path = game.library_path / "steamapps" / "compatdata" / std::to_string(game.app_id);
+    std::ifstream input(game.compatdata_path / "config_info");
+    std::string version;
+    std::string files_path;
+    if (!std::getline(input, version) || !std::getline(input, files_path)) return;
+    const auto marker = files_path.find("/files/");
+    if (marker != std::string::npos) game.proton_path = files_path.substr(0, marker);
+  }
+
+  std::string shell_quote(std::string_view value) {
+    std::string result = "'";
+    for (const char ch : value) {
+      if (ch == '\'') result += "'\\''";
+      else result.push_back(ch);
+    }
+    result.push_back('\'');
+    return result;
+  }
+#endif
 }  // namespace
 
 namespace platf::steam {
@@ -491,6 +712,28 @@ namespace platf::steam {
         }
       }
     }
+#ifndef _WIN32
+    std::unordered_set<std::string> metadata_roots;
+    for (const auto &root : roots) {
+      const auto apps = steamapps_for(root);
+      const auto steam_root = apps.empty() ? root : apps.parent_path();
+      std::error_code ec;
+      const auto key = fs::weakly_canonical(steam_root, ec).generic_string();
+      if (!ec && metadata_roots.insert(key).second) {
+        try {
+          enrich_from_appinfo(steam_root / "appcache/appinfo.vdf", found);
+          apply_launch_options(steam_root, found);
+        } catch (...) {
+          // Local launch metadata is an optimization. Steam's broker remains
+          // the safe fallback for an unreadable or newly-versioned cache.
+        }
+      }
+    }
+    for (auto &[app_id, game] : found) {
+      (void) app_id;
+      apply_proton_metadata(game);
+    }
+#endif
     std::vector<game_t> result;
     result.reserve(found.size());
     for (auto &[id, game] : found) {
@@ -515,6 +758,44 @@ namespace platf::steam {
     // Send the request directly to Steam. Desktop URI openers can exit
     // successfully even when KDE drops the handoff during an output switch.
     return "steam -applaunch " + std::to_string(app_id);
+#endif
+  }
+
+  std::string launch_command(const game_t &game) {
+#ifdef __linux__
+    if (game.app_id == 0 || game.launch_executable.empty()) {
+      return launch_command(game.app_id);
+    }
+
+    std::string command = "vibepollo-mangohud --appid " + std::to_string(game.app_id) + " -- env ";
+    command += "SteamAppId=" + std::to_string(game.app_id) + " ";
+    command += "SteamGameId=" + std::to_string(game.app_id) + " ";
+    if (game.launch_os == "windows") {
+      if (game.compatdata_path.empty() || game.proton_path.empty()) {
+        return launch_command(game.app_id);
+      }
+      command += "GAMEID=umu-" + std::to_string(game.app_id) + " STORE=steam ";
+      command += "WINEPREFIX=" + shell_quote(game.compatdata_path.generic_string()) + " ";
+      command += "PROTONPATH=" + shell_quote(game.proton_path.generic_string()) + " ";
+      command += "umu-run " + shell_quote(game.launch_executable.generic_string());
+    } else {
+      command += shell_quote(game.launch_executable.generic_string());
+    }
+    if (!game.launch_arguments.empty()) {
+      command.push_back(' ');
+      command += game.launch_arguments;
+    }
+
+    if (game.launch_options.empty()) return command;
+    auto options = game.launch_options;
+    constexpr std::string_view placeholder = "%command%";
+    if (const auto position = options.find(placeholder); position != std::string::npos) {
+      options.replace(position, placeholder.size(), command);
+      return options;
+    }
+    return command + " " + options;
+#else
+    return launch_command(game.app_id);
 #endif
   }
 

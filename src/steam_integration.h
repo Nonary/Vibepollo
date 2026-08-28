@@ -46,6 +46,15 @@ namespace platf::steam {
     std::filesystem::path artwork_client_path;
     std::string artwork_format;
     std::string app_type;
+    // Resolved Steam launch metadata used to start the game without routing
+    // through an already-running Steam client's immutable environment.
+    std::filesystem::path launch_executable;
+    std::filesystem::path launch_working_dir;
+    std::filesystem::path proton_path;
+    std::filesystem::path compatdata_path;
+    std::string launch_arguments;
+    std::string launch_options;
+    std::string launch_os;
     std::uint32_t state_flags = 0;
     std::uint64_t last_updated = 0;
   };
@@ -60,6 +69,10 @@ namespace platf::steam {
   // Return a URI/argv-safe launch target after validating the app ID.
   std::string launch_uri(std::uint32_t app_id);
   std::string launch_command(std::uint32_t app_id);
+  // Build a direct Linux launch that preserves Steam's user launch options
+  // while placing Vibepollo's game-process wrapper at %command%. Falls back
+  // to the Steam broker when local metadata is incomplete.
+  std::string launch_command(const game_t &game);
   bool launch(std::uint32_t app_id);
 
 }  // namespace platf::steam

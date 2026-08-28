@@ -74,10 +74,6 @@ TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
 TEST(MangoHudPolicy, AvoidsMangoHudFractionalEnvironmentTruncation) {
   EXPECT_EQ(mangohud::fps_limit_environment_override(120000, "120"), "120");
   EXPECT_TRUE(mangohud::fps_limit_environment_override(59940, "59.94").empty());
-  EXPECT_EQ(
-    mangohud::steam_launch_option("480"),
-    "vibepollo-mangohud --appid 480 -- %command%"
-  );
 }
 
 TEST(MangoHudPolicy, ValidatesAndSerializesLastMileSteamState) {
