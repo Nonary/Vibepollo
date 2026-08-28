@@ -118,7 +118,7 @@ TEST(KmsgrabSelection, RequiredPresentationModeNeverEnablesFixedRateFallback) {
   EXPECT_TRUE(ordinary_kms.fixed_rate_allowed());
 }
 
-TEST(KmsgrabSelection, EventDeliveryNeverExceedsTheNegotiatedRate) {
+TEST(KmsgrabSelection, EventDeliveryPreservesNegotiatedScheduleWithoutCatchupBursts) {
   using namespace std::chrono_literals;
   using clock_t = platf::kms::pacing::clock_t;
 
@@ -134,10 +134,20 @@ TEST(KmsgrabSelection, EventDeliveryNeverExceedsTheNegotiatedRate) {
 
   const auto late_delivery = first + 13ms;
   limiter.mark_delivered(late_delivery);
-  EXPECT_EQ(limiter.next_delivery(late_delivery), late_delivery + 10ms);
+  EXPECT_EQ(limiter.next_delivery(late_delivery), first + 20ms);
+
+  // A small scheduler overshoot does not shift every subsequent deadline.
+  const auto overshot_delivery = first + 21ms;
+  limiter.mark_delivered(overshot_delivery);
+  EXPECT_EQ(limiter.next_delivery(overshot_delivery), first + 30ms);
+
+  // A material stall rebases instead of producing back-to-back catch-up frames.
+  const auto stalled_delivery = first + 45ms;
+  limiter.mark_delivered(stalled_delivery);
+  EXPECT_EQ(limiter.next_delivery(stalled_delivery), stalled_delivery + 10ms);
 
   limiter.reset();
-  EXPECT_EQ(limiter.next_delivery(late_delivery + 1ms), late_delivery + 1ms);
+  EXPECT_EQ(limiter.next_delivery(stalled_delivery + 1ms), stalled_delivery + 1ms);
 }
 
 TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {
