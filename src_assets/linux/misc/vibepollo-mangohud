@@ -65,21 +65,61 @@ if { [ "$version" != 1 ] && [ "$version" != 2 ]; } || [ "$expires" -lt "$now" ] 
   exec "$@"
 fi
 
-if [ "$provider" = proton ]; then
-  # vkd3d-proton reads this when the D3D12 device is created. Apply it here,
-  # after Steam Launch Options, so a stale user value cannot win. Suppress
-  # MangoHud for an unambiguous built-in-limiter test, including when the
-  # user's Launch Options wrapped %command% in the mangohud executable.
+if [ "$provider" = proton ] || [ "$provider" = mangohud-proton ]; then
+  # Apply the built-in renderer limits after Steam Launch Options so stale
+  # user values cannot win. vkd3d-proton owns D3D12; DXVK owns D3D9-11.
   VKD3D_FRAME_RATE=$limit
   export VKD3D_FRAME_RATE
-  unset MANGOHUD MANGOHUD_CONFIG MANGOHUD_FPS_LIMIT
+
+  # Current DXVK accepts only whole-number limits. Round fractional stream
+  # rates to the nearest FPS, while vkd3d-proton retains the exact value.
+  dxvk_limit=${limit%%.*}
+  case "$limit" in
+    *.*)
+      fraction=${limit#*.}
+      case "$fraction" in
+        [5-9]*) dxvk_limit=$((dxvk_limit + 1)) ;;
+      esac
+      ;;
+  esac
+  dxvk_override="dxvk.maxFrameRate = $dxvk_limit; dxgi.maxFrameRate = $dxvk_limit; d3d9.maxFrameRate = $dxvk_limit"
+  if [ -n "${DXVK_CONFIG-}" ]; then
+    DXVK_CONFIG="$DXVK_CONFIG; $dxvk_override"
+  else
+    DXVK_CONFIG=$dxvk_override
+  fi
+  export DXVK_CONFIG
+
+  if [ "$provider" = mangohud-proton ]; then
+    # Keep MangoHUD visible for telemetry, but make its limiter inert so the
+    # Proton renderer remains the sole pacing authority.
+    managed_config=read_cfg
+    if [ -n "${MANGOHUD_CONFIG-}" ]; then
+      managed_config=$managed_config,$MANGOHUD_CONFIG
+    fi
+    case "$preset" in
+      1|2|3|4) managed_config=$managed_config,preset=$preset ;;
+    esac
+    managed_config=$managed_config,no_display=0
+    if [ "$always_show_graph" = 1 ]; then
+      managed_config=$managed_config,frame_timing=1
+    fi
+    MANGOHUD_CONFIG=$managed_config,fps_limit=0
+    MANGOHUD=1
+    export MANGOHUD_CONFIG MANGOHUD
+    unset MANGOHUD_FPS_LIMIT
+  else
+    # Suppress MangoHUD for an unambiguous built-in-limiter mode, including
+    # when the user's Launch Options wrapped %command% in mangohud.
+    unset MANGOHUD MANGOHUD_CONFIG MANGOHUD_FPS_LIMIT
+  fi
 
   shim='/usr/$LIB/mangohud/libMangoHud_shim.so'
   filtered_preload=
   old_ifs=$IFS
   IFS=:
   for item in ${LD_PRELOAD-}; do
-    if [ -n "$item" ] && [ "$item" != "$shim" ]; then
+    if [ -n "$item" ] && { [ "$provider" = mangohud-proton ] || [ "$item" != "$shim" ]; }; then
       if [ -n "$filtered_preload" ]; then
         filtered_preload=$filtered_preload:$item
       else
@@ -88,7 +128,14 @@ if [ "$provider" = proton ]; then
     fi
   done
   IFS=$old_ifs
-  if [ -n "$filtered_preload" ]; then
+  if [ "$provider" = mangohud-proton ]; then
+    case ":$filtered_preload:" in
+      *":$shim:"*) LD_PRELOAD=$filtered_preload ;;
+      ::) LD_PRELOAD=$shim ;;
+      *) LD_PRELOAD=$filtered_preload:$shim ;;
+    esac
+    export LD_PRELOAD
+  elif [ -n "$filtered_preload" ]; then
     LD_PRELOAD=$filtered_preload
     export LD_PRELOAD
   else

@@ -537,6 +537,10 @@ function optionsFor(field: SettingsField): SettingsOption[] {
       localizedOption('auto', '_common.auto'),
       localizedOption('mangohud', 'ui.settings.options.frame_limiter_provider.mangohud'),
       localizedOption('proton', 'ui.settings.options.frame_limiter_provider.proton'),
+      localizedOption(
+        'mangohud-proton',
+        'ui.settings.options.frame_limiter_provider.mangohudProton',
+      ),
       localizedOption('none', 'ui.settings.options.frame_limiter_provider.none'),
     ];
   }

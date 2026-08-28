@@ -284,6 +284,7 @@ const frameLimiterOptions = [
   option('rtss', 'ui.settings.options.frame_limiter_provider.rtss'),
   option('nvidia-control-panel', 'ui.settings.options.frame_limiter_provider.nvidia'),
   option('proton', 'ui.settings.options.frame_limiter_provider.proton'),
+  option('mangohud-proton', 'ui.settings.options.frame_limiter_provider.mangohudProton'),
   option('none', 'ui.settings.options.frame_limiter_provider.none'),
 ];
 

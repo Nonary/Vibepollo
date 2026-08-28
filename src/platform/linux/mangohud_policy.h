@@ -26,7 +26,7 @@ namespace platf::mangohud {
     std::string normalized;
     normalized.reserve(provider.size());
     for (const char ch : provider) {
-      if (ch == '-' || ch == '_' || std::isspace(static_cast<unsigned char>(ch))) {
+      if (ch == '-' || ch == '_' || ch == '+' || std::isspace(static_cast<unsigned char>(ch))) {
         continue;
       }
       normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
@@ -40,7 +40,13 @@ namespace platf::mangohud {
   }
 
   inline bool proton_provider_selected(std::string_view provider) {
-    return normalize_provider(provider) == "proton";
+    const auto normalized = normalize_provider(provider);
+    return normalized == "proton" || normalized == "mangohudproton" || normalized == "protonmangohud";
+  }
+
+  inline bool proton_overlay_provider_selected(std::string_view provider) {
+    const auto normalized = normalize_provider(provider);
+    return normalized == "mangohudproton" || normalized == "protonmangohud";
   }
 
   inline bool linux_provider_selected(std::string_view provider) {
@@ -126,6 +132,30 @@ namespace platf::mangohud {
     }
     config += ",fps_limit=";
     config += limit;
+    return config;
+  }
+
+  inline std::string overlay_config_override(
+    std::string_view inherited_config = {},
+    std::string_view preset = "custom",
+    bool always_show_graph = false
+  ) {
+    // Preserve the user's selected metrics while making MangoHUD an overlay
+    // only. The Proton renderer owns the frame limit in this mode.
+    std::string config = "read_cfg";
+    if (!inherited_config.empty()) {
+      config.push_back(',');
+      config += inherited_config;
+    }
+    if (preset == "1" || preset == "2" || preset == "3" || preset == "4") {
+      config += ",preset=";
+      config += preset;
+    }
+    config += ",no_display=0";
+    if (always_show_graph) {
+      config += ",frame_timing=1";
+    }
+    config += ",fps_limit=0";
     return config;
   }
 

@@ -609,7 +609,11 @@ function mangoHudSummary(): IntegrationSummary {
   const description = t('ui.integrations.mangohud.description');
   if (!isLinux.value) return unavailableSummary('mangohud', name, description);
   if (!value) return failedSummary('mangohud', name, description);
-  const selected = value.configured_provider === 'auto' || value.configured_provider === 'mangohud' || value.configured_provider === 'proton';
+  const selected =
+    value.configured_provider === 'auto' ||
+    value.configured_provider === 'mangohud' ||
+    value.configured_provider === 'proton' ||
+    value.configured_provider === 'mangohud-proton';
   const available = value.configured_provider === 'proton' || value.mangohud_available === true;
   const enabled = value.enabled === true && selected;
   return {
@@ -1486,6 +1490,9 @@ onMounted(() => void load());
                   </option>
                   <option value="proton">
                     {{ t('ui.integrations.mangohud.providerProton') }}
+                  </option>
+                  <option value="mangohud-proton">
+                    {{ t('ui.integrations.mangohud.providerMangoHudProton') }}
                   </option>
                   <option value="none">{{ t('ui.integrations.mangohud.providerNone') }}</option>
                 </select>

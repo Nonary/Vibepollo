@@ -69,6 +69,14 @@ TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
     mangohud::config_override("position=top-right,fps_limit=30", "120", "custom", false),
     "read_cfg,position=top-right,fps_limit=30,fps_limit=120"
   );
+  EXPECT_EQ(
+    mangohud::overlay_config_override("position=top-right,fps_limit=30", "custom", false),
+    "read_cfg,position=top-right,fps_limit=30,no_display=0,fps_limit=0"
+  );
+  EXPECT_EQ(
+    mangohud::overlay_config_override({}, "3", true),
+    "read_cfg,preset=3,no_display=0,frame_timing=1,fps_limit=0"
+  );
 }
 
 TEST(MangoHudPolicy, AvoidsMangoHudFractionalEnvironmentTruncation) {
@@ -97,10 +105,19 @@ TEST(MangoHudPolicy, SelectsProtonAsLinuxLimiterProvider) {
   framegen::stream_start_policy_t stream_policy;
   stream_policy.fps = 116;
   EXPECT_TRUE(mangohud::proton_provider_selected("Proton"));
+  EXPECT_TRUE(mangohud::proton_provider_selected("MangoHUD + Proton"));
+  EXPECT_TRUE(mangohud::proton_overlay_provider_selected("mangohud-proton"));
+  EXPECT_FALSE(mangohud::proton_overlay_provider_selected("proton"));
   EXPECT_FALSE(mangohud::provider_selected("proton"));
   const auto policy = mangohud::make_launch_policy("proton", true, false, stream_policy, 0);
   ASSERT_TRUE(policy.enabled);
   EXPECT_EQ(policy.limit, "116");
+
+  const auto overlay_policy = mangohud::make_launch_policy(
+    "mangohud-proton", true, false, stream_policy, 0
+  );
+  ASSERT_TRUE(overlay_policy.enabled);
+  EXPECT_EQ(overlay_policy.limit, "116");
 }
 
 TEST(MangoHudPolicy, AutomaticVirtualLimiterDoesNotEnablePhysicalStreams) {
