@@ -105,6 +105,56 @@ namespace platf::kms::pacing {
     std::optional<clock_t::time_point> next_delivery_;
   };
 
+  /**
+   * Keep packet presentation timestamps on the negotiated client cadence while
+   * allowing a genuinely slow source to establish a new phase. Virtual KMS
+   * presentation timestamps describe VRR compositor submissions and therefore
+   * contain small frame-to-frame jitter even when the capture/encode path is
+   * delivering at the exact negotiated rate. Passing that jitter through as RTP
+   * timing makes the client reproduce it as uneven motion.
+   */
+  class presentation_timestamp_grid_t {
+  public:
+    void set_interval(clock_t::duration interval) {
+      interval_ = interval;
+      reset();
+    }
+
+    void reset() {
+      next_timestamp_.reset();
+    }
+
+    [[nodiscard]] clock_t::time_point normalize(clock_t::time_point source_timestamp) {
+      if (interval_ <= clock_t::duration::zero()) {
+        return source_timestamp;
+      }
+
+      if (!next_timestamp_) {
+        next_timestamp_ = source_timestamp + interval_;
+        return source_timestamp;
+      }
+
+      const auto scheduled = *next_timestamp_;
+
+      /*
+       * Jitter within half a frame remains on the client grid. A source that
+       * arrives more than half a frame late has genuinely missed its slot, so
+       * preserve that stall and start a new grid from the real presentation.
+       */
+      if (source_timestamp > scheduled + interval_ / 2) {
+        next_timestamp_ = source_timestamp + interval_;
+        return source_timestamp;
+      }
+
+      next_timestamp_ = scheduled + interval_;
+      return scheduled;
+    }
+
+  private:
+    clock_t::duration interval_ {};
+    std::optional<clock_t::time_point> next_timestamp_;
+  };
+
   class presentation_latch_t {
   public:
     using generation_t = std::uint64_t;

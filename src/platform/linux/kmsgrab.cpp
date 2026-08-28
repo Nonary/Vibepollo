@@ -687,6 +687,7 @@ namespace platf {
       int init(const std::string &display_name, const ::video::config_t &config) {
         delay = std::chrono::nanoseconds {1s} / config.framerate;
         presentation_rate_limiter.set_interval(delay);
+        presentation_timestamp_grid.set_interval(delay);
 
         // Empty historically selected monitor 0. Explicit decimal names remain
         // legacy aliases, while every other value resolves through the stable
@@ -1431,6 +1432,8 @@ namespace platf {
 
         presentation_mode.activate();
         presentation_rate_limiter.reset();
+        presentation_timestamp_grid.reset();
+        last_source_presentation_timestamp.reset();
         presentation_latch.request_capture();
         presentation_pending = presentation_latch.capture_ready();
         BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
@@ -1630,7 +1633,17 @@ namespace platf {
 
             const bool newer_presentation = post_capture_presentation == presentation_wait_e::changed;
             if (status == platf::capture_e::ok && img_out && captured_timestamp) {
-              img_out->frame_timestamp = captured_timestamp;
+              if (last_source_presentation_timestamp) {
+                source_presentation_interval_logger.collect_and_log(
+                  std::chrono::duration<double, std::milli>(
+                    *captured_timestamp - *last_source_presentation_timestamp
+                  ).count()
+                );
+              }
+              last_source_presentation_timestamp = captured_timestamp;
+
+              img_out->frame_timestamp = presentation_timestamp_grid.normalize(*captured_timestamp);
+              img_out->host_processing_timestamp = captured_timestamp;
             }
 
             switch (status) {
@@ -1763,12 +1776,19 @@ namespace platf {
       bool direct_import_required {false};
       pacing::presentation_mode_t presentation_mode;
       pacing::presentation_rate_limiter_t presentation_rate_limiter;
+      pacing::presentation_timestamp_grid_t presentation_timestamp_grid;
       bool presentation_pending {false};
       pacing::presentation_latch_t presentation_latch;
       std::uint64_t presentation_sequence {};
       std::optional<std::chrono::steady_clock::time_point> presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_source_presentation_timestamp;
       std::optional<exported_frame_t> pending_exported_frame;
+      logging::min_max_avg_periodic_logger<double> source_presentation_interval_logger {
+        debug,
+        "Vibepollo DRM source presentation interval",
+        "ms"
+      };
       std::uint64_t crtc_gamma_lut_blob_id {};
       std::shared_ptr<const egl::img_descriptor_t::gamma_lut_t> crtc_gamma_lut;
 
