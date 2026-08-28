@@ -686,6 +686,7 @@ namespace platf {
 
       int init(const std::string &display_name, const ::video::config_t &config) {
         delay = std::chrono::nanoseconds {1s} / config.framerate;
+        presentation_rate_limiter.set_interval(delay);
 
         // Empty historically selected monitor 0. Explicit decimal names remain
         // legacy aliases, while every other value resolves through the stable
@@ -1429,6 +1430,7 @@ namespace platf {
         }
 
         presentation_mode.activate();
+        presentation_rate_limiter.reset();
         presentation_latch.request_capture();
         presentation_pending = presentation_latch.capture_ready();
         BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
@@ -1558,6 +1560,19 @@ namespace platf {
       ) {
         while (presentation_mode.event_capture_enabled()) {
           if (presentation_pending) {
+            const auto delivery_deadline = presentation_rate_limiter.next_delivery(
+              std::chrono::steady_clock::now()
+            );
+            if (const auto now = std::chrono::steady_clock::now(); delivery_deadline > now) {
+              std::this_thread::sleep_until(delivery_deadline);
+            }
+
+            /*
+             * Refresh the sequence only after the client-rate deadline. The
+             * driver returns its newest completed framebuffer, so every
+             * presentation that arrived during the wait is coalesced without
+             * polling or comparing image contents.
+             */
             if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
               return std::nullopt;
             }
@@ -1585,6 +1600,7 @@ namespace platf {
 
             const auto captured_timestamp = presentation_timestamp;
             const auto captured_generation = presentation_latch.capture_generation();
+            const auto capture_started_at = std::chrono::steady_clock::now();
             std::shared_ptr<platf::img_t> img_out;
             auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
             if (status == platf::capture_e::reinit ||
@@ -1625,6 +1641,7 @@ namespace platf {
                 }
                 break;
               case platf::capture_e::ok:
+                presentation_rate_limiter.mark_delivered(capture_started_at);
                 presentation_latch.mark_delivered(captured_generation);
                 presentation_pending = newer_presentation;
                 if (!newer_presentation) {
@@ -1742,6 +1759,7 @@ namespace platf {
       std::optional<uint64_t> hdr_metadata_blob_id;
       bool direct_import_required {false};
       pacing::presentation_mode_t presentation_mode;
+      pacing::presentation_rate_limiter_t presentation_rate_limiter;
       bool presentation_pending {false};
       pacing::presentation_latch_t presentation_latch;
       std::uint64_t presentation_sequence {};
