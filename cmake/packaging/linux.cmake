@@ -11,6 +11,9 @@ file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/"
 file(CREATE_LINK "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders"
         "${CMAKE_BINARY_DIR}/assets/shaders" COPY_ON_ERROR SYMBOLIC)
 
+install(PROGRAMS "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/vibepollo-mangohud"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
 if(${SUNSHINE_BUILD_APPIMAGE} OR ${SUNSHINE_BUILD_FLATPAK})
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.rules"
             DESTINATION "${SUNSHINE_ASSETS_DIR}/udev/rules.d")

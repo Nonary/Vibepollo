@@ -5,6 +5,9 @@
 #include "../../../tests_common.h"
 
 #include <src/platform/linux/mangohud_policy.h>
+#include <src/platform/linux/mangohud_state.h>
+
+#include <chrono>
 
 namespace mangohud = platf::mangohud;
 
@@ -62,6 +65,35 @@ TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
     mangohud::config_override("120", "4", true),
     "read_cfg,preset=4,no_display=0,frame_timing=1,fps_limit=120"
   );
+  EXPECT_EQ(
+    mangohud::config_override("position=top-right,fps_limit=30", "120", "custom", false),
+    "read_cfg,position=top-right,fps_limit=30,fps_limit=120"
+  );
+}
+
+TEST(MangoHudPolicy, AvoidsMangoHudFractionalEnvironmentTruncation) {
+  EXPECT_EQ(mangohud::fps_limit_environment_override(120000, "120"), "120");
+  EXPECT_TRUE(mangohud::fps_limit_environment_override(59940, "59.94").empty());
+  EXPECT_EQ(
+    mangohud::steam_launch_option("480"),
+    "vibepollo-mangohud --appid 480 -- %command%"
+  );
+}
+
+TEST(MangoHudPolicy, ValidatesAndSerializesLastMileSteamState) {
+  EXPECT_TRUE(mangohud::valid_steam_app_id("480"));
+  EXPECT_FALSE(mangohud::valid_steam_app_id("0"));
+  EXPECT_FALSE(mangohud::valid_steam_app_id("48/0"));
+
+  const auto state = mangohud::serialize_state(
+    "59.94",
+    "3",
+    true,
+    std::chrono::system_clock::time_point {std::chrono::seconds {12345}}
+  );
+  EXPECT_NE(state.find("version=1\nlimit=59.94\npreset=3\nalways_show_graph=1\n"), std::string::npos);
+  EXPECT_NE(state.find("owner_pid="), std::string::npos);
+  EXPECT_TRUE(state.ends_with("expires=12345\n"));
 }
 
 TEST(MangoHudPolicy, AutomaticVirtualLimiterDoesNotEnablePhysicalStreams) {
