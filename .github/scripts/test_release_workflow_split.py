@@ -83,6 +83,12 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn('find "/usr/lib/modules/${kernel_release}"', arch_text)
         self.assertNotIn('modinfo -k "${kernel_release}" -n vibeshine_drm', arch_text)
 
+        glad_text = (ROOT / "cmake" / "dependencies" / "glad.cmake").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('COMMAND "${Python_EXECUTABLE}" -c "import jinja2"', glad_text)
+        self.assertNotIn("import pkg_resources", glad_text)
+
         resolver = release_workflow["jobs"]["resolve_release"]
         self.assertIn("arch_artifact_id", resolver["outputs"])
         release_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(
