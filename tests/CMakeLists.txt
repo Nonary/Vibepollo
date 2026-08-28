@@ -399,6 +399,7 @@ sunshine_register_component(NAME test_component_file_handler TEST_SOURCE unit/te
 sunshine_register_component(NAME test_component_state_storage TEST_SOURCE unit/test_state_storage.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp"
     LINK_LIBRARIES Boost::property_tree nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_virtual_display_scale TEST_SOURCE unit/test_virtual_display_scale.cpp)
 sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_http_auth.cpp
     EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_confighttp.cpp"
     PRODUCT_SOURCES

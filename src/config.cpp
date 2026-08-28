@@ -35,6 +35,7 @@
 // local includes
 #include "amf/amf_lifecycle.h"
 #include "config.h"
+#include "virtual_display_scale.h"
 #include "config_key.h"
 #include "config_playnite.h"
 #include "config_lutris.h"
@@ -1936,8 +1937,7 @@ namespace config {
     {
       int value = video.dd.virtual_display_scale_percent;
       int_f(vars, "dd_virtual_display_scale", value);
-      constexpr std::array allowed_scales {-1, 0, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500};
-      if (std::ranges::find(allowed_scales, value) != allowed_scales.end()) {
+      if (virtual_display_scale::supported_config_value(value)) {
         video.dd.virtual_display_scale_percent = value;
       } else {
         BOOST_LOG(warning) << "Ignoring unsupported virtual display scale " << value

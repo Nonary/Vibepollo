@@ -13,6 +13,7 @@
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <chrono>
+#include <cmath>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -1257,6 +1258,121 @@ namespace statefile {
       return;
     }
     BOOST_LOG(info) << "statefile: persisted display helper engine '" << engine << "' to vibeshine state";
+  }
+
+  namespace {
+    constexpr std::size_t kMaxVirtualDisplayScales = 32;
+
+    bool valid_virtual_display_scale(const double scale) {
+      return std::isfinite(scale) && scale >= 0.25 && scale <= 5.0;
+    }
+  }  // namespace
+
+  void save_virtual_display_scale(const std::string &identity, const double scale) {
+    if (identity.empty() || !valid_virtual_display_scale(scale)) {
+      return;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    std::vector<std::pair<std::string, double>> scales;
+    if (auto scales_node = root_node.get_child_optional("virtual_display_scales")) {
+      for (const auto &item : *scales_node) {
+        const auto saved_identity = item.second.get_optional<std::string>("identity");
+        const auto saved_scale = item.second.get_optional<double>("scale");
+        if (saved_identity && saved_scale && !saved_identity->empty() &&
+            valid_virtual_display_scale(*saved_scale) && *saved_identity != identity) {
+          scales.emplace_back(*saved_identity, *saved_scale);
+        }
+      }
+    }
+    scales.emplace_back(identity, scale);
+    if (scales.size() > kMaxVirtualDisplayScales) {
+      scales.erase(scales.begin(), scales.end() - kMaxVirtualDisplayScales);
+    }
+
+    pt::ptree scales_node;
+    for (const auto &[saved_identity, saved_scale] : scales) {
+      pt::ptree item;
+      item.put("identity", saved_identity);
+      item.put("scale", saved_scale);
+      scales_node.push_back({"", item});
+    }
+    root_node.put_child("virtual_display_scales", scales_node);
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to persist virtual display scale: " << e.what();
+    }
+  }
+
+  std::optional<double> load_virtual_display_scale(const std::string &identity) {
+    if (identity.empty()) {
+      return std::nullopt;
+    }
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return std::nullopt;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    pt::ptree root;
+    if (!load_tree_if_exists(fs::path(path_str), root)) {
+      return std::nullopt;
+    }
+    try {
+      const auto scales_node = root.get_child_optional("root.virtual_display_scales");
+      if (!scales_node) {
+        return std::nullopt;
+      }
+      for (auto item = scales_node->rbegin(); item != scales_node->rend(); ++item) {
+        const auto saved_identity = item->second.get_optional<std::string>("identity");
+        if (!saved_identity || *saved_identity != identity) {
+          continue;
+        }
+        const auto scale = item->second.get_optional<double>("scale");
+        return scale && valid_virtual_display_scale(*scale) ?
+                 std::make_optional(*scale) :
+                 std::nullopt;
+      }
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "statefile: failed to read virtual display scale: " << e.what();
+    }
+    return std::nullopt;
+  }
+
+  void clear_virtual_display_scales() {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+      return;
+    }
+    auto &root_node = ensure_root(root);
+    root_node.erase("virtual_display_scales");
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to clear virtual display scales: " << e.what();
+    }
   }
 
 }  // namespace statefile

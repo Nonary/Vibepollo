@@ -2063,7 +2063,7 @@
         },
         "virtual_scale": {
           "percent": "{value}%",
-          "preserve": "Preserve the current Windows choice",
+          "preserve": "Preserve the current desktop choice",
           "recommended": "Recommended for the resolution"
         }
       },

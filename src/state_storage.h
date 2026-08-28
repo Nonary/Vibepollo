@@ -3,6 +3,7 @@
 #include <boost/property_tree/ptree_fwd.hpp>
 #include <nlohmann/json_fwd.hpp>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -143,5 +144,14 @@ namespace statefile {
    *        same engine that armed it.
    */
   void save_display_helper_engine(const std::string &engine);
+
+  /** Persist a compositor scale selected for a stable virtual-display owner. */
+  void save_virtual_display_scale(const std::string &identity, double scale);
+
+  /** Load the last compositor scale selected for a stable virtual-display owner. */
+  std::optional<double> load_virtual_display_scale(const std::string &identity);
+
+  /** Clear retained virtual-display scales when display state is reset. */
+  void clear_virtual_display_scales();
 
 }  // namespace statefile
