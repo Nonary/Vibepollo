@@ -6,6 +6,7 @@
 #include "private_display.h"
 
 #include "hdr_policy.h"
+#include "private_display_resume_policy.h"
 
 #include "src/config.h"
 #include "src/display_device.h"
@@ -747,7 +748,11 @@ namespace platf::linux_private_display {
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
-        session.virtual_display_recreated_on_demand = output && !enabled(*output);
+        session.virtual_display_recreated_on_demand =
+          resume_policy::requires_apply(
+            manager.newly_connected_reservations.contains(identity),
+            enabled(*output)
+          );
         session.virtual_display_needs_resume_apply = session.virtual_display_recreated_on_demand;
         if (enabled(*output) && (!allow_display_changes || shared)) {
           const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
