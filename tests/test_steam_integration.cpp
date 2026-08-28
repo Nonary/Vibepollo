@@ -230,6 +230,17 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_EQ(games[0].proton_runtime_path, runtime);
   EXPECT_EQ(games[0].steam_client_path, base);
   EXPECT_NE(launch_command(games[0]).find("mangohud vibepollo-mangohud --appid 42 -- env"), std::string::npos);
+
+  // Compatibility tools can also be installed outside a Steam library. The
+  // upward search must stop at the filesystem root and use the broker fallback.
+  {
+    std::ofstream output(compatdata / "config_info");
+    output << "External Proton\n/opt/proton/files/share/fonts/\n";
+  }
+  const auto external_games = discover({base});
+  ASSERT_GE(external_games.size(), 1U);
+  EXPECT_TRUE(external_games[0].proton_runtime_path.empty());
+  EXPECT_EQ(launch_command(external_games[0]), "steam -applaunch 42");
   fs::remove_all(base, ec);
 }
 #endif
