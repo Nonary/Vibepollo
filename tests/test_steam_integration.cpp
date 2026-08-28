@@ -246,12 +246,12 @@ TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
 
   EXPECT_EQ(
     launch_command(game),
-    "PROTON_DLSS_UPGRADE=3.7 mangohud "
+    "/bin/sh -c 'PROTON_DLSS_UPGRADE=3.7 mangohud "
     "vibepollo-mangohud --appid 1182900 -- env SteamAppId=1182900 SteamGameId=1182900 "
     "GAMEID=umu-1182900 STORE=steam "
-    "WINEPREFIX='/games/steamapps/compatdata/1182900' "
-    "PROTONPATH='/steam/compatibilitytools.d/GE-Proton11-5' "
-    "umu-run '/games/A Plague Tale/APlagueTaleRequiem_x64.exe' -windowed"
+    "WINEPREFIX='\\''/games/steamapps/compatdata/1182900'\\'' "
+    "PROTONPATH='\\''/steam/compatibilitytools.d/GE-Proton11-5'\\'' "
+    "umu-run '\\''/games/A Plague Tale/APlagueTaleRequiem_x64.exe'\\'' -windowed'"
   );
 }
 
@@ -265,8 +265,8 @@ TEST(SteamLaunch, DirectNativeLaunchTreatsOptionsWithoutPlaceholderAsArguments) 
 
   EXPECT_EQ(
     launch_command(game),
-    "vibepollo-mangohud --appid 480 -- env SteamAppId=480 SteamGameId=480 "
-    "'/games/Spacewar/spacewar' -default -user-option"
+    "/bin/sh -c 'vibepollo-mangohud --appid 480 -- env SteamAppId=480 SteamGameId=480 "
+    "'\\''/games/Spacewar/spacewar'\\'' -default -user-option'"
   );
 }
 
