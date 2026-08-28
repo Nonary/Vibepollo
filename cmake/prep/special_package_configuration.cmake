@@ -44,6 +44,11 @@ elseif(UNIX)
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/dkms.conf.in")
         list(SORT VIBESHINE_DRM_HASH_INPUTS)
+        # The source identity is embedded in the configured root installer.
+        # CONFIGURE_DEPENDS on the glob only notices files entering or leaving
+        # it, not content changes to an existing driver source file.
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                ${VIBESHINE_DRM_HASH_INPUTS})
         set(VIBESHINE_DRM_HASH_MATERIAL "")
         foreach(VIBESHINE_DRM_HASH_INPUT IN LISTS VIBESHINE_DRM_HASH_INPUTS)
             file(SHA256 "${VIBESHINE_DRM_HASH_INPUT}" VIBESHINE_DRM_INPUT_HASH)
