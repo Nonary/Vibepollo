@@ -211,6 +211,29 @@ namespace {
     return {};
   }
 
+  fs::path first_hashed_nested_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id,
+                                        std::initializer_list<const char *> names) {
+    const auto id = std::to_string(app_id);
+    for (const auto &dir : dirs) {
+      const auto app_dir = dir / id;
+      std::error_code ec;
+      if (!fs::is_directory(app_dir, ec)) continue;
+      std::vector<fs::path> asset_dirs;
+      for (const auto &entry : fs::directory_iterator(app_dir, ec)) {
+        if (ec) break;
+        if (entry.is_directory(ec)) asset_dirs.push_back(entry.path());
+      }
+      std::sort(asset_dirs.begin(), asset_dirs.end());
+      for (const auto &asset_dir : asset_dirs) {
+        for (const auto *name : names) {
+          const auto path = asset_dir / name;
+          if (regular(path)) return path;
+        }
+      }
+    }
+    return {};
+  }
+
   struct artwork_t {
     fs::path portrait;
     fs::path header;
@@ -260,10 +283,21 @@ namespace {
         {"library_600x900.jpg", "library_600x900.png", "library_600x900.webp"});
     }
     if (out.portrait.empty()) {
+      // Current Steam clients key cached store assets by their content hash:
+      // <appid>/<hash>/library_capsule.jpg. The capsule is the same portrait
+      // cover as the legacy library_600x900 asset (normally 300x450 locally).
+      out.portrait = first_hashed_nested_existing(cache_dirs, app_id,
+        {"library_capsule.jpg", "library_capsule.png", "library_capsule.webp"});
+    }
+    if (out.portrait.empty()) {
       out.portrait = first_existing(grid_dirs, app_id, {"p.png", "p.jpg", "_p.png", "_p.jpg"});
     }
     out.header = first_existing(cache_dirs, app_id, {"_header.jpg", "_header.png", "_header.webp"});
     if (out.header.empty()) out.header = first_nested_existing(cache_dirs, app_id, {"header.jpg", "header.png", "header.webp"});
+    if (out.header.empty()) {
+      out.header = first_hashed_nested_existing(cache_dirs, app_id,
+        {"library_header.jpg", "library_header.png", "library_header.webp"});
+    }
     if (out.header.empty()) out.header = first_existing(grid_dirs, app_id, {"_hero.png", "_hero.jpg"});
     out.icon = first_existing(cache_dirs, app_id, {"_icon.jpg", "_icon.png", "_icon.webp"});
     if (out.icon.empty()) out.icon = first_nested_existing(cache_dirs, app_id, {"icon.jpg", "icon.png", "icon.webp"});

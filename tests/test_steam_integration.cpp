@@ -73,6 +73,29 @@ TEST(SteamDiscovery, FindsModernCentralPortraitForExternalLibrary) {
   fs::remove_all(base, ec);
 }
 
+TEST(SteamDiscovery, FindsContentHashedLibraryCapsule) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-hashed-art-test-" + std::to_string(nonce));
+  std::error_code ec;
+  fs::create_directories(base / "steamapps/common/HashedCoverGame", ec);
+  fs::create_directories(base / "appcache/librarycache/84/capsule-hash", ec);
+  fs::create_directories(base / "appcache/librarycache/84/header-hash", ec);
+  {
+    std::ofstream out(base / "steamapps/appmanifest_84.acf");
+    out << R"VDF("AppState" { "appid" "84" "name" "Hashed Cover Game" "type" "game" "installdir" "HashedCoverGame" })VDF";
+  }
+  std::ofstream(base / "appcache/librarycache/84/capsule-hash/library_capsule.jpg") << "capsule";
+  std::ofstream(base / "appcache/librarycache/84/header-hash/library_header.jpg") << "header";
+
+  const auto games = discover({base});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].portrait_path.filename(), "library_capsule.jpg");
+  EXPECT_EQ(games[0].artwork_path, games[0].portrait_path);
+  EXPECT_EQ(games[0].artwork_format, "jpg");
+  EXPECT_EQ(games[0].header_path.filename(), "library_header.jpg");
+  fs::remove_all(base, ec);
+}
+
 TEST(SteamDiscovery, IgnoresManifestWithoutInstalledDirectory) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
   const auto base = fs::temp_directory_path() / ("vibeshine-steam-stale-test-" + std::to_string(nonce));
