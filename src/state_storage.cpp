@@ -1281,7 +1281,7 @@ namespace statefile {
     std::lock_guard<std::mutex> guard(state_mutex());
     const fs::path path(path_str);
     pt::ptree root;
-    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
       return;
     }
 
@@ -1363,7 +1363,7 @@ namespace statefile {
     std::lock_guard<std::mutex> guard(state_mutex());
     const fs::path path(path_str);
     pt::ptree root;
-    if (load_tree_for_update(path, root) == json_load_result_e::failed) {
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
       return;
     }
     auto &root_node = ensure_root(root);

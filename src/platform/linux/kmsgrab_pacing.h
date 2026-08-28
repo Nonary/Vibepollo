@@ -58,27 +58,44 @@ namespace platf::kms::pacing {
   public:
     void set_interval(clock_t::duration interval) {
       interval_ = interval;
-      last_delivery_.reset();
+      next_delivery_.reset();
     }
 
     void reset() {
-      last_delivery_.reset();
+      next_delivery_.reset();
     }
 
     [[nodiscard]] clock_t::time_point next_delivery(clock_t::time_point now) const {
-      if (!last_delivery_ || interval_ <= clock_t::duration::zero()) {
+      if (!next_delivery_ || interval_ <= clock_t::duration::zero()) {
         return now;
       }
-      return *last_delivery_ + interval_;
+      return *next_delivery_;
     }
 
     void mark_delivered(clock_t::time_point delivery) {
-      last_delivery_ = delivery;
+      if (interval_ <= clock_t::duration::zero()) {
+        next_delivery_.reset();
+        return;
+      }
+
+      if (!next_delivery_) {
+        next_delivery_ = delivery + interval_;
+        return;
+      }
+
+      /*
+       * Advance from the negotiated schedule, not from the actual wake-up
+       * time. Rebasing every deadline on delivery makes scheduler overshoot
+       * accumulate and eventually drops an otherwise on-time presentation.
+       * Rebase only after a large stall so we never emit catch-up bursts.
+       */
+      const auto following_delivery = *next_delivery_ + interval_;
+      next_delivery_ = following_delivery <= delivery ? delivery + interval_ : following_delivery;
     }
 
   private:
     clock_t::duration interval_ {};
-    std::optional<clock_t::time_point> last_delivery_;
+    std::optional<clock_t::time_point> next_delivery_;
   };
 
   class presentation_latch_t {
