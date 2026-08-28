@@ -242,6 +242,8 @@ jobs:
           grep -qx 'conflict = vibeshine' <<< "${package_info}"
           grep -qx 'depend = dkms' <<< "${package_info}"
           grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
+          grep -qx $'\tmakedepends = nodejs' .SRCINFO
+          grep -qx $'\tmakedepends = npm' .SRCINFO
           grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
           if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
             echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
