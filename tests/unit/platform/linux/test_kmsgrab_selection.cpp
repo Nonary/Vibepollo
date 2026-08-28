@@ -17,6 +17,7 @@ TEST(KmsgrabSelection, RejectsInconsistentPresentationResponses) {
   using response_e = platf::kms::pacing::presentation_response_e;
 
   EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::changed);
+  EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 12), response_e::changed);
   EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_CHANGED | VIBESHINE_DRM_PRESENT_PENDING, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 6), response_e::changed);
   EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::timeout);
   EXPECT_EQ(classify_response(VIBESHINE_DRM_PRESENT_TIMEOUT | VIBESHINE_DRM_PRESENT_PENDING, VIBESHINE_DRM_PRESENT_CHANGED, VIBESHINE_DRM_PRESENT_TIMEOUT, VIBESHINE_DRM_PRESENT_PENDING, 5, 5), response_e::timeout);
@@ -115,6 +116,28 @@ TEST(KmsgrabSelection, RequiredPresentationModeNeverEnablesFixedRateFallback) {
   platf::kms::pacing::presentation_mode_t ordinary_kms;
   EXPECT_FALSE(ordinary_kms.event_capture_enabled());
   EXPECT_TRUE(ordinary_kms.fixed_rate_allowed());
+}
+
+TEST(KmsgrabSelection, EventDeliveryNeverExceedsTheNegotiatedRate) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_rate_limiter_t limiter;
+  limiter.set_interval(10ms);
+
+  const auto first = clock_t::time_point {1s};
+  EXPECT_EQ(limiter.next_delivery(first), first);
+
+  limiter.mark_delivered(first);
+  EXPECT_EQ(limiter.next_delivery(first + 1ms), first + 10ms);
+  EXPECT_EQ(limiter.next_delivery(first + 9ms), first + 10ms);
+
+  const auto late_delivery = first + 13ms;
+  limiter.mark_delivered(late_delivery);
+  EXPECT_EQ(limiter.next_delivery(late_delivery), late_delivery + 10ms);
+
+  limiter.reset();
+  EXPECT_EQ(limiter.next_delivery(late_delivery + 1ms), late_delivery + 1ms);
 }
 
 TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {

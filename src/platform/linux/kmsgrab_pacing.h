@@ -54,6 +54,33 @@ namespace platf::kms::pacing {
     bool enabled_ {false};
   };
 
+  class presentation_rate_limiter_t {
+  public:
+    void set_interval(clock_t::duration interval) {
+      interval_ = interval;
+      last_delivery_.reset();
+    }
+
+    void reset() {
+      last_delivery_.reset();
+    }
+
+    [[nodiscard]] clock_t::time_point next_delivery(clock_t::time_point now) const {
+      if (!last_delivery_ || interval_ <= clock_t::duration::zero()) {
+        return now;
+      }
+      return *last_delivery_ + interval_;
+    }
+
+    void mark_delivered(clock_t::time_point delivery) {
+      last_delivery_ = delivery;
+    }
+
+  private:
+    clock_t::duration interval_ {};
+    std::optional<clock_t::time_point> last_delivery_;
+  };
+
   class presentation_latch_t {
   public:
     using generation_t = std::uint64_t;
