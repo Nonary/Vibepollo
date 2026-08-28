@@ -1969,7 +1969,8 @@
         },
         "frame_limiter_provider": {
           "mangohud": "MangoHUD",
-          "proton": "Proton VKD3D (D3D12)",
+          "mangohudProton": "MangoHUD + Proton",
+          "proton": "Proton DXVK/VKD3D",
           "none": "None",
           "nvidia": "NVIDIA Control Panel",
           "rtss": "RivaTuner Statistics Server"

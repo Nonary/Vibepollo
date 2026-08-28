@@ -1707,6 +1707,8 @@ namespace proc {
       config::frame_limiter.fps_limit_millihz
     );
     const bool proton_limiter = platf::mangohud::proton_provider_selected(config::frame_limiter.provider);
+    const bool proton_overlay_requested =
+      platf::mangohud::proton_overlay_provider_selected(config::frame_limiter.provider);
     const auto smooth_motion_policy = platf::smooth_motion::make_launch_policy(
       _app.frame_generation_enabled,
       _app.frame_generation_provider,
@@ -1731,27 +1733,47 @@ namespace proc {
     }
     const auto existing_preload = _env["LD_PRELOAD"].to_string();
     if (mangohud_policy.enabled && proton_limiter) {
-      _env["MANGOHUD"] = "";
-      _env["MANGOHUD_CONFIG"] = "";
-      _env["MANGOHUD_FPS_LIMIT"] = "";
-      _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+      const bool mangohud_available = !bp::search_path("mangohud").empty();
+      const bool proton_overlay_enabled = proton_overlay_requested && mangohud_available;
+      if (proton_overlay_enabled) {
+        _env["MANGOHUD"] = "1";
+        _env["MANGOHUD_CONFIG"] = platf::mangohud::overlay_config_override(
+          {},
+          config::frame_limiter.mangohud_preset,
+          config::frame_limiter.mangohud_always_show_graph
+        );
+        _env["MANGOHUD_FPS_LIMIT"] = "";
+        _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
+      } else {
+        _env["MANGOHUD"] = "";
+        _env["MANGOHUD_CONFIG"] = "";
+        _env["MANGOHUD_FPS_LIMIT"] = "";
+        _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+        if (proton_overlay_requested) {
+          BOOST_LOG(warning)
+            << "MangoHUD + Proton was requested, but mangohud was not found in PATH; "
+               "continuing with the Proton renderer limiter only.";
+        }
+      }
       if (!_app.steam_id.empty()) {
         const auto state_path = platf::mangohud::write_state(
           _app.steam_id,
-          "proton",
+          proton_overlay_enabled ? "mangohud-proton" : "proton",
           mangohud_policy.limit,
           config::frame_limiter.mangohud_preset,
-          false
+          proton_overlay_enabled && config::frame_limiter.mangohud_always_show_graph
         );
         if (state_path.empty()) {
           BOOST_LOG(warning) << "Could not write the Steam Proton limiter handoff state for app "
                              << _app.steam_id << ".";
         } else {
-          BOOST_LOG(info) << "Proton VKD3D frame limiter ready at " << mangohud_policy.limit
-                          << " FPS for Steam app " << _app.steam_id << ".";
+          BOOST_LOG(info) << "Proton DXVK/VKD3D frame limiter ready at " << mangohud_policy.limit
+                          << " FPS for Steam app " << _app.steam_id
+                          << (proton_overlay_enabled ? " with the MangoHUD overlay." : ".");
         }
       } else {
-        BOOST_LOG(warning) << "The Proton frame limiter requires a managed Steam Proton application.";
+        BOOST_LOG(warning)
+          << "The Proton DXVK/VKD3D frame limiter requires a managed Steam Proton application.";
       }
     } else if (mangohud_policy.enabled) {
       if (bp::search_path("mangohud").empty()) {
