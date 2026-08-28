@@ -25,6 +25,7 @@ else()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         install(PROGRAMS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-drm-hot-reload"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
