@@ -283,6 +283,7 @@ const frameLimiterOptions = [
   option('auto', '_common.auto'),
   option('rtss', 'ui.settings.options.frame_limiter_provider.rtss'),
   option('nvidia-control-panel', 'ui.settings.options.frame_limiter_provider.nvidia'),
+  option('proton', 'ui.settings.options.frame_limiter_provider.proton'),
   option('none', 'ui.settings.options.frame_limiter_provider.none'),
 ];
 

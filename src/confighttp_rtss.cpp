@@ -377,18 +377,20 @@ namespace confighttp {
     const auto path = boost::process::v1::search_path("mangohud");
     const bool available = !path.empty();
     const bool selected = platf::mangohud::provider_selected(config::frame_limiter.provider);
-    const bool active = config::frame_limiter.enable && selected && available;
+    const bool proton_selected = platf::mangohud::proton_provider_selected(config::frame_limiter.provider);
+    const bool active = config::frame_limiter.enable && ((selected && available) || proton_selected);
     send_response(response, {
       {"enabled", config::frame_limiter.enable},
       {"configured_provider", config::frame_limiter.provider.empty() ? "auto" : config::frame_limiter.provider},
-      {"active_provider", active ? "mangohud" : "none"},
+      {"active_provider", active ? (proton_selected ? "proton" : "mangohud") : "none"},
       {"fps_limit", static_cast<double>(config::frame_limiter.fps_limit_millihz) / 1000.0},
       {"fps_limit_millihz", config::frame_limiter.fps_limit_millihz},
       {"overlay_preset", config::frame_limiter.mangohud_preset},
       {"always_show_graph", config::frame_limiter.mangohud_always_show_graph},
       {"mangohud_available", available},
       {"resolved_path", path.string()},
-      {"message", available ?
+      {"message", proton_selected ?
+                    "The Proton VKD3D frame limiter is selected for managed Steam D3D12 games." : available ?
                     "MangoHUD is installed and ready for launched games." :
                     "MangoHUD was not found in PATH; install it to enable Linux frame limiting."}
     });

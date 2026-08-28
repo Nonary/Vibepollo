@@ -536,6 +536,7 @@ function optionsFor(field: SettingsField): SettingsOption[] {
     options = [
       localizedOption('auto', '_common.auto'),
       localizedOption('mangohud', 'ui.settings.options.frame_limiter_provider.mangohud'),
+      localizedOption('proton', 'ui.settings.options.frame_limiter_provider.proton'),
       localizedOption('none', 'ui.settings.options.frame_limiter_provider.none'),
     ];
   }

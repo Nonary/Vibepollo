@@ -578,8 +578,9 @@
     "presetHorizontal": "Horizontal",
     "provider": "Limiter provider",
     "providerAuto": "Automatic — use MangoHUD on Linux",
-    "providerDescription": "Automatic is recommended. None disables MangoHUD for both manual and automatic pacing policies.",
+    "providerDescription": "Automatic uses MangoHUD. Proton VKD3D uses the D3D12 renderer's built-in limiter and suppresses MangoHUD for managed Steam games.",
     "providerMangoHud": "MangoHUD",
+    "providerProton": "Proton VKD3D (D3D12)",
     "providerNone": "None",
      "settingsDescription": "Choose when Vibepollo injects MangoHUD and how its frame limit is calculated.",
     "settingsTitle": "Frame-limiter settings",
@@ -1811,6 +1812,7 @@
         },
         "frame_limiter_provider": {
           "mangohud": "MangoHUD",
+          "proton": "Proton VKD3D (D3D12)",
           "none": "None",
           "nvidia": "NVIDIA Control Panel",
           "rtss": "RivaTuner Statistics Server"

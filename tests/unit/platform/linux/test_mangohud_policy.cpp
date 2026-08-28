@@ -82,14 +82,25 @@ TEST(MangoHudPolicy, ValidatesAndSerializesLastMileSteamState) {
   EXPECT_FALSE(mangohud::valid_steam_app_id("48/0"));
 
   const auto state = mangohud::serialize_state(
+    "proton",
     "59.94",
     "3",
     true,
     std::chrono::system_clock::time_point {std::chrono::seconds {12345}}
   );
-  EXPECT_NE(state.find("version=1\nlimit=59.94\npreset=3\nalways_show_graph=1\n"), std::string::npos);
+  EXPECT_NE(state.find("version=2\nprovider=proton\nlimit=59.94\npreset=3\nalways_show_graph=1\n"), std::string::npos);
   EXPECT_NE(state.find("owner_pid="), std::string::npos);
   EXPECT_TRUE(state.ends_with("expires=12345\n"));
+}
+
+TEST(MangoHudPolicy, SelectsProtonAsLinuxLimiterProvider) {
+  framegen::stream_start_policy_t stream_policy;
+  stream_policy.fps = 116;
+  EXPECT_TRUE(mangohud::proton_provider_selected("Proton"));
+  EXPECT_FALSE(mangohud::provider_selected("proton"));
+  const auto policy = mangohud::make_launch_policy("proton", true, false, stream_policy, 0);
+  ASSERT_TRUE(policy.enabled);
+  EXPECT_EQ(policy.limit, "116");
 }
 
 TEST(MangoHudPolicy, AutomaticVirtualLimiterDoesNotEnablePhysicalStreams) {

@@ -7,9 +7,11 @@ trap 'rm -rf -- "$test_root"' EXIT HUP INT TERM
 
 write_state() {
   limit=$1
+  provider=${2-mangohud}
   expires=$(($(date +%s) + 60))
   printf '%s\n' \
-    'version=1' \
+    'version=2' \
+    "provider=$provider" \
     "limit=$limit" \
     'preset=custom' \
     'always_show_graph=0' \
@@ -38,6 +40,22 @@ integer=$(
 expected_integer='config=read_cfg,fps_limit=120
 limit=120'
 [ "$integer" = "$expected_integer" ]
+
+write_state 116 proton
+proton=$(
+  VIBEPOLLO_MANGOHUD_STATE_DIR=$test_root \
+  MANGOHUD=1 \
+  MANGOHUD_CONFIG='fps_limit=30' \
+  MANGOHUD_FPS_LIMIT=30 \
+  LD_PRELOAD='/usr/$LIB/mangohud/libMangoHud_shim.so' \
+    "$wrapper" --appid 480 -- /bin/sh -c \
+      'printf "vkd3d=%s\nmango=%s\nconfig=%s\npreload=%s" "$VKD3D_FRAME_RATE" "${MANGOHUD-UNSET}" "${MANGOHUD_CONFIG-UNSET}" "${LD_PRELOAD-UNSET}"'
+)
+expected_proton='vkd3d=116
+mango=UNSET
+config=UNSET
+preload=UNSET'
+[ "$proton" = "$expected_proton" ]
 
 rm -f -- "$test_root/480.state"
 passthrough=$(

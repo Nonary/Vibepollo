@@ -54,6 +54,7 @@ namespace platf::mangohud {
   }
 
   inline std::string serialize_state(
+    std::string_view provider,
     std::string_view limit,
     std::string_view preset,
     bool always_show_graph,
@@ -63,7 +64,8 @@ namespace platf::mangohud {
     const auto expires = std::chrono::duration_cast<std::chrono::seconds>(
       expires_at.time_since_epoch()
     ).count();
-    return "version=1\nlimit=" + std::string(limit) +
+    return "version=2\nprovider=" + std::string(provider) +
+           "\nlimit=" + std::string(limit) +
            "\npreset=" + (standard_preset ? std::string(preset) : "custom") +
            "\nalways_show_graph=" + (always_show_graph ? "1" : "0") +
            "\nowner_pid=" + std::to_string(static_cast<unsigned long>(getpid())) +
@@ -72,6 +74,7 @@ namespace platf::mangohud {
 
   inline std::filesystem::path write_state(
     std::string_view app_id,
+    std::string_view provider,
     std::string_view limit,
     std::string_view preset,
     bool always_show_graph
@@ -104,6 +107,7 @@ namespace platf::mangohud {
         return {};
       }
       output << serialize_state(
+        provider,
         limit,
         preset,
         always_show_graph,
