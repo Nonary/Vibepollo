@@ -1556,24 +1556,8 @@ namespace platf {
         const pull_free_image_cb_t &pull_free_image_cb,
         bool *cursor
       ) {
-        auto next_capture = std::chrono::steady_clock::time_point::min();
-
         while (presentation_mode.event_capture_enabled()) {
-          auto now = std::chrono::steady_clock::now();
-          if (presentation_pending && now < next_capture) {
-            std::this_thread::sleep_until(pacing::coalescing_wake_deadline(
-              now,
-              next_capture,
-              PRESENT_WAIT_IDLE_TIMEOUT
-            ));
-            if (std::chrono::steady_clock::now() < next_capture &&
-                !push_captured_image_cb({}, false)) {
-              return platf::capture_e::ok;
-            }
-            continue;
-          }
-
-          if (pacing::capture_due(presentation_pending, now, next_capture)) {
+          if (presentation_pending) {
             if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
               return std::nullopt;
             }
@@ -1599,10 +1583,8 @@ namespace platf {
               }
             }
 
-            const auto captured_sequence = presentation_sequence;
             const auto captured_timestamp = presentation_timestamp;
             const auto captured_generation = presentation_latch.capture_generation();
-            const auto capture_started = std::chrono::steady_clock::now();
             std::shared_ptr<platf::img_t> img_out;
             auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
             if (status == platf::capture_e::reinit ||
@@ -1620,7 +1602,6 @@ namespace platf {
               return std::nullopt;
             }
 
-            next_capture = pacing::capture_deadline(capture_started, delay);
             if (presentation_latch.state_pending()) {
               if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
@@ -1633,13 +1614,8 @@ namespace platf {
             }
 
             const bool newer_presentation = post_capture_presentation == presentation_wait_e::changed;
-            if (!newer_presentation && presentation_sequence == captured_sequence &&
-                status == platf::capture_e::ok && img_out && captured_timestamp) {
+            if (status == platf::capture_e::ok && img_out && captured_timestamp) {
               img_out->frame_timestamp = captured_timestamp;
-            }
-
-            if (status == platf::capture_e::timeout && next_capture < std::chrono::steady_clock::now()) {
-              next_capture = std::chrono::steady_clock::now() + delay;
             }
 
             switch (status) {

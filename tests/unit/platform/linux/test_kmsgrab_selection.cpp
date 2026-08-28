@@ -12,22 +12,6 @@
 
 namespace selection = platf::kms::selection;
 
-TEST(KmsgrabSelection, CoalescesPresentationsToTheCaptureDeadline) {
-  using namespace std::chrono_literals;
-  using clock_t = platf::kms::pacing::clock_t;
-
-  const auto now = clock_t::time_point {1s};
-  const auto next_capture = now + 7500us;
-
-  EXPECT_FALSE(platf::kms::pacing::capture_due(false, now, now));
-  EXPECT_FALSE(platf::kms::pacing::capture_due(true, now, next_capture));
-  EXPECT_TRUE(platf::kms::pacing::capture_due(true, next_capture, next_capture));
-
-  EXPECT_EQ(platf::kms::pacing::capture_deadline(now, 8333333ns), now + 8333333ns);
-  EXPECT_EQ(platf::kms::pacing::coalescing_wake_deadline(now, next_capture, 16ms), next_capture);
-  EXPECT_EQ(platf::kms::pacing::coalescing_wake_deadline(now, now + 50ms, 16ms), now + 16ms);
-}
-
 TEST(KmsgrabSelection, RejectsInconsistentPresentationResponses) {
   using platf::kms::pacing::classify_response;
   using response_e = platf::kms::pacing::presentation_response_e;
