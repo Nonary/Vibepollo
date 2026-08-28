@@ -12,6 +12,8 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/rtsp.h"
+#include "src/state_storage.h"
+#include "src/virtual_display_scale.h"
 
 #include <virtual_display/driver/linux_control_client.h>
 
@@ -46,6 +48,8 @@ namespace platf::linux_private_display {
       std::mutex mutex;
       std::optional<json> snapshot;
       std::map<std::string, std::string> reservations;
+      std::map<std::string, double> retained_scales;
+      std::set<std::string> newly_connected_reservations;
       std::atomic<std::uint64_t> cleanup_generation {0};
     };
 
@@ -396,6 +400,17 @@ namespace platf::linux_private_display {
       return best;
     }
 
+    std::pair<std::uint32_t, std::uint32_t> mode_size(const json &output, const std::string &mode_id) {
+      for (const auto &mode : output.value("modes", json::array())) {
+        if (mode.value("id", std::string {}) == mode_id) {
+          const auto size = mode.value("size", json::object());
+          return {size.value("width", 0u), size.value("height", 0u)};
+        }
+      }
+      const auto size = output.value("size", json::object());
+      return {size.value("width", 0u), size.value("height", 0u)};
+    }
+
     std::pair<int, int> logical_size(const json &output) {
       const auto size = output.value("size", json::object());
       const auto scale = std::max(0.25, output.value("scale", 1.0));
@@ -520,6 +535,35 @@ namespace platf::linux_private_display {
       return "client:" + client_uuid;
     }
 
+    std::optional<double> retained_scale(state_t &manager, const std::string &identity) {
+      if (const auto saved = manager.retained_scales.find(identity); saved != manager.retained_scales.end()) {
+        return saved->second;
+      }
+      const auto saved = statefile::load_virtual_display_scale(identity);
+      if (saved) {
+        manager.retained_scales.emplace(identity, *saved);
+      }
+      return saved;
+    }
+
+    void remember_scale(state_t &manager, const std::string &identity, const json *output) {
+      if (!output || !connected(*output) || !enabled(*output)) {
+        return;
+      }
+      const auto scale = output->value("scale", 0.0);
+      if (!std::isfinite(scale) || scale < 0.25 || scale > 5.0) {
+        return;
+      }
+      manager.retained_scales.insert_or_assign(identity, scale);
+      statefile::save_virtual_display_scale(identity, scale);
+    }
+
+    void remember_reserved_scales(state_t &manager, const json &configuration) {
+      for (const auto &[identity, output_name] : manager.reservations) {
+        remember_scale(manager, identity, find_output(configuration, output_name));
+      }
+    }
+
     void snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
       if (manager.snapshot) {
         return;
@@ -553,6 +597,7 @@ namespace platf::linux_private_display {
           }
         }
         if (is_managed_output(existing->second) && connect_managed_output(existing->second)) {
+          manager.newly_connected_reservations.insert(identity);
           return existing->second;
         }
         manager.reservations.erase(existing);
@@ -582,6 +627,7 @@ namespace platf::linux_private_display {
         if (is_managed_output(candidate)) {
           if (connect_managed_output(candidate)) {
             manager.reservations.emplace(identity, candidate);
+            manager.newly_connected_reservations.insert(identity);
             return candidate;
           }
           continue;
@@ -691,6 +737,7 @@ namespace platf::linux_private_display {
         const auto *output = configuration ? find_output(*configuration, *output_name) : nullptr;
         if (!output || !connected(*output)) {
           manager.reservations.erase(identity);
+          manager.newly_connected_reservations.erase(identity);
           (void) disconnect_managed_output(*output_name);
           result.error = "The leased Linux private display was not published by KScreen";
           session.virtual_display_failed = true;
@@ -739,11 +786,19 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::set<std::string> reserved_outputs;
+    std::optional<double> saved_scale;
+    std::string identity;
     {
       std::lock_guard lock {manager.mutex};
       snapshot_configuration_if_needed(manager, *configuration);
       for (const auto &[_, output_name] : manager.reservations) {
         reserved_outputs.insert(output_name);
+      }
+      const auto mode = session.virtual_display_mode_override.value_or(config::video.virtual_display_mode);
+      identity = reservation_identity(session, mode == config::video_t::virtual_display_mode_e::shared);
+      if (config::video.dd.virtual_display_scale_percent == 0 &&
+          (manager.newly_connected_reservations.contains(identity) || !enabled(*target_before))) {
+        saved_scale = retained_scale(manager, identity);
       }
     }
 
@@ -819,14 +874,17 @@ namespace platf::linux_private_display {
     std::vector<std::string> arguments {
       target_prefix + "enable",
       target_prefix + "mode." + mode_id,
+      target_prefix + "vrrpolicy.always",
     };
 
-    double target_scale = target_before->value("scale", 1.0);
-    if (config::video.dd.virtual_display_scale_percent > 0) {
-      target_scale = config::video.dd.virtual_display_scale_percent / 100.0;
-    } else if (config::video.dd.virtual_display_scale_percent < 0) {
-      target_scale = 1.0;
-    }
+    const auto [mode_width, mode_height] = mode_size(*target_before, mode_id);
+    const double target_scale = virtual_display_scale::effective_factor(
+      config::video.dd.virtual_display_scale_percent,
+      mode_width,
+      mode_height,
+      target_before->value("scale", 1.0),
+      saved_scale
+    );
     arguments.push_back(target_prefix + "scale." + std::to_string(target_scale));
 
     int right_edge = 0;
@@ -929,6 +987,7 @@ namespace platf::linux_private_display {
         if (const auto *output = find_output(*current, session.virtual_display_device_id);
             output && connected(*output) && enabled(*output) &&
             output->value("currentModeId", std::string {}) == mode_id &&
+            std::abs(output->value("scale", 1.0) - target_scale) < 0.01 &&
             (!hdr_policy.command || output->value("hdr", false) == *hdr_policy.command)) {
           verified_hdr_enabled = hdr_capable && output->value("hdr", false);
           verified = true;
@@ -939,7 +998,7 @@ namespace platf::linux_private_display {
     } while (std::chrono::steady_clock::now() < verification_deadline);
 
     if (!verified) {
-      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR state on "
+      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale state on "
                        << session.virtual_display_device_id << '.';
       return false;
     }
@@ -951,7 +1010,12 @@ namespace platf::linux_private_display {
     session.virtual_display_ready_since = std::chrono::steady_clock::now();
     session.virtual_display_recreated_on_demand = false;
     session.virtual_display_needs_resume_apply = false;
-    BOOST_LOG(info) << "Linux private display: applied private output " << session.virtual_display_device_id << ".";
+    {
+      std::lock_guard lock {manager.mutex};
+      manager.newly_connected_reservations.erase(identity);
+    }
+    BOOST_LOG(info) << "Linux private display: applied private output " << session.virtual_display_device_id
+                    << " at " << std::lround(target_scale * 100.0) << "% scale.";
     return true;
   }
 
@@ -1042,9 +1106,11 @@ namespace platf::linux_private_display {
 
     struct desired_output_t {
       std::string name;
+      std::string identity;
       remote_display_topology::node_t node;
       bool owned_client {false};
       std::string mode_id;
+      double scale {1.0};
     };
 
     auto &manager = state();
@@ -1076,6 +1142,7 @@ namespace platf::linux_private_display {
 
       desired_output_t entry {
         .name = output_name,
+        .identity = owned_client ? client_reservation_identity(node.id) : std::string {},
         .node = node,
         .owned_client = owned_client,
       };
@@ -1193,15 +1260,21 @@ namespace platf::linux_private_display {
       activate_arguments.push_back(prefix + "enable");
       if (entry.owned_client) {
         activate_arguments.push_back(prefix + "mode." + entry.mode_id);
-        double scale = 1.0;
-        if (config::video.dd.virtual_display_scale_percent > 0) {
-          scale = config::video.dd.virtual_display_scale_percent / 100.0;
-        } else if (config::video.dd.virtual_display_scale_percent == 0) {
-          if (const auto *output = find_output(*configuration, entry.name)) {
-            scale = output->value("scale", 1.0);
-          }
-        }
-        activate_arguments.push_back(prefix + "scale." + std::to_string(scale));
+        activate_arguments.push_back(prefix + "vrrpolicy.always");
+        const auto *output = find_output(*configuration, entry.name);
+        const auto saved_scale =
+          config::video.dd.virtual_display_scale_percent == 0 && output &&
+              (manager.newly_connected_reservations.contains(entry.identity) || !enabled(*output)) ?
+            retained_scale(manager, entry.identity) :
+            std::nullopt;
+        entry.scale = virtual_display_scale::effective_factor(
+          config::video.dd.virtual_display_scale_percent,
+          static_cast<std::uint32_t>(std::max(1, entry.node.configured_mode.width)),
+          static_cast<std::uint32_t>(std::max(1, entry.node.configured_mode.height)),
+          output ? output->value("scale", 1.0) : 1.0,
+          saved_scale
+        );
+        activate_arguments.push_back(prefix + "scale." + std::to_string(entry.scale));
         if (const auto *output = find_output(*configuration, entry.name); output_hdr_capable(output, entry.name)) {
           activate_arguments.push_back(prefix + "hdr." + std::string(entry.node.configured_mode.hdr ? "enable" : "disable"));
         } else if (entry.node.configured_mode.hdr) {
@@ -1240,6 +1313,7 @@ namespace platf::linux_private_display {
           }
           return !entry.owned_client ||
                  (output->value("currentModeId", std::string {}) == entry.mode_id &&
+                  std::abs(output->value("scale", 1.0) - entry.scale) < 0.01 &&
                   (!output_hdr_capable(output, entry.name) ||
                    output->value("hdr", false) == entry.node.configured_mode.hdr));
         });
@@ -1250,11 +1324,16 @@ namespace platf::linux_private_display {
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     } while (std::chrono::steady_clock::now() < verification_deadline);
     if (!verified) {
-      BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR state.";
+      BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/scale state.";
       return false;
     }
     if (!execute_configuration(deactivate_arguments, "Remote Monitor topology retirement")) {
       return false;
+    }
+    for (const auto &entry : desired) {
+      if (entry.owned_client) {
+        manager.newly_connected_reservations.erase(entry.identity);
+      }
     }
     BOOST_LOG(info) << "Linux Remote Monitor: applied a " << desired.size()
                     << "-output composed desktop.";
@@ -1306,6 +1385,10 @@ namespace platf::linux_private_display {
       return;
     }
     const auto output_name = reservation->second;
+    if (const auto configuration = query_configuration()) {
+      remember_scale(manager, reservation->first, find_output(*configuration, output_name));
+    }
+    manager.newly_connected_reservations.erase(reservation->first);
     manager.reservations.erase(reservation);
     const bool still_reserved = std::ranges::any_of(manager.reservations, [&](const auto &entry) {
       return entry.second == output_name;
@@ -1334,15 +1417,19 @@ namespace platf::linux_private_display {
     for (const auto &[_, output_name] : manager.reservations) {
       reserved_outputs.insert(output_name);
     }
+    const auto current = query_configuration();
+    if (current) {
+      remember_reserved_scales(manager, *current);
+    }
     if (!manager.snapshot) {
       manager.reservations.clear();
+      manager.newly_connected_reservations.clear();
       bool disconnected = true;
       for (const auto &output_name : reserved_outputs) {
         disconnected = disconnect_managed_output(output_name) && disconnected;
       }
       return disconnected;
     }
-    const auto current = query_configuration();
     if (!current) {
       return false;
     }
@@ -1361,6 +1448,7 @@ namespace platf::linux_private_display {
     }
     manager.snapshot.reset();
     manager.reservations.clear();
+    manager.newly_connected_reservations.clear();
     bool disconnected = true;
     for (const auto &output_name : reserved_outputs) {
       disconnected = disconnect_managed_output(output_name) && disconnected;
@@ -1381,6 +1469,9 @@ namespace platf::linux_private_display {
     std::lock_guard lock {manager.mutex};
     manager.snapshot.reset();
     manager.reservations.clear();
+    manager.retained_scales.clear();
+    manager.newly_connected_reservations.clear();
+    statefile::clear_virtual_display_scales();
     return true;
   }
 

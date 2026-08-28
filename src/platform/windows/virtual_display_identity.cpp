@@ -1,17 +1,12 @@
 #include "src/platform/windows/virtual_display.h"
+#include "src/virtual_display_scale.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
 #include <cctype>
 #include <cstring>
 #include <ranges>
 
 namespace {
-  constexpr std::array<std::uint32_t, 12> kWindowsScalePercentages {
-    100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500
-  };
-
   bool equals_ascii_ci(const std::string_view lhs, const std::string_view rhs) {
     return lhs.size() == rhs.size() &&
            std::ranges::equal(lhs, rhs, [](const char left, const char right) {
@@ -113,20 +108,7 @@ namespace VDISPLAY {
     const std::uint32_t width,
     const std::uint32_t height
   ) {
-    if (configured_scale_percent >= 0) {
-      return static_cast<std::uint32_t>(configured_scale_percent);
-    }
-
-    const auto short_edge = (std::min)(width, height);
-    const auto ideal_scale = static_cast<double>(short_edge) * 100.0 / 864.0;
-    const auto closest = std::ranges::min_element(
-      kWindowsScalePercentages,
-      [ideal_scale](const auto lhs, const auto rhs) {
-        return std::abs(static_cast<double>(lhs) - ideal_scale) <
-               std::abs(static_cast<double>(rhs) - ideal_scale);
-      }
-    );
-    return closest != kWindowsScalePercentages.end() ? *closest : 100u;
+    return virtual_display_scale::effective_percent(configured_scale_percent, width, height);
   }
 
   std::uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid) {
