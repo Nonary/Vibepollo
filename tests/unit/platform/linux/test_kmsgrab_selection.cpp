@@ -161,10 +161,10 @@ TEST(KmsgrabSelection, NormalizesPresentationJitterOntoTheClientCadence) {
   const auto first = clock_t::time_point {1s};
   EXPECT_EQ(grid.normalize(first), first);
 
-  // Both early and late VRR presentations stay on the negotiated wire grid.
-  EXPECT_EQ(grid.normalize(first + 8ms), first + 10ms);
-  EXPECT_EQ(grid.normalize(first + 21ms), first + 20ms);
-  EXPECT_EQ(grid.normalize(first + 29ms), first + 30ms);
+  // The output removes most alternating VRR jitter without becoming rigid.
+  EXPECT_EQ(grid.normalize(first + 8ms), first + 9500us);
+  EXPECT_EQ(grid.normalize(first + 21ms), first + 19875us);
+  EXPECT_EQ(grid.normalize(first + 29ms), first + 29656250ns);
 }
 
 TEST(KmsgrabSelection, PresentationTimestampGridRebasesAfterARealStall) {
@@ -180,10 +180,30 @@ TEST(KmsgrabSelection, PresentationTimestampGridRebasesAfterARealStall) {
 
   const auto stalled = first + 36ms;
   EXPECT_EQ(grid.normalize(stalled), stalled);
-  EXPECT_EQ(grid.normalize(stalled + 9ms), stalled + 10ms);
+  EXPECT_EQ(grid.normalize(stalled + 9ms), stalled + 9750us);
 
   grid.reset();
   EXPECT_EQ(grid.normalize(stalled + 50ms), stalled + 50ms);
+}
+
+TEST(KmsgrabSelection, PresentationTimestampGridTracksFractionalSourceRate) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_timestamp_grid_t grid;
+  grid.set_interval(10ms);
+
+  const auto first = clock_t::time_point {1s};
+  auto normalized = grid.normalize(first);
+  for (int frame = 1; frame <= 100; ++frame) {
+    normalized = grid.normalize(first + frame * 10100us);
+  }
+
+  // A slightly slower source pulls the output frequency with it instead of
+  // allowing an exact nominal grid to advance indefinitely ahead of frames.
+  const auto source = first + 1010ms;
+  const auto phase_error = normalized > source ? normalized - source : source - normalized;
+  EXPECT_LT(phase_error, 1ms);
 }
 
 TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {

@@ -106,12 +106,12 @@ namespace platf::kms::pacing {
   };
 
   /**
-   * Keep packet presentation timestamps on the negotiated client cadence while
-   * allowing a genuinely slow source to establish a new phase. Virtual KMS
-   * presentation timestamps describe VRR compositor submissions and therefore
-   * contain small frame-to-frame jitter even when the capture/encode path is
-   * delivering at the exact negotiated rate. Passing that jitter through as RTP
-   * timing makes the client reproduce it as uneven motion.
+   * Smooth packet presentation timestamps toward the negotiated client cadence
+   * without letting that cadence drift away from the source clock. Virtual KMS
+   * timestamps contain small VRR submission jitter, but a free-running exact
+   * grid can outrun a client's real (fractional) refresh rate and grow its frame
+   * queue. This acts as a lightweight phase-locked loop: remove most short-term
+   * jitter while continuously correcting long-term phase and frequency error.
    */
   class presentation_timestamp_grid_t {
   public:
@@ -135,19 +135,22 @@ namespace platf::kms::pacing {
       }
 
       const auto scheduled = *next_timestamp_;
+      const auto phase_error = source_timestamp - scheduled;
 
       /*
-       * Jitter within half a frame remains on the client grid. A source that
-       * arrives more than half a frame late has genuinely missed its slot, so
-       * preserve that stall and start a new grid from the real presentation.
+       * A phase error beyond half a frame is a real missed slot or discontinuity,
+       * not normal VRR jitter. Preserve it immediately. Otherwise correct one
+       * quarter of the phase error per frame, which damps alternating jitter but
+       * converges to the source frequency instead of accumulating queue depth.
        */
-      if (source_timestamp > scheduled + interval_ / 2) {
+      if (phase_error > interval_ / 2 || phase_error < -interval_ / 2) {
         next_timestamp_ = source_timestamp + interval_;
         return source_timestamp;
       }
 
-      next_timestamp_ = scheduled + interval_;
-      return scheduled;
+      const auto normalized = scheduled + phase_error / 4;
+      next_timestamp_ = normalized + interval_;
+      return normalized;
     }
 
   private:

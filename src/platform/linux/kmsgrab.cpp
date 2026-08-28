@@ -1642,7 +1642,13 @@ namespace platf {
               }
               last_source_presentation_timestamp = captured_timestamp;
 
-              img_out->frame_timestamp = presentation_timestamp_grid.normalize(*captured_timestamp);
+              const auto packet_timestamp = presentation_timestamp_grid.normalize(*captured_timestamp);
+              packet_timestamp_phase_logger.collect_and_log(
+                std::chrono::duration<double, std::milli>(
+                  packet_timestamp - *captured_timestamp
+                ).count()
+              );
+              img_out->frame_timestamp = packet_timestamp;
               img_out->host_processing_timestamp = captured_timestamp;
             }
 
@@ -1787,6 +1793,11 @@ namespace platf {
       logging::min_max_avg_periodic_logger<double> source_presentation_interval_logger {
         debug,
         "Vibepollo DRM source presentation interval",
+        "ms"
+      };
+      logging::min_max_avg_periodic_logger<double> packet_timestamp_phase_logger {
+        debug,
+        "Vibepollo DRM packet timestamp phase",
         "ms"
       };
       std::uint64_t crtc_gamma_lut_blob_id {};
