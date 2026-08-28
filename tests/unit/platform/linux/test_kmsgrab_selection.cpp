@@ -151,6 +151,41 @@ TEST(KmsgrabSelection, EventDeliveryTracksSameRatePresentationsAndCoalescesOvers
   EXPECT_EQ(limiter.next_delivery(stalled_delivery + 1ms), stalled_delivery + 1ms);
 }
 
+TEST(KmsgrabSelection, NormalizesPresentationJitterOntoTheClientCadence) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_timestamp_grid_t grid;
+  grid.set_interval(10ms);
+
+  const auto first = clock_t::time_point {1s};
+  EXPECT_EQ(grid.normalize(first), first);
+
+  // Both early and late VRR presentations stay on the negotiated wire grid.
+  EXPECT_EQ(grid.normalize(first + 8ms), first + 10ms);
+  EXPECT_EQ(grid.normalize(first + 21ms), first + 20ms);
+  EXPECT_EQ(grid.normalize(first + 29ms), first + 30ms);
+}
+
+TEST(KmsgrabSelection, PresentationTimestampGridRebasesAfterARealStall) {
+  using namespace std::chrono_literals;
+  using clock_t = platf::kms::pacing::clock_t;
+
+  platf::kms::pacing::presentation_timestamp_grid_t grid;
+  grid.set_interval(10ms);
+
+  const auto first = clock_t::time_point {1s};
+  EXPECT_EQ(grid.normalize(first), first);
+  EXPECT_EQ(grid.normalize(first + 10ms), first + 10ms);
+
+  const auto stalled = first + 36ms;
+  EXPECT_EQ(grid.normalize(stalled), stalled);
+  EXPECT_EQ(grid.normalize(stalled + 9ms), stalled + 10ms);
+
+  grid.reset();
+  EXPECT_EQ(grid.normalize(stalled + 50ms), stalled + 50ms);
+}
+
 TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {
   using namespace std::chrono_literals;
   using response_e = platf::kms::pacing::presentation_response_e;
