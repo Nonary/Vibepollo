@@ -4,7 +4,6 @@
  */
 #pragma once
 
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -124,22 +123,6 @@ namespace platf::kms::pacing {
     bool blocking_wait
   ) {
     return response == presentation_response_e::changed && pending && blocking_wait;
-  }
-
-  inline bool capture_due(bool presentation_pending, clock_t::time_point now, clock_t::time_point next_capture) {
-    return presentation_pending && now >= next_capture;
-  }
-
-  inline clock_t::time_point capture_deadline(clock_t::time_point capture_started, clock_t::duration interval) {
-    return capture_started + interval;
-  }
-
-  inline clock_t::time_point coalescing_wake_deadline(
-    clock_t::time_point now,
-    clock_t::time_point next_capture,
-    clock_t::duration control_interval
-  ) {
-    return std::min(next_capture, now + control_interval);
   }
 
   inline presentation_response_e classify_response(
