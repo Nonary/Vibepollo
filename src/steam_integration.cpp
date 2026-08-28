@@ -786,14 +786,22 @@ namespace platf::steam {
       command += game.launch_arguments;
     }
 
-    if (game.launch_options.empty()) return command;
-    auto options = game.launch_options;
-    constexpr std::string_view placeholder = "%command%";
-    if (const auto position = options.find(placeholder); position != std::string::npos) {
-      options.replace(position, placeholder.size(), command);
-      return options;
+    std::string shell_command;
+    if (game.launch_options.empty()) {
+      shell_command = std::move(command);
+    } else {
+      shell_command = game.launch_options;
+      constexpr std::string_view placeholder = "%command%";
+      if (const auto position = shell_command.find(placeholder); position != std::string::npos) {
+        shell_command.replace(position, placeholder.size(), command);
+      } else {
+        shell_command = command + " " + shell_command;
+      }
     }
-    return command + " " + options;
+    // Steam Launch Options are shell expressions, not argv fragments. They
+    // commonly begin with environment assignments and may contain wrapper
+    // commands or operators, so preserve those semantics explicitly.
+    return "/bin/sh -c " + shell_quote(shell_command);
 #else
     return launch_command(game.app_id);
 #endif
