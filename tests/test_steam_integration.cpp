@@ -183,10 +183,13 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   const auto base = fs::temp_directory_path() / ("vibepollo-steam-direct-test-" + std::to_string(nonce));
   const auto install = base / "steamapps/common/DirectGame";
   const auto compatdata = base / "steamapps/compatdata/42";
-  const auto proton = base / "compatibilitytools.d/TestProton";
+  const auto proton = base / "steamapps/common/TestProton";
+  const auto runtime = base / "steamapps/common/TestRuntime";
   std::error_code ec;
   fs::create_directories(install / "bin", ec);
   fs::create_directories(compatdata, ec);
+  fs::create_directories(proton, ec);
+  fs::create_directories(runtime, ec);
   fs::create_directories(base / "appcache", ec);
   fs::create_directories(base / "userdata/123/config", ec);
   {
@@ -199,6 +202,15 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
     output << "Test Proton\n" << (proton / "files/share/fonts").string() << "/\n";
   }
   {
+    std::ofstream output(proton / "toolmanifest.vdf");
+    output << R"VDF("manifest" { "require_tool_appid" "99" })VDF";
+  }
+  {
+    std::ofstream output(base / "steamapps/appmanifest_99.acf");
+    output << R"VDF("AppState" { "appid" "99" "installdir" "TestRuntime" })VDF";
+  }
+  std::ofstream(runtime / "_v2-entry-point") << "runtime";
+  {
     std::ofstream output(base / "userdata/123/config/localconfig.vdf");
     output << R"VDF("UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "42" {
       "LaunchOptions" "MANGOHUD_CONFIG=fps_limit=30 mangohud %command% -user"
@@ -206,7 +218,8 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   }
 
   const auto games = discover({base});
-  ASSERT_EQ(games.size(), 1U);
+  ASSERT_GE(games.size(), 1U);
+  ASSERT_EQ(games[0].app_id, 42U);
   EXPECT_EQ(games[0].launch_executable, install / "Game.exe");
   EXPECT_EQ(games[0].launch_working_dir, install / "bin");
   EXPECT_EQ(games[0].launch_arguments, "-from-appinfo");
@@ -214,6 +227,8 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_EQ(games[0].launch_os, "windows");
   EXPECT_EQ(games[0].compatdata_path, compatdata);
   EXPECT_EQ(games[0].proton_path, proton);
+  EXPECT_EQ(games[0].proton_runtime_path, runtime);
+  EXPECT_EQ(games[0].steam_client_path, base);
   EXPECT_NE(launch_command(games[0]).find("mangohud vibepollo-mangohud --appid 42 -- env"), std::string::npos);
   fs::remove_all(base, ec);
 }
@@ -240,19 +255,26 @@ TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
   game.launch_executable = "/games/A Plague Tale/APlagueTaleRequiem_x64.exe";
   game.launch_working_dir = game.launch_executable.parent_path();
   game.launch_os = "windows";
+  game.install_dir = "/games/A Plague Tale";
+  game.library_path = "/games";
   game.compatdata_path = "/games/steamapps/compatdata/1182900";
   game.proton_path = "/steam/compatibilitytools.d/GE-Proton11-5";
+  game.proton_runtime_path = "/steam/steamapps/common/SteamLinuxRuntime_4";
+  game.steam_client_path = "/steam";
   game.launch_options = "PROTON_DLSS_UPGRADE=3.7 mangohud %command% -windowed";
 
-  EXPECT_EQ(
-    launch_command(game),
-    "/bin/sh -c 'PROTON_DLSS_UPGRADE=3.7 mangohud "
-    "vibepollo-mangohud --appid 1182900 -- env SteamAppId=1182900 SteamGameId=1182900 "
-    "GAMEID=umu-1182900 STORE=steam "
-    "WINEPREFIX='\\''/games/steamapps/compatdata/1182900'\\'' "
-    "PROTONPATH='\\''/steam/compatibilitytools.d/GE-Proton11-5'\\'' "
-    "umu-run '\\''/games/A Plague Tale/APlagueTaleRequiem_x64.exe'\\'' -windowed'"
-  );
+  const auto command = launch_command(game);
+  EXPECT_TRUE(command.starts_with("/bin/sh -c 'PROTON_DLSS_UPGRADE=3.7 mangohud "));
+  EXPECT_NE(command.find("vibepollo-mangohud --appid 1182900 -- env"), std::string::npos);
+  EXPECT_NE(command.find("STEAM_COMPAT_APP_ID=1182900"), std::string::npos);
+  EXPECT_NE(command.find("STEAM_COMPAT_SHADER_PATH="), std::string::npos);
+  EXPECT_NE(command.find("STEAM_COMPAT_MEDIA_PATH="), std::string::npos);
+  EXPECT_NE(command.find("STEAM_COMPAT_TRANSCODED_MEDIA_PATH="), std::string::npos);
+  EXPECT_NE(command.find("__GL_SHADER_DISK_CACHE_PATH="), std::string::npos);
+  EXPECT_NE(command.find("SteamLinuxRuntime_4/_v2-entry-point"), std::string::npos);
+  EXPECT_NE(command.find("GE-Proton11-5/proton"), std::string::npos);
+  EXPECT_EQ(command.find("umu-run"), std::string::npos);
+  EXPECT_TRUE(command.ends_with("-windowed'"));
 }
 
 TEST(SteamLaunch, DirectNativeLaunchTreatsOptionsWithoutPlaceholderAsArguments) {
@@ -275,6 +297,16 @@ TEST(SteamLaunch, FallsBackToBrokerWhenProtonMetadataIsUnavailable) {
   game.app_id = 480;
   game.launch_executable = "/games/Spacewar/spacewar.exe";
   game.launch_os = "windows";
+  EXPECT_EQ(launch_command(game), "steam -applaunch 480");
+}
+
+TEST(SteamLaunch, FallsBackToBrokerWhenRequiredRuntimeIsUnavailable) {
+  game_t game;
+  game.app_id = 480;
+  game.launch_executable = "/games/Spacewar/spacewar.exe";
+  game.launch_os = "windows";
+  game.compatdata_path = "/games/steamapps/compatdata/480";
+  game.proton_path = "/steam/steamapps/common/Proton";
   EXPECT_EQ(launch_command(game), "steam -applaunch 480");
 }
 #endif

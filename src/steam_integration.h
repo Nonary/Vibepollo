@@ -51,6 +51,8 @@ namespace platf::steam {
     std::filesystem::path launch_executable;
     std::filesystem::path launch_working_dir;
     std::filesystem::path proton_path;
+    std::filesystem::path proton_runtime_path;
+    std::filesystem::path steam_client_path;
     std::filesystem::path compatdata_path;
     std::string launch_arguments;
     std::string launch_options;
