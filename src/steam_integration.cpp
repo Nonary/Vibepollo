@@ -521,7 +521,12 @@ namespace {
 
     auto steamapps = game.proton_path;
     while (!steamapps.empty() && steamapps.filename() != "steamapps") {
-      steamapps = steamapps.parent_path();
+      const auto parent = steamapps.parent_path();
+      if (parent == steamapps) {
+        steamapps.clear();
+        break;
+      }
+      steamapps = parent;
     }
     if (steamapps.empty() || steamapps.filename() != "steamapps") return;
     game.steam_client_path = steamapps.parent_path();
