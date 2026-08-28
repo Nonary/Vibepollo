@@ -39,6 +39,14 @@ namespace platf::mangohud {
     return normalized.empty() || normalized == "auto" || normalized == "mangohud";
   }
 
+  inline bool proton_provider_selected(std::string_view provider) {
+    return normalize_provider(provider) == "proton";
+  }
+
+  inline bool linux_provider_selected(std::string_view provider) {
+    return provider_selected(provider) || proton_provider_selected(provider);
+  }
+
   inline std::string with_preload(std::string_view current) {
     std::size_t start = 0;
     while (start <= current.size()) {
@@ -158,7 +166,7 @@ namespace platf::mangohud {
   ) {
     const bool policy_limiter =
       stream_policy.uses_virtual_display && automatic_virtual_limiter;
-    if (!provider_selected(provider) || (!limiter_enabled && !policy_limiter)) {
+    if (!linux_provider_selected(provider) || (!limiter_enabled && !policy_limiter)) {
       return {};
     }
 

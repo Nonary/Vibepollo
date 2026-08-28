@@ -1706,10 +1706,11 @@ namespace proc {
       mangohud_stream_policy,
       config::frame_limiter.fps_limit_millihz
     );
+    const bool proton_limiter = platf::mangohud::proton_provider_selected(config::frame_limiter.provider);
     const auto smooth_motion_policy = platf::smooth_motion::make_launch_policy(
       _app.frame_generation_enabled,
       _app.frame_generation_provider,
-      mangohud_policy.enabled
+      mangohud_policy.enabled && !proton_limiter
     );
     _env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = smooth_motion_policy.enabled ? "1" : "";
     _env["NVPRESENT_QUEUE_FAMILY"] = smooth_motion_policy.use_graphics_queue ? "1" : "";
@@ -1729,7 +1730,30 @@ namespace proc {
       }
     }
     const auto existing_preload = _env["LD_PRELOAD"].to_string();
-    if (mangohud_policy.enabled) {
+    if (mangohud_policy.enabled && proton_limiter) {
+      _env["MANGOHUD"] = "";
+      _env["MANGOHUD_CONFIG"] = "";
+      _env["MANGOHUD_FPS_LIMIT"] = "";
+      _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+      if (!_app.steam_id.empty()) {
+        const auto state_path = platf::mangohud::write_state(
+          _app.steam_id,
+          "proton",
+          mangohud_policy.limit,
+          config::frame_limiter.mangohud_preset,
+          false
+        );
+        if (state_path.empty()) {
+          BOOST_LOG(warning) << "Could not write the Steam Proton limiter handoff state for app "
+                             << _app.steam_id << ".";
+        } else {
+          BOOST_LOG(info) << "Proton VKD3D frame limiter ready at " << mangohud_policy.limit
+                          << " FPS for Steam app " << _app.steam_id << ".";
+        }
+      } else {
+        BOOST_LOG(warning) << "The Proton frame limiter requires a managed Steam Proton application.";
+      }
+    } else if (mangohud_policy.enabled) {
       if (bp::search_path("mangohud").empty()) {
         _env["MANGOHUD"] = "";
         _env["MANGOHUD_CONFIG"] = "";
@@ -1755,6 +1779,7 @@ namespace proc {
         if (!_app.steam_id.empty()) {
           const auto state_path = platf::mangohud::write_state(
             _app.steam_id,
+            "mangohud",
             mangohud_policy.limit,
             config::frame_limiter.mangohud_preset,
             config::frame_limiter.mangohud_always_show_graph
