@@ -516,7 +516,38 @@ namespace {
     std::string files_path;
     if (!std::getline(input, version) || !std::getline(input, files_path)) return;
     const auto marker = files_path.find("/files/");
-    if (marker != std::string::npos) game.proton_path = files_path.substr(0, marker);
+    if (marker == std::string::npos) return;
+    game.proton_path = files_path.substr(0, marker);
+
+    auto steamapps = game.proton_path;
+    while (!steamapps.empty() && steamapps.filename() != "steamapps") {
+      steamapps = steamapps.parent_path();
+    }
+    if (steamapps.empty() || steamapps.filename() != "steamapps") return;
+    game.steam_client_path = steamapps.parent_path();
+
+    std::ifstream tool_manifest(game.proton_path / "toolmanifest.vdf");
+    if (!tool_manifest) return;
+    std::stringstream tool_buffer;
+    tool_buffer << tool_manifest.rdbuf();
+    const auto tool_doc = platf::steam::parse_vdf(tool_buffer.str());
+    const auto *manifest = tool_doc.find("manifest");
+    const auto *required = manifest ? manifest->find("require_tool_appid") : nullptr;
+    if (!required || required->value.empty()) return;
+
+    std::ifstream runtime_manifest(steamapps / ("appmanifest_" + required->value + ".acf"));
+    if (!runtime_manifest) return;
+    std::stringstream runtime_buffer;
+    runtime_buffer << runtime_manifest.rdbuf();
+    const auto runtime_doc = platf::steam::parse_vdf(runtime_buffer.str());
+    const auto *app_state = runtime_doc.find("AppState");
+    const auto *install_dir = app_state ? app_state->find("installdir") : nullptr;
+    if (!install_dir || install_dir->value.empty()) return;
+    const auto runtime = steamapps / "common" / install_dir->value;
+    std::error_code ec;
+    if (fs::is_regular_file(runtime / "_v2-entry-point", ec)) {
+      game.proton_runtime_path = runtime;
+    }
   }
 
   std::string shell_quote(std::string_view value) {
@@ -771,13 +802,36 @@ namespace platf::steam {
     command += "SteamAppId=" + std::to_string(game.app_id) + " ";
     command += "SteamGameId=" + std::to_string(game.app_id) + " ";
     if (game.launch_os == "windows") {
-      if (game.compatdata_path.empty() || game.proton_path.empty()) {
+      if (game.compatdata_path.empty() || game.proton_path.empty() ||
+          game.proton_runtime_path.empty() || game.steam_client_path.empty()) {
         return launch_command(game.app_id);
       }
-      command += "GAMEID=umu-" + std::to_string(game.app_id) + " STORE=steam ";
-      command += "WINEPREFIX=" + shell_quote(game.compatdata_path.generic_string()) + " ";
-      command += "PROTONPATH=" + shell_quote(game.proton_path.generic_string()) + " ";
-      command += "umu-run " + shell_quote(game.launch_executable.generic_string());
+      const auto app_id = std::to_string(game.app_id);
+      const auto steamapps = game.library_path / "steamapps";
+      const auto client_steamapps = game.steam_client_path / "steamapps";
+      const auto shader_cache = steamapps / "shadercache" / app_id;
+      std::string library_paths = steamapps.generic_string();
+      if (client_steamapps != steamapps) library_paths += ":" + client_steamapps.generic_string();
+      const auto tool_paths = game.proton_path.generic_string() + ":" + game.proton_runtime_path.generic_string();
+      command += "STEAM_COMPAT_APP_ID=" + app_id + " SteamOverlayGameId=" + app_id + " ";
+      command += "STEAM_COMPAT_DATA_PATH=" + shell_quote(game.compatdata_path.generic_string()) + " ";
+      command += "STEAM_COMPAT_CLIENT_INSTALL_PATH=" + shell_quote(game.steam_client_path.generic_string()) + " ";
+      command += "STEAM_COMPAT_INSTALL_PATH=" + shell_quote(game.install_dir.generic_string()) + " ";
+      command += "STEAM_COMPAT_LIBRARY_PATHS=" + shell_quote(library_paths) + " ";
+      command += "STEAM_COMPAT_TOOL_PATHS=" + shell_quote(tool_paths) + " ";
+      command += "STEAM_COMPAT_MOUNTS=" + shell_quote(tool_paths) + " ";
+      command += "STEAM_COMPAT_SHADER_PATH=" + shell_quote(shader_cache.generic_string()) + " ";
+      command += "STEAM_COMPAT_MEDIA_PATH=" + shell_quote((shader_cache / "fozmediav1").generic_string()) + " ";
+      command += "STEAM_COMPAT_TRANSCODED_MEDIA_PATH=" + shell_quote(shader_cache.generic_string()) + " ";
+      command += "DXVK_STATE_CACHE_PATH=" + shell_quote((shader_cache / "DXVK_state_cache").generic_string()) + " ";
+      command += "__GL_SHADER_DISK_CACHE_PATH=" + shell_quote((shader_cache / "nvidiav1").generic_string()) + " ";
+      command += "__GL_SHADER_DISK_CACHE_APP_NAME=steamapp_shader_cache ";
+      command += "__GL_SHADER_DISK_CACHE_READ_ONLY_APP_NAME=" + shell_quote("steam_shader_cache;steamapp_merged_shader_cache") + " ";
+      command += "__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1 ";
+      command += shell_quote((game.proton_runtime_path / "_v2-entry-point").generic_string());
+      command += " --verb=waitforexitandrun -- ";
+      command += shell_quote((game.proton_path / "proton").generic_string());
+      command += " waitforexitandrun " + shell_quote(game.launch_executable.generic_string());
     } else {
       command += shell_quote(game.launch_executable.generic_string());
     }
