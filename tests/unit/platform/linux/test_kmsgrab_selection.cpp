@@ -118,7 +118,7 @@ TEST(KmsgrabSelection, RequiredPresentationModeNeverEnablesFixedRateFallback) {
   EXPECT_TRUE(ordinary_kms.fixed_rate_allowed());
 }
 
-TEST(KmsgrabSelection, EventDeliveryPreservesNegotiatedScheduleWithoutCatchupBursts) {
+TEST(KmsgrabSelection, EventDeliveryTracksSameRatePresentationsAndCoalescesOversupply) {
   using namespace std::chrono_literals;
   using clock_t = platf::kms::pacing::clock_t;
 
@@ -132,16 +132,17 @@ TEST(KmsgrabSelection, EventDeliveryPreservesNegotiatedScheduleWithoutCatchupBur
   EXPECT_EQ(limiter.next_delivery(first + 1ms), first + 10ms);
   EXPECT_EQ(limiter.next_delivery(first + 9ms), first + 10ms);
 
-  const auto late_delivery = first + 13ms;
-  limiter.mark_delivered(late_delivery);
-  EXPECT_EQ(limiter.next_delivery(late_delivery), first + 20ms);
+  // A near-deadline source timestamp moves the cadence with the compositor.
+  const auto same_rate_presentation = first + 9500us;
+  limiter.mark_delivered(same_rate_presentation);
+  EXPECT_EQ(limiter.next_delivery(first + 10ms), first + 19500us);
 
-  // A small scheduler overshoot does not shift every subsequent deadline.
-  const auto overshot_delivery = first + 21ms;
-  limiter.mark_delivered(overshot_delivery);
-  EXPECT_EQ(limiter.next_delivery(overshot_delivery), first + 30ms);
+  // A materially early presentation retains the client-rate deadline.
+  const auto oversupplied_presentation = first + 15ms;
+  limiter.mark_delivered(oversupplied_presentation);
+  EXPECT_EQ(limiter.next_delivery(first + 20ms), first + 29500us);
 
-  // A material stall rebases instead of producing back-to-back catch-up frames.
+  // A late source frame rebases instead of producing a catch-up burst.
   const auto stalled_delivery = first + 45ms;
   limiter.mark_delivered(stalled_delivery);
   EXPECT_EQ(limiter.next_delivery(stalled_delivery), stalled_delivery + 10ms);

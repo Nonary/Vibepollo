@@ -1568,10 +1568,10 @@ namespace platf {
             }
 
             /*
-             * Refresh the sequence only after the client-rate deadline. The
-             * driver returns its newest completed framebuffer, so every
-             * presentation that arrived during the wait is coalesced without
-             * polling or comparing image contents.
+             * Refresh the sequence only after the source-locked client-rate
+             * deadline. The driver returns its newest completed framebuffer,
+             * so genuine oversupply is coalesced without imposing a competing
+             * clock on same-rate compositor presentations.
              */
             if (wait_for_presentation(0ms) == presentation_wait_e::unsupported) {
               return std::nullopt;
@@ -1600,7 +1600,6 @@ namespace platf {
 
             const auto captured_timestamp = presentation_timestamp;
             const auto captured_generation = presentation_latch.capture_generation();
-            const auto capture_started_at = std::chrono::steady_clock::now();
             std::shared_ptr<platf::img_t> img_out;
             auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
             if (status == platf::capture_e::reinit ||
@@ -1641,7 +1640,11 @@ namespace platf {
                 }
                 break;
               case platf::capture_e::ok:
-                presentation_rate_limiter.mark_delivered(capture_started_at);
+                if (!captured_timestamp) {
+                  BOOST_LOG(error) << "Vibeshine DRM presentation is missing its validated timestamp."sv;
+                  return std::nullopt;
+                }
+                presentation_rate_limiter.mark_delivered(*captured_timestamp);
                 presentation_latch.mark_delivered(captured_generation);
                 presentation_pending = newer_presentation;
                 if (!newer_presentation) {

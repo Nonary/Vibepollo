@@ -84,13 +84,20 @@ namespace platf::kms::pacing {
       }
 
       /*
-       * Advance from the negotiated schedule, not from the actual wake-up
-       * time. Rebasing every deadline on delivery makes scheduler overshoot
-       * accumulate and eventually drops an otherwise on-time presentation.
-       * Rebase only after a large stall so we never emit catch-up bursts.
+       * Follow the compositor clock when its presentation is close to the
+       * negotiated cadence. This keeps equal-rate generated and real frames
+       * in their original slots instead of resampling them onto a competing
+       * capture clock. A materially early presentation is genuine oversupply,
+       * so retain the negotiated schedule and coalesce excess frames there.
+       * Late presentations rebase immediately and never produce catch-up
+       * bursts.
        */
-      const auto following_delivery = *next_delivery_ + interval_;
-      next_delivery_ = following_delivery <= delivery ? delivery + interval_ : following_delivery;
+      const auto tracking_tolerance = interval_ / 8;
+      if (delivery + tracking_tolerance >= *next_delivery_) {
+        next_delivery_ = delivery + interval_;
+      } else {
+        next_delivery_ = *next_delivery_ + interval_;
+      }
     }
 
   private:
