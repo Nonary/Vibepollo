@@ -65,6 +65,8 @@ makedepends=(
   "gcc${_gcc_dep_suffix}"
   'git'
   'make'
+  'nodejs'
+  'npm'
   'python-jinja'  # required by the glad OpenGL/EGL loader generator
   'shaderc'
 )
