@@ -188,7 +188,24 @@ add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
-find_package(Boost CONFIG REQUIRED COMPONENTS asio log log_setup property_tree)
+if(NOT TARGET Boost::algorithm OR
+   NOT TARGET Boost::asio OR
+   NOT TARGET Boost::crc OR
+   NOT TARGET Boost::function OR
+   NOT TARGET Boost::log OR
+   NOT TARGET Boost::log_setup OR
+   NOT TARGET Boost::property_tree OR
+   NOT TARGET Boost::system)
+    find_package(Boost CONFIG REQUIRED COMPONENTS
+        algorithm
+        asio
+        crc
+        function
+        log
+        log_setup
+        property_tree
+        system)
+endif()
 set(SUNSHINE_TEST_SOCKET_LIBRARIES "")
 if(WIN32)
     set(SUNSHINE_TEST_SOCKET_LIBRARIES ws2_32)
@@ -406,20 +423,22 @@ sunshine_register_component(NAME test_component_http_auth TEST_SOURCE unit/test_
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_auth_request_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES GTest::gmock sunshine_test_simple_web_headers Boost::property_tree nlohmann_json::nlohmann_json ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+    LINK_LIBRARIES GTest::gmock nlohmann_json::nlohmann_json sunshine_test_simple_web_headers
+        Boost::algorithm Boost::function Boost::property_tree ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_http_policy TEST_SOURCE unit/test_httpcommon.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_policy.cpp"
     LINK_LIBRARIES Boost::property_tree)
 sunshine_register_component(NAME test_component_network_policy TEST_SOURCE unit/test_network.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/network_policy.cpp"
-    LINK_LIBRARIES ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+    LINK_LIBRARIES Boost::algorithm Boost::asio ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_input_validation TEST_SOURCE unit/test_input.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input_validation_policy.cpp"
     LINK_LIBRARIES sunshine_test_moonlight_headers)
 sunshine_register_component(NAME test_component_display_device_policy TEST_SOURCE unit/test_display_device.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_device_policy.cpp")
 sunshine_register_component(NAME test_component_process_policy TEST_SOURCE unit/test_process.cpp
-    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp")
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_catalog_policy.cpp"
+    LINK_LIBRARIES Boost::crc)
 sunshine_register_component(NAME test_component_process_framegen_json TEST_SOURCE unit/test_process_framegen_json.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/app_framegen_config.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
@@ -493,7 +512,7 @@ sunshine_register_component(NAME test_component_entry_metadata TEST_SOURCE unit/
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/entry_metadata.cpp")
 sunshine_register_component(NAME test_component_config_http_policy TEST_SOURCE unit/test_config_http_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/config_http_policy.cpp"
-    LINK_LIBRARIES ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+    LINK_LIBRARIES Boost::asio Boost::system ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE unit/test_http_pairing.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/state_storage_policy.cpp"
@@ -531,7 +550,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
             NAME test_component_linux_vibeshine_drm_build_module
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
                 "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/tests/linux/test-vibeshine-drm-build-module.sh"
-                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module")
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
+                "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/dkms.conf.in")
         set_tests_properties(test_component_linux_vibeshine_drm_build_module PROPERTIES LABELS "component")
     else()
         message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")

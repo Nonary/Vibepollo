@@ -97,7 +97,7 @@ jobs:
         if: matrix.name == 'AppImage'
         working-directory: build
         run: |
-          # install sunshine to the DESTDIR
+          # install Vibepollo to the DESTDIR
           DESTDIR=AppDir ninja install
 
           # custom AppRun file
@@ -106,7 +106,7 @@ jobs:
 
           # variables
           DESKTOP_FILE="${DESKTOP_FILE:-${APP_ID}.desktop}"
-          ICON_FILE="${ICON_FILE:-sunshine.png}"
+          ICON_FILE="${ICON_FILE:-apollo.svg}"
 
           # AppImage
           # https://docs.appimage.org/packaging-guide/index.html
@@ -122,16 +122,16 @@ jobs:
           ./linuxdeploy-x86_64.AppImage \
             --appdir ./AppDir \
             --plugin gtk \
-            --executable ./sunshine \
+            --executable ./vibepollo \
             --icon-file "../$ICON_FILE" \
             --desktop-file "./$DESKTOP_FILE" \
             --output appimage
 
           # move
-          mv Sunshine*.AppImage ../artifacts/sunshine.AppImage
+          mv [Vv]ibepollo*.AppImage ../artifacts/vibepollo.AppImage
 
           # permissions
-          chmod +x ../artifacts/sunshine.AppImage
+          chmod +x ../artifacts/vibepollo.AppImage
 
       - name: Delete CUDA
         # free up space on the runner
@@ -144,7 +144,7 @@ jobs:
           wget https://github.com/TheAssassin/appimagelint/releases/download/continuous/appimagelint-x86_64.AppImage
           chmod +x appimagelint-x86_64.AppImage
 
-          ./appimagelint-x86_64.AppImage ./artifacts/sunshine.AppImage
+          ./appimagelint-x86_64.AppImage ./artifacts/vibepollo.AppImage
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

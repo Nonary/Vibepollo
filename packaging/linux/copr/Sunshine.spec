@@ -21,6 +21,7 @@ Summary: Self-hosted game stream host for Moonlight.
 License: GPLv3-only
 URL: https://github.com/Nonary/Vibepollo
 Source0: tarball.tar.gz
+Conflicts: Sunshine sunshine vibeshine
 
 # Common BuildRequires
 BuildRequires: cmake >= 3.25.0
@@ -370,6 +371,7 @@ fi
 %files
 # Executables
 %caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/vibepollo
+%{_bindir}/vibepollo-mangohud
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland

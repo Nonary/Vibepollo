@@ -81,6 +81,7 @@ jobs:
             --requirements-file=./third-party/glad/requirements.txt
 
           # Copy generated pip sources into build dir alongside the manifest
+          mkdir -p build
           cp glad-dependencies.json build/
 
       - name: Cache Flatpak build
@@ -152,12 +153,12 @@ jobs:
           sudo su "$(whoami)" -c "flatpak build-bundle \
             --arch=${MATRIX_ARCH} \
             ./repo \
-            ../artifacts/sunshine_${MATRIX_ARCH}.flatpak ${APP_ID}"
+            ../artifacts/vibepollo_${MATRIX_ARCH}.flatpak ${APP_ID}"
           sudo su "$(whoami)" -c "flatpak build-bundle \
             --runtime \
             --arch=${MATRIX_ARCH} \
             ./repo \
-            ../artifacts/sunshine_debug_${MATRIX_ARCH}.flatpak ${APP_ID}.Debug"
+            ../artifacts/vibepollo_debug_${MATRIX_ARCH}.flatpak ${APP_ID}.Debug"
           echo "::remove-matcher owner=gcc-strip3::"
 
       - name: Lint Flatpak

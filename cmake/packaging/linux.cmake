@@ -69,6 +69,12 @@ endif()
 
 # RPM specific
 set(CPACK_RPM_PACKAGE_LICENSE "GPLv3")
+set(CPACK_RPM_PACKAGE_CONFLICTS "Sunshine, sunshine, vibeshine")
+
+# Native hosts share the same ports, input integration, and virtual-display
+# driver. Let package managers replace either legacy host without deleting
+# users' configuration or pairing data.
+set(CPACK_DEBIAN_PACKAGE_CONFLICTS "sunshine, vibeshine")
 
 # FreeBSD specific
 set(CPACK_FREEBSD_PACKAGE_MAINTAINER "${CPACK_PACKAGE_VENDOR}")

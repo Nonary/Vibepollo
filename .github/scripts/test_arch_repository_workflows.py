@@ -13,6 +13,27 @@ def load_workflow(name: str) -> dict:
 
 
 class ArchRepositoryWorkflowTest(unittest.TestCase):
+    def test_portable_packages_match_the_linux_product_identity(self) -> None:
+        appimage = (ROOT / ".github/workflows/ci-linux.yml").read_text(encoding="utf-8")
+        flatpak = (ROOT / ".github/workflows/ci-flatpak.yml").read_text(encoding="utf-8")
+        self.assertIn("--executable ./vibepollo", appimage)
+        self.assertIn('ICON_FILE="${ICON_FILE:-apollo.svg}"', appimage)
+        self.assertTrue((ROOT / "apollo.svg").is_file())
+        self.assertIn("mv [Vv]ibepollo*.AppImage ../artifacts/vibepollo.AppImage", appimage)
+        self.assertIn("../artifacts/vibepollo_${MATRIX_ARCH}.flatpak", flatpak)
+        self.assertIn("APP_ID: io.github.Nonary.vibepollo", flatpak)
+        self.assertIn("mkdir -p build\n          cp glad-dependencies.json build/", flatpak)
+
+    def test_native_packages_replace_both_legacy_hosts(self) -> None:
+        cpack = (ROOT / "cmake/packaging/linux.cmake").read_text(encoding="utf-8")
+        rpm = (ROOT / "packaging/linux/copr/Sunshine.spec").read_text(encoding="utf-8")
+        arch = (ROOT / "packaging/linux/Arch/PKGBUILD").read_text(encoding="utf-8")
+        self.assertIn('CPACK_DEBIAN_PACKAGE_CONFLICTS "sunshine, vibeshine"', cpack)
+        self.assertIn('CPACK_RPM_PACKAGE_CONFLICTS "Sunshine, sunshine, vibeshine"', cpack)
+        self.assertIn("Conflicts: Sunshine sunshine vibeshine", rpm)
+        self.assertIn("%{_bindir}/vibepollo-mangohud", rpm)
+        self.assertIn("conflicts=('sunshine' 'vibeshine')", arch)
+
     def test_pages_is_native_and_deploys_the_arch_branch(self) -> None:
         workflow = load_workflow("update-pages.yml")
         text = (ROOT / ".github" / "workflows" / "update-pages.yml").read_text(

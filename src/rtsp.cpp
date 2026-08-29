@@ -1092,7 +1092,7 @@ namespace rtsp_stream {
     }
 
     void set_pending_vulkan_hdr_layer_stream(bool active) {
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         auto lg = _session_state.lock();
         _session_state->vulkan_hdr_layer_pending_stream = active;
@@ -1119,7 +1119,7 @@ namespace rtsp_stream {
       // but perform the potentially blocking join() outside of the lock to
       // avoid deadlocks. Each join serializes only its final ownership change.
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
 
       {
         auto lg = _session_state.lock();
@@ -1160,7 +1160,7 @@ namespace rtsp_stream {
      * @param session The session to remove.
      */
     void remove(const std::shared_ptr<stream::session_t> &session) {
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         auto lg = _session_state.lock();
         _session_state->sessions.erase(session);
@@ -1179,7 +1179,7 @@ namespace rtsp_stream {
      */
     void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid, bool hdr_enabled) {
       const bool has_uuid = !client_uuid.empty();
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         auto lg = _session_state.lock();
         _session_state->sessions.emplace(session);
@@ -1224,7 +1224,7 @@ namespace rtsp_stream {
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
       bool removed_pending = false;
       client_disconnect_result_t result;
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         std::lock_guard lock {pending_launches_mutex};
         for (auto it = pending_launches.begin(); it != pending_launches.end();) {
@@ -1279,7 +1279,7 @@ namespace rtsp_stream {
     ) {
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
       bool removed_pending = false;
-      bool vulkan_hdr_layer_active = false;
+      [[maybe_unused]] bool vulkan_hdr_layer_active = false;
       {
         std::lock_guard lock {pending_launches_mutex};
         for (auto it = pending_launches.begin(); it != pending_launches.end();) {

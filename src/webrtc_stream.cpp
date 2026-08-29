@@ -155,7 +155,7 @@ namespace webrtc_stream {
       std::shared_ptr<std::atomic_uint32_t> inflight;
     };
 
-    void release_shared_encoded_payload(void *user) noexcept {
+    [[maybe_unused]] void release_shared_encoded_payload(void *user) noexcept {
       auto *context = static_cast<SharedEncodedPayloadReleaseContext *>(user);
       if (!context) {
         return;
@@ -825,7 +825,7 @@ namespace webrtc_stream {
       }
     }
 
-    bool starts_with_annexb(const std::vector<std::uint8_t> &data) {
+    [[maybe_unused]] bool starts_with_annexb(const std::vector<std::uint8_t> &data) {
       if (data.size() < 3) {
         return false;
       }
@@ -835,7 +835,7 @@ namespace webrtc_stream {
       return data.size() >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1;
     }
 
-    std::string hex_prefix(const std::vector<std::uint8_t> &data, std::size_t max_bytes = 8) {
+    [[maybe_unused]] std::string hex_prefix(const std::vector<std::uint8_t> &data, std::size_t max_bytes = 8) {
       std::ostringstream oss;
       const std::size_t count = std::min(data.size(), max_bytes);
       for (std::size_t i = 0; i < count; ++i) {
@@ -1072,7 +1072,7 @@ namespace webrtc_stream {
       return input_context;
     }
 
-    void reset_input_context() {
+    [[maybe_unused]] void reset_input_context() {
       std::lock_guard lg {input_mutex};
       if (input_context) {
         input::reset(input_context);
@@ -1489,7 +1489,7 @@ namespace webrtc_stream {
     void request_webrtc_latency_resync(std::string_view session_id);
 #endif
 
-    void handle_input_message(std::string_view payload, std::string_view session_id = {}) {
+    [[maybe_unused]] void handle_input_message(std::string_view payload, std::string_view session_id = {}) {
       if (payload.empty()) {
         return;
       }
@@ -1939,7 +1939,7 @@ namespace webrtc_stream {
     }
 #endif
 
-    std::optional<std::string> build_gamepad_feedback_payload(const platf::gamepad_feedback_msg_t &msg) {
+    [[maybe_unused]] std::optional<std::string> build_gamepad_feedback_payload(const platf::gamepad_feedback_msg_t &msg) {
       nlohmann::json payload;
       payload["type"] = "gamepad_feedback";
       payload["id"] = msg.id;
@@ -2178,7 +2178,7 @@ namespace webrtc_stream {
       std::optional<Av1FmtpParams> fmtp;
     };
 
-    Av1OfferInfo parse_av1_offer(std::string_view sdp) {
+    [[maybe_unused]] Av1OfferInfo parse_av1_offer(std::string_view sdp) {
       std::unordered_map<int, Av1FmtpParams> fmtp_params;
       std::vector<int> av1_payloads;
       bool in_video = false;
@@ -2278,7 +2278,7 @@ namespace webrtc_stream {
       std::vector<std::string> fmtp_candidates;
     };
 
-    HevcOfferInfo parse_hevc_offer(std::string_view sdp) {
+    [[maybe_unused]] HevcOfferInfo parse_hevc_offer(std::string_view sdp) {
       std::unordered_map<int, std::string> fmtp_params;
       std::vector<int> h265_payloads;
 
@@ -2343,7 +2343,7 @@ namespace webrtc_stream {
       return info;
     }
 
-    bool hevc_offer_supports_main10(std::string_view fmtp) {
+    [[maybe_unused]] bool hevc_offer_supports_main10(std::string_view fmtp) {
       std::optional<unsigned int> profile_id;
       std::optional<unsigned int> profile_space;
       std::size_t start = 0;
@@ -2397,7 +2397,7 @@ namespace webrtc_stream {
      * @param channels Number of audio channels (2 for stereo, 6 for 5.1, 8 for 7.1)
      * @return Modified SDP string
      */
-    std::string apply_opus_audio_params(std::string_view sdp, int channels) {
+    [[maybe_unused]] std::string apply_opus_audio_params(std::string_view sdp, int channels) {
       // Determine bitrate based on channel count (matching audio.cpp stream_configs)
       // Using HIGH_QUALITY bitrates since WebRTC config sets HIGH_QUALITY = true
       int bitrate = 512000;  // stereo high quality
@@ -5604,7 +5604,7 @@ namespace webrtc_stream {
     std::optional<int> remaining_bitrate_kbps;
 #endif
     bool removed = false;
-    bool last_session = false;
+    [[maybe_unused]] bool last_session = false;
     {
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
       {

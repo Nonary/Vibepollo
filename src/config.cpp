@@ -2569,6 +2569,7 @@ namespace config {
       g_base_adapter_config_valid = true;
     }
 
+#ifdef _WIN32
     bool is_rtx_hdr_live_key(std::string_view key) {
       return key == "rtx_hdr" ||
              key == "rtx_hdr_sdr_brightness" ||
@@ -2594,6 +2595,7 @@ namespace config {
       }
       return false;
     }
+#endif
 
     bool is_valid_override_key(const std::string_view key) {
       if (key.empty() || key.size() > 128) {
@@ -3172,12 +3174,14 @@ namespace config {
       const auto prev_virtual_display_outputs = video.dd.virtual_display_outputs;
       const auto prev_dd_snapshot_exclude_devices = video.dd.snapshot_exclude_devices;
       const auto prev_dd_dummy_plug = video.dd.wa.dummy_plug_hdr10;
+#ifdef _WIN32
       const auto prev_rtx_hdr_enabled = video.rtx_hdr.enabled;
       const auto prev_rtx_hdr_sdr_brightness = video.rtx_hdr.sdr_brightness;
       const auto prev_rtx_hdr_contrast = video.rtx_hdr.contrast;
       const auto prev_rtx_hdr_saturation = video.rtx_hdr.saturation;
       const auto prev_rtx_hdr_middle_gray = video.rtx_hdr.middle_gray;
       const auto prev_rtx_hdr_peak_brightness = video.rtx_hdr.peak_brightness;
+#endif
       const auto prev_session_history_enabled = sunshine.session_history_enabled;
 
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
@@ -3289,10 +3293,14 @@ namespace config {
       filtered.erase("adapter_pnp_id");
     }
 
+#ifdef _WIN32
     bool rtx_hdr_live_changed = false;
+#endif
     {
       std::scoped_lock lk(g_runtime_overrides_mutex);
+#ifdef _WIN32
       rtx_hdr_live_changed = rtx_hdr_live_overrides_changed(g_runtime_config_overrides, filtered);
+#endif
       g_runtime_config_overrides = std::move(filtered);
     }
 #ifdef _WIN32
@@ -3303,12 +3311,16 @@ namespace config {
   }
 
   void clear_runtime_config_overrides() {
+#ifdef _WIN32
     bool rtx_hdr_live_changed = false;
+#endif
     {
       std::scoped_lock lk(g_runtime_overrides_mutex);
+#ifdef _WIN32
       rtx_hdr_live_changed = std::ranges::any_of(g_runtime_config_overrides, [](const auto &entry) {
         return is_rtx_hdr_live_key(entry.first);
       });
+#endif
       g_runtime_config_overrides.clear();
     }
 #ifdef _WIN32

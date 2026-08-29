@@ -52,6 +52,7 @@ depends=(
   'numactl'
   'openssl'
   'opus'
+  'python'
   'udev'
   'vulkan-icd-loader'
   'which'
