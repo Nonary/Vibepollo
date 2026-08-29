@@ -5,7 +5,7 @@ IFS=$'\n\t'
 
 readonly expected_user="chasep"
 readonly expected_home="/home/chasep"
-readonly sunshine_service="vibepollo.service"
+readonly sunshine_service="app-io.github.Nonary.vibepollo.service"
 readonly watchdog_device="/dev/watchdog0"
 readonly watchdog_config="/etc/systemd/system.conf.d/50-vibepollo-reboot-watchdog.conf"
 

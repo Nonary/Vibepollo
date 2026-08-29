@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -77,6 +78,7 @@
   #include "platform/linux/mangohud_policy.h"
   #include "platform/linux/mangohud_state.h"
   #include "platform/linux/smooth_motion_policy.h"
+  #include "steam_integration.h"
 #endif
 #include "httpcommon.h"
 #include "nvhttp.h"
@@ -1714,21 +1716,55 @@ namespace proc {
       _app.frame_generation_provider,
       mangohud_policy.enabled && !proton_limiter
     );
-    _env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = smooth_motion_policy.enabled ? "1" : "";
-    _env["NVPRESENT_QUEUE_FAMILY"] = smooth_motion_policy.use_graphics_queue ? "1" : "";
-    if (smooth_motion_policy.enabled) {
+    bool smooth_motion_launch_ready = smooth_motion_policy.enabled;
+    if (smooth_motion_policy.enabled && !_app.steam_id.empty()) {
+      std::uint32_t steam_app_id = 0;
+      const auto *steam_id_begin = _app.steam_id.data();
+      const auto *steam_id_end = steam_id_begin + _app.steam_id.size();
+      const auto parsed_steam_id = std::from_chars(steam_id_begin, steam_id_end, steam_app_id);
+      if (parsed_steam_id.ec == std::errc {} && parsed_steam_id.ptr == steam_id_end && steam_app_id != 0) {
+        const auto games = platf::steam::discover();
+        const auto game = std::find_if(games.begin(), games.end(), [steam_app_id](const auto &candidate) {
+          return candidate.app_id == steam_app_id;
+        });
+        if (game != games.end()) {
+          const auto direct_command = platf::steam::launch_command(*game);
+          const auto broker_command = platf::steam::launch_command(steam_app_id);
+          if (!direct_command.empty() && direct_command != broker_command) {
+            _app.cmd = direct_command;
+            if (!game->launch_working_dir.empty()) {
+              _app.working_dir = game->launch_working_dir.generic_string();
+            }
+            BOOST_LOG(info)
+              << "NVIDIA Smooth Motion: resolved direct Steam launch for app " << steam_app_id
+              << "; inherited Steam Launch Options and Vibepollo environment will be applied to the game process.";
+          } else {
+            smooth_motion_launch_ready = false;
+            BOOST_LOG(error)
+              << "NVIDIA Smooth Motion cannot activate for Steam app " << steam_app_id
+              << " because direct launch metadata is incomplete; refusing to claim that the Steam broker inherited the NVIDIA environment.";
+          }
+        } else {
+          smooth_motion_launch_ready = false;
+          BOOST_LOG(error)
+            << "NVIDIA Smooth Motion cannot activate for Steam app " << steam_app_id
+            << " because the installed game could not be resolved from Steam metadata.";
+        }
+      } else {
+        smooth_motion_launch_ready = false;
+        BOOST_LOG(error)
+          << "NVIDIA Smooth Motion cannot activate because the managed Steam app ID is invalid: ["
+          << _app.steam_id << "].";
+      }
+    }
+    _env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = smooth_motion_launch_ready ? "1" : "";
+    _env["NVPRESENT_QUEUE_FAMILY"] = smooth_motion_launch_ready && smooth_motion_policy.use_graphics_queue ? "1" : "";
+    if (smooth_motion_launch_ready) {
       BOOST_LOG(info) << "NVIDIA Smooth Motion enabled for the application launch.";
       if (!nvidia_present_layer_installed()) {
         BOOST_LOG(error)
           << "NVIDIA Smooth Motion was selected, but the VK_LAYER_NV_present implicit Vulkan layer "
              "was not found. Install a current NVIDIA Linux driver before launching this app.";
-      }
-      if (!_app.steam_id.empty()) {
-        BOOST_LOG(warning)
-          << "NVIDIA Smooth Motion was selected for Steam app " << _app.steam_id
-          << ", but an already-running Steam client does not inherit the URI launcher's environment. "
-             "Add 'NVPRESENT_ENABLE_SMOOTH_MOTION=1 %command%' to this game's Steam Launch Options "
-             "to guarantee activation.";
       }
     }
     const auto existing_preload = _env["LD_PRELOAD"].to_string();
