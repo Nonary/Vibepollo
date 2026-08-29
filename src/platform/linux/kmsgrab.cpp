@@ -339,6 +339,7 @@ namespace platf {
       using connector_interal_t = util::safe_ptr<drmModeConnector, drmModeFreeConnector>;
 
       int init(const char *path) {
+        vulkan_device_path = path;
         cap_sys_admin admin;
         fd.el = open(path, O_RDWR);
 
@@ -364,6 +365,7 @@ namespace platf {
         // If it fails, we'll just share the primary node instead.
         char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
         if (rendernode_path) {
+          vulkan_device_path = rendernode_path;
           BOOST_LOG(debug) << "Opening render node: "sv << rendernode_path;
           render_fd.el = open(rendernode_path, O_RDWR);
           if (render_fd.el < 0) {
@@ -604,6 +606,7 @@ namespace platf {
       file_t render_fd;
       plane_res_t plane_res;
       std::string driver_name;
+      std::string vulkan_device_path;
     };
 
     std::map<std::uint32_t, monitor_t> map_crtc_to_monitor(const std::vector<connector_t> &connectors) {
@@ -1972,7 +1975,7 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_VULKAN
         if (mem_type == mem_type_e::vulkan) {
-          return vk::make_avcodec_encode_device_vram(width, height, img_offset_x, img_offset_y);
+          return vk::make_avcodec_encode_device_vram(width, height, img_offset_x, img_offset_y, card.vulkan_device_path);
         }
 #endif
 
