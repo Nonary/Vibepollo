@@ -35,25 +35,21 @@ TEST(VibeshinePresentPolicy, DecidesQueriesWaitsAndCapacityBoundaries) {
   request.timeout_ms = 16;
 
   EXPECT_EQ(
-    vibeshine_drm_present_decide_wait(&request, 7, false, VIBESHINE_DRM_PRESENT_MAX_WAITERS - 1),
+    vibeshine_drm_present_decide_wait(&request, 7, VIBESHINE_DRM_PRESENT_MAX_WAITERS - 1),
     VIBESHINE_DRM_PRESENT_REGISTER_WAITER
   );
   EXPECT_EQ(
-    vibeshine_drm_present_decide_wait(&request, 7, false, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
+    vibeshine_drm_present_decide_wait(&request, 7, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
     VIBESHINE_DRM_PRESENT_REJECT_BUSY
   );
   EXPECT_EQ(
-    vibeshine_drm_present_decide_wait(&request, 8, false, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
+    vibeshine_drm_present_decide_wait(&request, 8, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
     VIBESHINE_DRM_PRESENT_RETURN_CURRENT
-  );
-  EXPECT_EQ(
-    vibeshine_drm_present_decide_wait(&request, 8, true, 0),
-    VIBESHINE_DRM_PRESENT_REGISTER_WAITER
   );
 
   request.timeout_ms = 0;
   EXPECT_EQ(
-    vibeshine_drm_present_decide_wait(&request, 7, true, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
+    vibeshine_drm_present_decide_wait(&request, 7, VIBESHINE_DRM_PRESENT_MAX_WAITERS),
     VIBESHINE_DRM_PRESENT_RETURN_CURRENT
   );
 }

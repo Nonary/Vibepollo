@@ -1527,13 +1527,6 @@ namespace platf {
                   (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
                   std::chrono::steady_clock::now()
                 );
-                if (pacing::hold_pending_response_to_deadline(
-                      pacing::presentation_response_e::changed,
-                      (request.flags & VIBESHINE_DRM_PRESENT_PENDING) != 0,
-                      timeout > 0ms
-                    )) {
-                  std::this_thread::sleep_until(wait_deadline);
-                }
                 return presentation_wait_e::changed;
               }
             case pacing::presentation_response_e::timeout:
@@ -1583,22 +1576,19 @@ namespace platf {
               if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
-              presentation_pending = false;
-              if (!push_captured_image_cb({}, false)) {
-                return platf::capture_e::ok;
-              }
-              continue;
             }
 
-            if (!pending_exported_frame) {
-              switch (dequeue_presentation_frame()) {
-                case frame_export_e::ready:
-                  break;
-                case frame_export_e::empty:
-                  return platf::capture_e::reinit;
-                case frame_export_e::unsupported:
-                  return std::nullopt;
-              }
+            // Re-export at the delivery slot even when initialization cached a
+            // frame. GET_FRAME coalesces completed sequences and guarantees that
+            // the framebuffer, sequence, and timestamp all describe the newest
+            // coherent presentation.
+            switch (dequeue_presentation_frame()) {
+              case frame_export_e::ready:
+                break;
+              case frame_export_e::empty:
+                return platf::capture_e::reinit;
+              case frame_export_e::unsupported:
+                return std::nullopt;
             }
 
             const auto captured_timestamp = presentation_timestamp;
@@ -1624,14 +1614,8 @@ namespace platf {
               if (presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
-              presentation_pending = false;
-              if (!push_captured_image_cb({}, false)) {
-                return platf::capture_e::ok;
-              }
-              continue;
             }
 
-            const bool newer_presentation = post_capture_presentation == presentation_wait_e::changed;
             if (status == platf::capture_e::ok && img_out && captured_timestamp) {
               if (last_source_presentation_timestamp) {
                 source_presentation_interval_logger.collect_and_log(
@@ -1665,8 +1649,8 @@ namespace platf {
                 }
                 presentation_rate_limiter.mark_delivered(*captured_timestamp);
                 presentation_latch.mark_delivered(captured_generation);
-                presentation_pending = newer_presentation;
-                if (!newer_presentation) {
+                presentation_pending = presentation_latch.capture_ready();
+                if (!presentation_pending) {
                   presentation_timestamp.reset();
                 }
                 if (!push_captured_image_cb(std::move(img_out), true)) {
@@ -1691,12 +1675,7 @@ namespace platf {
                   presentation_latch.pending_timed_out(std::chrono::steady_clock::now(), pacing::PRESENT_PENDING_HANG_TIMEOUT)) {
                 return std::nullopt;
               }
-              if (presentation_latch.state_pending()) {
-                presentation_pending = false;
-                if (!push_captured_image_cb({}, false)) {
-                  return platf::capture_e::ok;
-                }
-              } else if (presentation_latch.capture_ready()) {
+              if (presentation_latch.capture_ready()) {
                 presentation_pending = true;
               } else if (!presentation_pending && !push_captured_image_cb({}, false)) {
                 return platf::capture_e::ok;

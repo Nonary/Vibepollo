@@ -55,7 +55,7 @@ TEST(KmsgrabSelection, RetainsCaptureAcrossPendingCommitTransitions) {
 
   latch.observe_response(response_e::changed, true, start);
   EXPECT_TRUE(latch.state_pending());
-  EXPECT_FALSE(latch.capture_ready());
+  EXPECT_TRUE(latch.capture_ready());
   EXPECT_FALSE(latch.pending_timed_out(start + 99ms, 100ms));
   EXPECT_TRUE(latch.pending_timed_out(start + 100ms, 100ms));
 
@@ -67,7 +67,7 @@ TEST(KmsgrabSelection, RetainsCaptureAcrossPendingCommitTransitions) {
   EXPECT_FALSE(latch.capture_ready());
 }
 
-TEST(KmsgrabSelection, RepeatedPendingChangesKeepTheirOriginalFallbackDeadline) {
+TEST(KmsgrabSelection, CompletedPendingChangesRefreshTheirHangDeadline) {
   using namespace std::chrono_literals;
   using response_e = platf::kms::pacing::presentation_response_e;
   using clock_t = platf::kms::pacing::clock_t;
@@ -78,13 +78,8 @@ TEST(KmsgrabSelection, RepeatedPendingChangesKeepTheirOriginalFallbackDeadline) 
   for (int elapsed_ms = 0; elapsed_ms <= 96; elapsed_ms += 16) {
     latch.observe_response(response_e::changed, true, start + std::chrono::milliseconds {elapsed_ms});
   }
-  EXPECT_FALSE(latch.pending_timed_out(start + 99ms, 100ms));
-  EXPECT_TRUE(latch.pending_timed_out(start + 100ms, 100ms));
-
-  EXPECT_TRUE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, true, true));
-  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, true, false));
-  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::changed, false, true));
-  EXPECT_FALSE(platf::kms::pacing::hold_pending_response_to_deadline(response_e::timeout, true, true));
+  EXPECT_FALSE(latch.pending_timed_out(start + 195ms, 100ms));
+  EXPECT_TRUE(latch.pending_timed_out(start + 196ms, 100ms));
 }
 
 TEST(KmsgrabSelection, PendingPresentationUsesAHangDeadlineInsteadOfTheOldFallbackWindow) {
@@ -222,7 +217,7 @@ TEST(KmsgrabSelection, OlderSnapshotCannotClearNewerPresentation) {
   EXPECT_TRUE(latch.capture_ready());
 
   latch.observe_response(response_e::changed, true, start + 1ms);
-  EXPECT_FALSE(latch.capture_ready());
+  EXPECT_TRUE(latch.capture_ready());
   latch.observe_response(response_e::timeout, false, start + 2ms);
   EXPECT_TRUE(latch.capture_ready());
 
