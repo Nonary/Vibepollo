@@ -396,6 +396,8 @@
     "output_name_default": "Primary display (default)"
   },
   "config": {
+    "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
+    "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "amf": {
       "quality": "AMF Usage",
       "rate_control": "AMF Rate Control"

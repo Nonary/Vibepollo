@@ -101,22 +101,34 @@ namespace nvhttp {
       return std::string {uuid} + ':' + std::to_string(static_cast<unsigned int>(role));
     }
 
-    remote_session::owner_t remote_owner_for_client(std::string_view uuid) {
-      std::lock_guard lock {remote_role_owners_mutex};
-      for (const auto role : {remote_session::role_e::monitor, remote_session::role_e::input}) {
-        const auto it = remote_role_owners.find(remote_role_owner_key(uuid, role));
-        if (it == remote_role_owners.end()) continue;
-        remote_session::owner_t owner {.role = role};
-        if (role == remote_session::role_e::monitor) {
-          const auto state = remote_session::monitor_runtime_snapshot(uuid, it->second.generation);
-          owner.retained = state.accepted;
-          owner.ready = state.ready;
-          owner.retryable = state.retryable;
-          if (!state.output.empty()) owner.output = state.output;
+    struct remote_role_gate_snapshot_t {
+      remote_session::owner_t owner;
+      bool active {};
+    };
+
+    remote_role_gate_snapshot_t remote_role_gate_snapshot_for_client(std::string_view uuid) {
+      remote_role_gate_snapshot_t result;
+      std::optional<remote_role_owner_t> caller_owner;
+      {
+        std::lock_guard lock {remote_role_owners_mutex};
+        result.active = !remote_role_owners.empty();
+        for (const auto role : {remote_session::role_e::monitor, remote_session::role_e::input}) {
+          const auto it = remote_role_owners.find(remote_role_owner_key(uuid, role));
+          if (it == remote_role_owners.end()) continue;
+          caller_owner = it->second;
+          break;
         }
-        return owner;
       }
-      return {};
+      if (!caller_owner) return result;
+      result.owner.role = caller_owner->role;
+      if (caller_owner->role == remote_session::role_e::monitor) {
+        const auto state = remote_session::monitor_runtime_snapshot(uuid, caller_owner->generation);
+        result.owner.retained = state.accepted;
+        result.owner.ready = state.ready;
+        result.owner.retryable = state.retryable;
+        if (!state.output.empty()) result.owner.output = state.output;
+      }
+      return result;
     }
 
     void remember_remote_owner(std::string_view uuid, remote_session::role_e role, std::uint64_t generation) {
@@ -138,10 +150,27 @@ namespace nvhttp {
     }
 
     void forget_remote_client(std::string_view uuid) {
-      std::lock_guard lock {remote_role_owners_mutex};
-      remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::monitor));
-      remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::input));
+      {
+        std::lock_guard lock {remote_role_owners_mutex};
+        remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::monitor));
+        remote_role_owners.erase(remote_role_owner_key(uuid, remote_session::role_e::input));
+      }
+      remote_session::clear_app_replacement_confirmation(uuid);
     }
+
+    bool has_stream_session_activity() {
+      // RTSP removes STOPPING sessions from session_count() before stream::session::join()
+      // returns; pending launches/creations reserve the process-wide runtime layer
+      // before either protocol publishes an active session.
+      return rtsp_stream::has_pending_launch_or_startup() ||
+             rtsp_stream::session_count_no_cleanup() > 0 ||
+             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
+             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
+             webrtc_stream::has_active_or_pending_sessions() ||
+             webrtc_stream::has_capture_active() ||
+             webrtc_stream::has_teardown_in_progress();
+    }
+
   }  // namespace
 
   static constexpr std::string_view EMPTY_PROPERTY_TREE_ERROR_MSG = "Property tree is empty. Probably, control flow got interrupted by an unexpected C++ exception. This is a bug in Sunshine. Moonlight-qt will report Malformed XML (missing root element)."sv;
@@ -211,8 +240,6 @@ namespace nvhttp {
       if (const auto *value = std::get_if<double>(&refresh)) return static_cast<int>(std::lround(*value));
       return 0;
     }
-
-    bool has_stream_session_activity();
 
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
       const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
@@ -595,19 +622,6 @@ namespace nvhttp {
       if (cleanup.helper_revert_dispatched) {
         display_helper_integration::stop_watchdog();
       }
-    }
-
-    bool has_stream_session_activity() {
-      // RTSP removes STOPPING sessions from session_count() before stream::session::join()
-      // returns; pending launches/creations reserve the process-wide runtime layer
-      // before either protocol publishes an active session.
-      return rtsp_stream::has_pending_launch_or_startup() ||
-             rtsp_stream::session_count_no_cleanup() > 0 ||
-             stream::session::running_sessions.load(std::memory_order_acquire) != 0 ||
-             stream::session::teardown_sessions.load(std::memory_order_acquire) != 0 ||
-             webrtc_stream::has_active_or_pending_sessions() ||
-             webrtc_stream::has_capture_active() ||
-             webrtc_stream::has_teardown_in_progress();
     }
 
     bool has_active_or_stopping_stream_session() {
@@ -3235,23 +3249,46 @@ namespace nvhttp {
 
       tree.put("root.PairStatus", pair_status);
 
-      const auto current_appid = proc::proc.running();
-      const auto current_app = proc::proc.resolve_app(current_appid);
-      bool caller_owns_active_app = false;
+      auto current_appid = proc::proc.running();
+      auto current_app = proc::proc.resolve_app(current_appid);
+      const auto active_session = proc::proc.active_session_guard();
+      remote_role_gate_snapshot_t remote_gate;
+      remote_session::caller_t caller;
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-        const auto verified_client = get_verified_cert(request);
-        const auto identity = resolve_client_identity(request, verified_client);
-        const auto active_session = proc::proc.active_session_guard();
-        const auto remote_owner = remote_owner_for_client(identity.uuid);
-        caller_owns_active_app = current_appid > 0 && !identity.uuid.empty() &&
-                                 identity.uuid == active_session.client_uuid &&
-                                 remote_owner.role == remote_session::role_e::none;
+        const auto identity = resolve_client_identity(request, get_verified_cert(request));
+        remote_gate = remote_role_gate_snapshot_for_client(identity.uuid);
+        caller.uuid = identity.uuid;
+        caller.paired = !identity.uuid.empty();
+      } else {
+        remote_gate = remote_role_gate_snapshot_for_client({});
       }
-
-      // A client that does not own the running game sees a free host and uses
-      // the caller-scoped Resume/Disconnect entries in /applist instead of
-      // being locked out by another client's process.
-      const bool expose_active_game = current_appid > 0 && caller_owns_active_app;
+      const remote_session::game_t game {
+        .running = current_appid > 0,
+        .owner_uuid = active_session.client_uuid,
+        .generation = active_session_generation(active_session),
+        .app = current_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(current_app->id)), current_app->uuid, current_app->name, false} : remote_session::app_t {},
+      };
+      bool replacement_confirmation_active = false;
+      if (caller.paired) {
+        if (remote_gate.active) {
+          remote_session::clear_app_replacement_confirmation(caller.uuid);
+        } else if (config::video.remote_monitor_confirm_app_replacement) {
+          replacement_confirmation_active = remote_session::app_replacement_confirmation_active(caller.uuid, game.generation);
+        }
+      }
+      tree.put("root.PairStatus", pair_status);
+      // Before a special owner exists, advertise the host as free so selecting
+      // Remote Input or Remote Monitor does not trigger Moonlight's generic
+      // replace-running-app warning. The launch handler distinguishes attach,
+      // resume, and normal-app replacement from the requested catalogue entry.
+      // Once a special owner exists, restore owner-aware busy reporting.
+      const bool expose_active_game = remote_session::exposes_active_game(
+        caller,
+        game,
+        remote_gate.owner,
+        remote_gate.active,
+        replacement_confirmation_active
+      );
       tree.put("root.currentgame", expose_active_game ? current_appid : 0);
       tree.put("root.currentgameuuid", expose_active_game && current_app ? current_app->uuid : "");
       tree.put("root.state", expose_active_game ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE");
@@ -3461,7 +3498,8 @@ namespace nvhttp {
           .generation = active_session_generation(active_session),
           .app = current_app ? remote_session::app_t {static_cast<std::int32_t>(util::from_view(current_app->id)), current_app->uuid, current_app->name, false} : remote_session::app_t {},
         };
-        const auto projection = remote_session::project(caller, game, remote_owner_for_client(identity.uuid), remote_configured_apps);
+        const auto remote_gate = remote_role_gate_snapshot_for_client(identity.uuid);
+        const auto projection = remote_session::project(caller, game, remote_gate.owner, remote_configured_apps, remote_gate.active);
 
         const bool enable_legacy_ordering = config::sunshine.legacy_ordering && verified_client->enable_legacy_ordering;
         size_t bits = 0;
@@ -3572,6 +3610,7 @@ namespace nvhttp {
             !appuuid_str.empty() ? appuuid_str == active_app->uuid :
                                    util::from_view(appid_str) == util::from_view(active_app->id);
           if (requests_active_app) {
+            remote_session::clear_app_replacement_confirmation(request_client_identity.uuid);
             g.disable();
             resume(host_audio, std::move(response), std::move(request), current_appid, false, true);
             return;
@@ -3595,7 +3634,7 @@ namespace nvhttp {
           .may_launch = has_client_perm(verified_client, PERM::launch),
           .may_terminate = has_client_perm(verified_client, PERM::launch),
         };
-        const auto owner = remote_owner_for_client(request_client_identity.uuid);
+        const auto owner = remote_role_gate_snapshot_for_client(request_client_identity.uuid).owner;
         const auto decision = remote_session::dispatch(caller, game, owner, synthetic_control);
         if (!decision.allowed) {
           tree.put("root.resume", 0);
@@ -3603,6 +3642,7 @@ namespace nvhttp {
           tree.put("root.<xmlattr>.status_message", "Remote session action conflicts with this client's current session state");
           return;
         }
+        remote_session::clear_app_replacement_confirmation(request_client_identity.uuid);
         if (decision.resume && decision.resume_role == remote_session::role_e::game && current_appid > 0) {
           g.disable();
           resume(host_audio, std::move(response), std::move(request), current_appid, false, true);
@@ -3886,13 +3926,50 @@ namespace nvhttp {
         return;
       }
 
-      if (
-        current_appid > 0 && ((appid > 0 && appid != current_appid) || (!appuuid_str.empty() && appuuid_str != current_app_uuid))
-      ) {
-        tree.put("root.resume", 0);
-        tree.put("root.<xmlattr>.status_code", 400);
-        tree.put("root.<xmlattr>.status_message", "An app is already running on this host");
-        return;
+      if (current_appid > 0) {
+        if (remote_role_gate_snapshot_for_client(request_client_identity.uuid).active) {
+          remote_session::clear_app_replacement_confirmation(request_client_identity.uuid);
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 409);
+          tree.put(
+            "root.<xmlattr>.status_message",
+            "Remote Input or Remote Monitor is active; launch Terminate before starting a different app"
+          );
+          return;
+        }
+        if (!requested_app || appid <= 0) {
+          tree.put("root.resume", 0);
+          tree.put("root.<xmlattr>.status_code", 404);
+          tree.put("root.<xmlattr>.status_message", "The requested replacement app was not found");
+          return;
+        }
+
+        if (config::video.remote_monitor_confirm_app_replacement) {
+          const auto active_session = proc::proc.active_session_guard();
+          const auto confirmation = remote_session::arm_or_confirm_app_replacement(
+            request_client_identity.uuid,
+            active_session_generation(active_session),
+            static_cast<std::int32_t>(appid)
+          );
+          if (confirmation == remote_session::app_replacement_confirmation_e::prompt) {
+            BOOST_LOG(info) << "App replacement confirmation armed for client " << request_client_identity.uuid
+                            << " (running_app=" << current_appid << ", requested_app=" << appid << ").";
+            tree.put("root.resume", 0);
+            tree.put("root.gamesession", 0);
+            tree.put("root.<xmlattr>.status_code", 410);
+            tree.put("root.<xmlattr>.status_message", std::string {remote_session::app_replacement_confirmation_message()});
+            return;
+          }
+          BOOST_LOG(info) << "App replacement confirmation accepted for client " << request_client_identity.uuid
+                          << " (running_app=" << current_appid << ", requested_app=" << appid << ").";
+        } else {
+          remote_session::clear_app_replacement_confirmation(request_client_identity.uuid);
+        }
+
+        BOOST_LOG(info) << "Replacing running app " << current_appid << " with app " << appid
+                        << " at the request of paired client " << request_client_identity.uuid << ".";
+        (void) rtsp_stream::disconnect_game_sessions(true);
+        proc::proc.terminate(false, true, false, true);
       }
 
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
@@ -4886,6 +4963,7 @@ namespace nvhttp {
       return;
     }
 
+    remote_session::clear_app_replacement_confirmation(identity.uuid);
     tree.put("root.cancel", 1);
     tree.put("root.<xmlattr>.status_code", 200);
 

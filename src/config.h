@@ -162,6 +162,7 @@ namespace config {
     bool remote_monitor_disconnect_on_stream_end;  ///< Release a Remote Monitor when its RTSP stream ends.
     bool remote_monitor_disconnect_on_client_disconnect;  ///< Release a Remote Monitor when its paired client transport disconnects.
     bool remote_monitor_terminate_on_first_request;  ///< Let extra clients terminate the active game with one Terminate request.
+    bool remote_monitor_confirm_app_replacement;  ///< Require confirmation before an ungated launch replaces the active game.
 
     struct dd_t {
       struct workarounds_t {

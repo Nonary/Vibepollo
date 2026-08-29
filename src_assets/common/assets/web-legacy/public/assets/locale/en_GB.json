@@ -388,6 +388,8 @@
     "exclude_global_state_cmd": "Exclude Global State Commands"
   },
   "config": {
+    "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
+    "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "remote_monitor_options_title": "Remote Monitor options",
     "remote_monitor_options_desc": "Choose what Remote Monitor sends and when its extra Windows screen is removed.",
     "remote_monitor_mute_audio": "Mute audio on Remote Monitor",
