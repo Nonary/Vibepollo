@@ -1735,14 +1735,7 @@ namespace video {
       const pull_free_image_cb_t &pull,
       bool * /*cursor*/
     ) override {
-      const auto cadence = std::chrono::milliseconds(1000 / std::max(1, client_frame_rate));
-      for (;;) {
-        std::shared_ptr<platf::img_t> image;
-        if (!pull(image) || !image) return platf::capture_e::ok;
-        if (dummy_img(image.get()) != 0) return platf::capture_e::error;
-        if (!push(std::move(image), true)) return platf::capture_e::ok;
-        std::this_thread::sleep_for(std::max(cadence, std::chrono::milliseconds(1)));
-      }
+      return capture_synthetic_black(push, pull, client_frame_rate);
     }
 
   protected:
