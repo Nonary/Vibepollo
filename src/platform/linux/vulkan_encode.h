@@ -4,6 +4,9 @@
  */
 #pragma once
 
+#include <optional>
+#include <string>
+
 #include "src/platform/common.h"
 
 extern "C" struct AVBufferRef;
@@ -25,8 +28,15 @@ namespace vk {
 
   /**
    * @brief Create a Vulkan encode device for VRAM capture.
+   * @param capture_device_path Exact DRM node backing KMS capture, if known.
    */
-  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device_vram(int width, int height, int offset_x, int offset_y);
+  std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device_vram(
+    int width,
+    int height,
+    int offset_x,
+    int offset_y,
+    std::optional<std::string> capture_device_path = std::nullopt
+  );
 
   /**
    * @brief Check if FFmpeg Vulkan Video encoding is available.

@@ -14,6 +14,11 @@
 
 #ifdef _WIN32
   #include <Windows.h>
+#else
+  #include <cerrno>
+  #include <fcntl.h>
+  #include <sys/stat.h>
+  #include <unistd.h>
 #endif
 
 namespace file_handler {
@@ -37,6 +42,7 @@ namespace file_handler {
       }
 
       bool write(const std::filesystem::path &path, std::string_view contents) override {
+#ifdef _WIN32
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         if (!output.is_open()) {
           return false;
@@ -45,6 +51,45 @@ namespace file_handler {
         output.flush();
         output.close();
         return static_cast<bool>(output);
+#else
+        // Atomic callers always write a fresh temporary path. O_EXCL and
+        // O_NOFOLLOW prevent a same-directory attacker from redirecting a
+        // predictable temporary name through a pre-positioned symlink.
+        const int fd = ::open(
+          path.c_str(),
+          O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+          S_IRUSR | S_IWUSR
+        );
+        if (fd < 0) {
+          return false;
+        }
+
+        size_t offset = 0;
+        bool success = true;
+        while (offset < contents.size()) {
+          const auto written = ::write(fd, contents.data() + offset, contents.size() - offset);
+          if (written < 0) {
+            if (errno == EINTR) {
+              continue;
+            }
+            success = false;
+            break;
+          }
+          if (written == 0) {
+            success = false;
+            break;
+          }
+          offset += static_cast<size_t>(written);
+        }
+
+        if (success && ::fsync(fd) != 0) {
+          success = false;
+        }
+        if (::close(fd) != 0) {
+          success = false;
+        }
+        return success;
+#endif
       }
 
       replace_result_e replace(const std::filesystem::path &temporary,

@@ -1,3 +1,8 @@
+if command -v systemd-sysusers >/dev/null 2>&1; then
+  systemd-sysusers "@VIBESHINE_SYSUSERS_INSTALL_DIR@/vibeshine-vkms.conf" || \
+    echo "warning: could not create the dedicated vibeshine-vkms control group."
+fi
+
 @VIBESHINE_BASE_POSTINST@
 
 # Build/register the managed virtual-display module. Package installation may

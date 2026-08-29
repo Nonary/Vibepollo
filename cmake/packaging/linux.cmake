@@ -30,6 +30,11 @@ else()
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(TARGETS vibeshine_vkms_peercred
+                RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(FILES "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.sysusers"
+                DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
+                RENAME vibeshine-vkms.conf)
         install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 FILES_MATCHING

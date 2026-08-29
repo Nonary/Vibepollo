@@ -374,8 +374,12 @@ fi
 %{_bindir}/vibepollo-mangohud
 %{_prefix}/libexec/vibeshine/vibeshine-drm-install
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
+%{_prefix}/libexec/vibeshine/vibeshine-vkms-peercred
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
 %{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
+
+# Dedicated access group for the privileged virtual-display control socket
+%{_prefix}/lib/sysusers.d/vibeshine-vkms.conf
 
 # Versioned DKMS/direct-build source tree
 /usr/src/vibeshine-drm-*
