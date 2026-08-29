@@ -65,6 +65,7 @@ makedepends=(
   "gcc${_gcc_dep_suffix}"
   'git'
   'make'
+  'ninja'
   'nodejs'
   'npm'
   'python-jinja'  # required by the glad OpenGL/EGL loader generator
@@ -129,6 +130,7 @@ build() {
     local _cmake_options=(
       -S "$pkgname"
       -B build
+      -G Ninja
       -Wno-dev
       -D BUILD_DOCS=OFF
       -D BUILD_WERROR=ON
