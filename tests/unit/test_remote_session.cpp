@@ -31,19 +31,28 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
 
 TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   const std::vector<remote_session::app_t> configured {{1, "one", "One", false}, {2, "two", "Two", false}};
-  const auto idle = remote_session::project(caller("other"), {}, {}, configured);
+  const auto idle = remote_session::project(caller("other"), {}, {}, configured, false);
   ASSERT_TRUE(idle.free);
   ASSERT_EQ(idle.catalogue.size(), 4);
   EXPECT_EQ(idle.catalogue[2].id, remote_session::input_id);
   EXPECT_EQ(idle.catalogue[3].id, remote_session::monitor_id);
 
-  const auto owner = remote_session::project(caller("owner"), game(), {}, configured);
-  EXPECT_FALSE(owner.free);
-  EXPECT_EQ(owner.current_game, 42);
+  const auto owner = remote_session::project(caller("owner"), game(), {}, configured, false);
+  EXPECT_TRUE(owner.free);
+  EXPECT_EQ(owner.current_game, 0);
   ASSERT_EQ(owner.catalogue.size(), 4);
   EXPECT_EQ(owner.catalogue[0].title, "One");
 
-  const auto observer = remote_session::project(caller("other"), game(), {}, configured);
+  const auto normal_observer = remote_session::project(caller("other"), game(), {}, configured, false);
+  EXPECT_TRUE(normal_observer.free);
+  EXPECT_EQ(normal_observer.current_game, 0);
+  ASSERT_EQ(normal_observer.catalogue.size(), 4);
+  EXPECT_EQ(normal_observer.catalogue[0].title, "One");
+  EXPECT_EQ(normal_observer.catalogue[1].title, "Two");
+  EXPECT_EQ(normal_observer.catalogue[2].id, remote_session::input_id);
+  EXPECT_EQ(normal_observer.catalogue[3].id, remote_session::monitor_id);
+
+  const auto observer = remote_session::project(caller("other"), game(), {}, configured, true);
   ASSERT_EQ(observer.catalogue.size(), 5);
   EXPECT_EQ(observer.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(observer.catalogue[1].id, remote_session::terminate_id);
@@ -52,25 +61,25 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(observer.catalogue[3].id, remote_session::input_id);
   EXPECT_EQ(observer.catalogue[4].id, remote_session::monitor_id);
 
-  const auto monitor = remote_session::project(caller("monitor"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured);
+  const auto monitor = remote_session::project(caller("monitor"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(monitor.catalogue.size(), 2);
   EXPECT_EQ(monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
 
-  const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured);
+  const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input.catalogue.size(), 3);
   EXPECT_EQ(input.catalogue[0].id, 1);
   EXPECT_EQ(input.catalogue[1].id, 2);
   EXPECT_EQ(input.catalogue[2].id, remote_session::monitor_id);
 
-  const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured);
+  const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input_during_game.catalogue.size(), 4);
   EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::terminate_id);
   EXPECT_EQ(input_during_game.catalogue[2].id, 42);
   EXPECT_EQ(input_during_game.catalogue[3].id, remote_session::monitor_id);
 
-  const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured);
+  const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
   EXPECT_EQ(game_owner_monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(game_owner_monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
@@ -82,11 +91,33 @@ TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
     {2, "shadow-input", "Remote Input", false},
     {3, "shadow-monitor", "remote monitor", false},
   };
-  const auto idle = remote_session::project(caller("client"), {}, {}, configured);
+  const auto idle = remote_session::project(caller("client"), {}, {}, configured, false);
   ASSERT_EQ(idle.catalogue.size(), 3);
   EXPECT_EQ(idle.catalogue[0].title, "One");
   EXPECT_EQ(idle.catalogue[1].id, remote_session::input_id);
   EXPECT_EQ(idle.catalogue[2].id, remote_session::monitor_id);
+}
+
+TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOwnership) {
+  const auto active_game = game();
+  const auto owner = caller("owner");
+  const auto other = caller("other");
+
+  EXPECT_FALSE(remote_session::exposes_active_game(owner, active_game, {}, false));
+  EXPECT_FALSE(remote_session::exposes_active_game(other, active_game, {}, false));
+  EXPECT_TRUE(remote_session::allows_normal_game_cancel(owner, active_game, false));
+  EXPECT_TRUE(remote_session::allows_normal_game_cancel(other, active_game, false));
+
+  EXPECT_TRUE(remote_session::exposes_active_game(owner, active_game, {}, true));
+  EXPECT_FALSE(remote_session::exposes_active_game(other, active_game, {}, true));
+  EXPECT_TRUE(remote_session::exposes_active_game(other, active_game, {}, false, true));
+  EXPECT_TRUE(remote_session::allows_normal_game_cancel(owner, active_game, true));
+  EXPECT_FALSE(remote_session::allows_normal_game_cancel(other, active_game, true));
+
+  const remote_session::owner_t retained_monitor {.role = remote_session::role_e::monitor, .retained = true};
+  EXPECT_FALSE(remote_session::exposes_active_game(owner, active_game, retained_monitor, true));
+  EXPECT_FALSE(remote_session::exposes_active_game(other, {}, {}, false));
+  EXPECT_FALSE(remote_session::allows_normal_game_cancel(caller("other", true, true, false), active_game, false));
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
@@ -249,6 +280,43 @@ TEST(RemoteSession, TerminateAllowsMobileCatalogueRefreshWithinSixtySeconds) {
   );
   remote_session::clear_termination_confirmation("client");
   remote_session::clear_termination_confirmation("other");
+}
+
+TEST(RemoteSession, AppReplacementConfirmationIsPerClientGameAndRequestedApp) {
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_app_replacement("client", 7, 99, start),
+    remote_session::app_replacement_confirmation_e::prompt
+  );
+  EXPECT_TRUE(remote_session::app_replacement_confirmation_active("client", 7, start + std::chrono::seconds {1}));
+  EXPECT_FALSE(remote_session::app_replacement_confirmation_active("other", 7, start + std::chrono::seconds {1}));
+
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_app_replacement("client", 7, 100, start + std::chrono::seconds {2}),
+    remote_session::app_replacement_confirmation_e::prompt
+  );
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_app_replacement("client", 7, 100, start + std::chrono::seconds {3}),
+    remote_session::app_replacement_confirmation_e::confirmed
+  );
+  EXPECT_FALSE(remote_session::app_replacement_confirmation_active("client", 7, start + std::chrono::seconds {4}));
+
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_app_replacement("client", 8, 101, start + std::chrono::seconds {5}),
+    remote_session::app_replacement_confirmation_e::prompt
+  );
+  EXPECT_FALSE(remote_session::app_replacement_confirmation_active("client", 7, start + std::chrono::seconds {6}));
+  EXPECT_EQ(
+    remote_session::arm_or_confirm_app_replacement("client", 8, 101, start + std::chrono::seconds {7}),
+    remote_session::app_replacement_confirmation_e::prompt
+  );
+  EXPECT_FALSE(remote_session::app_replacement_confirmation_active("client", 8, start + std::chrono::seconds {68}));
+
+  EXPECT_EQ(
+    remote_session::app_replacement_confirmation_message(),
+    "An app is already running. Launch this app again within 60 seconds to confirm that you want to close it."
+  );
+  remote_session::clear_app_replacement_confirmation("client");
 }
 
 TEST(RemoteSession, PendingRegistryKeepsEncryptedLaunchesDistinctAndPlaintextSafe) {

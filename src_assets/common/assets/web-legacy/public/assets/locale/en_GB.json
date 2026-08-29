@@ -816,6 +816,8 @@
     "remote_monitor_disconnect_on_client_disconnect_desc": "Remove the extra monitor as soon as the client connection drops or you use Disconnect, even if the monitor was waiting for Resume.",
     "remote_monitor_terminate_on_first_request": "Terminate on the first request",
     "remote_monitor_terminate_on_first_request_desc": "Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
+    "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
+    "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "virtual_display_mode_step_hint": "Select which display Vibepollo should prepare: keep your physical monitor, create a per-client virtual display, or reuse a shared virtual screen. A virtual display is the recommended default — it frees Vibepollo from the physical monitor's resolution and refresh limits, and its 4× refresh + WGC capture pipeline captures frame-generated games cleanly.",
     "dd_use_sunshine_virtual_display_driver": "Use SudoVDA",
     "dd_use_sunshine_virtual_display_driver_desc": "Switch back to SudoVDA for virtual displays. The Vibepollo Display Driver remains installed and can be restored by clearing this option.",

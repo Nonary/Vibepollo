@@ -22,6 +22,13 @@ namespace remote_session {
     };
     std::mutex terminate_confirmation_mutex;
     std::unordered_map<std::string, terminate_confirmation_t> terminate_confirmations;
+    struct app_replacement_confirmation_t {
+      std::uint64_t generation {};
+      std::int32_t requested_app_id {};
+      std::chrono::steady_clock::time_point expires_at {};
+    };
+    std::mutex app_replacement_confirmation_mutex;
+    std::unordered_map<std::string, app_replacement_confirmation_t> app_replacement_confirmations;
     bool equal_folded(std::string_view left, std::string_view right) {
       if (left.size() != right.size()) return false;
       for (std::size_t i = 0; i < left.size(); ++i) {
@@ -78,7 +85,24 @@ namespace remote_session {
     }
   }
 
-  projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured) {
+  bool exposes_active_game(
+    const caller_t &caller,
+    const game_t &game,
+    const owner_t &owner,
+    const bool remote_sessions_active,
+    const bool replacement_confirmation_active
+  ) {
+    if (!game.running) return false;
+    if (replacement_confirmation_active) return true;
+    const bool gated = remote_sessions_active || owner.role != role_e::none;
+    return gated && owner.role == role_e::none && owns_game(caller, game);
+  }
+
+  bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, const bool remote_sessions_active) {
+    return game.running && caller.paired && caller.may_terminate && (!remote_sessions_active || owns_game(caller, game));
+  }
+
+  projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, const bool remote_sessions_active) {
     projection_t result;
     std::vector<app_t> visible_configured;
     std::copy_if(configured.begin(), configured.end(), std::back_inserter(visible_configured), [](const app_t &app) {
@@ -86,6 +110,12 @@ namespace remote_session {
     });
     if (owner.role == role_e::monitor) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
+      return result;
+    }
+    if (!remote_sessions_active && owner.role == role_e::none) {
+      result.catalogue = std::move(visible_configured);
+      result.catalogue.push_back(synthetic(control_e::input));
+      result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
     }
     if (owns_game(caller, game)) {
@@ -210,6 +240,52 @@ namespace remote_session {
   void clear_termination_confirmation(const std::string_view client_uuid) {
     std::lock_guard lock {terminate_confirmation_mutex};
     terminate_confirmations.erase(std::string {client_uuid});
+  }
+
+  app_replacement_confirmation_e arm_or_confirm_app_replacement(
+    const std::string_view client_uuid,
+    const std::uint64_t generation,
+    const std::int32_t requested_app_id,
+    const std::chrono::steady_clock::time_point now
+  ) {
+    std::lock_guard lock {app_replacement_confirmation_mutex};
+    const auto it = app_replacement_confirmations.find(std::string {client_uuid});
+    if (it != app_replacement_confirmations.end()) {
+      const auto pending = it->second;
+      app_replacement_confirmations.erase(it);
+      if (pending.generation == generation &&
+          pending.requested_app_id == requested_app_id &&
+          pending.expires_at > now) {
+        return app_replacement_confirmation_e::confirmed;
+      }
+    }
+    app_replacement_confirmations.insert_or_assign(
+      std::string {client_uuid},
+      app_replacement_confirmation_t {generation, requested_app_id, now + terminate_confirmation_window}
+    );
+    return app_replacement_confirmation_e::prompt;
+  }
+
+  bool app_replacement_confirmation_active(
+    const std::string_view client_uuid,
+    const std::uint64_t generation,
+    const std::chrono::steady_clock::time_point now
+  ) {
+    std::lock_guard lock {app_replacement_confirmation_mutex};
+    const auto it = app_replacement_confirmations.find(std::string {client_uuid});
+    if (it == app_replacement_confirmations.end()) return false;
+    if (it->second.generation == generation && it->second.expires_at > now) return true;
+    app_replacement_confirmations.erase(it);
+    return false;
+  }
+
+  std::string_view app_replacement_confirmation_message() {
+    return "An app is already running. Launch this app again within 60 seconds to confirm that you want to close it.";
+  }
+
+  void clear_app_replacement_confirmation(const std::string_view client_uuid) {
+    std::lock_guard lock {app_replacement_confirmation_mutex};
+    app_replacement_confirmations.erase(std::string {client_uuid});
   }
 
   bool input_uses_display_or_audio(const role_e role) { return role != role_e::input; }

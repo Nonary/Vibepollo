@@ -139,6 +139,7 @@ const defaultGroups = [
       remote_monitor_disconnect_on_stream_end: false,
       remote_monitor_disconnect_on_client_disconnect: false,
       remote_monitor_terminate_on_first_request: false,
+      remote_monitor_confirm_app_replacement: true,
       dd_configuration_option: 'verify_only',
       dd_resolution_option: 'auto',
       dd_manual_resolution: '',

@@ -1327,6 +1327,15 @@ Allow an additional paired client to terminate the active game with its first
 Terminate request. The original game client is unaffected. The default is
 `false`.
 
+### remote_monitor_confirm_app_replacement
+
+Protect a running app while Vibepollo advertises the host as available for
+warning-free Remote Input and Remote Monitor attachment. Selecting a different
+normal app is rejected once and temporarily advertises the running app as
+resumable to that paired client, allowing Moonlight to show its native close-app
+warning on the next attempt. The confirmation window is 60 seconds. Disable
+this option to replace the running app immediately. The default is `true`.
+
 ### dd_configuration_option
 
 <table>

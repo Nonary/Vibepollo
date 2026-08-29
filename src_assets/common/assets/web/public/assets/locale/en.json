@@ -539,6 +539,8 @@
     "remote_monitor_disconnect_on_client_disconnect_desc": "Release the private monitor when the paired client explicitly disconnects, even if it was retained for Resume.",
     "remote_monitor_terminate_on_first_request": "Terminate on the first request",
     "remote_monitor_terminate_on_first_request_desc": "Allow an additional paired client to terminate the active game with its first Terminate request.",
+    "remote_monitor_confirm_app_replacement": "Confirm before replacing a running app",
+    "remote_monitor_confirm_app_replacement_desc": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
     "dd_snapshot_exclude_title": "Exclude devices from snapshots",
     "dd_snapshot_exclude_desc": "Exclude physical dummy plugs from golden/session snapshots. Helpful when using both a virtual display and a physical dummy plug so restores avoid the plug.",
     "dd_snapshot_exclude_placeholder": "Choose devices (e.g., physical dummy plug) to exclude",

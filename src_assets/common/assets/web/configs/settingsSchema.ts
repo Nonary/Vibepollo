@@ -376,6 +376,10 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
 ];
 
 const remoteMonitorFields = (): SettingsField[] => [
+  boolean('remote_monitor_confirm_app_replacement', {
+    labelKey: 'ui.settings.fields.remote_monitor_confirm_app_replacement.label',
+    descriptionKey: 'ui.settings.fields.remote_monitor_confirm_app_replacement.description',
+  }),
   boolean('remote_monitor_mute_audio', {
     labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
@@ -926,6 +930,7 @@ export const settingsDefaults: Record<string, unknown> = {
   remote_monitor_disconnect_on_stream_end: false,
   remote_monitor_disconnect_on_client_disconnect: false,
   remote_monitor_terminate_on_first_request: false,
+  remote_monitor_confirm_app_replacement: true,
   dd_virtual_display_scale: -1,
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',

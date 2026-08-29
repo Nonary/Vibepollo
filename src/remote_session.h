@@ -78,6 +78,7 @@ namespace remote_session {
   };
 
   enum class terminate_confirmation_e : std::uint8_t { prompt, confirmed };
+  enum class app_replacement_confirmation_e : std::uint8_t { prompt, confirmed };
 
   [[nodiscard]] bool requires_termination_confirmation(bool terminate_on_first_request, bool caller_owns_active_game);
 
@@ -89,6 +90,20 @@ namespace remote_session {
   );
   [[nodiscard]] std::string_view termination_confirmation_message();
   void clear_termination_confirmation(std::string_view client_uuid);
+
+  [[nodiscard]] app_replacement_confirmation_e arm_or_confirm_app_replacement(
+    std::string_view client_uuid,
+    std::uint64_t generation,
+    std::int32_t requested_app_id,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+  );
+  [[nodiscard]] bool app_replacement_confirmation_active(
+    std::string_view client_uuid,
+    std::uint64_t generation,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
+  );
+  [[nodiscard]] std::string_view app_replacement_confirmation_message();
+  void clear_app_replacement_confirmation(std::string_view client_uuid);
 
   struct pending_t {
     std::uint32_t launch_id {};
@@ -141,7 +156,15 @@ namespace remote_session {
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
-  [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured);
+  [[nodiscard]] bool exposes_active_game(
+    const caller_t &caller,
+    const game_t &game,
+    const owner_t &owner,
+    bool remote_sessions_active,
+    bool replacement_confirmation_active = false
+  );
+  [[nodiscard]] bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, bool remote_sessions_active);
+  [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, bool remote_sessions_active);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
   [[nodiscard]] bool joins_existing_game_output(role_e role, bool stream_active);
   [[nodiscard]] std::string_view stream_start_response_key(bool launched_from_applist);

@@ -1530,6 +1530,10 @@
           "description": "Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
           "label": "Terminate on the first request"
         },
+        "remote_monitor_confirm_app_replacement": {
+          "description": "Reject the first request to replace a running app, then advertise it as resumable for 60 seconds so Moonlight can show its close-app warning. Remote Input and Remote Monitor still attach without that warning. Turn this off to replace apps immediately.",
+          "label": "Confirm before replacing a running app"
+        },
         "capture": {
           "description": "Automatic follows the capture backend Vibepollo chooses for this host. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. Override it only for compatibility or a specific capture path.",
           "label": "Capture method"
