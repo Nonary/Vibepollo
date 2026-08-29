@@ -1764,14 +1764,7 @@ namespace video {
       const pull_free_image_cb_t &pull,
       bool * /*cursor*/
     ) override {
-      const auto cadence = std::chrono::milliseconds(1000 / std::max(1, client_frame_rate));
-      for (;;) {
-        std::shared_ptr<platf::img_t> image;
-        if (!pull(image) || !image) return platf::capture_e::ok;
-        if (dummy_img(image.get()) != 0) return platf::capture_e::error;
-        if (!push(std::move(image), true)) return platf::capture_e::ok;
-        std::this_thread::sleep_for(std::max(cadence, std::chrono::milliseconds(1)));
-      }
+      return capture_synthetic_black(push, pull, client_frame_rate);
     }
 
   protected:
@@ -1860,6 +1853,14 @@ namespace video {
     if (!display->valid()) return {};
     display->client_frame_rate = std::max(1, config.framerate);
     return display;
+  }
+#elif defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
+    return ::cuda::make_black_display(config);
+  }
+#else
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &) {
+    return {};
   }
 #endif
 
@@ -3098,10 +3099,9 @@ namespace video {
     while (capture_ctx_queue->running()) {
       const auto &capture_config = capture_ctxs.front().config;
       if (capture_config.capture_source == capture_source_e::synthetic_black) {
-#ifdef _WIN32
         disp = make_black_display(capture_config);
         if (disp) break;
-#endif
+        BOOST_LOG(error) << "Synthetic black capture is unavailable for the selected encoder backend.";
         return;
       }
 

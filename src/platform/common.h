@@ -5,7 +5,9 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
 #include <bitset>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -13,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
@@ -564,6 +567,43 @@ namespace platf {
     virtual std::shared_ptr<img_t> alloc_img() = 0;
 
     virtual int dummy_img(img_t *img) = 0;
+
+    /**
+     * @brief Produce encoder-compatible black frames without opening a capture target.
+     * @details Remote Input needs a protocol video stream on every platform, but the
+     *          capture lifetime and pacing are platform-independent. Subclasses only
+     *          provide their native image allocation and dummy-image initialization.
+     */
+    capture_e capture_synthetic_black(
+      const push_captured_image_cb_t &push_captured_image_cb,
+      const pull_free_image_cb_t &pull_free_image_cb,
+      int frame_rate
+    ) {
+      const auto cadence = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds {1}) /
+                           std::max(1, frame_rate);
+
+      for (;;) {
+        std::shared_ptr<img_t> image;
+        if (!pull_free_image_cb(image) || !image) {
+          return capture_e::ok;
+        }
+        if (dummy_img(image.get()) != 0) {
+          return capture_e::error;
+        }
+
+        const auto captured_at = std::chrono::steady_clock::now();
+        image->frame_timestamp = captured_at;
+        image->host_processing_timestamp = captured_at;
+        if (!push_captured_image_cb(std::move(image), true)) {
+          return capture_e::ok;
+        }
+
+        std::this_thread::sleep_for(std::max(
+          cadence,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds {1})
+        ));
+      }
+    }
 
     virtual std::unique_ptr<avcodec_encode_device_t> make_avcodec_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
