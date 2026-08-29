@@ -188,7 +188,7 @@ add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
-find_package(Boost CONFIG REQUIRED COMPONENTS log log_setup property_tree)
+find_package(Boost CONFIG REQUIRED COMPONENTS asio log log_setup property_tree)
 find_package(OpenSSL REQUIRED)
 
 set(SUNSHINE_TEST_SOCKET_LIBRARIES "")
@@ -203,7 +203,7 @@ add_library(sunshine_test_simple_web_headers INTERFACE)
 target_include_directories(sunshine_test_simple_web_headers SYSTEM INTERFACE
     "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party")
 target_link_libraries(sunshine_test_simple_web_headers INTERFACE
-    OpenSSL::SSL OpenSSL::Crypto)
+    Boost::asio OpenSSL::SSL OpenSSL::Crypto)
 
 add_library(sunshine_test_moonlight_headers INTERFACE)
 target_include_directories(sunshine_test_moonlight_headers SYSTEM INTERFACE
