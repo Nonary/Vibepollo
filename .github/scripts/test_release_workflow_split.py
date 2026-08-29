@@ -84,6 +84,12 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn('modinfo -k "${kernel_release}" -n vibeshine_drm', arch_text)
         self.assertIn("makedepends = nodejs", arch_text)
         self.assertIn("makedepends = npm", arch_text)
+        self.assertIn("makedepends = ninja", arch_text)
+
+        pkgbuild_text = (ROOT / "packaging" / "linux" / "Arch" / "PKGBUILD").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("-G Ninja", pkgbuild_text)
 
         glad_text = (ROOT / "cmake" / "dependencies" / "glad.cmake").read_text(
             encoding="utf-8"
