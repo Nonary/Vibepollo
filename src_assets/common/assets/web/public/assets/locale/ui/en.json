@@ -156,8 +156,8 @@
           "label": "Target frame rate"
         },
         "name": {
-          "help": "Type a custom name or search installed Playnite and Steam games.",
-          "label": "Application or Playnite game"
+          "help": "Type a custom name or browse games from an available library provider.",
+          "label": "Application or integrated game"
         },
         "output": {
           "label": "Output identifier"
@@ -283,14 +283,29 @@
         "unavailable": "Playnite game search is unavailable because its integration is not installed or active.",
         "useCustom": "Use a custom application"
       },
+      "providers": {
+        "managed": "{provider} managed"
+      },
       "steam": {
         "browse": "Browse Steam games",
-        "editNotice": "Steam launch metadata is retained with this application. The command uses Steam's platform-appropriate URI launcher.",
+        "editNotice": "Vibeshine manages this game's launch command and working directory from Steam metadata. Those generated details stay hidden here; automatic Steam entries refresh them during sync.",
         "empty": "No installed Steam games match this name.",
         "loadFailed": "Unable to load Steam games. Check that Steam is installed and its libraries are readable.",
         "loading": "Loading Steam games...",
+        "linkedHelp": "This entry is linked to a Steam game.",
         "resultsLabel": "Matching Steam games",
         "unavailable": "Steam game search is unavailable because Steam was not detected or its libraries could not be read.",
+        "useCustom": "Use a custom application"
+      },
+      "lutris": {
+        "browse": "Browse Lutris games",
+        "editNotice": "Vibeshine manages this game's launch command from Lutris metadata. Those generated details stay hidden here; automatic Lutris entries refresh them during sync.",
+        "empty": "No imported Lutris games match this name.",
+        "loadFailed": "Unable to load Lutris games. Check that Lutris is installed and its library is readable.",
+        "loading": "Loading Lutris games...",
+        "linkedHelp": "This entry is linked to a Lutris game.",
+        "resultsLabel": "Matching Lutris games",
+        "unavailable": "Lutris game search is unavailable because Lutris was not detected or its library could not be read.",
         "useCustom": "Use a custom application"
       },
       "prep": {
@@ -745,6 +760,10 @@
       "progress": {
         "shown": "{visible} of {total} shown"
       },
+      "providers": {
+        "custom": "Custom",
+        "managed": "{provider} managed"
+      },
       "result": {
         "many": "{count} applications",
         "one": "{count} application"
@@ -764,7 +783,8 @@
         "configured": "Configured order",
         "label": "Sort applications",
         "nameAsc": "Name, A to Z",
-        "nameDesc": "Name, Z to A"
+        "nameDesc": "Name, Z to A",
+        "provider": "Provider"
       },
       "unnamed": "Unnamed application",
       "view": {
