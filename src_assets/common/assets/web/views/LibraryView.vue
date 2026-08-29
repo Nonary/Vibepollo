@@ -13,6 +13,7 @@ import {
   PageHeader,
   StatusBadge,
   UiIcon,
+  type StatusTone,
 } from '@/components/ui';
 import {
   appCoverUrl,
@@ -26,6 +27,13 @@ import {
 
 type ViewMode = 'grid' | 'list';
 type SortMode = 'name' | 'name-desc' | 'source';
+type AppProvider = 'playnite' | 'steam' | 'lutris';
+
+interface ProviderInfo {
+  id: AppProvider;
+  name: string;
+  managed: boolean;
+}
 
 const PAGE_SIZE = 72;
 const VIEW_STORAGE_KEY = 'vibepollo.library.view';
@@ -79,10 +87,60 @@ function readStoredView(): ViewMode {
 }
 
 function commandSummary(app: AppRecord): string {
+  if (providerInfo(app)) return '';
   if (Array.isArray(app.cmd)) return app.cmd.filter((part) => typeof part === 'string').join(' ');
   if (typeof app.cmd === 'string' && app.cmd.trim()) return app.cmd;
   if (typeof app.output === 'string' && app.output.trim()) return app.output;
   return '';
+}
+
+function providerInfo(app: AppRecord): ProviderInfo | null {
+  if (typeof app['playnite-id'] === 'string' && app['playnite-id'].trim()) {
+    return {
+      id: 'playnite',
+      name: 'Playnite',
+      managed: app['playnite-managed'] === 'auto',
+    };
+  }
+  if (typeof app['steam-id'] === 'string' && app['steam-id'].trim()) {
+    return { id: 'steam', name: 'Steam', managed: app['steam-managed'] === 'auto' };
+  }
+  if (typeof app['lutris-id'] === 'string' && app['lutris-id'].trim()) {
+    return { id: 'lutris', name: 'Lutris', managed: app['lutris-managed'] === 'auto' };
+  }
+  return null;
+}
+
+function providerLabel(app: AppRecord): string {
+  const provider = providerInfo(app);
+  if (!provider) return t('ui.library.providers.custom');
+  return provider.managed
+    ? t('ui.library.providers.managed', { provider: provider.name })
+    : provider.name;
+}
+
+function providerTone(app: AppRecord): StatusTone {
+  const provider = providerInfo(app);
+  if (!provider) return 'neutral';
+  return provider.managed ? 'success' : 'info';
+}
+
+function providerSortName(app: AppRecord): string {
+  return providerInfo(app)?.name ?? t('ui.library.providers.custom');
+}
+
+function searchSummary(app: AppRecord): string {
+  return [
+    commandSummary(app),
+    providerLabel(app),
+    app['playnite-id'],
+    app['steam-id'],
+    app['lutris-id'],
+    app['steam-install-dir'],
+    app['lutris-directory'],
+  ]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .join(' ');
 }
 
 function displayName(app: AppRecord): string {
@@ -107,12 +165,21 @@ const filteredApps = computed(() => {
     .map((app, sourceIndex) => ({ app, sourceIndex }))
     .filter(({ app }) => {
       if (!query) return true;
-      return `${displayName(app)} ${commandSummary(app)}`
+      return `${displayName(app)} ${searchSummary(app)}`
         .toLocaleLowerCase(locale.value)
         .includes(query);
     });
 
-  if (sort.value === 'source') return candidates.map(({ app }) => app);
+  if (sort.value === 'source') {
+    candidates.sort((left, right) => {
+      const sourceResult = collator.value.compare(
+        providerSortName(left.app),
+        providerSortName(right.app),
+      );
+      return sourceResult || collator.value.compare(displayName(left.app), displayName(right.app));
+    });
+    return candidates.map(({ app }) => app);
+  }
 
   candidates.sort((left, right) => {
     const result = collator.value.compare(displayName(left.app), displayName(right.app));
@@ -457,7 +524,7 @@ onBeforeUnmount(() => {
         <select v-model="sort" class="vs-select" :aria-label="t('ui.library.sort.label')">
           <option value="name">{{ t('ui.library.sort.nameAsc') }}</option>
           <option value="name-desc">{{ t('ui.library.sort.nameDesc') }}</option>
-          <option value="source">{{ t('ui.library.sort.configured') }}</option>
+          <option value="source">{{ t('ui.library.sort.provider') }}</option>
         </select>
       </label>
 
@@ -592,7 +659,10 @@ onBeforeUnmount(() => {
               </span>
             </span>
             <span class="library-item__copy">
-              <span class="library-item__title">{{ displayName(app) }}</span>
+              <span class="library-item__title-line">
+                <span class="library-item__title">{{ displayName(app) }}</span>
+                <StatusBadge :label="providerLabel(app)" :tone="providerTone(app)" compact />
+              </span>
               <span
                 v-if="commandSummary(app)"
                 class="library-item__command vs-monospace"
@@ -895,6 +965,22 @@ onBeforeUnmount(() => {
   line-height: var(--vs-type-line-height-control);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.library-item__title-line {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: var(--vs-space-8);
+}
+
+.library-item__title-line .library-item__title {
+  min-inline-size: 0;
+  flex: 1 1 auto;
+}
+
+.library-item__title-line :deep(.vs-status-badge) {
+  flex: 0 0 auto;
 }
 
 .library-item__command {
