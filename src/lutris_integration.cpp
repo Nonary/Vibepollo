@@ -217,13 +217,15 @@ namespace platf::lutris {
       if (grandchild > 0) _exit(0);
       if (grandchild < 0) {
         const int error = errno;
-        (void) write(error_pipe[1], &error, sizeof(error));
+        const auto ignored = write(error_pipe[1], &error, sizeof(error));
+        (void) ignored;
         _exit(127);
       }
       setsid();
       execl(executable.c_str(), executable.c_str(), uri.c_str(), static_cast<char *>(nullptr));
       const int error = errno;
-      (void) write(error_pipe[1], &error, sizeof(error));
+      const auto ignored = write(error_pipe[1], &error, sizeof(error));
+      (void) ignored;
       _exit(127);
     }
     close(error_pipe[1]);

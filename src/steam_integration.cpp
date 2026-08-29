@@ -902,7 +902,8 @@ namespace platf::steam {
       if (grandchild < 0) {
         const int error = errno;
         close(exec_error_pipe[0]);
-        (void) write(exec_error_pipe[1], &error, sizeof(error));
+        const auto ignored = write(exec_error_pipe[1], &error, sizeof(error));
+        (void) ignored;
         close(exec_error_pipe[1]);
         _exit(127);
       }
@@ -914,7 +915,8 @@ namespace platf::steam {
       execlp("steam", "steam", "-applaunch", app_id_string.c_str(), static_cast<char *>(nullptr));
   #endif
       const int error = errno;
-      (void) write(exec_error_pipe[1], &error, sizeof(error));
+      const auto ignored = write(exec_error_pipe[1], &error, sizeof(error));
+      (void) ignored;
       close(exec_error_pipe[1]);
       _exit(127);
     }

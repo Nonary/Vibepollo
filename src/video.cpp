@@ -6123,7 +6123,9 @@ namespace video {
 
     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
+#if defined(_WIN32) || (defined(__linux__) && defined(SUNSHINE_BUILD_CUDA))
     int consecutive_encoder_initialization_failures = 0;
+#endif
 #ifdef _WIN32
     int consecutive_native_amf_runtime_failures = 0;
 #endif
@@ -6305,7 +6307,9 @@ namespace video {
         std::this_thread::sleep_for(100ms);
         continue;
       }
+#if defined(_WIN32) || (defined(__linux__) && defined(SUNSHINE_BUILD_CUDA))
       consecutive_encoder_initialization_failures = 0;
+#endif
 #ifdef _WIN32
       consecutive_native_amf_runtime_failures = 0;
 #endif
@@ -6617,17 +6621,12 @@ namespace video {
     const auto cached_adapter = cached_probe_display ? cached_probe_display->capture_adapter_id() : std::nullopt;
     const bool cached_display_matches_required =
       !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
-    const bool wants_native_nvenc_probe =
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      &encoder == &nvenc_experimental && !required_adapter;
-#else
-      false;
-#endif
+    const bool wants_native_nvenc_probe = &encoder == &nvenc_experimental && !required_adapter;
     const bool cached_probe_kind_matches =
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
       cached_display_is_native_nvenc_probe == wants_native_nvenc_probe;
 #else
-      true;
+    const bool cached_probe_kind_matches = true;
 #endif
     if (cached_probe_display &&
         cached_display_type == encoder.platform_formats->dev_type &&

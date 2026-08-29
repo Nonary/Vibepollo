@@ -442,9 +442,21 @@ namespace {
       return fail_decode();
     }
     auto supports = [&](AVPixelFormat format) {
-      if (!encoder->pix_fmts) return false;
-      for (const auto *formats = encoder->pix_fmts; *formats != AV_PIX_FMT_NONE; ++formats) {
-        if (*formats == format) return true;
+      const void *supported_configs = nullptr;
+      int supported_config_count = 0;
+      if (avcodec_get_supported_config(
+            encoder_context,
+            encoder,
+            AV_CODEC_CONFIG_PIX_FORMAT,
+            0,
+            &supported_configs,
+            &supported_config_count
+          ) < 0 || !supported_configs) {
+        return false;
+      }
+      const auto *formats = static_cast<const AVPixelFormat *>(supported_configs);
+      for (int i = 0; i < supported_config_count; ++i) {
+        if (formats[i] == format) return true;
       }
       return false;
     };

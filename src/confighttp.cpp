@@ -476,12 +476,14 @@ namespace confighttp {
              key == "rtx_hdr_peak_brightness";
     }
 
+#ifdef _WIN32
     std::string encode_config_override_value(const nlohmann::json &value) {
       if (value.is_string()) {
         return value.get<std::string>();
       }
       return value.dump();
     }
+#endif
 
     void normalize_adapter_config_pair(nlohmann::json &config_object) {
       if (!config_object.is_object()) {
@@ -2557,6 +2559,27 @@ namespace confighttp {
 
       nlohmann::json::array_t new_apps;
       new_apps.reserve(apps_node.size());
+
+#ifdef _WIN32
+      // Detect if the app being removed is the Playnite fullscreen launcher
+      auto is_playnite_fullscreen = [](const nlohmann::json &app) -> bool {
+        try {
+          if (app.contains("playnite-fullscreen") && app["playnite-fullscreen"].is_boolean() && app["playnite-fullscreen"].get<bool>()) {
+            return true;
+          }
+          if (app.contains("cmd") && app["cmd"].is_string()) {
+            auto s = app["cmd"].get<std::string>();
+            if (s.find("playnite-launcher") != std::string::npos && s.find("--fullscreen") != std::string::npos) {
+              return true;
+            }
+          }
+          if (app.contains("name") && app["name"].is_string() && app["name"].get<std::string>() == "Playnite (Fullscreen)") {
+            return true;
+          }
+        } catch (...) {}
+        return false;
+      };
+#endif
 
       bool removed = false;
       bool disabled_fullscreen_flag = false;
