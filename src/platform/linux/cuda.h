@@ -58,6 +58,9 @@ namespace cuda {
   /** Create a blank GL/CUDA display used only for hardware encoder probing. */
   std::shared_ptr<platf::display_t> make_nvenc_probe_display(const video::config_t &config);
 
+  /** Create a paced blank GL/CUDA display for a Remote Input transport. */
+  std::shared_ptr<platf::display_t> make_black_display(const video::config_t &config);
+
   int init();
 }  // namespace cuda
 

@@ -1852,6 +1852,14 @@ namespace video {
     display->client_frame_rate = std::max(1, config.framerate);
     return display;
   }
+#elif defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
+    return ::cuda::make_black_display(config);
+  }
+#else
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &) {
+    return {};
+  }
 #endif
 
   struct capture_thread_async_ctx_t {
@@ -3059,10 +3067,9 @@ namespace video {
     while (capture_ctx_queue->running()) {
       const auto &capture_config = capture_ctxs.front().config;
       if (capture_config.capture_source == capture_source_e::synthetic_black) {
-#ifdef _WIN32
         disp = make_black_display(capture_config);
         if (disp) break;
-#endif
+        BOOST_LOG(error) << "Synthetic black capture is unavailable for the selected encoder backend.";
         return;
       }
 

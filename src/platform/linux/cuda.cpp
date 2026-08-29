@@ -844,9 +844,11 @@ namespace cuda {
     std::unique_ptr<nvenc::nvenc_cuda> native_encoder;
   };
 
-  class nvenc_probe_display_t final: public platf::display_t {
+  class synthetic_cuda_display_t final: public platf::display_t {
   public:
-    explicit nvenc_probe_display_t(const video::config_t &config):
+    explicit synthetic_cuda_display_t(const video::config_t &config, const bool capture_frames):
+        capture_frames(capture_frames),
+        frame_rate(std::max(1, config.framerate)),
         hdr(config.dynamicRange > 0 && !config.force_sdr) {
       width = std::max(1, config.width);
       height = std::max(1, config.height);
@@ -859,11 +861,11 @@ namespace cuda {
     }
 
     platf::capture_e capture(
-      const push_captured_image_cb_t &,
-      const pull_free_image_cb_t &,
+      const push_captured_image_cb_t &push,
+      const pull_free_image_cb_t &pull,
       bool *
     ) override {
-      return platf::capture_e::error;
+      return capture_frames ? capture_synthetic_black(push, pull, frame_rate) : platf::capture_e::error;
     }
 
     std::shared_ptr<platf::img_t> alloc_img() override {
@@ -884,6 +886,10 @@ namespace cuda {
 
     int dummy_img(platf::img_t *) override {
       return 0;
+    }
+
+    std::unique_ptr<platf::avcodec_encode_device_t> make_avcodec_encode_device(platf::pix_fmt_e) override {
+      return make_avcodec_gl_encode_device(width, height, 0, 0);
     }
 
     std::unique_ptr<platf::nvenc_encode_device_t> make_nvenc_encode_device(platf::pix_fmt_e pix_fmt) override {
@@ -914,6 +920,8 @@ namespace cuda {
     }
 
   private:
+    bool capture_frames;
+    int frame_rate;
     bool hdr;
   };
 
@@ -978,7 +986,11 @@ namespace cuda {
   }
 
   std::shared_ptr<platf::display_t> make_nvenc_probe_display(const video::config_t &config) {
-    return std::make_shared<nvenc_probe_display_t>(config);
+    return std::make_shared<synthetic_cuda_display_t>(config, false);
+  }
+
+  std::shared_ptr<platf::display_t> make_black_display(const video::config_t &config) {
+    return std::make_shared<synthetic_cuda_display_t>(config, true);
   }
 
   namespace nvfbc {
