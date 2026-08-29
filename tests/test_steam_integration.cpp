@@ -231,8 +231,32 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_EQ(games[0].steam_client_path, base);
   EXPECT_NE(launch_command(games[0]).find("mangohud vibepollo-mangohud --appid 42 -- env"), std::string::npos);
 
+  // Custom compatibility tools live outside steamapps. Modern config_info
+  // records the Steam client root explicitly, which must be used to resolve
+  // the required pressure-vessel runtime.
+  const auto external_proton = base / "compatibilitytools.d/ExternalProton";
+  fs::create_directories(external_proton / "files/share/fonts", ec);
+  {
+    std::ofstream output(external_proton / "toolmanifest.vdf");
+    output << R"VDF("manifest" { "require_tool_appid" "99" })VDF";
+  }
+  {
+    std::ofstream output(compatdata / "config_info");
+    output << "External Proton\n"
+           << (external_proton / "files/share/fonts").string() << "/\n"
+           << (external_proton / "files/lib").string() << "/\n"
+           << base.string() << "\n";
+  }
+  const auto custom_tool_games = discover({base});
+  ASSERT_GE(custom_tool_games.size(), 1U);
+  EXPECT_EQ(custom_tool_games[0].proton_path, external_proton);
+  EXPECT_EQ(custom_tool_games[0].steam_client_path, base);
+  EXPECT_EQ(custom_tool_games[0].proton_runtime_path, runtime);
+  EXPECT_NE(launch_command(custom_tool_games[0]).find("ExternalProton/proton"), std::string::npos);
+
   // Compatibility tools can also be installed outside a Steam library. The
-  // upward search must stop at the filesystem root and use the broker fallback.
+  // upward search must stop at the filesystem root and use the broker fallback
+  // when older config_info metadata does not identify the Steam client.
   {
     std::ofstream output(compatdata / "config_info");
     output << "External Proton\n/opt/proton/files/share/fonts/\n";

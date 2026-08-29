@@ -514,22 +514,33 @@ namespace {
     std::ifstream input(game.compatdata_path / "config_info");
     std::string version;
     std::string files_path;
+    std::string library_path;
+    std::string steam_client_path;
     if (!std::getline(input, version) || !std::getline(input, files_path)) return;
+    std::getline(input, library_path);
+    std::getline(input, steam_client_path);
     const auto marker = files_path.find("/files/");
     if (marker == std::string::npos) return;
     game.proton_path = files_path.substr(0, marker);
 
-    auto steamapps = game.proton_path;
-    while (!steamapps.empty() && steamapps.filename() != "steamapps") {
-      const auto parent = steamapps.parent_path();
-      if (parent == steamapps) {
-        steamapps.clear();
-        break;
+    fs::path steamapps;
+    std::error_code ec;
+    if (!steam_client_path.empty() && fs::is_directory(fs::path(steam_client_path) / "steamapps", ec)) {
+      game.steam_client_path = steam_client_path;
+      steamapps = game.steam_client_path / "steamapps";
+    } else {
+      steamapps = game.proton_path;
+      while (!steamapps.empty() && steamapps.filename() != "steamapps") {
+        const auto parent = steamapps.parent_path();
+        if (parent == steamapps) {
+          steamapps.clear();
+          break;
+        }
+        steamapps = parent;
       }
-      steamapps = parent;
+      if (steamapps.empty() || steamapps.filename() != "steamapps") return;
+      game.steam_client_path = steamapps.parent_path();
     }
-    if (steamapps.empty() || steamapps.filename() != "steamapps") return;
-    game.steam_client_path = steamapps.parent_path();
 
     std::ifstream tool_manifest(game.proton_path / "toolmanifest.vdf");
     if (!tool_manifest) return;
@@ -549,7 +560,7 @@ namespace {
     const auto *install_dir = app_state ? app_state->find("installdir") : nullptr;
     if (!install_dir || install_dir->value.empty()) return;
     const auto runtime = steamapps / "common" / install_dir->value;
-    std::error_code ec;
+    ec.clear();
     if (fs::is_regular_file(runtime / "_v2-entry-point", ec)) {
       game.proton_runtime_path = runtime;
     }
