@@ -174,7 +174,9 @@ namespace platf::kms::pacing {
 
       state_pending_ = pending;
       if (pending) {
-        if (!pending_since_) {
+        // A newly completed sequence is forward progress. Start a fresh hang
+        // deadline even when another submitted commit is already pending.
+        if (response == presentation_response_e::changed || !pending_since_) {
           pending_since_ = now;
         }
       } else {
@@ -183,7 +185,9 @@ namespace platf::kms::pacing {
     }
 
     [[nodiscard]] bool capture_ready() const {
-      return capture_needed_ && !state_pending_;
+      // PENDING describes the next submitted commit. The latest completed
+      // framebuffer remains coherent and should be consumed immediately.
+      return capture_needed_;
     }
 
     [[nodiscard]] bool state_pending() const {
@@ -219,14 +223,6 @@ namespace platf::kms::pacing {
       return presentation_ioctl_error_e::transient_timeout;
     }
     return presentation_ioctl_error_e::unsupported;
-  }
-
-  inline bool hold_pending_response_to_deadline(
-    presentation_response_e response,
-    bool pending,
-    bool blocking_wait
-  ) {
-    return response == presentation_response_e::changed && pending && blocking_wait;
   }
 
   inline presentation_response_e classify_response(
