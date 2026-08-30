@@ -4,8 +4,10 @@
 #include "confighttp.h"
 #include "file_handler.h"
 #include "logging.h"
+#include "lutris_artwork.h"
 #include "lutris_integration.h"
 #include "lutris_sync_policy.h"
+#include "platform/common.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -64,9 +66,10 @@ namespace platf::lutris::autosync {
           }
           if (settings.enabled && settings.auto_sync) {
             try {
-              const auto games = discover();
+              auto games = discover();
               const auto fingerprint = source_fingerprint(games);
               if (!have_fingerprint || fingerprint != previous_fingerprint) {
+                artwork::prepare(games, platf::appdata());
                 std::lock_guard apps_lock {confighttp::apps_file_mutex()};
                 const auto contents = file_handler::read_file(config::stream.file_apps.c_str());
                 if (!contents.empty()) {

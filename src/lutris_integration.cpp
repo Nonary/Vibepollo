@@ -55,19 +55,22 @@ namespace platf::lutris {
       return {};
     }
 
-    std::filesystem::path discover_image(const std::filesystem::path &lutris_data,
-                                         const std::string &slug) {
+    std::filesystem::path discover_artwork(const std::filesystem::path &lutris_data,
+                                           const std::string &slug) {
       if (slug.empty()) return {};
-      // Sunshine's catalog image contract is PNG. Prefer Lutris' generated
-      // application icon; JPEG cover art remains visible through the API but
-      // is not passed to clients that require a PNG signature.
+      return first_existing(lutris_data / "coverart", slug, {".png", ".jpg", ".jpeg", ".webp"});
+    }
+
+    std::filesystem::path discover_icon(const std::filesystem::path &lutris_data,
+                                        const std::string &slug) {
+      if (slug.empty()) return {};
       auto data_home = lutris_data.parent_path();
       for (const auto size : {"256x256", "128x128", "64x64", "48x48"}) {
         auto image = first_existing(data_home / "icons/hicolor" / size / "apps",
                                     "lutris_" + slug, {".png"});
         if (!image.empty()) return image;
       }
-      return first_existing(lutris_data / "coverart", slug, {".png"});
+      return {};
     }
 
     void hash_bytes(std::uint64_t &hash, std::string_view value) {
@@ -78,6 +81,17 @@ namespace platf::lutris {
       }
       hash ^= 0xff;
       hash *= prime;
+    }
+
+    void hash_path(std::uint64_t &hash, const std::filesystem::path &path) {
+      hash_bytes(hash, path.generic_string());
+      if (path.empty()) return;
+      std::error_code error;
+      const auto size = std::filesystem::file_size(path, error);
+      hash_bytes(hash, error ? "missing" : std::to_string(size));
+      error.clear();
+      const auto modified = std::filesystem::last_write_time(path, error);
+      hash_bytes(hash, error ? "unstatable" : std::to_string(modified.time_since_epoch().count()));
     }
 
 #if defined(__linux__)
@@ -159,7 +173,8 @@ namespace platf::lutris {
       game.service_id = text(statement.get(), 8);
       game.last_played = sqlite3_column_int64(statement.get(), 9);
       game.playtime_seconds = sqlite3_column_double(statement.get(), 10);
-      game.image_path = discover_image(lutris_data, game.slug);
+      game.artwork_path = discover_artwork(lutris_data, game.slug);
+      game.icon_path = discover_icon(lutris_data, game.slug);
       game.stable_id = game.steam_backed() && !game.service_id.empty() ?
                          "steam:" + game.service_id :
                          "lutris:" + std::to_string(game.id);
@@ -177,6 +192,8 @@ namespace platf::lutris {
       hash_bytes(hash, game.service_id);
       hash_bytes(hash, game.directory.generic_string());
       hash_bytes(hash, game.config_path);
+      hash_path(hash, game.artwork_path);
+      hash_path(hash, game.icon_path);
     }
     return hash;
   }

@@ -670,9 +670,8 @@ namespace platf::steam::artwork {
     return appdata / "covers" / ("steam_" + std::to_string(app_id) + ".png");
   }
 
-  sync_result_t sync(std::uint32_t app_id, const fs::path &source, const fs::path &appdata) {
+  sync_result_t sync_to(const fs::path &source, const fs::path &output) {
     sync_result_t result;
-    const auto output = cache_path(appdata, app_id);
     const auto fp = fingerprint(source);
     if (!fp) {
       std::error_code ec;
@@ -697,6 +696,10 @@ namespace platf::steam::artwork {
     result.converted = true;
     write_meta(sidecar_path(output), *fp);
     return result;
+  }
+
+  sync_result_t sync(std::uint32_t app_id, const fs::path &source, const fs::path &appdata) {
+    return sync_to(source, cache_path(appdata, app_id));
   }
 
   void prepare(std::vector<game_t> &games, const fs::path &appdata, remote_fetcher_t fetcher) {

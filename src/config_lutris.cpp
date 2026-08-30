@@ -4,9 +4,11 @@
 #ifndef SUNSHINE_TESTS
   #include "confighttp.h"
   #include "file_handler.h"
+  #include "lutris_artwork.h"
   #include "lutris_auto_sync.h"
   #include "lutris_integration.h"
   #include "lutris_sync_policy.h"
+  #include "platform/common.h"
 
   #include <nlohmann/json.hpp>
 #endif
@@ -106,7 +108,8 @@ namespace config {
     });
     if (!lutris.enabled || !lutris.auto_sync) return;
     try {
-      const auto games = platf::lutris::discover();
+      auto games = platf::lutris::discover();
+      platf::lutris::artwork::prepare(games, platf::appdata());
       std::lock_guard apps_lock {confighttp::apps_file_mutex()};
       const auto contents = file_handler::read_file(stream.file_apps.c_str());
       if (contents.empty()) return;
