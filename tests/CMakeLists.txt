@@ -2426,3 +2426,12 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     set_tests_properties(test_component_avahi_lifetime
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_client_name_environment
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_client_name_environment.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_client_name_environment
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
