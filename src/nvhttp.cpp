@@ -2784,12 +2784,8 @@ namespace nvhttp {
 
       int pair_status = 0;
       if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-        auto args = request->parse_query_string();
-        auto clientID = args.find("uniqueid"s);
-
-        if (clientID != std::end(args)) {
-          pair_status = 1;
-        }
+        const auto verified_client = get_verified_cert(request);
+        pair_status = !resolve_client_identity(request, verified_client).uuid.empty();
       }
 
       auto local_endpoint = request->local_endpoint();
