@@ -155,7 +155,7 @@ read_state_file() {
   [[ -f "$path" && ! -L "$path" ]] || return 1
   attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$path") || return 1
   [[ "$attributes" == "root:root:${expected_mode}:regular file" ]] || return 1
-  /usr/bin/mapfile -t fields <"$path"
+  mapfile -t fields <"$path"
   [[ ${#fields[@]} == 3 ]] || return 1
   validate_identity "${fields[0]}" "${fields[1]}" || return 1
   valid_token "${fields[2]}" || return 1
