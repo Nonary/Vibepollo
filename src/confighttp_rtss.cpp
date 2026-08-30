@@ -392,12 +392,13 @@ namespace confighttp {
       {"fps_limit_millihz", config::frame_limiter.fps_limit_millihz},
       {"overlay_preset", config::frame_limiter.mangohud_preset},
       {"always_show_graph", config::frame_limiter.mangohud_always_show_graph},
+      {"limiter_method", config::frame_limiter.mangohud_limiter_method},
       {"mangohud_available", available},
       {"resolved_path", path.string()},
       {"message", proton_overlay_selected ?
                     (available ?
                        "The MangoHUD overlay and Proton DXVK/VKD3D limiter are ready for managed Steam games." :
-                       "MangoHUD + Proton is selected, but MangoHUD was not found in PATH.") : proton_selected ?
+                       "The Proton DXVK/VKD3D limiter is ready, but MangoHUD was not found in PATH; the overlay will be unavailable.") : proton_selected ?
                     "The Proton DXVK/VKD3D frame limiter is selected for managed Steam D3D9-12 games." : available ?
                     "MangoHUD is installed and ready for launched games." :
                     "MangoHUD was not found in PATH; install it to enable Linux frame limiting."}

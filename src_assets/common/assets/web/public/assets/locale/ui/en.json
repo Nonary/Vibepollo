@@ -1673,7 +1673,7 @@
           "label": "Virtual-screen game smoothness"
         },
         "frame_limiter_provider": {
-          "description": "Used by manual limiting and automatic virtual-screen game smoothness. Automatic uses MangoHUD on Linux; on Windows it prefers RTSS, then NVIDIA Control Panel."
+          "description": "Used by manual limiting and automatic virtual-screen game smoothness. On Linux, Automatic uses the frame-generation-capable Proton limiter and presents MangoHUD; on Windows it prefers RTSS, then NVIDIA Control Panel."
         },
         "frame_limiter_fps_limit": {
           "description": "0 follows the stream rate. A nonzero value also replaces the automatically calculated virtual-screen limit."
@@ -1977,6 +1977,7 @@
           "off": "Off — no automatic virtual refresh or WGC admission limit"
         },
         "frame_limiter_provider": {
+          "autoLinux": "Automatic — Proton limiter + MangoHUD overlay",
           "mangohud": "MangoHUD",
           "mangohudProton": "MangoHUD + Proton",
           "proton": "Proton DXVK/VKD3D",

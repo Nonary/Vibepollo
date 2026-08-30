@@ -702,6 +702,8 @@
     "fec_percentage_desc": "Percentage of error correcting packets per data packet in each video frame. Higher values can correct for more network packet loss, but at the cost of increasing bandwidth usage.",
     "frame_limiter_fps_limit": "Frame limiter FPS limit",
     "frame_limiter_fps_limit_desc": "Optional global FPS limit for the frame limiter. MangoHUD and RTSS support up to three decimal places; NVIDIA Control Panel rounds fractional limits. Set to 0 to use the stream's requested FPS.",
+    "mangohud_limiter_method": "MangoHUD limiter timing",
+    "mangohud_limiter_method_desc": "Early favors smoother pacing with more latency. Late favors lower latency but cannot limit frame-generated output. Proton limiting supports frame generation.",
     "mangohud_preset": "MangoHud metrics and layout",
     "mangohud_preset_desc": "Choose a standard MangoHud overlay preset or retain the metrics from your MangoHud configuration.",
     "mangohud_always_show_graph": "Always show MangoHud frame-time graph",
@@ -1978,6 +1980,7 @@
     "enableHint": "Vibepollo applies the selected limiter provider at stream start and restores the previous driver setting when the stream ends.",
     "providerLabel": "Limiter provider",
     "providerHint": "Auto prefers RTSS whenever it is available and falls back to the NVIDIA driver's limiter when it isn't. RTSS is recommended: its limiter — including the NVIDIA Reflex mode used on virtual screens — delivers the most consistent frame pacing.",
+    "providerHintLinux": "Automatic uses Proton's built-in DXVK or vkd3d-proton limiter for managed Steam games and keeps the MangoHUD overlay visible. Proton also limits frame-generated output. Choose MangoHUD to use its limiter with selectable early or late timing.",
     "limitLabel": "FPS limit override",
     "limitHint": "Optional global FPS limit for NVIDIA or RTSS. RTSS supports decimals; NVIDIA rounds to a whole FPS. Set to 0 to use the client display override or requested stream FPS.",
     "limitPlaceholder": "0",
@@ -1985,11 +1988,19 @@
     "autoVirtualFramegenHint": "Enabled uses 4× refresh while a game is active and 1× on the desktop. Stream FPS stays the same, so overall performance should not be affected; games with uneven frame pacing can capture much more smoothly. Disabled turns off these automatic adjustments and the virtual-display limiter. Legacy uses a fixed 2× refresh for the entire stream.",
     "provider": {
       "auto": "Auto (RTSS, then NVIDIA driver)",
-      "autoLinux": "Auto (MangoHUD)",
-      "mangohud": "MangoHUD (recommended)",
+      "autoLinux": "Automatic — Proton limiter + MangoHUD overlay",
+      "mangohud": "MangoHUD",
+      "mangohudProton": "MangoHUD + Proton",
+      "proton": "Proton DXVK/VKD3D",
       "nvcp": "NVIDIA driver",
       "rtss": "RTSS (recommended)",
       "none": "None"
+    },
+    "mangohudMethod": {
+      "label": "MangoHUD limiter timing",
+      "hint": "Only applies when MangoHUD owns the limit. Early waits before presentation for smoother pacing with more latency. Late waits after presentation for lower latency, but cannot limit frame-generated output. The Proton limiter supports frame generation.",
+      "early": "Early — smoother pacing, more latency",
+      "late": "Late — lower latency, no frame-generation limiting"
     },
     "syncLimiter": {
       "keep": "Do not change",
@@ -2020,6 +2031,9 @@
       "nvcpUnavailable": "NVIDIA driver integration (NvAPI) unavailable.",
       "mangohudDetected": "MangoHUD detected and ready for launched games.",
       "mangohudNotDetected": "MangoHUD was not found. Install it to enable Linux frame limiting.",
+      "protonReady": "Proton's DXVK/VKD3D limiter is ready for managed Steam games and supports frame generation.",
+      "protonMangoHudReady": "Proton's frame-generation-capable limiter is ready, with the MangoHUD overlay visible.",
+      "protonReadyMangoHudMissing": "Proton's limiter is ready, but MangoHUD was not found, so the overlay will not be visible.",
       "rtssDetected": "RTSS detected and ready.",
       "rtssNotDetected": "RTSS not detected.",
       "none": "None",

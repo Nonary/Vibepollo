@@ -37,6 +37,7 @@ provider=mangohud
 limit=
 preset=custom
 always_show_graph=0
+limiter_method=late
 owner_pid=0
 expires=0
 while IFS='=' read -r key value; do
@@ -46,6 +47,7 @@ while IFS='=' read -r key value; do
     limit) limit=$value ;;
     preset) preset=$value ;;
     always_show_graph) always_show_graph=$value ;;
+    limiter_method) limiter_method=$value ;;
     owner_pid) owner_pid=$value ;;
     expires) expires=$value ;;
   esac
@@ -146,6 +148,11 @@ fi
 
 [ "$provider" = mangohud ] || exec "$@"
 
+case "$limiter_method" in
+  early|late) ;;
+  *) limiter_method=late ;;
+esac
+
 # Preserve the user's HUD choices, then append Vibepollo's settings so its
 # stream-owned limit is the final value parsed by MangoHud.
 managed_config=read_cfg
@@ -158,7 +165,7 @@ esac
 if [ "$always_show_graph" = 1 ]; then
   managed_config=$managed_config,no_display=0,frame_timing=1
 fi
-MANGOHUD_CONFIG=$managed_config,fps_limit=$limit
+MANGOHUD_CONFIG=$managed_config,fps_limit_method=$limiter_method,fps_limit=$limit
 MANGOHUD=1
 export MANGOHUD_CONFIG MANGOHUD
 

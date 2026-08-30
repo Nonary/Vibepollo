@@ -259,6 +259,7 @@ const defaultGroups = [
       frame_limiter_enable: false,
       frame_limiter_provider: 'auto',
       frame_limiter_fps_limit: 0,
+      mangohud_limiter_method: 'late',
       frame_limiter_auto_virtual_framegen: 'enabled',
       rtss_install_path: '',
       rtss_frame_limit_type: 'async',
@@ -617,6 +618,9 @@ export const useConfigStore = defineStore('config', () => {
       }
       if (!Object.prototype.hasOwnProperty.call(data, 'frame_limiter_provider')) {
         (data as Record<string, unknown>)['frame_limiter_provider'] = 'auto';
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'mangohud_limiter_method')) {
+        (data as Record<string, unknown>)['mangohud_limiter_method'] = 'late';
       }
       const virtualCaptureKey = 'frame_limiter_auto_virtual_framegen';
       if (!Object.prototype.hasOwnProperty.call(data, virtualCaptureKey)) {

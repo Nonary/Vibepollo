@@ -716,6 +716,8 @@
     "fec_percentage_desc": "Percentage of error correcting packets per data packet in each video frame. Higher values can correct for more network packet loss, but at the cost of increasing bandwidth usage.",
     "frame_limiter_fps_limit": "Frame limiter FPS limit",
     "frame_limiter_fps_limit_desc": "Optional global FPS limit for the frame limiter. MangoHUD and RTSS support up to three decimal places; NVIDIA Control Panel rounds fractional limits. Set to 0 to use the stream's requested FPS.",
+    "mangohud_limiter_method": "MangoHUD limiter timing",
+    "mangohud_limiter_method_desc": "Early favors smoother pacing with more latency. Late favors lower latency but cannot limit frame-generated output. Proton limiting supports frame generation.",
     "mangohud_preset": "MangoHud metrics and layout",
     "mangohud_preset_desc": "Choose a standard MangoHud overlay preset or retain the metrics from your MangoHud configuration.",
     "mangohud_always_show_graph": "Always show MangoHud frame-time graph",

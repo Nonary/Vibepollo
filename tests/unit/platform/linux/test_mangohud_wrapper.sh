@@ -10,6 +10,7 @@ write_state() {
   provider=${2-mangohud}
   preset=${3-custom}
   always_show_graph=${4-0}
+  limiter_method=${5-late}
   expires=$(($(date +%s) + 60))
   printf '%s\n' \
     'version=2' \
@@ -17,20 +18,21 @@ write_state() {
     "limit=$limit" \
     "preset=$preset" \
     "always_show_graph=$always_show_graph" \
+    "limiter_method=$limiter_method" \
     "owner_pid=$$" \
     "expires=$expires" > "$test_root/480.state"
 }
 
 probe='printf "config=%s\nlimit=%s\n" "$MANGOHUD_CONFIG" "${MANGOHUD_FPS_LIMIT-UNSET}"'
 
-write_state 59.94
+write_state 59.94 mangohud custom 0 early
 fractional=$(
   VIBEPOLLO_MANGOHUD_STATE_DIR=$test_root \
   MANGOHUD_CONFIG='position=top-right,fps_limit=30' \
   MANGOHUD_FPS_LIMIT=30 \
     "$wrapper" --appid 480 -- /bin/sh -c "$probe"
 )
-expected_fractional='config=read_cfg,position=top-right,fps_limit=30,fps_limit=59.94
+expected_fractional='config=read_cfg,position=top-right,fps_limit=30,fps_limit_method=early,fps_limit=59.94
 limit=UNSET'
 [ "$fractional" = "$expected_fractional" ]
 
@@ -39,7 +41,7 @@ integer=$(
   VIBEPOLLO_MANGOHUD_STATE_DIR=$test_root \
     "$wrapper" --appid 480 -- /bin/sh -c "$probe"
 )
-expected_integer='config=read_cfg,fps_limit=120
+expected_integer='config=read_cfg,fps_limit_method=late,fps_limit=120
 limit=120'
 [ "$integer" = "$expected_integer" ]
 

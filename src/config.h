@@ -342,8 +342,10 @@ namespace config {
 
     bool enable {false};
 
-    // Provider selector. Linux uses MangoHUD; Windows uses RTSS or NVIDIA Control Panel.
-    // Supported values: "auto", "mangohud", "proton", "nvidia-control-panel", "rtss", "none".
+    // Provider selector. Linux defaults to Proton with a MangoHUD overlay;
+    // Windows defaults to RTSS or NVIDIA Control Panel.
+    // Supported values: "auto", "mangohud", "proton", "mangohud-proton",
+    // "nvidia-control-panel", "rtss", "none".
     std::string provider;
 
     // Optional FPS limit override in millihertz. 0 uses the stream's requested FPS.
@@ -353,6 +355,8 @@ namespace config {
     // configuration; 1-4 select MangoHUD's standard built-in presets.
     std::string mangohud_preset {"custom"};
     bool mangohud_always_show_graph {false};
+    // MangoHUD's own limiter timing. Early favors smooth pacing; late favors latency.
+    std::string mangohud_limiter_method {"late"};
 
     // When enabled, Sunshine forces the NVIDIA driver VSYNC setting to Off during streams when available.
     // When NVIDIA overrides are unavailable, the display helper falls back to the highest refresh rate instead.

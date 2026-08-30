@@ -441,6 +441,19 @@ const everydayPacingFields = (): SettingsField[] => [
     descriptionKey: 'ui.settings.fields.frame_limiter_fps_limit.description',
   }),
   select(
+    'mangohud_limiter_method',
+    [
+      option('early', 'ui.integrations.mangohud.limiterMethodEarly'),
+      option('late', 'ui.integrations.mangohud.limiterMethodLate'),
+    ],
+    {
+      labelKey: 'ui.integrations.mangohud.limiterMethod',
+      descriptionKey: 'ui.integrations.mangohud.limiterMethodDescription',
+      platform: 'linux',
+      visibleWhen: { key: 'frame_limiter_provider', equals: 'mangohud' },
+    },
+  ),
+  select(
     'mangohud_preset',
     [
       option('custom', 'ui.integrations.mangohud.presetCustom'),
@@ -1025,6 +1038,7 @@ export const settingsDefaults: Record<string, unknown> = {
   frame_limiter_enable: false,
   frame_limiter_provider: 'auto',
   frame_limiter_fps_limit: 0,
+  mangohud_limiter_method: 'late',
   mangohud_preset: 'custom',
   mangohud_always_show_graph: false,
   frame_limiter_auto_virtual_framegen: 'enabled',

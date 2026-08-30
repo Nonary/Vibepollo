@@ -76,6 +76,40 @@ test('Linux hides Windows-only input and audio installation controls', () => {
   }
 });
 
+test('Linux Proton and MangoHUD limiter choices stay aligned with legacy UI', () => {
+  assert.equal(settingsDefaults.frame_limiter_provider, 'auto');
+  assert.equal(settingsDefaults.mangohud_limiter_method, 'late');
+
+  const fields = settingsCategories.flatMap((category) =>
+    category.groups.flatMap((group) => group.fields),
+  );
+  const method = fields.find((field) => field.key === 'mangohud_limiter_method');
+  assert.deepEqual(method?.platform, 'linux');
+  assert.deepEqual(method?.visibleWhen, {
+    key: 'frame_limiter_provider',
+    equals: 'mangohud',
+  });
+  assert.deepEqual(
+    method?.options?.map((option) => option.value),
+    ['early', 'late'],
+  );
+
+  const messages = JSON.parse(
+    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+  );
+  assert.match(messages.ui.integrations.mangohud.providerAuto, /Proton.*MangoHUD/i);
+  assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /latency/i);
+  assert.match(messages.ui.integrations.mangohud.limiterMethodDescription, /frame generation/i);
+
+  const legacyStep = readFileSync(
+    new URL('../../web-legacy/configs/tabs/audiovideo/FrameLimiterStep.vue', import.meta.url),
+    'utf8',
+  );
+  assert.match(legacyStep, /value: 'mangohud-proton'/);
+  assert.match(legacyStep, /value: 'proton'/);
+  assert.match(legacyStep, /setting-key="mangohud_limiter_method"/);
+});
+
 test('Linux maintenance omits Windows-only support and recovery sections', () => {
   const maintenanceView = readFileSync(
     new URL('../views/MaintenanceView.vue', import.meta.url),

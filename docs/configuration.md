@@ -2878,7 +2878,7 @@ this option to replace the running app immediately. The default is `true`.
 
 ## Frame Limiter
 
-These options integrate with MangoHUD on Linux and RTSS or NVIDIA Control Panel on Windows to
+These options integrate with Proton and MangoHUD on Linux and RTSS or NVIDIA Control Panel on Windows to
 manage frame pacing and related behavior during a stream.
 They appear in the Frame Limiter section of the settings UI.
 
@@ -2923,13 +2923,21 @@ They appear in the Frame Limiter section of the settings UI.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="5">Choices</td>
+        <td rowspan="7">Choices</td>
         <td>auto</td>
-        <td>Use MangoHUD on Linux. On Windows, prefer RTSS when available and otherwise fall back to NVIDIA Control Panel.</td>
+        <td>On Linux, use Proton's DXVK/VKD3D limiter and present the MangoHUD overlay. On Windows, prefer RTSS when available and otherwise fall back to NVIDIA Control Panel.</td>
     </tr>
     <tr>
         <td>mangohud</td>
         <td>Use MangoHUD on Linux. Vibepollo enables it for launched games and supplies the stream-derived FPS limit.</td>
+    </tr>
+    <tr>
+        <td>mangohud-proton</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games and keep the MangoHUD overlay visible. This limiter supports frame-generated output.</td>
+    </tr>
+    <tr>
+        <td>proton</td>
+        <td>Use Proton's DXVK/VKD3D limiter for managed Steam games without presenting MangoHUD. This limiter supports frame-generated output.</td>
     </tr>
     <tr>
         <td>rtss</td>
@@ -2966,6 +2974,35 @@ They appear in the Frame Limiter section of the settings UI.
             frame_limiter_fps_limit = 59.94
             @endcode</td>
     </tr>
+</table>
+
+### mangohud_limiter_method
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Linux-only timing used when <code>frame_limiter_provider = mangohud</code>.
+            <code>early</code> waits before presentation for smoother pacing at the cost of
+            more latency. <code>late</code> waits after presentation for lower latency, but
+            cannot limit frame-generated output. The Proton limiter supports frame generation.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}late@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            mangohud_limiter_method = early
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>early</td><td>Smoother frame pacing with more latency.</td>
+    </tr>
+    <tr><td>late</td><td>Lower latency; does not limit frame-generated output.</td></tr>
 </table>
 
 ### mangohud_preset

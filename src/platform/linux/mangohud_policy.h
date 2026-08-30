@@ -36,17 +36,19 @@ namespace platf::mangohud {
 
   inline bool provider_selected(std::string_view provider) {
     const auto normalized = normalize_provider(provider);
-    return normalized.empty() || normalized == "auto" || normalized == "mangohud";
+    return normalized == "mangohud";
   }
 
   inline bool proton_provider_selected(std::string_view provider) {
     const auto normalized = normalize_provider(provider);
-    return normalized == "proton" || normalized == "mangohudproton" || normalized == "protonmangohud";
+    return normalized.empty() || normalized == "auto" || normalized == "proton" ||
+           normalized == "mangohudproton" || normalized == "protonmangohud";
   }
 
   inline bool proton_overlay_provider_selected(std::string_view provider) {
     const auto normalized = normalize_provider(provider);
-    return normalized == "mangohudproton" || normalized == "protonmangohud";
+    return normalized.empty() || normalized == "auto" || normalized == "mangohudproton" ||
+           normalized == "protonmangohud";
   }
 
   inline bool linux_provider_selected(std::string_view provider) {
@@ -113,7 +115,8 @@ namespace platf::mangohud {
   inline std::string config_override(
     std::string_view limit,
     std::string_view preset = "custom",
-    bool always_show_graph = false
+    bool always_show_graph = false,
+    std::string_view limiter_method = "late"
   ) {
     // MANGOHUD_CONFIG is passed through Steam's pressure-vessel runtime, while
     // older runtimes may discard the newer MANGOHUD_FPS_LIMIT variable. Load
@@ -130,6 +133,8 @@ namespace platf::mangohud {
     if (always_show_graph) {
       config += ",frame_timing=1";
     }
+    config += ",fps_limit_method=";
+    config += limiter_method == "early" ? "early" : "late";
     config += ",fps_limit=";
     config += limit;
     return config;
@@ -163,7 +168,8 @@ namespace platf::mangohud {
     std::string_view inherited_config,
     std::string_view limit,
     std::string_view preset,
-    bool always_show_graph
+    bool always_show_graph,
+    std::string_view limiter_method = "late"
   ) {
     std::string config = "read_cfg";
     if (!inherited_config.empty()) {
@@ -171,7 +177,7 @@ namespace platf::mangohud {
       config += inherited_config;
     }
 
-    const auto managed = config_override(limit, preset, always_show_graph);
+    const auto managed = config_override(limit, preset, always_show_graph, limiter_method);
     // The first token in the managed fragment is already supplied above.
     config.append(managed, std::string_view("read_cfg").size());
     return config;

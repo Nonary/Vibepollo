@@ -1797,7 +1797,8 @@ namespace proc {
           proton_overlay_enabled ? "mangohud-proton" : "proton",
           mangohud_policy.limit,
           config::frame_limiter.mangohud_preset,
-          proton_overlay_enabled && config::frame_limiter.mangohud_always_show_graph
+          proton_overlay_enabled && config::frame_limiter.mangohud_always_show_graph,
+          config::frame_limiter.mangohud_limiter_method
         );
         if (state_path.empty()) {
           BOOST_LOG(warning) << "Could not write the Steam Proton limiter handoff state for app "
@@ -1826,7 +1827,8 @@ namespace proc {
         _env["MANGOHUD_CONFIG"] = platf::mangohud::config_override(
           mangohud_policy.limit,
           config::frame_limiter.mangohud_preset,
-          config::frame_limiter.mangohud_always_show_graph
+          config::frame_limiter.mangohud_always_show_graph,
+          config::frame_limiter.mangohud_limiter_method
         );
         _env["MANGOHUD_FPS_LIMIT"] = platf::mangohud::fps_limit_environment_override(
           mangohud_policy.limit_millihz,
@@ -1840,7 +1842,8 @@ namespace proc {
             "mangohud",
             mangohud_policy.limit,
             config::frame_limiter.mangohud_preset,
-            config::frame_limiter.mangohud_always_show_graph
+            config::frame_limiter.mangohud_always_show_graph,
+            config::frame_limiter.mangohud_limiter_method
           );
           if (state_path.empty()) {
             BOOST_LOG(warning) << "Could not write the Steam MangoHUD handoff state for app "

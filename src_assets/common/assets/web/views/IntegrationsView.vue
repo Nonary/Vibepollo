@@ -59,6 +59,7 @@ interface MangoHudStatus {
   fps_limit_millihz?: number;
   overlay_preset?: string;
   always_show_graph?: boolean;
+  limiter_method?: string;
   mangohud_available?: boolean;
   resolved_path?: string;
   message?: string;
@@ -193,6 +194,7 @@ const mangoDraft = ref({
   enabled: false,
   provider: 'auto',
   fpsLimit: 0,
+  limiterMethod: 'late',
   overlayPreset: 'custom',
   alwaysShowGraph: false,
 });
@@ -394,6 +396,7 @@ function resetMangoDraft(): void {
     enabled: mangohud.value?.enabled === true,
     provider: String(mangohud.value?.configured_provider || 'auto'),
     fpsLimit: Number(mangohud.value?.fps_limit ?? 0),
+    limiterMethod: String(mangohud.value?.limiter_method || 'late'),
     overlayPreset: String(mangohud.value?.overlay_preset || 'custom'),
     alwaysShowGraph: mangohud.value?.always_show_graph === true,
   };
@@ -406,6 +409,7 @@ const mangoDirty = computed(
     mangoDraft.value.enabled !== mangoOriginal.value.enabled ||
     mangoDraft.value.provider !== mangoOriginal.value.provider ||
     Number(mangoDraft.value.fpsLimit) !== Number(mangoOriginal.value.fpsLimit) ||
+    mangoDraft.value.limiterMethod !== mangoOriginal.value.limiterMethod ||
     mangoDraft.value.overlayPreset !== mangoOriginal.value.overlayPreset ||
     mangoDraft.value.alwaysShowGraph !== mangoOriginal.value.alwaysShowGraph,
 );
@@ -662,25 +666,43 @@ function mangoHudSummary(): IntegrationSummary {
     value.configured_provider === 'mangohud' ||
     value.configured_provider === 'proton' ||
     value.configured_provider === 'mangohud-proton';
-  const available = value.configured_provider === 'proton' || value.mangohud_available === true;
+  const protonSelected =
+    value.configured_provider === 'auto' ||
+    value.configured_provider === 'proton' ||
+    value.configured_provider === 'mangohud-proton';
+  const overlayMissing =
+    (value.configured_provider === 'auto' || value.configured_provider === 'mangohud-proton') &&
+    value.mangohud_available !== true;
+  const available = protonSelected || value.mangohud_available === true;
   const enabled = value.enabled === true && selected;
   return {
     id: 'mangohud',
     name,
     description,
-    status: !available
-      ? t('ui.integrations.status.notDetected')
-      : enabled
-        ? t('_common.active')
-        : selected
-          ? t('ui.integrations.status.ready')
-          : t('_common.disabled'),
-    tone: !available ? 'warning' : enabled ? 'success' : selected ? 'info' : 'neutral',
+    status: overlayMissing
+      ? t('ui.integrations.mangohud.overlayMissing')
+      : !available
+        ? t('ui.integrations.status.notDetected')
+        : enabled
+          ? t('_common.active')
+          : selected
+            ? t('ui.integrations.status.ready')
+            : t('_common.disabled'),
+    tone: overlayMissing
+      ? 'warning'
+      : !available
+        ? 'warning'
+        : enabled
+          ? 'success'
+          : selected
+            ? 'info'
+            : 'neutral',
     details: [
       value.fps_limit
         ? t('ui.integrations.mangohud.fixedLimit', { fps: value.fps_limit })
         : t('ui.integrations.mangohud.streamLimit'),
       value.resolved_path || '',
+      value.message || '',
     ].filter(Boolean),
   };
 }
@@ -1167,6 +1189,7 @@ async function saveMangoSettings(): Promise<void> {
       frame_limiter_enable: submitted.enabled,
       frame_limiter_provider: submitted.provider,
       frame_limiter_fps_limit: fps,
+      mangohud_limiter_method: submitted.limiterMethod,
       mangohud_preset: submitted.overlayPreset,
       mangohud_always_show_graph: submitted.alwaysShowGraph,
     });
@@ -1177,6 +1200,9 @@ async function saveMangoSettings(): Promise<void> {
       enabled: submitted.enabled,
       configured_provider: submitted.provider,
       fps_limit: submitted.fpsLimit,
+      limiter_method: submitted.limiterMethod,
+      overlay_preset: submitted.overlayPreset,
+      always_show_graph: submitted.alwaysShowGraph,
     };
     delete errors.value.mangohud;
     notice.value = t('ui.integrations.notices.mangohudUpdated');
@@ -1822,6 +1848,25 @@ function libraryRequest(
                     {{ t('ui.integrations.mangohud.providerMangoHudProton') }}
                   </option>
                   <option value="none">{{ t('ui.integrations.mangohud.providerNone') }}</option>
+                </select>
+              </SettingRow>
+              <SettingRow
+                v-if="mangoDraft.provider === 'mangohud'"
+                :label="t('ui.integrations.mangohud.limiterMethod')"
+                :description="t('ui.integrations.mangohud.limiterMethodDescription')"
+                control-id="mangohud-limiter-method"
+              >
+                <select
+                  id="mangohud-limiter-method"
+                  v-model="mangoDraft.limiterMethod"
+                  class="integration-control"
+                >
+                  <option value="early">
+                    {{ t('ui.integrations.mangohud.limiterMethodEarly') }}
+                  </option>
+                  <option value="late">
+                    {{ t('ui.integrations.mangohud.limiterMethodLate') }}
+                  </option>
                 </select>
               </SettingRow>
               <SettingRow
