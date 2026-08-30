@@ -26,6 +26,7 @@ assume_yes=0
 dry_run=0
 force_reboot=0
 stage_dir=""
+watchdog_module=""
 
 usage() {
   cat <<EOF
@@ -550,7 +551,6 @@ if (( force_reboot )); then
   log "skipping the hardware watchdog setup; --force-reboot does not rely on it"
 else
   log "loading a hardware watchdog"
-  watchdog_module=""
   if sudo modprobe iTCO_wdt nowayout=1 heartbeat=60 && [[ -c "$watchdog_device" ]]; then
     watchdog_module="iTCO_wdt"
   else
@@ -796,7 +796,7 @@ else
   # Never trade systemd's reboot-phase watchdog for a counter that cannot fire
   # -- doing that is what turned an ordinary shutdown hang into a power-button
   # recovery. Put back what we touched and reboot with the cover systemd has.
-  log "WARNING: ${watchdog_module} timeleft stuck at ${countdown_probe_start:-missing}s over ${countdown_probe_seconds}s while PID 1 feeds it every $((hard_reboot_deadline_sec / 2))s"
+  log "WARNING: ${watchdog_module:-the hardware watchdog} timeleft stuck at ${countdown_probe_start:-missing}s over ${countdown_probe_seconds}s while PID 1 feeds it every $((hard_reboot_deadline_sec / 2))s"
   log "WARNING: the hardware countdown cannot fire; skipping the handoff and keeping RebootWatchdogSec armed"
   log "WARNING: this reboot has no hardware backstop -- if it wedges, use Alt+SysRq+S, U, B rather than the power button"
   restore_manager_watchdogs
