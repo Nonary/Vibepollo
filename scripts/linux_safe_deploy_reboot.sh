@@ -276,6 +276,7 @@ required_system_files=(
   "$stage_dir/usr/lib/vibeshine/libvibeshine-kwin-gpu.so"
   "$stage_dir/usr/libexec/vibeshine/kwin-preload/kwin_wayland"
   "$stage_dir/usr/lib/systemd/user/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf"
+  "$stage_dir/usr/lib/systemd/user/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf"
   "$stage_dir/usr/lib/systemd/system/vibeshine-drm-setup.service"
   "$stage_dir/usr/lib/systemd/system/vibeshine-vkms.service"
   "$stage_dir/usr/lib/systemd/system/vibeshine-vkms-control.socket"
@@ -469,6 +470,9 @@ sudo install -Dm755 \
 sudo install -Dm644 \
   "$stage_dir/usr/lib/systemd/user/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf" \
   /usr/lib/systemd/user/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
+sudo install -Dm644 \
+  "$stage_dir/usr/lib/systemd/user/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf" \
+  /usr/lib/systemd/user/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
 
 for unit in \
   vibeshine-drm-setup.service \
