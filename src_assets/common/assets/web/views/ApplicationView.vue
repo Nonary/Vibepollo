@@ -3064,7 +3064,6 @@ onBeforeUnmount(() => {
                 :tone="form.steamManaged === 'auto' ? 'success' : 'info'"
                 compact
               />
-              <span>{{ form.steamId }}</span>
               <AppButton
                 size="compact"
                 variant="tertiary"
@@ -3190,7 +3189,7 @@ onBeforeUnmount(() => {
             </label>
 
             <div class="vs-field editor-field editor-field--full">
-              <label v-if="!isPlayniteLinked" class="vs-field__label" for="app-image-path">
+              <label v-if="!isProviderLinked" class="vs-field__label" for="app-image-path">
                 {{ t('ui.application.fields.imagePath.label') }}
               </label>
               <span v-else class="vs-field__label">
@@ -3198,7 +3197,7 @@ onBeforeUnmount(() => {
               </span>
               <div class="editor-cover-control">
                 <input
-                  v-if="!isPlayniteLinked"
+                  v-if="!isProviderLinked"
                   id="app-image-path"
                   v-model="form.imagePath"
                   class="vs-input vs-monospace"
@@ -3218,7 +3217,9 @@ onBeforeUnmount(() => {
                   t(
                     isPlayniteLinked
                       ? 'ui.application.coverPicker.playniteWarning'
-                      : 'ui.application.fields.imagePath.help',
+                      : isProviderLinked
+                        ? 'ui.application.coverPicker.providerHelp'
+                        : 'ui.application.fields.imagePath.help',
                   )
                 }}
               </span>
@@ -3650,7 +3651,11 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="editor-section" aria-labelledby="commands-heading">
+      <section
+        v-if="!isProviderLinked"
+        class="editor-section"
+        aria-labelledby="commands-heading"
+      >
         <div class="editor-section__heading editor-section__heading--actions">
           <div>
             <h2 id="commands-heading">{{ t('ui.application.sections.commands.title') }}</h2>
