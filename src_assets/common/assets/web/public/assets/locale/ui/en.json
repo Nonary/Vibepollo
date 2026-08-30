@@ -1584,6 +1584,7 @@
         },
         "frame_limiter_auto_virtual_framegen": {
           "description": "Automatic keeps the virtual screen at 4× refresh and changes only WGC's latest-frame admission: 2× on the desktop and 4× for a confirmed game. This avoids display-mode changes while retaining high-rate game capture. Compatibility keeps the older fixed 2× behavior.",
+          "description_linux": "Automatic keeps the virtual display at 4× the requested stream rate and caps launched games to that rate with the selected Linux limiter. Compatibility uses a fixed 2× virtual-display rate.",
           "label": "Virtual-screen game smoothness"
         },
         "frame_limiter_provider": {
@@ -1683,7 +1684,7 @@
           "title": "Virtual display"
         },
         "display_remote_monitor": {
-          "description": "Use a paired device as an additional Windows display. Choose whether it receives audio and when the display is removed.",
+          "description": "Use a paired device as an additional display. Choose whether it receives audio and when the display is removed.",
           "title": "Remote Monitor"
         },
         "everyday_access": {
@@ -1721,11 +1722,12 @@
           "title": "Display lifecycle and recovery"
         },
         "everyday_remote_monitor": {
-          "description": "Use a paired device as an additional Windows display. Choose whether it receives audio and when the display is removed.",
+          "description": "Use a paired device as an additional display. Choose whether it receives audio and when the display is removed.",
           "title": "Remote Monitor"
         },
         "everyday_smoothness": {
           "description": "Virtual screens automatically match the game cap to the stream and switch between desktop and game refresh rates.",
+          "description_linux": "Virtual displays run at a multiple of the requested stream rate while launched games are capped through the selected Linux limiter for smoother motion and lower GPU load.",
           "title": "Automatic virtual-screen smoothness"
         },
         "everyday_virtual_display": {
@@ -1838,8 +1840,11 @@
         },
         "frame_generation": {
           "automatic": "Automatic — always 4× display; desktop WGC capped at 2× / games at 4× (recommended)",
+          "automatic_linux": "Automatic — 4× virtual display; cap games to the stream rate (recommended)",
           "compatibility": "Compatibility — fixed 2× display and capture",
-          "off": "Off — no automatic virtual refresh or WGC admission limit"
+          "compatibility_linux": "Compatibility — 2× virtual display; cap games to the stream rate",
+          "off": "Off — no automatic virtual refresh or WGC admission limit",
+          "off_linux": "Off — no automatic virtual-display refresh or game cap"
         },
         "frame_limiter_provider": {
           "mangohud": "MangoHUD",
@@ -2036,9 +2041,13 @@
       "summary": {
         "display": "Streaming display",
         "automatic_pacing": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4×",
+        "automatic_pacing_linux": "Automatic · 4× virtual display / game cap matches stream",
         "automatic_pacing_limiter_off": "Automatic · always 4× display / desktop WGC cap 2× / game WGC cap 4× · limiter off",
+        "automatic_pacing_limiter_off_linux": "Automatic · 4× virtual display · limiter off",
         "compatibility_pacing": "Compatibility · fixed 2× display and capture",
+        "compatibility_pacing_linux": "Compatibility · 2× virtual display / game cap matches stream",
         "compatibility_pacing_limiter_off": "Compatibility · fixed 2× display and capture · limiter off",
+        "compatibility_pacing_limiter_off_linux": "Compatibility · 2× virtual display · limiter off",
         "capture": "Capture",
         "fixed_resolution": "Fixed at {resolution}",
         "game_smoothness": "Game smoothness",

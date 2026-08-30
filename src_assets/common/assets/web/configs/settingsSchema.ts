@@ -294,6 +294,15 @@ const frameGenerationOptions = [
   option('disabled', 'ui.settings.options.frame_generation.off'),
 ];
 
+export function frameGenerationOptionsForPlatform(platform: string): SettingsOption[] {
+  if (!platform.toLocaleLowerCase().includes('linux')) return frameGenerationOptions;
+  return [
+    option('enabled', 'ui.settings.options.frame_generation.automatic_linux'),
+    option('legacy', 'ui.settings.options.frame_generation.compatibility_linux'),
+    option('disabled', 'ui.settings.options.frame_generation.off_linux'),
+  ];
+}
+
 const integrationPath = (
   key: string,
   integration: SettingsField['integration'],
@@ -383,22 +392,22 @@ const remoteMonitorFields = (): SettingsField[] => [
   boolean('remote_monitor_mute_audio', {
     labelKey: 'ui.settings.fields.remote_monitor_mute_audio.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_mute_audio.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_disconnect_on_stream_end', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_stream_end.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_disconnect_on_client_disconnect', {
     labelKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_disconnect_on_client_disconnect.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
   boolean('remote_monitor_terminate_on_first_request', {
     labelKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.label',
     descriptionKey: 'ui.settings.fields.remote_monitor_terminate_on_first_request.description',
-    platform: 'windows',
+    platform: ['windows', 'linux'],
   }),
 ];
 
@@ -479,7 +488,6 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           select('frame_limiter_auto_virtual_framegen', frameGenerationOptions, {
             labelKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.label',
-            descriptionKey: 'ui.settings.fields.frame_limiter_auto_virtual_framegen.description',
             recommended: true,
             visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
           }),

@@ -10,6 +10,7 @@ import SettingsIntegrationPath from '@/components/settings/SettingsIntegrationPa
 import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@/components/ui';
 import {
   captureOptionsForPlatform,
+  frameGenerationOptionsForPlatform,
   restartRequiredKeys,
   settingsCategories,
   settingsDefaults,
@@ -315,14 +316,22 @@ const everydaySummary = computed(() => [
               String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') !== 'disabled'
             ? t(
                 String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') === 'legacy'
-                  ? 'ui.settings.summary.compatibility_pacing_limiter_off'
-                  : 'ui.settings.summary.automatic_pacing_limiter_off',
+                  ? isLinuxHost.value
+                    ? 'ui.settings.summary.compatibility_pacing_limiter_off_linux'
+                    : 'ui.settings.summary.compatibility_pacing_limiter_off'
+                  : isLinuxHost.value
+                    ? 'ui.settings.summary.automatic_pacing_limiter_off_linux'
+                    : 'ui.settings.summary.automatic_pacing_limiter_off',
               )
             : t(
                 String(values.frame_limiter_auto_virtual_framegen ?? 'enabled') === 'enabled'
-                  ? 'ui.settings.summary.automatic_pacing'
+                  ? isLinuxHost.value
+                    ? 'ui.settings.summary.automatic_pacing_linux'
+                    : 'ui.settings.summary.automatic_pacing'
                   : String(values.frame_limiter_auto_virtual_framegen ?? '') === 'legacy'
-                    ? 'ui.settings.summary.compatibility_pacing'
+                    ? isLinuxHost.value
+                      ? 'ui.settings.summary.compatibility_pacing_linux'
+                      : 'ui.settings.summary.compatibility_pacing'
                     : 'ui.settings.summary.pacing_off',
               ),
   },
@@ -430,8 +439,15 @@ function groupTitle(id: string): string {
 }
 
 function groupDescription(id: string): string {
-  const key = `ui.settings.groups.${id}.description`;
-  return messageExists(key) ? t(key) : '';
+  const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
+  const candidates = [
+    platform.includes('windows') ? `ui.settings.groups.${id}.description_windows` : '',
+    platform.includes('linux') ? `ui.settings.groups.${id}.description_linux` : '',
+    platform.includes('mac') ? `ui.settings.groups.${id}.description_macos` : '',
+    `ui.settings.groups.${id}.description`,
+  ].filter(Boolean);
+  const key = candidates.find((candidate) => messageExists(candidate));
+  return key ? t(key) : '';
 }
 
 function fieldLabel(field: SettingsField): string {
@@ -449,6 +465,9 @@ function fieldDescription(field: SettingsField): string {
     platform.includes('windows') ? `config.${field.key}_desc_windows` : '',
     platform.includes('linux') ? `config.${field.key}_desc_linux` : '',
     platform.includes('mac') ? `config.${field.key}_desc_macos` : '',
+    platform.includes('windows') ? `ui.settings.fields.${field.key}.description_windows` : '',
+    platform.includes('linux') ? `ui.settings.fields.${field.key}.description_linux` : '',
+    platform.includes('mac') ? `ui.settings.fields.${field.key}.description_macos` : '',
     `config.${field.key}_desc`,
     `ui.settings.fields.${field.key}.description`,
   ].filter(Boolean);
@@ -511,19 +530,9 @@ function optionsFor(field: SettingsField): SettingsOption[] {
     } else if (platform) {
       options = [
         ...common,
-        localizedOption(
-          'nvenc',
-          platform.includes('linux')
-            ? 'ui.settings.options.encoder.nvenc_ffmpeg'
-            : 'ui.settings.options.encoder.nvenc',
-        ),
+        localizedOption('nvenc', 'ui.settings.options.encoder.nvenc'),
         ...(platform.includes('linux')
-          ? [
-              localizedOption(
-                'nvenc_experimental',
-                'ui.settings.options.encoder.nvenc_experimental',
-              ),
-            ]
+          ? [localizedOption('nvenc_legacy', 'ui.settings.options.encoder.nvenc_legacy')]
           : []),
         localizedOption('vulkan', 'ui.settings.options.encoder.vulkan'),
         localizedOption('vaapi', 'ui.settings.options.encoder.vaapi'),
@@ -532,6 +541,8 @@ function optionsFor(field: SettingsField): SettingsOption[] {
     }
   } else if (field.key === 'capture') {
     options = captureOptionsForPlatform(platform);
+  } else if (field.key === 'frame_limiter_auto_virtual_framegen') {
+    options = frameGenerationOptionsForPlatform(platform);
   } else if (field.key === 'frame_limiter_provider' && platform.includes('linux')) {
     options = [
       localizedOption('auto', '_common.auto'),

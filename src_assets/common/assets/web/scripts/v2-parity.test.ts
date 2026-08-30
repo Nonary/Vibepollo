@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { captureOptionsForPlatform, settingsCategories } from '../configs/settingsSchema.ts';
+import {
+  captureOptionsForPlatform,
+  frameGenerationOptionsForPlatform,
+  settingsCategories,
+  type SettingsField,
+} from '../configs/settingsSchema.ts';
 import {
   displayFieldVisibility,
   downsampleHostHistory,
@@ -70,6 +75,56 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
   ]) {
     const field = fields.find((candidate) => candidate.key === key);
     assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux cleanup`);
+  }
+});
+
+test('Linux exposes Remote Monitor behavior controls', () => {
+  const remoteMonitor = settingsCategories
+    .flatMap((category) => category.groups)
+    .find((group) => group.id === 'everyday_remote_monitor');
+  assert.ok(remoteMonitor);
+
+  for (const key of [
+    'remote_monitor_mute_audio',
+    'remote_monitor_disconnect_on_stream_end',
+    'remote_monitor_disconnect_on_client_disconnect',
+    'remote_monitor_terminate_on_first_request',
+  ]) {
+    const field: SettingsField | undefined = remoteMonitor.fields.find(
+      (candidate) => candidate.key === key,
+    );
+    assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux`);
+  }
+});
+
+test('Linux virtual-display pacing uses Linux-specific copy', () => {
+  assert.deepEqual(
+    frameGenerationOptionsForPlatform('linux').map((option) => option.labelKey),
+    [
+      'ui.settings.options.frame_generation.automatic_linux',
+      'ui.settings.options.frame_generation.compatibility_linux',
+      'ui.settings.options.frame_generation.off_linux',
+    ],
+  );
+
+  const messages = JSON.parse(
+    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+  );
+  const linuxCopy = [
+    messages.ui.settings.fields.frame_limiter_auto_virtual_framegen.description_linux,
+    messages.ui.settings.groups.everyday_remote_monitor.description,
+    messages.ui.settings.groups.everyday_smoothness.description_linux,
+    messages.ui.settings.options.frame_generation.automatic_linux,
+    messages.ui.settings.options.frame_generation.compatibility_linux,
+    messages.ui.settings.options.frame_generation.off_linux,
+    messages.ui.settings.summary.automatic_pacing_linux,
+    messages.ui.settings.summary.automatic_pacing_limiter_off_linux,
+    messages.ui.settings.summary.compatibility_pacing_linux,
+    messages.ui.settings.summary.compatibility_pacing_limiter_off_linux,
+  ];
+  for (const copy of linuxCopy) {
+    assert.equal(typeof copy, 'string');
+    assert.doesNotMatch(copy, /\b(?:WGC|Windows)\b/i);
   }
 });
 
