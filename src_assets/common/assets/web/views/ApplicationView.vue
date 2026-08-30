@@ -159,6 +159,8 @@ interface SteamGame {
   artworkClientCompatible: boolean | null;
   appType: string;
   launchUri: string;
+  lastPlayed: number;
+  playtimeMinutes: number;
 }
 
 interface LutrisGame {
@@ -1867,6 +1869,8 @@ function steamGame(value: unknown): SteamGame | null {
         : null,
     appType: asString(game.app_type),
     launchUri: asString(game.launch_uri) || `steam://rungameid/${steamId}`,
+    lastPlayed: Number(game.last_played) || 0,
+    playtimeMinutes: Number(game.playtime_minutes) || 0,
   };
 }
 
@@ -2028,7 +2032,7 @@ function selectSteamGame(game: SteamGame): void {
   form.uuid = canonicalSteamUuid(game.steamId) || newUuid();
   form.steamId = game.steamId;
   form.steamManaged = 'manual';
-  form.steamSource = 'installed';
+  form.steamSource = game.installed ? 'installed' : 'library';
   form.steamInstallDir = game.installDir;
   form.steamLibraryPath = game.libraryPath;
   form.steamIconPath = game.iconPath;

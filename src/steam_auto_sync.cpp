@@ -34,7 +34,9 @@ namespace platf::steam::autosync {
           return;
         }
         stopping_ = false;
-        worker_ = std::thread {[this] { run(); }};
+        worker_ = std::thread {[this] {
+          run();
+        }};
       }
 
       void stop() {
@@ -76,16 +78,28 @@ namespace platf::steam::autosync {
             try {
               const auto roots = platf::steam::default_library_roots();
               if (!roots.empty()) {
-                auto games = platf::steam::discover(roots);
-                const auto fingerprint = source_fingerprint(games);
+                auto catalog = platf::steam::discover_catalog(roots);
+                const auto fingerprint = source_fingerprint(catalog);
                 if (!have_fingerprint || fingerprint != previous_fingerprint) {
+                  auto games = platf::steam::sync::policy::select_games(
+                    catalog,
+                    settings.sync_all_installed,
+                    settings.recent_games,
+                    settings.recent_max_age_days
+                  );
                   platf::steam::artwork::prepare(games, platf::appdata());
                   std::lock_guard apps_lock {confighttp::apps_file_mutex()};
                   const auto text = file_handler::read_file(config::stream.file_apps.c_str());
                   if (!text.empty()) {
                     auto root = nlohmann::json::parse(text);
                     const auto changed = platf::steam::sync::policy::reconcile(
-                      root, games, settings.remove_uninstalled, settings.exclusions, settings.include_tools);
+                      root,
+                      games,
+                      !settings.sync_all_installed || settings.remove_uninstalled,
+                      settings.exclusions,
+                      settings.include_tools,
+                      settings.sync_all_installed ? "installed" : "recent"
+                    );
                     if (changed && !confighttp::refresh_client_apps_cache(root)) {
                       BOOST_LOG(warning) << "Steam auto-sync could not save applications";
                     } else {

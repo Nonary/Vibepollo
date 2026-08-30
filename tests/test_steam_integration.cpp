@@ -12,11 +12,15 @@ using namespace platf::steam;
 
 namespace {
   void append_u32(std::vector<std::uint8_t> &data, std::uint32_t value) {
-    for (unsigned shift = 0; shift < 32; shift += 8) data.push_back(static_cast<std::uint8_t>(value >> shift));
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+      data.push_back(static_cast<std::uint8_t>(value >> shift));
+    }
   }
 
   void append_u64(std::vector<std::uint8_t> &data, std::uint64_t value) {
-    for (unsigned shift = 0; shift < 64; shift += 8) data.push_back(static_cast<std::uint8_t>(value >> shift));
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      data.push_back(static_cast<std::uint8_t>(value >> shift));
+    }
   }
 
   void append_string(std::vector<std::uint8_t> &data, std::string_view value) {
@@ -35,12 +39,26 @@ namespace {
     append_string(data, value);
   }
 
-  void write_test_appinfo(const fs::path &path, std::uint32_t app_id) {
+  void write_test_appinfo(const fs::path &path, std::uint32_t app_id, std::string_view name = "Example") {
     const std::vector<std::string> keys {
-      "appinfo", "config", "launch", "0", "executable", "arguments", "workingdir", "type", "oslist"
+      "appinfo",
+      "config",
+      "launch",
+      "0",
+      "executable",
+      "arguments",
+      "workingdir",
+      "type",
+      "oslist",
+      "common",
+      "name"
     };
     std::vector<std::uint8_t> blob;
     append_object(blob, 0);
+    append_object(blob, 9);
+    append_value(blob, 10, name);
+    append_value(blob, 7, "game");
+    blob.push_back(0x08);
     append_object(blob, 1);
     append_object(blob, 2);
     append_object(blob, 3);
@@ -62,13 +80,46 @@ namespace {
     data.insert(data.end(), blob.begin(), blob.end());
     append_u32(data, 0);  // App-entry sentinel.
     const auto table_offset = data.size();
-    for (unsigned shift = 0; shift < 64; shift += 8) data[8 + shift / 8] = static_cast<std::uint8_t>(table_offset >> shift);
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      data[8 + shift / 8] = static_cast<std::uint8_t>(table_offset >> shift);
+    }
     append_u32(data, static_cast<std::uint32_t>(keys.size()));
-    for (const auto &key : keys) append_string(data, key);
+    for (const auto &key : keys) {
+      append_string(data, key);
+    }
 
     std::ofstream output(path, std::ios::binary);
     output.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
   }
+}  // namespace
+
+TEST(SteamDiscovery, CatalogIncludesPlayedUninstalledGamesWithNames) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibeshine-steam-catalog-test-" + std::to_string(nonce));
+  std::error_code ec;
+  fs::create_directories(base / "steamapps", ec);
+  fs::create_directories(base / "appcache", ec);
+  fs::create_directories(base / "userdata/123/config", ec);
+  {
+    std::ofstream out(base / "steamapps/libraryfolders.vdf");
+    out << R"VDF("libraryfolders" { "0" { "path" ")VDF" << base.string() << R"VDF(" } })VDF";
+  }
+  {
+    std::ofstream out(base / "userdata/123/config/localconfig.vdf");
+    out << R"VDF("UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" {
+      "4242" { "LastPlayed" "1700000000" "Playtime" "321" }
+    } } } } })VDF";
+  }
+  write_test_appinfo(base / "appcache/appinfo.vdf", 4242, "History Game");
+
+  const auto games = discover_catalog({base});
+  ASSERT_EQ(games.size(), 1U);
+  EXPECT_EQ(games[0].app_id, 4242U);
+  EXPECT_EQ(games[0].name, "History Game");
+  EXPECT_FALSE(games[0].installed);
+  EXPECT_EQ(games[0].last_played, 1700000000U);
+  EXPECT_EQ(games[0].playtime_minutes, 321U);
+  fs::remove_all(base, ec);
 }
 
 TEST(SteamVdf, ParsesNestedEscapesAndComments) {
@@ -199,7 +250,8 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   write_test_appinfo(base / "appcache/appinfo.vdf", 42);
   {
     std::ofstream output(compatdata / "config_info");
-    output << "Test Proton\n" << (proton / "files/share/fonts").string() << "/\n";
+    output << "Test Proton\n"
+           << (proton / "files/share/fonts").string() << "/\n";
   }
   {
     std::ofstream output(proton / "toolmanifest.vdf");

@@ -57,6 +57,9 @@ namespace platf::steam {
     std::string launch_arguments;
     std::string launch_options;
     std::string launch_os;
+    bool installed = false;
+    std::uint64_t last_played = 0;
+    std::uint64_t playtime_minutes = 0;
     std::uint32_t state_flags = 0;
     std::uint64_t last_updated = 0;
   };
@@ -66,6 +69,10 @@ namespace platf::steam {
   // are collapsed deterministically. If roots is empty, common OS locations
   // are searched.
   std::vector<game_t> discover(const std::vector<std::filesystem::path> &roots = {});
+  // Discover installed games plus games recorded in Steam's local user
+  // library/play-history metadata. This remains entirely local and does not
+  // require a Steam Web API key or a public profile.
+  std::vector<game_t> discover_catalog(const std::vector<std::filesystem::path> &roots = {});
   std::vector<std::filesystem::path> default_library_roots();
 
   // Return a URI/argv-safe launch target after validating the app ID.

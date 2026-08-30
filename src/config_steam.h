@@ -1,16 +1,19 @@
 /** @file src/config_steam.h */
 #pragma once
 
+#include "config_playnite.h"
+
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include "config_playnite.h"
 
 namespace config {
   struct steam_t {
     bool enabled = true;
     bool auto_sync = true;
+    bool sync_all_installed = true;
+    int recent_games = 10;
+    int recent_max_age_days = 30;
     bool autosync_remove_uninstalled = true;
     // Compatibility/runtime manifests are excluded by default. This opt-in
     // exists for users who intentionally expose Steam tools in their catalog.
