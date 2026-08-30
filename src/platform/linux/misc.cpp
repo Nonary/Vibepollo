@@ -1270,14 +1270,17 @@ namespace platf {
     }
 
     if (sources[source::KMS]) {
-      BOOST_LOG(info) << "Screencasting with KMS"sv;
       // A dormant private connector is activated immediately before encoder
       // probing. Refresh its connector-to-CRTC map so pre-login capture does
       // not reuse the physical-output enumeration recorded at startup.
       if (linux_private_display::is_private_output(display_name)) {
         (void) kms_display_names(hwdevice_type);
       }
-      return kms_display(hwdevice_type, display_name, config);
+      auto kms = kms_display(hwdevice_type, display_name, config);
+      if (kms) {
+        BOOST_LOG(info) << "Screencasting with KMS"sv;
+      }
+      return kms;
     }
 #endif
 

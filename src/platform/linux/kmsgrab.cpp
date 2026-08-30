@@ -707,11 +707,8 @@ namespace platf {
         if (config.framerateX100 > 0) {
           const auto frame_rate = ::video::framerateX100_to_rational(config.framerateX100);
           delay = pacing::interval_from_frame_rate(frame_rate.num, frame_rate.den);
-          BOOST_LOG(info) << "[kmsgrab] Requested frame rate ["sv << frame_rate.num << '/' << frame_rate.den
-                          << ", approx. "sv << av_q2d(frame_rate) << " fps]"sv;
         } else {
           delay = pacing::interval_from_frame_rate(config.framerate, 1);
-          BOOST_LOG(info) << "[kmsgrab] Requested frame rate ["sv << config.framerate << " fps]"sv;
         }
         if (delay <= std::chrono::nanoseconds::zero()) {
           BOOST_LOG(error) << "Invalid KMS capture frame interval."sv;
@@ -727,7 +724,7 @@ namespace platf {
         if (!numeric_alias) {
           selected_monitor = selection::resolve_named_monitor(display_name, named_monitors);
           if (!selected_monitor) {
-            BOOST_LOG(error) << "Couldn't resolve DRM connector ["sv << display_name << "]";
+            // The capture worker owns rate-limited retry diagnostics.
             return -1;
           }
 
@@ -909,7 +906,7 @@ namespace platf {
           }
         }
 
-        BOOST_LOG(error) << "Couldn't find monitor ["sv << display_name << ']';
+        // The capture worker owns rate-limited retry diagnostics.
         return -1;
 
       // Neatly break from nested for loop
