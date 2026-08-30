@@ -1759,6 +1759,10 @@
         }
       },
       "loading": "Loading settings",
+      "metadata_unavailable": {
+        "description": "Host-specific settings may be hidden until Vibeshine can report this system's platform and hardware.",
+        "title": "Some host details are unavailable"
+      },
       "no_results": "No settings match “{query}”.",
       "notices": {
         "display_state_cleared": "Saved display-device state was cleared.",
@@ -2030,7 +2034,11 @@
       "unsaved_many": "{count} unsaved changes",
       "unsaved_one": "1 unsaved change",
       "unsaved_region": "Unsaved settings",
-      "unsaved_short": "{count} unsaved"
+      "unsaved_short": "{count} unsaved",
+      "virtual_display_unavailable": {
+        "description": "Choose a physical display or finish installing the Linux virtual-display module before streaming.",
+        "title": "Virtual displays are not ready on this host"
+      }
     },
     "api_tokens": {
       "active": {

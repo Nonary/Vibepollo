@@ -100,3 +100,25 @@ test('host compute readouts label current and peak values explicitly', () => {
   );
   assert.doesNotMatch(chart, /t\('stats\.peak'\)[^\n]*\/[^\n]*t\('stats\.current'\)/);
 });
+
+test('Settings protects drafts and keeps restart actions available', () => {
+  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
+  assert.match(settingsView, /<form[\s\S]*@submit\.prevent="save"/);
+  assert.match(settingsView, /class="button button--primary" type="submit"/);
+  assert.match(settingsView, /:disabled="loading \|\| saving \|\| isDirty"/);
+  assert.match(settingsView, /restartAvailable\.value \|\|= Boolean\(result\.restartRequired\)/);
+  assert.match(settingsView, /v-else-if="notice \|\| restartAvailable"/);
+  assert.match(settingsView, /:disabled="restarting"/);
+});
+
+test('Settings explains unavailable host metadata and virtual-display readiness', () => {
+  const settingsView = readFileSync(new URL('../views/SettingsView.vue', import.meta.url), 'utf8');
+  assert.match(settingsView, /metadataUnavailable\.value = true/);
+  assert.match(settingsView, /virtualDisplayUnavailable/);
+
+  const messages = JSON.parse(
+    readFileSync(new URL('../public/assets/locale/ui/en.json', import.meta.url), 'utf8'),
+  );
+  assert.equal(typeof messages.ui.settings.metadata_unavailable.description, 'string');
+  assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
+});
