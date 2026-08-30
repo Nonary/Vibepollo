@@ -11,6 +11,7 @@ import { InlineAlert, LoadingSkeleton, PageHeader, StatusBadge, UiIcon } from '@
 import {
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
+  gamepadOptionsForPlatform,
   restartRequiredKeys,
   settingsCategories,
   settingsDefaults,
@@ -507,6 +508,8 @@ function optionsFor(field: SettingsField): SettingsOption[] {
   const platform = String(hostMetadata.value.platform ?? '').toLocaleLowerCase();
   const current = String(values[field.key] ?? '');
   let options = field.options ?? [];
+
+  if (field.key === 'gamepad') return gamepadOptionsForPlatform(platform);
 
   if (field.key === 'encoder') {
     const common = [localizedOption('', 'ui.settings.options.encoder.auto')];

@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
+  gamepadOptionsForPlatform,
   settingsCategories,
   type SettingsField,
 } from '../configs/settingsSchema.ts';
@@ -32,6 +33,22 @@ test('capture options follow the host platform', () => {
   );
 });
 
+test('gamepad options follow the host platform', () => {
+  assert.deepEqual(
+    gamepadOptionsForPlatform('linux').map((option) => option.value),
+    ['auto', 'xone', 'ds4', 'ds5', 'switch'],
+  );
+  assert.deepEqual(
+    gamepadOptionsForPlatform('windows').map((option) => option.value),
+    ['auto', 'x360', 'ds4', 'vhf', 'vhf_xbox', 'vhf_xbox_one', 'vhf_ds4', 'vhf_ds5', 'vhf_switch'],
+  );
+  const legacyOptions = readFileSync(
+    new URL('../../web-legacy/configs/configSelectOptions.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(legacyOptions, /linux:\s*\['xone', 'ds4', 'ds5', 'switch'\]/);
+});
+
 test('Linux keeps common virtual-display policy and hides Windows display internals', () => {
   const fields = settingsCategories.flatMap((category) =>
     category.groups.flatMap((group) => group.fields),
@@ -55,7 +72,6 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'dd_snapshot_restore_hotkey',
     'dd_snapshot_restore_hotkey_modifiers',
     'wgc_pacing_smoothing',
-    'ds4_back_as_touchpad_click',
     'always_send_scancodes',
     'native_pen_touch',
     'install_steam_audio_drivers',
@@ -68,6 +84,8 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     assert.equal(field.platform, 'windows', `${field.key} must remain Windows-only`);
   }
   for (const key of [
+    'gamepad',
+    'ds4_back_as_touchpad_click',
     'dd_virtual_display_scale',
     'dd_config_revert_delay',
     'dd_config_revert_on_disconnect',

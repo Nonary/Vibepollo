@@ -19,6 +19,7 @@ namespace platf::gamepad {
 
   enum ControllerType {
     XboxOneWired,  ///< Xbox One Wired Controller
+    DualShock4Wired,  ///< DualShock 4 Wired Controller
     DualSenseWired,  ///< DualSense Wired Controller
     SwitchProWired  ///< Switch Pro Wired Controller
   };

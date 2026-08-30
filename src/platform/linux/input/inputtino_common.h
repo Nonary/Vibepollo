@@ -13,6 +13,7 @@
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/linux/input/inputtino_ds4.h"
 #include "src/platform/linux/input/inputtino_seat.h"
 #include "src/utility.h"
 
@@ -35,7 +36,7 @@ namespace platf {
     return name;
   }
 
-  using joypads_t = std::variant<inputtino::XboxOneJoypad, inputtino::SwitchJoypad, inputtino::PS5Joypad>;
+  using joypads_t = std::variant<inputtino::XboxOneJoypad, inputtino::SwitchJoypad, gamepad::ds4_joypad_t, inputtino::PS5Joypad>;
 
   struct joypad_state {
     std::unique_ptr<joypads_t> joypad;
