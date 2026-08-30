@@ -21,15 +21,26 @@ namespace nvenc {
   };
 
   struct encoder_selection_policy_t {
-    bool include_experimental = false;
+    bool include_native = true;
     bool fail_closed = false;
   };
 
-  /** Native Linux NVENC is only eligible after an explicit opt-in. */
+  inline constexpr std::string_view canonical_encoder_name(
+    std::string_view requested_encoder) noexcept {
+    if (requested_encoder == "nvenc_experimental") {
+      return "nvenc";
+    }
+    return requested_encoder;
+  }
+
+  /** Native Linux NVENC is preferred unless the legacy backend is requested. */
   inline constexpr encoder_selection_policy_t encoder_selection_policy(
     std::string_view requested_encoder) noexcept {
-    const bool requested_experimental = requested_encoder == "nvenc_experimental";
-    return {requested_experimental, requested_experimental};
+    const auto canonical_encoder = canonical_encoder_name(requested_encoder);
+    return {
+      canonical_encoder != "nvenc_legacy",
+      canonical_encoder == "nvenc",
+    };
   }
 
   /**

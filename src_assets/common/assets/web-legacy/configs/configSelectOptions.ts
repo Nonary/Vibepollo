@@ -227,8 +227,8 @@ export function getConfigSelectOptions(
         }
       } else if (platform === 'linux') {
         options.push(
-          { label: 'NVIDIA NVENC (FFmpeg)', value: 'nvenc' },
-          { label: 'NVIDIA NVENC (Native, Experimental)', value: 'nvenc_experimental' },
+          { label: 'NVIDIA NVENC (Native)', value: 'nvenc' },
+          { label: 'NVIDIA NVENC (Legacy FFmpeg)', value: 'nvenc_legacy' },
           { label: 'Vulkan', value: 'vulkan' },
           { label: 'VA-API', value: 'vaapi' },
         );

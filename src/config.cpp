@@ -1870,6 +1870,7 @@ namespace config {
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
     string_f(vars, "encoder", video.encoder);
     const auto configured_encoder = video.encoder;
+    video.encoder = std::string(nvenc::canonical_encoder_name(video.encoder));
     video.encoder = std::string(amf::lifecycle::canonical_encoder_name(video.encoder));
     if (video.encoder != configured_encoder) {
       BOOST_LOG(info) << "config: encoder = " << configured_encoder
@@ -3018,7 +3019,9 @@ namespace config {
       }
       base.insert_or_assign(
         name,
-        name == "encoder" ? std::string(amf::lifecycle::canonical_encoder_name(value)) : value
+        name == "encoder" ?
+          std::string(amf::lifecycle::canonical_encoder_name(nvenc::canonical_encoder_name(value))) :
+          value
       );
     }
 
@@ -3271,6 +3274,7 @@ namespace config {
         continue;
       }
       if (normalized_key == "encoder") {
+        v = std::string(nvenc::canonical_encoder_name(v));
         v = std::string(amf::lifecycle::canonical_encoder_name(v));
       }
       filtered.emplace(std::move(normalized_key), std::move(v));

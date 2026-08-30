@@ -304,8 +304,8 @@ namespace video {
   extern encoder_t nvenc;  // available for windows and linux
 #endif
 
-#if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  extern encoder_t nvenc_experimental;
+#if defined(__linux__)
+  extern encoder_t nvenc_legacy;
 #endif
 
 #ifdef _WIN32
