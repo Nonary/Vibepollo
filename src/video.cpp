@@ -13,6 +13,7 @@
 #include <cstring>
 #include <future>
 #include <list>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -98,6 +99,13 @@ namespace video {
   }
 
   namespace {
+    void wait_before_display_retry(std::size_t &consecutive_failures) {
+      std::this_thread::sleep_for(policy::display_retry_delay(consecutive_failures));
+      if (consecutive_failures < std::numeric_limits<std::size_t>::max()) {
+        ++consecutive_failures;
+      }
+    }
+
 #ifdef _WIN32
     void wait_for_recent_display_apply_stability() {
       constexpr auto kFallbackSettleWindow = std::chrono::milliseconds(1500);
@@ -2830,7 +2838,8 @@ namespace video {
     platf::mem_type_e dev_type,
     std::vector<std::string> &display_names,
     int &current_display_index,
-    const std::optional<std::string> &required_output = std::nullopt
+    const std::optional<std::string> &required_output = std::nullopt,
+    const bool log_failure = true
   ) {
     if (required_output && !required_output->empty()) {
       display_names = platf::display_names(dev_type);
@@ -2875,17 +2884,23 @@ namespace video {
       // name so the reinit loop targets the correct display.
       const auto ms_since_apply = display_helper_integration::ms_since_last_apply();
       if (ms_since_apply < 5000 && !output_name.empty()) {
-        BOOST_LOG(info) << "No displays found after reenumeration during topology change; "
-                        << "using configured output ["sv << output_name << "] instead of stale list"sv;
+        if (log_failure) {
+          BOOST_LOG(info) << "No displays found after reenumeration during topology change; "
+                          << "using configured output ["sv << output_name << "] instead of stale list"sv;
+        }
         display_names.clear();
         display_names.emplace_back(output_name);
       } else {
-        BOOST_LOG(error) << "No displays were found after reenumeration!"sv;
+        if (log_failure) {
+          BOOST_LOG(error) << "No displays were found after reenumeration; retrying with backoff."sv;
+        }
         display_names = std::move(old_display_names);
         return;
       }
 #else
-      BOOST_LOG(error) << "No displays were found after reenumeration!"sv;
+      if (log_failure) {
+        BOOST_LOG(error) << "No displays were found after reenumeration; retrying with backoff."sv;
+      }
       display_names = std::move(old_display_names);
       return;
 #endif
@@ -2982,6 +2997,7 @@ namespace video {
     std::vector<std::string> display_names;
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
+    std::size_t display_retry_failures = 0;
 
     while (capture_ctx_queue->running()) {
       const auto &capture_config = capture_ctxs.front().config;
@@ -2994,7 +3010,8 @@ namespace video {
       }
 
       const auto required_output = capture_config.capture_source == capture_source_e::exact_output ? capture_config.capture_output : std::nullopt;
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
+      const bool log_display_retry = policy::should_log_display_retry(display_retry_failures);
+      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output, log_display_retry);
 
       const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
         capture_config.capture_source == capture_source_e::active_output ?
@@ -3002,18 +3019,20 @@ namespace video {
           video::policy::capture_selection_e::exact_output
       );
       if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
-        std::this_thread::sleep_for(50ms);
+        wait_before_display_retry(display_retry_failures);
         continue;
       }
 
-      BOOST_LOG(info) << "Capture worker selecting source=" << static_cast<int>(capture_config.capture_source)
-                      << " output='" << display_names[display_p] << "'.";
+      if (log_display_retry) {
+        BOOST_LOG(info) << "Capture worker selecting source=" << static_cast<int>(capture_config.capture_source)
+                        << " output='" << display_names[display_p] << "'.";
+      }
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
         break;
       }
 
-      std::this_thread::sleep_for(50ms);
+      wait_before_display_retry(display_retry_failures);
     }
 
     if (!disp) {
@@ -3297,6 +3316,7 @@ namespace video {
             }
 #endif
 
+            std::size_t display_retry_failures = 0;
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
               // only support a single display session per device/application.
@@ -3308,7 +3328,13 @@ namespace video {
 
               // Refresh display names since a display removal might have caused the reinitialization
               const auto required_output = capture_ctxs.front().config.capture_source == capture_source_e::exact_output ? capture_ctxs.front().config.capture_output : std::nullopt;
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
+              refresh_displays(
+                encoder.platform_formats->dev_type,
+                display_names,
+                display_p,
+                required_output,
+                policy::should_log_display_retry(display_retry_failures)
+              );
 
               const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
                 capture_ctxs.front().config.capture_source == capture_source_e::active_output ?
@@ -3316,7 +3342,7 @@ namespace video {
                   video::policy::capture_selection_e::exact_output
               );
               if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
-                std::this_thread::sleep_for(50ms);
+                wait_before_display_retry(display_retry_failures);
                 continue;
               }
 
@@ -3335,6 +3361,7 @@ namespace video {
                 proc::proc.display_name = display_names[display_p];
                 break;
               }
+              wait_before_display_retry(display_retry_failures);
             }
             if (!disp) {
               return;
@@ -5607,6 +5634,7 @@ namespace video {
       synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
     }
 
+    std::size_t display_retry_failures = 0;
     while (encode_session_ctx_queue.running()) {
       // Admit queued peers before checking shutdown. A peer can disconnect
       // while the first session is still waiting for its capture display.
@@ -5630,7 +5658,13 @@ namespace video {
 #endif
       // Refresh display names since a display removal might have caused the reinitialization
       const auto required_output = synced_session_ctxs.front()->config.capture_source == capture_source_e::exact_output ? synced_session_ctxs.front()->config.capture_output : std::nullopt;
-      refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output);
+      refresh_displays(
+        encoder.platform_formats->dev_type,
+        display_names,
+        display_p,
+        required_output,
+        policy::should_log_display_retry(display_retry_failures)
+      );
 
       const bool allow_process_display_preference = video::policy::may_apply_process_display_preference(
         synced_session_ctxs.front()->config.capture_source == capture_source_e::active_output ?
@@ -5638,7 +5672,7 @@ namespace video {
           video::policy::capture_selection_e::exact_output
       );
       if (!ensure_virtual_display_ready(display_names, display_p, allow_process_display_preference)) {
-        std::this_thread::sleep_for(50ms);
+        wait_before_display_retry(display_retry_failures);
         continue;
       }
 
@@ -5656,6 +5690,7 @@ namespace video {
       if (disp) {
         break;
       }
+      wait_before_display_retry(display_retry_failures);
     }
 
     if (!disp) {

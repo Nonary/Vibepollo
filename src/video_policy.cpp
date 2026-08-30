@@ -9,6 +9,19 @@ namespace video::policy {
     return selection == capture_selection_e::process_preferred;
   }
 
+  std::chrono::milliseconds display_retry_delay(const std::size_t consecutive_failures) {
+    constexpr auto initial_delay = std::chrono::milliseconds {50};
+    constexpr auto maximum_delay = std::chrono::milliseconds {2000};
+    constexpr std::size_t maximum_shift = 6;
+    const auto shift = std::min(consecutive_failures, maximum_shift);
+    const auto multiplier = static_cast<std::chrono::milliseconds::rep>(std::size_t {1} << shift);
+    return std::min(initial_delay * multiplier, maximum_delay);
+  }
+
+  bool should_log_display_retry(const std::size_t consecutive_failures) {
+    return consecutive_failures == 0 || (consecutive_failures & (consecutive_failures - 1)) == 0;
+  }
+
   rational_t framerate_x100_to_rational(std::int32_t value) {
     if (value % 2997 == 0) return {(value / 2997) * 30000, 1001};
     if (value == 2397 || value == 2398) return {24000, 1001};
