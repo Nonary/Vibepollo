@@ -59,11 +59,11 @@ If building on a fresh clone and seeing Boost errors:
 
 ## 2. Virtual Display Setup
 
-### Preferred managed virtual displays (Linux 7.1+)
+### Preferred managed virtual displays (Linux 6.16+)
 
 Native Vibeshine installations include the `vibeshine_drm` source. Native package hooks and
 `vibeshine-drm-setup.service` attempt to register it with DKMS or build it for the running kernel.
-It targets the Linux 7.2 DRM APIs with a Linux 7.1 compatibility shim and provides a separate
+It derives from the Linux 7.2 DRM APIs with compatibility through Linux 6.16 and provides a separate
 `/sys/kernel/config/vibeshine-drm` namespace, so it can coexist with stock VKMS. Install (or retry)
 the module and enable the four-output private pool with:
 
@@ -94,7 +94,7 @@ stock Arch and CachyOS kernels allow a signed external module with the normal mo
 
 The setup below records this repository's older Linux 6.19 reference host. It remains useful for a
 physical dummy connector or a kernel that cannot run `vibeshine_drm`, but it is not required for the
-managed pool on Linux 7.1+.
+managed pool on Linux 6.16+.
 
 Vibeshine streams to a **virtual display** on HDMI-A-2 (a physically disconnected port) using a custom EDID loaded by the kernel at boot.
 

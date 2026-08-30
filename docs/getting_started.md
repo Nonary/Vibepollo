@@ -92,7 +92,7 @@ CUDA is used for NVFBC capture.
         <td>Sunshine (copr - OpenSUSE)</td>
     </tr>
     <tr>
-        <td>vibepollo.pkg.tar.zst</td>
+        <td>vibepollo-*.pkg.tar.zst</td>
     </tr>
 </table>
 
@@ -159,23 +159,22 @@ Future releases then arrive through the normal `pacman -Syu` upgrade process. In
 streaming host at a time: Vibepollo replaces Sunshine or Vibeshine. Preserve existing configuration
 and pairing data when transitioning, including earlier manually built Vibepollo installations.
 
-As a fallback, download the `vibepollo-<version>-1-x86_64.pkg.tar.zst` asset from the
-[Vibepollo release page](https://github.com/Nonary/Vibepollo/releases) and install it with
-`sudo pacman -U ./vibepollo-<version>-1-x86_64.pkg.tar.zst`.
+As a fallback, open the desired [Vibepollo release page](https://github.com/Nonary/Vibepollo/releases)
+and use the exact download link and `pacman -U` command in its **Arch Linux and CachyOS** section.
+That section uses the built package's actual filename, including Arch's normalized prerelease version
+format.
 
-##### Install PKGBUILD Archive
-Open terminal and run the following command.
+The package installs the managed virtual-display driver automatically on Linux 6.16 and newer.
+If matching kernel headers are absent, it prints the exact `sudo pacman -S --needed
+<kernel-package>-headers` command for the kernel currently booted. Run that command and retry
+the driver setup with:
+
 ```bash
-wget https://github.com/Nonary/Vibepollo/releases/latest/download/vibepollo.pkg.tar.gz
-tar -xvf vibepollo.pkg.tar.gz
-cd vibepollo
-
-# install optional dependencies
-pacman -S cuda  # Nvidia GPU encoding support
-pacman -S libva-mesa-driver  # AMD GPU encoding support
-
-makepkg -si
+sudo /usr/libexec/vibeshine/vibeshine-drm-install install
 ```
+
+This detection covers the standard, LTS, and CachyOS kernel package variants; users do not need
+to guess a header package name.
 
 ##### Uninstall
 ```bash
@@ -665,7 +664,7 @@ Additional information:
     not support HDR.
   - You will need a desktop environment with a compositor that supports HDR rendering, such as Gamescope or KDE Plasma 6.
   - Native Vibepollo installations can provide private HDR10 virtual outputs through the
-    `vibeshine_drm` module. It requires Linux 7.1 or newer and matching kernel headers. Its EDID
+    `vibeshine_drm` module. It requires Linux 6.16 or newer and matching kernel headers. Its EDID
     advertises BT.2020, PQ, and HDR static metadata, while its connector and planes support 10-bit output.
     The driver notifies direct KMS capture when a presentation completes and exports the exact pinned
     primary-plane DMA-BUF for that sequence, so sparse changes are captured immediately and bursts are
@@ -694,12 +693,14 @@ Additional information:
   cannot be built or loaded, managed virtual displays remain unavailable rather than falling back
   to CPU-backed stock VKMS.
 
-  On Arch Linux and CachyOS, install the matching headers for every kernel you boot (for example,
-  `linux-headers` or `linux-cachyos-headers`). The native package uses DKMS and signs rebuilt
-  modules automatically and verifies the signer embedded in every installed module. On stock Arch
-  and CachyOS kernels this all happens during package installation: accept pacman's normal install
-  confirmation and no separate signing or enrollment command is required, including when Secure
-  Boot uses a direct Limine or systemd-boot chain.
+  On Arch Linux and CachyOS, install matching headers for every kernel you boot. If they are
+  absent, the package asks pacman which installed package owns the running kernel and prints the
+  exact `sudo pacman -S --needed <kernel-package>-headers` command. This covers standard, LTS,
+  and CachyOS kernel variants without guessing a package name. The native package uses DKMS and
+  signs rebuilt modules automatically and verifies the signer embedded in every installed module.
+  On stock Arch and CachyOS kernels this all happens during package installation: accept pacman's
+  normal install confirmation and no separate signing or enrollment command is required, including
+  when Secure Boot uses a direct Limine or systemd-boot chain.
 
   Only a custom kernel configured to enforce trusted module signatures needs additional
   authorization. When that is detected, the package installation launches the one-time signing-key

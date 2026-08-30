@@ -65,6 +65,8 @@ class ArchRepositoryWorkflowTest(unittest.TestCase):
         self.assertIn("Imported signing key fingerprint does not match", text)
         self.assertIn("Release ${source_tag} is still a draft", text)
         self.assertIn("Expected exactly one non-debug Vibepollo Arch package", text)
+        self.assertIn("arch_package_version=${release_version//-/}", text)
+        self.assertIn("pkgver = ${arch_package_version}-1", text)
         self.assertIn("--detach-sign \"incoming/${PACKAGE_NAME}\"", text)
         self.assertIn("--detach-sign vibepollo.db.tar.gz", text)
         self.assertIn("gpg --batch --verify", text)

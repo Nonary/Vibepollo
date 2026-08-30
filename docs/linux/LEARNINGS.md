@@ -253,7 +253,7 @@ groups $USER | grep -E "input|video|render"
 
 ## 11. Virtual Display Setup (EDID Method)
 
-> **Preferred current setup:** On Linux 7.1 or newer, native package hooks and
+> **Preferred current setup:** On Linux 6.16 or newer, native package hooks and
 > `vibeshine-drm-setup.service` attempt to build or register the packaged `vibeshine_drm` module.
 > Run `sudo /usr/libexec/vibeshine/vibeshine-drm-install install` to install or retry it manually,
 > then run `sudo systemctl enable --now vibeshine-vkms.service` to provision four dormant managed

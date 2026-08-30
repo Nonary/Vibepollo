@@ -74,7 +74,11 @@ jobs:
 
           package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
           grep -qx 'pkgname = vibepollo' <<<"${package_info}"
-          grep -qx "pkgver = ${release_version}-1" <<<"${package_info}"
+          # Keep this aligned with special_package_configuration.cmake: Arch
+          # pkgver strips SemVer's prerelease separator.
+          arch_package_version=${release_version//-/}
+          arch_package_version=${arch_package_version//+/.}
+          grep -qx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
           grep -qx 'arch = x86_64' <<<"${package_info}"
 
           echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"

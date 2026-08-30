@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -5,6 +8,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
+COMPOSE_RELEASE_NOTES = ROOT / ".github" / "scripts" / "compose_release_notes.py"
 
 
 def load_workflow(name: str) -> dict:
@@ -116,6 +120,68 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "Include Arch Linux package",
             {step["name"] for step in release_steps},
         )
+        self.assertIn(
+            r"Download [\`${package_name}\`]("
+            r"https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${package_name})",
+            release_text,
+        )
+        self.assertIn(
+            "sudo pacman -U ./${package_name}",
+            release_text,
+        )
+        self.assertIn(
+            "Managed virtual displays require Linux 6.16 or newer.", release_text
+        )
+        self.assertIn(
+            "https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/getting_started.md#arch-linux-and-cachyos",
+            release_text,
+        )
+        self.assertIn("arch_package_version=${RELEASE_VERSION//-/}", release_text)
+        self.assertIn("pkgver = ${arch_package_version}-1", release_text)
+
+        publish_arch_workflow = load_workflow("publish-arch-repository.yml")
+        self.assertIn("publish", publish_arch_workflow["jobs"])
+        publish_arch_text = (
+            ROOT / ".github" / "workflows" / "publish-arch-repository.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("arch_package_version=${release_version//-/}", publish_arch_text)
+        self.assertIn("pkgver = ${arch_package_version}-1", publish_arch_text)
+
+        getting_started = (ROOT / "docs" / "getting_started.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("vibepollo.pkg.tar.gz", getting_started)
+        self.assertIn("vibepollo-*.pkg.tar.zst", getting_started)
+        self.assertIn("to guess a header package name", getting_started)
+
+    def test_prerelease_notes_do_not_claim_to_cover_stable_releases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            notes_dir = Path(temporary_dir) / "notes"
+            notes_dir.mkdir()
+            (notes_dir / "1.19.0-beta.3.md").write_text(
+                "# 1.19.0-beta.3\n\n## Changes\n\n- Test prerelease notes.\n",
+                encoding="utf-8",
+            )
+            output = Path(temporary_dir) / "release-notes.md"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPOSE_RELEASE_NOTES),
+                    "--release-version",
+                    "1.19.0-beta.3",
+                    "--notes-dir",
+                    str(notes_dir),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+            rendered = output.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "These release notes cover the 1.19.0-beta.3 prerelease.", rendered
+        )
+        self.assertNotIn("stable 1.19.0 releases", rendered)
 
     def test_manual_workflow_auto_resolves_an_exact_valid_build(self) -> None:
         workflow = load_workflow("sign-release.yml")

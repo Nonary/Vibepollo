@@ -570,7 +570,9 @@ jobs:
 
       - name: Include Arch Linux package
         env:
+          NOTES_FILE: ${{ steps.release-metadata.outputs.notes_file }}
           RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
+          TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
         run: |
           set -euo pipefail
           mapfile -t packages < <(find arch-artifacts -type f -name 'vibepollo-*.pkg.tar.zst' ! -name '*-debug-*' | sort)
@@ -580,7 +582,11 @@ jobs:
             exit 1
           fi
           package_info="$(bsdtar -xOf "${packages[0]}" .PKGINFO)"
-          if ! grep -qx "pkgver = ${RELEASE_VERSION}-1" <<< "${package_info}"; then
+          # Arch pkgver disallows SemVer's prerelease separator. Keep this
+          # expectation aligned with special_package_configuration.cmake.
+          arch_package_version=${RELEASE_VERSION//-/}
+          arch_package_version=${arch_package_version//+/.}
+          if ! grep -qx "pkgver = ${arch_package_version}-1" <<< "${package_info}"; then
             echo "::error::Arch package version does not match release ${RELEASE_VERSION}."
             grep '^pkgver = ' <<< "${package_info}" >&2 || true
             exit 1
@@ -595,6 +601,25 @@ jobs:
             '.assets[$name] = $hash' \
             artifacts/release-provenance.json > "${provenance_tmp}"
           mv -- "${provenance_tmp}" artifacts/release-provenance.json
+
+          cat >>"${NOTES_FILE}" <<EOF
+
+          ## Arch Linux and CachyOS
+
+          Download [\`${package_name}\`](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${package_name}) and install it with:
+
+          \`\`\`bash
+          sudo pacman -U ./${package_name}
+          \`\`\`
+
+          Managed virtual displays require Linux 6.16 or newer. If matching headers are missing, the package prints the exact \`sudo pacman -S --needed <kernel-package>-headers\` command for the running kernel. Run it, then retry the driver setup:
+
+          \`\`\`bash
+          sudo /usr/libexec/vibeshine/vibeshine-drm-install install
+          \`\`\`
+
+          See the [full Arch/CachyOS installation guide](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG_NAME}/docs/getting_started.md#arch-linux-and-cachyos).
+          EOF
 
       - name: Debug artifacts
         run: ls -l artifacts

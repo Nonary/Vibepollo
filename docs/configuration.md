@@ -1262,7 +1262,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Replacing the module file does not replace a module already loaded by the compositor.
             Compare <code>modinfo -F version vibeshine_drm</code> with
             <code>cat /sys/module/vibeshine_drm/version</code> and reboot before testing when they differ.
-            The module supports Linux 7.1 or newer and exposes four independent virtual connectors
+            The module supports Linux 6.16 or newer and exposes four independent virtual connectors
             with a deterministic HDR10 EDID, BT.2020/PQ metadata, 8-16 bits per component, and
             10-bit RGB plane formats. Vibepollo enables one only for a stream, applies the requested
             mode, layout, and HDR state through KScreen, captures that exact connector, and restores
@@ -1519,7 +1519,7 @@ this option to replace the running app immediately. The default is `true`.
         <td>Description</td>
         <td colspan="2">
             Perform additional HDR configuration for the display device.
-            @note{On Linux 7.1 or newer, the managed <code>vibeshine_drm</code> output advertises HDR10 and 10-bit formats. Managed display creation fails if that driver is unavailable rather than using CPU-backed stock VKMS.}
+            @note{On Linux 6.16 or newer, the managed <code>vibeshine_drm</code> output advertises HDR10 and 10-bit formats. Managed display creation fails if that driver is unavailable rather than using CPU-backed stock VKMS.}
         </td>
     </tr>
     <tr>
@@ -2830,16 +2830,15 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td rowspan="8">Choices</td>
         <td>nvenc</td>
-        <td>For NVIDIA graphics cards. On Linux this is the supported FFmpeg-based NVENC
-            implementation and the implementation used by automatic selection. On Windows it uses
-            Vibepollo's native NVENC implementation.</td>
+        <td>For NVIDIA graphics cards. Uses Vibepollo's native NVENC implementation on Windows and
+            on CUDA-enabled Linux builds. On Linux it is tried first during automatic selection.</td>
     </tr>
     <tr>
-        <td>nvenc_experimental</td>
-        <td>Experimental native NVIDIA NVENC encoder. It is not selected automatically, has limited
-            Linux driver and capture-path test coverage, and may not work with every capture method.
-            Explicit selection fails closed instead of silently changing encoder implementations.
-            @note{Applies to Linux only and requires a CUDA-enabled build.}</td>
+        <td>nvenc_legacy</td>
+        <td>Legacy FFmpeg-based NVIDIA NVENC encoder. Select this explicitly on Linux to roll back
+            from the native implementation. Existing @code{}nvenc_experimental@endcode settings
+            are accepted as a compatibility alias for @code{}nvenc@endcode.
+            @note{Applies to Linux only.}</td>
     </tr>
     <tr>
         <td>quicksync</td>
@@ -3163,9 +3162,9 @@ They appear in the Frame Limiter section of the settings UI.
 
 ## NVIDIA NVENC Encoder
 
-The options in this section are shared by both NVENC implementations. On Linux, @code{nvenc} uses
-FFmpeg while @code{nvenc_experimental} talks directly to the NVIDIA Video Codec SDK. The native
-implementation is opt-in and never replaces the supported FFmpeg encoder during automatic probing.
+The options in this section are shared by both NVENC implementations. On Linux, @code{nvenc} talks
+directly to the NVIDIA Video Codec SDK and is preferred during automatic probing, while
+@code{nvenc_legacy} uses FFmpeg as a rollback path.
 
 ### nvenc_preset
 
@@ -3335,8 +3334,8 @@ implementation is opt-in and never replaces the supported FFmpeg encoder during 
             Set it to disabled to prevent split-frame encoding even when the driver would normally use it automatically.
             @note{Applies to NVENC HEVC or AV1 only. H.264 does not use split-frame encoding.}
             @note{Requires NVENC API 12.1 or newer.}
-            @note{On Linux, both the supported FFmpeg @code{nvenc} encoder and the native
-            @code{nvenc_experimental} encoder honor the configured auto, enabled, or disabled mode.}
+            @note{On Linux, both the legacy FFmpeg @code{nvenc_legacy} encoder and the native
+            @code{nvenc} encoder honor the configured auto, enabled, or disabled mode.}
         </td>
     </tr>
     <tr>

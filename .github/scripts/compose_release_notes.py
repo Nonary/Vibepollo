@@ -148,7 +148,8 @@ def main() -> None:
     if current is None:
         raise SystemExit(f"No exact release note found for {release_version} in {args.notes_dir}.")
 
-    target_line = ".".join(str(part) for part in version_key(release_version)[:3])
+    release_key = version_key(release_version)
+    target_line = ".".join(str(part) for part in release_key[:3])
     seen: set[str] = set()
     rendered_notes: list[str] = []
     for index, (_, version, path) in enumerate(notes):
@@ -173,10 +174,18 @@ def main() -> None:
         elif rendered_sections:
             rendered_notes.append(f"## {version}\n\n" + "\n\n".join(rendered_sections))
 
+    if release_key[3] == 40:
+        summary = (
+            f"These release notes cover the stable {target_line} releases, "
+            "from the original stable release through this update."
+        )
+    else:
+        summary = f"These release notes cover the {release_version} prerelease."
+
     public_body = "\n\n".join(
         (
             f"# {args.product_name} {release_version}",
-            f"These release notes cover the stable {target_line} releases, from the original stable release through this update.",
+            summary,
             "\n\n".join(rendered_notes),
         )
     ).strip() + "\n"
