@@ -24,16 +24,22 @@ readonly countdown_probe_seconds=10
 
 assume_yes=0
 dry_run=0
+force_reboot=0
 stage_dir=""
 
 usage() {
   cat <<EOF
 Safely deploy the current Vibepollo build and reboot this Linux host.
 
-Usage: $(basename "$0") [--yes] [--dry-run]
+Usage: $(basename "$0") [--yes] [--dry-run] [--force-reboot]
 
   --yes      Skip the final interactive confirmation.
   --dry-run  Stage and validate the install without changing the host or rebooting.
+  --force-reboot
+             Restart through SysRq instead of systemd-shutdown, skipping the
+             watchdog handoff entirely. Filesystems are synced and remounted
+             read-only first, but no service stops cleanly. Use this when an
+             orderly reboot is known to wedge.
   -h, --help Show this help.
 
 Run this script as ${expected_user}, without sudo. It asks for sudo once.
@@ -66,6 +72,9 @@ for arg in "$@"; do
       ;;
     --dry-run)
       dry_run=1
+      ;;
+    --force-reboot)
+      force_reboot=1
       ;;
     -h|--help)
       usage
@@ -196,6 +205,14 @@ This will:
   7. Reboot the machine.
 
 EOF
+  if (( force_reboot )); then
+    cat <<'EOF'
+  NOTE: --force-reboot restarts through SysRq. Filesystems are synced and
+        remounted read-only first, but services do not stop cleanly and the
+        virtual-display release path does not run.
+
+EOF
+  fi
   read -r -p "Type REBOOT to continue: " confirmation
   [[ $confirmation == "REBOOT" ]] || die "reboot cancelled"
 fi
@@ -296,6 +313,15 @@ if (( dry_run )); then
   - set capabilities on the resolved ${expected_home}/.local/bin/vibepollo binary
   - update the required installed pre-login host and select native NVENC
   - add watchdog.stop_on_reboot=0 to the generated Limine kernel command line
+EOF
+  if (( force_reboot )); then
+    cat <<EOF
+  - skip the hardware watchdog setup and the whole orderly reboot path
+  - enable and stop ${sunshine_service}
+  - sync, remount read-only, and restart the kernel through SysRq
+EOF
+  else
+    cat <<EOF
   - require this host's validated Intel TCO hardware watchdog
   - arm a ${hard_reboot_deadline_sec}s no-feeder hardware timeout once the new kernel argument is active
   - otherwise perform the one-time ordered bootstrap reboot that activates it
@@ -303,6 +329,7 @@ if (( dry_run )); then
   - enable and stop ${sunshine_service}
   - sync and reboot
 EOF
+  fi
   exit 0
 fi
 
@@ -519,71 +546,75 @@ loaded_drm_version="$(cat /sys/module/vibeshine_drm/version 2>/dev/null || true)
   die "installed DRM version ${installed_drm_version:-missing} does not match staged ${staged_drm_version}; refusing to reboot"
 log "DRM versions: installed=${installed_drm_version:-missing} loaded=${loaded_drm_version:-not-loaded}"
 
-log "loading a hardware watchdog"
-watchdog_module=""
-if sudo modprobe iTCO_wdt nowayout=1 heartbeat=60 && [[ -c "$watchdog_device" ]]; then
-  watchdog_module="iTCO_wdt"
+if (( force_reboot )); then
+  log "skipping the hardware watchdog setup; --force-reboot does not rely on it"
 else
-  die "the validated Intel TCO watchdog did not expose $watchdog_device"
+  log "loading a hardware watchdog"
+  watchdog_module=""
+  if sudo modprobe iTCO_wdt nowayout=1 heartbeat=60 && [[ -c "$watchdog_device" ]]; then
+    watchdog_module="iTCO_wdt"
+  else
+    die "the validated Intel TCO watchdog did not expose $watchdog_device"
+  fi
+  [[ -n "$watchdog_module" && -c "$watchdog_device" ]] || \
+    die "the Intel TCO hardware watchdog is unavailable; refusing an unprotected reboot"
+
+  watchdog_identity="$(cat "$watchdog_sysfs/identity" 2>/dev/null || true)"
+  [[ "$watchdog_identity" == "$watchdog_module" ]] || \
+    die "unexpected watchdog identity: ${watchdog_identity:-missing}"
+
+  watchdog_modprobe_stage="$stage_dir/50-vibepollo-reboot-watchdog-modprobe.conf"
+  printf 'options %s nowayout=1\n' "$watchdog_module" >"$watchdog_modprobe_stage"
+  sudo install -Dm644 "$watchdog_modprobe_stage" "$watchdog_modprobe_config"
+  log "configured ${watchdog_module} with nowayout=1 for future boots"
+
+  watchdog_modules_stage="$stage_dir/50-vibepollo-reboot-watchdog-modules.conf"
+  printf '%s\n' "$watchdog_module" >"$watchdog_modules_stage"
+  sudo install -Dm644 "$watchdog_modules_stage" "$watchdog_modules_config"
+  log "configured ${watchdog_module} to load automatically on future boots"
+
+  watchdog_config_stage="$stage_dir/50-vibepollo-reboot-watchdog.conf"
+  cat >"$watchdog_config_stage" <<EOF
+  [Manager]
+  RuntimeWatchdogSec=60s
+  RebootWatchdogSec=60s
+  WatchdogDevice=$watchdog_device
+EOF
+  sudo install -Dm644 "$watchdog_config_stage" "$watchdog_config"
+
+  reboot_timeout_stage="$stage_dir/50-vibepollo-hard-reboot-deadline.conf"
+  cat >"$reboot_timeout_stage" <<EOF
+  [Unit]
+  JobTimeoutSec=${orderly_reboot_timeout_sec}s
+  JobTimeoutAction=reboot-force
+EOF
+  sudo install -Dm644 "$reboot_timeout_stage" "$reboot_timeout_config"
+  log "limited the orderly reboot transaction to ${orderly_reboot_timeout_sec}s before reboot-force"
+
+  log "making the live hardware watchdog non-disarmable"
+  printf '1\n' | sudo tee "$watchdog_sysfs/nowayout" >/dev/null
+  watchdog_nowayout="$(cat "$watchdog_sysfs/nowayout" 2>/dev/null || true)"
+  [[ "$watchdog_nowayout" == 1 ]] || \
+    die "hardware watchdog did not accept nowayout=1; refusing to reboot"
+
+  log "arming the runtime and reboot watchdogs"
+  sudo systemctl daemon-reexec
+  runtime_watchdog="$(systemctl show -p RuntimeWatchdogUSec --value)"
+  reboot_watchdog="$(systemctl show -p RebootWatchdogUSec --value)"
+  active_watchdog_device="$(systemctl show -p WatchdogDevice --value)"
+  watchdog_state="$(cat "$watchdog_sysfs/state" 2>/dev/null || true)"
+  watchdog_timeout="$(cat "$watchdog_sysfs/timeout" 2>/dev/null || true)"
+  [[ -n "$runtime_watchdog" && "$runtime_watchdog" != 0 ]] || die "runtime watchdog did not arm"
+  [[ -n "$reboot_watchdog" && "$reboot_watchdog" != 0 ]] || die "reboot watchdog did not arm"
+  [[ "$active_watchdog_device" == "$watchdog_device" ]] || \
+    die "systemd selected an unexpected watchdog: ${active_watchdog_device:-none}"
+  [[ "$watchdog_state" == active ]] || \
+    die "hardware watchdog is not active: ${watchdog_state:-missing}"
+  [[ "$watchdog_timeout" == 60 ]] || \
+    die "hardware watchdog did not accept the 60s timeout: ${watchdog_timeout:-missing}"
+  sudo wdctl "$watchdog_device"
+  log "non-disarmable watchdog armed: runtime=$runtime_watchdog reboot=$reboot_watchdog device=$active_watchdog_device"
 fi
-[[ -n "$watchdog_module" && -c "$watchdog_device" ]] || \
-  die "the Intel TCO hardware watchdog is unavailable; refusing an unprotected reboot"
-
-watchdog_identity="$(cat "$watchdog_sysfs/identity" 2>/dev/null || true)"
-[[ "$watchdog_identity" == "$watchdog_module" ]] || \
-  die "unexpected watchdog identity: ${watchdog_identity:-missing}"
-
-watchdog_modprobe_stage="$stage_dir/50-vibepollo-reboot-watchdog-modprobe.conf"
-printf 'options %s nowayout=1\n' "$watchdog_module" >"$watchdog_modprobe_stage"
-sudo install -Dm644 "$watchdog_modprobe_stage" "$watchdog_modprobe_config"
-log "configured ${watchdog_module} with nowayout=1 for future boots"
-
-watchdog_modules_stage="$stage_dir/50-vibepollo-reboot-watchdog-modules.conf"
-printf '%s\n' "$watchdog_module" >"$watchdog_modules_stage"
-sudo install -Dm644 "$watchdog_modules_stage" "$watchdog_modules_config"
-log "configured ${watchdog_module} to load automatically on future boots"
-
-watchdog_config_stage="$stage_dir/50-vibepollo-reboot-watchdog.conf"
-cat >"$watchdog_config_stage" <<EOF
-[Manager]
-RuntimeWatchdogSec=60s
-RebootWatchdogSec=60s
-WatchdogDevice=$watchdog_device
-EOF
-sudo install -Dm644 "$watchdog_config_stage" "$watchdog_config"
-
-reboot_timeout_stage="$stage_dir/50-vibepollo-hard-reboot-deadline.conf"
-cat >"$reboot_timeout_stage" <<EOF
-[Unit]
-JobTimeoutSec=${orderly_reboot_timeout_sec}s
-JobTimeoutAction=reboot-force
-EOF
-sudo install -Dm644 "$reboot_timeout_stage" "$reboot_timeout_config"
-log "limited the orderly reboot transaction to ${orderly_reboot_timeout_sec}s before reboot-force"
-
-log "making the live hardware watchdog non-disarmable"
-printf '1\n' | sudo tee "$watchdog_sysfs/nowayout" >/dev/null
-watchdog_nowayout="$(cat "$watchdog_sysfs/nowayout" 2>/dev/null || true)"
-[[ "$watchdog_nowayout" == 1 ]] || \
-  die "hardware watchdog did not accept nowayout=1; refusing to reboot"
-
-log "arming the runtime and reboot watchdogs"
-sudo systemctl daemon-reexec
-runtime_watchdog="$(systemctl show -p RuntimeWatchdogUSec --value)"
-reboot_watchdog="$(systemctl show -p RebootWatchdogUSec --value)"
-active_watchdog_device="$(systemctl show -p WatchdogDevice --value)"
-watchdog_state="$(cat "$watchdog_sysfs/state" 2>/dev/null || true)"
-watchdog_timeout="$(cat "$watchdog_sysfs/timeout" 2>/dev/null || true)"
-[[ -n "$runtime_watchdog" && "$runtime_watchdog" != 0 ]] || die "runtime watchdog did not arm"
-[[ -n "$reboot_watchdog" && "$reboot_watchdog" != 0 ]] || die "reboot watchdog did not arm"
-[[ "$active_watchdog_device" == "$watchdog_device" ]] || \
-  die "systemd selected an unexpected watchdog: ${active_watchdog_device:-none}"
-[[ "$watchdog_state" == active ]] || \
-  die "hardware watchdog is not active: ${watchdog_state:-missing}"
-[[ "$watchdog_timeout" == 60 ]] || \
-  die "hardware watchdog did not accept the 60s timeout: ${watchdog_timeout:-missing}"
-sudo wdctl "$watchdog_device"
-log "non-disarmable watchdog armed: runtime=$runtime_watchdog reboot=$reboot_watchdog device=$active_watchdog_device"
 
 vkms_quiesce_helper="/usr/libexec/vibeshine/vibeshine-vkms-quiesce"
 vkms_exec_stop_post="$(systemctl show vibeshine-vkms.service -p ExecStopPost --value)"
@@ -592,19 +623,23 @@ vkms_before="$(systemctl show vibeshine-vkms.service -p Before --value)"
   die "vibeshine-vkms.service does not have the required early-quiesce stop hook"
 [[ " $vkms_before " == *" systemd-user-sessions.service "* ]] || \
   die "vibeshine-vkms.service is not ordered after graphical sessions during shutdown"
-sudo test -w "$watchdog_sysfs/nowayout" || \
-  die "hardware watchdog state is no longer writable by root"
+if (( !force_reboot )); then
+  sudo test -w "$watchdog_sysfs/nowayout" || \
+    die "hardware watchdog state is no longer writable by root"
+fi
 sudo test -w /sys/bus/faux/devices/vibeshine/quiesce || \
   die "Vibepollo DRM early-quiesce control is unavailable"
 log "verified normal-shutdown early quiesce: $vkms_quiesce_helper"
 
-reboot_job_timeout="$(systemctl show reboot.target -p JobTimeoutUSec --value)"
-reboot_job_action="$(systemctl show reboot.target -p JobTimeoutAction --value)"
-[[ "$reboot_job_timeout" == "${orderly_reboot_timeout_sec}s" ]] || \
-  die "reboot.target has an unexpected job timeout: ${reboot_job_timeout:-missing}"
-[[ "$reboot_job_action" == reboot-force ]] || \
-  die "reboot.target has an unexpected timeout action: ${reboot_job_action:-missing}"
-log "verified reboot.target hard progress limit: ${reboot_job_timeout}/${reboot_job_action}"
+if (( !force_reboot )); then
+  reboot_job_timeout="$(systemctl show reboot.target -p JobTimeoutUSec --value)"
+  reboot_job_action="$(systemctl show reboot.target -p JobTimeoutAction --value)"
+  [[ "$reboot_job_timeout" == "${orderly_reboot_timeout_sec}s" ]] || \
+    die "reboot.target has an unexpected job timeout: ${reboot_job_timeout:-missing}"
+  [[ "$reboot_job_action" == reboot-force ]] || \
+    die "reboot.target has an unexpected timeout action: ${reboot_job_action:-missing}"
+  log "verified reboot.target hard progress limit: ${reboot_job_timeout}/${reboot_job_action}"
+fi
 
 log "enabling the emergency SysRq sync/remount/reboot fallback for this boot"
 sudo sysctl -q -w kernel.sysrq=176
@@ -626,6 +661,35 @@ trap - EXIT
 
 log "syncing filesystems"
 sync
+
+if (( force_reboot )); then
+  cat <<EOF
+[safe-reboot] Restarting through SysRq. emergency_restart() skips both the
+[safe-reboot] reboot-notifier chain and device_shutdown(), so nothing in the
+[safe-reboot] shutdown path can wedge this -- unlike systemctl reboot --force
+[safe-reboot] --force or reboot -f, which still run device_shutdown().
+[safe-reboot] Filesystems are synced and remounted read-only first.
+EOF
+
+  # One root shell for the whole sequence: after the read-only remount, a
+  # fresh sudo may be unable to write its timestamp, and there is no second
+  # chance to issue the restart. SysRq bits: 16 sync, 32 remount, 128 reboot.
+  log "sync, remount read-only, restart"
+  sudo -n bash -c '
+    set -u
+    sysctl -q -w kernel.sysrq=176
+    sync
+    printf "s\n" >/proc/sysrq-trigger
+    sleep 3
+    printf "u\n" >/proc/sysrq-trigger
+    sleep 3
+    printf "b\n" >/proc/sysrq-trigger
+  '
+
+  # emergency_restart() does not return.
+  sleep 30
+  die "the kernel did not restart after the SysRq reboot request"
+fi
 
 if (( !watchdog_survives_reboot )); then
   cat <<EOF
