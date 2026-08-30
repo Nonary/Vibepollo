@@ -386,6 +386,7 @@ fi
 # Systemd unit files for user services
 %{_userunitdir}/*.service
 %{_userunitdir}/plasma-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
+%{_userunitdir}/plasma-login-kwin_wayland.service.d/vibeshine-kwin-gpu.conf
 
 # Privileged virtual-display provisioning service
 %{_unitdir}/vibeshine-drm-setup.service
