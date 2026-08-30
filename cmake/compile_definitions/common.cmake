@@ -155,6 +155,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/steam_process_tracker.h"
         "${CMAKE_SOURCE_DIR}/src/lutris_integration.cpp"
         "${CMAKE_SOURCE_DIR}/src/lutris_integration.h"
+        "${CMAKE_SOURCE_DIR}/src/lutris_artwork.cpp"
+        "${CMAKE_SOURCE_DIR}/src/lutris_artwork.h"
         "${CMAKE_SOURCE_DIR}/src/lutris_sync_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/lutris_sync_policy.h"
         "${CMAKE_SOURCE_DIR}/src/lutris_auto_sync.cpp"

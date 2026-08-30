@@ -20,6 +20,10 @@ namespace platf::lutris {
     std::string config_path;
     std::string service;
     std::string service_id;
+    // Lutris' portrait cover and square launcher icon are kept separately.
+    // image_path is populated later with a client-compatible managed PNG.
+    std::filesystem::path artwork_path;
+    std::filesystem::path icon_path;
     std::filesystem::path image_path;
     std::int64_t last_played = 0;
     double playtime_seconds = 0.0;

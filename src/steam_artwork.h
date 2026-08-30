@@ -42,6 +42,12 @@ namespace platf::steam::artwork {
   // Return the stable managed path used for Steam's client-compatible cover.
   std::filesystem::path cache_path(const std::filesystem::path &appdata, std::uint32_t app_id);
 
+  // Convert a local provider image to a caller-owned managed PNG path. This
+  // exposes the format-safe cache primitive to other local integrations while
+  // keeping Steam-specific source selection and downloads in prepare().
+  sync_result_t sync_to(const std::filesystem::path &source,
+                        const std::filesystem::path &output);
+
   // Convert a Steam image to PNG in appdata/covers. This function never calls
   // an external command. A matching sidecar fingerprint reuses an existing
   // valid PNG; source changes cause an atomic replacement. Missing or invalid
