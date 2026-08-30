@@ -148,15 +148,20 @@ namespace gl {
   }
 
   std::string shader_t::err_str() {
-    int length;
+    GLint length = 0;
     ctx.GetShaderiv(handle(), GL_INFO_LOG_LENGTH, &length);
 
+    if (length <= 0) {
+      return {};
+    }
+
     std::string string;
-    string.resize(length);
+    string.resize(static_cast<std::size_t>(length));
 
-    ctx.GetShaderInfoLog(handle(), length, &length, string.data());
+    GLsizei written = 0;
+    ctx.GetShaderInfoLog(handle(), length, &written, string.data());
 
-    string.resize(length - 1);
+    string.resize(static_cast<std::size_t>(std::max<GLsizei>(written, 0)));
 
     return string;
   }
@@ -224,15 +229,20 @@ namespace gl {
   }
 
   std::string program_t::err_str() {
-    int length;
+    GLint length = 0;
     ctx.GetProgramiv(handle(), GL_INFO_LOG_LENGTH, &length);
 
+    if (length <= 0) {
+      return {};
+    }
+
     std::string string;
-    string.resize(length);
+    string.resize(static_cast<std::size_t>(length));
 
-    ctx.GetShaderInfoLog(handle(), length, &length, string.data());
+    GLsizei written = 0;
+    ctx.GetProgramInfoLog(handle(), length, &written, string.data());
 
-    string.resize(length - 1);
+    string.resize(static_cast<std::size_t>(std::max<GLsizei>(written, 0)));
 
     return string;
   }
@@ -1062,8 +1072,15 @@ namespace egl {
       bool error_flag = false;
       for (int x = 0; x < count; ++x) {
         auto &compiled_source = compiled_sources[x];
+        auto shader_source = file_handler::read_file(sources[x]);
 
-        compiled_source = gl::shader_t::compile(file_handler::read_file(sources[x]), shader_type[x % 2]);
+        if (shader_source.empty()) {
+          BOOST_LOG(error) << "OpenGL shader source is missing, unreadable, or empty: ["sv << sources[x] << ']';
+          error_flag = true;
+          continue;
+        }
+
+        compiled_source = gl::shader_t::compile(shader_source, shader_type[x % 2]);
         gl_drain_errors;
 
         if (compiled_source.has_right()) {
