@@ -315,6 +315,10 @@ const filteredSteamGames = computed(() => {
   const query = steamGameSearch.value.trim().toLocaleLowerCase();
   return [...steamGames.value]
     .filter((game) => {
+      // Steam exposes runtimes, redistributables, and other support packages
+      // through the same discovery endpoint. Keep those implementation details
+      // out of the normal game picker unless the advanced import policy is on.
+      if (game.filtered && !steamIncludeToolsEnabled()) return false;
       const excluded = gameExcluded(game);
       if (steamGameFilter.value === 'included' && excluded) return false;
       if (steamGameFilter.value === 'excluded' && !excluded) return false;
@@ -1212,20 +1216,22 @@ onMounted(() => void load());
               </details>
             </div>
 
-            <div class="game-manager" aria-labelledby="steam-exclusions-heading">
-              <div class="game-manager__heading">
-                <div>
-                  <h4 id="steam-exclusions-heading">
-                    {{ t('ui.integrations.steam.exclusionsTitle') }}
-                  </h4>
-                  <small>{{ t('ui.integrations.steam.exclusionsDescription') }}</small>
+            <details class="integration-advanced integration-advanced--manager">
+              <summary>{{ t('ui.integrations.steam.manageGames') }}</summary>
+              <div class="game-manager" aria-labelledby="steam-exclusions-heading">
+                <div class="game-manager__heading">
+                  <div>
+                    <h4 id="steam-exclusions-heading">
+                      {{ t('ui.integrations.steam.exclusionsTitle') }}
+                    </h4>
+                    <small>{{ t('ui.integrations.steam.exclusionsDescription') }}</small>
+                  </div>
+                  <StatusBadge
+                    :label="t('ui.integrations.steam.excludedCount', { count: steamExcludedCount })"
+                    :tone="steamExclusionsDirty ? 'warning' : 'neutral'"
+                    compact
+                  />
                 </div>
-                <StatusBadge
-                  :label="t('ui.integrations.steam.excludedCount', { count: steamExcludedCount })"
-                  :tone="steamExclusionsDirty ? 'warning' : 'neutral'"
-                  compact
-                />
-              </div>
               <div class="game-manager__toolbar">
                 <label class="game-manager__search">
                   <span class="vs-sr-only">{{ t('ui.integrations.steam.searchGames') }}</span>
@@ -1346,7 +1352,8 @@ onMounted(() => void load());
                   />
                 </div>
               </div>
-            </div>
+              </div>
+            </details>
           </section>
 
           <section
@@ -1764,6 +1771,20 @@ onMounted(() => void load());
 
 .integration-advanced :deep(.vs-setting-row) {
   border-top: var(--vs-border-width) solid var(--vs-color-border-subtle);
+}
+
+.integration-advanced--manager {
+  overflow: hidden;
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-control);
+  background: var(--vs-color-bg-subtle);
+}
+
+.integration-advanced--manager > .game-manager {
+  border-inline: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  background: var(--vs-color-bg-surface);
 }
 
 .integration-control,
