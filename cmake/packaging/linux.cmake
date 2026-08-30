@@ -29,6 +29,8 @@ else()
         install(PROGRAMS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-ready"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibeshine_vkms_peercred
@@ -68,6 +70,7 @@ else()
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"
                     DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
     endif()

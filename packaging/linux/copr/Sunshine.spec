@@ -374,6 +374,8 @@ fi
 %{_prefix}/libexec/vibeshine/vibeshine-vkms
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-quiesce
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-peercred
+%{_prefix}/libexec/vibeshine/vibepollo-session-handoff
+%{_prefix}/libexec/vibeshine/vibepollo-session-ready
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
 %{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
 
@@ -393,6 +395,7 @@ fi
 %{_unitdir}/vibeshine-vkms-control.socket
 %{_unitdir}/vibeshine-vkms-control@.service
 %{_unitdir}/vibeshine-vkms.service
+%{_unitdir}/vibepollo-session-restore@.service
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules
