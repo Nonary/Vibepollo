@@ -24,6 +24,15 @@ elseif(UNIX)
     # configure metadata file
     configure_file(packaging/linux/${PROJECT_FQDN}.metainfo.xml ${PROJECT_FQDN}.metainfo.xml @ONLY)
 
+    # Native Linux services wait for a usable compositor without consuming
+    # restart-limit attempts. Portable bundles retain the fixed startup delay.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SUNSHINE_BUILD_APPIMAGE AND NOT SUNSHINE_BUILD_FLATPAK)
+        set(SUNSHINE_SERVICE_READINESS_COMMAND
+                "ExecStartPre=/usr/libexec/vibeshine/vibepollo-session-ready")
+    else()
+        set(SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5")
+    endif()
+
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

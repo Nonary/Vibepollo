@@ -1,0 +1,267 @@
+#!/usr/bin/bash
+
+set -euo pipefail
+
+readonly marker=/run/vibepollo/prelogin-handoff-complete
+readonly control_socket=/run/vibeshine/vkms-control.sock
+readonly prelogin_service=vibepollo-prelogin.service
+readonly desktop_service=app-io.github.Nonary.vibepollo.service
+readonly desktop_target=graphical-session.target
+readonly desktop_compositor=plasma-kwin_wayland.service
+readonly restore_unit_prefix=vibepollo-session-restore@
+readonly greeter_user=plasmalogin
+readonly greeter_target=plasma-login-wayland.target
+readonly virtual_output=Virtual-1
+readonly maximum_delay=5
+
+should_log_attempt() {
+  local attempt=$1
+  ((attempt == 0 || (attempt & (attempt - 1)) == 0))
+}
+
+user_systemctl() {
+  local desktop_user=$1
+  shift
+  local desktop_uid runtime_directory
+  desktop_uid=$(/usr/bin/id -u -- "$desktop_user")
+  runtime_directory=/run/user/$desktop_uid
+  [[ -S "$runtime_directory/bus" ]] || return 1
+  /usr/bin/runuser -u "$desktop_user" -- \
+    /usr/bin/env "XDG_RUNTIME_DIR=$runtime_directory" \
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_directory/bus" \
+      /usr/bin/systemctl --user "$@"
+}
+
+queue_desktop_service() {
+  local desktop_user=$1
+  if user_systemctl "$desktop_user" reset-failed "$desktop_service" &&
+     user_systemctl "$desktop_user" start --no-block "$desktop_service"; then
+    return 0
+  fi
+  /usr/bin/printf 'vibepollo-session-handoff: user manager is not ready; graphical-session.target will start %s later\n' "$desktop_service" >&2
+}
+
+stop_desktop_session() {
+  local desktop_user=$1
+  if /usr/bin/timeout --signal=KILL 25 \
+       /usr/bin/runuser -u "$desktop_user" -- \
+       /usr/bin/env "XDG_RUNTIME_DIR=/run/user/$(/usr/bin/id -u -- "$desktop_user")" \
+         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(/usr/bin/id -u -- "$desktop_user")/bus" \
+         /usr/bin/systemctl --user stop "$desktop_target"; then
+    if ! user_systemctl "$desktop_user" stop "$desktop_service"; then
+      user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_service" || :
+    fi
+  else
+    /usr/bin/printf 'vibepollo-session-handoff: desktop target did not stop cleanly; forcing capture owners down\n' >&2
+    user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_service" || :
+    user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_compositor" || :
+  fi
+}
+
+stream_ports_are_free() {
+  local listeners
+  listeners=$({
+    /usr/bin/ss -H -ltn
+    /usr/bin/ss -H -lun
+  })
+  ! /usr/bin/awk '
+    $4 ~ /:(47984|47989|47990|47998|47999|48000|48002|48010)$/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' <<<"$listeners"
+}
+
+connector_status() {
+  if [[ ! -S "$control_socket" ]]; then
+    /usr/bin/printf 'STATUS disconnected %s\n' "$virtual_output"
+    return
+  fi
+  /usr/bin/printf 'status %s\n' "$virtual_output" |
+    /usr/bin/socat - "UNIX-CONNECT:$control_socket"
+}
+
+release_connector() {
+  local response status
+  status=$(connector_status)
+  case "$status" in
+    "STATUS disconnected $virtual_output")
+      return 0
+      ;;
+    "STATUS connected $virtual_output")
+      response=$(/usr/bin/printf 'disconnect %s\n' "$virtual_output" |
+                 /usr/bin/socat - "UNIX-CONNECT:$control_socket")
+      [[ "$response" == "OK disconnected $virtual_output" ]]
+      ;;
+    *)
+      /usr/bin/printf 'vibepollo-session-handoff: unexpected connector status: %s\n' "$status" >&2
+      return 1
+      ;;
+  esac
+}
+
+write_marker() {
+  local desktop_user=$1
+  local temporary
+  /usr/bin/install -d -o root -g root -m 0755 /run/vibepollo
+  temporary=$(/usr/bin/mktemp --tmpdir=/run/vibepollo .handoff.XXXXXX)
+  /usr/bin/printf '%s\n' "$desktop_user" >"$temporary"
+  /usr/bin/chown root:root "$temporary"
+  /usr/bin/chmod 0644 "$temporary"
+  /usr/bin/mv -fT -- "$temporary" "$marker"
+}
+
+handoff() {
+  local attempt desktop_uid desktop_user
+
+  ((EUID == 0)) || {
+    /usr/bin/printf 'vibepollo-session-handoff: handoff requires root\n' >&2
+    return 1
+  }
+  [[ "${PAM_TYPE:-}" == open_session && "${PAM_SERVICE:-}" == plasmalogin ]] || return 0
+  desktop_user=${PAM_USER:-}
+  [[ "$desktop_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || {
+    /usr/bin/printf 'vibepollo-session-handoff: invalid PAM user\n' >&2
+    return 1
+  }
+  desktop_uid=$(/usr/bin/id -u -- "$desktop_user")
+  [[ "$desktop_uid" -ge 1000 ]] || return 0
+
+  /usr/bin/systemctl stop "${restore_unit_prefix}${desktop_uid}.service" || :
+  if user_systemctl "$desktop_user" is-active --quiet "$desktop_target"; then
+    stop_desktop_session "$desktop_user"
+  fi
+  /usr/bin/rm -f -- "$marker"
+  if ! /usr/bin/timeout --signal=KILL 25 /usr/bin/systemctl stop "$prelogin_service"; then
+    /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$prelogin_service" || :
+  fi
+
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    if ! /usr/bin/systemctl is-active --quiet "$prelogin_service" && stream_ports_are_free; then
+      break
+    fi
+    /usr/bin/sleep 0.1
+  done
+  if ((attempt == 100)); then
+    /usr/bin/printf 'vibepollo-session-handoff: pre-login stream did not stop safely\n' >&2
+    return 1
+  fi
+
+  if ! release_connector || [[ $(connector_status) != "STATUS disconnected $virtual_output" ]]; then
+    /usr/bin/printf 'vibepollo-session-handoff: virtual connector release failed\n' >&2
+    return 1
+  fi
+
+  write_marker "$desktop_user"
+  queue_desktop_service "$desktop_user"
+}
+
+queue_prelogin_restore() {
+  local desktop_uid desktop_user
+  ((EUID == 0)) || return 0
+  [[ "${PAM_TYPE:-}" == close_session && "${PAM_SERVICE:-}" == plasmalogin ]] || return 0
+  desktop_user=${PAM_USER:-}
+  if [[ "$desktop_user" =~ ^[a-z_][a-z0-9_-]*$ ]] &&
+     [[ $(/usr/bin/id -u -- "$desktop_user") -ge 1000 ]]; then
+    desktop_uid=$(/usr/bin/id -u -- "$desktop_user")
+    /usr/bin/systemctl reset-failed "${restore_unit_prefix}${desktop_uid}.service" || :
+    if ! /usr/bin/systemctl start --no-block "${restore_unit_prefix}${desktop_uid}.service"; then
+      /usr/bin/printf 'vibepollo-session-handoff: could not queue pre-login restoration\n' >&2
+    fi
+  fi
+  return 0
+}
+
+restore_prelogin() {
+  local desktop_uid=$1 desktop_user passwd_entry
+
+  ((EUID == 0)) || {
+    /usr/bin/printf 'vibepollo-session-handoff: restore requires root\n' >&2
+    return 1
+  }
+  [[ "$desktop_uid" =~ ^[0-9]+$ && "$desktop_uid" -ge 1000 ]] || return 1
+  passwd_entry=$(/usr/bin/getent passwd "$desktop_uid") || return 1
+  desktop_user=${passwd_entry%%:*}
+  [[ "$desktop_user" =~ ^[a-z_][a-z0-9_-]*$ ]] || return 1
+  [[ $(/usr/bin/id -u -- "$desktop_user") == "$desktop_uid" ]] || return 1
+
+  # This runs outside PAM so stopping the graphical target cannot wait on the
+  # same close_session hook that requested the stop.
+  /usr/bin/sleep 1
+  stop_desktop_session "$desktop_user"
+  /usr/bin/rm -f -- "$marker"
+  user_systemctl "$greeter_user" reset-failed || :
+  if ! user_systemctl "$greeter_user" start "$greeter_target"; then
+    /usr/bin/printf 'vibepollo-session-handoff: greeter target is not ready; pre-login retries will wait for it\n' >&2
+  fi
+  /usr/bin/systemctl reset-failed "$prelogin_service" || :
+  if ! /usr/bin/systemctl start --no-block "$prelogin_service"; then
+    /usr/bin/printf 'vibepollo-session-handoff: could not start pre-login restoration\n' >&2
+    return 1
+  fi
+}
+
+wait_prelogin() {
+  local attempt=0 delay=1
+
+  ((EUID == 0)) || {
+    /usr/bin/printf 'vibepollo-session-handoff: wait-prelogin requires root\n' >&2
+    return 1
+  }
+  while [[ -e "$marker" ]] || ! stream_ports_are_free; do
+    if should_log_attempt "$attempt"; then
+      /usr/bin/printf 'vibepollo-session-handoff: waiting for desktop stream resources to drain (attempt %d)\n' "$((attempt + 1))" >&2
+    fi
+    /usr/bin/sleep "$delay"
+    ((attempt += 1))
+    if ((delay < maximum_delay)); then
+      ((delay *= 2))
+      ((delay > maximum_delay)) && delay=$maximum_delay
+    fi
+  done
+}
+
+verify() {
+  local attributes expected_user marker_user
+  expected_user=$(/usr/bin/id -un)
+
+  if [[ ! -f "$marker" || -L "$marker" ]]; then
+    /usr/bin/printf 'vibepollo-session-handoff: missing trusted handoff marker\n' >&2
+    return 1
+  fi
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$marker")
+  marker_user=$(<"$marker")
+  if [[ "$attributes" != root:root:644 || "$marker_user" != "$expected_user" ]]; then
+    /usr/bin/printf 'vibepollo-session-handoff: handoff marker is not trusted for %s\n' "$expected_user" >&2
+    return 1
+  fi
+  if /usr/bin/systemctl is-active --quiet "$prelogin_service" || ! stream_ports_are_free; then
+    /usr/bin/printf 'vibepollo-session-handoff: pre-login resources are still active\n' >&2
+    return 1
+  fi
+}
+
+case "${1:-handoff}" in
+  handoff)
+    if [[ "${PAM_TYPE:-}" == close_session ]]; then
+      queue_prelogin_restore
+    else
+      handoff
+    fi
+    ;;
+  restore)
+    [[ $# == 2 ]] || {
+      /usr/bin/printf 'usage: %s restore UID\n' "$0" >&2
+      exit 2
+    }
+    restore_prelogin "$2"
+    ;;
+  verify)
+    verify
+    ;;
+  wait-prelogin)
+    wait_prelogin
+    ;;
+  *)
+    /usr/bin/printf 'usage: %s {handoff|restore UID|verify|wait-prelogin}\n' "$0" >&2
+    exit 2
+    ;;
+esac
