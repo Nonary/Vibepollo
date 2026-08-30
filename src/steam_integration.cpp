@@ -11,8 +11,8 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifdef _WIN32
   #include <shellapi.h>
@@ -188,8 +188,7 @@ namespace {
     return fs::is_regular_file(path, ec);
   }
 
-  fs::path first_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id,
-                         std::initializer_list<const char *> suffixes) {
+  fs::path first_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id, std::initializer_list<const char *> suffixes) {
     const auto id = std::to_string(app_id);
     for (const auto &dir : dirs) {
       for (const auto *suffix : suffixes) {
@@ -202,35 +201,43 @@ namespace {
     return {};
   }
 
-  fs::path first_nested_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id,
-                                 std::initializer_list<const char *> names) {
+  fs::path first_nested_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id, std::initializer_list<const char *> names) {
     const auto id = std::to_string(app_id);
     for (const auto &dir : dirs) {
       for (const auto *name : names) {
         const auto path = dir / id / name;
-        if (regular(path)) return path;
+        if (regular(path)) {
+          return path;
+        }
       }
     }
     return {};
   }
 
-  fs::path first_hashed_nested_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id,
-                                        std::initializer_list<const char *> names) {
+  fs::path first_hashed_nested_existing(const std::vector<fs::path> &dirs, std::uint32_t app_id, std::initializer_list<const char *> names) {
     const auto id = std::to_string(app_id);
     for (const auto &dir : dirs) {
       const auto app_dir = dir / id;
       std::error_code ec;
-      if (!fs::is_directory(app_dir, ec)) continue;
+      if (!fs::is_directory(app_dir, ec)) {
+        continue;
+      }
       std::vector<fs::path> asset_dirs;
       for (const auto &entry : fs::directory_iterator(app_dir, ec)) {
-        if (ec) break;
-        if (entry.is_directory(ec)) asset_dirs.push_back(entry.path());
+        if (ec) {
+          break;
+        }
+        if (entry.is_directory(ec)) {
+          asset_dirs.push_back(entry.path());
+        }
       }
       std::sort(asset_dirs.begin(), asset_dirs.end());
       for (const auto &asset_dir : asset_dirs) {
         for (const auto *name : names) {
           const auto path = asset_dir / name;
-          if (regular(path)) return path;
+          if (regular(path)) {
+            return path;
+          }
         }
       }
     }
@@ -244,12 +251,13 @@ namespace {
     std::string format;
   };
 
-  artwork_t artwork_for(std::uint32_t app_id, const fs::path &library,
-                        const std::vector<fs::path> &steam_roots) {
+  artwork_t artwork_for(std::uint32_t app_id, const fs::path &library, const std::vector<fs::path> &steam_roots) {
     std::vector<fs::path> cache_dirs;
     std::vector<fs::path> grid_dirs;
     auto add_root_dirs = [&](const fs::path &root) {
-      if (root.empty()) return;
+      if (root.empty()) {
+        return;
+      }
       cache_dirs.push_back(root / "appcache/librarycache");
       cache_dirs.push_back(root / "librarycache");
       std::error_code ec;
@@ -263,7 +271,9 @@ namespace {
       }
     };
     add_root_dirs(library);
-    for (const auto &root : steam_roots) add_root_dirs(root);
+    for (const auto &root : steam_roots) {
+      add_root_dirs(root);
+    }
 
     // New librarycache artwork is preferred because it is Steam's canonical
     // portrait cover. Steam's _2x asset is the only local variant that is
@@ -271,50 +281,55 @@ namespace {
     // the older 300x450 files. User grid art is a useful fallback for custom
     // artwork.
     artwork_t out;
-    out.portrait = first_existing(cache_dirs, app_id,
-      {"_library_600x900_2x.jpg", "_library_600x900_2x.png", "_library_600x900_2x.webp"});
+    out.portrait = first_existing(cache_dirs, app_id, {"_library_600x900_2x.jpg", "_library_600x900_2x.png", "_library_600x900_2x.webp"});
     if (out.portrait.empty()) {
-      out.portrait = first_nested_existing(cache_dirs, app_id,
-        {"library_600x900_2x.jpg", "library_600x900_2x.png", "library_600x900_2x.webp"});
+      out.portrait = first_nested_existing(cache_dirs, app_id, {"library_600x900_2x.jpg", "library_600x900_2x.png", "library_600x900_2x.webp"});
     }
     if (out.portrait.empty()) {
-      out.portrait = first_existing(cache_dirs, app_id,
-        {"_library_600x900.jpg", "_library_600x900.png", "_library_600x900.webp"});
+      out.portrait = first_existing(cache_dirs, app_id, {"_library_600x900.jpg", "_library_600x900.png", "_library_600x900.webp"});
     }
     if (out.portrait.empty()) {
-      out.portrait = first_nested_existing(cache_dirs, app_id,
-        {"library_600x900.jpg", "library_600x900.png", "library_600x900.webp"});
+      out.portrait = first_nested_existing(cache_dirs, app_id, {"library_600x900.jpg", "library_600x900.png", "library_600x900.webp"});
     }
     if (out.portrait.empty()) {
       // Current Steam clients key cached store assets by their content hash:
       // <appid>/<hash>/library_capsule.jpg. The capsule is the same portrait
       // cover as the legacy library_600x900 asset (normally 300x450 locally).
-      out.portrait = first_hashed_nested_existing(cache_dirs, app_id,
-        {"library_capsule.jpg", "library_capsule.png", "library_capsule.webp"});
+      out.portrait = first_hashed_nested_existing(cache_dirs, app_id, {"library_capsule.jpg", "library_capsule.png", "library_capsule.webp"});
     }
     if (out.portrait.empty()) {
       out.portrait = first_existing(grid_dirs, app_id, {"p.png", "p.jpg", "_p.png", "_p.jpg"});
     }
     out.header = first_existing(cache_dirs, app_id, {"_header.jpg", "_header.png", "_header.webp"});
-    if (out.header.empty()) out.header = first_nested_existing(cache_dirs, app_id, {"header.jpg", "header.png", "header.webp"});
     if (out.header.empty()) {
-      out.header = first_hashed_nested_existing(cache_dirs, app_id,
-        {"library_header.jpg", "library_header.png", "library_header.webp"});
+      out.header = first_nested_existing(cache_dirs, app_id, {"header.jpg", "header.png", "header.webp"});
     }
-    if (out.header.empty()) out.header = first_existing(grid_dirs, app_id, {"_hero.png", "_hero.jpg"});
+    if (out.header.empty()) {
+      out.header = first_hashed_nested_existing(cache_dirs, app_id, {"library_header.jpg", "library_header.png", "library_header.webp"});
+    }
+    if (out.header.empty()) {
+      out.header = first_existing(grid_dirs, app_id, {"_hero.png", "_hero.jpg"});
+    }
     out.icon = first_existing(cache_dirs, app_id, {"_icon.jpg", "_icon.png", "_icon.webp"});
-    if (out.icon.empty()) out.icon = first_nested_existing(cache_dirs, app_id, {"icon.jpg", "icon.png", "icon.webp"});
-    if (out.icon.empty()) out.icon = first_existing(grid_dirs, app_id, {"_icon.png", "_icon.jpg", ".png"});
+    if (out.icon.empty()) {
+      out.icon = first_nested_existing(cache_dirs, app_id, {"icon.jpg", "icon.png", "icon.webp"});
+    }
+    if (out.icon.empty()) {
+      out.icon = first_existing(grid_dirs, app_id, {"_icon.png", "_icon.jpg", ".png"});
+    }
     out.format = !out.portrait.empty() ? out.portrait.extension().string() :
-                 (!out.header.empty() ? out.header.extension().string() :
-                  (!out.icon.empty() ? out.icon.extension().string() : std::string {}));
-    if (!out.format.empty() && out.format.front() == '.') out.format.erase(0, 1);
+                                         (!out.header.empty() ? out.header.extension().string() :
+                                                                (!out.icon.empty() ? out.icon.extension().string() : std::string {}));
+    if (!out.format.empty() && out.format.front() == '.') {
+      out.format.erase(0, 1);
+    }
     return out;
   }
 
-#ifndef _WIN32
   std::uint32_t read_u32(const std::vector<std::uint8_t> &data, std::size_t offset) {
-    if (offset + 4 > data.size()) throw std::out_of_range("Steam appinfo u32");
+    if (offset + 4 > data.size()) {
+      throw std::out_of_range("Steam appinfo u32");
+    }
     return static_cast<std::uint32_t>(data[offset]) |
            (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
            (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
@@ -322,7 +337,9 @@ namespace {
   }
 
   std::uint64_t read_u64(const std::vector<std::uint8_t> &data, std::size_t offset) {
-    if (offset + 8 > data.size()) throw std::out_of_range("Steam appinfo u64");
+    if (offset + 8 > data.size()) {
+      throw std::out_of_range("Steam appinfo u64");
+    }
     std::uint64_t value = 0;
     for (unsigned shift = 0; shift < 64; shift += 8) {
       value |= static_cast<std::uint64_t>(data[offset++]) << shift;
@@ -332,8 +349,12 @@ namespace {
 
   std::string read_cstring(const std::vector<std::uint8_t> &data, std::size_t &offset, std::size_t end) {
     const auto begin = offset;
-    while (offset < end && data[offset] != 0) ++offset;
-    if (offset >= end) throw std::out_of_range("Steam appinfo string");
+    while (offset < end && data[offset] != 0) {
+      ++offset;
+    }
+    if (offset >= end) {
+      throw std::out_of_range("Steam appinfo string");
+    }
     std::string value(reinterpret_cast<const char *>(data.data() + begin), offset - begin);
     ++offset;
     return value;
@@ -348,10 +369,14 @@ namespace {
     vdf_node result;
     while (offset < end) {
       const auto type = data[offset++];
-      if (type == 0x08) return result;
+      if (type == 0x08) {
+        return result;
+      }
       const auto key_index = read_u32(data, offset);
       offset += 4;
-      if (key_index >= keys.size()) throw std::out_of_range("Steam appinfo key");
+      if (key_index >= keys.size()) {
+        throw std::out_of_range("Steam appinfo key");
+      }
       vdf_node value;
       switch (type) {
         case 0x00:
@@ -367,19 +392,23 @@ namespace {
           value.value = std::to_string(read_u32(data, offset));
           offset += 4;
           break;
-        case 0x05: {
-          const auto begin = offset;
-          while (offset + 1 < end && (data[offset] != 0 || data[offset + 1] != 0)) offset += 2;
-          if (offset + 1 >= end) throw std::out_of_range("Steam appinfo wide string");
-          // Launch metadata is UTF-8. Preserve a readable ASCII subset for
-          // the uncommon wide-string values without adding a codec dependency.
-          for (auto cursor = begin; cursor < offset; cursor += 2) {
-            value.value.push_back(data[cursor] < 0x80 && data[cursor + 1] == 0 ?
-                                    static_cast<char>(data[cursor]) : '?');
+        case 0x05:
+          {
+            const auto begin = offset;
+            while (offset + 1 < end && (data[offset] != 0 || data[offset + 1] != 0)) {
+              offset += 2;
+            }
+            if (offset + 1 >= end) {
+              throw std::out_of_range("Steam appinfo wide string");
+            }
+            // Launch metadata is UTF-8. Preserve a readable ASCII subset for
+            // the uncommon wide-string values without adding a codec dependency.
+            for (auto cursor = begin; cursor < offset; cursor += 2) {
+              value.value.push_back(data[cursor] < 0x80 && data[cursor + 1] == 0 ? static_cast<char>(data[cursor]) : '?');
+            }
+            offset += 2;
+            break;
           }
-          offset += 2;
-          break;
-        }
         case 0x07:
         case 0x0a:
           value.value = std::to_string(read_u64(data, offset));
@@ -400,37 +429,53 @@ namespace {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
       return static_cast<char>(std::tolower(ch));
     });
-    if (value.find("linux") != std::string::npos) return "linux";
-    if (value.empty() || value.find("windows") != std::string::npos) return "windows";
+    if (value.find("linux") != std::string::npos) {
+      return "linux";
+    }
+    if (value.empty() || value.find("windows") != std::string::npos) {
+      return "windows";
+    }
     return {};
   }
 
   void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo) {
     const auto *config = appinfo.find("config");
     const auto *launches = config ? config->find("launch") : nullptr;
-    if (!launches) return;
+    if (!launches) {
+      return;
+    }
 
     const vdf_node *selected = nullptr;
     int selected_score = -1;
     for (const auto &[index, launch] : launches->children) {
       const auto *executable = launch.find("executable");
       const auto os = normalized_os(launch);
-      if (!executable || executable->value.empty() || os.empty()) continue;
+      if (!executable || executable->value.empty() || os.empty()) {
+        continue;
+      }
       int score = os == "linux" ? 200 : 100;
-      if (index == "0") score += 20;
-      if (const auto *type = launch.find("type"); type && (type->value == "default" || type->value == "none")) score += 10;
+      if (index == "0") {
+        score += 20;
+      }
+      if (const auto *type = launch.find("type"); type && (type->value == "default" || type->value == "none")) {
+        score += 10;
+      }
       if (score > selected_score) {
         selected = &launch;
         selected_score = score;
       }
     }
-    if (!selected) return;
+    if (!selected) {
+      return;
+    }
 
     auto relative = selected->find("executable")->value;
     std::replace(relative.begin(), relative.end(), '\\', '/');
     game.launch_executable = game.install_dir / relative;
     game.launch_os = normalized_os(*selected);
-    if (const auto *arguments = selected->find("arguments")) game.launch_arguments = arguments->value;
+    if (const auto *arguments = selected->find("arguments")) {
+      game.launch_arguments = arguments->value;
+    }
     if (const auto *working = selected->find("workingdir"); working && !working->value.empty()) {
       auto directory = working->value;
       std::replace(directory.begin(), directory.end(), '\\', '/');
@@ -440,18 +485,39 @@ namespace {
     }
   }
 
+  void apply_common_node(platf::steam::game_t &game, const vdf_node &appinfo) {
+    const auto *common = appinfo.find("common");
+    if (!common) {
+      return;
+    }
+    if (const auto *name = common->find("name"); name && !name->value.empty()) {
+      game.name = name->value;
+    }
+    if (const auto *type = common->find("type"); type && !type->value.empty()) {
+      game.app_type = type->value;
+    }
+  }
+
   void enrich_from_appinfo(const fs::path &path, std::map<std::uint32_t, platf::steam::game_t> &games) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) return;
+    if (!input) {
+      return;
+    }
     std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(input)), {});
-    if (data.size() < 20 || read_u32(data, 0) != 0x07564429) return;
+    if (data.size() < 20 || read_u32(data, 0) != 0x07564429) {
+      return;
+    }
     const auto string_table_offset = read_u64(data, 8);
-    if (string_table_offset > data.size() - 4) return;
+    if (string_table_offset > data.size() - 4) {
+      return;
+    }
 
     std::size_t strings_offset = static_cast<std::size_t>(string_table_offset);
     const auto string_count = read_u32(data, strings_offset);
     strings_offset += 4;
-    if (string_count > data.size() - strings_offset) return;
+    if (string_count > data.size() - strings_offset) {
+      return;
+    }
     std::vector<std::string> keys;
     keys.reserve(string_count);
     for (std::uint32_t i = 0; i < string_count; ++i) {
@@ -461,19 +527,29 @@ namespace {
     std::size_t offset = 16;
     while (offset + 4 <= string_table_offset) {
       const auto app_id = read_u32(data, offset);
-      if (app_id == 0) break;
-      if (offset + 68 > string_table_offset) return;
+      if (app_id == 0) {
+        break;
+      }
+      if (offset + 68 > string_table_offset) {
+        return;
+      }
       const auto entry_size = read_u32(data, offset + 4);
-      if (entry_size > string_table_offset - offset - 8) return;
+      if (entry_size > string_table_offset - offset - 8) {
+        return;
+      }
       const auto entry_end = offset + 8 + static_cast<std::size_t>(entry_size);
       const auto value_offset = offset + 68;
-      if (entry_size < 60 || entry_end > string_table_offset || value_offset > entry_end) return;
+      if (entry_size < 60 || entry_end > string_table_offset || value_offset > entry_end) {
+        return;
+      }
       if (const auto found = games.find(app_id); found != games.end()) {
         try {
           auto cursor = value_offset;
           const auto root = parse_binary_vdf(data, cursor, entry_end, keys);
           const auto *appinfo = root.find("appinfo");
-          apply_launch_node(found->second, appinfo ? *appinfo : root);
+          const auto &metadata = appinfo ? *appinfo : root;
+          apply_common_node(found->second, metadata);
+          apply_launch_node(found->second, metadata);
         } catch (...) {
           // A single malformed/cache-version entry must not suppress the rest
           // of Steam discovery; unresolved games keep the broker fallback.
@@ -483,14 +559,20 @@ namespace {
     }
   }
 
-  void apply_launch_options(const fs::path &steam_root, std::map<std::uint32_t, platf::steam::game_t> &games) {
+  void apply_user_metadata(const fs::path &steam_root, std::map<std::uint32_t, platf::steam::game_t> &games, bool include_history) {
     std::error_code ec;
     const auto userdata = steam_root / "userdata";
-    if (!fs::is_directory(userdata, ec)) return;
+    if (!fs::is_directory(userdata, ec)) {
+      return;
+    }
     for (const auto &user : fs::directory_iterator(userdata, ec)) {
-      if (ec || !user.is_directory(ec)) continue;
+      if (ec || !user.is_directory(ec)) {
+        continue;
+      }
       std::ifstream input(user.path() / "config/localconfig.vdf");
-      if (!input) continue;
+      if (!input) {
+        continue;
+      }
       std::stringstream buffer;
       buffer << input.rdbuf();
       const auto doc = platf::steam::parse_vdf(buffer.str());
@@ -499,28 +581,61 @@ namespace {
       apps = apps ? apps->find("Valve") : nullptr;
       apps = apps ? apps->find("Steam") : nullptr;
       apps = apps ? apps->find("apps") : nullptr;
-      if (!apps) continue;
-      for (auto &[app_id, game] : games) {
-        if (const auto *app = apps->find(std::to_string(app_id))) {
-          if (const auto *options = app->find("LaunchOptions")) game.launch_options = options->value;
+      if (!apps) {
+        continue;
+      }
+      for (const auto &[id_text, app] : apps->children) {
+        std::uint64_t id = 0;
+        try {
+          std::size_t used = 0;
+          id = std::stoull(id_text, &used, 10);
+          if (used != id_text.size() || id == 0 || id > UINT32_MAX) {
+            continue;
+          }
+        } catch (...) {
+          continue;
+        }
+        const auto last_played = number(app.find("LastPlayed")).value_or(0);
+        const auto playtime = number(app.find("Playtime")).value_or(0);
+        auto found = games.find(static_cast<std::uint32_t>(id));
+        if (found == games.end()) {
+          if (!include_history || (last_played == 0 && playtime == 0)) {
+            continue;
+          }
+          platf::steam::game_t game;
+          game.app_id = static_cast<std::uint32_t>(id);
+          game.stable_id = "steam:" + id_text;
+          found = games.emplace(game.app_id, std::move(game)).first;
+        }
+        auto &game = found->second;
+        game.last_played = std::max(game.last_played, last_played);
+        game.playtime_minutes = std::max(game.playtime_minutes, playtime);
+        if (const auto *options = app.find("LaunchOptions"); options && !options->value.empty()) {
+          game.launch_options = options->value;
         }
       }
     }
   }
 
   void apply_proton_metadata(platf::steam::game_t &game) {
-    if (game.launch_os != "windows") return;
+    if (game.launch_os != "windows") {
+      return;
+    }
     game.compatdata_path = game.library_path / "steamapps" / "compatdata" / std::to_string(game.app_id);
     std::ifstream input(game.compatdata_path / "config_info");
     std::string version;
     std::string files_path;
     std::string library_path;
     std::string steam_client_path;
-    if (!std::getline(input, version) || !std::getline(input, files_path)) return;
+    if (!std::getline(input, version) || !std::getline(input, files_path)) {
+      return;
+    }
     std::getline(input, library_path);
     std::getline(input, steam_client_path);
     const auto marker = files_path.find("/files/");
-    if (marker == std::string::npos) return;
+    if (marker == std::string::npos) {
+      return;
+    }
     game.proton_path = files_path.substr(0, marker);
 
     fs::path steamapps;
@@ -538,27 +653,37 @@ namespace {
         }
         steamapps = parent;
       }
-      if (steamapps.empty() || steamapps.filename() != "steamapps") return;
+      if (steamapps.empty() || steamapps.filename() != "steamapps") {
+        return;
+      }
       game.steam_client_path = steamapps.parent_path();
     }
 
     std::ifstream tool_manifest(game.proton_path / "toolmanifest.vdf");
-    if (!tool_manifest) return;
+    if (!tool_manifest) {
+      return;
+    }
     std::stringstream tool_buffer;
     tool_buffer << tool_manifest.rdbuf();
     const auto tool_doc = platf::steam::parse_vdf(tool_buffer.str());
     const auto *manifest = tool_doc.find("manifest");
     const auto *required = manifest ? manifest->find("require_tool_appid") : nullptr;
-    if (!required || required->value.empty()) return;
+    if (!required || required->value.empty()) {
+      return;
+    }
 
     std::ifstream runtime_manifest(steamapps / ("appmanifest_" + required->value + ".acf"));
-    if (!runtime_manifest) return;
+    if (!runtime_manifest) {
+      return;
+    }
     std::stringstream runtime_buffer;
     runtime_buffer << runtime_manifest.rdbuf();
     const auto runtime_doc = platf::steam::parse_vdf(runtime_buffer.str());
     const auto *app_state = runtime_doc.find("AppState");
     const auto *install_dir = app_state ? app_state->find("installdir") : nullptr;
-    if (!install_dir || install_dir->value.empty()) return;
+    if (!install_dir || install_dir->value.empty()) {
+      return;
+    }
     const auto runtime = steamapps / "common" / install_dir->value;
     ec.clear();
     if (fs::is_regular_file(runtime / "_v2-entry-point", ec)) {
@@ -569,13 +694,15 @@ namespace {
   std::string shell_quote(std::string_view value) {
     std::string result = "'";
     for (const char ch : value) {
-      if (ch == '\'') result += "'\\''";
-      else result.push_back(ch);
+      if (ch == '\'') {
+        result += "'\\''";
+      } else {
+        result.push_back(ch);
+      }
     }
     result.push_back('\'');
     return result;
   }
-#endif
 }  // namespace
 
 namespace platf::steam {
@@ -599,11 +726,9 @@ namespace platf::steam {
     std::vector<fs::path> roots;
 #ifdef _WIN32
     DWORD steam_path_size = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ,
-                     nullptr, nullptr, &steam_path_size) == ERROR_SUCCESS && steam_path_size > sizeof(wchar_t)) {
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, nullptr, nullptr, &steam_path_size) == ERROR_SUCCESS && steam_path_size > sizeof(wchar_t)) {
       std::vector<wchar_t> steam_path(steam_path_size / sizeof(wchar_t));
-      if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ,
-                       nullptr, steam_path.data(), &steam_path_size) == ERROR_SUCCESS) {
+      if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", RRF_RT_REG_SZ, nullptr, steam_path.data(), &steam_path_size) == ERROR_SUCCESS) {
         add_root(roots, fs::path(steam_path.data()));
       }
     }
@@ -687,6 +812,7 @@ namespace platf::steam {
         game_t game;
         game.app_id = static_cast<std::uint32_t>(*id);
         game.stable_id = "steam:" + std::to_string(game.app_id);
+        game.installed = true;
         if (const auto *name = app->find("name")) {
           game.name = name->value;
         }
@@ -724,13 +850,27 @@ namespace platf::steam {
           // the later record.
           auto &candidate = existing->second;
           const auto &other = game;
-          if (candidate.portrait_path.empty()) candidate.portrait_path = other.portrait_path;
-          if (candidate.boxart_path.empty()) candidate.boxart_path = other.boxart_path;
-          if (candidate.artwork_path.empty()) candidate.artwork_path = other.artwork_path;
-          if (candidate.artwork_format.empty()) candidate.artwork_format = other.artwork_format;
-          if (candidate.header_path.empty()) candidate.header_path = other.header_path;
-          if (candidate.icon_path.empty()) candidate.icon_path = other.icon_path;
-          if (candidate.app_type.empty()) candidate.app_type = other.app_type;
+          if (candidate.portrait_path.empty()) {
+            candidate.portrait_path = other.portrait_path;
+          }
+          if (candidate.boxart_path.empty()) {
+            candidate.boxart_path = other.boxart_path;
+          }
+          if (candidate.artwork_path.empty()) {
+            candidate.artwork_path = other.artwork_path;
+          }
+          if (candidate.artwork_format.empty()) {
+            candidate.artwork_format = other.artwork_format;
+          }
+          if (candidate.header_path.empty()) {
+            candidate.header_path = other.header_path;
+          }
+          if (candidate.icon_path.empty()) {
+            candidate.icon_path = other.icon_path;
+          }
+          if (candidate.app_type.empty()) {
+            candidate.app_type = other.app_type;
+          }
         }
       }
     };
@@ -769,7 +909,7 @@ namespace platf::steam {
       if (!ec && metadata_roots.insert(key).second) {
         try {
           enrich_from_appinfo(steam_root / "appcache/appinfo.vdf", found);
-          apply_launch_options(steam_root, found);
+          apply_user_metadata(steam_root, found, false);
         } catch (...) {
           // Local launch metadata is an optimization. Steam's broker remains
           // the safe fallback for an unreadable or newly-versioned cache.
@@ -784,6 +924,54 @@ namespace platf::steam {
     std::vector<game_t> result;
     result.reserve(found.size());
     for (auto &[id, game] : found) {
+      result.push_back(std::move(game));
+    }
+    return result;
+  }
+
+  std::vector<game_t> discover_catalog(const std::vector<fs::path> &requested_roots) {
+    auto roots = requested_roots;
+    if (roots.empty()) {
+      roots = default_library_roots();
+    }
+    auto installed = discover(roots);
+    std::map<std::uint32_t, game_t> found;
+    for (auto &game : installed) {
+      found.emplace(game.app_id, std::move(game));
+    }
+
+    std::unordered_set<std::string> metadata_roots;
+    for (const auto &root : roots) {
+      const auto apps = steamapps_for(root);
+      const auto steam_root = apps.empty() ? root : apps.parent_path();
+      std::error_code ec;
+      const auto key = fs::weakly_canonical(steam_root, ec).generic_string();
+      if (ec || !metadata_roots.insert(key).second) {
+        continue;
+      }
+      try {
+        apply_user_metadata(steam_root, found, true);
+        enrich_from_appinfo(steam_root / "appcache/appinfo.vdf", found);
+      } catch (...) {
+        // Preserve installed discovery if Steam is rewriting either cache.
+      }
+    }
+
+    std::vector<game_t> result;
+    for (auto &[id, game] : found) {
+      (void) id;
+      if (game.name.empty()) {
+        continue;
+      }
+      if (!game.installed) {
+        const auto art = artwork_for(game.app_id, {}, roots);
+        game.portrait_path = art.portrait;
+        game.boxart_path = art.portrait;
+        game.artwork_path = !art.portrait.empty() ? art.portrait : (!art.header.empty() ? art.header : art.icon);
+        game.artwork_format = art.format;
+        game.icon_path = art.icon;
+        game.header_path = art.header;
+      }
       result.push_back(std::move(game));
     }
     return result;
@@ -818,8 +1006,7 @@ namespace platf::steam {
     command += "SteamAppId=" + std::to_string(game.app_id) + " ";
     command += "SteamGameId=" + std::to_string(game.app_id) + " ";
     if (game.launch_os == "windows") {
-      if (game.compatdata_path.empty() || game.proton_path.empty() ||
-          game.proton_runtime_path.empty() || game.steam_client_path.empty()) {
+      if (game.compatdata_path.empty() || game.proton_path.empty() || game.proton_runtime_path.empty() || game.steam_client_path.empty()) {
         return launch_command(game.app_id);
       }
       const auto app_id = std::to_string(game.app_id);
@@ -827,7 +1014,9 @@ namespace platf::steam {
       const auto client_steamapps = game.steam_client_path / "steamapps";
       const auto shader_cache = steamapps / "shadercache" / app_id;
       std::string library_paths = steamapps.generic_string();
-      if (client_steamapps != steamapps) library_paths += ":" + client_steamapps.generic_string();
+      if (client_steamapps != steamapps) {
+        library_paths += ":" + client_steamapps.generic_string();
+      }
       const auto tool_paths = game.proton_path.generic_string() + ":" + game.proton_runtime_path.generic_string();
       command += "STEAM_COMPAT_APP_ID=" + app_id + " SteamOverlayGameId=" + app_id + " ";
       command += "STEAM_COMPAT_DATA_PATH=" + shell_quote(game.compatdata_path.generic_string()) + " ";
@@ -889,10 +1078,13 @@ namespace platf::steam {
     // it was actually executed. A close-on-exec pipe reports only pre-exec
     // failures: successful exec closes the write end and produces EOF.
     int exec_error_pipe[2] {-1, -1};
-    if (pipe(exec_error_pipe) != 0 ||
-        fcntl(exec_error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
-      if (exec_error_pipe[0] >= 0) close(exec_error_pipe[0]);
-      if (exec_error_pipe[1] >= 0) close(exec_error_pipe[1]);
+    if (pipe(exec_error_pipe) != 0 || fcntl(exec_error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
+      if (exec_error_pipe[0] >= 0) {
+        close(exec_error_pipe[0]);
+      }
+      if (exec_error_pipe[1] >= 0) {
+        close(exec_error_pipe[1]);
+      }
       return false;
     }
     const auto pid = fork();

@@ -101,11 +101,40 @@ TEST(SteamSync, FiltersCompatibilityNamesAndCurrentRuntimeIdsUnlessOptedIn) {
   EXPECT_EQ(platf::steam::sync::policy::filter_games({proton, runtime, game}, {}, true).size(), 3U);
 }
 
+TEST(SteamSync, SelectsMostRecentInstalledGamesWithinAgeLimit) {
+  platf::steam::game_t newest;
+  newest.app_id = 10;
+  newest.installed = true;
+  newest.last_played = 199990;
+  auto older = newest;
+  older.app_id = 11;
+  older.last_played = 199900;
+  auto stale = newest;
+  stale.app_id = 12;
+  stale.last_played = 100;
+  auto uninstalled = newest;
+  uninstalled.app_id = 13;
+  uninstalled.installed = false;
+  uninstalled.last_played = 199999;
+
+  const auto selected = platf::steam::sync::policy::select_games(
+    {older, uninstalled, stale, newest},
+    false,
+    2,
+    1,
+    200000
+  );
+  ASSERT_EQ(selected.size(), 2U);
+  EXPECT_EQ(selected[0].app_id, 10U);
+  EXPECT_EQ(selected[1].app_id, 11U);
+  EXPECT_EQ(platf::steam::sync::policy::select_games({newest}, false, 0, 0, 200000).size(), 0U);
+}
+
 TEST(SteamSync, RemovesExcludedStaleAutoEntryButPreservesManualEntry) {
   nlohmann::json root = {{"apps", nlohmann::json::array({
-    nlohmann::json {{"name", "Old auto"}, {"steam-id", "102"}, {"steam-managed", "auto"}},
-    nlohmann::json {{"name", "Manual"}, {"steam-id", "102"}},
-  })}};
+                                    nlohmann::json {{"name", "Old auto"}, {"steam-id", "102"}, {"steam-managed", "auto"}},
+                                    nlohmann::json {{"name", "Manual"}, {"steam-id", "102"}},
+                                  })}};
   const std::vector<config::id_name_t> exclusions {{"102", "Excluded"}};
   EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {}, false, exclusions));
   ASSERT_EQ(root["apps"].size(), 1U);
@@ -142,10 +171,7 @@ TEST(SteamSync, PublishesGeneratedClientArtworkAndPreservesSource) {
 }
 
 TEST(SteamSync, FailedArtworkFallsBackWithoutReplacingCustomCover) {
-  nlohmann::json root = {{"apps", nlohmann::json::array({nlohmann::json {
-    {"steam-id", "105"}, {"steam-managed", "auto"}, {"image-path", "/custom/cover.png"},
-    {"steam-artwork-client-path", "/appdata/covers/steam_105.png"}, {"steam-artwork-client-compatible", true}
-  }})}};
+  nlohmann::json root = {{"apps", nlohmann::json::array({nlohmann::json {{"steam-id", "105"}, {"steam-managed", "auto"}, {"image-path", "/custom/cover.png"}, {"steam-artwork-client-path", "/appdata/covers/steam_105.png"}, {"steam-artwork-client-compatible", true}}})}};
   platf::steam::game_t game;
   game.app_id = 105;
   game.name = "Missing art";
@@ -156,11 +182,11 @@ TEST(SteamSync, FailedArtworkFallsBackWithoutReplacingCustomCover) {
 }
 
 TEST(SteamSync, MigratesLegacySteamUuidAndDeduplicatesManagedEntries) {
-  nlohmann::json root = { {"apps", nlohmann::json::array({
-    nlohmann::json {{"name", "Old copy"}, {"uuid", "STEAM-106"}, {"steam-managed", "auto"}},
-    nlohmann::json {{"name", "Duplicate copy"}, {"steam-id", "106"}, {"uuid", "STEAM-106"}, {"steam-managed", "auto"}},
-    nlohmann::json {{"name", "User shortcut"}, {"steam-id", "106"}},
-  })} };
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+                                    nlohmann::json {{"name", "Old copy"}, {"uuid", "STEAM-106"}, {"steam-managed", "auto"}},
+                                    nlohmann::json {{"name", "Duplicate copy"}, {"steam-id", "106"}, {"uuid", "STEAM-106"}, {"steam-managed", "auto"}},
+                                    nlohmann::json {{"name", "User shortcut"}, {"steam-id", "106"}},
+                                  })}};
   platf::steam::game_t game;
   game.app_id = 106;
   game.name = "Current game";
@@ -175,24 +201,14 @@ TEST(SteamSync, MigratesLegacySteamUuidAndDeduplicatesManagedEntries) {
 }
 
 TEST(SteamSync, ClearsStaleProviderMetadataButPreservesCustomCover) {
-  nlohmann::json root = {{"apps", nlohmann::json::array({nlohmann::json {
-    {"name", "Metadata game"}, {"steam-id", "107"}, {"steam-managed", "auto"},
-    {"steam-app-type", "game"}, {"steam-install-dir", "/old/install"},
-    {"steam-library-path", "/old/library"}, {"steam-icon-path", "/old/icon.png"},
-    {"steam-header-path", "/old/header.jpg"}, {"steam-boxart-path", "/old/box.jpg"},
-    {"steam-artwork-path", "/old/art.jpg"}, {"steam-artwork-format", "jpg"},
-    {"steam-artwork-client-path", "/old/generated.png"}, {"steam-artwork-client-compatible", true},
-    {"image-path", "/old/generated.png"}
-  }})}};
+  nlohmann::json root = {{"apps", nlohmann::json::array({nlohmann::json {{"name", "Metadata game"}, {"steam-id", "107"}, {"steam-managed", "auto"}, {"steam-app-type", "game"}, {"steam-install-dir", "/old/install"}, {"steam-library-path", "/old/library"}, {"steam-icon-path", "/old/icon.png"}, {"steam-header-path", "/old/header.jpg"}, {"steam-boxart-path", "/old/box.jpg"}, {"steam-artwork-path", "/old/art.jpg"}, {"steam-artwork-format", "jpg"}, {"steam-artwork-client-path", "/old/generated.png"}, {"steam-artwork-client-compatible", true}, {"image-path", "/old/generated.png"}}})}};
   platf::steam::game_t game;
   game.app_id = 107;
   game.name = "Metadata game";
 
   ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
   const auto &app = root["apps"][0];
-  for (const auto *key : {"steam-app-type", "steam-install-dir", "steam-library-path", "steam-icon-path",
-                           "steam-header-path", "steam-boxart-path", "steam-artwork-path", "steam-artwork-format",
-                           "steam-artwork-client-path", "steam-artwork-client-compatible"}) {
+  for (const auto *key : {"steam-app-type", "steam-install-dir", "steam-library-path", "steam-icon-path", "steam-header-path", "steam-boxart-path", "steam-artwork-path", "steam-artwork-format", "steam-artwork-client-path", "steam-artwork-client-compatible"}) {
     EXPECT_FALSE(app.contains(key)) << key;
   }
   EXPECT_EQ(app["image-path"], "./assets/steam.png");
@@ -212,19 +228,17 @@ TEST(SteamSync, ExclusionNamesAreCaseInsensitiveForDiscoveryAndStaleEntries) {
   const std::vector<config::id_name_t> exclusions {{"", "case sensitive name"}};
   EXPECT_TRUE(platf::steam::sync::policy::filter_games({game}, exclusions).empty());
 
-  nlohmann::json root = { {"apps", nlohmann::json::array({nlohmann::json {
-    {"name", "STALE NAME"}, {"steam-id", "109"}, {"steam-managed", "auto"}
-  }})} };
+  nlohmann::json root = {{"apps", nlohmann::json::array({nlohmann::json {{"name", "STALE NAME"}, {"steam-id", "109"}, {"steam-managed", "auto"}}})}};
   const std::vector<config::id_name_t> stale_exclusion {{"", "stale name"}};
   EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {}, false, stale_exclusion));
   EXPECT_TRUE(root["apps"].empty());
 }
 
 TEST(SteamSync, KeepsOneDuplicateStaleEntryWhenRemovalDisabled) {
-  nlohmann::json root = { {"apps", nlohmann::json::array({
-    nlohmann::json {{"name", "Stale one"}, {"steam-id", "110"}, {"steam-managed", "auto"}},
-    nlohmann::json {{"name", "Stale two"}, {"steam-id", "110"}, {"steam-managed", "auto"}},
-  })} };
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+                                    nlohmann::json {{"name", "Stale one"}, {"steam-id", "110"}, {"steam-managed", "auto"}},
+                                    nlohmann::json {{"name", "Stale two"}, {"steam-id", "110"}, {"steam-managed", "auto"}},
+                                  })}};
   EXPECT_TRUE(platf::steam::sync::policy::reconcile(root, {}, false));
   ASSERT_EQ(root["apps"].size(), 1U);
   EXPECT_EQ(root["apps"][0]["steam-id"], "110");

@@ -42,6 +42,9 @@ interface SteamStatus {
   tool_game_count?: number;
   playnite_available?: boolean;
   auto_sync?: boolean;
+  sync_all_installed?: boolean;
+  recent_games?: number;
+  recent_max_age_days?: number;
   autosync_remove_uninstalled?: boolean;
   remove_uninstalled?: boolean;
   include_tools?: boolean;
@@ -69,6 +72,9 @@ interface SteamGame {
   excluded?: boolean;
   filtered?: boolean;
   app_type?: string;
+  installed?: boolean;
+  last_played?: number;
+  playtime_minutes?: number;
 }
 
 interface LutrisStatus {
@@ -350,6 +356,7 @@ const filteredSteamGames = computed(() => {
       // Steam exposes runtimes, redistributables, and other support packages
       // through the same discovery endpoint. Keep those implementation details
       // out of the normal game picker unless the advanced import policy is on.
+      if (game.installed === false) return false;
       if (game.filtered && !steamIncludeToolsEnabled()) return false;
       const excluded = gameExcluded(game);
       if (steamGameFilter.value === 'included' && excluded) return false;
@@ -1072,14 +1079,35 @@ async function saveLutrisExclusions(): Promise<void> {
 }
 
 async function setSteamPolicy(
-  key: 'steam_auto_sync' | 'steam_autosync_remove_uninstalled',
+  key: 'steam_auto_sync' | 'steam_sync_all_installed' | 'steam_autosync_remove_uninstalled',
   value: boolean,
 ): Promise<void> {
   try {
     await apiPatch('/api/config', { [key]: value });
     if (steam.value) {
       if (key === 'steam_auto_sync') steam.value.auto_sync = value;
+      else if (key === 'steam_sync_all_installed') steam.value.sync_all_installed = value;
       else steam.value.autosync_remove_uninstalled = value;
+    }
+    notice.value = t('ui.integrations.notices.providerUpdated');
+  } catch (cause) {
+    errors.value = {
+      ...errors.value,
+      steam: message(cause, t('ui.integrations.errors.providerUpdateFailed')),
+    };
+  }
+}
+
+async function setSteamRecentPolicy(
+  key: 'steam_recent_games' | 'steam_recent_max_age_days',
+  value: string,
+): Promise<void> {
+  const parsed = Math.max(0, Number.parseInt(value, 10) || 0);
+  try {
+    await apiPatch('/api/config', { [key]: parsed });
+    if (steam.value) {
+      if (key === 'steam_recent_games') steam.value.recent_games = parsed;
+      else steam.value.recent_max_age_days = parsed;
     }
     notice.value = t('ui.integrations.notices.providerUpdated');
   } catch (cause) {
@@ -1307,6 +1335,7 @@ function libraryRequest(
                   class="integration-switch"
                   type="checkbox"
                   :checked="steamRemoveUninstalledEnabled()"
+                  :disabled="steam?.sync_all_installed === false"
                   @change="
                     setSteamPolicy(
                       'steam_autosync_remove_uninstalled',
@@ -1314,6 +1343,70 @@ function libraryRequest(
                     )
                   "
                 />
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.steam.syncAllInstalled')"
+                :description="t('ui.integrations.steam.syncAllInstalledDescription')"
+                control-id="steam-sync-all-installed"
+              >
+                <input
+                  id="steam-sync-all-installed"
+                  class="integration-switch"
+                  type="checkbox"
+                  :checked="steam?.sync_all_installed !== false"
+                  @change="
+                    setSteamPolicy(
+                      'steam_sync_all_installed',
+                      ($event.target as HTMLInputElement).checked,
+                    )
+                  "
+                />
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.steam.recentGames')"
+                :description="t('ui.integrations.steam.recentGamesDescription')"
+                control-id="steam-recent-games"
+              >
+                <div class="integration-number">
+                  <input
+                    id="steam-recent-games"
+                    class="integration-control"
+                    type="number"
+                    min="0"
+                    :value="steam?.recent_games ?? 10"
+                    :disabled="steam?.sync_all_installed !== false"
+                    @change="
+                      setSteamRecentPolicy(
+                        'steam_recent_games',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                  <span>{{ t('ui.integrations.steam.gamesUnit') }}</span>
+                </div>
+              </SettingRow>
+              <SettingRow
+                :label="t('ui.integrations.steam.recentMaxAge')"
+                :description="t('ui.integrations.steam.recentMaxAgeDescription')"
+                control-id="steam-recent-max-age"
+              >
+                <div class="integration-number">
+                  <input
+                    id="steam-recent-max-age"
+                    class="integration-control"
+                    type="number"
+                    min="0"
+                    :value="steam?.recent_max_age_days ?? 30"
+                    :disabled="steam?.sync_all_installed !== false"
+                    @change="
+                      setSteamRecentPolicy(
+                        'steam_recent_max_age_days',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                  />
+                  <span>{{ t('ui.integrations.steam.daysUnit') }}</span>
+                </div>
               </SettingRow>
               <details class="integration-advanced">
                 <summary>{{ t('ui.integrations.steam.advancedSettings') }}</summary>

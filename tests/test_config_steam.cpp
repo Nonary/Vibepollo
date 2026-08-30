@@ -39,3 +39,16 @@ TEST(SteamConfig, ParsesExclusionsAndRemovalPolicy) {
   EXPECT_TRUE(result.include_tools);
   EXPECT_TRUE(vars.empty());
 }
+
+TEST(SteamConfig, ParsesRecentSynchronizationPolicy) {
+  std::unordered_map<std::string, std::string> vars {
+    {"steam_sync_all_installed", "off"},
+    {"steam_recent_games", "15"},
+    {"steam_recent_max_age_days", "45"},
+  };
+  const auto result = config::parse_steam(vars);
+  EXPECT_FALSE(result.sync_all_installed);
+  EXPECT_EQ(result.recent_games, 15);
+  EXPECT_EQ(result.recent_max_age_days, 45);
+  EXPECT_TRUE(vars.empty());
+}

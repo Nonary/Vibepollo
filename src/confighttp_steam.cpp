@@ -4,10 +4,10 @@
 #include "config_steam.h"
 #include "confighttp.h"
 #include "file_handler.h"
-#include "steam_integration.h"
-#include "steam_artwork.h"
-#include "steam_sync_policy.h"
 #include "platform/common.h"
+#include "steam_artwork.h"
+#include "steam_integration.h"
+#include "steam_sync_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -42,6 +42,9 @@ namespace confighttp {
       out["artwork_format"] = game.artwork_format;
       out["artwork_client_compatible"] = !game.artwork_client_path.empty();
       out["app_type"] = game.app_type;
+      out["installed"] = game.installed;
+      out["last_played"] = game.last_played;
+      out["playtime_minutes"] = game.playtime_minutes;
       out["importable"] = platf::steam::sync::policy::is_importable(game, config::steam.include_tools);
       out["launch_uri"] = platf::steam::launch_uri(game.app_id);
       return out;
@@ -55,20 +58,21 @@ namespace confighttp {
     try {
       const auto roots = platf::steam::default_library_roots();
       auto found = platf::steam::discover(roots);
-      const auto importable = platf::steam::sync::policy::filter_games(found, {}, config::steam.include_tools);
-      const auto filtered = platf::steam::sync::policy::filter_games(found, config::steam.exclude_games_meta, config::steam.include_tools);
+      const auto all_importable = platf::steam::sync::policy::filter_games(found, {}, config::steam.include_tools);
+      const auto selected = platf::steam::sync::policy::select_games(
+        found,
+        config::steam.sync_all_installed,
+        config::steam.recent_games,
+        config::steam.recent_max_age_days
+      );
+      const auto selected_importable = platf::steam::sync::policy::filter_games(selected, {}, config::steam.include_tools);
+      const auto filtered = platf::steam::sync::policy::filter_games(selected, config::steam.exclude_games_meta, config::steam.include_tools);
+      const auto all_filtered = platf::steam::sync::policy::filter_games(found, config::steam.exclude_games_meta, config::steam.include_tools);
       nlohmann::json exclusions = nlohmann::json::array();
       for (const auto &entry : config::steam.exclude_games_meta) {
         exclusions.push_back({{"id", entry.id}, {"name", entry.name}});
       }
-      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled},
-                          {"forced", false}, {"available", !roots.empty()}, {"game_count", found.size()},
-                          {"importable_game_count", filtered.size()},
-                          {"tool_game_count", found.size() - importable.size()},
-                          {"excluded_game_count", importable.size() - filtered.size()},
-                          {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync},
-                          {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled},
-                          {"include_tools", config::steam.include_tools}};
+      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", !roots.empty()}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}, {"tool_game_count", found.size() - all_importable.size()}, {"excluded_game_count", all_importable.size() - all_filtered.size()}, {"selected_game_count", selected_importable.size()}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
 #if defined(__linux__)
       out["forced"] = true;
       out["playnite_available"] = false;
@@ -87,14 +91,13 @@ namespace confighttp {
     }
     try {
       nlohmann::json out {{"status", true}, {"enabled", config::steam.enabled}, {"games", nlohmann::json::array()}};
-      auto games = platf::steam::discover();
-      platf::steam::artwork::prepare(games, platf::appdata());
+      auto games = platf::steam::discover_catalog();
       for (const auto &game : games) {
         auto item = game_json(game);
         item["excluded"] = std::find_if(config::steam.exclude_games_meta.begin(), config::steam.exclude_games_meta.end(), [&game](const auto &entry) {
-          return (!entry.id.empty() && entry.id == std::to_string(game.app_id)) ||
-                 (entry.id.empty() && !entry.name.empty() && entry.name == game.name);
-        }) != config::steam.exclude_games_meta.end();
+                             return (!entry.id.empty() && entry.id == std::to_string(game.app_id)) ||
+                                    (entry.id.empty() && !entry.name.empty() && entry.name == game.name);
+                           }) != config::steam.exclude_games_meta.end();
         item["filtered"] = !platf::steam::sync::policy::is_importable(game, config::steam.include_tools);
         out["games"].push_back(std::move(item));
       }
@@ -121,12 +124,17 @@ namespace confighttp {
         bad_request(response, request, "Steam installation was not found");
         return;
       }
-      auto found = platf::steam::discover(roots);
+      auto catalog = platf::steam::discover_catalog(roots);
+      auto found = platf::steam::sync::policy::select_games(
+        catalog,
+        config::steam.sync_all_installed,
+        config::steam.recent_games,
+        config::steam.recent_max_age_days
+      );
       platf::steam::artwork::prepare(found, platf::appdata());
       std::lock_guard apps_lock {apps_file_mutex()};
       auto root = nlohmann::json::parse(file_handler::read_file(config::stream.file_apps.c_str()));
-      const bool changed = platf::steam::sync::policy::reconcile(root, found, config::steam.autosync_remove_uninstalled,
-                                                                  config::steam.exclude_games_meta, config::steam.include_tools);
+      const bool changed = platf::steam::sync::policy::reconcile(root, found, !config::steam.sync_all_installed || config::steam.autosync_remove_uninstalled, config::steam.exclude_games_meta, config::steam.include_tools, config::steam.sync_all_installed ? "installed" : "recent");
       if (changed && !refresh_client_apps_cache(root)) {
         bad_request(response, request, "Unable to save applications");
         return;
@@ -173,7 +181,10 @@ namespace confighttp {
       }
       const auto requested_id = static_cast<std::uint32_t>(app_id);
       const auto launchable = platf::steam::sync::policy::filter_games(
-        platf::steam::discover(), config::steam.exclude_games_meta, config::steam.include_tools);
+        platf::steam::discover(),
+        config::steam.exclude_games_meta,
+        config::steam.include_tools
+      );
       const auto installed = std::find_if(launchable.begin(), launchable.end(), [requested_id](const auto &game) {
         return game.app_id == requested_id;
       });

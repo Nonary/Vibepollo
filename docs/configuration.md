@@ -4354,18 +4354,43 @@ Default: `true`
 
 ### steam_auto_sync
 
-Synchronizes installed Steam games into `apps.json` when configuration is
-applied and checks for manifest, library, metadata, and artwork changes every
-30 seconds while Vibepollo is running. Steam-managed entries use stable Steam
-IDs; manual and Playnite-managed entries are preserved.
+Synchronizes the games selected by the Steam policy into `apps.json` when
+configuration is applied and checks for manifest, local play-history, library,
+metadata, and artwork changes every 30 seconds while Vibepollo is running.
+Steam-managed entries use stable Steam IDs; manual and Playnite-managed entries
+are preserved.
 
 Default: `true`
+
+### steam_sync_all_installed
+
+Synchronizes every installed Steam game. Disable this to use the recent-game
+count and age policy instead.
+
+Default: `true`
+
+### steam_recent_games
+
+Maximum number of installed games to synchronize, ordered by Steam's local
+`LastPlayed` timestamp, when `steam_sync_all_installed` is disabled. Set to `0`
+to disable recent-game synchronization.
+
+Default: `10`
+
+### steam_recent_max_age_days
+
+Excludes games last played more than this many days ago from recent-game
+synchronization. Set to `0` for no age limit.
+
+Default: `30`
 
 ### steam_autosync_remove_uninstalled
 
 When enabled, Steam-managed entries whose installed manifest disappears are
 removed during synchronization. Manual and Playnite-managed entries are never
-removed by this provider.
+removed by this provider. Recent-only synchronization always removes managed
+games that leave the selected recent set so the configured limit remains
+effective.
 
 Default: `true`
 
@@ -4389,6 +4414,11 @@ or video. This is intended for users who deliberately want those records in
 their catalog.
 
 Default: `false`
+
+The manual application picker shows installed, importable Steam games by
+default, matching the Playnite picker. Vibeshine also reads Steam's local user
+play-history and `appinfo.vdf` caches to rank installed games for recent-game
+synchronization without requiring a Steam Web API key or a public profile.
 
 ## Lutris Integration
 

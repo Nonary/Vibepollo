@@ -1,8 +1,8 @@
 /** @file src/steam_sync_policy.h */
 #pragma once
 
-#include "steam_integration.h"
 #include "config_playnite.h"
+#include "steam_integration.h"
 
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -12,9 +12,9 @@ namespace platf::steam::sync {
     std::string canonical_steam_app_uuid(std::uint32_t app_id);
     bool is_importable(const game_t &game, bool include_tools = false);
     std::vector<game_t> filter_games(const std::vector<game_t> &games, const std::vector<config::id_name_t> &exclusions, bool include_tools = false);
+    std::vector<game_t> select_games(const std::vector<game_t> &games, bool sync_all_installed, int recent_games, int recent_max_age_days, std::uint64_t now = 0);
     // Reconcile only entries marked steam-managed. Existing manual and
     // Playnite entries are retained untouched. Returns whether root changed.
-    bool reconcile(nlohmann::json &root, const std::vector<game_t> &games, bool remove_uninstalled = true,
-                   const std::vector<config::id_name_t> &exclusions = {}, bool include_tools = false);
+    bool reconcile(nlohmann::json &root, const std::vector<game_t> &games, bool remove_uninstalled = true, const std::vector<config::id_name_t> &exclusions = {}, bool include_tools = false, const std::string &source = "installed");
   }  // namespace policy
 }  // namespace platf::steam::sync
