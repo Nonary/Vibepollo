@@ -825,8 +825,9 @@ function triggerDownload(blob: Blob, filename: string) {
   window.URL.revokeObjectURL(url);
 }
 
-async function downloadCrashBundlePart(partIndex: number, filenameHint?: string) {
-  const r = await http.get(`/api/logs/export_crash?part=${partIndex}`, {
+async function downloadCrashBundlePart(partIndex: number, filenameHint?: string, snapshot?: string) {
+  const snapshotParam = snapshot ? `&snapshot=${encodeURIComponent(snapshot)}` : '';
+  const r = await http.get(`/api/logs/export_crash?part=${partIndex}${snapshotParam}`, {
     responseType: 'blob',
     validateStatus: () => true,
   });
@@ -847,12 +848,13 @@ async function exportCrashBundleAsync() {
       validateStatus: () => true,
     });
     const parts = Array.isArray(manifest.data?.parts) ? manifest.data.parts : [];
+    const snapshot = typeof manifest.data?.snapshot === 'string' ? manifest.data.snapshot : undefined;
     if (manifest.status === 200 && parts.length > 0) {
       const ordered = [...parts].sort((a, b) => Number(a.index) - Number(b.index));
       for (const part of ordered) {
         const index = Number(part.index) || 0;
         if (index <= 0) continue;
-        await downloadCrashBundlePart(index, part.filename);
+        await downloadCrashBundlePart(index, part.filename, snapshot);
       }
     } else {
       await downloadCrashBundlePart(1);

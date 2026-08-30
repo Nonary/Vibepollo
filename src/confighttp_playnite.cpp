@@ -43,6 +43,7 @@
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
   #include "state_storage.h"
+  #include "uuid.h"
 
   // Windows headers
   #include <KnownFolders.h>
@@ -64,6 +65,7 @@ namespace confighttp {
   void print_req(const req_https_t &request);
   void send_response(resp_https_t response, const nlohmann::json &output_tree);
   void bad_request(resp_https_t response, req_https_t request, const std::string &error_message = "Bad Request");
+  void conflict(resp_https_t response, const std::string &error_message);
   bool check_content_type(resp_https_t response, req_https_t request, const std::string_view &contentType);
 
   struct playnite_install_state_t {
@@ -543,6 +545,8 @@ namespace confighttp {
 
   static std::chrono::system_clock::time_point file_time_to_system_clock(std::filesystem::file_time_type ft);
   static void to_dos_datetime(std::chrono::system_clock::time_point tp, uint16_t &dos_time, uint16_t &dos_date);
+  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
+  static std::uint64_t estimate_zip_entry_size(std::size_t name_len, std::uint64_t data_size);
 
   struct ZipDataEntry {
     std::string name;
@@ -1106,12 +1110,15 @@ namespace confighttp {
           }
           std::error_code size_ec;
           const auto size = std::filesystem::file_size(candidate.path, size_ec);
-          if (!size_ec && files_added > 0 && budget_used + size > k_max_session_export_bytes) {
-            break;
+          if (size_ec || size > k_max_session_export_bytes - budget_used) {
+            continue;
           }
           std::string data;
           std::optional<std::filesystem::file_time_type> mtime;
           if (read_file_if_exists(candidate.path, data, &mtime)) {
+            if (data.size() > k_max_session_export_bytes - budget_used) {
+              continue;
+            }
             budget_used += data.size();
             ++files_added;
             entries.push_back(make_export_log_entry(sanitizer, candidate.path.filename().string(), std::move(data), mtime));
@@ -1416,27 +1423,29 @@ namespace confighttp {
       entries.swap(dedup);
     }
 
-    return entries;
-  }
-
-  // The crash-bundle flow calls into the log collection once for the manifest
-  // and once per downloaded part; collecting and sanitizing the corpus each
-  // time multiplied the export cost by the part count. Reuse one snapshot for
-  // the duration of a bundle download.
-  static std::shared_ptr<const std::vector<ZipDataEntry>> collect_support_logs_cached() {
-    static std::mutex cache_mutex;
-    static std::shared_ptr<const std::vector<ZipDataEntry>> cached;
-    static std::chrono::steady_clock::time_point cached_at {};
-    constexpr auto cache_ttl = std::chrono::seconds {120};
-
-    std::lock_guard lock(cache_mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (cached && now - cached_at < cache_ttl) {
-      return cached;
+    // A crash-bundle part is capped at 30 MiB. Keep its in-memory log corpus
+    // within that exact uncompressed ZIP estimate, so logs never force an
+    // oversized first part before crash dumps are considered.
+    constexpr std::uint64_t kZipEndOfCentralDirectorySize = 22;
+    std::uint64_t estimated_log_size = kZipEndOfCentralDirectorySize;
+    std::size_t omitted_logs = 0;
+    std::vector<ZipDataEntry> bounded;
+    bounded.reserve(entries.size());
+    for (auto &entry : entries) {
+      const auto entry_size = estimate_zip_entry_size(entry.name.size(), static_cast<std::uint64_t>(entry.data.size()));
+      if (entry_size > kCrashBundleMaxBytes - estimated_log_size) {
+        ++omitted_logs;
+        continue;
+      }
+      estimated_log_size += entry_size;
+      bounded.emplace_back(std::move(entry));
     }
-    cached = std::make_shared<const std::vector<ZipDataEntry>>(collect_support_logs());
-    cached_at = now;
-    return cached;
+    if (omitted_logs != 0) {
+      BOOST_LOG(warning) << "Crash bundle omitted " << omitted_logs << " log entries to keep each part below 30 MiB.";
+    }
+    entries.swap(bounded);
+
+    return entries;
   }
 
   void downloadPlayniteLogs(resp_https_t response, req_https_t request) {
@@ -1500,7 +1509,6 @@ namespace confighttp {
   }};
 
   constexpr std::uint64_t kMinCrashDumpSunshineBytes = 10ull * 1024ull * 1024ull;
-  constexpr std::uint64_t kCrashBundleMaxBytes = 30ull * 1024ull * 1024ull;
 
   static std::wstring to_lower_wstring(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -2035,9 +2043,13 @@ namespace confighttp {
     for (const auto &dump : dumps) {
       ZipFileEntry entry {dump.path.filename().string(), dump.path, dump.write_time, dump.size};
       const std::uint64_t entry_est = estimate_zip_entry_size(entry.name.size(), entry.size);
+      if (entry_est > kCrashBundleMaxBytes - estimate_zip_size({}, {})) {
+        BOOST_LOG(warning) << "Crash bundle skipped oversized dump " << entry.name << " to keep each part below 30 MiB.";
+        continue;
+      }
       CrashBundlePartPlan *part = &parts.back();
       const bool part_has_payload = part->include_logs ? !logs.empty() : !part->files.empty();
-      if (part->estimated_size + entry_est > kCrashBundleMaxBytes && part_has_payload) {
+      if (part_has_payload && part->estimated_size > kCrashBundleMaxBytes - entry_est) {
         add_new_part(false);
         part = &parts.back();
       }
@@ -2049,6 +2061,77 @@ namespace confighttp {
       parts[i].filename = crash_bundle_filename(base, i + 1, parts.size());
     }
     return parts;
+  }
+
+  struct CrashBundleSnapshot {
+    std::vector<ZipDataEntry> logs;
+    std::vector<CrashDumpInfo> dumps;
+    std::vector<CrashBundlePartPlan> plan;
+    std::chrono::steady_clock::time_point expires_at {};
+    std::string id;
+  };
+
+  struct CrashBundleSnapshotCache {
+    std::mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<const CrashBundleSnapshot>> snapshots;
+  };
+
+  constexpr auto kCrashBundleSnapshotTtl = std::chrono::minutes {5};
+  constexpr std::size_t kMaxCrashBundleSnapshots = 4;
+
+  static CrashBundleSnapshotCache &crash_bundle_snapshot_cache() {
+    static CrashBundleSnapshotCache cache;
+    return cache;
+  }
+
+  static void prune_crash_bundle_snapshots(CrashBundleSnapshotCache &cache, std::chrono::steady_clock::time_point now) {
+    for (auto it = cache.snapshots.begin(); it != cache.snapshots.end();) {
+      if (it->second->expires_at <= now) {
+        it = cache.snapshots.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // The manifest freezes the sanitized logs, discovered dumps, part plan, and
+  // filenames. Download requests refer to its opaque id, so a newly-created
+  // dump cannot shift a later part onto different content.
+  static std::shared_ptr<const CrashBundleSnapshot> create_crash_bundle_snapshot() {
+    auto snapshot = std::make_shared<CrashBundleSnapshot>();
+    snapshot->logs = collect_support_logs();
+    snapshot->dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
+    snapshot->plan = build_crash_bundle_plan(snapshot->logs, snapshot->dumps);
+    snapshot->id = uuid_util::uuid_t::generate().string();
+    snapshot->expires_at = std::chrono::steady_clock::now() + kCrashBundleSnapshotTtl;
+
+    auto &cache = crash_bundle_snapshot_cache();
+    std::lock_guard lock(cache.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    prune_crash_bundle_snapshots(cache, now);
+    while (cache.snapshots.size() >= kMaxCrashBundleSnapshots) {
+      const auto oldest = std::min_element(cache.snapshots.begin(), cache.snapshots.end(), [](const auto &left, const auto &right) {
+        return left.second->expires_at < right.second->expires_at;
+      });
+      cache.snapshots.erase(oldest);
+    }
+    cache.snapshots.insert_or_assign(snapshot->id, snapshot);
+    return snapshot;
+  }
+
+  static std::shared_ptr<const CrashBundleSnapshot> find_crash_bundle_snapshot(std::string_view id) {
+    auto &cache = crash_bundle_snapshot_cache();
+    std::lock_guard lock(cache.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    prune_crash_bundle_snapshots(cache, now);
+    const auto it = cache.snapshots.find(std::string(id));
+    return it == cache.snapshots.end() ? nullptr : it->second;
+  }
+
+  static bool crash_bundle_plan_has_dump(const CrashBundleSnapshot &snapshot) {
+    return std::any_of(snapshot.plan.begin(), snapshot.plan.end(), [](const auto &part) {
+      return !part.files.empty();
+    });
   }
 
   static inline void write_le16(std::ostream &out, uint16_t v) {
@@ -2138,6 +2221,17 @@ namespace confighttp {
       std::error_code ec {};
       if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
         error = "Crash dump no longer exists";
+        return false;
+      }
+      std::error_code metadata_ec {};
+      const auto current_size = std::filesystem::file_size(entry.path, metadata_ec);
+      if (metadata_ec) {
+        error = "Crash dump changed since the manifest was created";
+        return false;
+      }
+      const auto current_write_time = std::filesystem::last_write_time(entry.path, metadata_ec);
+      if (metadata_ec || current_size != entry.size || current_write_time != entry.write_time) {
+        error = "Crash dump changed since the manifest was created";
         return false;
       }
       if (entry.size > std::numeric_limits<uint32_t>::max()) {
@@ -2324,20 +2418,23 @@ namespace confighttp {
     }
     print_req(request);
     try {
-      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
-      if (dumps.empty()) {
+      auto snapshot = create_crash_bundle_snapshot();
+      if (snapshot->dumps.empty()) {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs_cached();
-      auto plan = build_crash_bundle_plan(*entries, dumps);
+      if (!crash_bundle_plan_has_dump(*snapshot)) {
+        bad_request(response, request, "Recent crash dumps exceed the 30 MiB crash-bundle limit");
+        return;
+      }
       nlohmann::json out;
+      out["snapshot"] = snapshot->id;
       out["parts"] = nlohmann::json::array();
-      for (std::size_t i = 0; i < plan.size(); ++i) {
+      for (std::size_t i = 0; i < snapshot->plan.size(); ++i) {
         nlohmann::json part;
         part["index"] = static_cast<int>(i + 1);
-        part["filename"] = plan[i].filename;
-        part["estimated_size_bytes"] = plan[i].estimated_size;
+        part["filename"] = snapshot->plan[i].filename;
+        part["estimated_size_bytes"] = snapshot->plan[i].estimated_size;
         out["parts"].push_back(part);
       }
       send_response(response, out);
@@ -2367,20 +2464,33 @@ namespace confighttp {
         }
       }
 
-      auto dumps = find_recent_crash_dumps(std::chrono::hours(24 * 7));
-      if (dumps.empty()) {
+      std::shared_ptr<const CrashBundleSnapshot> snapshot;
+      if (const auto snapshot_param = query.find("snapshot"); snapshot_param != query.end() && !snapshot_param->second.empty()) {
+        snapshot = find_crash_bundle_snapshot(snapshot_param->second);
+        if (!snapshot) {
+          conflict(response, "Crash bundle snapshot expired. Please request a new crash-bundle manifest.");
+          return;
+        }
+      } else {
+        // Preserve the legacy direct-download endpoint used by older Web UI
+        // bundles and bookmarked links. New clients always send a snapshot id.
+        snapshot = create_crash_bundle_snapshot();
+      }
+      if (snapshot->dumps.empty()) {
         bad_request(response, request, "No recent crash dumps found (within last 7 days)");
         return;
       }
-      auto entries = collect_support_logs_cached();
-      auto plan = build_crash_bundle_plan(*entries, dumps);
-      if (part_index > plan.size()) {
+      if (!crash_bundle_plan_has_dump(*snapshot)) {
+        bad_request(response, request, "Recent crash dumps exceed the 30 MiB crash-bundle limit");
+        return;
+      }
+      if (part_index > snapshot->plan.size()) {
         bad_request(response, request, "Invalid crash bundle part index");
         return;
       }
-      const auto &selected = plan[part_index - 1];
+      const auto &selected = snapshot->plan[part_index - 1];
       const std::vector<ZipDataEntry> empty_entries;
-      const auto &data_entries = selected.include_logs ? *entries : empty_entries;
+      const auto &data_entries = selected.include_logs ? snapshot->logs : empty_entries;
 
       wchar_t tmpDir[MAX_PATH] = {};
       wchar_t tmpFile[MAX_PATH] = {};
