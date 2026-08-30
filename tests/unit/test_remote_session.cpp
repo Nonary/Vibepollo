@@ -16,6 +16,7 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   EXPECT_EQ(remote_session::identify(remote_session::monitor_id), remote_session::control_e::monitor);
   EXPECT_EQ(remote_session::identify(2147483605), remote_session::control_e::monitor);
   EXPECT_EQ(remote_session::identify(11, "9a1c5a25-58fe-40e0-b9aa-7d3f00000006"), remote_session::control_e::input);
+  EXPECT_EQ(remote_session::identify(remote_session::running_game_id), remote_session::control_e::running_game);
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("Remote Input"));
@@ -38,28 +39,31 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(idle.catalogue[3].id, remote_session::monitor_id);
 
   const auto owner = remote_session::project(caller("owner"), game(), {}, configured, false);
-  EXPECT_TRUE(owner.free);
-  EXPECT_EQ(owner.current_game, 0);
+  EXPECT_FALSE(owner.free);
+  EXPECT_EQ(owner.current_game, 42);
   ASSERT_EQ(owner.catalogue.size(), 4);
   EXPECT_EQ(owner.catalogue[0].title, "One");
 
   const auto normal_observer = remote_session::project(caller("other"), game(), {}, configured, false);
   EXPECT_TRUE(normal_observer.free);
   EXPECT_EQ(normal_observer.current_game, 0);
-  ASSERT_EQ(normal_observer.catalogue.size(), 4);
-  EXPECT_EQ(normal_observer.catalogue[0].title, "One");
-  EXPECT_EQ(normal_observer.catalogue[1].title, "Two");
-  EXPECT_EQ(normal_observer.catalogue[2].id, remote_session::input_id);
-  EXPECT_EQ(normal_observer.catalogue[3].id, remote_session::monitor_id);
+  ASSERT_EQ(normal_observer.catalogue.size(), 6);
+  EXPECT_EQ(normal_observer.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(normal_observer.catalogue[1].id, remote_session::terminate_id);
+  EXPECT_EQ(normal_observer.catalogue[2].title, "One");
+  EXPECT_EQ(normal_observer.catalogue[3].title, "Two");
+  EXPECT_EQ(normal_observer.catalogue[4].id, remote_session::input_id);
+  EXPECT_EQ(normal_observer.catalogue[5].id, remote_session::monitor_id);
 
   const auto observer = remote_session::project(caller("other"), game(), {}, configured, true);
-  ASSERT_EQ(observer.catalogue.size(), 5);
-  EXPECT_EQ(observer.catalogue[0].id, remote_session::resume_id);
+  ASSERT_EQ(observer.catalogue.size(), 6);
+  EXPECT_EQ(observer.catalogue[0].id, remote_session::running_game_id);
   EXPECT_EQ(observer.catalogue[1].id, remote_session::terminate_id);
   EXPECT_EQ(observer.catalogue[1].title, "Terminate");
-  EXPECT_EQ(observer.catalogue[2].id, 42);
-  EXPECT_EQ(observer.catalogue[3].id, remote_session::input_id);
-  EXPECT_EQ(observer.catalogue[4].id, remote_session::monitor_id);
+  EXPECT_EQ(observer.catalogue[2].title, "One");
+  EXPECT_EQ(observer.catalogue[3].title, "Two");
+  EXPECT_EQ(observer.catalogue[4].id, remote_session::input_id);
+  EXPECT_EQ(observer.catalogue[5].id, remote_session::monitor_id);
 
   const auto monitor = remote_session::project(caller("monitor"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(monitor.catalogue.size(), 2);
@@ -73,11 +77,12 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(input.catalogue[2].id, remote_session::monitor_id);
 
   const auto input_during_game = remote_session::project(caller("input"), game(), {.role = remote_session::role_e::input}, configured, true);
-  ASSERT_EQ(input_during_game.catalogue.size(), 4);
-  EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::resume_id);
+  ASSERT_EQ(input_during_game.catalogue.size(), 5);
+  EXPECT_EQ(input_during_game.catalogue[0].id, remote_session::running_game_id);
   EXPECT_EQ(input_during_game.catalogue[1].id, remote_session::terminate_id);
-  EXPECT_EQ(input_during_game.catalogue[2].id, 42);
-  EXPECT_EQ(input_during_game.catalogue[3].id, remote_session::monitor_id);
+  EXPECT_EQ(input_during_game.catalogue[2].title, "One");
+  EXPECT_EQ(input_during_game.catalogue[3].title, "Two");
+  EXPECT_EQ(input_during_game.catalogue[4].id, remote_session::monitor_id);
 
   const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
@@ -103,7 +108,7 @@ TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOw
   const auto owner = caller("owner");
   const auto other = caller("other");
 
-  EXPECT_FALSE(remote_session::exposes_active_game(owner, active_game, {}, false));
+  EXPECT_TRUE(remote_session::exposes_active_game(owner, active_game, {}, false));
   EXPECT_FALSE(remote_session::exposes_active_game(other, active_game, {}, false));
   EXPECT_TRUE(remote_session::allows_normal_game_cancel(owner, active_game, false));
   EXPECT_TRUE(remote_session::allows_normal_game_cancel(other, active_game, false));
@@ -118,6 +123,27 @@ TEST(RemoteSession, UngatedGameStaysLaunchableAndCancelableUntilSpecialSessionOw
   EXPECT_FALSE(remote_session::exposes_active_game(owner, active_game, retained_monitor, true));
   EXPECT_FALSE(remote_session::exposes_active_game(other, {}, {}, false));
   EXPECT_FALSE(remote_session::allows_normal_game_cancel(caller("other", true, true, false), active_game, false));
+}
+
+TEST(RemoteSession, SecondaryCatalogueKeepsConfiguredRunningAppBesideInvisibleResumeDuplicate) {
+  const auto active_game = game();
+  const std::vector<remote_session::app_t> configured {
+    active_game.app,
+    {7, "other", "Another game", false},
+  };
+
+  const auto projection = remote_session::project(caller("other"), active_game, {}, configured, false);
+  ASSERT_EQ(projection.catalogue.size(), 6);
+  EXPECT_EQ(projection.catalogue[0].id, remote_session::running_game_id);
+  EXPECT_EQ(projection.catalogue[0].uuid, remote_session::synthetic_uuid(remote_session::control_e::running_game));
+  EXPECT_EQ(projection.catalogue[0].title, " Running game");
+  EXPECT_EQ(projection.catalogue[2].id, active_game.app.id);
+  EXPECT_EQ(projection.catalogue[2].uuid, active_game.app.uuid);
+  EXPECT_EQ(projection.catalogue[2].title, active_game.app.title);
+  EXPECT_EQ(
+    remote_session::dispatch(caller("other"), active_game, {}, remote_session::identify(projection.catalogue[0].id, projection.catalogue[0].uuid)).resume_role,
+    remote_session::role_e::game
+  );
 }
 
 TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {

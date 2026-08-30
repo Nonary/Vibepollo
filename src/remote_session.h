@@ -20,6 +20,7 @@ namespace remote_session {
   inline constexpr std::int32_t terminate_id = 2147483504;
   inline constexpr std::int32_t monitor_id = 2147483505;
   inline constexpr std::int32_t input_id = 2147483506;
+  inline constexpr std::int32_t running_game_id = 2147483507;
   inline constexpr std::size_t max_client_vdds = 4;
 
   enum class role_e : std::uint8_t { none, input, monitor, game };
@@ -155,6 +156,7 @@ namespace remote_session {
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
+  [[nodiscard]] app_t synthetic_running_game(const app_t &game);
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] bool exposes_active_game(
     const caller_t &caller,

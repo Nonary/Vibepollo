@@ -3856,6 +3856,7 @@ namespace nvhttp {
           app_node.put("ID", entry.id);
           app_node.put(
             "ArtVersion",
+            remote_session::identify(entry.id, entry.uuid) == remote_session::control_e::running_game && current_app ? current_app->art_version :
             entry.synthetic ? (configured == visible_apps.end() ? "remote-session-v6" : (*configured)->art_version) :
                               (configured == visible_apps.end() ? "" : (*configured)->art_version)
           );
@@ -5517,6 +5518,10 @@ namespace nvhttp {
     std::string app_image;
     if (app_ctx) {
       app_image = proc::validate_app_image_path(app_ctx->image_path);
+    } else if (remote_session::identify(util::from_view(appid), appuuid) == remote_session::control_e::running_game) {
+      if (const auto running_app = proc::proc.resolve_app(proc::proc.running())) {
+        app_image = proc::validate_app_image_path(running_app->image_path);
+      }
     } else if (const auto artwork = remote_session::synthetic_artwork_filename(
                  remote_session::identify(util::from_view(appid), appuuid)
                )) {

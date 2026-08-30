@@ -53,12 +53,13 @@ namespace remote_session {
     if (id == terminate_id || id == 2147483604 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000004") return control_e::terminate;
     if (id == monitor_id || id == 2147483605 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000005") return control_e::monitor;
     if (id == input_id || id == 2147483606 || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000006") return control_e::input;
+    if (id == running_game_id || uuid == "9a1c5a25-58fe-40e0-b9aa-7d3f00000007") return control_e::running_game;
     return control_e::none;
   }
 
   std::string synthetic_uuid(const control_e control) {
     const auto suffix = static_cast<unsigned>(control);
-    return suffix >= 1 && suffix <= 6 ? "9a1c5a25-58fe-40e0-b9aa-7d3f0000000" + std::to_string(suffix) : std::string {};
+    return suffix >= 1 && suffix <= 7 ? "9a1c5a25-58fe-40e0-b9aa-7d3f0000000" + std::to_string(suffix) : std::string {};
   }
 
   app_t synthetic(const control_e control) {
@@ -71,6 +72,19 @@ namespace remote_session {
       case control_e::input: return {input_id, synthetic_uuid(control), "Remote Input", true};
       default: return {};
     }
+  }
+
+  app_t synthetic_running_game(const app_t &game) {
+    // Moonlight clients commonly alphabetize the received catalogue. A
+    // leading space keeps this resume-only duplicate ahead of ordinary
+    // alphanumeric titles without changing what the user sees.
+    constexpr std::string_view sort_prefix {" "};
+    return {
+      running_game_id,
+      synthetic_uuid(control_e::running_game),
+      std::string {sort_prefix} + game.title,
+      true,
+    };
   }
 
   std::optional<std::string_view> synthetic_artwork_filename(const control_e control) {
@@ -94,8 +108,7 @@ namespace remote_session {
   ) {
     if (!game.running) return false;
     if (replacement_confirmation_active) return true;
-    const bool gated = remote_sessions_active || owner.role != role_e::none;
-    return gated && owner.role == role_e::none && owns_game(caller, game);
+    return owner.role == role_e::none && owns_game(caller, game);
   }
 
   bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, const bool remote_sessions_active) {
@@ -112,7 +125,7 @@ namespace remote_session {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
       return result;
     }
-    if (!remote_sessions_active && owner.role == role_e::none) {
+    if (!game.running && !remote_sessions_active && owner.role == role_e::none) {
       result.catalogue = std::move(visible_configured);
       result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
@@ -127,7 +140,12 @@ namespace remote_session {
       return result;
     }
     if (game.running) {
-      result.catalogue = {synthetic(control_e::resume), synthetic(control_e::terminate), game.app};
+      // Secondary clients are told the host is free so they can choose any
+      // configured app. Keep that complete catalogue, but add a distinct,
+      // resume-only copy of the active game at the front. The configured copy
+      // remains available under its normal identity.
+      result.catalogue = {synthetic_running_game(game.app), synthetic(control_e::terminate)};
+      result.catalogue.insert(result.catalogue.end(), visible_configured.begin(), visible_configured.end());
       if (owner.role != role_e::input) result.catalogue.push_back(synthetic(control_e::input));
       result.catalogue.push_back(synthetic(control_e::monitor));
       return result;
