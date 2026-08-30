@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -14,6 +15,19 @@ namespace platf::kms::pacing {
 
   using clock_t = std::chrono::steady_clock;
   constexpr auto PRESENT_PENDING_HANG_TIMEOUT = std::chrono::seconds {5};
+
+  [[nodiscard]] constexpr std::chrono::nanoseconds interval_from_frame_rate(
+    std::int64_t numerator,
+    std::int64_t denominator
+  ) {
+    if (numerator <= 0 || denominator <= 0) {
+      return std::chrono::nanoseconds::zero();
+    }
+
+    return std::chrono::nanoseconds {
+      denominator * std::chrono::nanoseconds::period::den / numerator
+    };
+  }
 
   enum class presentation_response_e {
     changed,
@@ -58,104 +72,77 @@ namespace platf::kms::pacing {
   public:
     void set_interval(clock_t::duration interval) {
       interval_ = interval;
-      next_delivery_.reset();
-    }
-
-    void reset() {
-      next_delivery_.reset();
-    }
-
-    [[nodiscard]] clock_t::time_point next_delivery(clock_t::time_point now) const {
-      if (!next_delivery_ || interval_ <= clock_t::duration::zero()) {
-        return now;
-      }
-      return *next_delivery_;
-    }
-
-    void mark_delivered(clock_t::time_point delivery) {
-      if (interval_ <= clock_t::duration::zero()) {
-        next_delivery_.reset();
-        return;
-      }
-
-      if (!next_delivery_) {
-        next_delivery_ = delivery + interval_;
-        return;
-      }
-
-      /*
-       * Follow the compositor clock when its presentation is close to the
-       * negotiated cadence. This keeps equal-rate generated and real frames
-       * in their original slots instead of resampling them onto a competing
-       * capture clock. A materially early presentation is genuine oversupply,
-       * so retain the negotiated schedule and coalesce excess frames there.
-       * Late presentations rebase immediately and never produce catch-up
-       * bursts.
-       */
-      const auto tracking_tolerance = interval_ / 8;
-      if (delivery + tracking_tolerance >= *next_delivery_) {
-        next_delivery_ = delivery + interval_;
-      } else {
-        next_delivery_ = *next_delivery_ + interval_;
-      }
-    }
-
-  private:
-    clock_t::duration interval_ {};
-    std::optional<clock_t::time_point> next_delivery_;
-  };
-
-  /**
-   * Smooth packet presentation timestamps toward the negotiated client cadence
-   * without letting that cadence drift away from the source clock. Virtual KMS
-   * timestamps contain small VRR submission jitter, but a free-running exact
-   * grid can outrun a client's real (fractional) refresh rate and grow its frame
-   * queue. This acts as a lightweight phase-locked loop: remove most short-term
-   * jitter while continuously correcting long-term phase and frequency error.
-   */
-  class presentation_timestamp_grid_t {
-  public:
-    void set_interval(clock_t::duration interval) {
-      interval_ = interval;
       reset();
     }
 
     void reset() {
-      next_timestamp_.reset();
+      credit_ = clock_t::duration::zero();
+      last_delivery_.reset();
     }
 
-    [[nodiscard]] clock_t::time_point normalize(clock_t::time_point source_timestamp) {
+    [[nodiscard]] clock_t::time_point next_delivery(clock_t::time_point now) const {
+      if (!last_delivery_ || interval_ <= clock_t::duration::zero()) {
+        return now;
+      }
+
+      const auto available_credit = replenished_credit(now);
+      if (available_credit >= interval_) {
+        return now;
+      }
+      return now + (interval_ - available_credit);
+    }
+
+    void mark_delivered(clock_t::time_point delivery) {
       if (interval_ <= clock_t::duration::zero()) {
-        return source_timestamp;
+        reset();
+        return;
       }
 
-      if (!next_timestamp_) {
-        next_timestamp_ = source_timestamp + interval_;
-        return source_timestamp;
-      }
+      if (!last_delivery_) {
+        last_delivery_ = delivery;
 
-      const auto scheduled = *next_timestamp_;
-      const auto phase_error = source_timestamp - scheduled;
+        // Start with one frame of phase credit. This lets an uneven but
+        // correctly averaged VRR source lead with either the short or long
+        // half of a presentation pair without adding a competing phase.
+        credit_ = interval_;
+        return;
+      }
 
       /*
-       * A phase error beyond half a frame is a real missed slot or discontinuity,
-       * not normal VRR jitter. Preserve it immediately. Otherwise correct one
-       * quarter of the phase error per frame, which damps alternating jitter but
-       * converges to the source frequency instead of accumulating queue depth.
+       * Keep at most one frame of saved phase in addition to the frame being
+       * admitted. A long presentation interval can therefore pay for a short
+       * one, preserving uneven VRR timing when the pair averages to the client
+       * rate. Persistent oversupply consumes the finite credit and is then
+       * coalesced at the negotiated ceiling.
+       *
+       * A gap of two frame intervals is a stall, not useful phase credit. The
+       * resumed frame is immediate, but it cannot trigger a catch-up burst.
        */
-      if (phase_error > interval_ / 2 || phase_error < -interval_ / 2) {
-        next_timestamp_ = source_timestamp + interval_;
-        return source_timestamp;
+      const auto elapsed = delivery > *last_delivery_ ? delivery - *last_delivery_ : clock_t::duration::zero();
+      if (elapsed >= credit_capacity()) {
+        credit_ = clock_t::duration::zero();
+        last_delivery_ = delivery;
+        return;
       }
 
-      const auto normalized = scheduled + phase_error / 4;
-      next_timestamp_ = normalized + interval_;
-      return normalized;
+      const auto available_credit = std::min(credit_capacity(), credit_ + elapsed);
+      credit_ = available_credit > interval_ ? available_credit - interval_ : clock_t::duration::zero();
+      last_delivery_ = delivery;
     }
 
   private:
+    [[nodiscard]] clock_t::duration credit_capacity() const {
+      return interval_ + interval_;
+    }
+
+    [[nodiscard]] clock_t::duration replenished_credit(clock_t::time_point now) const {
+      const auto elapsed = now > *last_delivery_ ? now - *last_delivery_ : clock_t::duration::zero();
+      return std::min(credit_capacity(), credit_ + elapsed);
+    }
+
     clock_t::duration interval_ {};
-    std::optional<clock_t::time_point> next_timestamp_;
+    clock_t::duration credit_ {};
+    std::optional<clock_t::time_point> last_delivery_;
   };
 
   class presentation_latch_t {
