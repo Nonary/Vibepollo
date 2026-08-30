@@ -444,6 +444,8 @@ export function getConfigSelectOptions(
       const options = platform.includes('linux')
         ? [
             { label: t('frameLimiter.provider.autoLinux'), value: 'auto' },
+            { label: t('frameLimiter.provider.mangohudProton'), value: 'mangohud-proton' },
+            { label: t('frameLimiter.provider.proton'), value: 'proton' },
             { label: t('frameLimiter.provider.mangohud'), value: 'mangohud' },
             { label: t('frameLimiter.provider.none'), value: 'none' },
           ]
@@ -456,6 +458,13 @@ export function getConfigSelectOptions(
             },
             { label: t('frameLimiter.provider.none'), value: 'none' },
           ];
+      return ensureIncludesCurrentValue(options, ctx.currentValue);
+    }
+    case 'mangohud_limiter_method': {
+      const options = [
+        { label: t('frameLimiter.mangohudMethod.early'), value: 'early' },
+        { label: t('frameLimiter.mangohudMethod.late'), value: 'late' },
+      ];
       return ensureIncludesCurrentValue(options, ctx.currentValue);
     }
     case 'frame_limiter_auto_virtual_framegen': {

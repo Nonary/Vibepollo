@@ -11,8 +11,8 @@
 
 namespace mangohud = platf::mangohud;
 
-TEST(MangoHudPolicy, SelectsMangoHudForLinuxAutoAndExplicitProviders) {
-  EXPECT_TRUE(mangohud::provider_selected("auto"));
+TEST(MangoHudPolicy, SelectsOnlyExplicitMangoHudProvider) {
+  EXPECT_FALSE(mangohud::provider_selected("auto"));
   EXPECT_TRUE(mangohud::provider_selected("MangoHUD"));
   EXPECT_TRUE(mangohud::provider_selected("mango-hud"));
   EXPECT_FALSE(mangohud::provider_selected("none"));
@@ -51,23 +51,26 @@ TEST(MangoHudPolicy, AddsAndRemovesOnlyItsOpenGlPreload) {
 }
 
 TEST(MangoHudPolicy, BuildsSteamCompatibleAuthoritativeLimitConfig) {
-  EXPECT_EQ(mangohud::config_override("120"), "read_cfg,fps_limit=120");
-  EXPECT_EQ(mangohud::config_override("59.94"), "read_cfg,fps_limit=59.94");
+  EXPECT_EQ(mangohud::config_override("120"), "read_cfg,fps_limit_method=late,fps_limit=120");
+  EXPECT_EQ(
+    mangohud::config_override("59.94", "custom", false, "early"),
+    "read_cfg,fps_limit_method=early,fps_limit=59.94"
+  );
   EXPECT_EQ(
     mangohud::config_override("120", "3", false),
-    "read_cfg,preset=3,no_display=0,fps_limit=120"
+    "read_cfg,preset=3,no_display=0,fps_limit_method=late,fps_limit=120"
   );
   EXPECT_EQ(
     mangohud::config_override("120", "custom", true),
-    "read_cfg,no_display=0,frame_timing=1,fps_limit=120"
+    "read_cfg,no_display=0,frame_timing=1,fps_limit_method=late,fps_limit=120"
   );
   EXPECT_EQ(
     mangohud::config_override("120", "4", true),
-    "read_cfg,preset=4,no_display=0,frame_timing=1,fps_limit=120"
+    "read_cfg,preset=4,no_display=0,frame_timing=1,fps_limit_method=late,fps_limit=120"
   );
   EXPECT_EQ(
     mangohud::config_override("position=top-right,fps_limit=30", "120", "custom", false),
-    "read_cfg,position=top-right,fps_limit=30,fps_limit=120"
+    "read_cfg,position=top-right,fps_limit=30,fps_limit_method=late,fps_limit=120"
   );
   EXPECT_EQ(
     mangohud::overlay_config_override("position=top-right,fps_limit=30", "custom", false),
@@ -94,9 +97,13 @@ TEST(MangoHudPolicy, ValidatesAndSerializesLastMileSteamState) {
     "59.94",
     "3",
     true,
+    "early",
     std::chrono::system_clock::time_point {std::chrono::seconds {12345}}
   );
-  EXPECT_NE(state.find("version=2\nprovider=proton\nlimit=59.94\npreset=3\nalways_show_graph=1\n"), std::string::npos);
+  EXPECT_NE(
+    state.find("version=2\nprovider=proton\nlimit=59.94\npreset=3\nalways_show_graph=1\nlimiter_method=early\n"),
+    std::string::npos
+  );
   EXPECT_NE(state.find("owner_pid="), std::string::npos);
   EXPECT_TRUE(state.ends_with("expires=12345\n"));
 }
@@ -106,6 +113,8 @@ TEST(MangoHudPolicy, SelectsProtonAsLinuxLimiterProvider) {
   stream_policy.fps = 116;
   EXPECT_TRUE(mangohud::proton_provider_selected("Proton"));
   EXPECT_TRUE(mangohud::proton_provider_selected("MangoHUD + Proton"));
+  EXPECT_TRUE(mangohud::proton_provider_selected("auto"));
+  EXPECT_TRUE(mangohud::proton_overlay_provider_selected("auto"));
   EXPECT_TRUE(mangohud::proton_overlay_provider_selected("mangohud-proton"));
   EXPECT_FALSE(mangohud::proton_overlay_provider_selected("proton"));
   EXPECT_FALSE(mangohud::provider_selected("proton"));

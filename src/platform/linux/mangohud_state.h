@@ -58,6 +58,7 @@ namespace platf::mangohud {
     std::string_view limit,
     std::string_view preset,
     bool always_show_graph,
+    std::string_view limiter_method,
     std::chrono::system_clock::time_point expires_at
   ) {
     const bool standard_preset = preset == "1" || preset == "2" || preset == "3" || preset == "4";
@@ -68,6 +69,7 @@ namespace platf::mangohud {
            "\nlimit=" + std::string(limit) +
            "\npreset=" + (standard_preset ? std::string(preset) : "custom") +
            "\nalways_show_graph=" + (always_show_graph ? "1" : "0") +
+           "\nlimiter_method=" + (limiter_method == "early" ? "early" : "late") +
            "\nowner_pid=" + std::to_string(static_cast<unsigned long>(getpid())) +
            "\nexpires=" + std::to_string(expires) + "\n";
   }
@@ -77,7 +79,8 @@ namespace platf::mangohud {
     std::string_view provider,
     std::string_view limit,
     std::string_view preset,
-    bool always_show_graph
+    bool always_show_graph,
+    std::string_view limiter_method = "late"
   ) {
     const auto path = state_path(app_id);
     if (path.empty()) {
@@ -111,6 +114,7 @@ namespace platf::mangohud {
         limit,
         preset,
         always_show_graph,
+        limiter_method,
         std::chrono::system_clock::now() + std::chrono::hours(1)
       );
       if (!output) {
