@@ -3193,7 +3193,7 @@ onBeforeUnmount(() => {
                 {{ t('ui.application.fields.imagePath.label') }}
               </label>
               <span v-else class="vs-field__label">
-                {{ t('ui.application.fields.imagePath.label') }}
+                {{ t('ui.application.coverPicker.title') }}
               </span>
               <div class="editor-cover-control">
                 <input
@@ -3223,6 +3223,20 @@ onBeforeUnmount(() => {
                   )
                 }}
               </span>
+              <details
+                v-if="isProviderLinked && !isPlayniteLinked"
+                class="editor-inline-disclosure"
+              >
+                <summary>{{ t('ui.application.coverPicker.pathDisclosure') }}</summary>
+                <input
+                  id="app-image-path"
+                  v-model="form.imagePath"
+                  class="vs-input vs-monospace"
+                  type="text"
+                  :aria-label="t('ui.application.fields.imagePath.label')"
+                  :placeholder="t('ui.application.fields.imagePath.placeholder')"
+                />
+              </details>
             </div>
 
             <InlineAlert
@@ -3651,11 +3665,11 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section
-        v-if="!isProviderLinked"
-        class="editor-section"
-        aria-labelledby="commands-heading"
-      >
+      <details class="editor-section editor-section--disclosure" :open="!isProviderLinked">
+        <summary v-if="isProviderLinked" class="editor-section__summary">
+          <span>{{ t('ui.application.sections.commands.advancedTitle') }}</span>
+          <small>{{ t('ui.application.sections.commands.advancedDescription') }}</small>
+        </summary>
         <div class="editor-section__heading editor-section__heading--actions">
           <div>
             <h2 id="commands-heading">{{ t('ui.application.sections.commands.title') }}</h2>
@@ -3717,7 +3731,7 @@ onBeforeUnmount(() => {
           />
           <span class="vs-field__helper">{{ t('ui.application.fields.detached.help') }}</span>
         </label>
-      </section>
+      </details>
 
       <section class="editor-section" aria-labelledby="overrides-heading">
         <div class="editor-section__heading">
@@ -4052,6 +4066,58 @@ onBeforeUnmount(() => {
 
 .editor-section {
   gap: var(--vs-space-12);
+}
+
+.editor-section--disclosure:not([open]) {
+  display: block;
+}
+
+.editor-section__summary,
+.editor-inline-disclosure summary {
+  cursor: pointer;
+}
+
+.editor-section__summary {
+  padding: var(--vs-space-16) var(--vs-space-20);
+  border: var(--vs-border-width) solid var(--vs-color-border-subtle);
+  border-radius: var(--vs-radius-card);
+  background: var(--vs-color-bg-surface);
+}
+
+.editor-section__summary span,
+.editor-section__summary small {
+  display: block;
+}
+
+.editor-section__summary span {
+  color: var(--vs-color-text-primary);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.editor-section__summary small {
+  margin-block-start: var(--vs-space-4);
+  color: var(--vs-color-text-secondary);
+}
+
+.editor-inline-disclosure {
+  margin-block-start: var(--vs-space-4);
+}
+
+.editor-inline-disclosure summary {
+  color: var(--vs-color-text-secondary);
+  font-size: var(--vs-type-size-helper);
+  font-weight: var(--vs-type-weight-semibold);
+}
+
+.editor-inline-disclosure .vs-input {
+  inline-size: 100%;
+  margin-block-start: var(--vs-space-8);
+}
+
+.editor-section__summary:focus-visible,
+.editor-inline-disclosure summary:focus-visible {
+  outline: var(--vs-focus-width) solid var(--vs-color-focus);
+  outline-offset: var(--vs-focus-offset);
 }
 
 .app-display-routing {
