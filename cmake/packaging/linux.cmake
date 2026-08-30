@@ -26,6 +26,21 @@ else()
     find_package(Udev)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_path(VIBESHINE_PAM_INCLUDE_DIR security/pam_modules.h REQUIRED)
+        find_library(VIBESHINE_PAM_LIBRARY pam REQUIRED)
+        get_filename_component(VIBESHINE_PAM_LIBRARY_DIR "${VIBESHINE_PAM_LIBRARY}" DIRECTORY)
+        set(VIBESHINE_PAM_MODULE_INSTALL_DIR "${VIBESHINE_PAM_LIBRARY_DIR}/security")
+        add_library(pam_vibepollo_session MODULE
+                "${CMAKE_SOURCE_DIR}/packaging/linux/pam_vibepollo_session.c")
+        set_target_properties(pam_vibepollo_session PROPERTIES
+                PREFIX ""
+                OUTPUT_NAME pam_vibepollo_session)
+        target_include_directories(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_INCLUDE_DIR}")
+        target_link_libraries(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_LIBRARY}")
+        file(GENERATE
+                OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vibeshine_drm_version.h"
+                CONTENT "#define VIBESHINE_DRM_VERSION \"${PROJECT_VERSION_NUMERIC}\"\n")
+
         install(PROGRAMS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
@@ -35,6 +50,8 @@ else()
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibeshine_vkms_peercred
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(TARGETS pam_vibepollo_session
+                LIBRARY DESTINATION "${VIBESHINE_PAM_MODULE_INSTALL_DIR}")
         install(FILES "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.sysusers"
                 DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
                 RENAME vibeshine-vkms.conf)
@@ -48,6 +65,8 @@ else()
                 PATTERN "Makefile"
                 PATTERN "README*"
                 PATTERN "LICENSE*")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine_drm_version.h"
+                DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}")
         install(PROGRAMS "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/build-module"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}")
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-dkms.conf"
@@ -132,24 +151,29 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             libdrm2, \
             libgbm1, \
             libevdev2, \
+            iproute2, \
             kmod, \
             libkscreen-bin | libkf5screen-bin, \
             make, \
             libnuma1, \
             libopus0, \
+            libpam0g, \
             libpulse0, \
             libva2, \
             libva-drm2, \
             libwayland-client0, \
             libx11-6, \
             miniupnpc, \
-            openssl | libssl3")
+            openssl | libssl3, \
+            socat, \
+            util-linux")
 set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
             libcap >= 2.22, \
             libcurl >= 7.0, \
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
+            iproute, \
             kmod, \
             libkscreen, \
             make, \
@@ -161,7 +185,10 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             miniupnpc >= 2.2.4, \
             numactl-libs >= 2.0.14, \
             openssl >= 3.0.2, \
+            pam, \
             pulseaudio-libs >= 10.0, \
+            socat, \
+            util-linux, \
             which >= 2.21")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")
 set(CPACK_RPM_PACKAGE_SUGGESTS "dkms, gcc, kernel-devel")

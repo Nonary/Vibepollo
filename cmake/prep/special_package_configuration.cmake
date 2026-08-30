@@ -68,6 +68,8 @@ elseif(UNIX)
             string(APPEND VIBESHINE_DRM_HASH_MATERIAL
                     "${VIBESHINE_DRM_INPUT_NAME}:${VIBESHINE_DRM_INPUT_HASH}\n")
         endforeach()
+        string(APPEND VIBESHINE_DRM_HASH_MATERIAL
+                "package-version:${PROJECT_VERSION_NUMERIC}\n")
         string(SHA256 VIBESHINE_DRM_SOURCE_ID "${VIBESHINE_DRM_HASH_MATERIAL}")
         # Privileged services that build and provision Vibepollo's virtual
         # display outputs before the display manager enumerates DRM devices.

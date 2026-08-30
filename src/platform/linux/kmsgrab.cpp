@@ -1496,6 +1496,7 @@ namespace platf {
           request.sequence = requested_sequence;
           request.timeout_ms = requested_timeout_ms;
 
+          cap_sys_admin admin;
           if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_WAIT_PRESENT, &request) < 0) {
             switch (pacing::classify_ioctl_error(errno, timeout > 0ms)) {
               case pacing::presentation_ioctl_error_e::retry:

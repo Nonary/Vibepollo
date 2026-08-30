@@ -42,6 +42,7 @@ BuildRequires: libXinerama-devel
 BuildRequires: libXrandr-devel
 BuildRequires: libXtst-devel
 BuildRequires: openssl-devel
+BuildRequires: pam-devel
 BuildRequires: pipewire-devel
 BuildRequires: rpm-build
 BuildRequires: systemd-rpm-macros
@@ -140,6 +141,10 @@ BuildRequires: gcc14-c++
 Requires: miniupnpc >= 2.2.4
 Requires: which >= 2.21
 Requires: kmod
+Requires: iproute
+Requires: pam
+Requires: socat
+Requires: util-linux
 Recommends: dkms
 Recommends: gcc
 Recommends: kernel-devel
@@ -380,6 +385,7 @@ fi
 %{_prefix}/libexec/vibeshine/vibepollo-session-ready
 %{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
 %{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
+%{_libdir}/security/pam_vibepollo_session.so
 
 # Dedicated access group for the privileged virtual-display control socket
 %{_prefix}/lib/sysusers.d/vibeshine-vkms.conf
