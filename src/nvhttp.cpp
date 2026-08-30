@@ -3641,7 +3641,7 @@ namespace nvhttp {
           return;
         }
         if (decision.disconnect_game) {
-          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid, true);
+          const bool disconnected = rtsp_stream::disconnect_game_sessions(game.owner_uuid, false);
           tree.put("root.resume", 0);
           tree.put("root.gamesession", 0);
           if (disconnected) {
@@ -3671,7 +3671,7 @@ namespace nvhttp {
             request_client_identity.uuid,
             role,
             *generation,
-            true
+            false
           );
           if (role == remote_session::role_e::monitor) {
             remote_session::release_monitor(
@@ -3683,7 +3683,7 @@ namespace nvhttp {
           forget_remote_owner(request_client_identity.uuid, role, *generation);
 #ifdef _WIN32
           if (role == remote_session::role_e::monitor) {
-            cleanup_virtual_display_if_idle_locked();
+            cleanup_virtual_display_if_idle();
           }
 #endif
           const auto completion = *remote_session::successful_control_completion(synthetic_control);
