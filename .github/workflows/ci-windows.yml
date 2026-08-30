@@ -1244,7 +1244,7 @@ jobs:
           # payload. Its DLL is catalog-bound and its setup tool is hash-pinned
           # by manifest.json, so neither may be altered by the MSI deep-sign.
           # Verify it separately from the generic first-party PE sweep.
-          $vhfPackageDir = Join-Path $extractDir 'Sunshine\drivers\vhf-gamepad'
+          $vhfPackageDir = Join-Path $extractDir 'Apollo\drivers\vhf-gamepad'
           $vhfManifestPath = Join-Path $vhfPackageDir 'manifest.json'
           # cleanup.ps1 is deliberately present in every MSI so a later
           # unbundled build can remove an older owned source node. A complete

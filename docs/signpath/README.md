@@ -70,8 +70,8 @@ invalidates the catalog hash and **breaks driver installation**. These must be
   `Apollo\drivers\sunshine\nefconc.exe`,
   `Apollo\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.dll`
   (libvirtualdisplay release, origin-signed upstream)
-- `drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll` (+ `.cat`) and
-  `drivers/vhf-gamepad/tools/VibeshineVhfGamepadDeviceSetup.exe`
+- `Apollo\drivers\vhf-gamepad\driver\VibeshineVhfGamepad.dll` (+ `.cat`) and
+  `Apollo\drivers\vhf-gamepad\tools\VibeshineVhfGamepadDeviceSetup.exe`
   (libvirtualgamepad release). The DLL is catalog-bound; the setup tool is not,
   but both are hash-pinned by that package's immutable manifest, so the MSI
   deep-sign step must leave both bytes unchanged.
