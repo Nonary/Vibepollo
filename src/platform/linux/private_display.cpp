@@ -6,6 +6,7 @@
 #include "private_display.h"
 
 #include "hdr_policy.h"
+#include "private_display_restore_policy.h"
 #include "private_display_resume_policy.h"
 
 #include "src/config.h"
@@ -424,22 +425,56 @@ namespace platf::linux_private_display {
     struct phased_configuration_t {
       std::vector<std::string> activate;
       std::vector<std::string> deactivate;
+      std::vector<std::string> guard_activate;
+      std::optional<std::string> guard_output;
+      bool guard_required {false};
     };
+
+    std::vector<std::string> output_activation_arguments(
+      const json &saved,
+      const json *present,
+      const std::string &name
+    ) {
+      const auto prefix = "output." + name + ".";
+      std::vector<std::string> arguments {prefix + "enable"};
+      const auto mode = saved.value("currentModeId", std::string {});
+      if (!mode.empty()) {
+        arguments.push_back(prefix + "mode." + mode);
+      }
+      arguments.push_back(prefix + "scale." + std::to_string(saved.value("scale", 1.0)));
+      const auto pos = saved.value("pos", json::object());
+      arguments.push_back(prefix + "position." + std::to_string(pos.value("x", 0)) + "," + std::to_string(pos.value("y", 0)));
+      const auto priority = saved.value("priority", 0);
+      if (priority > 0) {
+        arguments.push_back(prefix + "priority." + std::to_string(priority));
+      }
+      if (saved.contains("hdr") && output_hdr_capable(present, name)) {
+        arguments.push_back(prefix + "hdr." + std::string(saved.value("hdr", false) ? "enable" : "disable"));
+      }
+      return arguments;
+    }
 
     phased_configuration_t restore_arguments(const json &snapshot, const json &current) {
       phased_configuration_t arguments;
       const auto private_names = private_output_set();
       bool restored_non_private = false;
       std::set<std::string> snapshot_names;
+      std::vector<restore_policy::candidate_t> guard_candidates;
+      std::map<std::string, std::vector<std::string>> activation_by_output;
 
       for (const auto &saved : snapshot["outputs"]) {
         const auto name = saved.value("name", std::string {});
         if (name.empty()) {
+          if (enabled(saved)) {
+            guard_candidates.push_back({name, true, false, false});
+          }
           continue;
         }
         snapshot_names.insert(name);
         const auto *present = find_output(current, name);
-        if (!present || !connected(*present)) {
+        const bool is_connected = present && connected(*present);
+        guard_candidates.push_back({name, enabled(saved), is_connected, private_names.contains(name)});
+        if (!is_connected) {
           continue;
         }
         const auto prefix = "output." + name + ".";
@@ -448,21 +483,15 @@ namespace platf::linux_private_display {
           continue;
         }
         restored_non_private = restored_non_private || !private_names.contains(name);
-        arguments.activate.push_back(prefix + "enable");
-        const auto mode = saved.value("currentModeId", std::string {});
-        if (!mode.empty()) {
-          arguments.activate.push_back(prefix + "mode." + mode);
-        }
-        arguments.activate.push_back(prefix + "scale." + std::to_string(saved.value("scale", 1.0)));
-        const auto pos = saved.value("pos", json::object());
-        arguments.activate.push_back(prefix + "position." + std::to_string(pos.value("x", 0)) + "," + std::to_string(pos.value("y", 0)));
-        const auto priority = saved.value("priority", 0);
-        if (priority > 0) {
-          arguments.activate.push_back(prefix + "priority." + std::to_string(priority));
-        }
-        if (saved.contains("hdr") && output_hdr_capable(present, name)) {
-          arguments.activate.push_back(prefix + "hdr." + std::string(saved.value("hdr", false) ? "enable" : "disable"));
-        }
+        auto activation = output_activation_arguments(saved, present, name);
+        arguments.activate.insert(arguments.activate.end(), activation.begin(), activation.end());
+        activation_by_output.emplace(name, std::move(activation));
+      }
+
+      arguments.guard_required = restore_policy::requires_guard(guard_candidates);
+      arguments.guard_output = restore_policy::select_guard(guard_candidates);
+      if (arguments.guard_output) {
+        arguments.guard_activate = activation_by_output.at(*arguments.guard_output);
       }
 
       if (restored_non_private) {
@@ -475,6 +504,18 @@ namespace platf::linux_private_display {
         }
       }
       return arguments;
+    }
+
+    json snapshot_for_output(const json &snapshot, const std::string &name) {
+      json result;
+      result["outputs"] = json::array();
+      for (const auto &saved : snapshot["outputs"]) {
+        if (saved.value("name", std::string {}) == name) {
+          result["outputs"].push_back(saved);
+          break;
+        }
+      }
+      return result;
     }
 
     bool wait_for_snapshot_activation(const json &snapshot) {
@@ -515,6 +556,18 @@ namespace platf::linux_private_display {
           }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      } while (std::chrono::steady_clock::now() < deadline);
+      return false;
+    }
+
+    bool wait_for_capture_publication(const std::string &name) {
+      const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
+      do {
+        const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+        if (std::find(capture_outputs.begin(), capture_outputs.end(), name) != capture_outputs.end()) {
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } while (std::chrono::steady_clock::now() < deadline);
       return false;
     }
@@ -651,19 +704,41 @@ namespace platf::linux_private_display {
       return false;
     }
 
-    // A provisioned pool is dormant. A connector is hotplugged only after a
-    // session owns its reservation; stale connectors from a crash/reboot must
-    // not appear as attached desktop monitors.
+    auto configuration = query_configuration();
+    if (!configuration) {
+      return false;
+    }
+
+    // A normal idle pool is dormant, but a restart may follow a failed
+    // compositor handoff. Never hot-unplug the last framebuffer that the
+    // selected capture backend can actually enumerate.
+    const auto capture_outputs = platf::display_names(platf::mem_type_e::unknown);
+    const std::set<std::string> capture_names {capture_outputs.begin(), capture_outputs.end()};
+    const bool capture_ready_physical = std::ranges::any_of((*configuration)["outputs"], [&](const json &output) {
+      const auto name = output.value("name", std::string {});
+      return connected(output) && enabled(output) && !private_names.contains(name) && capture_names.contains(name);
+    });
+
     const auto managed_outputs = discover_managed_outputs();
     const std::set<std::string> managed_names {managed_outputs.begin(), managed_outputs.end()};
+    std::set<std::string> preserved_private_outputs;
     for (const auto &name : managed_outputs) {
+      const auto *output = find_output(*configuration, name);
+      const bool capture_ready_private =
+        output && connected(*output) && enabled(*output) && capture_names.contains(name);
+      if (restore_policy::preserve_private_scanout(capture_ready_physical, capture_ready_private)) {
+        preserved_private_outputs.insert(name);
+        BOOST_LOG(warning) << "Linux private display: preserving capture-ready " << name
+                           << " during startup because no physical capture output is ready.";
+        continue;
+      }
       if (!disconnect_managed_output(name)) {
         BOOST_LOG(error) << "Linux private display: failed to disconnect stale pool output " << name << '.';
         return false;
       }
     }
 
-    auto configuration = query_configuration();
+    configuration = query_configuration();
     if (!configuration) {
       return false;
     }
@@ -678,6 +753,9 @@ namespace platf::linux_private_display {
     if (has_active_physical) {
       std::vector<std::string> disable_stale;
       for (const auto &name : private_names) {
+        if (preserved_private_outputs.contains(name)) {
+          continue;
+        }
         // Managed connectors were already hot-unplugged through the broker.
         // KScreen can briefly retain a stale JSON object after that hotplug;
         // do not send a modeset to an output which no longer exists.
@@ -1439,9 +1517,32 @@ namespace platf::linux_private_display {
       return false;
     }
     const auto arguments = restore_arguments(*manager.snapshot, *current);
+    if (arguments.guard_required) {
+      if (!arguments.guard_output) {
+        BOOST_LOG(error) << "Linux private display: no connected saved output can guard topology restore; preserving the current private scanout.";
+        return false;
+      }
+      if (!execute_configuration(arguments.guard_activate, "topology restore guard activation")) {
+        return false;
+      }
+      const auto guard_snapshot = snapshot_for_output(*manager.snapshot, *arguments.guard_output);
+      if (!wait_for_snapshot_activation(guard_snapshot)) {
+        BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
+                         << " did not activate as the topology restore guard; preserving the current private scanout.";
+        return false;
+      }
+      if (!wait_for_capture_publication(*arguments.guard_output)) {
+        BOOST_LOG(error) << "Linux private display: saved output " << *arguments.guard_output
+                         << " activated in KScreen but did not publish to the capture backend; preserving the current private scanout.";
+        return false;
+      }
+      BOOST_LOG(debug) << "Linux private display: capture-ready restore guard "
+                       << *arguments.guard_output << " is active.";
+    }
     // Apply retirement and activation as one KScreen transaction. Activating
     // every saved output before retiring the private output can exceed the
-    // compositor's max-active-output limit and can never reach verification.
+    // compositor's max-active-output limit. The capture-ready guard above
+    // ensures this transaction cannot create a transient zero-output desktop.
     auto restore = arguments.deactivate;
     restore.insert(restore.end(), arguments.activate.begin(), arguments.activate.end());
     if (!execute_configuration(restore, "topology restore")) {
