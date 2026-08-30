@@ -535,9 +535,9 @@ prelogin_encoder_count="$(sudo sed -n '/^[[:space:]]*encoder[[:space:]]*=/p' "$p
 [[ "$prelogin_encoder_count" == 1 ]] || \
   die "expected exactly one encoder setting in $prelogin_config"
 sudo sed -i -E \
-  's/^[[:space:]]*encoder[[:space:]]*=.*/encoder = nvenc_experimental/' \
+  's/^[[:space:]]*encoder[[:space:]]*=.*/encoder = nvenc/' \
   "$prelogin_config"
-sudo rg -q '^[[:space:]]*encoder[[:space:]]*=[[:space:]]*nvenc_experimental[[:space:]]*$' \
+sudo rg -q '^[[:space:]]*encoder[[:space:]]*=[[:space:]]*nvenc[[:space:]]*$' \
   "$prelogin_config" || die "failed to select native NVENC for the pre-login host"
 log "configured the pre-login host for the known-good native NVENC DMA-BUF path"
 

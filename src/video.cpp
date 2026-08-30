@@ -1923,8 +1923,13 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION | YUV444_SUPPORT | ASYNC_TEARDOWN  // flags
   };
 #elif !defined(__APPLE__)
+#if defined(__linux__)
+  encoder_t nvenc_legacy {
+    "nvenc_legacy"sv,
+#else
   encoder_t nvenc {
     "nvenc"sv,
+#endif
     std::make_unique<encoder_platform_formats_avcodec>(
   #ifdef _WIN32
       AV_HWDEVICE_TYPE_D3D11VA,
@@ -2024,11 +2029,10 @@ namespace video {
 #endif
 
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-  // Experimental native Linux NVENC encoder. The stable `nvenc` choice keeps
-  // using FFmpeg; this explicit backend talks directly to the Video Codec SDK
-  // and consumes the same CUDA NV12/P010 conversion surface.
-  encoder_t nvenc_experimental {
-    "nvenc_experimental"sv,
+  // Native Linux NVENC encoder. This is the preferred `nvenc` backend and
+  // consumes the same CUDA NV12/P010 conversion surface as the legacy path.
+  encoder_t nvenc {
+    "nvenc"sv,
     std::make_unique<encoder_platform_formats_nvenc>(
       platf::mem_type_e::cuda,
       platf::pix_fmt_e::nv12,
@@ -2677,11 +2681,16 @@ namespace video {
 #endif
 
   static const std::vector<encoder_t *> encoders {
-#ifndef __APPLE__
+#ifdef _WIN32
     &nvenc,
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    &nvenc_experimental,
+    &nvenc,
+    &nvenc_legacy,
+#elif defined(__linux__)
+    &nvenc_legacy,
+#elif !defined(_WIN32) && !defined(__APPLE__)
+    &nvenc,
 #endif
 #ifdef _WIN32
     &quicksync,
@@ -4935,7 +4944,7 @@ namespace video {
     }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (!session && &encoder == &nvenc_experimental) {
+    if (!session && &encoder == &nvenc) {
       BOOST_LOG(error) << "NvEnc: native session initialization failed; refusing silent FFmpeg NVENC fallback"sv;
     }
 #endif
@@ -5555,7 +5564,7 @@ namespace video {
     }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    if (&encoder == &nvenc_experimental && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
+    if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
       BOOST_LOG(error) << "NvEnc: native runtime is quarantined after an unsafe teardown; refusing to create another native session until host restart"sv;
       return nullptr;
     }
@@ -6196,7 +6205,7 @@ namespace video {
       }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      if (!encode_device && !prepared_session && &encoder == &nvenc_experimental) {
+      if (!encode_device && !prepared_session && &encoder == &nvenc) {
         ++consecutive_encoder_initialization_failures;
         if (consecutive_encoder_initialization_failures >= 3) {
           BOOST_LOG(error) << "NvEnc: native device creation failed 3 times; ending the stream without changing encoder implementations"sv;
@@ -6287,7 +6296,7 @@ namespace video {
         continue;
 #else
   #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-        if (&session_encoder == &nvenc_experimental) {
+        if (&session_encoder == &nvenc) {
           ++consecutive_encoder_initialization_failures;
           if (consecutive_encoder_initialization_failures >= 3) {
             BOOST_LOG(error) << "NvEnc: native session initialization failed 3 times; ending the stream without changing encoder implementations"sv;
@@ -6430,7 +6439,7 @@ namespace video {
           }
 #endif
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-          if (&encoder == &nvenc_experimental) {
+          if (&encoder == &nvenc) {
             // The native CUDA device owns an EGL context made current on this
             // probe thread. EGL contexts cannot be handed to the generic
             // bounded teardown worker while still current here, so release all
@@ -6512,7 +6521,7 @@ namespace video {
 
       auto result = validate_once();
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-      if (&encoder == &nvenc_experimental && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
+      if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
         BOOST_LOG(error) << "NvEnc: native probe teardown was unsafe; rejecting the probe result and quarantining native NVENC until process restart"sv;
         return -1;
       }
@@ -6591,7 +6600,7 @@ namespace video {
       }
 #else
   #if defined(SUNSHINE_BUILD_CUDA)
-      if (&encoder == &nvenc_experimental && !required_adapter) {
+      if (&encoder == &nvenc && !required_adapter) {
         // Encoder capability probing does not need access to a scanout
         // framebuffer. A blank GL/CUDA source isolates the native API probe
         // from KMS privileges while the real stream still uses KMS capture.
@@ -6621,7 +6630,7 @@ namespace video {
     const bool cached_display_matches_required =
       !required_adapter || (cached_adapter && *cached_adapter == *required_adapter);
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
-    const bool wants_native_nvenc_probe = &encoder == &nvenc_experimental && !required_adapter;
+    const bool wants_native_nvenc_probe = &encoder == &nvenc && !required_adapter;
     const bool cached_probe_kind_matches =
       cached_display_is_native_nvenc_probe == wants_native_nvenc_probe;
 #else
@@ -6912,10 +6921,8 @@ namespace video {
     auto encoder_list = encoders;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
     const auto nvenc_selection_policy = nvenc::encoder_selection_policy(config::video.encoder);
-    // Native CUDA NVENC is opt-in until it has broad driver and capture-source
-    // coverage. Never let automatic probing select an experimental backend.
-    if (!nvenc_selection_policy.include_experimental) {
-      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &nvenc_experimental), encoder_list.end());
+    if (!nvenc_selection_policy.include_native) {
+      encoder_list.erase(std::remove(encoder_list.begin(), encoder_list.end(), &nvenc), encoder_list.end());
     }
 #endif
 #ifdef _WIN32
@@ -6995,7 +7002,7 @@ namespace video {
         BOOST_LOG(error) << "Couldn't find any working encoder matching ["sv << config::video.encoder << ']';
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
         if (nvenc_selection_policy.fail_closed) {
-          BOOST_LOG(error) << "Experimental native NVENC was explicitly selected; refusing automatic fallback to FFmpeg NVENC or another encoder"sv;
+          BOOST_LOG(error) << "Native NVENC was explicitly selected; refusing automatic fallback to legacy FFmpeg NVENC or another encoder"sv;
           return -1;
         }
 #endif

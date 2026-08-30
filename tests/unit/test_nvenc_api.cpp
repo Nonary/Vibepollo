@@ -42,17 +42,21 @@ TEST(NvencApiTest, DriverMaximumVersionUsesPackedNibbleRepresentation) {
   EXPECT_EQ(nvenc::api::driver_max_to_api_version(0xC2U), nvenc::api::make_api_version(12U, 2U));
 }
 
-TEST(NvencApiTest, ExperimentalLinuxBackendIsExplicitOnlyAndFailClosed) {
+TEST(NvencApiTest, NativeLinuxBackendIsDefaultAndExplicitSelectionFailsClosed) {
   const auto automatic = nvenc::encoder_selection_policy("");
-  const auto stable = nvenc::encoder_selection_policy("nvenc");
-  const auto experimental = nvenc::encoder_selection_policy("nvenc_experimental");
+  const auto native = nvenc::encoder_selection_policy("nvenc");
+  const auto native_alias = nvenc::encoder_selection_policy("nvenc_experimental");
+  const auto legacy = nvenc::encoder_selection_policy("nvenc_legacy");
 
-  EXPECT_FALSE(automatic.include_experimental);
+  EXPECT_TRUE(automatic.include_native);
   EXPECT_FALSE(automatic.fail_closed);
-  EXPECT_FALSE(stable.include_experimental);
-  EXPECT_FALSE(stable.fail_closed);
-  EXPECT_TRUE(experimental.include_experimental);
-  EXPECT_TRUE(experimental.fail_closed);
+  EXPECT_TRUE(native.include_native);
+  EXPECT_TRUE(native.fail_closed);
+  EXPECT_TRUE(native_alias.include_native);
+  EXPECT_TRUE(native_alias.fail_closed);
+  EXPECT_FALSE(legacy.include_native);
+  EXPECT_FALSE(legacy.fail_closed);
+  EXPECT_EQ(nvenc::canonical_encoder_name("nvenc_experimental"), "nvenc");
 }
 
 TEST(NvencApiTest, FilterToApiVersionRetainsReviewedFallbacksForSdk130) {

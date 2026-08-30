@@ -758,7 +758,7 @@ namespace platf {
           // import path unless NVENC was explicitly selected by the user.
           if (mem_type == mem_type_e::cuda && !card.supports_cuda_import()) {
             BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
-            if (config::video.encoder != "nvenc" && config::video.encoder != "nvenc_experimental") {
+            if (config::video.encoder != "nvenc" && config::video.encoder != "nvenc_legacy") {
               continue;
             }
           }
@@ -2285,7 +2285,7 @@ namespace platf {
       // import path unless NVENC was explicitly selected by the user.
       if (hwdevice_type == mem_type_e::cuda && !card.supports_cuda_import()) {
         BOOST_LOG(debug) << file << " does not support CUDA framebuffer import"sv;
-        if (config::video.encoder == "nvenc" || config::video.encoder == "nvenc_experimental") {
+        if (config::video.encoder == "nvenc" || config::video.encoder == "nvenc_legacy") {
           BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
         } else {
           continue;

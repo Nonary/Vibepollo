@@ -222,7 +222,7 @@ installed_binary_hash="$(sha256sum "$prelogin_binary" | sed 's/[[:space:]].*$//'
 encoder_count="$(sudo sed -n '/^[[:space:]]*encoder[[:space:]]*=/p' "$prelogin_config" | wc -l)"
 [[ "$encoder_count" == 1 ]] || die "expected exactly one encoder setting in $prelogin_config"
 sudo sed -i -E \
-  's/^[[:space:]]*encoder[[:space:]]*=.*/encoder = nvenc_experimental/' \
+  's/^[[:space:]]*encoder[[:space:]]*=.*/encoder = nvenc/' \
   "$prelogin_config"
 capture_count="$(sudo sed -n '/^[[:space:]]*capture[[:space:]]*=/p' "$prelogin_config" | wc -l)"
 [[ "$capture_count" == 1 ]] || die "expected exactly one capture setting in $prelogin_config"
@@ -249,9 +249,9 @@ for _ in {1..20}; do
   if [[ "$service_log" =~ Linux\ private\ display:\ ready\ with\ [1-9][0-9]*\ private\ output\(s\)\. ]] &&
      [[ "$service_log" == *"config: 'capture' = kms"* &&
         "$service_log" == *"config: 'virtual_display_mode' = shared"* &&
-        "$service_log" == *"Found H.264 encoder: h264_nvenc [nvenc_experimental]"* &&
-        "$service_log" == *"Found HEVC encoder: hevc_nvenc [nvenc_experimental]"* &&
-        "$service_log" == *"Found AV1 encoder: av1_nvenc [nvenc_experimental]"* ]]; then
+        "$service_log" == *"Found H.264 encoder: h264_nvenc [nvenc]"* &&
+        "$service_log" == *"Found HEVC encoder: hevc_nvenc [nvenc]"* &&
+        "$service_log" == *"Found AV1 encoder: av1_nvenc [nvenc]"* ]]; then
     encoder_ready=1
     break
   fi
