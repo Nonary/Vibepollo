@@ -54,6 +54,22 @@ namespace platf {
 
     constexpr auto PRESENT_WAIT_IDLE_TIMEOUT = std::chrono::milliseconds(16);
 
+    void wait_until_capture_deadline(std::chrono::steady_clock::time_point deadline) {
+      constexpr auto sleep_guard = 250us;
+      constexpr auto yield_guard = 50us;
+
+      auto now = std::chrono::steady_clock::now();
+      if (deadline - now > sleep_guard) {
+        std::this_thread::sleep_until(deadline - sleep_guard);
+      }
+
+      while ((now = std::chrono::steady_clock::now()) < deadline) {
+        if (deadline - now > yield_guard) {
+          std::this_thread::yield();
+        }
+      }
+    }
+
     class cap_sys_admin {
     public:
       cap_sys_admin() {
@@ -688,9 +704,20 @@ namespace platf {
       }
 
       int init(const std::string &display_name, const ::video::config_t &config) {
-        delay = std::chrono::nanoseconds {1s} / config.framerate;
+        if (config.framerateX100 > 0) {
+          const auto frame_rate = ::video::framerateX100_to_rational(config.framerateX100);
+          delay = pacing::interval_from_frame_rate(frame_rate.num, frame_rate.den);
+          BOOST_LOG(info) << "[kmsgrab] Requested frame rate ["sv << frame_rate.num << '/' << frame_rate.den
+                          << ", approx. "sv << av_q2d(frame_rate) << " fps]"sv;
+        } else {
+          delay = pacing::interval_from_frame_rate(config.framerate, 1);
+          BOOST_LOG(info) << "[kmsgrab] Requested frame rate ["sv << config.framerate << " fps]"sv;
+        }
+        if (delay <= std::chrono::nanoseconds::zero()) {
+          BOOST_LOG(error) << "Invalid KMS capture frame interval."sv;
+          return -1;
+        }
         presentation_rate_limiter.set_interval(delay);
-        presentation_timestamp_grid.set_interval(delay);
 
         // Empty historically selected monitor 0. Explicit decimal names remain
         // legacy aliases, while every other value resolves through the stable
@@ -1435,8 +1462,9 @@ namespace platf {
 
         presentation_mode.activate();
         presentation_rate_limiter.reset();
-        presentation_timestamp_grid.reset();
         last_source_presentation_timestamp.reset();
+        last_capture_delivery_timestamp.reset();
+        sleep_overshoot_logger.reset();
         presentation_latch.request_capture();
         presentation_pending = presentation_latch.capture_ready();
         BOOST_LOG(info) << "Using event-driven KMS capture for Vibeshine DRM CRTC ["sv << crtc_id << "]."sv;
@@ -1563,7 +1591,9 @@ namespace platf {
               std::chrono::steady_clock::now()
             );
             if (const auto now = std::chrono::steady_clock::now(); delivery_deadline > now) {
-              std::this_thread::sleep_until(delivery_deadline);
+              wait_until_capture_deadline(delivery_deadline);
+              sleep_overshoot_logger.first_point(delivery_deadline);
+              sleep_overshoot_logger.second_point_now_and_log();
             }
 
             /*
@@ -1597,6 +1627,7 @@ namespace platf {
             const auto captured_timestamp = presentation_timestamp;
             const auto captured_generation = presentation_latch.capture_generation();
             std::shared_ptr<platf::img_t> img_out;
+            std::optional<std::chrono::steady_clock::time_point> capture_delivery_timestamp;
             auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
             if (status == platf::capture_e::reinit ||
                 status == platf::capture_e::error ||
@@ -1629,14 +1660,31 @@ namespace platf {
               }
               last_source_presentation_timestamp = captured_timestamp;
 
-              const auto packet_timestamp = presentation_timestamp_grid.normalize(*captured_timestamp);
-              packet_timestamp_phase_logger.collect_and_log(
+              if (!img_out->host_processing_timestamp) {
+                BOOST_LOG(error) << "KMS snapshot is missing its host capture timestamp."sv;
+                return std::nullopt;
+              }
+
+              capture_delivery_timestamp = std::chrono::steady_clock::now();
+              if (last_capture_delivery_timestamp) {
+                capture_delivery_interval_logger.collect_and_log(
+                  std::chrono::duration<double, std::milli>(
+                    *capture_delivery_timestamp - *last_capture_delivery_timestamp
+                  ).count()
+                );
+              }
+              last_capture_delivery_timestamp = capture_delivery_timestamp;
+              presentation_to_capture_latency_logger.collect_and_log(
                 std::chrono::duration<double, std::milli>(
-                  packet_timestamp - *captured_timestamp
+                  *capture_delivery_timestamp - *captured_timestamp
                 ).count()
               );
-              img_out->frame_timestamp = packet_timestamp;
-              img_out->host_processing_timestamp = captured_timestamp;
+
+              // Presentation time remains source metadata. Actual pacing is
+              // controlled by capture delivery, because GameStream clients do
+              // not schedule frame display from this RTP timestamp.
+              img_out->frame_timestamp = captured_timestamp;
+              img_out->capture_pacing_timestamp = capture_delivery_timestamp;
             }
 
             switch (status) {
@@ -1650,7 +1698,11 @@ namespace platf {
                   BOOST_LOG(error) << "Vibepollo DRM presentation is missing its validated timestamp."sv;
                   return std::nullopt;
                 }
-                presentation_rate_limiter.mark_delivered(*captured_timestamp);
+                if (!img_out || !img_out->host_processing_timestamp || !capture_delivery_timestamp) {
+                  BOOST_LOG(error) << "KMS capture is missing its actual delivery timestamp."sv;
+                  return std::nullopt;
+                }
+                presentation_rate_limiter.mark_delivered(*capture_delivery_timestamp);
                 presentation_latch.mark_delivered(captured_generation);
                 presentation_pending = presentation_latch.capture_ready();
                 if (!presentation_pending) {
@@ -1764,22 +1816,27 @@ namespace platf {
       bool direct_import_required {false};
       pacing::presentation_mode_t presentation_mode;
       pacing::presentation_rate_limiter_t presentation_rate_limiter;
-      pacing::presentation_timestamp_grid_t presentation_timestamp_grid;
       bool presentation_pending {false};
       pacing::presentation_latch_t presentation_latch;
       std::uint64_t presentation_sequence {};
       std::optional<std::chrono::steady_clock::time_point> presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_presentation_timestamp;
       std::optional<std::chrono::steady_clock::time_point> last_source_presentation_timestamp;
+      std::optional<std::chrono::steady_clock::time_point> last_capture_delivery_timestamp;
       std::optional<exported_frame_t> pending_exported_frame;
       logging::min_max_avg_periodic_logger<double> source_presentation_interval_logger {
         debug,
         "Vibepollo DRM source presentation interval",
         "ms"
       };
-      logging::min_max_avg_periodic_logger<double> packet_timestamp_phase_logger {
+      logging::min_max_avg_periodic_logger<double> capture_delivery_interval_logger {
         debug,
-        "Vibepollo DRM packet timestamp phase",
+        "Vibepollo DRM capture delivery interval",
+        "ms"
+      };
+      logging::min_max_avg_periodic_logger<double> presentation_to_capture_latency_logger {
+        debug,
+        "Vibepollo DRM presentation-to-capture latency",
         "ms"
       };
       std::uint64_t crtc_gamma_lut_blob_id {};
