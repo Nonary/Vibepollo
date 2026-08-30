@@ -361,7 +361,8 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td rowspan="6">Choices</td>
         <td>ds4</td>
         <td>DualShock 4 controller (PS4)
-            @note{This option applies to Windows only.}</td>
+            @note{This option applies to Windows and Linux. On Linux it uses UHID and includes
+            rumble, the touchpad, motion sensors, battery reporting, and the lightbar.}</td>
     </tr>
     <tr>
         <td>ds5</td>

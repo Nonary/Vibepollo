@@ -57,9 +57,17 @@ test('gamepad options follow the host platform', () => {
   );
 });
 
+test('Linux exposes DS4 touchpad mapping in both settings UIs', () => {
+  assert.deepEqual(settingsFields.get('ds4_back_as_touchpad_click')?.platform, ['windows', 'linux']);
+  const legacyOptions = readFileSync(
+    new URL('../../web-legacy/configs/configSelectOptions.ts', import.meta.url),
+    'utf8',
+  );
+  assert.match(legacyOptions, /linux:\s*\['xone', 'ds4', 'ds5', 'switch'\]/);
+});
+
 test('Linux hides Windows-only input and audio installation controls', () => {
   for (const key of [
-    'ds4_back_as_touchpad_click',
     'always_send_scancodes',
     'native_pen_touch',
     'install_steam_audio_drivers',

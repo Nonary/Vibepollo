@@ -164,7 +164,7 @@ export function getConfigSelectOptions(
       };
       const prioritizedByPlatform: Record<string, string[]> = {
         freebsd: ['switch', 'xone'],
-        linux: ['ds5', 'xone', 'switch', 'x360'],
+        linux: ['xone', 'ds4', 'ds5', 'switch'],
         windows: [
           'x360',
           'ds4',

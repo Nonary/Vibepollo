@@ -35,7 +35,6 @@ import {
   settingsDestinations,
   captureOptionsForPlatform,
   frameGenerationOptionsForPlatform,
-  gamepadOptionsForPlatform,
   restartRequiredKeys,
   settingsCategories,
   settingsDefaults,

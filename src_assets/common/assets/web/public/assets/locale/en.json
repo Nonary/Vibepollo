@@ -730,6 +730,7 @@
     "gamepad": "Emulated Gamepad Type",
     "gamepad_auto": "Automatic selection options",
     "gamepad_desc": "Choose which type of gamepad to emulate on the host. The Vibepollo Virtual Gamepad options use Vibepollo's own driver instead of ViGEmBus. Automatic presents a DualSense to PlayStation clients and an Xbox Series controller otherwise. Xbox Series and Xbox One are the options Windows places on the XInput path, so they are the ones games that support only XInput can see. DualShock 4 and DualSense add the touchpad, motion, battery, lightbar, and (DualSense) adaptive triggers.",
+    "gamepad_desc_linux": "Choose which virtual controller Linux exposes through UHID. Automatic follows the controller type reported by the client; select DS4 to force a DualShock 4 with rumble, touchpad, motion, battery, and lightbar support.",
     "gamepad_ds4": "DS4 (PS4)",
     "gamepad_ds4_manual": "DS4 selection options",
     "gamepad_ds5": "DS5 (PS5)",
