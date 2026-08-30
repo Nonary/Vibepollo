@@ -1063,6 +1063,10 @@ namespace vk {
       submit.pSignalSemaphores = signal_sems.data();
 
 #if FF_API_VULKAN_SYNC_QUEUES
+      // Keep the compatibility callbacks until internally synchronized queues are
+      // guaranteed across supported FFmpeg and Vulkan driver combinations.
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
       if (!vk_dev.ctx->lock_queue || !vk_dev.ctx->unlock_queue || !ffmpeg_device_ctx) {
         BOOST_LOG(error) << "FFmpeg Vulkan queue synchronization hooks are unavailable"sv;
         return -1;
@@ -1071,6 +1075,7 @@ namespace vk {
       auto unlock_queue = util::fail_guard([&]() {
         vk_dev.ctx->unlock_queue(ffmpeg_device_ctx, vk_dev.compute_qf, 0);
       });
+  #pragma GCC diagnostic pop
 #endif
 
       auto res = vkQueueSubmit(vk_dev.compute_queue, 1, &submit, cmd.fences[slot]);
