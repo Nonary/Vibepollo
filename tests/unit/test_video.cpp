@@ -81,6 +81,23 @@ TEST(CapturePolicy, AcceptedSessionAdmissionLeavesSignalsForTheWorker) {
   EXPECT_EQ(queue.pop(0ms), 7);
 }
 
+TEST(CapturePolicy, PersistentDisplayFailureBacksOffWithoutDelayingInitialRecovery) {
+  using namespace std::chrono_literals;
+
+  EXPECT_EQ(video::policy::display_retry_delay(0), 50ms);
+  EXPECT_EQ(video::policy::display_retry_delay(1), 100ms);
+  EXPECT_EQ(video::policy::display_retry_delay(5), 1600ms);
+  EXPECT_EQ(video::policy::display_retry_delay(6), 2s);
+  EXPECT_EQ(video::policy::display_retry_delay(1000), 2s);
+
+  EXPECT_TRUE(video::policy::should_log_display_retry(0));
+  EXPECT_TRUE(video::policy::should_log_display_retry(1));
+  EXPECT_TRUE(video::policy::should_log_display_retry(2));
+  EXPECT_FALSE(video::policy::should_log_display_retry(3));
+  EXPECT_TRUE(video::policy::should_log_display_retry(16));
+  EXPECT_FALSE(video::policy::should_log_display_retry(17));
+}
+
 TEST(EncoderPolicy, SelectsFirstAvailableCapableEncoderWithoutHardwareProbe) {
   FakeEncoderProvider provider;
   provider.values["nvenc"] = {false, true, true};

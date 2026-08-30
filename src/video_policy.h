@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -39,6 +40,12 @@ namespace video::policy {
     std::string_view output_identity,
     std::span<const std::string> display_names
   );
+
+  /** Delay repeated display discovery without busy-looping during a persistent topology failure. */
+  [[nodiscard]] std::chrono::milliseconds display_retry_delay(std::size_t consecutive_failures);
+
+  /** Log the first failure and exponentially sparse reminders for a persistent retry loop. */
+  [[nodiscard]] bool should_log_display_retry(std::size_t consecutive_failures);
 
   struct rational_t {
     int numerator;
