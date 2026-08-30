@@ -7362,8 +7362,6 @@ namespace video {
         return platf::mem_type_e::vaapi;
       case AV_HWDEVICE_TYPE_CUDA:
         return platf::mem_type_e::cuda;
-      case AV_HWDEVICE_TYPE_VULKAN:
-        return platf::mem_type_e::vulkan;
       case AV_HWDEVICE_TYPE_NONE:
         return platf::mem_type_e::system;
       case AV_HWDEVICE_TYPE_VIDEOTOOLBOX:

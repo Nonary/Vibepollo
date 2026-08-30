@@ -19,3 +19,29 @@ TEST(LinuxPrivateDisplayResumePolicy, ReappliesDisabledExistingOutput) {
 TEST(LinuxPrivateDisplayResumePolicy, ReusesConfiguredExistingOutput) {
   EXPECT_FALSE(policy::requires_apply(false, true));
 }
+
+TEST(LinuxPrivateDisplayResumePolicy, RecomposesNewNormalGameIdentity) {
+  EXPECT_TRUE(policy::requires_topology_reapply(true, false));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, RecomposesRecreatedRetainedOutput) {
+  EXPECT_TRUE(policy::requires_topology_reapply(false, true));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, ReusesRetainedConfiguredTopology) {
+  EXPECT_FALSE(policy::requires_topology_reapply(false, false));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, ReusesReadyPrivateDisplayDespiteLegacyApplyGate) {
+  EXPECT_FALSE(policy::requires_session_apply(true, true, false, false));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, AppliesNewOrRecreatedPrivateDisplay) {
+  EXPECT_TRUE(policy::requires_session_apply(true, false, true, false));
+  EXPECT_TRUE(policy::requires_session_apply(true, false, false, true));
+}
+
+TEST(LinuxPrivateDisplayResumePolicy, PreservesPhysicalDisplayApplyGate) {
+  EXPECT_TRUE(policy::requires_session_apply(false, true, false, false));
+  EXPECT_FALSE(policy::requires_session_apply(false, false, true, true));
+}

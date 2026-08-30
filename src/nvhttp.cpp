@@ -70,6 +70,7 @@
   #include "platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
   #include "platform/linux/private_display.h"
+  #include "platform/linux/private_display_resume_policy.h"
 #endif
 #include "process.h"
 #include "rtsp.h"
@@ -509,8 +510,16 @@ namespace nvhttp {
 
       launch_session->normal_vdd_identity_token = reservation.token;
       launch_session->normal_vdd_identity_newly_reserved = reservation.newly_reserved;
-      refresh_remote_monitor_baseline(has_stream_session_activity());
-      if (!remote_display_topology::instance().reapply_composed_topology()) {
+      const bool reapply_topology = platf::linux_private_display::resume_policy::requires_topology_reapply(
+        reservation.newly_reserved,
+        launch_session->virtual_display_needs_resume_apply
+      );
+      if (reapply_topology) {
+        refresh_remote_monitor_baseline(has_stream_session_activity());
+      } else {
+        BOOST_LOG(debug) << "Linux private display: reusing the retained game topology without a resume modeset.";
+      }
+      if (reapply_topology && !remote_display_topology::instance().reapply_composed_topology()) {
         if (reservation.newly_reserved) {
           remote_display_topology::instance().rollback_normal_game_identity(
             launch_session->client_uuid,
@@ -5127,9 +5136,18 @@ namespace nvhttp {
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
       const bool should_apply_display_request =
+#ifdef __linux__
+        platf::linux_private_display::resume_policy::requires_session_apply(
+          launch_session->virtual_display,
+          allow_session_display_changes,
+          launch_session->normal_vdd_identity_newly_reserved,
+          launch_session->virtual_display_recreated_on_demand || launch_session->virtual_display_needs_resume_apply
+        );
+#else
         allow_session_display_changes ||
         launch_session->virtual_display_recreated_on_demand ||
         launch_session->virtual_display_needs_resume_apply;
+#endif
       if (should_apply_display_request) {
         BOOST_LOG(debug) << "Display helper: applying session display request on "
                          << (allow_display_changes ? "normal start/resume" :
