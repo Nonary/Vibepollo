@@ -99,6 +99,7 @@ fi
 if [[ "${_use_cuda::1}" == "t" ]]; then
   optdepends+=(
     'cuda: Nvidia GPU encoding support'
+    'nvidia-modprobe: initialize Nvidia devices for pre-login streaming'
   )
 fi
 

@@ -142,6 +142,8 @@ for dependency in ("'pam'", "'socat'", "'iproute2'", "'jq'", "'util-linux'"):
     require(arch_package, dependency, "Arch runtime dependency")
 require(arch_package, "_gcc_version=15", "Arch CUDA host compiler")
 require(arch_package, "_versioned_gcc=true", "Arch compiler pin")
+require(arch_package, "'nvidia-modprobe: initialize Nvidia devices for pre-login streaming'",
+        "Arch pre-login NVIDIA dependency")
 if arch_install.index('if "$helper" configure-auto') > arch_install.index('"$helper" install-pam'):
     raise AssertionError("Arch package must not activate the PAM hook without valid pre-login settings")
 
