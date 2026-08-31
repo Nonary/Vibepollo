@@ -106,6 +106,17 @@ using namespace std::literals;
 namespace pt = boost::property_tree;
 
 namespace confighttp {
+#ifdef _WIN32
+  /**
+   * @brief Reports whether ViGEmBus is needed for the configured gamepad backend.
+   * @return `true` unless a selected VHF backend is ready to provide controllers.
+   */
+  static bool is_vigem_required() {
+    return !config::input.gamepad.starts_with("vhf") ||
+           !platf::is_virtual_gamepad_driver_available();
+  }
+#endif
+
   // Global MIME type lookup used for static file responses
   const std::map<std::string, std::string> mime_types = {
     {"css", "text/css"},
@@ -1166,7 +1177,7 @@ namespace confighttp {
       nlohmann::json out;
       out["installed"] = installed;
       // ViGEmBus is only a requirement when nothing else can provide a virtual controller.
-      out["required"] = !platf::is_virtual_gamepad_driver_available();
+      out["required"] = is_vigem_required();
       if (!version.empty()) {
         out["version"] = version;
       }
@@ -5594,7 +5605,7 @@ namespace confighttp {
     output_tree["packaged_version"] = VIGEMBUS_PACKAGED_VERSION;
     // Drives whether the UI presents a missing ViGEmBus as a problem or as an
     // unused option: Vibepollo's own driver provides controllers without it.
-    output_tree["required"] = !platf::is_virtual_gamepad_driver_available();
+    output_tree["required"] = is_vigem_required();
 #else
     output_tree["error"] = "ViGEmBus is only available on Windows";
     output_tree["installed"] = false;

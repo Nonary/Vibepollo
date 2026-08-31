@@ -358,7 +358,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="6">Choices</td>
+        <td rowspan="10">Choices</td>
         <td>ds4</td>
         <td>DualShock 4 controller (PS4)
             @note{This option applies to Windows only.}</td>
