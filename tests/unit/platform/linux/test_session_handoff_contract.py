@@ -66,10 +66,12 @@ require(handoff, '/usr/bin/timeout --signal=KILL "$socket_timeout"', "control so
 require(handoff, "rollback_to_prelogin", "transactional login handoff")
 require(handoff, "another desktop session owns the stream handoff", "multi-user exclusion")
 require(handoff, '[[ "$state_token" != "$token" ]]', "stale close rejection")
-require(handoff, 'systemctl start --no-block "$prelogin_service"', "pre-login restoration")
-require(handoff, 'user_systemctl "$desktop_user" stop "$desktop_target"', "desktop shutdown")
+require(handoff, 'systemctl start --no-block "$host_service"', "machine-host restoration")
 require(handoff, "stream_ports_are_free", "port ownership handoff")
 require(handoff, "release_connector", "connector ownership handoff")
+require(handoff, "/usr/bin/setpriv --reuid", "non-PAM user-manager transition")
+if "/usr/bin/runuser" in handoff:
+    raise AssertionError("restricted handoff must not invoke PAM through runuser")
 require(handoff, "wait-prelogin", "pre-login readiness gate")
 require(handoff, "attempt & (attempt - 1)", "rate-limited status logging")
 if "PAM_TYPE" in handoff or "PAM_USER" in handoff:
@@ -118,7 +120,7 @@ if "source \"$settings_file\"" in prelogin_sync or ". \"$settings_file\"" in pre
     raise AssertionError("root helper must parse rather than source administrator settings")
 require(prelogin_config, "capture = kms", "pre-login KMS policy")
 require(prelogin_config, "virtual_display_layout = exclusive", "exclusive greeter layout")
-require(prelogin_apps, "/usr/libexec/vibeshine/vibepollo-prelogin-sync activate", "greeter activation command")
+require(prelogin_apps, "/usr/libexec/vibeshine/vibepollo-machine-host activate", "greeter activation command")
 
 require(packaging, "add_library(pam_vibepollo_session MODULE", "native PAM build")
 require(packaging, "install(TARGETS pam_vibepollo_session", "native PAM install")
@@ -129,10 +131,9 @@ require(packaging, "util-linux", "native flock/runuser dependency")
 require(package_configuration, '"package-version:${PROJECT_VERSION_NUMERIC}\\n"',
         "versioned kernel source fingerprint")
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"', "native install")
-require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-ready"', "native install")
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"', "native install")
-require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin-sync"', "pre-login helper install")
-require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin.service"', "pre-login unit install")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"', "machine-host helper install")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo.service"', "machine-host unit install")
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/apps.json"', "pre-login profile install")
 
 require(rpm_spec, "BuildRequires: pam-devel", "RPM PAM build dependency")

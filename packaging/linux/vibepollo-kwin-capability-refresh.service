@@ -1,0 +1,25 @@
+[Unit]
+Description=Refresh Vibepollo KWin capability isolation
+Documentation=https://github.com/Nonary/Vibepollo
+
+[Service]
+Type=oneshot
+CapabilityBoundingSet=CAP_SETFCAP
+ExecStart=/usr/libexec/vibeshine/vibeshine-kwin-capability prepare
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/usr/bin/kwin_wayland
+ProtectHome=yes
+PrivateTmp=yes
+PrivateMounts=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX

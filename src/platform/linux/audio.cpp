@@ -71,8 +71,6 @@ namespace platf {
 
   namespace {
     constexpr auto session_exec_path = "/usr/libexec/vibeshine/vibepollo-session-exec";
-    constexpr auto pactl_path = "/usr/bin/pactl";
-    constexpr auto parec_path = "/usr/bin/parec";
 
     struct session_command_result_t {
       bool success {false};
@@ -139,7 +137,7 @@ namespace platf {
     }
 
     session_command_result_t run_pactl(std::vector<std::string> arguments) {
-      arguments.insert(arguments.begin(), pactl_path);
+      arguments.insert(arguments.begin(), "pactl");
       return run_session_command(arguments);
     }
 
@@ -211,7 +209,7 @@ namespace platf {
         const auto process_bytes = frame_size * static_cast<std::uint32_t>(channels) * sizeof(float);
         std::vector<std::string> owned_argv {
           session_exec_path,
-          parec_path,
+          "parec",
           "--record",
           "--raw",
           "--client-name=vibepollo",

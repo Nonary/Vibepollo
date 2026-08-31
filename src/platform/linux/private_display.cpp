@@ -108,8 +108,10 @@ namespace platf::linux_private_display {
       owned_argv.reserve(arguments.size() + 2);
       if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
         owned_argv.emplace_back("/usr/libexec/vibeshine/vibepollo-session-exec");
+        owned_argv.emplace_back("kscreen");
+      } else {
+        owned_argv.push_back(*executable);
       }
-      owned_argv.push_back(*executable);
       owned_argv.insert(owned_argv.end(), arguments.begin(), arguments.end());
       std::vector<const gchar *> argv;
       argv.reserve(owned_argv.size() + 1);
