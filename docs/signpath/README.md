@@ -105,25 +105,24 @@ Slugs and project/org/policy are passed as reusable-workflow inputs in
 
 ## ⚠️ Do NOT re-sign vendor / catalog-bound files
 
-Several files in the MSI are already signed by their upstream vendors and are
-bound to a Windows **catalog** (`.cat`). Re-Authenticode-signing a driver DLL
-invalidates the catalog hash and **breaks driver installation**. These must be
+Some files in the MSI are already signed by their publishers; two driver DLLs
+are bound to Windows **catalogs** (`.cat`). Re-Authenticode-signing either DLL
+invalidates its catalog hash and **breaks driver installation**. These must be
 **excluded** from the `msi-file-apollo` deep-sign:
 
 - `Apollo\drivers\sudovda\SudoVDA.dll`, `Apollo\drivers\sudovda\nefconc.exe` (CN=sudovda / Nefarius)
-- `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (+ `.cat`),
-  `Apollo\drivers\sunshine\virtualdisplay_probe.exe`,
-  `Apollo\drivers\sunshine\nefconc.exe`,
-  `Apollo\drivers\sunshine\vulkan-layer\VkLayer_sunshine_hdr.dll`
-  (libvirtualdisplay release, origin-signed upstream)
+- `Apollo\drivers\sunshine\SunshineVirtualDisplayDriver.dll` (catalog-bound)
+- `Apollo\drivers\sunshine\nefconc.exe` (publisher-signed upstream)
 - `Apollo\drivers\vhf-gamepad\driver\VibeshineVhfGamepad.dll`
   (libvirtualgamepad release). The DLL is catalog-bound and must remain
   unchanged; its catalog and setup tool are deliberately signed by the MSI
   request as described above.
 - `nvngx_truehdr.dll` (NVIDIA RTX Video SDK runtime, downloaded from the pinned TrueHDR runtime release)
 
-The recommended config (Strategy 1 below) excludes these by enumerating only
-first-party files explicitly.
+The virtual-display catalog, probe, and Vulkan layer are first-party signing
+targets; the VHF catalog and setup tool are downstream-signing targets. The
+recommended config excludes only the protected files above while enumerating
+each signing target explicitly.
 
 ## VHF gamepad release boundary
 
@@ -139,7 +138,7 @@ For local development, `SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE` is an
 explicit separate path. It accepts only the driver package's exported local
 test certificate and never relaxes production release validation.
 
-## First-party PEs that MUST be signed
+## First-party artifacts that MUST be signed
 
 These are produced by this project and ship unsigned into the MSI (they are
 stripped in CI and never signed on the runner). The `msi-file-apollo` config is the
@@ -158,6 +157,9 @@ stripped in CI and never signed on the runner). The `msi-file-apollo` config is 
 | `playnite-launcher.exe` | `Apollo\tools\` |
 | `sunshine_wgc_capture.exe` | `Apollo\tools\` |
 | `sunshine_display_helper.exe` | `Apollo\tools\` |
+| `SunshineVirtualDisplayDriver.cat` | `Apollo\drivers\sunshine\` |
+| `virtualdisplay_probe.exe` | `Apollo\drivers\sunshine\` |
+| `VkLayer_sunshine_hdr.dll` | `Apollo\drivers\sunshine\vulkan-layer\` |
 
 > The paths in the artifact-configuration XML must match the MSI's logical
 > directory layout. Confirm the exact in-MSI paths against a built MSI's File

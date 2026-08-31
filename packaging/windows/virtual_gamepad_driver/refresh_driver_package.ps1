@@ -39,6 +39,10 @@ $releaseLockFile = 'release-lock.json'
 # every manifest hash below is still checked exactly as before; only the
 # signature checks are skipped, because there is no signature to check.
 $msiRequestChannel = 'msi-request-signing'
+$downstreamSignedFiles = @(
+    'driver/VibeshineVhfGamepad.cat',
+    'tools/VibeshineVhfGamepadDeviceSetup.exe'
+)
 
 function Normalize-Hex {
     param(
@@ -58,8 +62,12 @@ if (-not $AllowLocalTestPackage) {
         throw '[VibeshineVhfGamepad] Production package refresh requires -ReleaseTag.'
     }
     $ExpectedReleaseAssetSha256 = Normalize-Hex -Value $ExpectedReleaseAssetSha256 -Length 64 -Name 'ExpectedReleaseAssetSha256'
-    $ExpectedCatalogSignerThumbprint = Normalize-Hex -Value $ExpectedCatalogSignerThumbprint -Length 40 -Name 'ExpectedCatalogSignerThumbprint'
-    $ExpectedDeviceSetupSignerThumbprint = Normalize-Hex -Value $ExpectedDeviceSetupSignerThumbprint -Length 40 -Name 'ExpectedDeviceSetupSignerThumbprint'
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCatalogSignerThumbprint)) {
+        $ExpectedCatalogSignerThumbprint = Normalize-Hex -Value $ExpectedCatalogSignerThumbprint -Length 40 -Name 'ExpectedCatalogSignerThumbprint'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedDeviceSetupSignerThumbprint)) {
+        $ExpectedDeviceSetupSignerThumbprint = Normalize-Hex -Value $ExpectedDeviceSetupSignerThumbprint -Length 40 -Name 'ExpectedDeviceSetupSignerThumbprint'
+    }
 }
 
 function Write-Step {
@@ -244,6 +252,9 @@ function Assert-Package {
     $toolPath = Join-Path $Root 'tools/VibeshineVhfGamepadDeviceSetup.exe'
 
     if ($manifest.signing.channel -eq $msiRequestChannel) {
+        if ((@($manifest.signing.signed_downstream) -join "`n") -cne ($downstreamSignedFiles -join "`n")) {
+            throw '[VibeshineVhfGamepad] MSI-signing manifest does not declare the exact downstream-signed payloads.'
+        }
         if ($AllowLocalTest) {
             throw '[VibeshineVhfGamepad] An MSI-signed package is not a local-test package.'
         }
@@ -329,8 +340,10 @@ function Write-ReleaseLock {
         channel = if ($AllowLocalTest) { 'self-signed-local-test' } else { 'production' }
         release_tag = if ($AllowLocalTest -and [string]::IsNullOrWhiteSpace($ReleaseTag)) { 'local' } else { $ReleaseTag }
         release_asset_sha256 = if ($AllowLocalTest) { '' } else { $ExpectedReleaseAssetSha256.ToLowerInvariant() }
-        catalog_signer_thumbprint = $Manifest.signing.signer_thumbprint.ToUpperInvariant()
-        device_setup_signer_thumbprint = $Manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant()
+        catalog_signer_thumbprint = if ($Manifest.signing.channel -eq $msiRequestChannel) { '' } else { $Manifest.signing.signer_thumbprint.ToUpperInvariant() }
+        device_setup_signer_thumbprint = if ($Manifest.signing.channel -eq $msiRequestChannel) { '' } else { $Manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant() }
+        signing_channel = $Manifest.signing.channel
+        signed_downstream = if ($Manifest.signing.channel -eq $msiRequestChannel) { @($Manifest.signing.signed_downstream) } else { @() }
         source_revision = $Manifest.source_revision.ToLowerInvariant()
         driver_ver = $Manifest.driver_ver
     }
@@ -358,13 +371,23 @@ function Assert-ReleaseLock {
     $lockChannel = Get-RequiredStringProperty -Object $lock -Name 'channel' -Context 'Release lock'
     $lockSourceRevision = Get-RequiredStringProperty -Object $lock -Name 'source_revision' -Context 'Release lock'
     $lockDriverVer = Get-RequiredStringProperty -Object $lock -Name 'driver_ver' -Context 'Release lock'
-    $lockCatalogSigner = Normalize-Hex -Value (Get-RequiredStringProperty -Object $lock -Name 'catalog_signer_thumbprint' -Context 'Release lock') -Length 40 -Name 'release-lock catalog signer thumbprint'
-    $lockDeviceSetupSigner = Normalize-Hex -Value (Get-RequiredStringProperty -Object $lock -Name 'device_setup_signer_thumbprint' -Context 'Release lock') -Length 40 -Name 'release-lock device-setup signer thumbprint'
+    $signedDownstream = $Manifest.signing.channel -eq $msiRequestChannel
     if ($lockSourceRevision.ToLowerInvariant() -ne $Manifest.source_revision.ToLowerInvariant() -or
-        $lockDriverVer -ne $Manifest.driver_ver -or
-        $lockCatalogSigner -ne $Manifest.signing.signer_thumbprint.ToUpperInvariant() -or
-        $lockDeviceSetupSigner -ne $Manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant()) {
+        $lockDriverVer -ne $Manifest.driver_ver) {
         throw '[VibeshineVhfGamepad] Release lock does not describe the signed driver manifest.'
+    }
+    if ($signedDownstream) {
+        if ($lock.signing_channel -cne $msiRequestChannel -or
+            (@($lock.signed_downstream) -join "`n") -cne ($downstreamSignedFiles -join "`n")) {
+            throw '[VibeshineVhfGamepad] Release lock does not describe the downstream signing contract.'
+        }
+    } else {
+        $lockCatalogSigner = Normalize-Hex -Value (Get-RequiredStringProperty -Object $lock -Name 'catalog_signer_thumbprint' -Context 'Release lock') -Length 40 -Name 'release-lock catalog signer thumbprint'
+        $lockDeviceSetupSigner = Normalize-Hex -Value (Get-RequiredStringProperty -Object $lock -Name 'device_setup_signer_thumbprint' -Context 'Release lock') -Length 40 -Name 'release-lock device-setup signer thumbprint'
+        if ($lockCatalogSigner -ne $Manifest.signing.signer_thumbprint.ToUpperInvariant() -or
+            $lockDeviceSetupSigner -ne $Manifest.signing.device_setup_signer_thumbprint.ToUpperInvariant()) {
+            throw '[VibeshineVhfGamepad] Release lock does not describe the signed driver manifest.'
+        }
     }
 
     if ($AllowLocalTest) {
@@ -377,8 +400,8 @@ function Assert-ReleaseLock {
     if ($lockChannel -ne 'production' -or
         (Get-RequiredStringProperty -Object $lock -Name 'release_tag' -Context 'Release lock') -ne $ReleaseTag -or
         (Normalize-Hex -Value (Get-RequiredStringProperty -Object $lock -Name 'release_asset_sha256' -Context 'Release lock') -Length 64 -Name 'release-lock archive SHA-256') -ne $ExpectedReleaseAssetSha256 -or
-        $lockCatalogSigner -ne $ExpectedCatalogSignerThumbprint -or
-        $lockDeviceSetupSigner -ne $ExpectedDeviceSetupSignerThumbprint) {
+        (-not $signedDownstream -and $ExpectedCatalogSignerThumbprint -and $lockCatalogSigner -ne $ExpectedCatalogSignerThumbprint) -or
+        (-not $signedDownstream -and $ExpectedDeviceSetupSignerThumbprint -and $lockDeviceSetupSigner -ne $ExpectedDeviceSetupSignerThumbprint)) {
         throw '[VibeshineVhfGamepad] Release lock does not match the Vibepollo-pinned production package.'
     }
 }

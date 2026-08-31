@@ -229,6 +229,10 @@ function Assert-DriverPackage {
     # immutable payload hashes are computed. Its existence and JSON schema are
     # checked above; only the described artifacts are hash-verified here.
     $signedDownstream = $manifest.signing.channel -eq $msiRequestChannel
+    if ($signedDownstream -and
+        (@($manifest.signing.signed_downstream) -join "`n") -cne ($downstreamSignedFiles -join "`n")) {
+        throw '[VibeshineVhfGamepad] MSI-signing manifest does not declare the exact downstream-signed payloads.'
+    }
     foreach ($relativePath in $manifestPayload) {
         if ($signedDownstream -and $downstreamSignedFiles -contains $relativePath) {
             # Re-signed after this manifest was written, so the recorded hash

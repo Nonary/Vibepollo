@@ -1193,8 +1193,8 @@ jobs:
           )
           $optionalFirstParty = @('vibeshine_truehdr.dll')
           $vendorSkip = @(
-            'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll','virtualdisplay_probe.exe',
-            'VkLayer_sunshine_hdr.dll','VibeshineVhfGamepad.dll','VibeshineVhfGamepadDeviceSetup.exe',
+            'SudoVDA.dll','nefconc.exe','SunshineVirtualDisplayDriver.dll',
+            'VibeshineVhfGamepad.dll','VibeshineVhfGamepadDeviceSetup.exe',
             'nvngx_truehdr.dll','nvngx_vsr.dll'
           )
 
@@ -1237,6 +1237,24 @@ jobs:
             if ($vendorSkip -contains $f.Name) {
               $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
               Write-Host "[verify] skip vendor/catalog file: $($f.Name) (status=$($sig.Status), signer=$($sig.SignerCertificate.Subject))"
+            }
+          }
+
+          $displayPackageDir = Join-Path $extractDir 'Apollo\drivers\sunshine'
+          if (Test-Path -LiteralPath $displayPackageDir -PathType Container) {
+            foreach ($relative in @(
+              'SunshineVirtualDisplayDriver.cat',
+              'virtualdisplay_probe.exe',
+              'vulkan-layer\VkLayer_sunshine_hdr.dll'
+            )) {
+              $path = Join-Path $displayPackageDir $relative
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $failures.Add("Vibepollo virtual display signing target is missing: $relative")
+              } elseif (Test-Signed $path) {
+                Write-Host "[verify] OK   virtual display target signed: $relative"
+              } else {
+                $failures.Add("Vibepollo virtual display target is UNSIGNED: $path")
+              }
             }
           }
 
@@ -1291,6 +1309,10 @@ jobs:
                   'driver/VibeshineVhfGamepad.cat',
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
+                if ((@($vhfManifest.signing.signed_downstream) -join "`n") -cne
+                    ($vhfDownstreamSigned -join "`n")) {
+                  throw 'manifest does not declare the exact downstream-signed payloads'
+                }
                 foreach ($entry in @($vhfManifest.files)) {
                   if ($null -eq $entry -or [string]::IsNullOrWhiteSpace($entry.path) -or
                       [string]::IsNullOrWhiteSpace($entry.sha256) -or
@@ -1329,16 +1351,25 @@ jobs:
                   throw 'release lock is missing or unsupported'
                 }
                 if ($vhfReleaseLock.source_revision -ne $vhfManifest.source_revision -or
-                    $vhfReleaseLock.driver_ver -ne $vhfManifest.driver_ver -or
-                    $vhfReleaseLock.catalog_signer_thumbprint -ne $vhfManifest.signing.signer_thumbprint -or
-                    $vhfReleaseLock.device_setup_signer_thumbprint -ne $vhfManifest.signing.device_setup_signer_thumbprint) {
+                    $vhfReleaseLock.driver_ver -ne $vhfManifest.driver_ver) {
                   throw 'release lock does not match the signed VHF manifest'
                 }
                 if ($vhfManifest.signing.channel -eq 'external-catalog-signing') {
                   if ($vhfReleaseLock.channel -ne 'production' -or
                       [string]::IsNullOrWhiteSpace($vhfReleaseLock.release_tag) -or
-                      $vhfReleaseLock.release_asset_sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+                      $vhfReleaseLock.release_asset_sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+                      $vhfReleaseLock.catalog_signer_thumbprint -ne $vhfManifest.signing.signer_thumbprint -or
+                      $vhfReleaseLock.device_setup_signer_thumbprint -ne $vhfManifest.signing.device_setup_signer_thumbprint) {
                     throw 'production VHF package lacks a pinned release identity'
+                  }
+                } elseif ($vhfManifest.signing.channel -eq 'msi-request-signing') {
+                  if ($vhfReleaseLock.channel -ne 'production' -or
+                      [string]::IsNullOrWhiteSpace($vhfReleaseLock.release_tag) -or
+                      $vhfReleaseLock.release_asset_sha256 -notmatch '^[0-9a-fA-F]{64}$' -or
+                      $vhfReleaseLock.signing_channel -cne 'msi-request-signing' -or
+                      (@($vhfReleaseLock.signed_downstream) -join "`n") -cne
+                        ($vhfDownstreamSigned -join "`n")) {
+                    throw 'production VHF package has an invalid downstream-signing lock'
                   }
                 } elseif ($vhfManifest.signing.channel -eq 'self-signed-local-test') {
                   if ($vhfReleaseLock.channel -ne 'self-signed-local-test') {
