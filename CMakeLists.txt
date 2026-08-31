@@ -63,6 +63,11 @@ include(${CMAKE_MODULE_PATH}/prep/init.cmake)
 # driver-owned assets. The dependency target itself is added later.
 include(${CMAKE_MODULE_PATH}/dependencies/libvirtualdisplay_source.cmake)
 
+# Native Linux package templates need this value before dependency targets are
+# added. Keep it in the cache so libvirtualdisplay sees the same decision.
+set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
+        "Build the Vibepollo KWin GPU-association bridge" FORCE)
+
 # configure special package files, such as sunshine.desktop, Flatpak manifest, Portfile , etc.
 include(${CMAKE_MODULE_PATH}/prep/special_package_configuration.cmake)
 

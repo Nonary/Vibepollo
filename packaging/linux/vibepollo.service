@@ -1,0 +1,44 @@
+[Unit]
+Description=Vibepollo machine streaming host
+Documentation=https://github.com/Nonary/Vibepollo
+Requires=vibepollo-machine-prepare.service
+Wants=vibeshine-vkms.service
+After=vibepollo-machine-prepare.service vibeshine-vkms.service display-manager.service
+ConditionPathExists=/etc/vibepollo/machine.conf
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=vibepollo
+Group=vibepollo
+SupplementaryGroups=video render input vibeshine-vkms
+StateDirectory=vibepollo
+StateDirectoryMode=0700
+CapabilityBoundingSet=CAP_SETGID CAP_SETUID CAP_SYS_ADMIN CAP_SYS_NICE
+ExecStart=/usr/libexec/vibeshine/vibepollo-machine-host run
+Restart=on-failure
+RestartSec=3
+RestartSteps=7
+RestartMaxDelaySec=5min
+TimeoutStartSec=infinity
+TimeoutStopSec=20
+UMask=0077
+ProtectSystem=strict
+ProtectHome=no
+PrivateTmp=no
+PrivateMounts=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @debug @module @mount @reboot @swap
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=graphical.target

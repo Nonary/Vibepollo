@@ -10,7 +10,7 @@
       "name": "Desktop",
       "prep-cmd": [
         {
-          "do": "/usr/bin/setpriv --no-new-privs --ambient-caps=-all --inh-caps=-all /usr/libexec/vibeshine/vibepollo-prelogin-sync activate"
+          "do": "/usr/bin/setpriv --no-new-privs --ambient-caps=-all --inh-caps=-all /usr/libexec/vibeshine/vibepollo-machine-host activate"
         }
       ],
       "virtual-display-layout": "exclusive",

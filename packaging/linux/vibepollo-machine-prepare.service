@@ -1,0 +1,29 @@
+[Unit]
+Description=Prepare the Vibepollo machine profile and active session
+Documentation=https://github.com/Nonary/Vibepollo
+Before=vibepollo.service
+
+[Service]
+Type=oneshot
+StateDirectory=vibepollo
+StateDirectoryMode=0700
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_ADMIN
+ExecStart=/usr/libexec/vibeshine/vibepollo-machine-host prepare
+UMask=0077
+ProtectSystem=strict
+ReadOnlyPaths=/home
+InaccessiblePaths=/root
+PrivateTmp=yes
+PrivateMounts=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @debug @module @mount @reboot @swap
+RestrictAddressFamilies=AF_UNIX AF_NETLINK

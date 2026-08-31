@@ -7,10 +7,7 @@ readonly marker_directory=$runtime_root/session-handoffs
 readonly restore_directory=$runtime_root/session-restores
 readonly transition_lock=$runtime_root/session-handoff.lock
 readonly control_socket=/run/vibeshine/vkms-control.sock
-readonly prelogin_service=vibepollo-prelogin.service
-readonly desktop_service=app-io.github.Nonary.vibepollo.service
-readonly desktop_target=graphical-session.target
-readonly desktop_compositor=plasma-kwin_wayland.service
+readonly host_service=vibepollo.service
 readonly restore_unit_prefix=vibepollo-session-restore@
 readonly greeter_user=plasmalogin
 readonly greeter_target=plasma-login-wayland.target
@@ -37,10 +34,11 @@ validate_identity() {
 initialize_runtime() {
   local attributes
   ((EUID == 0)) || return 1
-  /usr/bin/install -d -o root -g root -m 0755 "$runtime_root" "$marker_directory"
+  /usr/bin/install -d -o root -g root -m 0755 "$runtime_root"
+  /usr/bin/install -d -o root -g root -m 0700 "$marker_directory"
   /usr/bin/install -d -o root -g root -m 0700 "$restore_directory"
   [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$runtime_root") == "root:root:755:directory" ]] || return 1
-  [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$marker_directory") == "root:root:755:directory" ]] || return 1
+  [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$marker_directory") == "root:root:700:directory" ]] || return 1
   [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$restore_directory") == "root:root:700:directory" ]] || return 1
   if [[ -e "$transition_lock" || -L "$transition_lock" ]]; then
     [[ -f "$transition_lock" && ! -L "$transition_lock" ]] || return 1
@@ -74,28 +72,6 @@ user_systemctl() {
       /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime_directory" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_directory/bus" \
         /usr/bin/systemctl --user "$@"
-}
-
-queue_desktop_service() {
-  local desktop_user=$1
-  if user_systemctl "$desktop_user" reset-failed "$desktop_service" &&
-     user_systemctl "$desktop_user" start --no-block "$desktop_service"; then
-    return 0
-  fi
-  /usr/bin/printf 'vibepollo-session-handoff: user manager is not ready; graphical-session.target will start %s later\n' "$desktop_service" >&2
-}
-
-stop_desktop_session() {
-  local desktop_user=$1
-  if user_systemctl "$desktop_user" stop "$desktop_target"; then
-    if ! user_systemctl "$desktop_user" stop "$desktop_service"; then
-      user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_service" || :
-    fi
-  else
-    /usr/bin/printf 'vibepollo-session-handoff: desktop target did not stop cleanly; forcing capture owners down\n' >&2
-    user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_service" || :
-    user_systemctl "$desktop_user" kill --kill-whom=all --signal=KILL "$desktop_compositor" || :
-  fi
 }
 
 stream_ports_are_free() {
@@ -194,8 +170,8 @@ rollback_to_prelogin() {
   remove_state_file "$marker_directory" "$desktop_uid"
   user_systemctl "$greeter_user" reset-failed || :
   user_systemctl "$greeter_user" start "$greeter_target" || :
-  /usr/bin/systemctl reset-failed "$prelogin_service" || :
-  /usr/bin/systemctl start --no-block "$prelogin_service" || :
+  /usr/bin/systemctl reset-failed "$host_service" || :
+  /usr/bin/systemctl start --no-block "$host_service" || :
 }
 
 pam_open() {
@@ -209,15 +185,12 @@ pam_open() {
     /usr/bin/printf 'vibepollo-session-handoff: another desktop session owns the stream handoff\n' >&2
     return 1
   fi
-  if user_systemctl "$desktop_user" is-active --quiet "$desktop_target"; then
-    stop_desktop_session "$desktop_user"
-  fi
   remove_state_file "$marker_directory" "$desktop_uid"
-  if ! /usr/bin/timeout --signal=KILL 25 /usr/bin/systemctl stop "$prelogin_service"; then
-    /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$prelogin_service" || :
+  if ! /usr/bin/timeout --signal=KILL 25 /usr/bin/systemctl stop "$host_service"; then
+    /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$host_service" || :
   fi
   for ((attempt = 0; attempt < 100; ++attempt)); do
-    if ! /usr/bin/systemctl is-active --quiet "$prelogin_service" && stream_ports_are_free; then
+    if ! /usr/bin/systemctl is-active --quiet "$host_service" && stream_ports_are_free; then
       break
     fi
     /usr/bin/sleep 0.1
@@ -232,13 +205,14 @@ pam_open() {
     rollback_to_prelogin "$desktop_uid"
     return 1
   fi
-  if ! write_state_file "$marker_directory" "$desktop_user" "$desktop_uid" "$token" 0644; then
+  if ! write_state_file "$marker_directory" "$desktop_user" "$desktop_uid" "$token" 0600; then
     rollback_to_prelogin "$desktop_uid"
     return 1
   fi
   marker=$(state_path "$marker_directory" "$desktop_uid")
   [[ -f "$marker" ]] || { rollback_to_prelogin "$desktop_uid"; return 1; }
-  queue_desktop_service "$desktop_user"
+  /usr/bin/systemctl reset-failed "$host_service" || :
+  /usr/bin/systemctl start --no-block "$host_service"
 }
 
 pam_close() {
@@ -247,7 +221,7 @@ pam_close() {
   validate_identity "$desktop_user" "$desktop_uid" && valid_token "$token" || return 0
   lock_transition || return 0
   marker=$(state_path "$marker_directory" "$desktop_uid")
-  if ! read_state_file "$marker" 644 || [[ "$state_token" != "$token" ]]; then
+  if ! read_state_file "$marker" 600 || [[ "$state_token" != "$token" ]]; then
     return 0
   fi
   write_state_file "$restore_directory" "$desktop_user" "$desktop_uid" "$token" 0600
@@ -268,11 +242,13 @@ restore_prelogin() {
   read_state_file "$request" 600 || return 0
   request_token=$state_token
   marker=$(state_path "$marker_directory" "$desktop_uid")
-  if ! read_state_file "$marker" 644 || [[ "$state_token" != "$request_token" ]]; then
+  if ! read_state_file "$marker" 600 || [[ "$state_token" != "$request_token" ]]; then
     remove_state_file "$restore_directory" "$desktop_uid"
     return 0
   fi
-  stop_desktop_session "$state_user"
+  if ! /usr/bin/timeout --signal=KILL 25 /usr/bin/systemctl stop "$host_service"; then
+    /usr/bin/systemctl kill --kill-whom=all --signal=KILL "$host_service" || :
+  fi
   remove_state_file "$marker_directory" "$desktop_uid"
   remove_state_file "$restore_directory" "$desktop_uid"
   any_handoff_exists && return 0
@@ -280,8 +256,8 @@ restore_prelogin() {
   if ! user_systemctl "$greeter_user" start "$greeter_target"; then
     /usr/bin/printf 'vibepollo-session-handoff: greeter target is not ready; pre-login retries will wait for it\n' >&2
   fi
-  /usr/bin/systemctl reset-failed "$prelogin_service" || :
-  /usr/bin/systemctl start --no-block "$prelogin_service"
+  /usr/bin/systemctl reset-failed "$host_service" || :
+  /usr/bin/systemctl start --no-block "$host_service"
 }
 
 wait_prelogin() {
@@ -305,7 +281,7 @@ verify() {
   expected_uid=$(/usr/bin/id -u)
   expected_user=$(/usr/bin/id -un)
   marker=$(state_path "$marker_directory" "$expected_uid")
-  read_state_file "$marker" 644 || {
+  read_state_file "$marker" 600 || {
     /usr/bin/printf 'vibepollo-session-handoff: missing trusted handoff state\n' >&2
     return 1
   }
@@ -313,10 +289,7 @@ verify() {
     /usr/bin/printf 'vibepollo-session-handoff: handoff state belongs to another account\n' >&2
     return 1
   fi
-  if /usr/bin/systemctl is-active --quiet "$prelogin_service" || ! stream_ports_are_free; then
-    /usr/bin/printf 'vibepollo-session-handoff: pre-login resources are still active\n' >&2
-    return 1
-  fi
+  /usr/bin/systemctl is-active --quiet "$host_service" || return 1
 }
 
 case "${1:-}" in

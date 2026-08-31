@@ -1,7 +1,11 @@
 # shellcheck shell=bash
 
 do_setcap() {
+  systemd-sysusers /usr/lib/sysusers.d/vibepollo.conf
   setcap cap_sys_admin,cap_sys_nice+p "$(readlink -f usr/bin/vibepollo)"
+  chown root:vibepollo usr/libexec/vibeshine/vibepollo-session-exec
+  chmod 0750 usr/libexec/vibeshine/vibepollo-session-exec
+  setcap cap_setgid,cap_setuid=ep usr/libexec/vibeshine/vibepollo-session-exec
 }
 
 do_udev_reload() {
@@ -31,8 +35,14 @@ do_install_vibeshine_drm() {
   esac
 }
 
+do_prepare_kwin() {
+  local helper=/usr/libexec/vibeshine/vibeshine-kwin-capability
+  [[ -x "$helper" ]] || return 0
+  "$helper" prepare || echo 'warning: could not prepare capability-free KWin for the Vibepollo GPU bridge.'
+}
+
 do_install_prelogin() {
-  local helper=/usr/libexec/vibeshine/vibepollo-prelogin-sync
+  local helper=/usr/libexec/vibeshine/vibepollo-machine-host
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
     if ! "$helper" install-pam; then
@@ -40,11 +50,11 @@ do_install_prelogin() {
       return 0
     fi
     systemctl daemon-reload
-    systemctl enable vibepollo-prelogin.service ||
-      echo 'warning: could not enable Vibepollo pre-login streaming.'
+    systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+    systemctl enable vibepollo.service || echo 'warning: could not enable the Vibepollo machine host.'
   else
-    echo 'warning: Vibepollo pre-login streaming needs an explicit paired-client allowlist.'
-    echo "         Run: sudo $helper configure USER CLIENT_UUID"
+    echo 'warning: Vibepollo needs an explicit machine profile owner.'
+    echo "         Run: sudo $helper configure USER"
   fi
 }
 
@@ -52,6 +62,7 @@ post_install() {
   do_setcap
   do_udev_reload
   modprobe uhid
+  do_prepare_kwin
   do_install_vibeshine_drm
   do_install_prelogin
 }
@@ -60,14 +71,17 @@ post_upgrade() {
   do_setcap
   do_udev_reload
   modprobe uhid
+  do_prepare_kwin
   do_install_vibeshine_drm
   do_install_prelogin
 }
 
 pre_remove() {
-  systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-  /usr/libexec/vibeshine/vibepollo-prelogin-sync remove-pam 2>/dev/null || true
+  systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
+  /usr/libexec/vibeshine/vibepollo-machine-host remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
+  systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
+  /usr/libexec/vibeshine/vibeshine-kwin-capability restore 2>/dev/null || true
   /usr/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 }
