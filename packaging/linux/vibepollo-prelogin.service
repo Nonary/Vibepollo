@@ -15,8 +15,6 @@ StateDirectory=vibepollo-prelogin
 StateDirectoryMode=0750
 Environment=HOME=/var/lib/plasmalogin
 Environment=XDG_CONFIG_HOME=/var/lib/vibepollo-prelogin
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 Environment=XDG_SESSION_TYPE=wayland
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_NICE
 ExecStartPre=+/usr/libexec/vibeshine/vibepollo-session-handoff wait-prelogin

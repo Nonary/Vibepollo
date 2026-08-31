@@ -212,6 +212,27 @@ greeter_uid() {
   /usr/bin/id -u "$greeter_user"
 }
 
+prepare_nvidia_devices() {
+  local found=0 information minor node
+
+  [[ -d /sys/module/nvidia ]] || return 0
+  [[ -x /usr/bin/nvidia-modprobe ]] || fail 'NVIDIA is loaded but nvidia-modprobe is unavailable'
+
+  for information in /proc/driver/nvidia/gpus/*/information; do
+    [[ -f "$information" && ! -L "$information" ]] || continue
+    minor=$(/usr/bin/sed -n 's/^Device Minor:[[:space:]]*//p' "$information")
+    [[ "$minor" =~ ^(0|[1-9][0-9]*)$ ]] || fail "invalid NVIDIA device minor in $information"
+    /usr/bin/nvidia-modprobe -c "$minor" || fail "could not initialize NVIDIA device minor $minor"
+    found=1
+  done
+  ((found)) || fail 'NVIDIA is loaded but no GPU device metadata is available'
+  /usr/bin/nvidia-modprobe -m || fail 'could not initialize the NVIDIA modeset device'
+  /usr/bin/nvidia-modprobe -u || fail 'could not initialize NVIDIA unified-memory devices'
+  for node in /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm; do
+    [[ -c "$node" && ! -L "$node" ]] || fail "NVIDIA device is unavailable: $node"
+  done
+}
+
 greeter_systemctl() {
   local uid runtime
   uid=$(greeter_uid)
@@ -247,6 +268,7 @@ prepare() {
   require_root prepare
   load_settings
   /usr/bin/getent passwd "$greeter_user" >/dev/null || fail 'Plasma Login Manager account is missing'
+  prepare_nvidia_devices
   [[ -f "$packaged_profile/vibepollo.conf" && -f "$packaged_profile/apps.json" ]] ||
     fail 'packaged pre-login profile is incomplete'
 
@@ -303,11 +325,16 @@ prepare() {
 }
 
 run_host() {
-  local display uid
+  local display runtime uid
   uid=$(greeter_uid)
   ((EUID == uid)) || fail "run requires $greeter_user"
+  runtime=/run/user/$uid
   display=$(discover_wayland_display)
-  exec /usr/bin/env "WAYLAND_DISPLAY=$display" /usr/bin/vibepollo "$static_profile/vibepollo.conf"
+  exec /usr/bin/env \
+    "XDG_RUNTIME_DIR=$runtime" \
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+    "WAYLAND_DISPLAY=$display" \
+    /usr/bin/vibepollo "$static_profile/vibepollo.conf"
 }
 
 activate_greeter() {
