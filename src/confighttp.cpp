@@ -1858,7 +1858,18 @@ namespace confighttp {
         }
       }
 
-      // Add computed app ids for UI clients (best-effort, do not persist).
+      // If any normalization occurred, persist back to disk
+      if (mutated) {
+        try {
+          file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+          proc::refresh(config::stream.file_apps, false);
+        } catch (std::exception &e) {
+          BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
+        }
+      }
+
+      // Add computed app ids for UI clients only after normalized records are
+      // persisted. These fields are response metadata and must never enter apps.json.
       if (file_tree.contains("apps") && file_tree["apps"].is_array()) {
         try {
           const auto apps_snapshot = proc::proc.get_apps();
@@ -1869,16 +1880,6 @@ namespace confighttp {
             app["index"] = static_cast<int>(idx);
           }
         } catch (...) {
-        }
-      }
-
-      // If any normalization occurred, persist back to disk
-      if (mutated) {
-        try {
-          file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-          proc::refresh(config::stream.file_apps, false);
-        } catch (std::exception &e) {
-          BOOST_LOG(warning) << "GetApps persist normalization failed: "sv << e.what();
         }
       }
 
