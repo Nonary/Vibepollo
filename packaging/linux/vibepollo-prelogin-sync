@@ -1,0 +1,369 @@
+#!/usr/bin/bash
+
+set -euo pipefail
+
+readonly settings_file=/etc/vibepollo/prelogin.conf
+readonly pam_file=/etc/pam.d/plasmalogin
+readonly pam_line='session     optional    pam_vibepollo_session.so'
+readonly greeter_user=plasmalogin
+readonly greeter_profile=/var/lib/vibepollo-prelogin/vibepollo
+readonly static_profile=/var/lib/vibepollo-prelogin-static
+readonly staging_directory=$static_profile/.staging
+readonly packaged_profile=/usr/share/vibepollo/prelogin
+readonly virtual_output=Virtual-1
+readonly max_source_bytes=16777216
+
+desktop_user=''
+desktop_home=''
+declare -a allowed_client_uuids=()
+
+fail() {
+  /usr/bin/printf 'vibepollo-prelogin-sync: %s\n' "$*" >&2
+  return 1
+}
+
+require_root() {
+  ((EUID == 0)) || fail "$1 requires root"
+}
+
+valid_user() {
+  [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]
+}
+
+valid_uuid() {
+  [[ "$1" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]]
+}
+
+resolve_desktop_identity() {
+  local requested_user=$1 passwd_entry uid
+  valid_user "$requested_user" || fail 'invalid desktop account name'
+  passwd_entry=$(/usr/bin/getent passwd "$requested_user") || fail 'desktop account does not exist'
+  IFS=: read -r desktop_user _ uid _ _ desktop_home _ <<<"$passwd_entry"
+  [[ "$desktop_user" == "$requested_user" && "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 ]] ||
+    fail 'desktop account must be an unprivileged graphical user'
+  [[ "$desktop_home" == /* && -d "$desktop_home" && ! -L "$desktop_home" ]] ||
+    fail 'desktop home is missing or unsafe'
+}
+
+load_settings() {
+  local attributes key value line
+  desktop_user=''
+  desktop_home=''
+  allowed_client_uuids=()
+
+  [[ -f "$settings_file" && ! -L "$settings_file" ]] || fail "missing settings: $settings_file"
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$settings_file") || return 1
+  [[ "$attributes" == 'root:root:600:regular file' ]] || fail 'settings must be root:root mode 0600'
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      desktop_user)
+        [[ -z "$desktop_user" ]] || fail 'settings contain more than one desktop user'
+        desktop_user=$value
+        ;;
+      allowed_client_uuid)
+        value=${value^^}
+        valid_uuid "$value" || fail 'settings contain an invalid client UUID'
+        if /usr/bin/printf '%s\n' "${allowed_client_uuids[@]}" | /usr/bin/grep -Fxq -- "$value"; then
+          fail 'settings contain a duplicate client UUID'
+        fi
+        allowed_client_uuids+=("$value")
+        ;;
+      *) fail "unknown setting: $key" ;;
+    esac
+  done <"$settings_file"
+
+  [[ -n "$desktop_user" ]] || fail 'settings do not select a desktop user'
+  ((${#allowed_client_uuids[@]} > 0)) || fail 'settings do not allow a paired client'
+  resolve_desktop_identity "$desktop_user"
+}
+
+desktop_profile_path() {
+  /usr/bin/printf '%s/.config/vibepollo/%s\n' "$desktop_home" "$1"
+}
+
+desktop_file_is_safe() {
+  local path=$1
+  /usr/bin/runuser -u "$desktop_user" -- /usr/bin/test -f "$path" &&
+    ! /usr/bin/runuser -u "$desktop_user" -- /usr/bin/test -L "$path"
+}
+
+enabled_client_uuids() {
+  local state
+  state=$(desktop_profile_path sunshine_state.json)
+  desktop_file_is_safe "$state" || fail "unsafe or missing source: $state"
+  /usr/bin/runuser -u "$desktop_user" -- /usr/bin/jq -er '
+    [.root.named_devices[]? | select(.enabled // true) | .uuid]
+    | if all(.[]; type == "string") then .[] else error("invalid paired client") end
+  ' "$state" | /usr/bin/tr '[:lower:]' '[:upper:]'
+}
+
+write_settings() {
+  local enabled_output requested_user=$1 temporary uuid
+  local -a enabled=() selected=()
+  shift
+  require_root configure
+  resolve_desktop_identity "$requested_user"
+  (($# > 0)) || fail 'configure requires at least one paired-client UUID'
+
+  enabled_output=$(enabled_client_uuids)
+  mapfile -t enabled < <(/usr/bin/printf '%s' "$enabled_output")
+  ((${#enabled[@]} > 0)) || fail 'desktop profile has no enabled paired clients'
+  for uuid in "$@"; do
+    uuid=${uuid^^}
+    valid_uuid "$uuid" || fail "invalid paired-client UUID: $uuid"
+    if /usr/bin/printf '%s\n' "${selected[@]}" | /usr/bin/grep -Fxq -- "$uuid"; then
+      fail "duplicate paired-client UUID: $uuid"
+    fi
+    /usr/bin/printf '%s\n' "${enabled[@]}" | /usr/bin/grep -Fxq -- "$uuid" ||
+      fail "paired client is not enabled in the desktop profile: $uuid"
+    selected+=("$uuid")
+  done
+
+  /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .prelogin.XXXXXX)
+  {
+    /usr/bin/printf 'desktop_user=%s\n' "$desktop_user"
+    for uuid in "${selected[@]}"; do
+      /usr/bin/printf 'allowed_client_uuid=%s\n' "$uuid"
+    done
+  } >"$temporary"
+  /usr/bin/chown root:root "$temporary"
+  /usr/bin/chmod 0600 "$temporary"
+  /usr/bin/mv -fT -- "$temporary" "$settings_file"
+  /usr/bin/printf 'vibepollo-prelogin-sync: configured pre-login access for %s\n' "$desktop_user"
+}
+
+configure_automatically() {
+  local enabled_output legacy_output legacy_state selected_uuid state user
+  local -a candidates=() enabled=() legacy=()
+  require_root configure-auto
+  if [[ -e "$settings_file" || -L "$settings_file" ]]; then
+    load_settings
+    return
+  fi
+
+  while IFS=: read -r user _ uid _ _ home _; do
+    [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 ]] || continue
+    [[ "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
+    state=$home/.config/vibepollo/sunshine_state.json
+    if /usr/bin/runuser -u "$user" -- /usr/bin/test -f "$state" &&
+       ! /usr/bin/runuser -u "$user" -- /usr/bin/test -L "$state"; then
+      candidates+=("$user")
+    fi
+  done < <(/usr/bin/getent passwd)
+  ((${#candidates[@]} == 1)) || fail 'automatic setup requires exactly one desktop Vibepollo profile'
+
+  resolve_desktop_identity "${candidates[0]}"
+  enabled_output=$(enabled_client_uuids)
+  mapfile -t enabled < <(/usr/bin/printf '%s' "$enabled_output")
+  ((${#enabled[@]} > 0)) || fail 'desktop profile has no enabled paired clients'
+
+  # Migrate the least-privilege allowlist from the legacy host-only setup when
+  # it exists. A new install is automatic only when there is one possible
+  # client; otherwise an administrator must choose explicitly.
+  legacy_state=$greeter_profile/sunshine_state.json
+  if [[ -f "$legacy_state" && ! -L "$legacy_state" ]]; then
+    legacy_output=$(/usr/bin/jq -er '
+      [.root.named_devices[]? | select(.enabled // true) | .uuid]
+      | if all(.[]; type == "string") then .[] else error("invalid legacy state") end
+    ' "$legacy_state" | /usr/bin/tr '[:lower:]' '[:upper:]')
+    mapfile -t legacy < <(/usr/bin/printf '%s' "$legacy_output")
+  fi
+  if ((${#legacy[@]} == 1)) &&
+     /usr/bin/printf '%s\n' "${enabled[@]}" | /usr/bin/grep -Fxq -- "${legacy[0]}"; then
+    selected_uuid=${legacy[0]}
+  elif ((${#enabled[@]} == 1)); then
+    selected_uuid=${enabled[0]}
+  else
+    fail "multiple paired clients exist; run '$0 configure $desktop_user CLIENT_UUID'"
+  fi
+  write_settings "$desktop_user" "$selected_uuid"
+}
+
+stage_desktop_file() {
+  local source=$1 size temporary
+  desktop_file_is_safe "$source" || fail "unsafe or missing source: $source"
+  temporary=$(/usr/bin/mktemp --tmpdir="$staging_directory" .prelogin-source.XXXXXX)
+  if ! /usr/bin/timeout --signal=KILL 10 /usr/bin/runuser -u "$desktop_user" -- \
+       /usr/bin/head -c "$((max_source_bytes + 1))" -- "$source" >"$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    fail "could not read source as $desktop_user: $source"
+  fi
+  size=$(/usr/bin/stat -c %s -- "$temporary")
+  if ((size == 0 || size > max_source_bytes)); then
+    /usr/bin/rm -f -- "$temporary"
+    fail "invalid source size for $source"
+  fi
+  /usr/bin/printf '%s\n' "$temporary"
+}
+
+finish_staged_file() {
+  local temporary=$1 destination=$2 owner=$3 group=$4 mode=$5
+  /usr/bin/chown "$owner:$group" "$temporary"
+  /usr/bin/chmod "$mode" "$temporary"
+  /usr/bin/mv -fT -- "$temporary" "$destination"
+}
+
+greeter_uid() {
+  /usr/bin/id -u "$greeter_user"
+}
+
+greeter_systemctl() {
+  local uid runtime
+  uid=$(greeter_uid)
+  runtime=/run/user/$uid
+  [[ -S "$runtime/bus" ]] || return 1
+  /usr/bin/timeout --signal=KILL 25 /usr/bin/runuser -u "$greeter_user" -- \
+    /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+      /usr/bin/systemctl --user "$@"
+}
+
+discover_wayland_display() {
+  local candidate display runtime selected=''
+  runtime=/run/user/$(greeter_uid)
+  display=$(greeter_systemctl show-environment 2>/dev/null |
+    /usr/bin/sed -n 's/^WAYLAND_DISPLAY=//p' | /usr/bin/head -n 1) || :
+  if [[ "$display" =~ ^wayland-[0-9]+$ && -S "$runtime/$display" ]]; then
+    /usr/bin/printf '%s\n' "$display"
+    return
+  fi
+  for candidate in "$runtime"/wayland-*; do
+    [[ -S "$candidate" ]] || continue
+    display=${candidate##*/}
+    [[ "$display" =~ ^wayland-[0-9]+$ ]] || continue
+    [[ -z "$selected" ]] || fail 'multiple greeter Wayland displays are active'
+    selected=$display
+  done
+  [[ -n "$selected" ]] || fail 'greeter Wayland display is not ready'
+  /usr/bin/printf '%s\n' "$selected"
+}
+
+prepare() {
+  local allowed_json certificate empty_state filtered_state key raw_state uid
+  require_root prepare
+  load_settings
+  /usr/bin/getent passwd "$greeter_user" >/dev/null || fail 'Plasma Login Manager account is missing'
+  [[ -f "$packaged_profile/vibepollo.conf" && -f "$packaged_profile/apps.json" ]] ||
+    fail 'packaged pre-login profile is incomplete'
+
+  /usr/bin/install -d -o root -g "$greeter_user" -m 0750 "$static_profile" "$static_profile/credentials"
+  /usr/bin/install -d -o root -g root -m 0700 "$staging_directory"
+  /usr/bin/install -d -o "$greeter_user" -g "$greeter_user" -m 0750 "$greeter_profile"
+  /usr/bin/install -d -o "$greeter_user" -g "$greeter_user" -m 0700 "$greeter_profile/logs"
+
+  key=$(stage_desktop_file "$(desktop_profile_path credentials/cakey.pem)")
+  certificate=$(stage_desktop_file "$(desktop_profile_path credentials/cacert.pem)")
+  finish_staged_file "$key" "$static_profile/credentials/cakey.pem" root "$greeter_user" 0640
+  finish_staged_file "$certificate" "$static_profile/credentials/cacert.pem" root "$greeter_user" 0640
+
+  raw_state=$(stage_desktop_file "$(desktop_profile_path sunshine_state.json)")
+  allowed_json=$(/usr/bin/printf '%s\n' "${allowed_client_uuids[@]}" |
+    /usr/bin/jq -Rsc 'split("\n") | map(select(length > 0))')
+  filtered_state=$(/usr/bin/mktemp --tmpdir="$staging_directory" .sunshine-state.XXXXXX)
+  if ! /usr/bin/jq -e --argjson uuids "$allowed_json" '
+      .root.uniqueid as $host_id
+      | [.root.named_devices[]?
+          | select((.enabled // true) and (.uuid | ascii_upcase) as $uuid | $uuids | index($uuid))] as $devices
+      | select(($host_id | type) == "string" and ($host_id | length) > 0
+               and ($devices | length) == ($uuids | length))
+      | {root: {named_devices: $devices, uniqueid: $host_id}}
+    ' "$raw_state" >"$filtered_state"; then
+    /usr/bin/rm -f -- "$raw_state" "$filtered_state"
+    fail 'paired-client allowlist validation failed'
+  fi
+  /usr/bin/rm -f -- "$raw_state"
+  finish_staged_file "$filtered_state" "$greeter_profile/sunshine_state.json" "$greeter_user" "$greeter_user" 0600
+
+  empty_state=$(/usr/bin/mktemp --tmpdir="$staging_directory" .vibeshine-state.XXXXXX)
+  /usr/bin/printf '{"root":{}}\n' >"$empty_state"
+  finish_staged_file "$empty_state" "$greeter_profile/vibeshine_state.json" "$greeter_user" "$greeter_user" 0600
+  /usr/bin/install -o root -g "$greeter_user" -m 0640 "$packaged_profile/vibepollo.conf" "$static_profile/vibepollo.conf"
+  /usr/bin/install -o root -g "$greeter_user" -m 0640 "$packaged_profile/apps.json" "$static_profile/apps.json"
+
+  uid=$(greeter_uid)
+  /usr/bin/systemctl start "user@$uid.service"
+  for ((attempt = 0; attempt < 120; ++attempt)); do
+    if greeter_systemctl start plasma-login-wayland.target >/dev/null 2>&1 &&
+       discover_wayland_display >/dev/null 2>&1; then
+      return 0
+    fi
+    /usr/bin/sleep 0.25
+  done
+  fail 'greeter Wayland session did not become ready'
+}
+
+run_host() {
+  local display uid
+  uid=$(greeter_uid)
+  ((EUID == uid)) || fail "run requires $greeter_user"
+  display=$(discover_wayland_display)
+  exec /usr/bin/env "WAYLAND_DISPLAY=$display" /usr/bin/vibepollo "$static_profile/vibepollo.conf"
+}
+
+activate_greeter() {
+  local configuration
+  ((EUID == $(greeter_uid))) || fail "activate requires $greeter_user"
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    if configuration=$(/usr/bin/kscreen-doctor -j 2>/dev/null) &&
+       /usr/bin/jq -e --arg name "$virtual_output" '
+         ([.outputs[] | select(.connected and .enabled)] | length) == 1
+         and any(.outputs[]; .name == $name and .connected and .enabled)
+       ' >/dev/null <<<"$configuration"; then
+      /usr/bin/systemctl --user restart plasma-login.service
+      /usr/bin/printf 'vibepollo-prelogin-sync: on-demand greeter active on %s\n' "$virtual_output"
+      return
+    fi
+    /usr/bin/sleep 0.1
+  done
+  fail "refusing greeter start without exclusive $virtual_output"
+}
+
+install_pam_hook() {
+  local attributes temporary
+  require_root install-pam
+  [[ -f "$pam_file" && ! -L "$pam_file" ]] || fail "missing or unsafe PAM policy: $pam_file"
+  /usr/bin/grep -Eq '^[[:space:]]*session[[:space:]]+optional[[:space:]]+pam_vibepollo_session\.so([[:space:]]|$)' "$pam_file" && return
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$pam_file")
+  [[ "$attributes" == root:root:* ]] || fail 'PAM policy is not root-owned'
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/pam.d .plasmalogin.XXXXXX)
+  /usr/bin/awk -v hook="$pam_line" '
+    !inserted && $1 == "session" && $2 == "include" && $3 == "system-login" { print hook; inserted=1 }
+    { print }
+    END { if (!inserted) exit 1 }
+  ' "$pam_file" >"$temporary" || { /usr/bin/rm -f -- "$temporary"; fail 'could not locate PAM session insertion point'; }
+  /usr/bin/chown --reference="$pam_file" "$temporary"
+  /usr/bin/chmod --reference="$pam_file" "$temporary"
+  /usr/bin/mv -fT -- "$temporary" "$pam_file"
+}
+
+remove_pam_hook() {
+  local temporary
+  require_root remove-pam
+  [[ -f "$pam_file" && ! -L "$pam_file" ]] || return 0
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/pam.d .plasmalogin.XXXXXX)
+  /usr/bin/awk '
+    $1 == "session" && $2 == "optional" && $3 == "pam_vibepollo_session.so" { next }
+    { print }
+  ' "$pam_file" >"$temporary"
+  /usr/bin/chown --reference="$pam_file" "$temporary"
+  /usr/bin/chmod --reference="$pam_file" "$temporary"
+  /usr/bin/mv -fT -- "$temporary" "$pam_file"
+}
+
+case "${1:-}" in
+  configure) shift; (($# >= 2)) || { fail 'usage: configure USER CLIENT_UUID [CLIENT_UUID ...]'; exit 2; }; write_settings "$@" ;;
+  configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically ;;
+  prepare) [[ $# == 1 ]] || exit 2; prepare ;;
+  run) [[ $# == 1 ]] || exit 2; run_host ;;
+  activate) [[ $# == 1 ]] || exit 2; activate_greeter ;;
+  install-pam) [[ $# == 1 ]] || exit 2; install_pam_hook ;;
+  remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook ;;
+  *)
+    /usr/bin/printf 'usage: %s {configure USER UUID...|configure-auto|prepare|run|activate|install-pam|remove-pam}\n' "$0" >&2
+    exit 2
+    ;;
+esac

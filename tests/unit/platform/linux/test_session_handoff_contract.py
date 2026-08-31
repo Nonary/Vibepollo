@@ -15,10 +15,15 @@ pam_module = (root / "packaging/linux/pam_vibepollo_session.c").read_text()
 handoff = (root / "packaging/linux/vibepollo-session-handoff").read_text()
 ready = (root / "packaging/linux/vibepollo-session-ready").read_text()
 restore_unit = (root / "packaging/linux/vibepollo-session-restore@.service").read_text()
+prelogin_unit = (root / "packaging/linux/vibepollo-prelogin.service").read_text()
+prelogin_sync = (root / "packaging/linux/vibepollo-prelogin-sync").read_text()
+prelogin_config = (root / "packaging/linux/prelogin/vibepollo.conf").read_text()
+prelogin_apps = (root / "packaging/linux/prelogin/apps.json").read_text()
 packaging = (root / "cmake/packaging/linux.cmake").read_text()
 package_configuration = (root / "cmake/prep/special_package_configuration.cmake").read_text()
 rpm_spec = (root / "packaging/linux/copr/Sunshine.spec").read_text()
 arch_package = (root / "packaging/linux/Arch/PKGBUILD").read_text()
+arch_install = (root / "packaging/linux/Arch/vibepollo.install").read_text()
 
 require(unit, "StartLimitIntervalSec=0", "user service")
 require(unit, "PartOf=graphical-session.target", "user service")
@@ -82,6 +87,28 @@ require(restore_unit, "Type=oneshot", "restore supervisor unit")
 require(restore_unit, "vibepollo-session-handoff restore %i", "restore supervisor unit")
 require(restore_unit, "TimeoutStartSec=infinity", "restore supervisor unit")
 
+require(prelogin_unit, "ConditionPathExists=/etc/vibepollo/prelogin.conf", "pre-login service")
+require(prelogin_unit, "User=plasmalogin", "pre-login service")
+require(prelogin_unit, "vibepollo-session-handoff wait-prelogin", "pre-login service")
+require(prelogin_unit, "vibepollo-prelogin-sync prepare", "pre-login service")
+require(prelogin_unit, "vibepollo-prelogin-sync run", "pre-login service")
+require(prelogin_unit, "WantedBy=graphical.target", "pre-login service")
+if "/usr/local/" in prelogin_unit:
+    raise AssertionError("pre-login service must not depend on host-only /usr/local files")
+
+require(prelogin_sync, "settings must be root:root mode 0600", "pre-login settings boundary")
+require(prelogin_sync, "allowed_client_uuid", "paired-client allowlist")
+require(prelogin_sync, "configure-auto", "legacy provisioning migration")
+require(prelogin_sync, "plasma-login-wayland.target", "greeter compositor startup")
+require(prelogin_sync, "discover_wayland_display", "dynamic greeter display discovery")
+require(prelogin_sync, 'exec /usr/bin/env "WAYLAND_DISPLAY=$display" /usr/bin/vibepollo', "packaged executable")
+require(prelogin_sync, "pam_vibepollo_session.so", "PAM hook management")
+if "source \"$settings_file\"" in prelogin_sync or ". \"$settings_file\"" in prelogin_sync:
+    raise AssertionError("root helper must parse rather than source administrator settings")
+require(prelogin_config, "capture = kms", "pre-login KMS policy")
+require(prelogin_config, "virtual_display_layout = exclusive", "exclusive greeter layout")
+require(prelogin_apps, "/usr/libexec/vibeshine/vibepollo-prelogin-sync activate", "greeter activation command")
+
 require(packaging, "add_library(pam_vibepollo_session MODULE", "native PAM build")
 require(packaging, "install(TARGETS pam_vibepollo_session", "native PAM install")
 require(packaging, "libpam0g", "Debian PAM dependency")
@@ -93,11 +120,16 @@ require(package_configuration, '"package-version:${PROJECT_VERSION_NUMERIC}\\n"'
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"', "native install")
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-ready"', "native install")
 require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"', "native install")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin-sync"', "pre-login helper install")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin.service"', "pre-login unit install")
+require(packaging, '"${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/apps.json"', "pre-login profile install")
 
 require(rpm_spec, "BuildRequires: pam-devel", "RPM PAM build dependency")
 require(rpm_spec, "Requires: pam", "RPM PAM runtime dependency")
 require(rpm_spec, "pam_vibepollo_session.so", "RPM PAM module")
-for dependency in ("'pam'", "'socat'", "'iproute2'", "'util-linux'"):
+for dependency in ("'pam'", "'socat'", "'iproute2'", "'jq'", "'util-linux'"):
     require(arch_package, dependency, "Arch runtime dependency")
+if arch_install.index('if "$helper" configure-auto') > arch_install.index('"$helper" install-pam'):
+    raise AssertionError("Arch package must not activate the PAM hook without valid pre-login settings")
 
 print("PASS: hardened Linux session handoff contract")
