@@ -335,6 +335,13 @@ TEST(SteamLaunch, RejectsZeroAndBuildsValidatedUri) {
   EXPECT_FALSE(launch(0));
 }
 
+TEST(SteamLaunch, StreamOwnedEnvironmentFeaturesRequireDirectLaunch) {
+  EXPECT_TRUE(requires_direct_environment_launch(true, false));
+  EXPECT_TRUE(requires_direct_environment_launch(false, true));
+  EXPECT_TRUE(requires_direct_environment_launch(true, true));
+  EXPECT_FALSE(requires_direct_environment_launch(false, false));
+}
+
 #ifdef __linux__
 TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
   game_t game;
