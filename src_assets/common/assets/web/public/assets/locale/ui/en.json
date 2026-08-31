@@ -1390,7 +1390,7 @@
           "label": "Remove it when the client disconnects"
         },
         "remote_monitor_terminate_on_first_request": {
-          "description": "Moonlight needs Vibeshine to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
+          "description": "Moonlight needs Vibepollo to advertise the host as available to extra clients so it can show the running game and Terminate control. Leave this off to require launching Terminate twice; the original game client is not affected.",
           "label": "Terminate on the first request"
         },
         "capture": {
