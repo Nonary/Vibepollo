@@ -700,8 +700,9 @@ namespace platf {
     const std::optional<adapter_id_t> &required_adapter = std::nullopt
   );
 
-  // A list of names of displays accepted as display_name with the mem_type_e
-  std::vector<std::string> display_names(mem_type_e hwdevice_type);
+  // A list of names accepted as display_name. Omitting the memory type asks
+  // the active platform capture backend for its unfiltered/default view.
+  std::vector<std::string> display_names(mem_type_e hwdevice_type = mem_type_e::unknown);
 
   /**
    * @brief Check if GPUs/drivers have changed since the last call to this function.
