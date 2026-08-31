@@ -52,9 +52,10 @@ do_install_prelogin() {
     systemctl daemon-reload
     systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
     systemctl enable vibepollo.service || echo 'warning: could not enable the Vibepollo machine host.'
+    systemctl enable --now vibepollo-kwin-capability.path || echo 'warning: could not enable the KWin capability watcher.'
   else
     echo 'warning: Vibepollo needs an explicit machine profile owner.'
-    echo "         Run: sudo $helper configure USER"
+    echo "         Run: sudo $helper configure USER CLIENT_UUID..."
   fi
 }
 
@@ -78,6 +79,8 @@ post_upgrade() {
 
 pre_remove() {
   systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
+  systemctl disable --now vibepollo-kwin-capability.path 2>/dev/null || true
+  /usr/libexec/vibeshine/vibepollo-machine-host cleanup 2>/dev/null || true
   /usr/libexec/vibeshine/vibepollo-machine-host remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   systemctl stop vibeshine-drm-setup.service 2>/dev/null || true

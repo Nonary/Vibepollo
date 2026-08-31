@@ -240,7 +240,8 @@ namespace platf::lutris {
       }
       setsid();
       if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
-        execl("/usr/libexec/vibeshine/vibepollo-session-exec", "vibepollo-session-exec", executable.c_str(), uri.c_str(), static_cast<char *>(nullptr));
+        const auto id_string = std::to_string(id);
+        execl("/usr/libexec/vibeshine/vibepollo-session-exec", "vibepollo-session-exec", "lutris", id_string.c_str(), static_cast<char *>(nullptr));
       } else {
         execl(executable.c_str(), executable.c_str(), uri.c_str(), static_cast<char *>(nullptr));
       }

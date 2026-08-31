@@ -106,6 +106,8 @@ else()
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-prepare.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-capability-refresh.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-capability.path"
                     DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
     endif()

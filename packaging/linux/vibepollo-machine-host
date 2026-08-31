@@ -12,12 +12,14 @@ readonly profile_marker=$machine_profile/.machine-profile
 readonly runtime_root=/run/vibepollo
 readonly session_file=$runtime_root/session.env
 readonly acl_state=$runtime_root/runtime-acl
+readonly command_manifest=/etc/vibepollo/session-commands
 readonly handoff_directory=$runtime_root/session-handoffs
 readonly greeter_user=plasmalogin
 readonly virtual_output=Virtual-1
 
 desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''
-session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_groups=''; session_role=''
+session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_groups=''; session_role=''; session_allowed_clients=''
+declare -a allowed_client_uuids=()
 
 fail() { /usr/bin/printf 'vibepollo-machine-host: %s\n' "$*" >&2; return 1; }
 require_root() { ((EUID == 0)) || fail "$1 requires root"; }
@@ -41,21 +43,74 @@ read_desktop_user() {
     [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
     case "$key" in
       desktop_user) [[ -z "$selected" ]] || fail 'multiple desktop users selected'; selected=$value ;;
-      allowed_client_uuid) : ;; # accepted only during beta profile migration
+      allowed_client_uuid) : ;; # parsed and validated separately
       *) fail "unknown setting in $source: $key" ;;
     esac
   done <"$source"
   [[ -n "$selected" ]] || fail "$source does not select a desktop user"; /usr/bin/printf '%s\n' "$selected"
 }
 
-load_settings() { local selected; selected=$(read_desktop_user "$settings_file") || fail "missing settings: $settings_file"; resolve_desktop_identity "$selected"; }
+read_allowed_clients() {
+  local source=$1 attributes key value line normalized existing
+  allowed_client_uuids=()
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source")
+  [[ "$attributes" == 'root:root:600:regular file' ]] || fail "$source must be root:root mode 0600"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
+    [[ "$key" == allowed_client_uuid ]] || continue
+    normalized=${value^^}; existing=0
+    [[ "$normalized" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] || fail 'invalid allowed client UUID'
+    for value in "${allowed_client_uuids[@]}"; do [[ "$value" == "$normalized" ]] && existing=1; done
+    ((existing)) || allowed_client_uuids+=("$normalized")
+  done <"$source"
+}
+
+load_settings() {
+  local selected
+  selected=$(read_desktop_user "$settings_file") || fail "missing settings: $settings_file"
+  read_allowed_clients "$settings_file"
+  ((${#allowed_client_uuids[@]} > 0)) || fail 'machine settings do not allow a pre-login client'
+  resolve_desktop_identity "$selected"
+}
 
 write_settings() {
-  local temporary
-  require_root configure; resolve_desktop_identity "$1"; /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo
+  local requested_user=$1 temporary uuid normalized existing; shift
+  require_root configure; resolve_desktop_identity "$requested_user"; /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo
+  allowed_client_uuids=()
+  for uuid in "$@"; do
+    normalized=${uuid^^}; existing=0
+    [[ "$normalized" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] || fail 'invalid allowed client UUID'
+    for uuid in "${allowed_client_uuids[@]}"; do [[ "$uuid" == "$normalized" ]] && existing=1; done
+    ((existing)) || allowed_client_uuids+=("$normalized")
+  done
+  ((${#allowed_client_uuids[@]} > 0)) || fail 'at least one pre-login client UUID is required'
   temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX)
   /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary"
+  for uuid in "${allowed_client_uuids[@]}"; do /usr/bin/printf 'allowed_client_uuid=%s\n' "$uuid" >>"$temporary"; done
   /usr/bin/chown root:root "$temporary"; /usr/bin/chmod 0600 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$settings_file"
+}
+
+authorize_commands() {
+  local source temporary extracted
+  require_root authorize-commands; load_settings
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands.XXXXXX)
+  extracted=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-json.XXXXXX)
+  for source in "$machine_profile/apps.json" /usr/share/vibepollo/prelogin/apps.json; do
+    [[ -f "$source" && ! -L "$source" ]] || { /usr/bin/rm -f -- "$temporary" "$extracted"; fail "unsafe application list: $source"; }
+    if ! /usr/bin/jq -er '
+        [.apps[]? | [(.cmd? // empty), (.detached[]? // empty), (."prep-cmd"[]? | (.do? // empty), (.undo? // empty))][]
+          | select(type == "string" and length > 0)] as $commands
+        | if any($commands[]; test("[\\r\\n]")) then error("command contains a line break") else $commands[] end
+      ' "$source" >"$extracted"; then
+      /usr/bin/rm -f -- "$temporary" "$extracted"; fail "invalid application commands: $source"
+    fi
+    /usr/bin/cat "$extracted" >>"$temporary"
+  done
+  /usr/bin/rm -f -- "$extracted"
+  LC_ALL=C /usr/bin/sort -u -o "$temporary" "$temporary"
+  [[ -s "$temporary" ]] || { /usr/bin/rm -f -- "$temporary"; fail 'application command authorization is empty'; }
+  /usr/bin/chown root:"$service_user" "$temporary"; /usr/bin/chmod 0640 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$command_manifest"
 }
 
 profile_is_safe() {
@@ -91,15 +146,23 @@ migrate_profile() {
 }
 
 configure_automatically() {
-  local home selected state user uid; local -a candidates=()
+  local home selected state user uid; local -a candidates=() clients=()
   require_root configure-auto
-  if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then load_settings; migrate_profile; return; fi
-  if [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then selected=$(read_desktop_user "$legacy_settings_file")
+  if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then
+    selected=$(read_desktop_user "$settings_file"); read_allowed_clients "$settings_file"; clients=("${allowed_client_uuids[@]}")
+    if ((${#clients[@]} == 0)); then
+      [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]] || fail 'existing machine settings need an allowed client UUID'
+      read_allowed_clients "$legacy_settings_file"; clients=("${allowed_client_uuids[@]}"); write_settings "$selected" "${clients[@]}"
+    fi
+    load_settings; migrate_profile; authorize_commands; return
+  fi
+  if [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then
+    selected=$(read_desktop_user "$legacy_settings_file"); read_allowed_clients "$legacy_settings_file"; clients=("${allowed_client_uuids[@]}")
   else
     while IFS=: read -r user _ uid _ _ home _; do
       [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
       for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
-        if /usr/bin/runuser -u "$user" -- /usr/bin/test -f "$state" && ! /usr/bin/runuser -u "$user" -- /usr/bin/test -L "$state"; then
+        if user_exec "$user" /usr/bin/test -f "$state" && ! user_exec "$user" /usr/bin/test -L "$state"; then
           candidates+=("$user")
           break
         fi
@@ -107,7 +170,8 @@ configure_automatically() {
     done < <(/usr/bin/getent passwd)
     ((${#candidates[@]} == 1)) || fail 'automatic setup requires exactly one desktop Vibepollo profile'; selected=${candidates[0]}
   fi
-  write_settings "$selected"; migrate_profile
+  ((${#clients[@]} > 0)) || fail 'automatic setup requires an explicit pre-login client UUID'
+  write_settings "$selected" "${clients[@]}"; migrate_profile; authorize_commands
 }
 
 prepare_nvidia_devices() {
@@ -121,9 +185,14 @@ prepare_nvidia_devices() {
   for node in /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm; do [[ -c "$node" && ! -L "$node" ]] || fail "missing $node"; done
 }
 
+user_exec() {
+  local user=$1 uid gid; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user")
+  /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- "$@"
+}
+
 user_systemctl() {
-  local user=$1 uid runtime; shift; uid=$(/usr/bin/id -u -- "$user"); runtime=/run/user/$uid; [[ -S "$runtime/bus" ]] || return 1
-  /usr/bin/timeout --signal=KILL 25 /usr/bin/runuser -u "$user" -- /usr/bin/env -i \
+  local user=$1 uid gid runtime; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user"); runtime=/run/user/$uid; [[ -S "$runtime/bus" ]] || return 1
+  /usr/bin/timeout --signal=KILL 25 /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- /usr/bin/env -i \
     "XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" /usr/bin/systemctl --user "$@"
 }
 
@@ -152,13 +221,16 @@ wait_for_session() {
 }
 
 write_session() {
-  local user=$1 role=$2 entry uid gid home runtime display groups temporary old_uid
+  local user=$1 role=$2 entry uid gid home runtime display xdisplay groups allowed temporary old_uid
   entry=$(/usr/bin/getent passwd "$user"); IFS=: read -r _ _ uid gid _ home _ <<<"$entry"; runtime=/run/user/$uid; display=$(discover_wayland_display "$user")
+  xdisplay=$(user_systemctl "$user" show-environment 2>/dev/null | /usr/bin/sed -n 's/^DISPLAY=//p' | /usr/bin/head -n1) || :
+  [[ "$xdisplay" =~ ^:[0-9]+$ ]] || xdisplay=''
+  allowed=$(IFS=,; /usr/bin/printf '%s' "${allowed_client_uuids[*]}")
   groups=$(/usr/bin/id -G -- "$user" | /usr/bin/tr ' ' ',')
   if [[ -f "$acl_state" && ! -L "$acl_state" ]]; then read -r old_uid <"$acl_state" || :; [[ "$old_uid" =~ ^[0-9]+$ ]] && /usr/bin/setfacl -x "u:$service_user" "/run/user/$old_uid" 2>/dev/null || :; fi
   /usr/bin/setfacl -m "u:$service_user:--x" "$runtime"
   temporary=$(/usr/bin/mktemp --tmpdir="$runtime_root" .session.XXXXXX)
-  /usr/bin/printf 'user=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\ngroups=%s\nrole=%s\n' "$user" "$uid" "$gid" "$home" "$runtime" "$display" "$groups" "$role" >"$temporary"
+  /usr/bin/printf 'user=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\nxdisplay=%s\ngroups=%s\nrole=%s\nallowed_clients=%s\n' "$user" "$uid" "$gid" "$home" "$runtime" "$display" "$xdisplay" "$groups" "$role" "$allowed" >"$temporary"
   /usr/bin/chown root:"$service_user" "$temporary"; /usr/bin/chmod 0640 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$session_file"
   /usr/bin/printf '%s\n' "$uid" >"$acl_state"; /usr/bin/chown root:root "$acl_state"; /usr/bin/chmod 0600 "$acl_state"
 }
@@ -174,19 +246,36 @@ load_session() {
   local attributes key value line
   [[ -f "$session_file" && ! -L "$session_file" ]] || fail 'missing session environment'; attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file")
   [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'untrusted session environment'
-  while IFS= read -r line || [[ -n "$line" ]]; do key=${line%%=*}; value=${line#*=}; case "$key" in user) session_user=$value;; uid) session_uid=$value;; gid) session_gid=$value;; home) session_home=$value;; runtime) session_runtime=$value;; display) session_display=$value;; groups) session_groups=$value;; role) session_role=$value;; *) fail "unknown session key: $key";; esac; done <"$session_file"
-  valid_user "$session_user"; [[ "$session_uid" =~ ^[0-9]+$ && "$session_gid" =~ ^[0-9]+$ && "$session_home" == /* && "$session_runtime" == "/run/user/$session_uid" && "$session_display" =~ ^wayland-[0-9]+$ && "$session_groups" =~ ^[0-9]+(,[0-9]+)*$ && "$session_role" =~ ^(desktop|greeter)$ ]] || fail 'invalid session environment'
+  while IFS= read -r line || [[ -n "$line" ]]; do key=${line%%=*}; value=${line#*=}; case "$key" in user) session_user=$value;; uid) session_uid=$value;; gid) session_gid=$value;; home) session_home=$value;; runtime) session_runtime=$value;; display) session_display=$value;; xdisplay) session_xdisplay=$value;; groups) session_groups=$value;; role) session_role=$value;; allowed_clients) session_allowed_clients=$value;; *) fail "unknown session key: $key";; esac; done <"$session_file"
+  valid_user "$session_user"; [[ "$session_uid" =~ ^[0-9]+$ && "$session_gid" =~ ^[0-9]+$ && "$session_home" == /* && "$session_runtime" == "/run/user/$session_uid" && "$session_display" =~ ^wayland-[0-9]+$ && ( -z "$session_xdisplay" || "$session_xdisplay" =~ ^:[0-9]+$ ) && "$session_groups" =~ ^[0-9]+(,[0-9]+)*$ && "$session_role" =~ ^(desktop|greeter)$ && "$session_allowed_clients" =~ ^[0-9A-F-]+(,[0-9A-F-]+)*$ ]] || fail 'invalid session environment'
 }
 
 run_host() {
   local -a overrides=('system_tray=disabled')
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"; load_session
   if [[ "$session_role" == greeter ]]; then overrides+=('encoder=nvenc_experimental' 'capture=kms' 'min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=pc' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json' 'log_path=/var/lib/vibepollo/logs/prelogin.log'); fi
-  exec /usr/bin/env -i "HOME=/var/lib/vibepollo" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" \
+  exec /usr/bin/env -i "HOME=$session_home" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" \
     "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=$session_runtime" "PIPEWIRE_RUNTIME_DIR=$session_runtime" "XDG_SESSION_TYPE=wayland" "WAYLAND_DISPLAY=$session_display" \
-    "DBUS_SESSION_BUS_ADDRESS=unix:path=$session_runtime/bus" "VIBEPOLLO_MACHINE_HOST=1" \
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=$session_runtime/bus" "VIBEPOLLO_MACHINE_HOST=1" "VIBEPOLLO_ALLOWED_CLIENT_UUIDS=$session_allowed_clients" \
     "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
     /usr/bin/vibepollo "$machine_profile/vibepollo.conf" "${overrides[@]}"
+}
+
+cleanup() {
+  local old_uid old_user old_gid attributes
+  require_root cleanup
+  if [[ -f "$acl_state" && ! -L "$acl_state" ]]; then
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$acl_state")
+    [[ "$attributes" == 'root:root:600:regular file' ]] || fail 'untrusted runtime ACL state'
+    read -r old_uid <"$acl_state" || :
+    [[ "$old_uid" =~ ^[0-9]+$ ]] || fail 'invalid runtime ACL state'
+    old_user=$(/usr/bin/id -nu -- "$old_uid") || fail 'runtime ACL owner no longer exists'
+    old_gid=$(/usr/bin/id -g -- "$old_user")
+    /usr/bin/setpriv --reuid "$old_uid" --regid "$old_gid" --init-groups --no-new-privs -- /usr/bin/setfacl -x "u:$service_user" "/run/user/$old_uid" 2>/dev/null || :
+    /usr/bin/rm -f -- "$acl_state"
+  fi
+  [[ ! -e "$session_file" || (-f "$session_file" && ! -L "$session_file") ]] || fail 'unsafe session environment'
+  /usr/bin/rm -f -- "$session_file"
 }
 
 activate_greeter() {
@@ -209,5 +298,5 @@ remove_pam_hook() {
 }
 
 case "${1:-}" in
-  configure) [[ $# == 2 ]] || exit 2; write_settings "$2"; migrate_profile;; configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically;; migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile;; prepare) [[ $# == 1 ]] || exit 2; prepare;; run) [[ $# == 1 ]] || exit 2; run_host;; activate) [[ $# == 1 ]] || exit 2; activate_greeter;; install-pam) [[ $# == 1 ]] || exit 2; install_pam_hook;; remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook;; *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|migrate-profile|prepare|run|activate|install-pam|remove-pam}\n' "$0" >&2; exit 2;;
+  configure) [[ $# -ge 3 ]] || exit 2; shift; write_settings "$@"; migrate_profile; authorize_commands;; configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically;; authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands;; migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile;; prepare) [[ $# == 1 ]] || exit 2; prepare;; run) [[ $# == 1 ]] || exit 2; run_host;; cleanup) [[ $# == 1 ]] || exit 2; cleanup;; activate) [[ $# == 1 ]] || exit 2; activate_greeter;; install-pam) [[ $# == 1 ]] || exit 2; install_pam_hook;; remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook;; *) /usr/bin/printf 'usage: %s {configure USER CLIENT_UUID...|configure-auto|authorize-commands|migrate-profile|prepare|run|cleanup|activate|install-pam|remove-pam}\n' "$0" >&2; exit 2;;
 esac

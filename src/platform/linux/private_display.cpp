@@ -109,8 +109,10 @@ namespace platf::linux_private_display {
       owned_argv.reserve(arguments.size() + 2);
       if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
         owned_argv.emplace_back("/usr/libexec/vibeshine/vibepollo-session-exec");
+        owned_argv.emplace_back("kscreen");
+      } else {
+        owned_argv.push_back(*executable);
       }
-      owned_argv.push_back(*executable);
       owned_argv.insert(owned_argv.end(), arguments.begin(), arguments.end());
       std::vector<const gchar *> argv;
       argv.reserve(owned_argv.size() + 1);
@@ -293,7 +295,7 @@ namespace platf::linux_private_display {
       }
 
       // A unique physical connector needs no broker ownership check. The broker
-      // deliberately recognizes only Vibeshine's Virtual-N pool, so querying it
+      // deliberately recognizes only Vibepollo's Virtual-N pool, so querying it
       // for HDMI/DP connectors both produces a false error and prevents restore
       // verification from observing an already-active physical output.
       if (matching_connectors.size() == 1 && !name.starts_with("Virtual-")) {
@@ -327,7 +329,7 @@ namespace platf::linux_private_display {
         return true;
       }
 
-      // The managed Vibeshine DRM device has a fixed HDR10 EDID. Keep its
+      // The managed Vibepollo DRM device has a fixed HDR10 EDID. Keep its
       // capability stable while the connector is deliberately disconnected:
       // the kernel exposes no EDID bytes in that dormant state.
       std::error_code error;

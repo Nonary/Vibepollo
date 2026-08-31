@@ -372,6 +372,7 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
       systemctl daemon-reload || true
       systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
       systemctl enable vibepollo.service || echo "warning: could not enable the Vibepollo machine host."
+      systemctl enable --now vibepollo-kwin-capability.path || echo "warning: could not enable the KWin capability watcher."
     else
       echo "warning: could not install the Plasma Login Manager handoff hook."
     fi
@@ -385,6 +386,8 @@ fi
 %preun
 if [ "$1" -eq 0 ]; then
   systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
+  systemctl disable --now vibepollo-kwin-capability.path 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibepollo-machine-host cleanup || true
   %{_prefix}/libexec/vibeshine/vibepollo-machine-host remove-pam || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
@@ -428,6 +431,8 @@ fi
 %{_unitdir}/vibepollo-machine-prepare.service
 %{_unitdir}/vibepollo.service
 %{_unitdir}/vibepollo-session-restore@.service
+%{_unitdir}/vibepollo-kwin-capability-refresh.service
+%{_unitdir}/vibepollo-kwin-capability.path
 
 # Udev rules
 %{_udevrulesdir}/*-sunshine.rules

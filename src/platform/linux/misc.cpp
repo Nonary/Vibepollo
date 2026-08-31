@@ -400,36 +400,35 @@ namespace platf {
     (void) interactive;
     ec.clear();
 
-    std::vector<std::string> parts;
-    try {
-      parts = boost::program_options::split_unix(cmd);
-    } catch (...) {
-    }
-
-    if (parts.empty()) {
-      ec = std::make_error_code(std::errc::invalid_argument);
-      return bp::child();
-    }
-
-    auto exe_path = v2::filesystem::path(parts.front());
-    // Only PATH-search when there's no directory component (e.g., "foo" not "./foo" or "../foo")
-    if (!exe_path.is_absolute() && exe_path.parent_path().empty()) {
-      exe_path = v2::environment::find_executable(exe_path);
-    }
-
-    if (exe_path.empty()) {
-      ec = std::make_error_code(std::errc::no_such_file_or_directory);
-      return bp::child();
-    }
-
     std::vector<std::string> args;
-    if (parts.size() > 1) {
-      args.assign(parts.begin() + 1, parts.end());
-    }
-
-    if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
-      args.insert(args.begin(), exe_path.string());
+    v2::filesystem::path exe_path;
+    const bool session_command = std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr;
+    if (session_command) {
+      if (cmd.empty()) {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return bp::child();
+      }
       exe_path = v2::filesystem::path("/usr/libexec/vibeshine/vibepollo-session-exec");
+      args = {"app", cmd, working_dir.string()};
+    } else {
+      std::vector<std::string> parts;
+      try {
+        parts = boost::program_options::split_unix(cmd);
+      } catch (...) {
+      }
+      if (parts.empty()) {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return bp::child();
+      }
+      exe_path = v2::filesystem::path(parts.front());
+      if (!exe_path.is_absolute() && exe_path.parent_path().empty()) {
+        exe_path = v2::environment::find_executable(exe_path);
+      }
+      if (exe_path.empty()) {
+        ec = std::make_error_code(std::errc::no_such_file_or_directory);
+        return bp::child();
+      }
+      if (parts.size() > 1) args.assign(parts.begin() + 1, parts.end());
     }
 
     v2::process_stdio stdio {};
@@ -448,7 +447,7 @@ namespace platf {
     try {
 #ifndef _WIN32
       if (group) {
-        if (!working_dir.empty()) {
+        if (!session_command && !working_dir.empty()) {
           auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
           auto proc = v2::process(exec, exe_path, args, start, stdio, env_init, bp::detail::posix_group_initer {group});
           return bp::child(std::move(proc));
@@ -457,7 +456,7 @@ namespace platf {
         return bp::child(std::move(proc));
       }
 #endif
-      if (!working_dir.empty()) {
+      if (!session_command && !working_dir.empty()) {
         auto start = v2::process_start_dir(v2::filesystem::path(working_dir.string()));
         auto proc = v2::process(exec, exe_path, args, start, stdio, env_init);
         return bp::child(std::move(proc));

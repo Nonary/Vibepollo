@@ -2321,6 +2321,23 @@ namespace nvhttp {
       return std::nullopt;
     }
 
+  bool greeter_client_allowed(std::string_view uuid) {
+    const auto *role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+    if (!role || std::string_view {role} != "greeter") return true;
+    const auto *configured = std::getenv("VIBEPOLLO_ALLOWED_CLIENT_UUIDS");
+    if (!configured || !*configured || uuid.empty()) return false;
+    std::string_view remaining {configured};
+    while (!remaining.empty()) {
+      const auto separator = remaining.find(',');
+      const auto candidate = remaining.substr(0, separator);
+      if (candidate == uuid) return true;
+      if (separator == std::string_view::npos) break;
+      remaining.remove_prefix(separator + 1);
+    }
+    return false;
+  }
+
+
     void remember_tls_client_identity(req_https_t request, const resolved_client_identity_t &identity) {
       const auto key = endpoint_key(request);
       if (key.empty() || identity.uuid.empty()) {
@@ -5832,13 +5849,16 @@ namespace nvhttp {
         return verified;
       }
 
-      verified = true;
-      if (x509_verify) {
-        if (auto identity = resolve_client_identity_from_peer_cert(x509_verify)) {
-          remember_tls_client_identity(req, *identity);
-        }
-        tl_peer_certificate = std::move(x509_verify);
+      auto identity = resolve_client_identity_from_peer_cert(x509_verify);
+      if ((!identity || !greeter_client_allowed(identity->uuid)) &&
+          std::getenv("VIBEPOLLO_SESSION_ROLE") &&
+          std::string_view {std::getenv("VIBEPOLLO_SESSION_ROLE")} == "greeter") {
+        BOOST_LOG(warning) << "Pre-login TLS client is not in the administrator allowlist.";
+        return verified;
       }
+      verified = true;
+      if (identity) remember_tls_client_identity(req, *identity);
+      tl_peer_certificate = std::move(x509_verify);
 
       return true;
     };

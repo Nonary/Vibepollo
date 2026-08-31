@@ -63,12 +63,13 @@ should_log_attempt() {
 user_systemctl() {
   local desktop_user=$1
   shift
-  local desktop_uid runtime_directory
+  local desktop_uid desktop_gid runtime_directory
   desktop_uid=$(/usr/bin/id -u -- "$desktop_user")
+  desktop_gid=$(/usr/bin/id -g -- "$desktop_user")
   runtime_directory=/run/user/$desktop_uid
   [[ -S "$runtime_directory/bus" ]] || return 1
   /usr/bin/timeout --signal=KILL 25 \
-    /usr/bin/runuser -u "$desktop_user" -- \
+    /usr/bin/setpriv --reuid "$desktop_uid" --regid "$desktop_gid" --init-groups --no-new-privs -- \
       /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime_directory" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime_directory/bus" \
         /usr/bin/systemctl --user "$@"
