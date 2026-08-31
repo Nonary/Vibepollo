@@ -1309,7 +1309,8 @@ jobs:
                   'driver/VibeshineVhfGamepad.cat',
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
-                if ((@($vhfManifest.signing.signed_downstream) -join "`n") -cne
+                if ($vhfSignedDownstream -and
+                    (@($vhfManifest.signing.signed_downstream) -join "`n") -cne
                     ($vhfDownstreamSigned -join "`n")) {
                   throw 'manifest does not declare the exact downstream-signed payloads'
                 }
