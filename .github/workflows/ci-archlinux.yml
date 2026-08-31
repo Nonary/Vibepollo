@@ -92,8 +92,16 @@ jobs:
           fi
 
           kernel_release="$(basename "$(dirname "${kernel_build_dirs[0]}")")"
+          write_drm_version_header() {
+            local module_source=$1
+            local module_version=$2
+            printf '#define VIBESHINE_DRM_VERSION "%s"\n' "${module_version}" \
+              >"${module_source}/vibeshine_drm_version.h"
+          }
+
           module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
+          write_drm_version_header "${module_build_dir}" "0.0.0"
           MAKEFLAGS="-j$(nproc)" \
             "${module_build_dir}/build-module" "${kernel_release}" "${module_build_dir}"
           test -s "${module_build_dir}/vibeshine_drm.ko"
@@ -119,6 +127,7 @@ jobs:
           dkms_ci_version=0.0.1
           dkms_source="/usr/src/vibeshine-drm-${dkms_ci_version}"
           cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${dkms_source}"
+          write_drm_version_header "${dkms_source}" "${dkms_ci_version}"
           sed "s/@PROJECT_VERSION_NUMERIC@/${dkms_ci_version}/g" \
             "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"
           printf 'try_sign_modules=true\n' >/etc/dkms/framework.conf.d/vibeshine-ci.conf

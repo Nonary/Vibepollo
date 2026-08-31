@@ -86,6 +86,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         )
         self.assertIn('find "/usr/lib/modules/${kernel_release}"', arch_text)
         self.assertNotIn('modinfo -k "${kernel_release}" -n vibeshine_drm', arch_text)
+        self.assertIn(
+            'write_drm_version_header "${module_build_dir}" "0.0.0"', arch_text
+        )
+        self.assertIn(
+            'write_drm_version_header "${dkms_source}" "${dkms_ci_version}"',
+            arch_text,
+        )
         self.assertIn("makedepends = nodejs", arch_text)
         self.assertIn("makedepends = npm", arch_text)
         self.assertIn("makedepends = ninja", arch_text)
