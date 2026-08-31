@@ -267,7 +267,8 @@ prepare() {
   if ! /usr/bin/jq -e --argjson uuids "$allowed_json" '
       .root.uniqueid as $host_id
       | [.root.named_devices[]?
-          | select((.enabled // true) and (.uuid | ascii_upcase) as $uuid | $uuids | index($uuid))] as $devices
+          | select((.enabled // true)
+                   and (((.uuid | ascii_upcase) as $uuid | $uuids | index($uuid)) != null))] as $devices
       | select(($host_id | type) == "string" and ($host_id | length) > 0
                and ($devices | length) == ($uuids | length))
       | {root: {named_devices: $devices, uniqueid: $host_id}}
@@ -286,6 +287,11 @@ prepare() {
 
   uid=$(greeter_uid)
   /usr/bin/systemctl start "user@$uid.service"
+  # A transient compositor failure can exhaust a greeter unit's start limit.
+  # Clear only this startup chain so a repaired package can recover without a
+  # reboot; the bounded readiness loop still fails closed if startup is broken.
+  greeter_systemctl reset-failed plasma-login-kwin_wayland.service \
+    plasma-login.service plasma-wallpaper.service plasma-login-wayland.target >/dev/null 2>&1 || :
   for ((attempt = 0; attempt < 120; ++attempt)); do
     if greeter_systemctl start plasma-login-wayland.target >/dev/null 2>&1 &&
        discover_wayland_display >/dev/null 2>&1; then

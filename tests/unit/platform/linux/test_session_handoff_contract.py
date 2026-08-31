@@ -98,8 +98,12 @@ if "/usr/local/" in prelogin_unit:
 
 require(prelogin_sync, "settings must be root:root mode 0600", "pre-login settings boundary")
 require(prelogin_sync, "allowed_client_uuid", "paired-client allowlist")
+require(prelogin_sync, 'index($uuid)) != null', "paired-client membership predicate")
+if "and (.uuid | ascii_upcase) as $uuid" in prelogin_sync:
+    raise AssertionError("paired-client membership must not leak jq binding precedence into select")
 require(prelogin_sync, "configure-auto", "legacy provisioning migration")
 require(prelogin_sync, "plasma-login-wayland.target", "greeter compositor startup")
+require(prelogin_sync, "reset-failed plasma-login-kwin_wayland.service", "greeter startup recovery")
 require(prelogin_sync, "discover_wayland_display", "dynamic greeter display discovery")
 require(prelogin_sync, 'exec /usr/bin/env "WAYLAND_DISPLAY=$display" /usr/bin/vibepollo', "packaged executable")
 require(prelogin_sync, "pam_vibepollo_session.so", "PAM hook management")
