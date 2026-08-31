@@ -1,10 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -32,6 +34,14 @@ namespace version_compare {
            });
   }
 
+  inline bool parse_nonnegative_integer(std::string_view value, int &result) {
+    if (value.empty()) {
+      return false;
+    }
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    return error == std::errc {} && end == value.data() + value.size() && result >= 0;
+  }
+
   inline semver_t parse_semver(std::string_view version) {
     semver_t out;
     if (version.empty()) {
@@ -56,30 +66,26 @@ namespace version_compare {
           continue;
         }
         if (is_numeric_identifier(identifier)) {
-          try {
-            out.prerelease.emplace_back(std::stoi(identifier));
+          int numeric_identifier = 0;
+          if (parse_nonnegative_integer(identifier, numeric_identifier)) {
+            out.prerelease.emplace_back(numeric_identifier);
             continue;
-          } catch (...) {
           }
         }
         out.prerelease.emplace_back(identifier);
       }
     }
 
-    try {
-      std::stringstream core_stream(core);
-      std::string part;
-      if (std::getline(core_stream, part, '.')) {
-        out.major = std::stoi(part);
-      }
-      if (std::getline(core_stream, part, '.')) {
-        out.minor = std::stoi(part);
-      }
-      if (std::getline(core_stream, part, '.')) {
-        out.patch = std::stoi(part);
-      }
-    } catch (...) {
-      out = semver_t {};
+    std::stringstream core_stream(core);
+    std::string part;
+    if (std::getline(core_stream, part, '.') && !parse_nonnegative_integer(part, out.major)) {
+      return semver_t {};
+    }
+    if (std::getline(core_stream, part, '.') && !parse_nonnegative_integer(part, out.minor)) {
+      return semver_t {};
+    }
+    if (std::getline(core_stream, part, '.') && !parse_nonnegative_integer(part, out.patch)) {
+      return semver_t {};
     }
 
     return out;
