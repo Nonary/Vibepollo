@@ -17,7 +17,7 @@ install=vibepollo.install
 
 # this variable remains for future cases where we need an older version of gcc for cuda compatibility
 _gcc_version=15
-_versioned_gcc=false  # set to true if we need a versioned gcc, e.g. gcc14
+_versioned_gcc=true
 
 _gcc_dep_suffix=""
 _gcc_env_suffix=""
