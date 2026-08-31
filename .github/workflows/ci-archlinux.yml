@@ -167,7 +167,9 @@ jobs:
         run: |
           # Calculate sub_version
           sub_version=""
-          if [[ "${BUILD_VERSION}" == "0.0.0" && "${BRANCH}" != "master" ]]; then
+          # Branch candidates share the upcoming prerelease version but retain
+          # a commit suffix until the exact commit receives its release tag.
+          if [[ "${BRANCH}" == "vibe-test" ]]; then
             sub_version=".r${COMMIT}"
           fi
 

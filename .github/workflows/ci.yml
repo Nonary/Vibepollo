@@ -68,9 +68,14 @@ jobs:
               for key, value in values.items():
                 print(f"{key}={value}", file=fh)
 
-          def skip(reason):
+          def skip(reason, *, release_version="", release_commit=""):
             print(f"::notice::{reason}")
-            output(should_release="false", tag_name="", release_version="", release_commit="")
+            output(
+              should_release="false",
+              tag_name="",
+              release_version=release_version,
+              release_commit=release_commit,
+            )
             sys.exit(0)
 
           def version_key(tag):
@@ -187,6 +192,37 @@ jobs:
             valid_candidates.append((key, tag, notes_file, release_commit))
 
           if not valid_candidates:
+            # vibe-test is an installable Linux candidate before it is a release
+            # tag. Give that package the newest unreleased prerelease note version
+            # at HEAD while keeping should_release=false, so this path can never
+            # publish merely because release notes exist.
+            if event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/vibe-test":
+              head_commit = run("git", "rev-parse", "HEAD")
+              branch_candidates = []
+              for candidate in Path("release_notes").glob("*.md"):
+                release_version = candidate.stem
+                key = version_key(release_version)
+                if key is None or not is_prerelease_key(key):
+                  continue
+                comparable_releases = [
+                  release_key for release_key in release_versions
+                  if is_prerelease_key(release_key)
+                ]
+                current_release_version = max(comparable_releases) if comparable_releases else None
+                if current_release_version is not None and key <= current_release_version:
+                  continue
+                notes_file = release_notes_for(release_version, head_commit)
+                if notes_file is not None:
+                  branch_candidates.append((key, release_version, notes_file))
+
+              if branch_candidates:
+                _, release_version, notes_file = max(branch_candidates, key=lambda item: item[0])
+                skip(
+                  f"Linux branch candidate: {release_version} ({head_commit}) using {notes_file}; no release tag exists yet.",
+                  release_version=release_version,
+                  release_commit=head_commit,
+                )
+
             skip("No unreleased newer tag with exact matching release notes was found.")
 
           _, tag_name, notes_file, release_commit = max(valid_candidates, key=lambda item: item[0])
