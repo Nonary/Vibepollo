@@ -93,6 +93,8 @@ require(prelogin_unit, "vibepollo-session-handoff wait-prelogin", "pre-login ser
 require(prelogin_unit, "vibepollo-prelogin-sync prepare", "pre-login service")
 require(prelogin_unit, "vibepollo-prelogin-sync run", "pre-login service")
 require(prelogin_unit, "WantedBy=graphical.target", "pre-login service")
+if "/run/user/%U" in prelogin_unit:
+    raise AssertionError("system-manager UID specifiers must not select root's runtime directory")
 if "/usr/local/" in prelogin_unit:
     raise AssertionError("pre-login service must not depend on host-only /usr/local files")
 
@@ -105,7 +107,12 @@ require(prelogin_sync, "configure-auto", "legacy provisioning migration")
 require(prelogin_sync, "plasma-login-wayland.target", "greeter compositor startup")
 require(prelogin_sync, "reset-failed plasma-login-kwin_wayland.service", "greeter startup recovery")
 require(prelogin_sync, "discover_wayland_display", "dynamic greeter display discovery")
-require(prelogin_sync, 'exec /usr/bin/env "WAYLAND_DISPLAY=$display" /usr/bin/vibepollo', "packaged executable")
+require(prelogin_sync, "/usr/bin/nvidia-modprobe -c", "NVIDIA GPU device readiness")
+require(prelogin_sync, "/usr/bin/nvidia-modprobe -m", "NVIDIA modeset device readiness")
+require(prelogin_sync, "/usr/bin/nvidia-modprobe -u", "NVIDIA UVM device readiness")
+require(prelogin_sync, '"XDG_RUNTIME_DIR=$runtime"', "greeter runtime environment")
+require(prelogin_sync, '"DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus"', "greeter bus environment")
+require(prelogin_sync, '/usr/bin/vibepollo "$static_profile/vibepollo.conf"', "packaged executable")
 require(prelogin_sync, "pam_vibepollo_session.so", "PAM hook management")
 if "source \"$settings_file\"" in prelogin_sync or ". \"$settings_file\"" in prelogin_sync:
     raise AssertionError("root helper must parse rather than source administrator settings")
