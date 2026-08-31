@@ -3,6 +3,20 @@ if command -v systemd-sysusers >/dev/null 2>&1; then
     echo "warning: could not create the dedicated vibeshine-vkms control group."
 fi
 
+if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" ]; then
+  if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" configure-auto; then
+    if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" install-pam; then
+      systemctl daemon-reload 2>/dev/null || true
+      systemctl enable vibepollo-prelogin.service ||
+        echo "warning: could not enable Vibepollo pre-login streaming."
+    else
+      echo "warning: could not install the Plasma Login Manager handoff hook."
+    fi
+  else
+    echo "warning: configure a paired-client allowlist before enabling Vibepollo pre-login streaming."
+  fi
+fi
+
 @VIBESHINE_BASE_POSTINST@
 
 # Build/register the managed virtual-display module. Package installation may

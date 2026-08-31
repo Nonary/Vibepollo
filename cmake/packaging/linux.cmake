@@ -44,6 +44,7 @@ else()
         install(PROGRAMS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin-sync"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-ready"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
@@ -55,6 +56,10 @@ else()
         install(FILES "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.sysusers"
                 DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
                 RENAME vibeshine-vkms.conf)
+        install(FILES
+                "${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/vibepollo.conf"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/apps.json"
+                DESTINATION "${SUNSHINE_ASSETS_DIR}/prelogin")
         install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
                 FILES_MATCHING
@@ -89,6 +94,7 @@ else()
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"
                     DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
@@ -152,6 +158,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             libgbm1, \
             libevdev2, \
             iproute2, \
+            jq, \
             kmod, \
             libkscreen-bin | libkf5screen-bin, \
             make, \
@@ -174,6 +181,7 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
             iproute, \
+            jq, \
             kmod, \
             libkscreen, \
             make, \

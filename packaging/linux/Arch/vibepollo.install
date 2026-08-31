@@ -31,11 +31,29 @@ do_install_vibeshine_drm() {
   esac
 }
 
+do_install_prelogin() {
+  local helper=/usr/libexec/vibeshine/vibepollo-prelogin-sync
+  [[ -x "$helper" ]] || return 0
+  if "$helper" configure-auto; then
+    if ! "$helper" install-pam; then
+      echo 'warning: could not install the Plasma Login Manager handoff hook.'
+      return 0
+    fi
+    systemctl daemon-reload
+    systemctl enable vibepollo-prelogin.service ||
+      echo 'warning: could not enable Vibepollo pre-login streaming.'
+  else
+    echo 'warning: Vibepollo pre-login streaming needs an explicit paired-client allowlist.'
+    echo "         Run: sudo $helper configure USER CLIENT_UUID"
+  fi
+}
+
 post_install() {
   do_setcap
   do_udev_reload
   modprobe uhid
   do_install_vibeshine_drm
+  do_install_prelogin
 }
 
 post_upgrade() {
@@ -43,9 +61,12 @@ post_upgrade() {
   do_udev_reload
   modprobe uhid
   do_install_vibeshine_drm
+  do_install_prelogin
 }
 
 pre_remove() {
+  systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+  /usr/libexec/vibeshine/vibepollo-prelogin-sync remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   /usr/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
