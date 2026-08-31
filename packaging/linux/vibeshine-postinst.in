@@ -1,20 +1,33 @@
 if command -v systemd-sysusers >/dev/null 2>&1; then
   systemd-sysusers "@VIBESHINE_SYSUSERS_INSTALL_DIR@/vibeshine-vkms.conf" || \
     echo "warning: could not create the dedicated vibeshine-vkms control group."
+  systemd-sysusers "@VIBESHINE_SYSUSERS_INSTALL_DIR@/vibepollo.conf" || \
+    echo "warning: could not create the dedicated Vibepollo service account."
 fi
 
-if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" ]; then
-  if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" configure-auto; then
-    if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" install-pam; then
+if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec" ]; then
+  chown root:vibepollo "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
+  chmod 0750 "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
+  setcap cap_setgid,cap_setuid=ep "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
+fi
+
+if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" ]; then
+  if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" configure-auto; then
+    if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" install-pam; then
       systemctl daemon-reload 2>/dev/null || true
-      systemctl enable vibepollo-prelogin.service ||
-        echo "warning: could not enable Vibepollo pre-login streaming."
+      systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+      systemctl enable vibepollo.service || echo "warning: could not enable the Vibepollo machine host."
     else
       echo "warning: could not install the Plasma Login Manager handoff hook."
     fi
   else
-    echo "warning: configure a paired-client allowlist before enabling Vibepollo pre-login streaming."
+    echo "warning: configure a machine profile owner before enabling Vibepollo."
   fi
+fi
+
+if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then
+  "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" prepare || \
+    echo "warning: could not prepare capability-free KWin for the Vibepollo GPU bridge."
 fi
 
 @VIBESHINE_BASE_POSTINST@
@@ -22,15 +35,15 @@ fi
 # Build/register the managed virtual-display module. Package installation may
 # continue on failure, but managed displays remain unavailable until it loads.
 if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
-  echo "Installing the Vibeshine HDR DRM module."
+  echo "Installing the Vibepollo HDR DRM module."
   if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" install; then
     :
   else
     vibeshine_drm_rc=$?
     if [ "$vibeshine_drm_rc" -eq 4 ]; then
-      echo "warning: Vibeshine DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
+      echo "warning: Vibepollo DRM was updated, but the loaded module is stale; reboot before using managed virtual displays."
     else
-      echo "warning: Vibeshine DRM installation failed; managed virtual displays are unavailable."
+      echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
     fi
   fi
 fi

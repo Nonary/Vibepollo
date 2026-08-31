@@ -4,7 +4,9 @@
  */
 #include <array>
 #include <gtest/gtest.h>
+#include <map>
 #include <src/platform/linux/private_display_restore_policy.h>
+#include <vector>
 
 namespace policy = platf::linux_private_display::restore_policy;
 
@@ -50,6 +52,24 @@ TEST(LinuxPrivateDisplayRestorePolicy, HeadlessBaselineDoesNotRequireGuard) {
   };
 
   EXPECT_FALSE(policy::requires_guard(candidates));
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, MissingGuardActivationFailsSafely) {
+  const std::map<std::string, std::vector<std::string>> activations {
+    {"HDMI-A-1", {"output.HDMI-A-1.enable"}},
+  };
+
+  EXPECT_FALSE(policy::guard_activation(std::make_optional<std::string>("DP-1"), activations).has_value());
+}
+
+TEST(LinuxPrivateDisplayRestorePolicy, ResolvesKnownGuardActivation) {
+  const std::map<std::string, std::vector<std::string>> activations {
+    {"HDMI-A-1", {"output.HDMI-A-1.enable"}},
+  };
+
+  const auto activation = policy::guard_activation(std::make_optional<std::string>("HDMI-A-1"), activations);
+  ASSERT_TRUE(activation.has_value());
+  EXPECT_EQ(*activation, activations.at("HDMI-A-1"));
 }
 
 TEST(LinuxPrivateDisplayRestorePolicy, PreservesOnlyWorkingPrivateScanoutAtStartup) {

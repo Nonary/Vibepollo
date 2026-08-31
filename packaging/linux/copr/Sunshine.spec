@@ -139,6 +139,7 @@ BuildRequires: gcc14-c++
 
 # Common runtime requirements
 Requires: miniupnpc >= 2.2.4
+Requires: acl
 Requires: which >= 2.21
 Requires: kmod
 Requires: iproute
@@ -353,6 +354,9 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
     echo "error: udevadm not found or not executable."
   fi
 
+  %{_prefix}/libexec/vibeshine/vibeshine-kwin-capability prepare || \
+    echo "warning: could not prepare capability-free KWin for the Vibepollo GPU bridge."
+
   if %{_prefix}/libexec/vibeshine/vibeshine-drm-install install; then
     :
   else
@@ -363,16 +367,16 @@ if [ ! -x "$(command -v rpm-ostree)" ]; then
       echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
     fi
   fi
-  if %{_prefix}/libexec/vibeshine/vibepollo-prelogin-sync configure-auto; then
-    if %{_prefix}/libexec/vibeshine/vibepollo-prelogin-sync install-pam; then
+  if %{_prefix}/libexec/vibeshine/vibepollo-machine-host configure-auto; then
+    if %{_prefix}/libexec/vibeshine/vibepollo-machine-host install-pam; then
       systemctl daemon-reload || true
-      systemctl enable vibepollo-prelogin.service || \
-        echo "warning: could not enable Vibepollo pre-login streaming."
+      systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+      systemctl enable vibepollo.service || echo "warning: could not enable the Vibepollo machine host."
     else
       echo "warning: could not install the Plasma Login Manager handoff hook."
     fi
   else
-    echo "warning: configure a paired-client allowlist before enabling Vibepollo pre-login streaming."
+    echo "warning: configure a machine profile owner before enabling Vibepollo."
   fi
 else
   echo "rpm-ostree environment detected, skipping post install steps. Restart to apply the changes."
@@ -380,9 +384,11 @@ fi
 
 %preun
 if [ "$1" -eq 0 ]; then
-  systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-  %{_prefix}/libexec/vibeshine/vibepollo-prelogin-sync remove-pam || true
+  systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibepollo-machine-host remove-pam || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
+  systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
+  %{_prefix}/libexec/vibeshine/vibeshine-kwin-capability restore || true
   %{_prefix}/libexec/vibeshine/vibeshine-drm-install remove || \
     echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
 fi
@@ -396,14 +402,15 @@ fi
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-quiesce
 %{_prefix}/libexec/vibeshine/vibeshine-vkms-peercred
 %{_prefix}/libexec/vibeshine/vibepollo-session-handoff
-%{_prefix}/libexec/vibeshine/vibepollo-session-ready
-%{_prefix}/libexec/vibeshine/vibepollo-prelogin-sync
-%{_prefix}/libexec/vibeshine/kwin-preload/kwin_wayland
+%attr(0750,root,vibepollo) %caps(cap_setgid,cap_setuid=ep) %{_prefix}/libexec/vibeshine/vibepollo-session-exec
+%{_prefix}/libexec/vibeshine/vibepollo-machine-host
+%{_prefix}/libexec/vibeshine/vibeshine-kwin-capability
 %{_prefix}/lib/vibeshine/libvibeshine-kwin-gpu.so
 %{_libdir}/security/pam_vibepollo_session.so
 
 # Dedicated access group for the privileged virtual-display control socket
 %{_prefix}/lib/sysusers.d/vibeshine-vkms.conf
+%{_prefix}/lib/sysusers.d/vibepollo.conf
 
 # Versioned DKMS/direct-build source tree
 /usr/src/vibeshine-drm-*
@@ -418,7 +425,8 @@ fi
 %{_unitdir}/vibeshine-vkms-control.socket
 %{_unitdir}/vibeshine-vkms-control@.service
 %{_unitdir}/vibeshine-vkms.service
-%{_unitdir}/vibepollo-prelogin.service
+%{_unitdir}/vibepollo-machine-prepare.service
+%{_unitdir}/vibepollo.service
 %{_unitdir}/vibepollo-session-restore@.service
 
 # Udev rules

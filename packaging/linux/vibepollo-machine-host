@@ -1,0 +1,213 @@
+#!/usr/bin/bash
+
+set -euo pipefail
+
+readonly settings_file=/etc/vibepollo/machine.conf
+readonly legacy_settings_file=/etc/vibepollo/prelogin.conf
+readonly pam_file=/etc/pam.d/plasmalogin
+readonly pam_line='session     optional    pam_vibepollo_session.so'
+readonly service_user=vibepollo
+readonly machine_profile=/var/lib/vibepollo
+readonly profile_marker=$machine_profile/.machine-profile
+readonly runtime_root=/run/vibepollo
+readonly session_file=$runtime_root/session.env
+readonly acl_state=$runtime_root/runtime-acl
+readonly handoff_directory=$runtime_root/session-handoffs
+readonly greeter_user=plasmalogin
+readonly virtual_output=Virtual-1
+
+desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''
+session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_groups=''; session_role=''
+
+fail() { /usr/bin/printf 'vibepollo-machine-host: %s\n' "$*" >&2; return 1; }
+require_root() { ((EUID == 0)) || fail "$1 requires root"; }
+valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+
+resolve_desktop_identity() {
+  local requested=$1 entry
+  valid_user "$requested" || fail 'invalid desktop account name'
+  entry=$(/usr/bin/getent passwd "$requested") || fail 'desktop account does not exist'
+  IFS=: read -r desktop_user _ desktop_uid desktop_gid _ desktop_home _ <<<"$entry"
+  [[ "$desktop_user" == "$requested" && "$desktop_uid" =~ ^[0-9]+$ && "$desktop_uid" -ge 1000 ]] || fail 'desktop account is invalid'
+  [[ "$desktop_gid" =~ ^[0-9]+$ && "$desktop_home" == /* && -d "$desktop_home" && ! -L "$desktop_home" ]] || fail 'desktop home is unsafe'
+}
+
+read_desktop_user() {
+  local source=$1 attributes key value line selected=''
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source")
+  [[ "$attributes" == 'root:root:600:regular file' ]] || fail "$source must be root:root mode 0600"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
+    case "$key" in
+      desktop_user) [[ -z "$selected" ]] || fail 'multiple desktop users selected'; selected=$value ;;
+      allowed_client_uuid) : ;; # accepted only during beta profile migration
+      *) fail "unknown setting in $source: $key" ;;
+    esac
+  done <"$source"
+  [[ -n "$selected" ]] || fail "$source does not select a desktop user"; /usr/bin/printf '%s\n' "$selected"
+}
+
+load_settings() { local selected; selected=$(read_desktop_user "$settings_file") || fail "missing settings: $settings_file"; resolve_desktop_identity "$selected"; }
+
+write_settings() {
+  local temporary
+  require_root configure; resolve_desktop_identity "$1"; /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo
+  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX)
+  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary"
+  /usr/bin/chown root:root "$temporary"; /usr/bin/chmod 0600 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$settings_file"
+}
+
+profile_is_safe() {
+  local unsafe
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  unsafe=$(/usr/bin/find "$1" -mindepth 1 ! -type d ! -type f -print -quit)
+  [[ -z "$unsafe" ]] || fail "profile contains an unsupported object: $unsafe"
+}
+
+secure_machine_profile() {
+  /usr/bin/chown "$service_user:$service_user" "$machine_profile"; /usr/bin/chmod 0700 "$machine_profile"
+  /usr/bin/find "$machine_profile" -mindepth 1 -type d -exec /usr/bin/chown "$service_user:$service_user" '{}' +
+  /usr/bin/find "$machine_profile" -mindepth 1 -type d -exec /usr/bin/chmod 0700 '{}' +
+  /usr/bin/find "$machine_profile" -mindepth 1 -type f -exec /usr/bin/chown "$service_user:$service_user" '{}' +
+  /usr/bin/find "$machine_profile" -mindepth 1 -type f -exec /usr/bin/chmod 0600 '{}' +
+}
+
+migrate_profile() {
+  local source staging
+  require_root migrate-profile; load_settings; /usr/bin/getent passwd "$service_user" >/dev/null || fail "missing system account: $service_user"
+  /usr/bin/install -d -o "$service_user" -g "$service_user" -m 0700 "$machine_profile"
+  /usr/bin/install -d -o root -g root -m 0755 "$runtime_root"
+  if [[ -f "$profile_marker" && ! -L "$profile_marker" ]]; then profile_is_safe "$machine_profile"; secure_machine_profile; return; fi
+  [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || fail 'unsafe machine-profile marker'
+  source=$desktop_home/.config/vibepollo; profile_is_safe "$source" || fail "missing or unsafe source profile: $source"
+  /usr/bin/find "$machine_profile" -mindepth 1 -print -quit | /usr/bin/grep -q . && fail 'machine profile is non-empty without its marker'
+  staging=$(/usr/bin/mktemp -d --tmpdir="$runtime_root" .profile.XXXXXX)
+  /usr/bin/cp -a --no-preserve=ownership -- "$source/." "$staging/" || { /usr/bin/rm -rf -- "$staging"; fail 'profile staging failed'; }
+  profile_is_safe "$staging" || { /usr/bin/rm -rf -- "$staging"; return 1; }
+  /usr/bin/cp -a --no-preserve=ownership -- "$staging/." "$machine_profile/"; /usr/bin/rm -rf -- "$staging"
+  /usr/bin/printf 'source_user=%s\n' "$desktop_user" >"$profile_marker"; secure_machine_profile
+  /usr/bin/printf 'vibepollo-machine-host: migrated %s into the machine profile\n' "$source"
+}
+
+configure_automatically() {
+  local home selected state user uid; local -a candidates=()
+  require_root configure-auto
+  if [[ -f "$settings_file" && ! -L "$settings_file" ]]; then load_settings; migrate_profile; return; fi
+  if [[ -f "$legacy_settings_file" && ! -L "$legacy_settings_file" ]]; then selected=$(read_desktop_user "$legacy_settings_file")
+  else
+    while IFS=: read -r user _ uid _ _ home _; do
+      [[ "$uid" =~ ^[0-9]+$ && "$uid" -ge 1000 && "$home" == /* && -d "$home" && ! -L "$home" ]] || continue
+      for state in "$home/.config/vibepollo/vibeshine_state.json" "$home/.config/vibepollo/sunshine_state.json"; do
+        if /usr/bin/runuser -u "$user" -- /usr/bin/test -f "$state" && ! /usr/bin/runuser -u "$user" -- /usr/bin/test -L "$state"; then
+          candidates+=("$user")
+          break
+        fi
+      done
+    done < <(/usr/bin/getent passwd)
+    ((${#candidates[@]} == 1)) || fail 'automatic setup requires exactly one desktop Vibepollo profile'; selected=${candidates[0]}
+  fi
+  write_settings "$selected"; migrate_profile
+}
+
+prepare_nvidia_devices() {
+  local found=0 information minor node
+  [[ -d /sys/module/nvidia ]] || return 0; [[ -x /usr/bin/nvidia-modprobe ]] || fail 'nvidia-modprobe is unavailable'
+  for information in /proc/driver/nvidia/gpus/*/information; do
+    [[ -f "$information" && ! -L "$information" ]] || continue; minor=$(/usr/bin/sed -n 's/^Device Minor:[[:space:]]*//p' "$information")
+    [[ "$minor" =~ ^(0|[1-9][0-9]*)$ ]] || fail "invalid NVIDIA minor in $information"; /usr/bin/nvidia-modprobe -c "$minor"; found=1
+  done
+  ((found)) || fail 'NVIDIA GPU metadata is unavailable'; /usr/bin/nvidia-modprobe -m; /usr/bin/nvidia-modprobe -u
+  for node in /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm; do [[ -c "$node" && ! -L "$node" ]] || fail "missing $node"; done
+}
+
+user_systemctl() {
+  local user=$1 uid runtime; shift; uid=$(/usr/bin/id -u -- "$user"); runtime=/run/user/$uid; [[ -S "$runtime/bus" ]] || return 1
+  /usr/bin/timeout --signal=KILL 25 /usr/bin/runuser -u "$user" -- /usr/bin/env -i \
+    "XDG_RUNTIME_DIR=$runtime" "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" /usr/bin/systemctl --user "$@"
+}
+
+discover_wayland_display() {
+  local user=$1 candidate display runtime selected=''; runtime=/run/user/$(/usr/bin/id -u -- "$user")
+  display=$(user_systemctl "$user" show-environment 2>/dev/null | /usr/bin/sed -n 's/^WAYLAND_DISPLAY=//p' | /usr/bin/head -n1) || :
+  [[ "$display" =~ ^wayland-[0-9]+$ && -S "$runtime/$display" ]] && { /usr/bin/printf '%s\n' "$display"; return; }
+  for candidate in "$runtime"/wayland-*; do [[ -S "$candidate" ]] || continue; display=${candidate##*/}; [[ "$display" =~ ^wayland-[0-9]+$ ]] || continue; [[ -z "$selected" ]] || fail "multiple Wayland displays for $user"; selected=$display; done
+  [[ -n "$selected" ]] || fail "Wayland display is not ready for $user"; /usr/bin/printf '%s\n' "$selected"
+}
+
+active_handoff_user() {
+  local marker attributes; local -a markers fields
+  shopt -s nullglob; markers=("$handoff_directory"/*); shopt -u nullglob; ((${#markers[@]} <= 1)) || fail 'multiple handoffs exist'; ((${#markers[@]} == 1)) || return 1
+  marker=${markers[0]}; [[ -f "$marker" && ! -L "$marker" ]] || fail 'unsafe handoff marker'; attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$marker")
+  [[ "$attributes" == 'root:root:600:regular file' ]] || fail 'untrusted handoff marker'; mapfile -t fields <"$marker"
+  [[ ${#fields[@]} == 3 && ${fields[1]} == "${marker##*/}" ]] || fail 'invalid handoff marker'; resolve_desktop_identity "${fields[0]}"; [[ "$desktop_uid" == "${fields[1]}" ]] || fail 'handoff mismatch'
+  /usr/bin/printf '%s\n' "$desktop_user"
+}
+
+wait_for_session() {
+  local user=$1 target=$2 attempt
+  /usr/bin/systemctl start "user@$(/usr/bin/id -u -- "$user").service"; user_systemctl "$user" reset-failed "$target" >/dev/null 2>&1 || :
+  for ((attempt=0; attempt<240; ++attempt)); do user_systemctl "$user" start "$target" >/dev/null 2>&1 && discover_wayland_display "$user" >/dev/null 2>&1 && return; /usr/bin/sleep 0.25; done
+  fail "graphical session did not become ready for $user"
+}
+
+write_session() {
+  local user=$1 role=$2 entry uid gid home runtime display groups temporary old_uid
+  entry=$(/usr/bin/getent passwd "$user"); IFS=: read -r _ _ uid gid _ home _ <<<"$entry"; runtime=/run/user/$uid; display=$(discover_wayland_display "$user")
+  groups=$(/usr/bin/id -G -- "$user" | /usr/bin/tr ' ' ',')
+  if [[ -f "$acl_state" && ! -L "$acl_state" ]]; then read -r old_uid <"$acl_state" || :; [[ "$old_uid" =~ ^[0-9]+$ ]] && /usr/bin/setfacl -x "u:$service_user" "/run/user/$old_uid" 2>/dev/null || :; fi
+  /usr/bin/setfacl -m "u:$service_user:--x" "$runtime"
+  temporary=$(/usr/bin/mktemp --tmpdir="$runtime_root" .session.XXXXXX)
+  /usr/bin/printf 'user=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\ngroups=%s\nrole=%s\n' "$user" "$uid" "$gid" "$home" "$runtime" "$display" "$groups" "$role" >"$temporary"
+  /usr/bin/chown root:"$service_user" "$temporary"; /usr/bin/chmod 0640 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$session_file"
+  /usr/bin/printf '%s\n' "$uid" >"$acl_state"; /usr/bin/chown root:root "$acl_state"; /usr/bin/chmod 0600 "$acl_state"
+}
+
+prepare() {
+  local selected
+  require_root prepare; load_settings; migrate_profile; prepare_nvidia_devices
+  if selected=$(active_handoff_user); then wait_for_session "$selected" plasma-kwin_wayland.service; write_session "$selected" desktop
+  else /usr/bin/getent passwd "$greeter_user" >/dev/null; wait_for_session "$greeter_user" plasma-login-wayland.target; write_session "$greeter_user" greeter; fi
+}
+
+load_session() {
+  local attributes key value line
+  [[ -f "$session_file" && ! -L "$session_file" ]] || fail 'missing session environment'; attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file")
+  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'untrusted session environment'
+  while IFS= read -r line || [[ -n "$line" ]]; do key=${line%%=*}; value=${line#*=}; case "$key" in user) session_user=$value;; uid) session_uid=$value;; gid) session_gid=$value;; home) session_home=$value;; runtime) session_runtime=$value;; display) session_display=$value;; groups) session_groups=$value;; role) session_role=$value;; *) fail "unknown session key: $key";; esac; done <"$session_file"
+  valid_user "$session_user"; [[ "$session_uid" =~ ^[0-9]+$ && "$session_gid" =~ ^[0-9]+$ && "$session_home" == /* && "$session_runtime" == "/run/user/$session_uid" && "$session_display" =~ ^wayland-[0-9]+$ && "$session_groups" =~ ^[0-9]+(,[0-9]+)*$ && "$session_role" =~ ^(desktop|greeter)$ ]] || fail 'invalid session environment'
+}
+
+run_host() {
+  local -a overrides=('system_tray=disabled')
+  [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"; load_session
+  if [[ "$session_role" == greeter ]]; then overrides+=('encoder=nvenc_experimental' 'capture=kms' 'min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=pc' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json' 'log_path=/var/lib/vibepollo/logs/prelogin.log'); fi
+  exec /usr/bin/env -i "HOME=/var/lib/vibepollo" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" \
+    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=$session_runtime" "PIPEWIRE_RUNTIME_DIR=$session_runtime" "XDG_SESSION_TYPE=wayland" "WAYLAND_DISPLAY=$session_display" \
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=$session_runtime/bus" "VIBEPOLLO_MACHINE_HOST=1" \
+    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
+    /usr/bin/vibepollo "$machine_profile/vibepollo.conf" "${overrides[@]}"
+}
+
+activate_greeter() {
+  local configuration; [[ $(/usr/bin/id -un) == "$greeter_user" ]] || fail "activate requires $greeter_user"
+  for ((attempt=0; attempt<100; ++attempt)); do if configuration=$(/usr/bin/kscreen-doctor -j 2>/dev/null) && /usr/bin/jq -e --arg name "$virtual_output" '([.outputs[] | select(.connected and .enabled)] | length) == 1 and any(.outputs[]; .name == $name and .connected and .enabled)' >/dev/null <<<"$configuration"; then /usr/bin/systemctl --user restart plasma-login.service; return; fi; /usr/bin/sleep 0.1; done
+  fail "refusing greeter start without exclusive $virtual_output"
+}
+
+install_pam_hook() {
+  local temporary; require_root install-pam; [[ -f "$pam_file" && ! -L "$pam_file" ]] || fail "unsafe PAM policy: $pam_file"
+  /usr/bin/grep -Eq '^[[:space:]]*session[[:space:]]+optional[[:space:]]+pam_vibepollo_session\.so([[:space:]]|$)' "$pam_file" && return
+  [[ $(/usr/bin/stat -c '%U:%G' -- "$pam_file") == root:root ]] || fail 'PAM policy is not root-owned'; temporary=$(/usr/bin/mktemp --tmpdir=/etc/pam.d .plasmalogin.XXXXXX)
+  /usr/bin/awk -v hook="$pam_line" '!done && $1=="session" && $2=="include" && $3=="system-login" {print hook; done=1} {print} END {if (!done) exit 1}' "$pam_file" >"$temporary" || { /usr/bin/rm -f -- "$temporary"; fail 'PAM insertion point missing'; }
+  /usr/bin/chown --reference="$pam_file" "$temporary"; /usr/bin/chmod --reference="$pam_file" "$temporary"; /usr/bin/mv -fT -- "$temporary" "$pam_file"
+}
+
+remove_pam_hook() {
+  local temporary; require_root remove-pam; [[ -f "$pam_file" && ! -L "$pam_file" ]] || return 0; temporary=$(/usr/bin/mktemp --tmpdir=/etc/pam.d .plasmalogin.XXXXXX)
+  /usr/bin/awk '$1=="session" && $2=="optional" && $3=="pam_vibepollo_session.so" {next} {print}' "$pam_file" >"$temporary"; /usr/bin/chown --reference="$pam_file" "$temporary"; /usr/bin/chmod --reference="$pam_file" "$temporary"; /usr/bin/mv -fT -- "$temporary" "$pam_file"
+}
+
+case "${1:-}" in
+  configure) [[ $# == 2 ]] || exit 2; write_settings "$2"; migrate_profile;; configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically;; migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile;; prepare) [[ $# == 1 ]] || exit 2; prepare;; run) [[ $# == 1 ]] || exit 2; run_host;; activate) [[ $# == 1 ]] || exit 2; activate_greeter;; install-pam) [[ $# == 1 ]] || exit 2; install_pam_hook;; remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook;; *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|migrate-profile|prepare|run|activate|install-pam|remove-pam}\n' "$0" >&2; exit 2;;
+esac

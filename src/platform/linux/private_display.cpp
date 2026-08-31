@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <display_device/json.h>
 #include <filesystem>
 #include <fstream>
@@ -105,7 +106,10 @@ namespace platf::linux_private_display {
       }
 
       std::vector<std::string> owned_argv;
-      owned_argv.reserve(arguments.size() + 1);
+      owned_argv.reserve(arguments.size() + 2);
+      if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+        owned_argv.emplace_back("/usr/libexec/vibeshine/vibepollo-session-exec");
+      }
       owned_argv.push_back(*executable);
       owned_argv.insert(owned_argv.end(), arguments.begin(), arguments.end());
       std::vector<const gchar *> argv;
@@ -492,7 +496,14 @@ namespace platf::linux_private_display {
       arguments.guard_required = restore_policy::requires_guard(guard_candidates);
       arguments.guard_output = restore_policy::select_guard(guard_candidates);
       if (arguments.guard_output) {
-        arguments.guard_activate = activation_by_output.at(*arguments.guard_output);
+        const auto activation = restore_policy::guard_activation(arguments.guard_output, activation_by_output);
+        if (activation) {
+          arguments.guard_activate = *activation;
+        } else {
+          BOOST_LOG(error) << "Linux private display: selected restore guard " << *arguments.guard_output
+                           << " has no activation transaction; preserving the current private scanout.";
+          arguments.guard_output.reset();
+        }
       }
 
       if (restored_non_private) {

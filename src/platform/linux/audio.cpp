@@ -9,6 +9,7 @@
 
 // lib includes
 #include <boost/regex.hpp>
+#include <gio/gio.h>
 #include <pulse/error.h>
 #include <pulse/pulseaudio.h>
 #include <pulse/simple.h>
@@ -67,6 +68,294 @@ namespace platf {
       return capture_e::ok;
     }
   };
+
+  namespace {
+    constexpr auto session_exec_path = "/usr/libexec/vibeshine/vibepollo-session-exec";
+    constexpr auto pactl_path = "/usr/bin/pactl";
+    constexpr auto parec_path = "/usr/bin/parec";
+
+    struct session_command_result_t {
+      bool success {false};
+      std::string stdout_text;
+      std::string stderr_text;
+    };
+
+    std::string trim_session_output(std::string value) {
+      const auto first = value.find_first_not_of(" \t\r\n");
+      if (first == std::string::npos) {
+        return {};
+      }
+      const auto last = value.find_last_not_of(" \t\r\n");
+      return value.substr(first, last - first + 1);
+    }
+
+    session_command_result_t run_session_command(const std::vector<std::string> &command) {
+      session_command_result_t result;
+      std::vector<const gchar *> argv;
+      argv.reserve(command.size() + 2);
+      argv.push_back(session_exec_path);
+      for (const auto &argument : command) {
+        argv.push_back(argument.c_str());
+      }
+      argv.push_back(nullptr);
+
+      GError *error = nullptr;
+      auto *process = g_subprocess_newv(
+        argv.data(),
+        static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_PIPE),
+        &error
+      );
+      if (!process) {
+        if (error) {
+          result.stderr_text = error->message;
+          g_error_free(error);
+        }
+        return result;
+      }
+
+      gchar *stdout_text = nullptr;
+      gchar *stderr_text = nullptr;
+      const auto communicated = g_subprocess_communicate_utf8(
+        process, nullptr, nullptr, &stdout_text, &stderr_text, &error
+      );
+      if (stdout_text) {
+        result.stdout_text = stdout_text;
+        g_free(stdout_text);
+      }
+      if (stderr_text) {
+        result.stderr_text = stderr_text;
+        g_free(stderr_text);
+      }
+      if (!communicated && error) {
+        if (!result.stderr_text.empty()) {
+          result.stderr_text += ": ";
+        }
+        result.stderr_text += error->message;
+        g_error_free(error);
+      }
+      result.success = communicated && g_subprocess_get_successful(process);
+      g_object_unref(process);
+      return result;
+    }
+
+    session_command_result_t run_pactl(std::vector<std::string> arguments) {
+      arguments.insert(arguments.begin(), pactl_path);
+      return run_session_command(arguments);
+    }
+
+    class session_mic_t final: public mic_t {
+    public:
+      explicit session_mic_t(GSubprocess *process):
+          process_ {process},
+          output_ {g_subprocess_get_stdout_pipe(process)} {
+        g_object_ref(output_);
+      }
+
+      capture_e sample(std::vector<float> &sample_buffer) override {
+        gsize bytes_read = 0;
+        GError *glib_error = nullptr;
+        const auto bytes = sample_buffer.size() * sizeof(float);
+        const auto success = g_input_stream_read_all(
+          output_, sample_buffer.data(), bytes, &bytes_read, nullptr, &glib_error
+        );
+        if (!success || bytes_read != bytes) {
+          BOOST_LOG(error) << "Session audio capture ended"
+                           << (glib_error ? std::string {": "} + glib_error->message : std::string {});
+          if (glib_error) {
+            g_error_free(glib_error);
+          }
+          return capture_e::error;
+        }
+        return capture_e::ok;
+      }
+
+      ~session_mic_t() override {
+        g_input_stream_close(output_, nullptr, nullptr);
+        g_object_unref(output_);
+        g_subprocess_force_exit(process_);
+        g_subprocess_wait(process_, nullptr, nullptr);
+        g_object_unref(process_);
+      }
+
+    private:
+      GSubprocess *process_;
+      GInputStream *output_;
+    };
+
+    class session_audio_control_t final: public audio_control_t {
+    public:
+      int set_sink(const std::string &sink) override {
+        const auto result = run_pactl({"set-default-sink", sink});
+        if (!result.success) {
+          BOOST_LOG(error) << "Couldn't set session default sink [" << sink << "]: " << result.stderr_text;
+          return -1;
+        }
+        return 0;
+      }
+
+      std::unique_ptr<mic_t> microphone(
+        const std::uint8_t *mapping,
+        int channels,
+        std::uint32_t sample_rate,
+        std::uint32_t frame_size,
+        bool,
+        bool
+      ) override {
+        std::string channel_map;
+        for (int index = 0; index < channels; ++index) {
+          if (index) {
+            channel_map += ',';
+          }
+          channel_map += pa_channel_position_to_string(position_mapping[mapping[index]]);
+        }
+        const auto process_bytes = frame_size * static_cast<std::uint32_t>(channels) * sizeof(float);
+        std::vector<std::string> owned_argv {
+          session_exec_path,
+          parec_path,
+          "--record",
+          "--raw",
+          "--client-name=vibepollo",
+          "--stream-name=vibepollo-record",
+          "--device=@DEFAULT_MONITOR@",
+          "--format=float32le",
+          "--rate=" + std::to_string(sample_rate),
+          "--channels=" + std::to_string(channels),
+          "--channel-map=" + channel_map,
+          "--latency=" + std::to_string(process_bytes),
+          "--process-time=" + std::to_string(process_bytes),
+        };
+        std::vector<const gchar *> argv;
+        argv.reserve(owned_argv.size() + 1);
+        for (const auto &argument : owned_argv) {
+          argv.push_back(argument.c_str());
+        }
+        argv.push_back(nullptr);
+
+        GError *glib_error = nullptr;
+        auto *process = g_subprocess_newv(
+          argv.data(),
+          static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE),
+          &glib_error
+        );
+        if (!process) {
+          BOOST_LOG(error) << "Couldn't start session audio capture: "
+                           << (glib_error ? glib_error->message : "unknown error");
+          if (glib_error) {
+            g_error_free(glib_error);
+          }
+          return nullptr;
+        }
+        return std::make_unique<session_mic_t>(process);
+      }
+
+      bool is_sink_available(const std::string &sink) override {
+        const auto result = run_pactl({"list", "short", "sinks"});
+        if (!result.success) {
+          return false;
+        }
+        std::istringstream lines {result.stdout_text};
+        for (std::string line; std::getline(lines, line);) {
+          const auto first_tab = line.find('\t');
+          const auto second_tab = first_tab == std::string::npos ? std::string::npos : line.find('\t', first_tab + 1);
+          if (first_tab != std::string::npos && second_tab != std::string::npos &&
+              line.substr(first_tab + 1, second_tab - first_tab - 1) == sink) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      std::optional<sink_t> sink_info() override {
+        const auto default_sink = run_pactl({"get-default-sink"});
+        if (!default_sink.success) {
+          BOOST_LOG(error) << "Couldn't read session default sink: " << default_sink.stderr_text;
+          return std::nullopt;
+        }
+
+        sink_t sink;
+        sink.host = trim_session_output(default_sink.stdout_text);
+        const bool stereo = ensure_null_sink(
+          "sink-sunshine-stereo", speaker::map_stereo, sizeof(speaker::map_stereo), index_.stereo
+        );
+        const bool surround51 = ensure_null_sink(
+          "sink-sunshine-surround51", speaker::map_surround51, sizeof(speaker::map_surround51), index_.surround51
+        );
+        const bool surround71 = ensure_null_sink(
+          "sink-sunshine-surround71", speaker::map_surround71, sizeof(speaker::map_surround71), index_.surround71
+        );
+        if (stereo && surround51 && surround71) {
+          sink.null = sink_t::null_t {
+            "sink-sunshine-stereo",
+            "sink-sunshine-surround51",
+            "sink-sunshine-surround71",
+          };
+        }
+        return sink;
+      }
+
+      ~session_audio_control_t() override {
+        unload_null(index_.stereo);
+        unload_null(index_.surround51);
+        unload_null(index_.surround71);
+      }
+
+    private:
+      struct {
+        std::optional<std::uint32_t> stereo;
+        std::optional<std::uint32_t> surround51;
+        std::optional<std::uint32_t> surround71;
+      } index_;
+
+      bool ensure_null_sink(
+        const char *name,
+        const std::uint8_t *mapping,
+        const int channels,
+        std::optional<std::uint32_t> &loaded_index
+      ) {
+        if (is_sink_available(name)) {
+          return true;
+        }
+        std::string channel_map;
+        for (int index = 0; index < channels; ++index) {
+          if (index) {
+            channel_map += ',';
+          }
+          channel_map += pa_channel_position_to_string(position_mapping[mapping[index]]);
+        }
+        const auto result = run_pactl({
+          "load-module",
+          "module-null-sink",
+          std::string {"sink_name="} + name,
+          "format=float32",
+          "rate=48000",
+          "channels=" + std::to_string(channels),
+          "channel_map=" + channel_map,
+          std::string {"sink_properties=device.description="} + name,
+        });
+        if (!result.success) {
+          BOOST_LOG(warning) << "Couldn't create session virtual sink [" << name << "]: " << result.stderr_text;
+          return false;
+        }
+        try {
+          const auto index = std::stoul(trim_session_output(result.stdout_text));
+          if (index >= PA_INVALID_INDEX) {
+            return false;
+          }
+          loaded_index = static_cast<std::uint32_t>(index);
+          return true;
+        } catch (const std::exception &) {
+          return false;
+        }
+      }
+
+      void unload_null(const std::optional<std::uint32_t> index) {
+        if (!index) {
+          return;
+        }
+        (void) run_pactl({"unload-module", std::to_string(*index)});
+      }
+    };
+  }  // namespace
 
   std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, std::string source_name) {
     auto mic = std::make_unique<mic_attr_t>();
@@ -515,6 +804,9 @@ namespace platf {
   }  // namespace pa
 
   std::unique_ptr<audio_control_t> audio_control() {
+    if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+      return std::make_unique<session_audio_control_t>();
+    }
     auto audio = std::make_unique<pa::server_t>();
 
     if (audio->init()) {

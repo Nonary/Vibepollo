@@ -21,8 +21,6 @@ add_subdirectory("${CMAKE_SOURCE_DIR}/third-party/libdisplaydevice")
 
 # libvirtualdisplay
 include(dependencies/libvirtualdisplay_source)
-set(BUILD_VIBESHINE_KWIN_GPU_BRIDGE ON CACHE BOOL
-        "Build the Vibepollo KWin GPU-association bridge" FORCE)
 add_subdirectory("${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/third-party/libvirtualdisplay")
 
 # common dependencies

@@ -261,7 +261,14 @@ jobs:
             echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
             exit 1
           fi
-          grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-machine-prepare.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-exec' <<< "${package_files}"
+          grep -qx 'usr/lib/sysusers.d/vibepollo.conf' <<< "${package_files}"
+          if grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"; then
+            echo "::error::The native package unexpectedly contains the legacy per-user host service."
+            exit 1
+          fi
           grep -qx 'usr/share/applications/io.github.Nonary.vibepollo.desktop' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
           grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"

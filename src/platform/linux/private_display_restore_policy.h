@@ -40,6 +40,21 @@ namespace platf::linux_private_display::restore_policy {
     return fallback == candidates.end() ? std::nullopt : std::make_optional(std::string {fallback->name});
   }
 
+  /** Resolve guard activation without allowing inconsistent compositor state to abort teardown. */
+  template <typename ActivationMap>
+  inline std::optional<typename ActivationMap::mapped_type> guard_activation(
+    const std::optional<std::string> &guard_output,
+    const ActivationMap &activation_by_output
+  ) {
+    if (!guard_output) {
+      return std::nullopt;
+    }
+    const auto activation = activation_by_output.find(*guard_output);
+    return activation == activation_by_output.end() ?
+             std::nullopt :
+             std::make_optional(activation->second);
+  }
+
   /** Keep the last working private scanout across restart until a physical capture source exists. */
   constexpr bool preserve_private_scanout(
     const bool capture_ready_physical,

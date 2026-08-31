@@ -5,15 +5,19 @@
 case "${1:-}" in
   remove | purge | 0)
     if command -v systemctl >/dev/null 2>&1; then
-      systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+      systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
       systemctl stop vibeshine-vkms.service 2>/dev/null || true
+      systemctl stop vibeshine-drm-setup.service 2>/dev/null || true
     fi
-    if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" ]; then
-      "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-prelogin-sync" remove-pam || true
+    if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" ]; then
+      "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" remove-pam || true
     fi
     if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; then
       "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" remove || \
-        echo "warning: could not remove the Vibeshine HDR DRM module cleanly."
+        echo "warning: could not remove the Vibepollo HDR DRM module cleanly."
+    fi
+    if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then
+      "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" restore || true
     fi
     ;;
 esac

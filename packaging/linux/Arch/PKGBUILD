@@ -27,6 +27,7 @@ if [ "${_versioned_gcc}" == true ]; then
 fi
 
 depends=(
+  'acl'
   'avahi'
   'curl'
   'dkms'

@@ -37,6 +37,11 @@ else()
                 OUTPUT_NAME pam_vibepollo_session)
         target_include_directories(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_INCLUDE_DIR}")
         target_link_libraries(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_LIBRARY}")
+        add_executable(vibepollo_session_exec
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-exec.c")
+        set_target_properties(vibepollo_session_exec PROPERTIES OUTPUT_NAME "vibepollo-session-exec")
+        target_include_directories(vibepollo_session_exec PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+        target_link_libraries(vibepollo_session_exec PRIVATE "${LIBCAP_LIBRARIES}")
         file(GENERATE
                 OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vibeshine_drm_version.h"
                 CONTENT "#define VIBESHINE_DRM_VERSION \"${PROJECT_VERSION_NUMERIC}\"\n")
@@ -44,11 +49,12 @@ else()
         install(PROGRAMS
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
-                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin-sync"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"
-                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-ready"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(TARGETS vibepollo_session_exec
+                RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibeshine_vkms_peercred
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS pam_vibepollo_session
@@ -56,9 +62,10 @@ else()
         install(FILES "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.sysusers"
                 DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
                 RENAME vibeshine-vkms.conf)
-        install(FILES
-                "${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/vibepollo.conf"
-                "${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/apps.json"
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo.sysusers"
+                DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
+                RENAME vibepollo.conf)
+        install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/prelogin/apps.json"
                 DESTINATION "${SUNSHINE_ASSETS_DIR}/prelogin")
         install(DIRECTORY "${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/"
                 DESTINATION "${VIBESHINE_DRM_SOURCE_INSTALL_DIR}"
@@ -84,8 +91,10 @@ else()
                 DESTINATION "${UDEV_RULES_INSTALL_DIR}")
     endif()
     if(SYSTEMD_FOUND)
-        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/app-${PROJECT_FQDN}.service"
-                DESTINATION "${SYSTEMD_USER_UNIT_INSTALL_DIR}")
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/app-${PROJECT_FQDN}.service"
+                    DESTINATION "${SYSTEMD_USER_UNIT_INSTALL_DIR}")
+        endif()
         install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunshine.conf"
                 DESTINATION "${SYSTEMD_MODULES_LOAD_DIR}")
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -94,7 +103,8 @@ else()
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
-                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-prelogin.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-prepare.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"
                     DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
         endif()
@@ -145,13 +155,15 @@ endif()
 
 # Apply setcap for RPM
 # https://github.com/coreos/rpm-ostree/discussions/5036#discussioncomment-10291071
-set(CPACK_RPM_USER_FILELIST "%caps(cap_sys_admin,cap_sys_nice+p) ${SUNSHINE_EXECUTABLE_PATH}")
+set(CPACK_RPM_USER_FILELIST
+        "%caps(cap_sys_admin,cap_sys_nice+p) ${SUNSHINE_EXECUTABLE_PATH};%attr(0750,root,vibepollo) %caps(cap_setgid,cap_setuid+ep) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec")
 
 # Dependencies
 set(CPACK_DEB_COMPONENT_INSTALL ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             ${CPACK_DEB_PLATFORM_PACKAGE_DEPENDS} \
             debianutils, \
+            acl, \
             libcap2, \
             libcurl4, \
             libdrm2, \
@@ -177,6 +189,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
 set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
             libcap >= 2.22, \
+            acl, \
             libcurl >= 7.0, \
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
