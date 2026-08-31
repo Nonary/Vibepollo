@@ -1716,8 +1716,12 @@ namespace proc {
       _app.frame_generation_provider,
       mangohud_policy.enabled && !proton_limiter
     );
-    bool smooth_motion_launch_ready = smooth_motion_policy.enabled;
-    if (smooth_motion_policy.enabled && !_app.steam_id.empty()) {
+    bool inherited_steam_environment_ready = true;
+    const bool direct_steam_launch_required =
+      !_app.steam_id.empty() &&
+      platf::steam::requires_direct_environment_launch(mangohud_policy.enabled, smooth_motion_policy.enabled);
+    if (direct_steam_launch_required) {
+      inherited_steam_environment_ready = false;
       std::uint32_t steam_app_id = 0;
       const auto *steam_id_begin = _app.steam_id.data();
       const auto *steam_id_end = steam_id_begin + _app.steam_id.size();
@@ -1735,28 +1739,28 @@ namespace proc {
             if (!game->launch_working_dir.empty()) {
               _app.working_dir = game->launch_working_dir.generic_string();
             }
+            inherited_steam_environment_ready = true;
             BOOST_LOG(info)
-              << "NVIDIA Smooth Motion: resolved direct Steam launch for app " << steam_app_id
-              << "; inherited Steam Launch Options and Vibepollo environment will be applied to the game process.";
+              << "Resolved direct Steam launch for app " << steam_app_id
+              << "; stream-owned environment and inherited Steam Launch Options will be applied to the game process.";
           } else {
-            smooth_motion_launch_ready = false;
             BOOST_LOG(error)
-              << "NVIDIA Smooth Motion cannot activate for Steam app " << steam_app_id
-              << " because direct launch metadata is incomplete; refusing to claim that the Steam broker inherited the NVIDIA environment.";
+              << "Stream-owned launch features cannot activate for Steam app " << steam_app_id
+              << " because direct launch metadata is incomplete; the already-running Steam broker cannot inherit their environment.";
           }
         } else {
-          smooth_motion_launch_ready = false;
           BOOST_LOG(error)
-            << "NVIDIA Smooth Motion cannot activate for Steam app " << steam_app_id
+            << "Stream-owned launch features cannot activate for Steam app " << steam_app_id
             << " because the installed game could not be resolved from Steam metadata.";
         }
       } else {
-        smooth_motion_launch_ready = false;
         BOOST_LOG(error)
-          << "NVIDIA Smooth Motion cannot activate because the managed Steam app ID is invalid: ["
+          << "Stream-owned launch features cannot activate because the managed Steam app ID is invalid: ["
           << _app.steam_id << "].";
       }
     }
+    const bool smooth_motion_launch_ready = smooth_motion_policy.enabled && inherited_steam_environment_ready;
+    const bool mangohud_launch_ready = mangohud_policy.enabled && inherited_steam_environment_ready;
     _env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = smooth_motion_launch_ready ? "1" : "";
     _env["NVPRESENT_QUEUE_FAMILY"] = smooth_motion_launch_ready && smooth_motion_policy.use_graphics_queue ? "1" : "";
     if (smooth_motion_launch_ready) {
@@ -1768,7 +1772,14 @@ namespace proc {
       }
     }
     const auto existing_preload = _env["LD_PRELOAD"].to_string();
-    if (mangohud_policy.enabled && proton_limiter) {
+    if (mangohud_policy.enabled && !mangohud_launch_ready) {
+      _env["MANGOHUD"] = "";
+      _env["MANGOHUD_CONFIG"] = "";
+      _env["MANGOHUD_FPS_LIMIT"] = "";
+      _env["LD_PRELOAD"] = platf::mangohud::without_preload(existing_preload);
+      BOOST_LOG(error)
+        << "Linux frame limiter disabled for this launch because the game process cannot inherit its environment.";
+    } else if (mangohud_policy.enabled && proton_limiter) {
       const bool mangohud_available = !bp::search_path("mangohud").empty();
       const bool proton_overlay_enabled = proton_overlay_requested && mangohud_available;
       if (proton_overlay_enabled) {

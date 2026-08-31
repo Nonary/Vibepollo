@@ -78,6 +78,14 @@ namespace platf::steam {
   // Return a URI/argv-safe launch target after validating the app ID.
   std::string launch_uri(std::uint32_t app_id);
   std::string launch_command(std::uint32_t app_id);
+
+  // An already-running Steam broker cannot inherit environment changes from
+  // a later `steam -applaunch` process. Features whose behavior is carried by
+  // environment variables must therefore resolve a direct game command.
+  inline bool requires_direct_environment_launch(bool frame_limiter_enabled, bool smooth_motion_enabled) {
+    return frame_limiter_enabled || smooth_motion_enabled;
+  }
+
   // Build a direct Linux launch that preserves Steam's user launch options
   // while placing Vibepollo's game-process wrapper at %command%. Falls back
   // to the Steam broker when local metadata is incomplete.
