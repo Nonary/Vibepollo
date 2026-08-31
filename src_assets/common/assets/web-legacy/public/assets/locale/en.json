@@ -691,7 +691,7 @@
     "gamepad_switch": "Nintendo Pro (Switch)",
     "gamepad_manual": "Manual DS4 options",
     "gamepad_x360": "X360 (Xbox 360)",
-    "gamepad_vhf": "Vibepollo Virtual Gamepad (Generic HID)",
+    "gamepad_vhf": "Vibepollo Virtual Gamepad",
     "gamepad_xone": "XOne (Xbox One)",
     "vigem_missing_title": "Virtual Gamepad Driver (ViGEm) not installed",
     "vigem_missing_desc": "Vibepollo requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:",
