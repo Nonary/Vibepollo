@@ -413,13 +413,24 @@ function Install-CertificateIfPresent {
 # in LocalMachine\TrustedPublisher to install its catalog without prompting.
 # Add only the expected, already-valid SignPath signer; local/test packages
 # continue using the bundled certificate path above.
-function Install-CatalogSignerCertificate {
-    $signature = Get-AuthenticodeSignature -LiteralPath $catPath
+function Get-ExpectedCatalogSignerCertificate {
+    param([string]$CatalogPath = $catPath)
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $CatalogPath
     $signer = $signature.SignerCertificate
     if (-not $signer -or $signature.Status -ne 'Valid') {
         return
     }
     if (-not [string]::Equals($signer.Subject, $signPathSignerSubject, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+
+    return $signer
+}
+
+function Install-CatalogSignerCertificate {
+    $signer = Get-ExpectedCatalogSignerCertificate
+    if (-not $signer) {
         return
     }
 

@@ -1,11 +1,11 @@
-# Pulls the real function out of install.ps1 and exercises it, so the test
-# covers the shipped logic rather than a restatement of it.
+# Pulls the real signer-validation helper out of install.ps1 and exercises it,
+# so the test covers the shipped trust boundary rather than restating it.
 $ErrorActionPreference = 'Stop'
 $pkg = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $installScript = Join-Path $pkg 'install.ps1'
 
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installScript, [ref]$null, [ref]$null)
-$wanted = @('Test-CatalogTrustedIndependently')
+$wanted = @('Get-ExpectedCatalogSignerCertificate')
 $definitions = $ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $node.Name
@@ -14,8 +14,7 @@ if ($definitions.Count -ne $wanted.Count) {
     throw "Expected $($wanted.Count) function(s), extracted $($definitions.Count)."
 }
 
-# The subject constant the functions close over.
-$legacySelfSignedSubject = 'CN=Sunshine Virtual Display Release Signing'
+$signPathSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 foreach ($definition in $definitions) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
@@ -28,33 +27,44 @@ function Check {
     if (-not $ok) { $script:failures++ }
 }
 
-# 1. Today's package: self-signed catalog, .cer alongside it. The trust must be
-#    kept, or upgrading to this build would break driver installation.
-$catPath = Join-Path $pkg 'SunshineVirtualDisplayDriver.cat'
-$certPath = Join-Path $pkg 'SunshineVirtualDisplayDriver.cer'
-Check (Test-CatalogTrustedIndependently) $false 'self-signed catalog still needs its root'
-
-# 2. Same catalog, but with no .cer shipped. Still self-signed, so still
-#    dependent: the subject check has to catch it without the file.
-$certPath = Join-Path $pkg 'does-not-exist.cer'
-Check (Test-CatalogTrustedIndependently) $false 'self-signed catalog detected without the .cer'
-
-# 3. A catalog signed by a real CA. Windows ships plenty; any of them stands on
-#    its own, which is the state a SignPath-signed catalog will be in.
-$microsoftCatalog = Get-ChildItem 'C:\Windows\System32\CatRoot' -Recurse -Filter *.cat -ErrorAction SilentlyContinue |
-    Where-Object { (Get-AuthenticodeSignature -LiteralPath $_.FullName).Status -eq 'Valid' } |
-    Select-Object -First 1
-if ($null -eq $microsoftCatalog) {
-    'no CA-signed catalog available to test against                 SKIPPED'
-} else {
-    $catPath = $microsoftCatalog.FullName
-    $certPath = Join-Path $pkg 'SunshineVirtualDisplayDriver.cer'
-    Check (Test-CatalogTrustedIndependently) $true "CA-signed catalog stands alone ($($microsoftCatalog.Name))"
+$script:testSignature = $null
+function Get-AuthenticodeSignature {
+    param([string] $LiteralPath)
+    return $script:testSignature
 }
 
-# 4. An unsigned file must never be read as independently trusted.
-$catPath = Join-Path $pkg 'virtualdisplay_probe.exe'
-Check (Test-CatalogTrustedIndependently) $false 'unsigned file is not independently trusted'
+$catPath = Join-Path $pkg 'SunshineVirtualDisplayDriver.cat'
+
+$script:testSignature = [pscustomobject]@{
+    Status = 'NotSigned'
+    SignerCertificate = $null
+}
+Check ($null -eq (Get-ExpectedCatalogSignerCertificate)) $true 'unsigned catalog is not trusted as a publisher'
+
+$unexpectedSigner = [pscustomobject]@{
+    Subject = 'CN=Unexpected Driver Publisher, O=Example'
+    Thumbprint = '00112233445566778899AABBCCDDEEFF00112233'
+}
+$script:testSignature = [pscustomobject]@{
+    Status = 'Valid'
+    SignerCertificate = $unexpectedSigner
+}
+Check ($null -eq (Get-ExpectedCatalogSignerCertificate)) $true 'valid catalog from an unexpected publisher is rejected'
+
+$expectedSigner = [pscustomobject]@{
+    Subject = $signPathSignerSubject
+    Thumbprint = '112233445566778899AABBCCDDEEFF0011223344'
+}
+$script:testSignature = [pscustomobject]@{
+    Status = 'Valid'
+    SignerCertificate = $expectedSigner
+}
+$acceptedSigner = Get-ExpectedCatalogSignerCertificate
+Check ($null -ne $acceptedSigner) $true 'valid SignPath publisher is accepted'
+Check ([string]::Equals($acceptedSigner.Thumbprint, $expectedSigner.Thumbprint, [System.StringComparison]::OrdinalIgnoreCase)) $true 'accepted publisher preserves its exact thumbprint'
+
+$script:testSignature.SignerCertificate.Subject = $signPathSignerSubject.ToLowerInvariant()
+Check ($null -ne (Get-ExpectedCatalogSignerCertificate)) $true 'SignPath subject comparison is case-insensitive'
 
 ""
 if ($failures -eq 0) { 'ALL CHECKS PASSED' } else { "$failures CHECK(S) FAILED" }
