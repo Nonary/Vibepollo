@@ -55,6 +55,10 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             "valid_candidates.append((key, tag, notes_file, release_commit))",
             workflow_text,
         )
+        self.assertIn('os.environ.get("GITHUB_REF") == "refs/heads/vibe-test"', workflow_text)
+        self.assertIn("Linux branch candidate:", workflow_text)
+        self.assertIn("release_version=release_version", workflow_text)
+        self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
 
     def test_arch_package_is_built_and_carried_into_release(self) -> None:
@@ -93,6 +97,8 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             'write_drm_version_header "${dkms_source}" "${dkms_ci_version}"',
             arch_text,
         )
+        self.assertIn('if [[ "${BRANCH}" == "vibe-test" ]]', arch_text)
+        self.assertIn('sub_version=".r${COMMIT}"', arch_text)
         self.assertIn("makedepends = nodejs", arch_text)
         self.assertIn("makedepends = npm", arch_text)
         self.assertIn("makedepends = ninja", arch_text)
