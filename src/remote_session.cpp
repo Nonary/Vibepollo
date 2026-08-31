@@ -202,8 +202,12 @@ namespace remote_session {
     return result;
   }
 
-  bool joins_existing_game_output(const role_e role, const bool stream_active) {
-    return role == role_e::game && stream_active;
+  bool joins_existing_game_output(
+    const role_e role,
+    const bool stream_active,
+    const bool retained_output_ready
+  ) {
+    return role == role_e::game && (stream_active || retained_output_ready);
   }
 
   std::string_view stream_start_response_key(const bool launched_from_applist) {

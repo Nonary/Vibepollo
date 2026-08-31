@@ -200,11 +200,14 @@ TEST(RemoteSession, StaleDisconnectControlsAreIdempotentButCannotTargetAnotherRo
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::disconnect_monitor).allowed);
 }
 
-TEST(RemoteSession, SecondaryGameTransportJoinsExistingOutputOnlyWhileActive) {
+TEST(RemoteSession, SecondaryGameTransportJoinsActiveOrRetainedOutput) {
   EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false));
+  EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, false, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, false, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, false, true));
 }
 
 TEST(RemoteSession, ApplistResumeUsesLaunchResponseShape) {

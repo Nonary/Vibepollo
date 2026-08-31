@@ -168,7 +168,12 @@ namespace remote_session {
   [[nodiscard]] bool allows_normal_game_cancel(const caller_t &caller, const game_t &game, bool remote_sessions_active);
   [[nodiscard]] projection_t project(const caller_t &caller, const game_t &game, const owner_t &owner, const std::vector<app_t> &configured, bool remote_sessions_active);
   [[nodiscard]] dispatch_t dispatch(const caller_t &caller, const game_t &game, const owner_t &owner, control_e control);
-  [[nodiscard]] bool joins_existing_game_output(role_e role, bool stream_active);
+  /** Join the running game's output while a peer owns it or a paused game retains a capture-ready output. */
+  [[nodiscard]] bool joins_existing_game_output(
+    role_e role,
+    bool stream_active,
+    bool retained_output_ready = false
+  );
   [[nodiscard]] std::string_view stream_start_response_key(bool launched_from_applist);
   [[nodiscard]] std::optional<control_completion_t> successful_control_completion(control_e control);
   [[nodiscard]] bool input_uses_display_or_audio(role_e role);

@@ -4929,8 +4929,25 @@ namespace nvhttp {
     // already counts pending launches, so every mutating decision below degrades to a
     // plain join on its own.
     const bool no_active_sessions = !has_stream_session_activity();
+    bool retained_game_output_ready = false;
+    if (no_active_sessions) {
+      if (const auto retained_output = config::runtime_output_name_override(); retained_output && !retained_output->empty()) {
+        const auto capture_outputs = platf::display_names();
+        retained_game_output_ready =
+          std::find(capture_outputs.begin(), capture_outputs.end(), *retained_output) != capture_outputs.end();
+        if (retained_game_output_ready) {
+          BOOST_LOG(info) << "Resume will join the capture-ready retained game output '"
+                          << *retained_output << "'.";
+        }
+      }
+    }
     const bool joining_existing_game_output =
-      remote_session::joins_existing_game_output(remote_session::role_e::game, !no_active_sessions);
+      remote_session::joins_existing_game_output(
+        remote_session::role_e::game,
+        !no_active_sessions,
+        retained_game_output_ready
+      );
+
     std::unordered_map<std::string, std::string> requested_runtime_overrides;
     if (auto running_app = proc::proc.resolve_app(current_appid)) {
       config::merge_config_overrides(requested_runtime_overrides, running_app->config_overrides);
@@ -4995,7 +5012,7 @@ namespace nvhttp {
     const bool is_input_only = config::input.enable_input_only_mode && current_appid == proc::input_only_app_id;
     const bool allow_display_changes = config::video.dd.config_revert_on_disconnect && !is_input_only;
     const bool allow_session_display_changes = allow_display_changes && !joining_existing_game_output;
-    if (no_active_sessions && allow_display_changes) {
+    if (no_active_sessions && allow_session_display_changes) {
       config::set_runtime_output_name_override(std::nullopt);
     }
     if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
