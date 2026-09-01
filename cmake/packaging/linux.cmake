@@ -85,6 +85,16 @@ else()
         target_link_libraries(vibepollo_provider_scan PRIVATE
                 nlohmann_json::nlohmann_json
                 "${SQLITE3_LIBRARIES}")
+        add_executable(vibepollo_steam_launch
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-steam-launch.cpp"
+                "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp")
+        set_target_properties(vibepollo_steam_launch PROPERTIES
+                OUTPUT_NAME "vibepollo-steam-launch")
+        target_include_directories(vibepollo_steam_launch PRIVATE
+                "${CMAKE_SOURCE_DIR}")
+        target_link_libraries(vibepollo_steam_launch PRIVATE
+                nlohmann_json::nlohmann_json)
         file(GENERATE
                 OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vibeshine_drm_version.h"
                 CONTENT "#define VIBESHINE_DRM_VERSION \"${PROJECT_VERSION_NUMERIC}\"\n")
@@ -98,7 +108,7 @@ else()
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
-                vibepollo_provider_scan
+                vibepollo_provider_scan vibepollo_steam_launch
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
         install(TARGETS vibepollo_session_broker
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}"
@@ -218,6 +228,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec"
             "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-broker"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-supervisor"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-steam-launch"
             "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-kwin-session-environment"
             "%attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-host"
     )

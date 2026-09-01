@@ -10,7 +10,9 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace platf::steam {
@@ -88,6 +90,24 @@ namespace platf::steam {
   inline bool requires_direct_environment_launch(bool frame_limiter_enabled, bool smooth_motion_enabled) {
     return frame_limiter_enabled || smooth_motion_enabled;
   }
+
+#ifdef __linux__
+  struct session_launch_policy_t {
+    std::string provider = "disabled";
+    std::uint32_t limit_millihz = 0;
+    std::string preset = "custom";
+    bool always_show_graph = false;
+    std::string limiter_method = "late";
+    bool smooth_motion = false;
+    bool smooth_motion_graphics_queue = false;
+  };
+
+  // Build and recognize the one canonical machine-host command that delegates
+  // Steam metadata parsing and direct launch to the selected desktop UID. The
+  // returned argv never contains a path or shell fragment from Steam metadata.
+  std::string session_launch_command(std::uint32_t app_id, const session_launch_policy_t &policy);
+  std::optional<std::vector<std::string>> session_launch_arguments(std::string_view command);
+#endif
 
   // Build a direct Linux launch that preserves Steam's user launch options
   // while placing Vibepollo's game-process wrapper at %command%. Falls back

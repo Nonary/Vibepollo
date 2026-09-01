@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -703,22 +704,53 @@ namespace {
       return;
     }
 
-    std::ifstream runtime_manifest(steamapps / ("appmanifest_" + required->value + ".acf"));
-    if (!runtime_manifest) {
+    const auto required_id = number(required);
+    if (!required_id || *required_id == 0 || *required_id > UINT32_MAX) {
       return;
     }
-    std::stringstream runtime_buffer;
-    runtime_buffer << runtime_manifest.rdbuf();
-    const auto runtime_doc = platf::steam::parse_vdf(runtime_buffer.str());
-    const auto *app_state = runtime_doc.find("AppState");
-    const auto *install_dir = app_state ? app_state->find("installdir") : nullptr;
-    if (!install_dir || install_dir->value.empty()) {
-      return;
-    }
-    const auto runtime = steamapps / "common" / install_dir->value;
-    ec.clear();
-    if (fs::is_regular_file(runtime / "_v2-entry-point", ec)) {
-      game.proton_runtime_path = runtime;
+    const auto required_text = std::to_string(*required_id);
+
+    // Steam can install the pressure-vessel runtime beside the game even when
+    // a compatibility tool records a different client root. Prefer that
+    // authoritative game library, then the client library. This is the layout
+    // used by current UMU-Proton installs and avoids silently falling back to
+    // an already-running Steam process that cannot inherit the stream limit.
+    std::vector<fs::path> runtime_roots {
+      game.library_path / "steamapps",
+      steamapps,
+    };
+    std::unordered_set<std::string> visited;
+    for (const auto &runtime_steamapps : runtime_roots) {
+      ec.clear();
+      const auto canonical = fs::weakly_canonical(runtime_steamapps, ec).generic_string();
+      if (ec || !visited.insert(canonical).second) {
+        continue;
+      }
+      std::ifstream runtime_manifest(
+        runtime_steamapps / ("appmanifest_" + required_text + ".acf")
+      );
+      if (!runtime_manifest) {
+        continue;
+      }
+      std::stringstream runtime_buffer;
+      runtime_buffer << runtime_manifest.rdbuf();
+      const auto runtime_doc = platf::steam::parse_vdf(runtime_buffer.str());
+      const auto *app_state = runtime_doc.find("AppState");
+      const auto app_id = app_state ? number(app_state->find("appid")) : std::nullopt;
+      const auto *install_dir = app_state ? app_state->find("installdir") : nullptr;
+      if (!app_id || *app_id != *required_id || !install_dir ||
+          install_dir->value.empty() || install_dir->value == "." ||
+          install_dir->value == ".." || install_dir->value.size() > 255 ||
+          install_dir->value.find('/') != std::string::npos ||
+          install_dir->value.find('\\') != std::string::npos) {
+        continue;
+      }
+      const auto runtime = runtime_steamapps / "common" / install_dir->value;
+      ec.clear();
+      if (fs::is_regular_file(runtime / "_v2-entry-point", ec)) {
+        game.proton_runtime_path = runtime;
+        break;
+      }
     }
   }
 
@@ -1061,13 +1093,112 @@ namespace platf::steam {
 #endif
   }
 
+#ifdef __linux__
+  namespace {
+    constexpr std::string_view session_exec_path =
+      "/usr/libexec/vibeshine/vibepollo-session-exec";
+
+    bool valid_session_launch_policy(const session_launch_policy_t &policy) {
+      const bool overlay = policy.provider == "mangohud" ||
+                           policy.provider == "mangohud-proton";
+      const bool limited = overlay || policy.provider == "proton";
+      if ((!limited && policy.provider != "disabled") ||
+          (limited && (policy.limit_millihz < 1000 ||
+                       policy.limit_millihz > 1000000)) ||
+          (!limited && policy.limit_millihz != 0) ||
+          (policy.preset != "custom" && policy.preset != "1" &&
+           policy.preset != "2" && policy.preset != "3" &&
+           policy.preset != "4") ||
+          (!overlay && (policy.preset != "custom" ||
+                        policy.always_show_graph)) ||
+          (policy.limiter_method != "early" &&
+           policy.limiter_method != "late") ||
+          (policy.provider != "mangohud" &&
+           policy.limiter_method != "late") ||
+          (!policy.smooth_motion && policy.smooth_motion_graphics_queue)) {
+        return false;
+      }
+      return limited || policy.smooth_motion;
+    }
+
+    bool parse_u32_token(std::string_view token, std::uint32_t &value) {
+      if (token.empty() || token.front() == '+' || token.front() == '-') {
+        return false;
+      }
+      const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+      return parsed.ec == std::errc {} && parsed.ptr == token.data() + token.size();
+    }
+  }  // namespace
+
+  std::string session_launch_command(std::uint32_t app_id,
+                                     const session_launch_policy_t &policy) {
+    if (app_id == 0 || !valid_session_launch_policy(policy)) {
+      return {};
+    }
+    return std::string(session_exec_path) + " steam-direct " +
+           std::to_string(app_id) + " " + policy.provider + " " +
+           std::to_string(policy.limit_millihz) + " " + policy.preset + " " +
+           (policy.always_show_graph ? "1" : "0") + " " +
+           policy.limiter_method + " " + (policy.smooth_motion ? "1" : "0") +
+           " " + (policy.smooth_motion_graphics_queue ? "1" : "0");
+  }
+
+  std::optional<std::vector<std::string>> session_launch_arguments(
+    std::string_view command
+  ) {
+    std::vector<std::string> tokens;
+    std::size_t offset = 0;
+    while (offset < command.size()) {
+      const auto separator = command.find(' ', offset);
+      const auto token = command.substr(
+        offset,
+        separator == std::string_view::npos ? command.size() - offset :
+                                               separator - offset
+      );
+      if (token.empty()) {
+        return std::nullopt;
+      }
+      tokens.emplace_back(token);
+      if (separator == std::string_view::npos) {
+        break;
+      }
+      offset = separator + 1;
+    }
+    if (tokens.size() != 10 || tokens[0] != session_exec_path ||
+        tokens[1] != "steam-direct") {
+      return std::nullopt;
+    }
+
+    std::uint32_t app_id = 0;
+    session_launch_policy_t policy;
+    if (!parse_u32_token(tokens[2], app_id) || app_id == 0 ||
+        !parse_u32_token(tokens[4], policy.limit_millihz) ||
+        (tokens[6] != "0" && tokens[6] != "1") ||
+        (tokens[8] != "0" && tokens[8] != "1") ||
+        (tokens[9] != "0" && tokens[9] != "1")) {
+      return std::nullopt;
+    }
+    policy.provider = tokens[3];
+    policy.preset = tokens[5];
+    policy.always_show_graph = tokens[6] == "1";
+    policy.limiter_method = tokens[7];
+    policy.smooth_motion = tokens[8] == "1";
+    policy.smooth_motion_graphics_queue = tokens[9] == "1";
+    if (session_launch_command(app_id, policy) != command) {
+      return std::nullopt;
+    }
+    tokens.erase(tokens.begin());
+    return tokens;
+  }
+#endif
+
   std::string launch_command(const game_t &game) {
 #ifdef __linux__
     if (game.app_id == 0 || game.launch_executable.empty()) {
       return launch_command(game.app_id);
     }
 
-    std::string command = "vibepollo-mangohud --appid " + std::to_string(game.app_id) + " -- env ";
+    std::string command = "/usr/bin/vibepollo-mangohud --appid " + std::to_string(game.app_id) + " -- env ";
     command += "SteamAppId=" + std::to_string(game.app_id) + " ";
     command += "SteamGameId=" + std::to_string(game.app_id) + " ";
     if (game.launch_os == "windows") {

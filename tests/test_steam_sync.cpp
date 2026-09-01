@@ -60,7 +60,7 @@ TEST(SteamSync, PublishesResolvedDirectCommandAndWorkingDirectory) {
   ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {game}));
   ASSERT_EQ(root["apps"].size(), 1U);
   EXPECT_EQ(root["apps"][0]["cmd"],
-            "/bin/sh -c 'mangohud vibepollo-mangohud --appid 42 -- env SteamAppId=42 SteamGameId=42 "
+            "/bin/sh -c 'mangohud /usr/bin/vibepollo-mangohud --appid 42 -- env SteamAppId=42 SteamGameId=42 "
             "'\\''/games/Direct/direct'\\'''");
   EXPECT_EQ(root["apps"][0]["working-dir"], "/games/Direct");
 }

@@ -29,6 +29,36 @@ int main(void) {
   CHECK(parse_number("0", 0, 10, &number) && number == 0);
   CHECK(parse_number("10", 1, 10, &number) && number == 10);
 
+  char *valid_steam_direct[] = {
+    "vibeshine-session-broker", "steam-direct", "1182900",
+    "mangohud-proton", "116000", "3", "1", "late", "0", "0", NULL
+  };
+  CHECK(steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[3] = "proton";
+  valid_steam_direct[5] = "custom";
+  valid_steam_direct[6] = "0";
+  CHECK(steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[3] = "disabled";
+  valid_steam_direct[4] = "0";
+  valid_steam_direct[8] = "1";
+  valid_steam_direct[9] = "1";
+  CHECK(steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[9] = "2";
+  CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[9] = "0";
+  valid_steam_direct[8] = "0";
+  CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[3] = "proton";
+  valid_steam_direct[4] = "116000";
+  valid_steam_direct[6] = "1";
+  CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[6] = "0";
+  valid_steam_direct[4] = "116.0";
+  CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+  valid_steam_direct[4] = "116000";
+  valid_steam_direct[2] = "0";
+  CHECK(!steam_direct_arguments_are_safe(10, valid_steam_direct));
+
   CHECK(xauthority_mode_is_safe(0600));
   CHECK(xauthority_mode_is_safe(0400));
   CHECK(!xauthority_mode_is_safe(0620));

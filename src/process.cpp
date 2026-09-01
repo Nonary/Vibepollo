@@ -1718,15 +1718,22 @@ namespace proc {
     const bool proton_limiter = platf::mangohud::proton_provider_selected(config::frame_limiter.provider);
     const bool proton_overlay_requested =
       platf::mangohud::proton_overlay_provider_selected(config::frame_limiter.provider);
+    const bool mangohud_available = !bp::search_path("mangohud").empty();
     const auto smooth_motion_policy = platf::smooth_motion::make_launch_policy(
       _app.frame_generation_enabled,
       _app.frame_generation_provider,
       mangohud_policy.enabled && !proton_limiter
     );
     bool inherited_steam_environment_ready = true;
+    bool session_steam_direct_launch = false;
+    const bool effective_frame_limiter =
+      mangohud_policy.enabled && (proton_limiter || mangohud_available);
     const bool direct_steam_launch_required =
       !_app.steam_id.empty() &&
-      platf::steam::requires_direct_environment_launch(mangohud_policy.enabled, smooth_motion_policy.enabled);
+      platf::steam::requires_direct_environment_launch(
+        effective_frame_limiter,
+        smooth_motion_policy.enabled
+      );
     if (direct_steam_launch_required) {
       inherited_steam_environment_ready = false;
       std::uint32_t steam_app_id = 0;
@@ -1736,24 +1743,67 @@ namespace proc {
       if (parsed_steam_id.ec == std::errc {} && parsed_steam_id.ptr == steam_id_end && steam_app_id != 0) {
         const auto games = platf::steam::discover();
         const auto game = std::find_if(games.begin(), games.end(), [steam_app_id](const auto &candidate) {
-          return candidate.app_id == steam_app_id;
+          return candidate.app_id == steam_app_id && candidate.installed;
         });
         if (game != games.end()) {
-          const auto direct_command = platf::steam::launch_command(*game);
-          const auto broker_command = platf::steam::launch_command(steam_app_id);
-          if (!direct_command.empty() && direct_command != broker_command) {
-            _app.cmd = direct_command;
-            if (!game->launch_working_dir.empty()) {
-              _app.working_dir = game->launch_working_dir.generic_string();
+          if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+            const bool proton_overlay_enabled =
+              effective_frame_limiter && proton_limiter &&
+              proton_overlay_requested && mangohud_available;
+            const bool mangohud_limiter_enabled =
+              effective_frame_limiter && !proton_limiter;
+            platf::steam::session_launch_policy_t policy {
+              .provider = proton_overlay_enabled ? "mangohud-proton" :
+                          (effective_frame_limiter && proton_limiter ? "proton" :
+                           (mangohud_limiter_enabled ? "mangohud" : "disabled")),
+              .limit_millihz = effective_frame_limiter ?
+                                 mangohud_policy.limit_millihz : 0,
+              .preset = "custom",
+              .always_show_graph = false,
+              .limiter_method = mangohud_limiter_enabled &&
+                                  config::frame_limiter.mangohud_limiter_method == "early" ?
+                                  "early" : "late",
+              .smooth_motion = smooth_motion_policy.enabled,
+              .smooth_motion_graphics_queue = smooth_motion_policy.enabled &&
+                                                smooth_motion_policy.use_graphics_queue,
+            };
+            const bool overlay = policy.provider == "mangohud" ||
+                                 policy.provider == "mangohud-proton";
+            if (overlay && (config::frame_limiter.mangohud_preset == "1" ||
+                            config::frame_limiter.mangohud_preset == "2" ||
+                            config::frame_limiter.mangohud_preset == "3" ||
+                            config::frame_limiter.mangohud_preset == "4")) {
+              policy.preset = config::frame_limiter.mangohud_preset;
             }
-            inherited_steam_environment_ready = true;
-            BOOST_LOG(info)
-              << "Resolved direct Steam launch for app " << steam_app_id
-              << "; stream-owned environment and inherited Steam Launch Options will be applied to the game process.";
+            policy.always_show_graph =
+              overlay && config::frame_limiter.mangohud_always_show_graph;
+            const auto command = platf::steam::session_launch_command(steam_app_id, policy);
+            if (!command.empty()) {
+              _app.cmd = command;
+              inherited_steam_environment_ready = true;
+              session_steam_direct_launch = true;
+              BOOST_LOG(info)
+                << "Delegated direct Steam launch for app " << steam_app_id
+                << " to the selected desktop session; no user path or launch option entered the machine host.";
+            }
           } else {
+            const auto direct_command = platf::steam::launch_command(*game);
+            const auto broker_command = platf::steam::launch_command(steam_app_id);
+            if (!direct_command.empty() && direct_command != broker_command) {
+              _app.cmd = direct_command;
+              if (!game->launch_working_dir.empty()) {
+                _app.working_dir = game->launch_working_dir.generic_string();
+              }
+              inherited_steam_environment_ready = true;
+              BOOST_LOG(info)
+                << "Resolved direct Steam launch for app " << steam_app_id
+                << "; stream-owned environment and inherited Steam Launch Options will be applied to the game process.";
+            }
+          }
+          if (!inherited_steam_environment_ready) {
             BOOST_LOG(error)
               << "Stream-owned launch features cannot activate for Steam app " << steam_app_id
-              << " because direct launch metadata is incomplete; the already-running Steam broker cannot inherit their environment.";
+              << " because a safe direct-launch request could not be constructed; the already-running Steam broker cannot inherit their environment.";
           }
         } else {
           BOOST_LOG(error)
@@ -1787,7 +1837,6 @@ namespace proc {
       BOOST_LOG(error)
         << "Linux frame limiter disabled for this launch because the game process cannot inherit its environment.";
     } else if (mangohud_policy.enabled && proton_limiter) {
-      const bool mangohud_available = !bp::search_path("mangohud").empty();
       const bool proton_overlay_enabled = proton_overlay_requested && mangohud_available;
       if (proton_overlay_enabled) {
         _env["MANGOHUD"] = "1";
@@ -1810,28 +1859,35 @@ namespace proc {
         }
       }
       if (!_app.steam_id.empty()) {
-        const auto state_path = platf::mangohud::write_state(
-          _app.steam_id,
-          proton_overlay_enabled ? "mangohud-proton" : "proton",
-          mangohud_policy.limit,
-          config::frame_limiter.mangohud_preset,
-          proton_overlay_enabled && config::frame_limiter.mangohud_always_show_graph,
-          config::frame_limiter.mangohud_limiter_method
-        );
-        if (state_path.empty()) {
-          BOOST_LOG(warning) << "Could not write the Steam Proton limiter handoff state for app "
-                             << _app.steam_id << ".";
-        } else {
-          BOOST_LOG(info) << "Proton DXVK/VKD3D frame limiter ready at " << mangohud_policy.limit
-                          << " FPS for Steam app " << _app.steam_id
+        if (session_steam_direct_launch) {
+          BOOST_LOG(info) << "Proton DXVK/VKD3D frame limiter delegated at "
+                          << mangohud_policy.limit << " FPS for Steam app "
+                          << _app.steam_id
                           << (proton_overlay_enabled ? " with the MangoHUD overlay." : ".");
+        } else {
+          const auto state_path = platf::mangohud::write_state(
+            _app.steam_id,
+            proton_overlay_enabled ? "mangohud-proton" : "proton",
+            mangohud_policy.limit,
+            config::frame_limiter.mangohud_preset,
+            proton_overlay_enabled && config::frame_limiter.mangohud_always_show_graph,
+            config::frame_limiter.mangohud_limiter_method
+          );
+          if (state_path.empty()) {
+            BOOST_LOG(warning) << "Could not write the Steam Proton limiter handoff state for app "
+                               << _app.steam_id << ".";
+          } else {
+            BOOST_LOG(info) << "Proton DXVK/VKD3D frame limiter ready at " << mangohud_policy.limit
+                            << " FPS for Steam app " << _app.steam_id
+                            << (proton_overlay_enabled ? " with the MangoHUD overlay." : ".");
+          }
         }
       } else {
         BOOST_LOG(warning)
           << "The Proton DXVK/VKD3D frame limiter requires a managed Steam Proton application.";
       }
     } else if (mangohud_policy.enabled) {
-      if (bp::search_path("mangohud").empty()) {
+      if (!mangohud_available) {
         _env["MANGOHUD"] = "";
         _env["MANGOHUD_CONFIG"] = "";
         _env["MANGOHUD_FPS_LIMIT"] = "";
@@ -1855,20 +1911,25 @@ namespace proc {
         _env["LD_PRELOAD"] = platf::mangohud::with_preload(existing_preload);
         BOOST_LOG(info) << "MangoHUD frame limiter enabled at " << mangohud_policy.limit << " FPS.";
         if (!_app.steam_id.empty()) {
-          const auto state_path = platf::mangohud::write_state(
-            _app.steam_id,
-            "mangohud",
-            mangohud_policy.limit,
-            config::frame_limiter.mangohud_preset,
-            config::frame_limiter.mangohud_always_show_graph,
-            config::frame_limiter.mangohud_limiter_method
-          );
-          if (state_path.empty()) {
-            BOOST_LOG(warning) << "Could not write the Steam MangoHUD handoff state for app "
-                               << _app.steam_id << ".";
+          if (session_steam_direct_launch) {
+            BOOST_LOG(info) << "Steam MangoHUD handoff delegated for app "
+                            << _app.steam_id << ".";
           } else {
-            BOOST_LOG(info) << "Steam MangoHUD handoff ready for app " << _app.steam_id
-                            << "; the direct game command will apply the stream limit after inherited Steam Launch Options.";
+            const auto state_path = platf::mangohud::write_state(
+              _app.steam_id,
+              "mangohud",
+              mangohud_policy.limit,
+              config::frame_limiter.mangohud_preset,
+              config::frame_limiter.mangohud_always_show_graph,
+              config::frame_limiter.mangohud_limiter_method
+            );
+            if (state_path.empty()) {
+              BOOST_LOG(warning) << "Could not write the Steam MangoHUD handoff state for app "
+                                 << _app.steam_id << ".";
+            } else {
+              BOOST_LOG(info) << "Steam MangoHUD handoff ready for app " << _app.steam_id
+                              << "; the direct game command will apply the stream limit after inherited Steam Launch Options.";
+            }
           }
         }
       }
