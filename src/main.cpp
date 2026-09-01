@@ -7,7 +7,10 @@
 #include <atomic>
 #include <codecvt>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <csignal>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -51,6 +54,7 @@
   #include "src/platform/windows/virtual_display.h"
   #include "src/platform/windows/virtual_display_cleanup.h"
 #elif defined(__linux__)
+  #include "src/platform/linux/capability_sanitizer.h"
   #include "src/platform/linux/private_display.h"
 #endif
 
@@ -91,8 +95,9 @@ namespace {
 
   class shutdown_deadline_t {
   public:
-    explicit shutdown_deadline_t(std::atomic_bool *signal_requested):
-        signal_requested_ {signal_requested} {
+    explicit shutdown_deadline_t(std::atomic_bool *signal_requested, bool supervised_machine_host):
+        signal_requested_ {signal_requested},
+        supervised_machine_host_ {supervised_machine_host} {
       try {
         worker_ = std::jthread([this](std::stop_token) {
           run();
@@ -171,6 +176,14 @@ namespace {
       state_ = state_e::firing;
       lock.unlock();
       BOOST_LOG(fatal) << "10 seconds passed, yet Sunshine's still running: Forcing shutdown"sv;
+#ifdef __linux__
+      if (supervised_machine_host_) {
+        // A supervised machine host must not enter a core-dump path while a
+        // driver or session helper is already wedged.  End the private child;
+        // the controller will quiesce the old generation before any restart.
+        std::_Exit(EXIT_FAILURE);
+      }
+#endif
       lifetime::debug_trap();
     }
 
@@ -179,6 +192,7 @@ namespace {
     state_e state_ {state_e::idle};
     std::atomic_bool *signal_requested_ = nullptr;
     std::jthread worker_;
+    const bool supervised_machine_host_;
   };
 }  // namespace
 
@@ -245,6 +259,21 @@ WINAPI BOOL ConsoleCtrlHandler(DWORD type) {
 #endif
 
 int main(int argc, char *argv[]) {
+#ifdef __linux__
+  if (!platf::linux_security::sanitize_startup_capabilities()) {
+    const int error_number = errno ? errno : EPERM;
+    std::fprintf(stderr, "Vibepollo: failed to sanitize Linux startup capabilities: %s\n",
+                 std::strerror(error_number));
+    return 1;
+  }
+  const char *machine_host_environment = std::getenv("VIBEPOLLO_MACHINE_HOST");
+  const bool supervised_machine_host =
+    machine_host_environment && machine_host_environment[0] == '1' &&
+    machine_host_environment[1] == '\0';
+#else
+  constexpr bool supervised_machine_host = false;
+#endif
+
   lifetime::argv = argv;
 
 #ifdef _WIN32
@@ -350,7 +379,7 @@ int main(int argc, char *argv[]) {
   // to bound that join as well as the ordinary shutdown path below.
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
   std::atomic_bool shutdown_signal_requested {false};
-  shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested};
+  shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host};
 
 #ifdef WIN32
   // Modify relevant NVIDIA control panel settings if the system has corresponding gpu

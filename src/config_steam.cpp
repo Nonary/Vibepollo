@@ -148,8 +148,7 @@ namespace config {
     // failures are non-fatal because Steam is an optional installation on
     // Windows and may not have started yet.
     try {
-      const auto roots = platf::steam::default_library_roots();
-      if (roots.empty()) {
+      if (!platf::steam::available()) {
         return;
       }
       const auto path = config::stream.file_apps;
@@ -159,7 +158,7 @@ namespace config {
         return;
       }
       auto root = nlohmann::json::parse(text);
-      auto catalog = platf::steam::discover_catalog(roots);
+      auto catalog = platf::steam::discover_catalog();
       auto games = platf::steam::sync::policy::select_games(
         catalog,
         steam.sync_all_installed,

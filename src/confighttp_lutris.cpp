@@ -54,7 +54,8 @@ namespace confighttp {
     if (!authenticate(response, request)) return;
     try {
       const auto database = platf::lutris::default_database_path();
-      const auto found = platf::lutris::discover(database);
+      const auto has_database = platf::lutris::database_available();
+      const auto found = platf::lutris::discover();
       const auto importable = platf::lutris::sync::policy::filter_games(found, {}, config::lutris.include_steam);
       const auto filtered = platf::lutris::sync::policy::filter_games(
         found, config::lutris.exclude_games_meta, config::lutris.include_steam);
@@ -64,8 +65,8 @@ namespace confighttp {
       }
       send_response(response, {
         {"status", true}, {"provider", "lutris"}, {"enabled", config::lutris.enabled},
-        {"available", !database.empty() && platf::lutris::executable_available()},
-        {"database_available", !database.empty()}, {"executable_available", platf::lutris::executable_available()},
+        {"available", has_database && platf::lutris::executable_available()},
+        {"database_available", has_database}, {"executable_available", platf::lutris::executable_available()},
         {"database_path", database.generic_string()}, {"game_count", found.size()},
         {"importable_game_count", filtered.size()}, {"steam_game_count", found.size() -
           platf::lutris::sync::policy::filter_games(found, {}, false).size()},
@@ -100,12 +101,11 @@ namespace confighttp {
       return;
     }
     try {
-      const auto database = platf::lutris::default_database_path();
-      if (database.empty() || !platf::lutris::executable_available()) {
+      if (!platf::lutris::database_available() || !platf::lutris::executable_available()) {
         bad_request(response, request, "Lutris installation was not found");
         return;
       }
-      auto found = platf::lutris::discover(database);
+      auto found = platf::lutris::discover();
       platf::lutris::artwork::prepare(found, platf::appdata());
       std::lock_guard apps_lock {apps_file_mutex()};
       auto root = nlohmann::json::parse(file_handler::read_file(config::stream.file_apps.c_str()));

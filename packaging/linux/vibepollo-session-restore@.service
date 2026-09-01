@@ -1,8 +1,0 @@
-[Unit]
-Description=Restore Vibepollo pre-login streaming after desktop session %i
-StartLimitIntervalSec=0
-
-[Service]
-Type=oneshot
-ExecStart=/usr/libexec/vibeshine/vibepollo-session-handoff restore %i
-TimeoutStartSec=infinity

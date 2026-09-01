@@ -13,11 +13,11 @@
 #include "src/file_handler.h"
 #include "src/logging.h"
 #include "src/video.h"
+#if !defined(__FreeBSD__)
+  #include "scoped_capability.h"
+#endif
 
 // platform includes
-#if !defined(__FreeBSD__)
-  #include <sys/capability.h>
-#endif
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -497,16 +497,6 @@ namespace egl {
 
   std::optional<ctx_t> make_ctx(display_t::pointer display) {
     bool nice_warning = false;
-#if !defined(__FreeBSD__)
-    cap_t caps = cap_get_proc();
-
-    cap_value_t sys_nice = CAP_SYS_NICE;
-    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_SET) || cap_set_proc(caps)) {
-      BOOST_LOG(debug) << "Failed to gain CAP_SYS_NICE"sv;
-      nice_warning = true;
-    }
-    cap_free(caps);
-#endif
 
     constexpr int conf_attr[] {
       EGL_RENDERABLE_TYPE,
@@ -533,14 +523,41 @@ namespace egl {
     attr.push_back(3);
 
     // Only add the high priority attribute if the driver explicitly supports it
-    if (extension_st && std::string_view(extension_st).contains("EGL_IMG_context_priority"sv)) {
+    const bool high_priority_supported =
+      extension_st && std::string_view(extension_st).contains("EGL_IMG_context_priority"sv);
+    if (high_priority_supported) {
       BOOST_LOG(debug) << "EGL: High priority context supported"sv;
+    }
+
+    EGLContext raw_ctx = EGL_NO_CONTEXT;
+#if !defined(__FreeBSD__)
+    if (high_priority_supported) {
+      platf::linux_security::scoped_effective_capability nice {CAP_SYS_NICE};
+      if (nice.state() == platf::linux_security::scoped_effective_capability::state_e::failed) {
+        BOOST_LOG(error) << "Failed to safely raise CAP_SYS_NICE for EGL context creation"sv;
+        return std::nullopt;
+      }
+      if (nice.active()) {
+        attr.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
+        attr.push_back(EGL_CONTEXT_PRIORITY_HIGH_IMG);
+      } else {
+        nice_warning = true;
+        BOOST_LOG(debug) << "CAP_SYS_NICE is not permitted; creating an EGL context at default priority"sv;
+      }
+      attr.push_back(EGL_NONE);
+      raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    } else {
+      attr.push_back(EGL_NONE);
+      raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    }
+#else
+    if (high_priority_supported) {
       attr.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
       attr.push_back(EGL_CONTEXT_PRIORITY_HIGH_IMG);
     }
     attr.push_back(EGL_NONE);
-
-    EGLContext raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+    raw_ctx = eglCreateContext(display, conf, EGL_NO_CONTEXT, attr.data());
+#endif
     if (raw_ctx == EGL_NO_CONTEXT) {
       BOOST_LOG(error) << "Couldn't create EGL context: ["sv << util::hex(eglGetError()).to_string_view() << ']';
       return std::nullopt;
@@ -592,14 +609,6 @@ namespace egl {
     BOOST_LOG(debug) << "GL: shader: "sv << gl_shader;
 
     gl::ctx.PixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-#if !defined(__FreeBSD__)
-    caps = cap_get_proc();
-    if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_nice, CAP_CLEAR) || cap_set_proc(caps)) {
-      BOOST_LOG(debug) << "Failed to drop CAP_SYS_NICE"sv;
-    }
-    cap_free(caps);
-#endif
 
     return ctx;
   }

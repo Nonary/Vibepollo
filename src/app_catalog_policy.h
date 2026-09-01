@@ -21,6 +21,10 @@ namespace proc::catalog {
 
   bool has_png_signature(std::span<const std::uint8_t> bytes);
   std::string asset_path(const std::string &assets_root, const std::string &relative_path);
+  bool machine_image_path_is_confined(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const std::string &covers_root);
   std::string validate_image_path(
     std::string image_path,
     const std::string &assets_root,

@@ -707,7 +707,10 @@ namespace platf {
 
     // Drop CAP_SYS_ADMIN, CAP_SYS_NICE and set DUMPABLE flag to allow XDG /root access
     if (has_elevated_privileges(true)) {
-      drop_elevated_privileges(true);
+      if (!drop_elevated_privileges(true)) {
+        BOOST_LOG(error) << "[portalgrab] Refusing portal capture after the permanent capability drop failed."sv;
+        return nullptr;
+      }
     }
 
     auto portal = std::make_shared<portal::portal_t>();

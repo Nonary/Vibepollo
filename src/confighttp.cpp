@@ -3059,10 +3059,10 @@ namespace confighttp {
 
     print_req(request);
 
-    nvhttp::erase_all_clients();
+    const bool persisted = nvhttp::erase_all_clients();
     proc::proc.terminate();
     nlohmann::json output_tree;
-    output_tree["status"] = true;
+    output_tree["status"] = persisted;
     send_response(response, output_tree);
   }
 
@@ -4317,8 +4317,8 @@ namespace confighttp {
         return;
       }
 
-      std::ifstream in(validated_path, std::ios::binary);
-      if (!in) {
+      const auto image = proc::read_validated_app_image(validated_path);
+      if (!image) {
         BOOST_LOG(warning) << "Unable to read cover image file: " << validated_path;
         bad_request(response, request, "Unable to read cover image file");
         return;
@@ -4329,7 +4329,7 @@ namespace confighttp {
       headers.emplace("X-Frame-Options", "DENY");
       headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
 
-      response->write(SimpleWeb::StatusCode::success_ok, in, headers);
+      response->write(SimpleWeb::StatusCode::success_ok, *image, headers);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "GetCover: "sv << e.what();
       bad_request(response, request, e.what());

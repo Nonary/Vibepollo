@@ -1,11 +1,17 @@
 #include "lutris_integration.h"
 
+#if defined(__linux__)
+  #include "provider_scan_protocol.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sqlite3.h>
 #include <string_view>
@@ -95,6 +101,28 @@ namespace platf::lutris {
     }
 
 #if defined(__linux__)
+    bool machine_host_mode() {
+      const auto *value = std::getenv("VIBEPOLLO_MACHINE_HOST");
+      return value && *value;
+    }
+
+    std::shared_ptr<const provider_scan::lutris_catalog_t> machine_lutris_catalog() {
+      static std::mutex mutex;
+      static std::shared_ptr<const provider_scan::lutris_catalog_t> cached;
+      static std::chrono::steady_clock::time_point refreshed_at {};
+      static bool initialized = false;
+      constexpr auto cache_lifetime = std::chrono::seconds {2};
+      const auto now = std::chrono::steady_clock::now();
+      std::lock_guard lock {mutex};
+      if (!initialized || now - refreshed_at >= cache_lifetime) {
+        auto scanned = provider_scan::scan_lutris_session();
+        cached = scanned ? std::make_shared<const provider_scan::lutris_catalog_t>(std::move(*scanned)) : nullptr;
+        refreshed_at = now;
+        initialized = true;
+      }
+      return cached;
+    }
+
     std::filesystem::path find_lutris_executable() {
       const auto *path_value = std::getenv("PATH");
       if (!path_value || !*path_value) return {};
@@ -118,12 +146,15 @@ namespace platf::lutris {
 
   std::filesystem::path default_database_path() {
 #if defined(__linux__)
-    if (const auto *xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+    if (machine_host_mode()) return {};
+    const auto *xdg = std::getenv("XDG_DATA_HOME");
+    if (xdg && *xdg) {
       const auto candidate = std::filesystem::path(xdg) / "lutris/pga.db";
       std::error_code error;
       if (std::filesystem::is_regular_file(candidate, error)) return candidate;
     }
-    if (const auto *home = std::getenv("HOME"); home && *home) {
+    const auto *home = std::getenv("HOME");
+    if (home && *home) {
       for (const auto &relative : {
              std::filesystem::path(".local/share/lutris/pga.db"),
              std::filesystem::path(".var/app/net.lutris.Lutris/data/lutris/pga.db")}) {
@@ -136,7 +167,30 @@ namespace platf::lutris {
     return {};
   }
 
+  bool database_available() {
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_lutris_catalog();
+      return catalog && catalog->database_available;
+    }
+#endif
+    return !default_database_path().empty();
+  }
+
+  bool discovery_ready() {
+#if defined(__linux__)
+    if (machine_host_mode()) return static_cast<bool>(machine_lutris_catalog());
+#endif
+    return true;
+  }
+
   std::vector<game_t> discover(const std::filesystem::path &requested_database) {
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_lutris_catalog();
+      return catalog && catalog->database_available ? catalog->games : std::vector<game_t> {};
+    }
+#endif
     const auto database_path = requested_database.empty() ? default_database_path() : requested_database;
     if (database_path.empty()) return {};
 
@@ -204,6 +258,10 @@ namespace platf::lutris {
 
   bool executable_available() {
 #if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_lutris_catalog();
+      return catalog && catalog->executable_available;
+    }
     return !find_lutris_executable().empty();
 #else
     return false;
@@ -212,9 +270,11 @@ namespace platf::lutris {
 
   bool launch(std::int64_t id) {
 #if defined(__linux__)
-    const auto executable = find_lutris_executable();
     const auto uri = launch_uri(id);
-    if (executable.empty() || uri.empty()) return false;
+    if (uri.empty()) return false;
+    const bool machine_host = machine_host_mode();
+    const auto executable = machine_host ? std::filesystem::path {} : find_lutris_executable();
+    if (!machine_host && executable.empty()) return false;
 
     int error_pipe[2] {-1, -1};
     if (pipe(error_pipe) != 0 || fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
@@ -239,7 +299,7 @@ namespace platf::lutris {
         _exit(127);
       }
       setsid();
-      if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+      if (machine_host) {
         const auto id_string = std::to_string(id);
         execl("/usr/libexec/vibeshine/vibepollo-session-exec", "vibepollo-session-exec", "lutris", id_string.c_str(), static_cast<char *>(nullptr));
       } else {

@@ -41,6 +41,27 @@ namespace proc::catalog {
       });
       return extension;
     }
+
+    bool is_strict_descendant(
+      const std::filesystem::path &candidate,
+      const std::filesystem::path &root) {
+      const auto normalized_candidate = candidate.lexically_normal();
+      const auto normalized_root = root.lexically_normal();
+      if (!normalized_candidate.is_absolute() || !normalized_root.is_absolute()) {
+        return false;
+      }
+
+      auto candidate_component = normalized_candidate.begin();
+      for (auto root_component = normalized_root.begin();
+           root_component != normalized_root.end();
+           ++root_component, ++candidate_component) {
+        if (candidate_component == normalized_candidate.end() ||
+            *candidate_component != *root_component) {
+          return false;
+        }
+      }
+      return candidate_component != normalized_candidate.end();
+    }
   }  // namespace
 
   bool has_png_signature(std::span<const std::uint8_t> bytes) {
@@ -50,6 +71,29 @@ namespace proc::catalog {
 
   std::string asset_path(const std::string &assets_root, const std::string &relative_path) {
     return (std::filesystem::path(assets_root) / relative_path).string();
+  }
+
+  bool machine_image_path_is_confined(
+    const std::string &image_path,
+    const std::string &assets_root,
+    const std::string &covers_root) {
+    if (image_path.empty()) {
+      return false;
+    }
+
+    const std::filesystem::path requested {image_path};
+    if (requested.is_absolute()) {
+      return is_strict_descendant(requested, assets_root) ||
+             is_strict_descendant(requested, covers_root);
+    }
+
+    // Legacy Steam catalogs used this client-facing spelling even though the
+    // installed file lives directly in the immutable assets root.
+    if (requested == std::filesystem::path {"./assets/steam.png"}) {
+      return true;
+    }
+    return is_strict_descendant(std::filesystem::path {assets_root} / requested,
+                                assets_root);
   }
 
   std::string validate_image_path(

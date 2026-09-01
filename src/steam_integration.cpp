@@ -1,13 +1,20 @@
 /** @file src/steam_integration.cpp */
 #include "steam_integration.h"
 
+#if defined(__linux__)
+  #include "provider_scan_protocol.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -146,6 +153,30 @@ namespace {
     const char *value = std::getenv(name);
     return value ? value : "";
   }
+
+#if defined(__linux__)
+  bool machine_host_mode() {
+    const auto *value = std::getenv("VIBEPOLLO_MACHINE_HOST");
+    return value && *value;
+  }
+
+  std::shared_ptr<const platf::provider_scan::steam_catalog_t> machine_steam_catalog() {
+    static std::mutex mutex;
+    static std::shared_ptr<const platf::provider_scan::steam_catalog_t> cached;
+    static std::chrono::steady_clock::time_point refreshed_at {};
+    static bool initialized = false;
+    constexpr auto cache_lifetime = std::chrono::seconds {2};
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard lock {mutex};
+    if (!initialized || now - refreshed_at >= cache_lifetime) {
+      auto scanned = platf::provider_scan::scan_steam_session();
+      cached = scanned ? std::make_shared<const platf::provider_scan::steam_catalog_t>(std::move(*scanned)) : nullptr;
+      refreshed_at = now;
+      initialized = true;
+    }
+    return cached;
+  }
+#endif
 
   fs::path steamapps_for(fs::path root) {
     std::error_code ec;
@@ -747,6 +778,13 @@ namespace platf::steam {
       add_root(roots, fs::path(home) / "Library/Application Support/Steam");
     }
 #else
+    const bool machine_host = machine_host_mode();
+    // The CAP_SYS_ADMIN machine daemon must not parse desktop-user-controlled
+    // provider data. A session-side scanner can populate the machine catalog;
+    // until then, retain the already migrated catalog and expose no home roots.
+    if (machine_host) {
+      return roots;
+    }
     const auto home = env("HOME");
     const auto xdg = env("XDG_DATA_HOME");
     if (!home.empty()) {
@@ -768,7 +806,28 @@ namespace platf::steam {
     return roots;
   }
 
+  bool available() {
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_steam_catalog();
+      return catalog && catalog->available;
+    }
+#endif
+    return !default_library_roots().empty();
+  }
+
   std::vector<game_t> discover(const std::vector<fs::path> &requested_roots) {
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_steam_catalog();
+      if (!catalog || !catalog->available) return {};
+      std::vector<game_t> installed;
+      std::copy_if(catalog->games.begin(), catalog->games.end(), std::back_inserter(installed), [](const auto &game) {
+        return game.installed;
+      });
+      return installed;
+    }
+#endif
     auto roots = requested_roots;
     if (roots.empty()) {
       roots = default_library_roots();
@@ -930,6 +989,12 @@ namespace platf::steam {
   }
 
   std::vector<game_t> discover_catalog(const std::vector<fs::path> &requested_roots) {
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      const auto catalog = machine_steam_catalog();
+      return catalog && catalog->available ? catalog->games : std::vector<game_t> {};
+    }
+#endif
     auto roots = requested_roots;
     if (roots.empty()) {
       roots = default_library_roots();

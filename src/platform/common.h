@@ -1059,7 +1059,7 @@ namespace platf {
   /** Resolve the render device path used for hardware encoding. */
   std::string resolve_render_device();
   bool has_elevated_privileges(bool all_caps = true);
+  [[nodiscard]] bool drop_elevated_privileges(bool all_caps = true);
   [[nodiscard]] bool drop_effective_elevated_privileges(bool all_caps = true);
-  void drop_elevated_privileges(bool all_caps = true);
 
 }  // namespace platf

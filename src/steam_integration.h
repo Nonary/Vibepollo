@@ -74,6 +74,9 @@ namespace platf::steam {
   // require a Steam Web API key or a public profile.
   std::vector<game_t> discover_catalog(const std::vector<std::filesystem::path> &roots = {});
   std::vector<std::filesystem::path> default_library_roots();
+  // On the Linux machine host this reports the active desktop session's
+  // scanner status without exposing that user's library paths to the host.
+  bool available();
 
   // Return a URI/argv-safe launch target after validating the app ID.
   std::string launch_uri(std::uint32_t app_id);

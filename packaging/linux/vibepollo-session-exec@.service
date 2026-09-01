@@ -1,0 +1,53 @@
+[Unit]
+Description=Vibepollo session execution broker connection
+Documentation=https://github.com/Nonary/Vibepollo
+BindsTo=vibepollo-session-controller.service
+After=vibepollo-session-controller.service
+
+[Service]
+Type=exec
+User=root
+ExecStart=/usr/libexec/vibeshine/vibepollo-session-broker
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+# The broker's worker owns exact transient-unit cancellation. Deliver TERM to
+# the whole connection cgroup so direct package/systemd shutdown cannot skip
+# the worker cleanup handler and strand a desktop application.
+KillMode=control-group
+TimeoutStopSec=15s
+MemoryMax=256M
+TasksMax=32
+
+CapabilityBoundingSet=CAP_SETGID CAP_SETUID CAP_KILL
+AmbientCapabilities=
+SecureBits=noroot noroot-locked
+# The root-only broker executable has permitted-only file capabilities.  Its
+# loader and parsers run with E/I/A empty; the first statement in main locks in
+# NoNewPrivileges, and narrowly scoped helpers raise one exact effective set.
+NoNewPrivileges=no
+
+DevicePolicy=closed
+PrivateDevices=yes
+PrivateTmp=yes
+PrivateMounts=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectProc=invisible
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @debug @module @mount @raw-io @reboot @swap
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any

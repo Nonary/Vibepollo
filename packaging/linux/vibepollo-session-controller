@@ -1,0 +1,1062 @@
+#!/usr/bin/bash
+
+set -uo pipefail
+
+readonly settings_file=/etc/vibepollo/machine.conf
+readonly runtime_root=/run/vibepollo
+readonly session_file=$runtime_root/session.env
+readonly generation_file=$runtime_root/session-generation
+readonly legacy_handoff_directory=$runtime_root/session-handoffs
+readonly legacy_restore_directory=$runtime_root/session-restores
+readonly control_socket=$runtime_root/vkms-control.sock
+readonly lease_directory=$runtime_root/vkms-leases
+readonly host_service=vibepollo.service
+readonly broker_socket_service=vibepollo-session-exec.socket
+readonly broker_socket_path=$runtime_root/session-broker.sock
+readonly service_user=vibepollo
+readonly greeter_user=plasmalogin
+readonly seat_name=seat0
+readonly reconcile_delay=1
+readonly command_timeout=5
+readonly stop_timeout=25
+readonly -a managed_outputs=(Virtual-1 Virtual-2 Virtual-3 Virtual-4)
+
+desktop_user=''
+desktop_uid=''
+candidate_session=''
+candidate_user=''
+candidate_uid=''
+candidate_gid=''
+candidate_home=''
+candidate_runtime=''
+candidate_display=''
+candidate_xdisplay=''
+candidate_xauthority=''
+candidate_groups=''
+candidate_role=''
+candidate_generation=''
+last_status=''
+shutting_down=0
+health_cycle=0
+
+log() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*"; }
+error() { /usr/bin/printf 'vibepollo-session-controller: %s\n' "$*" >&2; }
+announce() {
+  local status=$1
+  shift
+  if [[ "$status" != "$last_status" ]]; then
+    last_status=$status
+    log "$*"
+  fi
+}
+
+valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+valid_uid() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
+valid_session_id() { [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]; }
+valid_wayland_display() { [[ "$1" =~ ^wayland-[0-9]+$ ]]; }
+valid_xdisplay() { [[ "$1" =~ ^:[0-9]+(\.[0-9]+)?$ ]]; }
+
+xauthority_attributes_are_private() {
+  local attributes=$1 owner mode type extra
+  IFS=: read -r owner mode type extra <<<"$attributes"
+  [[ -z "$extra" && "$owner" == "$candidate_uid" && "$type" == 'regular file' &&
+     "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (((8#$mode & 0077) == 0))
+}
+
+xauthority_is_private() {
+  local path=$1 attributes
+  [[ "$path" == "$candidate_runtime"/* && "$path" != */../* && "$path" != */.. ]] || return 1
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test ! -L "$path" || return 1
+  attributes=$(/usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/stat -c '%u:%a:%F' -- "$path") || return 1
+  xauthority_attributes_are_private "$attributes"
+}
+
+clear_candidate() {
+  candidate_session=''
+  candidate_user=''
+  candidate_uid=''
+  candidate_gid=''
+  candidate_home=''
+  candidate_runtime=''
+  candidate_display=''
+  candidate_xdisplay=''
+  candidate_xauthority=''
+  candidate_groups=''
+  candidate_role=''
+  candidate_generation=''
+}
+
+read_settings() {
+  local attributes line key value entry
+  desktop_user=''
+  desktop_uid=''
+  [[ -f "$settings_file" && ! -L "$settings_file" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$settings_file") || return 1
+  [[ "$attributes" == 'root:root:600:regular file' ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* && "$line" == *=* ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      desktop_user)
+        [[ -z "$desktop_user" ]] || return 1
+        desktop_user=$value
+        ;;
+      *) return 1 ;;
+    esac
+  done <"$settings_file"
+  valid_user "$desktop_user" || return 1
+  entry=$(/usr/bin/getent passwd "$desktop_user") || return 1
+  IFS=: read -r value _ desktop_uid _ _ _ _ <<<"$entry"
+  [[ "$value" == "$desktop_user" ]] && valid_uid "$desktop_uid" && ((desktop_uid >= 1000))
+}
+
+loginctl_active_session() {
+  /usr/bin/timeout --signal=KILL "$command_timeout" \
+    /usr/bin/loginctl show-seat "$seat_name" --property=ActiveSession --value 2>/dev/null
+}
+
+loginctl_session_properties() {
+  local session=$1
+  /usr/bin/timeout --signal=KILL "$command_timeout" \
+    /usr/bin/loginctl show-session "$session" --no-pager \
+      --property=User --property=Name --property=Seat --property=Remote \
+      --property=Type --property=Class --property=Active --property=State \
+      --property=Service 2>/dev/null
+}
+
+observe_active_session() {
+  local properties line key value runtime_mode
+  local observed_user='' observed_name='' observed_seat='' observed_remote=''
+  local observed_type='' observed_class='' observed_active='' observed_state='' observed_service=''
+  local entry
+  clear_candidate
+  candidate_session=$(loginctl_active_session) || return 1
+  valid_session_id "$candidate_session" || return 1
+  properties=$(loginctl_session_properties "$candidate_session") || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      User) [[ -z "$observed_user" ]] || return 1; observed_user=$value ;;
+      Name) [[ -z "$observed_name" ]] || return 1; observed_name=$value ;;
+      Seat) [[ -z "$observed_seat" ]] || return 1; observed_seat=$value ;;
+      Remote) [[ -z "$observed_remote" ]] || return 1; observed_remote=$value ;;
+      Type) [[ -z "$observed_type" ]] || return 1; observed_type=$value ;;
+      Class) [[ -z "$observed_class" ]] || return 1; observed_class=$value ;;
+      Active) [[ -z "$observed_active" ]] || return 1; observed_active=$value ;;
+      State) [[ -z "$observed_state" ]] || return 1; observed_state=$value ;;
+      Service) [[ -z "$observed_service" ]] || return 1; observed_service=$value ;;
+      *) return 1 ;;
+    esac
+  done <<<"$properties"
+  valid_uid "$observed_user" && valid_user "$observed_name" || return 1
+  [[ "$observed_seat" == "$seat_name" && "$observed_remote" == no &&
+     "$observed_type" == wayland && "$observed_active" == yes &&
+     "$observed_state" == active ]] || return 1
+
+  if [[ "$observed_name" == "$desktop_user" && "$observed_user" == "$desktop_uid" &&
+        "$observed_class" == user && "$observed_service" == plasmalogin ]]; then
+    candidate_role=desktop
+  elif [[ "$observed_name" == "$greeter_user" && "$observed_class" == greeter &&
+          "$observed_service" == plasmalogin-greeter ]]; then
+    candidate_role=greeter
+  else
+    return 2
+  fi
+
+  entry=$(/usr/bin/getent passwd "$observed_user") || return 1
+  IFS=: read -r candidate_user _ candidate_uid candidate_gid _ candidate_home _ <<<"$entry"
+  [[ "$candidate_user" == "$observed_name" && "$candidate_uid" == "$observed_user" &&
+     "$candidate_gid" =~ ^[0-9]+$ && "$candidate_home" == /* ]] || return 1
+  candidate_runtime=/run/user/$candidate_uid
+  [[ -d "$candidate_runtime" && ! -L "$candidate_runtime" ]] || return 1
+  [[ $(/usr/bin/stat -c '%u:%F' -- "$candidate_runtime") == "$candidate_uid:directory" ]] || return 1
+  runtime_mode=$(/usr/bin/stat -c '%a' -- "$candidate_runtime") || return 1
+  [[ "$runtime_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (((8#$runtime_mode & 0700) == 0700 && (8#$runtime_mode & 0066) == 0 &&
+     (8#$runtime_mode & 0007) == 0)) || return 1
+  candidate_groups=$(/usr/bin/id -G -- "$candidate_user" | /usr/bin/tr ' ' ',') || return 1
+  [[ "$candidate_groups" =~ ^[0-9]+(,[0-9]+)*$ ]]
+}
+
+user_systemctl() {
+  local user=$1 uid=$2 gid=$3 runtime=$4
+  local bounded_timeout=${user_systemctl_timeout:-$command_timeout}
+  shift 4
+  [[ "$bounded_timeout" =~ ^[1-9][0-9]*$ && bounded_timeout -le command_timeout ]] || return 1
+  /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
+    /usr/bin/test -S "$runtime/bus" || return 1
+  /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
+    /usr/bin/test ! -L "$runtime/bus" || return 1
+  /usr/bin/timeout --signal=KILL "$bounded_timeout" \
+    /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- \
+      /usr/bin/env -i "XDG_RUNTIME_DIR=$runtime" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/bus" \
+        /usr/bin/systemctl --user "$@"
+}
+
+user_unit_running() {
+  local unit=$1 properties line key value active='' substate='' pid=''
+  properties=$(user_systemctl "$candidate_user" "$candidate_uid" "$candidate_gid" "$candidate_runtime" \
+    show "$unit" --property=ActiveState --property=SubState --property=MainPID 2>/dev/null) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      ActiveState) active=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      *) return 1 ;;
+    esac
+  done <<<"$properties"
+  case "$unit" in
+    # Targets have no MainPID property. Their active/active state is the
+    # lifecycle assertion; requiring a synthetic PID value makes every target
+    # fail readiness on systemd.
+    *.target) [[ "$active" == active && "$substate" == active ]] ;;
+    *) [[ "$active" == active && "$substate" == running && "$pid" =~ ^[1-9][0-9]*$ ]] ;;
+  esac
+}
+
+read_user_environment() {
+  local environment line key value wayland='' socket_attributes
+  candidate_display=''
+  candidate_xdisplay=''
+  candidate_xauthority=''
+  environment=$(user_systemctl "$candidate_user" "$candidate_uid" "$candidate_gid" "$candidate_runtime" \
+    show-environment 2>/dev/null | /usr/bin/head -c 65537) || return 1
+  ((${#environment} <= 65536)) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      WAYLAND_DISPLAY) [[ -z "$wayland" ]] || return 1; wayland=$value ;;
+      DISPLAY) [[ -z "$candidate_xdisplay" ]] || return 1; candidate_xdisplay=$value ;;
+      XAUTHORITY) [[ -z "$candidate_xauthority" ]] || return 1; candidate_xauthority=$value ;;
+    esac
+  done <<<"$environment"
+  valid_wayland_display "$wayland" || return 1
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test ! -L "$candidate_runtime/$wayland" || return 1
+  socket_attributes=$(/usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/stat -c '%u:%F' -- "$candidate_runtime/$wayland") || return 1
+  [[ "$socket_attributes" == "$candidate_uid:socket" ]] || return 1
+  candidate_display=$wayland
+
+  if [[ "$candidate_role" == desktop ]]; then
+    valid_xdisplay "$candidate_xdisplay" || return 1
+    xauthority_is_private "$candidate_xauthority" || return 1
+  else
+    candidate_xdisplay=''
+    candidate_xauthority=''
+  fi
+}
+
+probe_wayland() {
+  /usr/bin/timeout --signal=KILL "$command_timeout" \
+    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+        "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" \
+        "WAYLAND_DISPLAY=$candidate_display" /usr/bin/wayland-info >/dev/null 2>&1 || return 1
+  # KScreen output is controlled by the session account. Bound both its size
+  # and execution time, and keep JSON parsing below the UID boundary.
+  /usr/bin/timeout --signal=TERM --kill-after=1 "$command_timeout" \
+    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+        "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=$candidate_runtime/bus" \
+        "WAYLAND_DISPLAY=$candidate_display" /usr/bin/bash -c '
+          set -uo pipefail
+          readonly maximum_bytes=1048576
+          temporary=$(/usr/bin/mktemp --tmpdir=/tmp vibepollo-kscreen.XXXXXX) || exit 1
+          trap '\''/usr/bin/rm -f -- "$temporary"'\'' EXIT HUP INT TERM
+          if ! /usr/bin/timeout --signal=TERM --kill-after=1 "$1" /usr/bin/kscreen-doctor -j 2>/dev/null |
+               /usr/bin/head -c "$((maximum_bytes + 1))" >"$temporary"; then
+            exit 1
+          fi
+          size=$(/usr/bin/stat -c %s -- "$temporary") || exit 1
+          ((size > 0 && size <= maximum_bytes)) || exit 1
+          /usr/bin/timeout --signal=TERM --kill-after=1 "$1" \
+            /usr/bin/jq -e ".outputs | type == \"array\"" -- "$temporary" >/dev/null
+        ' vibepollo-kscreen "$command_timeout"
+}
+
+probe_x11() {
+  [[ "$candidate_role" == desktop ]] || return 0
+  /usr/bin/timeout --signal=KILL "$command_timeout" \
+    /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+      /usr/bin/env -i "HOME=$candidate_home" "USER=$candidate_user" "LOGNAME=$candidate_user" \
+        "PATH=/usr/bin" "XDG_RUNTIME_DIR=$candidate_runtime" "DISPLAY=$candidate_xdisplay" \
+        "XAUTHORITY=$candidate_xauthority" /usr/bin/xdpyinfo >/dev/null 2>&1
+}
+
+session_is_ready() {
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test -S "$candidate_runtime/bus" || return 1
+  /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
+    /usr/bin/test ! -L "$candidate_runtime/bus" || return 1
+  if [[ "$candidate_role" == greeter ]]; then
+    user_unit_running plasma-login-wayland.target || return 1
+    user_unit_running plasma-login-kwin_wayland.service || return 1
+    user_unit_running plasma-login.service || return 1
+  else
+    user_unit_running plasma-workspace-wayland.target || return 1
+    user_unit_running graphical-session.target || return 1
+    user_unit_running plasma-kwin_wayland.service || return 1
+    user_unit_running plasma-plasmashell.service || return 1
+  fi
+  read_user_environment && probe_wayland && probe_x11
+}
+
+system_systemctl_bounded() {
+  local timeout_seconds=$1
+  shift
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && timeout_seconds -le stop_timeout ]] || return 1
+  /usr/bin/timeout --signal=KILL "$timeout_seconds" /usr/bin/systemctl "$@"
+}
+
+host_unit_is_active() {
+  system_systemctl_bounded "$command_timeout" is-active --quiet "$host_service"
+}
+broker_socket_is_active() {
+  local attributes
+  system_systemctl_bounded "$command_timeout" is-active --quiet "$broker_socket_service" || return 1
+  [[ -S "$broker_socket_path" && ! -L "$broker_socket_path" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$broker_socket_path") || return 1
+  [[ "$attributes" == "root:${service_user}:660:socket" ]]
+}
+host_is_active() { host_unit_is_active && broker_socket_is_active; }
+
+system_unit_is_stopped() {
+  local unit=$1 properties line key value load='' active='' substate='' pid='' control_group=''
+  local -A seen=()
+  shift
+  if (($# == 0)); then
+    properties=$(system_systemctl_bounded "$command_timeout" show "$unit" \
+      --property=LoadState --property=ActiveState --property=SubState \
+      --property=MainPID --property=ControlGroup 2>/dev/null) || return 1
+  else
+    properties=$1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^(LoadState|ActiveState|SubState|MainPID|ControlGroup)$ &&
+       -z ${seen[$key]:-} ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      LoadState) load=$value ;;
+      ActiveState) active=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      ControlGroup) control_group=$value ;;
+    esac
+  done <<<"$properties"
+  [[ -n ${seen[LoadState]:-} && -n ${seen[ActiveState]:-} &&
+     -n ${seen[SubState]:-} && -n ${seen[ControlGroup]:-} ]] || return 1
+  if [[ "$unit" == *.socket ]]; then
+    ((${#seen[@]} == 4 || ${#seen[@]} == 5)) || return 1
+    [[ -z ${seen[MainPID]:-} || "$pid" == 0 ]] || return 1
+  else
+    ((${#seen[@]} == 5)) || return 1
+    [[ "$pid" == 0 ]] || return 1
+  fi
+  case "$load:$active:$substate" in
+    loaded:inactive:dead|loaded:failed:failed|masked:inactive:dead|masked-runtime:inactive:dead|not-found:inactive:dead) ;;
+    *) return 1 ;;
+  esac
+  session_app_control_group_is_empty "$control_group"
+}
+
+host_unit_is_stopped() {
+  if (($# == 0)); then
+    system_unit_is_stopped "$host_service"
+  else
+    system_unit_is_stopped "$host_service" "$1"
+  fi
+}
+
+stop_host() {
+  if system_systemctl_bounded "$command_timeout" is-active --quiet "$host_service" ||
+     system_systemctl_bounded "$command_timeout" is-failed --quiet "$host_service"; then
+    if ! system_systemctl_bounded "$stop_timeout" stop "$host_service"; then
+      system_systemctl_bounded "$command_timeout" kill --kill-whom=all --signal=KILL \
+        "$host_service" >/dev/null 2>&1 || :
+      system_systemctl_bounded "$command_timeout" --no-block stop \
+        "$host_service" >/dev/null 2>&1 || :
+    fi
+  fi
+  host_unit_is_stopped
+}
+
+connector_request() {
+  local request=$1
+  [[ -S "$control_socket" && ! -L "$control_socket" ]] || return 1
+  /usr/bin/printf '%s\n' "$request" |
+    /usr/bin/timeout --signal=KILL 3 /usr/bin/socat - "UNIX-CONNECT:$control_socket"
+}
+
+connector_owner_lease_is_absent() {
+  local output=$1
+  if [[ -e "$lease_directory" || -L "$lease_directory" ]]; then
+    [[ -d "$lease_directory" && ! -L "$lease_directory" ]] || return 1
+  fi
+  [[ ! -e "$lease_directory/$output.owner" && ! -L "$lease_directory/$output.owner" ]]
+}
+
+connector_control_socket_is_absent() {
+  [[ ! -e "$control_socket" && ! -L "$control_socket" ]]
+}
+
+connector_output_connection_state() {
+  local destination=$1 output=$2 path connection observed='' found=0
+  local -n result=$destination
+  result=''
+  for path in /sys/class/drm/*-"$output"/status; do
+    if [[ ! -e "$path" && ! -L "$path" ]]; then
+      continue
+    fi
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    connection=$(<"$path") || return 1
+    [[ "$connection" == connected || "$connection" == disconnected ]] || return 1
+    if ((found)) && [[ "$connection" != "$observed" ]]; then
+      return 1
+    fi
+    observed=$connection
+    found=1
+  done
+  if ((found)); then
+    result=$observed
+  else
+    result=absent
+  fi
+}
+
+connector_pool_presence() {
+  local destination=$1 output state absent=0 present=0
+  local -n result=$destination
+  result=''
+  for output in "${managed_outputs[@]}"; do
+    connector_output_connection_state state "$output" || return 1
+    if [[ "$state" == absent ]]; then
+      ((absent += 1))
+    else
+      ((present += 1))
+    fi
+  done
+  if ((absent == ${#managed_outputs[@]})); then
+    result=absent
+  elif ((present == ${#managed_outputs[@]})); then
+    result=present
+  else
+    # Never act on a partially created or partially removed connector pool.
+    return 1
+  fi
+}
+
+connectors_are_disconnected() {
+  local output state pool
+  connector_pool_presence pool || return 1
+  if [[ "$pool" == absent ]]; then
+    # Before the DRM helper has ever been installed or started there is no
+    # pool to release. This is safe only when *all* three representations are
+    # absent: every managed sysfs node, every owner lease, and the control
+    # socket. Any partial first-install state remains fail closed.
+    connector_control_socket_is_absent || return 1
+    for output in "${managed_outputs[@]}"; do
+      connector_owner_lease_is_absent "$output" || return 1
+    done
+    return 0
+  fi
+  for output in "${managed_outputs[@]}"; do
+    connector_owner_lease_is_absent "$output" || return 1
+    connector_output_connection_state state "$output" || return 1
+    [[ "$state" == disconnected ]] || return 1
+  done
+}
+
+release_connectors() {
+  local output status response state pool
+  connectors_are_disconnected && return 0
+  # Distinguish an actionable, complete connector pool from a mixed/partial
+  # first-install state before sending any mutating request.
+  connector_pool_presence pool || return 1
+  [[ "$pool" == present ]] || return 1
+  for output in "${managed_outputs[@]}"; do
+    if connector_owner_lease_is_absent "$output"; then
+      connector_output_connection_state state "$output" || return 1
+      [[ "$state" == disconnected ]] && continue
+    fi
+    status=$(connector_request "status $output") || return 1
+    case "$status" in
+      "STATUS disconnected $output") ;;
+      "STATUS connected $output")
+        response=$(connector_request "disconnect $output") || return 1
+        [[ "$response" == "OK disconnected $output" ]] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    connector_owner_lease_is_absent "$output" || return 1
+    connector_output_connection_state state "$output" || return 1
+    [[ "$state" == disconnected ]] || return 1
+  done
+  connectors_are_disconnected
+}
+
+read_session_record() {
+  local destination=$1 attributes line key value
+  local -n record=$destination
+  record=()
+  if [[ ! -e "$session_file" && ! -L "$session_file" ]]; then
+    return 2
+  fi
+  [[ -f "$session_file" && ! -L "$session_file" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file") || return 1
+  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role)$ ]] || return 1
+    [[ -z ${record[$key]+x} ]] || return 1
+    record[$key]=$value
+  done <"$session_file"
+  ((${#record[@]} == 12)) || return 1
+  [[ "${record[generation]}" =~ ^[1-9][0-9]*$ ]]
+}
+
+bounded_session_systemctl() {
+  local deadline=$1 remaining user_systemctl_timeout
+  shift
+  remaining=$((deadline - SECONDS))
+  ((remaining > 0)) || return 124
+  ((remaining < command_timeout)) && user_systemctl_timeout=$remaining || user_systemctl_timeout=$command_timeout
+  user_systemctl "$@"
+}
+
+bounded_system_systemctl() {
+  local deadline=$1 remaining bounded_timeout
+  shift
+  remaining=$((deadline - SECONDS))
+  ((remaining > 0)) || return 124
+  ((remaining < command_timeout)) && bounded_timeout=$remaining || bounded_timeout=$command_timeout
+  system_systemctl_bounded "$bounded_timeout" "$@"
+}
+
+session_app_control_group_is_empty() {
+  local control_group=$1 cgroup_path
+  [[ -n "$control_group" ]] || return 0
+  [[ "$control_group" == /* && "$control_group" != *'/../'* &&
+     "$control_group" != */.. && "$control_group" != *$'\n'* ]] || return 1
+  cgroup_path=/sys/fs/cgroup$control_group
+  if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
+    return 0
+  fi
+  [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
+     -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] || return 1
+  /usr/bin/grep -qx 'populated 0' "$cgroup_path/cgroup.events"
+}
+
+broker_unit_is_stopped() {
+  local deadline=$1 unit=$2 properties status
+  properties=$(bounded_system_systemctl "$deadline" show "$unit" \
+    --property=LoadState --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlGroup 2>/dev/null)
+  status=$?
+  if ((status != 0)); then
+    bounded_system_systemctl "$deadline" is-active --quiet "$unit" >/dev/null 2>&1
+    [[ $? == 4 ]]
+    return
+  fi
+  system_unit_is_stopped "$unit" "$properties"
+}
+
+enumerate_broker_instances() {
+  local destination=$1 deadline=$2 output line unit load active substate
+  local -a fields=()
+  local -A seen=()
+  local -n result=$destination
+  result=()
+  output=$(bounded_system_systemctl "$deadline" list-units --all --plain \
+    --no-legend --no-pager --full 'vibepollo-session-exec@*.service' 2>/dev/null |
+    /usr/bin/head -c 65537) || return 1
+  ((${#output} <= 65536)) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" != *$'\r'* ]] || return 1
+    read -ra fields <<<"$line"
+    if [[ ${fields[0]:-} == '●' ]]; then
+      fields=("${fields[@]:1}")
+    fi
+    ((${#fields[@]} >= 5)) || return 1
+    unit=${fields[0]}; load=${fields[1]}; active=${fields[2]}; substate=${fields[3]}
+    [[ "$unit" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ &&
+       "$load" == loaded && "$active" =~ ^[a-z-]+$ && "$substate" =~ ^[a-z-]+$ &&
+       -z ${seen[$unit]:-} ]] || return 1
+    seen[$unit]=1
+    result+=("$unit")
+    ((${#result[@]} <= 256)) || return 1
+  done <<<"$output"
+}
+
+stop_broker_instances() {
+  local deadline=$((SECONDS + stop_timeout)) clean_passes=0 all_stopped unit
+  local required_clean_passes=10
+  local -a units=()
+  while ((SECONDS < deadline)); do
+    enumerate_broker_instances units "$deadline" || return 1
+    all_stopped=1
+    for unit in "${units[@]}"; do
+      if broker_unit_is_stopped "$deadline" "$unit"; then
+        continue
+      fi
+      all_stopped=0
+      bounded_system_systemctl "$deadline" --no-block stop "$unit" >/dev/null 2>&1 || :
+      if ! broker_unit_is_stopped "$deadline" "$unit"; then
+        bounded_system_systemctl "$deadline" kill --kill-whom=all --signal=KILL \
+          "$unit" >/dev/null 2>&1 || :
+        bounded_system_systemctl "$deadline" --no-block stop "$unit" >/dev/null 2>&1 || :
+      fi
+    done
+    if ((all_stopped)); then
+      ((clean_passes += 1))
+      ((clean_passes >= required_clean_passes)) && return 0
+    else
+      clean_passes=0
+    fi
+    ((SECONDS < deadline)) || break
+    /usr/bin/sleep 0.1
+  done
+  return 1
+}
+
+close_broker_admission() {
+  if system_systemctl_bounded "$command_timeout" is-active --quiet "$broker_socket_service" ||
+     system_systemctl_bounded "$command_timeout" is-failed --quiet "$broker_socket_service"; then
+    system_systemctl_bounded "$stop_timeout" stop "$broker_socket_service" >/dev/null 2>&1 || {
+      system_systemctl_bounded "$command_timeout" kill --kill-whom=all --signal=KILL \
+        "$broker_socket_service" >/dev/null 2>&1 || :
+      system_systemctl_bounded "$command_timeout" --no-block stop \
+        "$broker_socket_service" >/dev/null 2>&1 || :
+    }
+  fi
+  system_unit_is_stopped "$broker_socket_service" || return 1
+  [[ ! -e "$broker_socket_path" && ! -L "$broker_socket_path" ]]
+}
+
+open_broker_admission() {
+  system_systemctl_bounded "$stop_timeout" start "$broker_socket_service" || return 1
+  broker_socket_is_active
+}
+
+session_app_unit_is_stopped() {
+  local deadline=$1 user=$2 uid=$3 gid=$4 runtime=$5 unit=$6 properties status
+  local line key value load='' active='' substate='' pid='' control_group=''
+  local -A seen=()
+  properties=$(bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
+    show "$unit" --property=LoadState --property=ActiveState --property=SubState \
+    --property=MainPID --property=ControlGroup 2>/dev/null)
+  status=$?
+  if ((status != 0)); then
+    bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
+      is-active --quiet "$unit" >/dev/null 2>&1
+    [[ $? == 4 ]]
+    return
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}; value=${line#*=}
+    [[ "$key" =~ ^(LoadState|ActiveState|SubState|MainPID|ControlGroup)$ &&
+       -z ${seen[$key]:-} ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      LoadState) load=$value ;;
+      ActiveState) active=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      ControlGroup) control_group=$value ;;
+    esac
+  done <<<"$properties"
+  ((${#seen[@]} == 5)) || return 1
+  [[ "$pid" == 0 ]] || return 1
+  case "$load:$active:$substate" in
+    loaded:inactive:dead|not-found:inactive:dead) ;;
+    # A failed unit is process-free only when systemd reports no MainPID and
+    # its exact cgroup is absent or unpopulated; both are verified here.
+    loaded:failed:failed) ;;
+    *) return 1 ;;
+  esac
+  session_app_control_group_is_empty "$control_group"
+}
+
+enumerate_session_generation_apps() {
+  local destination=$1 deadline=$2 user=$3 uid=$4 gid=$5 runtime=$6 generation=$7
+  local pattern="vibepollo-app-${generation}-*.service" output line unit load active substate
+  local -a fields=()
+  local -A seen=()
+  local -n result=$destination
+  result=()
+  output=$(bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
+    list-units --all --plain --no-legend --no-pager --full "$pattern" 2>/dev/null |
+    /usr/bin/head -c 65537) || return 1
+  ((${#output} <= 65536)) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    [[ "$line" != *$'\r'* ]] || return 1
+    read -ra fields <<<"$line"
+    if [[ ${fields[0]:-} == '●' ]]; then
+      fields=("${fields[@]:1}")
+    fi
+    ((${#fields[@]} >= 5)) || return 1
+    unit=${fields[0]}; load=${fields[1]}; active=${fields[2]}; substate=${fields[3]}
+    [[ "$unit" =~ ^vibepollo-app-${generation}-[1-9][0-9]*\.service$ &&
+       "$load" == loaded && "$active" =~ ^[a-z-]+$ && "$substate" =~ ^[a-z-]+$ &&
+       -z ${seen[$unit]:-} ]] || return 1
+    seen[$unit]=1
+    result+=("$unit")
+    ((${#result[@]} <= 256)) || return 1
+  done <<<"$output"
+}
+
+stop_session_generation_apps() {
+  local user=$1 uid=$2 gid=$3 runtime=$4 generation=$5 cleanup_budget=${6:-$stop_timeout}
+  local deadline clean_passes=0 unit all_stopped
+  local required_clean_passes=10
+  local -a units=()
+  [[ "$generation" =~ ^[1-9][0-9]*$ && "$cleanup_budget" =~ ^[1-9][0-9]*$ &&
+     cleanup_budget -le stop_timeout ]] || return 1
+  deadline=$((SECONDS + cleanup_budget))
+  while ((SECONDS < deadline)); do
+    enumerate_session_generation_apps units "$deadline" "$user" "$uid" "$gid" "$runtime" \
+      "$generation" || return 1
+    all_stopped=1
+    for unit in "${units[@]}"; do
+      if session_app_unit_is_stopped "$deadline" "$user" "$uid" "$gid" "$runtime" "$unit"; then
+        continue
+      fi
+      # Discovering a live/indeterminate unit makes this enumeration dirty
+      # even if the stop completes immediately; only a later re-enumeration
+      # can contribute to the consecutive-clean proof.
+      all_stopped=0
+      bounded_session_systemctl "$deadline" "$user" "$uid" "$gid" "$runtime" \
+        --no-block stop "$unit" >/dev/null 2>&1 || :
+      session_app_unit_is_stopped "$deadline" "$user" "$uid" "$gid" "$runtime" "$unit" || :
+    done
+    if ((all_stopped)); then
+      ((clean_passes += 1))
+      ((clean_passes >= required_clean_passes)) && return 0
+    else
+      clean_passes=0
+    fi
+    ((SECONDS < deadline)) || break
+    /usr/bin/sleep 0.1
+  done
+  return 1
+}
+
+stop_bound_session_apps() {
+  local status entry account_user account_uid account_gid account_home
+  local -A bound=()
+  read_session_record bound
+  status=$?
+  ((status == 2)) && return 0
+  ((status == 0)) || return 1
+  valid_user "${bound[user]}" && valid_uid "${bound[uid]}" || return 1
+  [[ "${bound[uid]}" != 0 && "${bound[gid]}" =~ ^[0-9]+$ &&
+     "${bound[runtime]}" == "/run/user/${bound[uid]}" ]] || return 1
+  if [[ ! -e "${bound[runtime]}" && ! -L "${bound[runtime]}" ]]; then
+    return 0
+  fi
+  [[ -d "${bound[runtime]}" && ! -L "${bound[runtime]}" ]] || return 1
+  [[ $(/usr/bin/stat -c '%u:%F' -- "${bound[runtime]}") == "${bound[uid]}:directory" ]] || return 1
+  entry=$(/usr/bin/getent passwd "${bound[uid]}") || return 1
+  IFS=: read -r account_user _ account_uid account_gid _ account_home _ <<<"$entry"
+  [[ "$account_user" == "${bound[user]}" && "$account_uid" == "${bound[uid]}" &&
+     "$account_gid" == "${bound[gid]}" && "$account_home" == "${bound[home]}" ]] || return 1
+  stop_session_generation_apps "$account_user" "$account_uid" "$account_gid" \
+    "${bound[runtime]}" "${bound[generation]}"
+}
+
+remove_session_record() {
+  [[ ! -e "$session_file" || (-f "$session_file" && ! -L "$session_file") ]] || return 1
+  /usr/bin/rm -f -- "$session_file"
+}
+
+cleanup_legacy_state() {
+  local path
+  for path in "$legacy_handoff_directory" "$legacy_restore_directory"; do
+    if [[ -d "$path" && ! -L "$path" ]]; then
+      /usr/bin/find "$path" -mindepth 1 -maxdepth 1 -type f -delete || return 1
+      [[ -z $(/usr/bin/find "$path" -mindepth 1 -maxdepth 1 -print -quit) ]] || return 1
+      /usr/bin/rmdir "$path" || return 1
+    elif [[ -e "$path" || -L "$path" ]]; then
+      return 1
+    fi
+  done
+}
+
+quiesce() {
+  local success=0
+  # Close new service-account requests first. Admission stays closed until a
+  # fully validated replacement binding is published immediately before host
+  # start.
+  close_broker_admission || return 1
+  # Attempt every bounded cgroup shutdown even when one worker is stuck. This
+  # is especially important for display-query brokers: a host blocked in the
+  # display driver must not strand an independently stoppable query worker.
+  # Display/session state is revoked only after all exact cgroups prove empty.
+  stop_host || success=1
+  stop_broker_instances || success=1
+  # Application units are generation-bound by the trusted session record. Do
+  # not touch another session's units, even when the same user manager survives
+  # a greeter/desktop transition.
+  stop_bound_session_apps || success=1
+  # Repeat after application cleanup so an accepted connection that was
+  # already queued when admission closed cannot register after the first pass.
+  stop_broker_instances || success=1
+  ((success == 0)) || return 1
+  release_connectors || success=1
+  remove_session_record || success=1
+  return "$success"
+}
+
+next_generation() {
+  local generation=0 attributes temporary
+  if [[ -f "$generation_file" && ! -L "$generation_file" ]]; then
+    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$generation_file") || return 1
+    [[ "$attributes" == 'root:root:600:regular file' ]] || return 1
+    read -r generation <"$generation_file" || return 1
+    [[ "$generation" =~ ^[0-9]+$ ]] || return 1
+  elif [[ -e "$generation_file" || -L "$generation_file" ]]; then
+    return 1
+  fi
+  ((generation += 1))
+  temporary=$(/usr/bin/mktemp --tmpdir="$runtime_root" .generation.XXXXXX) || return 1
+  /usr/bin/printf '%s\n' "$generation" >"$temporary" || {
+    /usr/bin/rm -f -- "$temporary"
+    return 1
+  }
+  /usr/bin/chmod 0600 "$temporary" || { /usr/bin/rm -f -- "$temporary"; return 1; }
+  /usr/bin/mv -fT -- "$temporary" "$generation_file" || return 1
+  candidate_generation=$generation
+}
+
+publish_session() {
+  local temporary
+  next_generation || return 1
+  temporary=$(/usr/bin/mktemp --tmpdir="$runtime_root" .session.XXXXXX) || return 1
+  /usr/bin/printf 'session=%s\ngeneration=%s\nuser=%s\nuid=%s\ngid=%s\nhome=%s\nruntime=%s\ndisplay=%s\nxdisplay=%s\nxauthority=%s\ngroups=%s\nrole=%s\n' \
+    "$candidate_session" "$candidate_generation" "$candidate_user" "$candidate_uid" "$candidate_gid" \
+    "$candidate_home" "$candidate_runtime" "$candidate_display" "$candidate_xdisplay" \
+    "$candidate_xauthority" "$candidate_groups" "$candidate_role" >"$temporary" || {
+      /usr/bin/rm -f -- "$temporary"
+      return 1
+    }
+  /usr/bin/chgrp "$service_user" "$temporary" || { /usr/bin/rm -f -- "$temporary"; return 1; }
+  /usr/bin/chmod 0640 "$temporary" || { /usr/bin/rm -f -- "$temporary"; return 1; }
+  /usr/bin/mv -fT -- "$temporary" "$session_file" || return 1
+}
+
+binding_matches_candidate() {
+  local comparison=${1:-identity}
+  local -A bound=()
+  read_session_record bound || return 1
+  [[ "${bound[session]}" == "$candidate_session" && "${bound[user]}" == "$candidate_user" &&
+     "${bound[uid]}" == "$candidate_uid" && "${bound[gid]}" == "$candidate_gid" &&
+     "${bound[home]}" == "$candidate_home" && "${bound[runtime]}" == "$candidate_runtime" &&
+     "${bound[groups]}" == "$candidate_groups" && "${bound[role]}" == "$candidate_role" ]] || return 1
+  [[ "$comparison" == identity ]] && return 0
+  [[ "$comparison" == complete && "${bound[display]}" == "$candidate_display" &&
+     "${bound[xdisplay]}" == "$candidate_xdisplay" &&
+     "${bound[xauthority]}" == "$candidate_xauthority" ]]
+}
+
+candidate_still_active() {
+  local expected_session=$candidate_session expected_user=$candidate_user
+  local expected_uid=$candidate_uid expected_gid=$candidate_gid expected_home=$candidate_home
+  local expected_runtime=$candidate_runtime expected_groups=$candidate_groups expected_role=$candidate_role
+  local expected_display=$candidate_display expected_xdisplay=$candidate_xdisplay
+  local expected_xauthority=$candidate_xauthority
+  # Do not trust the session ID as a stable identity. Re-run logind/passwd/
+  # runtime classification, then obtain display credentials from the current
+  # target-user manager immediately before publication or host start.
+  observe_active_session || return 1
+  read_user_environment || return 1
+  [[ "$candidate_session" == "$expected_session" && "$candidate_user" == "$expected_user" &&
+     "$candidate_uid" == "$expected_uid" && "$candidate_gid" == "$expected_gid" &&
+     "$candidate_home" == "$expected_home" && "$candidate_runtime" == "$expected_runtime" &&
+     "$candidate_groups" == "$expected_groups" && "$candidate_role" == "$expected_role" &&
+     "$candidate_display" == "$expected_display" && "$candidate_xdisplay" == "$expected_xdisplay" &&
+     "$candidate_xauthority" == "$expected_xauthority" ]]
+}
+
+start_host() {
+  open_broker_admission || return 1
+  system_systemctl_bounded "$command_timeout" reset-failed "$host_service" >/dev/null 2>&1 || :
+  system_systemctl_bounded "$stop_timeout" start "$host_service"
+}
+
+reconcile_once() {
+  local observed_status binding_matches=0 quiesced=0
+  if ! read_settings; then
+    if ! quiesce; then
+      announce invalid-policy-cleanup-failed 'machine policy is invalid and cleanup failed; retrying immediately'
+      return 0
+    fi
+    announce invalid-policy 'machine policy is unavailable or invalid; host is off'
+    return 0
+  fi
+
+  observe_active_session
+  observed_status=$?
+  if ((observed_status != 0)); then
+    if ! quiesce; then
+      announce session-cleanup-failed 'session selection changed and cleanup failed; retrying immediately'
+      return 0
+    fi
+    if ((observed_status == 2)); then
+      announce unsupported-session 'active graphical session is not the configured desktop or greeter; host is off'
+    else
+      announce no-session 'waiting for an authoritative local Wayland session'
+    fi
+    return 0
+  fi
+
+  if binding_matches_candidate identity; then
+    binding_matches=1
+  else
+    health_cycle=0
+    if ! quiesce; then
+      announce transition-cleanup-failed 'transition cleanup failed; host remains off and cleanup will retry'
+      return 0
+    fi
+    quiesced=1
+  fi
+
+  if ((binding_matches)) && host_is_active; then
+    ((health_cycle += 1))
+    if ((health_cycle < 5)); then
+      announce "running-${candidate_role}-${candidate_session}" \
+        "host is bound to ready ${candidate_role} session ${candidate_session}"
+      return 0
+    fi
+    health_cycle=0
+  fi
+
+  # A stopped generation is never a readiness candidate. Revoke it before
+  # compositor probes can create display-query brokers for an obsolete
+  # binding; the next cycle publishes a fresh generation.
+  if ((binding_matches)) && ! host_is_active; then
+    if quiesce; then
+      announce host-inactive 'host is inactive; discarded the old binding before readiness probes'
+    else
+      announce host-inactive-cleanup-failed 'host is inactive but binding cleanup failed; admission remains closed'
+    fi
+    return 0
+  fi
+
+  if ! session_is_ready; then
+    if ((quiesced == 0)) && ! quiesce; then
+      announce readiness-cleanup-failed 'session readiness was lost and cleanup failed; retrying immediately'
+      return 0
+    fi
+    announce "waiting-${candidate_role}-${candidate_session}" \
+      "waiting for ${candidate_role} session ${candidate_session} to become usable"
+    return 0
+  fi
+
+  if ((binding_matches)) && ! binding_matches_candidate complete; then
+    binding_matches=0
+    if ! quiesce; then
+      announce transition-cleanup-failed 'stale display binding cleanup failed; host remains off and cleanup will retry'
+      return 0
+    fi
+    quiesced=1
+  fi
+
+  if ((binding_matches)); then
+    if host_is_active; then
+      announce "running-${candidate_role}-${candidate_session}" \
+        "host is bound to ready ${candidate_role} session ${candidate_session}"
+    elif quiesce; then
+      # Never restart against an old generation. Revoking the stopped
+      # binding also cancels its brokers/app units; the next reconciliation
+      # publishes a fresh generation and enters full wrapper readiness.
+      announce host-stopped 'host stopped; discarded the old binding before a clean restart'
+    else
+      announce host-stop-cleanup-failed 'host stopped but binding cleanup failed; admission remains closed and cleanup will retry'
+    fi
+    return 0
+  fi
+
+  ((quiesced)) || {
+    announce controller-invariant-failed 'refusing to publish a session that was not quiesced first'
+    return 0
+  }
+  candidate_still_active || {
+    announce session-changed 'active session changed during readiness validation; reconciling again'
+    return 0
+  }
+  if ! publish_session; then
+    remove_session_record || :
+    announce publish-failed 'could not publish the trusted session record; host remains off'
+    return 0
+  fi
+  if ! candidate_still_active; then
+    if quiesce; then
+      announce session-changed 'active session changed before host start; discarded the stale binding'
+    else
+      announce session-change-cleanup-failed 'active session changed and stale binding cleanup failed; retrying immediately'
+    fi
+    return 0
+  fi
+  if ! start_host; then
+    if quiesce; then
+      announce host-start-failed 'host failed to start for the ready session; transition will retry'
+    else
+      announce host-start-cleanup-failed 'host start and cleanup both failed; retrying immediately'
+    fi
+    return 0
+  fi
+  announce "running-${candidate_role}-${candidate_session}" \
+    "started host for ready ${candidate_role} session ${candidate_session}"
+}
+
+shutdown_controller() {
+  ((shutting_down == 0)) || return
+  shutting_down=1
+  announce shutdown 'controller is stopping; quiescing the machine host'
+  quiesce || error 'shutdown cleanup was incomplete'
+}
+
+run_controller() {
+  ((EUID == 0)) || { error 'controller requires root'; return 1; }
+  /usr/bin/install -d -o root -g root -m 0755 "$runtime_root"
+  cleanup_legacy_state || { error 'legacy runtime state is unsafe'; return 1; }
+  trap shutdown_controller EXIT INT TERM HUP
+  announce startup 'controller started; reconciling machine session state'
+  while ((shutting_down == 0)); do
+    reconcile_once || error 'unexpected reconciliation failure; retrying'
+    /usr/bin/sleep "$reconcile_delay" &
+    wait $! || :
+  done
+}
+
+cleanup_command() {
+  ((EUID == 0)) || { error 'cleanup requires root'; return 1; }
+  quiesce
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    run) [[ $# == 1 ]] || exit 2; run_controller ;;
+    cleanup) [[ $# == 1 ]] || exit 2; cleanup_command ;;
+    *) error "usage: $0 {run|cleanup}"; exit 2 ;;
+  esac
+fi

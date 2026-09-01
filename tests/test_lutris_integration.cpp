@@ -3,9 +3,11 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <optional>
 #include <sqlite3.h>
 
 #ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
@@ -17,6 +19,24 @@ extern "C" {
 namespace fs = std::filesystem;
 
 namespace {
+#if defined(__linux__)
+  class scoped_environment final {
+  public:
+    scoped_environment(const char *name, const std::string &value): name_ {name} {
+      if (const auto *current = std::getenv(name)) previous_ = current;
+      setenv(name, value.c_str(), 1);
+    }
+    ~scoped_environment() {
+      if (previous_) setenv(name_.c_str(), previous_->c_str(), 1);
+      else unsetenv(name_.c_str());
+    }
+
+  private:
+    std::string name_;
+    std::optional<std::string> previous_;
+  };
+#endif
+
   void write_test_cover(const fs::path &path) {
 #ifdef VIBESHINE_STEAM_ARTWORK_IMAGE_LIBS
     auto *file = std::fopen(path.c_str(), "wb");
@@ -52,6 +72,26 @@ namespace {
 #endif
   }
 }
+
+#if defined(__linux__)
+TEST(LutrisDiscovery, MachineHostDoesNotParseSessionHome) {
+  const auto base = fs::temp_directory_path() /
+                    ("vibeshine-lutris-session-home-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  const auto session_home = base / "desktop";
+  const auto service_home = base / "machine";
+  fs::create_directories(session_home / ".local/share/lutris");
+  fs::create_directories(service_home / ".local/share/lutris");
+  std::ofstream(session_home / ".local/share/lutris/pga.db").put('x');
+  std::ofstream(service_home / ".local/share/lutris/pga.db").put('x');
+  scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", "1"};
+  scoped_environment session {"VIBEPOLLO_SESSION_HOME", session_home.string()};
+  scoped_environment home {"HOME", service_home.string()};
+  scoped_environment xdg {"XDG_DATA_HOME", (service_home / ".local/share").string()};
+
+  EXPECT_TRUE(platf::lutris::default_database_path().empty());
+  fs::remove_all(base);
+}
+#endif
 
 TEST(LutrisDiscovery, ReadsInstalledGamesAndClassifiesSteam) {
   const auto base = fs::temp_directory_path() /

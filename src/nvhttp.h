@@ -319,11 +319,12 @@ namespace nvhttp {
 
   /**
    * @brief Remove all paired clients.
+   * @return True only when the cleared machine pairing state was persisted.
    * @examples
    * nvhttp::erase_all_clients();
    * @examples_end
    */
-  void erase_all_clients();
+  bool erase_all_clients();
 
   /**
    * @brief      Stops a session.
@@ -395,5 +396,5 @@ namespace nvhttp {
    * @brief Persist current nvhttp-related state (paired clients, update subsystem markers, etc.).
    * @note Exposed so subsystems (e.g. update) can trigger a save after mutating persisted fields.
    */
-  void save_state();
+  bool save_state();
 }  // namespace nvhttp
