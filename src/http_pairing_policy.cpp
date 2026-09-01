@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
 
 namespace nvhttp::pairing_policy {
 
@@ -59,6 +60,110 @@ namespace nvhttp::pairing_policy {
       }
     }
     return "Sunshine";
+  }
+
+  bool valid_unique_id(const std::string_view value) {
+    return !value.empty() && value.size() <= max_unique_id_length &&
+           std::all_of(value.begin(), value.end(), [](const unsigned char character) {
+             return std::isalnum(character) || character == '-' || character == '_' || character == '.';
+           });
+  }
+
+  bool valid_hex_field(const std::string_view value, const std::size_t minimum, const std::size_t maximum) {
+    return value.size() >= minimum && value.size() <= maximum && value.size() % 2 == 0 &&
+           std::all_of(value.begin(), value.end(), [](const unsigned char character) {
+             return std::isxdigit(character) != 0;
+           });
+  }
+
+  bool valid_paired_client_uuid(const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) {
+        continue;
+      }
+      if (!std::isxdigit(static_cast<unsigned char>(value[index]))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool paired_client_state_valid(const std::span<const paired_client_record_view_t> clients) {
+    if (clients.size() > max_paired_clients) {
+      return false;
+    }
+
+    std::unordered_set<std::string_view> uuids;
+    std::unordered_set<std::string_view> certificate_identities;
+    uuids.reserve(clients.size());
+    certificate_identities.reserve(clients.size());
+    for (const auto &client : clients) {
+      if (!valid_paired_client_uuid(client.uuid) ||
+          client.certificate_identity.empty() ||
+          client.certificate_identity.size() > max_paired_certificate_length ||
+          !uuids.insert(client.uuid).second ||
+          !certificate_identities.insert(client.certificate_identity).second) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  paired_client_resolution_t resolve_paired_client(
+    const std::span<const paired_client_record_view_t> clients,
+    const std::string_view presented_certificate_identity
+  ) {
+    if (!paired_client_state_valid(clients)) {
+      return {paired_client_resolution_e::invalid_state, 0};
+    }
+    if (presented_certificate_identity.empty() ||
+        presented_certificate_identity.size() > max_paired_certificate_length) {
+      return {paired_client_resolution_e::unknown_certificate, 0};
+    }
+    for (std::size_t index = 0; index < clients.size(); ++index) {
+      if (clients[index].certificate_identity != presented_certificate_identity) {
+        continue;
+      }
+      return {
+        clients[index].enabled ? paired_client_resolution_e::authorized : paired_client_resolution_e::disabled,
+        index,
+      };
+    }
+    return {paired_client_resolution_e::unknown_certificate, 0};
+  }
+
+  admission_decision_t admit_pending_session(
+    const bool greeter_session,
+    const std::string_view unique_id,
+    const std::string_view client_certificate_hex,
+    const std::string_view salt_hex,
+    const std::size_t pending_sessions,
+    const bool replacing_existing
+  ) {
+    if (greeter_session) {
+      return {false, "Pairing is disabled before login"};
+    }
+    if (!valid_unique_id(unique_id)) {
+      return {false, "Invalid uniqueid"};
+    }
+    if (!valid_hex_field(client_certificate_hex, 2)) {
+      return {false, "Invalid client certificate"};
+    }
+    if (!valid_hex_field(salt_hex, salt_hex_length, 128)) {
+      return {false, "Invalid pairing salt"};
+    }
+    // A same-uniqueid request is not a continuation: it supplies a new
+    // certificate and salt and could replace the identity that the operator
+    // intended to approve. Never replace or multiplex a pending request.
+    if (pending_sessions >= max_pending_sessions) {
+      return {false, "Too many pending pairing sessions"};
+    }
+    (void) replacing_existing;
+    return {true, {}};
   }
 
   decision_t begin_get_server_certificate(const session_state_t state, const std::size_t salt_size) {
