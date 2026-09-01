@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tempfile
@@ -459,10 +460,71 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
             'if(DEFINED ENV{BUILD_VERSION} AND NOT "$ENV{BUILD_VERSION}" STREQUAL "")',
             version_script,
         )
+        self.assertIn(
+            'if(DEFINED BUILD_VERSION AND NOT "${BUILD_VERSION}" STREQUAL "")',
+            version_script,
+        )
         self.assertNotIn(
             "if((DEFINED ENV{BRANCH}) AND (DEFINED ENV{BUILD_VERSION}))",
             version_script,
         )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            probe = Path(temporary_dir) / "probe-version.cmake"
+            probe.write_text(
+                f'include("{(ROOT / "cmake" / "prep" / "build_version.cmake").as_posix()}")\n'
+                'if(NOT PROJECT_VERSION_FULL STREQUAL "1.19.0-beta.5")\n'
+                '  message(FATAL_ERROR "explicit cache version was not retained: ${PROJECT_VERSION_FULL}")\n'
+                'endif()\n'
+                'if(NOT PROJECT_VERSION_NUMERIC STREQUAL "1.19.0")\n'
+                '  message(FATAL_ERROR "numeric version was not split correctly: ${PROJECT_VERSION_NUMERIC}")\n'
+                'endif()\n',
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment.pop("BUILD_VERSION", None)
+            environment.pop("BRANCH", None)
+            subprocess.run(
+                ["cmake", "-DBUILD_VERSION=1.19.0-beta.5", "-P", str(probe)],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            empty_environment = environment.copy()
+            empty_environment["BUILD_VERSION"] = ""
+            subprocess.run(
+                ["cmake", "-DBUILD_VERSION=1.19.0-beta.5", "-P", str(probe)],
+                cwd=ROOT,
+                env=empty_environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            invalid_version = subprocess.run(
+                ["cmake", "-DBUILD_VERSION=1.19", "-P", str(probe)],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(invalid_version.returncode, 0)
+            self.assertIn("Invalid Vibeshine build version", invalid_version.stderr)
+
+            zero_version = subprocess.run(
+                ["cmake", "-DBUILD_VERSION=0.0.0", "-P", str(probe)],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(zero_version.returncode, 0)
+            self.assertIn("Version resolution produced 0.0.0", zero_version.stderr)
 
     def test_stable_respins_keep_the_stable_windows_version_ordinal(self) -> None:
         wix_version = (ROOT / "cmake" / "packaging" / "windows_wix.cmake").read_text(

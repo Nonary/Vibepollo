@@ -8,11 +8,6 @@
       "image-path": "desktop.png",
       "index": 0,
       "name": "Desktop",
-      "prep-cmd": [
-        {
-          "do": "/usr/bin/setpriv --no-new-privs --ambient-caps=-all --inh-caps=-all /usr/libexec/vibeshine/vibepollo-machine-host activate"
-        }
-      ],
       "virtual-display-layout": "exclusive",
       "virtual-display-mode": "shared",
       "uuid": "17BE8BA1-826A-7006-8598-397B7CD558FD"

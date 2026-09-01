@@ -24,14 +24,10 @@ elseif(UNIX)
     # configure metadata file
     configure_file(packaging/linux/${PROJECT_FQDN}.metainfo.xml ${PROJECT_FQDN}.metainfo.xml @ONLY)
 
-    # Native Linux services wait for a usable compositor without consuming
-    # restart-limit attempts. Portable bundles retain the fixed startup delay.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT SUNSHINE_BUILD_APPIMAGE AND NOT SUNSHINE_BUILD_FLATPAK)
-        set(SUNSHINE_SERVICE_READINESS_COMMAND
-                "ExecStartPre=/usr/libexec/vibeshine/vibepollo-session-ready")
-    else()
-        set(SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5")
-    endif()
+    # User-scoped portable services retain their startup delay. Native machine
+    # hosts are installed as separate system units and reconciled by the
+    # session controller without participating in the desktop startup path.
+    set(SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5")
 
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
@@ -91,8 +87,10 @@ elseif(UNIX)
         configure_file("${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-drm-install.in" vibeshine-drm-install @ONLY)
         configure_file("${LIBVIRTUALDISPLAY_LINUX_ROOT}/vibeshine-drm/dkms.conf.in" vibeshine-drm-dkms.conf @ONLY)
         file(READ "${CMAKE_SOURCE_DIR}/src_assets/linux/misc/postinst" VIBESHINE_BASE_POSTINST)
+        configure_file(packaging/linux/vibeshine-preinst.in preinst @ONLY)
         configure_file(packaging/linux/vibeshine-postinst.in postinst @ONLY)
         configure_file(packaging/linux/vibeshine-prerm.in prerm @ONLY)
+        configure_file(packaging/linux/vibeshine-postrm.in postrm @ONLY)
     endif()
 
     # configure kwin desktop permission file

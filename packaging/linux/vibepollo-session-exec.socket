@@ -1,0 +1,18 @@
+[Unit]
+Description=Vibepollo session execution broker socket
+Documentation=https://github.com/Nonary/Vibepollo
+BindsTo=vibepollo-session-controller.service
+After=vibepollo-session-controller.service
+PartOf=vibepollo-session-controller.service
+
+[Socket]
+ListenSequentialPacket=/run/vibepollo/session-broker.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=vibepollo
+DirectoryMode=0755
+Accept=yes
+RemoveOnStop=yes
+Backlog=16
+MaxConnections=32
+MaxConnectionsPerSource=16

@@ -56,8 +56,8 @@ namespace confighttp {
       return;
     }
     try {
-      const auto roots = platf::steam::default_library_roots();
-      auto found = platf::steam::discover(roots);
+      const auto provider_available = platf::steam::available();
+      auto found = platf::steam::discover();
       const auto all_importable = platf::steam::sync::policy::filter_games(found, {}, config::steam.include_tools);
       const auto selected = platf::steam::sync::policy::select_games(
         found,
@@ -72,7 +72,7 @@ namespace confighttp {
       for (const auto &entry : config::steam.exclude_games_meta) {
         exclusions.push_back({{"id", entry.id}, {"name", entry.name}});
       }
-      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", !roots.empty()}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}, {"tool_game_count", found.size() - all_importable.size()}, {"excluded_game_count", all_importable.size() - all_filtered.size()}, {"selected_game_count", selected_importable.size()}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
+      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", provider_available}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}, {"tool_game_count", found.size() - all_importable.size()}, {"excluded_game_count", all_importable.size() - all_filtered.size()}, {"selected_game_count", selected_importable.size()}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
 #if defined(__linux__)
       out["forced"] = true;
       out["playnite_available"] = false;
@@ -119,12 +119,11 @@ namespace confighttp {
       return;
     }
     try {
-      const auto roots = platf::steam::default_library_roots();
-      if (roots.empty()) {
+      if (!platf::steam::available()) {
         bad_request(response, request, "Steam installation was not found");
         return;
       }
-      auto catalog = platf::steam::discover_catalog(roots);
+      auto catalog = platf::steam::discover_catalog();
       auto found = platf::steam::sync::policy::select_games(
         catalog,
         config::steam.sync_all_installed,

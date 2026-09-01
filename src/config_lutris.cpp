@@ -108,6 +108,7 @@ namespace config {
     });
     if (!lutris.enabled || !lutris.auto_sync) return;
     try {
+      if (!platf::lutris::discovery_ready()) return;
       auto games = platf::lutris::discover();
       platf::lutris::artwork::prepare(games, platf::appdata());
       std::lock_guard apps_lock {confighttp::apps_file_mutex()};

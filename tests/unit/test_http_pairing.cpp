@@ -349,6 +349,21 @@ TEST(PairedStateRecovery, RejectsInvalidIdentityAndDuplicateRecords) {
   EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
 }
 
+TEST(PairedStateRecovery, ValidatesImportedEnabledFlagWithoutGrantingDefault) {
+  for (const auto &invalid : {nlohmann::json("bad"), nlohmann::json(2), nlohmann::json(nullptr), nlohmann::json::object()}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["enabled"] = invalid;
+    EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(snapshot));
+  }
+  for (const auto &disabled : {nlohmann::json(false), nlohmann::json(0), nlohmann::json("false"), nlohmann::json("0")}) {
+    auto snapshot = paired_snapshot();
+    snapshot["root"]["named_devices"][0]["enabled"] = disabled;
+    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(snapshot));
+    const auto &value = snapshot["root"]["named_devices"][0]["enabled"];
+    EXPECT_TRUE(value == false || value == "false" || value == "0");
+  }
+}
+
 TEST(PairedStateRecovery, AcceptsPropertyTreeEmptyContainersAndScalarValues) {
   auto snapshot = paired_snapshot();
   auto &client = snapshot["root"]["named_devices"][0];

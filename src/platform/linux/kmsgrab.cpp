@@ -13,7 +13,6 @@
 // platform includes
 #include <drm_fourcc.h>
 #include <linux/dma-buf.h>
-#include <sys/capability.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <xf86drm.h>
@@ -27,6 +26,7 @@
 #include "hdr_policy.h"
 #include "kmsgrab_pacing.h"
 #include "kmsgrab_selection.h"
+#include "scoped_capability.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -69,28 +69,6 @@ namespace platf {
         }
       }
     }
-
-    class cap_sys_admin {
-    public:
-      cap_sys_admin() {
-        caps = cap_get_proc();
-
-        cap_value_t sys_admin = CAP_SYS_ADMIN;
-        if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_admin, CAP_SET) || cap_set_proc(caps)) {
-          BOOST_LOG(error) << "Failed to gain CAP_SYS_ADMIN";
-        }
-      }
-
-      ~cap_sys_admin() {
-        cap_value_t sys_admin = CAP_SYS_ADMIN;
-        if (cap_set_flag(caps, CAP_EFFECTIVE, 1, &sys_admin, CAP_CLEAR) || cap_set_proc(caps)) {
-          BOOST_LOG(error) << "Failed to drop CAP_SYS_ADMIN";
-        }
-        cap_free(caps);
-      }
-
-      cap_t caps;
-    };
 
     class wrapper_fb {
     public:
@@ -356,7 +334,12 @@ namespace platf {
 
       int init(const char *path) {
         vulkan_device_path = path;
-        cap_sys_admin admin;
+        linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+        if (!admin.active()) {
+          BOOST_LOG(error) << "Cannot initialize KMS device because CAP_SYS_ADMIN "sv
+                           << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+          return -1;
+        }
         fd.el = open(path, O_RDWR);
 
         if (fd.el < 0) {
@@ -422,14 +405,24 @@ namespace platf {
       }
 
       fb_t fb(plane_t::pointer plane) {
-        cap_sys_admin admin;
+        drmModeFB2 *fb2 = nullptr;
+        drmModeFB *fb = nullptr;
+        {
+          linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+          if (!admin.active()) {
+            BOOST_LOG(error) << "Cannot inspect a KMS framebuffer because CAP_SYS_ADMIN "sv
+                             << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+            return nullptr;
+          }
+          fb2 = drmModeGetFB2(fd.el, plane->fb_id);
+          if (!fb2) {
+            fb = drmModeGetFB(fd.el, plane->fb_id);
+          }
+        }
 
-        auto fb2 = drmModeGetFB2(fd.el, plane->fb_id);
         if (fb2) {
           return std::make_unique<wrapper_fb>(fd.el, fb2);
         }
-
-        auto fb = drmModeGetFB(fd.el, plane->fb_id);
         if (fb) {
           return std::make_unique<wrapper_fb>(fd.el, fb);
         }
@@ -1366,9 +1359,20 @@ namespace platf {
         request.abi_version = VIBESHINE_DRM_FRAME_ABI_VERSION;
         request.crtc_id = static_cast<std::uint32_t>(crtc_id);
 
-        cap_sys_admin admin;
-        if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_FRAME, &request) < 0) {
-          BOOST_LOG(error) << "Failed to export Vibeshine DRM presentation frame: "sv << strerror(errno);
+        int ioctl_error = 0;
+        {
+          linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+          if (!admin.active()) {
+            BOOST_LOG(error) << "Cannot export a KMS presentation frame because CAP_SYS_ADMIN "sv
+                             << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+            return frame_export_e::unsupported;
+          }
+          if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_GET_FRAME, &request) < 0) {
+            ioctl_error = errno;
+          }
+        }
+        if (ioctl_error != 0) {
+          BOOST_LOG(error) << "Failed to export Vibeshine DRM presentation frame: "sv << strerror(ioctl_error);
           return frame_export_e::unsupported;
         }
 
@@ -1496,9 +1500,21 @@ namespace platf {
           request.sequence = requested_sequence;
           request.timeout_ms = requested_timeout_ms;
 
-          cap_sys_admin admin;
-          if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_WAIT_PRESENT, &request) < 0) {
-            switch (pacing::classify_ioctl_error(errno, timeout > 0ms)) {
+          int ioctl_error = 0;
+          {
+            linux_security::scoped_effective_capability admin {CAP_SYS_ADMIN};
+            if (!admin.active()) {
+              BOOST_LOG(error) << "Cannot wait for KMS presentation because CAP_SYS_ADMIN "sv
+                               << (admin.unavailable() ? "is not permitted"sv : "could not be raised safely"sv);
+              presentation_mode.deactivate();
+              return presentation_wait_e::unsupported;
+            }
+            if (::ioctl(card.fd.el, DRM_IOCTL_VIBESHINE_WAIT_PRESENT, &request) < 0) {
+              ioctl_error = errno;
+            }
+          }
+          if (ioctl_error != 0) {
+            switch (pacing::classify_ioctl_error(ioctl_error, timeout > 0ms)) {
               case pacing::presentation_ioctl_error_e::retry:
                 {
                   ++retry_count;

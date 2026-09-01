@@ -62,6 +62,8 @@ namespace nvhttp::state_policy {
             !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() ||
             device["cert"].get_ref<const std::string &>().size() > 65536 || !certs.insert(device["cert"]).second) return false;
         if (device.contains("perm") && !permission(device["perm"])) return false;
+        if (device.contains("enabled") && !boolean(device["enabled"])) return false;
+        if (device.contains("enabled") && device["enabled"].is_number_integer()) device["enabled"] = device["enabled"] == 1;
         if (device.contains("last_seen") && device["last_seen"].is_boolean()) return false;
         for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
           if (device.contains(key) && !device[key].is_string()) return false;

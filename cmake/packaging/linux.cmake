@@ -1,5 +1,28 @@
 # linux specific packaging
 
+# CPack's common numeric version is appropriate for MSI, but native Linux
+# package managers must retain the channel/build identity.  Tilde orders real
+# prereleases below the final release; the project's stable.N respins order
+# above the matching stable release.
+set(VIBESHINE_NATIVE_PACKAGE_VERSION "${PROJECT_VERSION_FULL}")
+if(VIBESHINE_NATIVE_PACKAGE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-stable([.].+)?$")
+    string(REPLACE "-stable" "+stable" VIBESHINE_NATIVE_PACKAGE_VERSION
+            "${VIBESHINE_NATIVE_PACKAGE_VERSION}")
+elseif(VIBESHINE_NATIVE_PACKAGE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-")
+    string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+)-" "\\1~"
+            VIBESHINE_NATIVE_PACKAGE_VERSION "${VIBESHINE_NATIVE_PACKAGE_VERSION}")
+endif()
+set(CPACK_DEBIAN_PACKAGE_VERSION "${VIBESHINE_NATIVE_PACKAGE_VERSION}")
+set(CPACK_RPM_PACKAGE_VERSION "${VIBESHINE_NATIVE_PACKAGE_VERSION}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" VIBESHINE_PACKAGE_PROCESSOR)
+    if(VIBESHINE_PACKAGE_PROCESSOR MATCHES "^(x86_64|amd64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    elseif(VIBESHINE_PACKAGE_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+    endif()
+endif()
+
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/"
         DESTINATION "${SUNSHINE_ASSETS_DIR}")
 
@@ -26,22 +49,42 @@ else()
     find_package(Udev)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        find_path(VIBESHINE_PAM_INCLUDE_DIR security/pam_modules.h REQUIRED)
-        find_library(VIBESHINE_PAM_LIBRARY pam REQUIRED)
-        get_filename_component(VIBESHINE_PAM_LIBRARY_DIR "${VIBESHINE_PAM_LIBRARY}" DIRECTORY)
-        set(VIBESHINE_PAM_MODULE_INSTALL_DIR "${VIBESHINE_PAM_LIBRARY_DIR}/security")
-        add_library(pam_vibepollo_session MODULE
-                "${CMAKE_SOURCE_DIR}/packaging/linux/pam_vibepollo_session.c")
-        set_target_properties(pam_vibepollo_session PROPERTIES
-                PREFIX ""
-                OUTPUT_NAME pam_vibepollo_session)
-        target_include_directories(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_INCLUDE_DIR}")
-        target_link_libraries(pam_vibepollo_session PRIVATE "${VIBESHINE_PAM_LIBRARY}")
         add_executable(vibepollo_session_exec
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-exec.c")
         set_target_properties(vibepollo_session_exec PROPERTIES OUTPUT_NAME "vibepollo-session-exec")
         target_include_directories(vibepollo_session_exec PRIVATE "${LIBCAP_INCLUDE_DIRS}")
         target_link_libraries(vibepollo_session_exec PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_session_broker
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-broker.c")
+        set_target_properties(vibepollo_session_broker PROPERTIES OUTPUT_NAME "vibepollo-session-broker")
+        target_include_directories(vibepollo_session_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+        target_link_libraries(vibepollo_session_broker PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_app_supervisor
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-app-supervisor.c")
+        set_target_properties(vibepollo_app_supervisor PROPERTIES OUTPUT_NAME "vibepollo-app-supervisor")
+        target_include_directories(vibepollo_app_supervisor PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+        target_link_libraries(vibepollo_app_supervisor PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_profile_import
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-profile-import.c")
+        set_target_properties(vibepollo_profile_import PROPERTIES OUTPUT_NAME "vibepollo-profile-import")
+        target_include_directories(vibepollo_profile_import PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+        target_link_libraries(vibepollo_profile_import PRIVATE "${LIBCAP_LIBRARIES}")
+        add_executable(vibepollo_kwin_session_environment
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-session-environment.c")
+        set_target_properties(vibepollo_kwin_session_environment PROPERTIES
+                OUTPUT_NAME "vibepollo-kwin-session-environment")
+        add_executable(vibepollo_provider_scan
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-provider-scan.cpp"
+                "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
+                "${CMAKE_SOURCE_DIR}/src/steam_integration.cpp"
+                "${CMAKE_SOURCE_DIR}/src/lutris_integration.cpp")
+        set_target_properties(vibepollo_provider_scan PROPERTIES OUTPUT_NAME "vibepollo-provider-scan")
+        target_include_directories(vibepollo_provider_scan PRIVATE
+                "${CMAKE_SOURCE_DIR}"
+                "${SQLITE3_INCLUDE_DIRS}")
+        target_link_libraries(vibepollo_provider_scan PRIVATE
+                nlohmann_json::nlohmann_json
+                "${SQLITE3_LIBRARIES}")
         file(GENERATE
                 OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/vibeshine_drm_version.h"
                 CONTENT "#define VIBESHINE_DRM_VERSION \"${PROJECT_VERSION_NUMERIC}\"\n")
@@ -50,15 +93,26 @@ else()
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms"
                 "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms-quiesce"
                 "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-host"
-                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-handoff"
+                "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller"
                 "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-install"
                 DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
-        install(TARGETS vibepollo_session_exec
+        install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
+                vibepollo_profile_import vibepollo_kwin_session_environment
+                vibepollo_provider_scan
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+        install(TARGETS vibepollo_session_broker
+                RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}"
+                PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+        # This must be a distinct inode from the public capability-free binary.
+        # Native package hooks make it root:vibepollo 0750 and attach only
+        # cap_sys_admin,cap_sys_nice+p.  With no effective file bit, its loader
+        # and the first statement in main() run with E/I/A empty.
+        install(PROGRAMS "$<TARGET_FILE:sunshine>"
+                DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}"
+                RENAME "vibepollo-host"
+                PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE)
         install(TARGETS vibeshine_vkms_peercred
                 RUNTIME DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
-        install(TARGETS pam_vibepollo_session
-                LIBRARY DESTINATION "${VIBESHINE_PAM_MODULE_INSTALL_DIR}")
         install(FILES "${LIBVIRTUALDISPLAY_LINUX_ROOT}/packaging/vibeshine-vkms.sysusers"
                 DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}"
                 RENAME vibeshine-vkms.conf)
@@ -103,12 +157,25 @@ else()
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-drm-setup.service"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control.socket"
                     "${CMAKE_CURRENT_BINARY_DIR}/vibeshine-vkms-control@.service"
-                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-machine-prepare.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-exec.socket"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-exec@.service"
+                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-controller.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo.service"
-                    "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-session-restore@.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-capability-refresh.service"
                     "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-capability.path"
                     DESTINATION "${VIBESHINE_SYSTEM_UNIT_INSTALL_DIR}")
+            # Both the Plasma desktop and Plasma Login greeter start their own
+            # KWin instance.  Publish each compositor's generated Wayland/X11
+            # credentials into its corresponding user manager so the machine
+            # controller can validate either authoritative seat0 session.
+            foreach(vibeshine_kwin_unit IN ITEMS
+                    plasma-kwin_wayland
+                    plasma-login-kwin_wayland)
+                install(FILES
+                        "${CMAKE_SOURCE_DIR}/packaging/linux/vibepollo-kwin-session-environment.conf"
+                        DESTINATION
+                        "${SYSTEMD_USER_UNIT_INSTALL_DIR}/${vibeshine_kwin_unit}.service.d")
+            endforeach()
         endif()
     endif()
 endif()
@@ -131,12 +198,29 @@ set(CPACK_FREEBSD_PACKAGE_LICENSE "GPLv3")
 # best-effort basis. The system service retries the custom module on boot.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
-            "${CMAKE_CURRENT_BINARY_DIR}/postinst;${CMAKE_CURRENT_BINARY_DIR}/prerm")
+            "${CMAKE_CURRENT_BINARY_DIR}/preinst;${CMAKE_CURRENT_BINARY_DIR}/postinst;${CMAKE_CURRENT_BINARY_DIR}/prerm;${CMAKE_CURRENT_BINARY_DIR}/postrm")
+    set(CPACK_RPM_PRE_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/preinst")
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/postinst")
     set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE "${CMAKE_CURRENT_BINARY_DIR}/prerm")
 else()
     set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
     set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/postinst")
+endif()
+
+# Encode the exact privileged-file ownership and permitted capabilities in the
+# RPM payload itself. This is required on rpm-ostree systems where lifecycle
+# scripts deliberately do not mutate immutable deployment files. Public and
+# capability-free helpers are listed explicitly so stale package metadata
+# cannot silently reattach the obsolete public/client capabilities.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CPACK_RPM_USER_FILELIST
+            "%attr(0755,root,root) ${CMAKE_INSTALL_FULL_BINDIR}/vibepollo"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec"
+            "%attr(0700,root,root) %caps(cap_kill,cap_setgid,cap_setuid+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-broker"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-app-supervisor"
+            "%attr(0755,root,root) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-kwin-session-environment"
+            "%attr(0750,root,vibepollo) %caps(cap_sys_admin,cap_sys_nice+p) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-host"
+    )
 endif()
 
 # FreeBSD post install/deinstall scripts
@@ -155,18 +239,18 @@ if(FREEBSD)
     list(APPEND CPACK_POST_BUILD_SCRIPTS "${CMAKE_MODULE_PATH}/packaging/freebsd_custom_cpack.cmake")
 endif()
 
-# Apply setcap for RPM
-# https://github.com/coreos/rpm-ostree/discussions/5036#discussioncomment-10291071
-set(CPACK_RPM_USER_FILELIST
-        "%caps(cap_sys_admin,cap_sys_nice+p) ${SUNSHINE_EXECUTABLE_PATH};%attr(0750,root,vibepollo) %caps(cap_setgid,cap_setuid+ep) ${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}/vibepollo-session-exec")
-
 # Dependencies
-set(CPACK_DEB_COMPONENT_INSTALL ON)
+# Native machine-service installation is atomic. Splitting the `assets`
+# component from the default component would produce an API-only host package,
+# and CPack would attach the same quiescing lifecycle hooks to both partial
+# packages. Emit one DEB containing the executable, Web UI, units, helpers,
+# drivers, and assets together.
+set(CPACK_DEB_COMPONENT_INSTALL OFF)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             ${CPACK_DEB_PLATFORM_PACKAGE_DEPENDS} \
             debianutils, \
-            acl, \
             libcap2, \
+            libcap2-bin, \
             libcurl4, \
             libdrm2, \
             libgbm1, \
@@ -178,8 +262,8 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             make, \
             libnuma1, \
             libopus0, \
-            libpam0g, \
             libpulse0, \
+            pulseaudio-utils, \
             libva2, \
             libva-drm2, \
             libwayland-client0, \
@@ -187,11 +271,16 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
             miniupnpc, \
             openssl | libssl3, \
             socat, \
-            util-linux")
+            util-linux, \
+            wayland-utils, \
+            x11-utils")
 set(CPACK_RPM_PACKAGE_REQUIRES "\
             ${CPACK_RPM_PLATFORM_PACKAGE_REQUIRES} \
+            /usr/bin/pactl, \
+            /usr/bin/parec, \
+            /usr/bin/wayland-info, \
+            /usr/bin/xdpyinfo, \
             libcap >= 2.22, \
-            acl, \
             libcurl >= 7.0, \
             libdrm >= 2.4.97, \
             libevdev >= 1.5.6, \
@@ -208,11 +297,9 @@ set(CPACK_RPM_PACKAGE_REQUIRES "\
             miniupnpc >= 2.2.4, \
             numactl-libs >= 2.0.14, \
             openssl >= 3.0.2, \
-            pam, \
             pulseaudio-libs >= 10.0, \
             socat, \
-            util-linux, \
-            which >= 2.21")
+            util-linux")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "dkms")
 set(CPACK_RPM_PACKAGE_SUGGESTS "dkms, gcc, kernel-devel")
 list(APPEND CPACK_FREEBSD_PACKAGE_DEPS

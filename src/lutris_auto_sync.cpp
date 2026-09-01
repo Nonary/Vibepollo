@@ -64,7 +64,7 @@ namespace platf::lutris::autosync {
             observed_epoch = epoch;
             have_fingerprint = false;
           }
-          if (settings.enabled && settings.auto_sync) {
+          if (settings.enabled && settings.auto_sync && discovery_ready()) {
             try {
               auto games = discover();
               const auto fingerprint = source_fingerprint(games);

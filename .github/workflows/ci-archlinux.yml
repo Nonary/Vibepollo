@@ -253,6 +253,8 @@ jobs:
           grep -qx 'conflict = vibeshine' <<< "${package_info}"
           grep -qx 'depend = dkms' <<< "${package_info}"
           grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
+          grep -qx 'depend = wayland-utils' <<< "${package_info}"
+          grep -qx 'depend = xorg-xdpyinfo' <<< "${package_info}"
           grep -qx $'\tmakedepends = nodejs' .SRCINFO
           grep -qx $'\tmakedepends = npm' .SRCINFO
           grep -qx $'\tmakedepends = ninja' .SRCINFO
@@ -261,10 +263,49 @@ jobs:
             echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
             exit 1
           fi
-          grep -qx 'usr/lib/systemd/system/vibepollo-machine-prepare.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-controller.service' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-exec.socket' <<< "${package_files}"
+          grep -qx 'usr/lib/systemd/system/vibepollo-session-exec@.service' <<< "${package_files}"
           grep -qx 'usr/lib/systemd/system/vibepollo.service' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-controller' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibepollo-session-exec' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-session-broker' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-provider-scan' <<< "${package_files}"
+          grep -qx 'usr/libexec/vibeshine/vibepollo-profile-import' <<< "${package_files}"
           grep -qx 'usr/lib/sysusers.d/vibepollo.conf' <<< "${package_files}"
+
+          # Extract only the two network-facing execution-chain binaries and
+          # verify that the package archive does not grant either file
+          # capabilities. systemd supplies the host's narrowly bounded runtime
+          # capabilities; the session client must remain entirely unprivileged.
+          capability_check_root="$(mktemp -d)"
+          bsdtar --xattrs -xpf "${package}" -C "${capability_check_root}" \
+            usr/bin/vibepollo \
+            usr/libexec/vibeshine/vibepollo-session-exec
+          for capability_path in \
+            "${capability_check_root}/usr/bin/vibepollo" \
+            "${capability_check_root}/usr/libexec/vibeshine/vibepollo-session-exec"; do
+            if [[ -n "$(getcap -n "${capability_path}" 2>/dev/null)" ]]; then
+              echo "::error::The package unexpectedly grants file capabilities to ${capability_path#${capability_check_root}/}."
+              exit 1
+            fi
+          done
+          for obsolete_path in \
+            usr/lib/systemd/system/vibepollo-machine-prepare.service \
+            usr/lib/systemd/system/vibepollo-prelogin.service \
+            usr/lib/systemd/system/vibepollo-session-restore@.service \
+            usr/libexec/vibeshine/vibepollo-prelogin-sync \
+            usr/libexec/vibeshine/vibepollo-session-handoff \
+            usr/libexec/vibeshine/vibepollo-session-ready; do
+            if grep -qx "${obsolete_path}" <<< "${package_files}"; then
+              echo "::error::The Vibeshine package unexpectedly contains obsolete login-path file ${obsolete_path}."
+              exit 1
+            fi
+          done
+          if grep -Eq '(^|/)pam_vibepollo_session\.so$' <<< "${package_files}"; then
+            echo "::error::The Vibeshine package unexpectedly contains the obsolete PAM handoff module."
+            exit 1
+          fi
           if grep -qx 'usr/lib/systemd/user/app-io.github.Nonary.vibepollo.service' <<< "${package_files}"; then
             echo "::error::The native package unexpectedly contains the legacy per-user host service."
             exit 1
@@ -273,6 +314,8 @@ jobs:
           grep -qx 'usr/libexec/vibeshine/vibeshine-drm-install' <<< "${package_files}"
           grep -qx 'usr/src/vibeshine-drm-[^/]*/dkms.conf' <<< "${package_files}"
           bsdtar -xOf "${package}" usr/libexec/vibeshine/vibeshine-drm-install | bash -n
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibepollo-session-controller | bash -n
+          bsdtar -xOf "${package}" usr/libexec/vibeshine/vibepollo-machine-host | bash -n
           package_install_script="$(bsdtar -xOf "${package}" .INSTALL)"
           bash -n <<< "${package_install_script}"
           grep -Fq 'vibeshine-drm-install install-package' <<< "${package_install_script}"

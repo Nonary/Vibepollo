@@ -33,6 +33,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <sys/stat.h>
 #include <thread>
 
 namespace platf::linux_private_display {
@@ -62,16 +63,11 @@ namespace platf::linux_private_display {
       return value;
     }
 
-    std::optional<bool> broker_connected(const std::string &output_name) {
-      static const virtual_display::driver::LinuxControlClient client;
-      const auto result = client.query_connector(output_name);
-      if (!result.ok()) {
-        BOOST_LOG(error) << "Linux private display: broker status failed for " << output_name
-                         << ": " << virtual_display::driver::to_string(result.status)
-                         << (result.detail.empty() ? std::string {} : " (" + result.detail + ")");
-        return std::nullopt;
-      }
-      return result.connected;
+    bool broker_socket_ready() {
+      struct stat attributes {};
+      return lstat("/run/vibeshine/vkms-control.sock", &attributes) == 0 &&
+             S_ISSOCK(attributes.st_mode) && attributes.st_uid == 0 &&
+             (attributes.st_mode & 0007) == 0;
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
@@ -109,11 +105,13 @@ namespace platf::linux_private_display {
       owned_argv.reserve(arguments.size() + 2);
       if (std::getenv("VIBEPOLLO_MACHINE_HOST")) {
         owned_argv.emplace_back("/usr/libexec/vibeshine/vibepollo-session-exec");
-        owned_argv.emplace_back("kscreen");
+        owned_argv.emplace_back(arguments.size() == 1 && arguments.front() == "-j" ? "display-query" : "display-apply");
       } else {
         owned_argv.push_back(*executable);
       }
-      owned_argv.insert(owned_argv.end(), arguments.begin(), arguments.end());
+      if (!std::getenv("VIBEPOLLO_MACHINE_HOST") || owned_argv.back() == "display-apply") {
+        owned_argv.insert(owned_argv.end(), arguments.begin(), arguments.end());
+      }
       std::vector<const gchar *> argv;
       argv.reserve(owned_argv.size() + 1);
       for (const auto &arg : owned_argv) {
@@ -1617,14 +1615,15 @@ namespace platf::linux_private_display {
   }
 
   bool ready() {
-    if (!doctor_path()) {
+    if (!doctor_path() || !broker_socket_ready()) {
       return false;
     }
     for (const auto &name : configured_outputs()) {
       if (is_managed_output(name)) {
-        // A dormant connector is the healthy idle state. A successful status
-        // exchange proves the provisioned pool and privileged broker are ready.
-        if (broker_connected(name).has_value()) {
+        // A dormant managed connector is healthy only while both its kernel
+        // node and the root-owned control endpoint exist. This remains a
+        // passive readiness check; actual IPC is reserved for transitions.
+        if (!connector_sysfs_path(name).empty()) {
           return true;
         }
         continue;

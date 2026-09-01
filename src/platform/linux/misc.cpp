@@ -9,6 +9,7 @@
 #endif
 
 // standard includes
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -62,6 +63,7 @@
 #ifdef __linux__
   #include "src/platform/linux/private_display_capture_policy.h"
   #include "src/platform/linux/private_display.h"
+  #include "src/platform/linux/scoped_capability.h"
 #endif
 #include "vaapi.h"
 
@@ -409,7 +411,10 @@ namespace platf {
         return bp::child();
       }
       exe_path = v2::filesystem::path("/usr/libexec/vibeshine/vibepollo-session-exec");
-      args = {"app", cmd, working_dir.string()};
+      // The capability-bearing helper resolves the administrator-authorized
+      // working directory. The network host supplies only the exact command
+      // to match, never a caller-selected filesystem location.
+      args = {"app", cmd};
     } else {
       std::vector<std::string> parts;
       try {
@@ -549,6 +554,39 @@ namespace platf {
 
     if (!success) {
       // This will run on FreeBSD OR Linux if RTKit failed/was missing
+#if !defined(__FreeBSD__)
+      errno = 0;
+      const int current_nice = getpriority(PRIO_PROCESS, 0);
+      const int getpriority_error = errno;
+      const bool raises_priority =
+        getpriority_error == 0 ? linux_nice < current_nice : linux_nice < 0;
+
+      if (raises_priority) {
+        int setpriority_result = -1;
+        int setpriority_error = 0;
+        linux_security::scoped_effective_capability::state_e capability_state;
+        {
+          linux_security::scoped_effective_capability nice {CAP_SYS_NICE};
+          capability_state = nice.state();
+          if (nice.active()) {
+            setpriority_result = setpriority(PRIO_PROCESS, 0, linux_nice);
+            setpriority_error = errno;
+          }
+        }
+
+        if (capability_state != linux_security::scoped_effective_capability::state_e::active) {
+          BOOST_LOG(warning) << "Cannot raise thread priority to nice "sv << linux_nice
+                             << " because CAP_SYS_NICE "sv
+                             << (capability_state == linux_security::scoped_effective_capability::state_e::unavailable ?
+                                   "is not permitted"sv : "could not be raised safely"sv);
+        } else if (setpriority_result == -1) {
+          BOOST_LOG(warning) << "setpriority failed for nice "sv << linux_nice << ": "sv << strerror(setpriority_error);
+        } else {
+          BOOST_LOG(debug) << "setpriority success for nice "sv << linux_nice;
+        }
+        return;
+      }
+#endif
       if (setpriority(PRIO_PROCESS, 0, linux_nice) == -1) {
         BOOST_LOG(warning) << "setpriority failed for nice "sv << linux_nice << ": "sv << strerror(errno);
       } else {
@@ -596,6 +634,15 @@ namespace platf {
   }
 
   void restart() {
+    const char *machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST");
+    if (machine_host && machine_host[0] == '1' && machine_host[1] == '\0') {
+      // The machine-service wrapper owns readiness and the controller owns
+      // restart authority. Re-execing this private child would bypass the
+      // wrapper's KMS/encoder gate and could leave a failed second startup
+      // reported as the already-ready systemd service.
+      lifetime::exit_sunshine(0, true);
+      return;
+    }
     // Gracefully clean up and restart ourselves instead of exiting
     atexit(restart_on_exit);
     lifetime::exit_sunshine(0, true);
@@ -1301,7 +1348,10 @@ namespace platf {
         }
         BOOST_LOG(debug) << "Retaining permitted CAP_SYS_ADMIN for managed private HDR KMS capture."sv;
       } else {
-        drop_elevated_privileges(false);
+        if (!drop_elevated_privileges(false)) {
+          BOOST_LOG(error) << "Failed to permanently drop CAP_SYS_ADMIN before compositor capture."sv;
+          return nullptr;
+        }
       }
     }
 
@@ -1596,33 +1646,51 @@ namespace platf {
     return true;
   }
 
-  void drop_elevated_privileges(bool all_caps) {
+  bool drop_elevated_privileges(bool all_caps) {
 #if !defined(__FreeBSD__)
-    bool failed = false;
     const auto caps_to_drop = all_caps ? ELEVATED_PRIVILEGES_FULL : ELEVATED_PRIVILEGES_ADMIN;
     const cap_t caps = cap_get_proc();
     if (!caps) {
       BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to get process capabilities"sv;
-      return;
+      return false;
     }
 
-    cap_set_flag(caps, CAP_EFFECTIVE, caps_to_drop.size(), caps_to_drop.data(), CAP_CLEAR);
-    cap_set_flag(caps, CAP_PERMITTED, caps_to_drop.size(), caps_to_drop.data(), CAP_CLEAR);
+    const int capability_count = static_cast<int>(caps_to_drop.size());
+    if (cap_set_flag(caps, CAP_EFFECTIVE, capability_count, caps_to_drop.data(), CAP_CLEAR) != 0 ||
+        cap_set_flag(caps, CAP_PERMITTED, capability_count, caps_to_drop.data(), CAP_CLEAR) != 0) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to construct the pruned capability set: "sv << std::strerror(errno);
+      cap_free(caps);
+      return false;
+    }
 
     if (cap_set_proc(caps) != 0) {
       BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to prune capabilities: "sv << std::strerror(errno);
-      failed = true;
+      cap_free(caps);
+      return false;
+    }
+
+    const cap_t verified_caps = cap_get_proc();
+    if (!verified_caps) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to read back process capabilities"sv;
+      cap_free(caps);
+      return false;
+    }
+    const int comparison = cap_compare(caps, verified_caps);
+    cap_free(verified_caps);
+    if (comparison != 0) {
+      BOOST_LOG(error) << "[misc] drop_elevated_privileges failed exact capability verification"sv;
+      cap_free(caps);
+      return false;
     }
     cap_free(caps);
 
     // Reset dumpable AFTER the caps have been pruned to ensure /proc/pid/root is accessible.
     if (prctl(PR_SET_DUMPABLE, 1) != 0) {
       BOOST_LOG(error) << "[misc] drop_elevated_privileges failed to set PR_SET_DUMPABLE: "sv << std::strerror(errno);
-      failed = true;
+      return false;
     }
-    if (!failed) {
-      BOOST_LOG(info) << "[misc] drop_elevated_privileges succeeded in dropping capabilities"sv;
-    }
+    BOOST_LOG(info) << "[misc] drop_elevated_privileges succeeded in dropping capabilities"sv;
 #endif
+    return true;
   }
 }  // namespace platf

@@ -1,11 +1,491 @@
 # shellcheck shell=bash
 
-do_setcap() {
+do_secure_executables() {
   systemd-sysusers /usr/lib/sysusers.d/vibepollo.conf
-  setcap cap_sys_admin,cap_sys_nice+p "$(readlink -f usr/bin/vibepollo)"
-  chown root:vibepollo usr/libexec/vibeshine/vibepollo-session-exec
-  chmod 0750 usr/libexec/vibeshine/vibepollo-session-exec
-  setcap cap_setgid,cap_setuid=ep usr/libexec/vibeshine/vibepollo-session-exec
+  local executable client broker host public_identity broker_identity host_identity
+  local broker_capabilities host_capabilities
+  executable=$(readlink -f /usr/bin/vibepollo) || return 1
+  client=/usr/libexec/vibeshine/vibepollo-session-exec
+  broker=/usr/libexec/vibeshine/vibepollo-session-broker
+  host=/usr/libexec/vibeshine/vibepollo-host
+  [[ -f "$executable" && ! -L "$executable" &&
+     -f "$client" && ! -L "$client" &&
+     -f "$broker" && ! -L "$broker" &&
+     -f "$host" && ! -L "$host" ]] || return 1
+  chown root:root "$executable" "$client"
+  chmod 0755 "$executable" "$client"
+  setcap -r "$executable" 2>/dev/null || true
+  setcap -r "$client" 2>/dev/null || true
+  [[ -z $(getcap "$executable" 2>/dev/null) ]] || {
+    echo 'error: unsafe file capabilities remain on the native Vibepollo executable.' >&2
+    return 1
+  }
+  [[ -z $(getcap "$client" 2>/dev/null) ]] || {
+    echo 'error: obsolete capabilities remain on the Vibepollo session client.' >&2
+    return 1
+  }
+  chown root:root "$broker"
+  chmod 0700 "$broker"
+  setcap cap_kill,cap_setgid,cap_setuid=p "$broker" || return 1
+  [[ $(stat -c '%U:%G:%a:%F' -- "$broker") == \
+     'root:root:700:regular file' ]] || return 1
+  broker_capabilities=$(getcap "$broker" 2>/dev/null)
+  [[ "$broker_capabilities" == "$broker cap_kill,cap_setgid,cap_setuid=p" ]] || {
+    echo 'error: the root-only session broker has unexpected file capabilities.' >&2
+    return 1
+  }
+
+  public_identity=$(stat -Lc '%d:%i' -- "$executable") || return 1
+  broker_identity=$(stat -Lc '%d:%i' -- "$broker") || return 1
+  host_identity=$(stat -Lc '%d:%i' -- "$host") || return 1
+  [[ "$public_identity" != "$host_identity" && "$broker_identity" != "$host_identity" ]] || {
+    echo 'error: privileged broker and private/public hosts must be distinct inodes.' >&2
+    return 1
+  }
+  chown root:vibepollo "$host"
+  chmod 0750 "$host"
+  setcap cap_sys_admin,cap_sys_nice=p "$host" || return 1
+  [[ $(stat -c '%U:%G:%a:%F' -- "$host") == \
+     'root:vibepollo:750:regular file' ]] || return 1
+  host_capabilities=$(getcap "$host" 2>/dev/null)
+  [[ "$host_capabilities" == "$host cap_sys_admin,cap_sys_nice=p" ]] || {
+    echo 'error: the private Vibepollo host has unexpected file capabilities.' >&2
+    return 1
+  }
+  [[ $(getcap "$broker" 2>/dev/null) == \
+     "$broker cap_kill,cap_setgid,cap_setuid=p" ]] || {
+    echo 'error: private-host setup altered the session broker capabilities.' >&2
+    return 1
+  }
+  [[ -z $(getcap "$executable" 2>/dev/null) &&
+     -z $(getcap "$client" 2>/dev/null) ]] || {
+    echo 'error: a public Vibepollo entrypoint gained file capabilities.' >&2
+    return 1
+  }
+}
+
+readonly vibepollo_controller=/usr/libexec/vibeshine/vibepollo-session-controller
+readonly vibepollo_legacy_host=/usr/libexec/vibeshine/vibepollo-machine-host
+readonly vibepollo_legacy_handoff=/usr/libexec/vibeshine/vibepollo-session-handoff
+readonly vibepollo_runtime_root=/run/vibepollo
+readonly vibepollo_session_record=/run/vibepollo/session.env
+readonly vibepollo_legacy_acl=/run/vibepollo/runtime-acl
+readonly vibepollo_broker_socket=/run/vibepollo/session-broker.sock
+readonly vibepollo_legacy_handoff_directory=/run/vibepollo/session-handoffs
+readonly vibepollo_legacy_restore_directory=/run/vibepollo/session-restores
+readonly vibepollo_legacy_transition_lock=/run/vibepollo/session-handoff.lock
+readonly vibepollo_legacy_prelogin_marker=/run/vibepollo/prelogin-handoff-complete
+
+vibepollo_cgroup_is_quiescent() {
+  local control_group=$1 cgroup_path
+  [[ -n "$control_group" ]] || return 0
+  [[ "$control_group" == /* && "$control_group" != */../* && "$control_group" != */.. ]] || return 1
+  cgroup_path=/sys/fs/cgroup$control_group
+  if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
+    return 0
+  fi
+  [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
+     -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] &&
+    grep -qx 'populated 0' "$cgroup_path/cgroup.events"
+}
+
+vibepollo_unit_is_quiescent() {
+  local unit=$1 properties line key value
+  local load='' state='' substate='' pid='' control_group=''
+  local -A seen=()
+  properties=$(timeout --signal=KILL 5 systemctl show "$unit" \
+    --property=LoadState --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup 2>/dev/null) || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    [[ "$key" =~ ^(LoadState|ActiveState|SubState|MainPID|ControlGroup)$ &&
+       -z ${seen[$key]:-} ]] || return 1
+    seen[$key]=1
+    case "$key" in
+      LoadState) load=$value ;;
+      ActiveState) state=$value ;;
+      SubState) substate=$value ;;
+      MainPID) pid=$value ;;
+      ControlGroup) control_group=$value ;;
+    esac
+  done <<<"$properties"
+  ((${#seen[@]} == 5)) || return 1
+  [[ "$load:$state:$substate" =~ ^(not-found:inactive:dead|(loaded|masked|masked-runtime):(inactive:dead|failed:failed))$ ]] || return 1
+  [[ "$pid" == 0 ]] && vibepollo_cgroup_is_quiescent "$control_group"
+}
+
+vibepollo_unit_is_disabled() {
+  local enabled
+  enabled=$(timeout --signal=KILL 5 systemctl is-enabled "$1" 2>/dev/null || true)
+  [[ "$enabled" =~ ^(disabled|masked|masked-runtime|static|indirect|generated|transient|linked|linked-runtime|not-found)$ ]]
+}
+
+vibepollo_restore_template_is_masked() {
+  local state load
+  state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    'vibepollo-session-restore@.service' 2>/dev/null || true)
+  load=$(timeout --signal=KILL 5 systemctl show 'vibepollo-session-restore@.service' \
+    --property=LoadState 2>/dev/null) || return 1
+  [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
+}
+
+vibepollo_host_unit_is_masked() {
+  local state load
+  state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  load=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=LoadState 2>/dev/null) || return 1
+  [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
+}
+
+vibepollo_broker_socket_is_masked() {
+  local state load
+  state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    vibepollo-session-exec.socket 2>/dev/null || true)
+  load=$(timeout --signal=KILL 5 systemctl show vibepollo-session-exec.socket \
+    --property=LoadState 2>/dev/null) || return 1
+  [[ "$state" =~ ^(masked|masked-runtime)$ && "$load" == 'LoadState=masked' ]]
+}
+
+vibepollo_restore_unit_is_safe() {
+  [[ "$1" =~ ^vibepollo-session-restore@[1-9][0-9]*\.service$ ]]
+}
+
+vibepollo_broker_unit_is_safe() {
+  [[ "$1" =~ ^vibepollo-session-exec@[A-Za-z0-9_.:-]+\.service$ ]]
+}
+
+vibepollo_stop_exact_unit() {
+  timeout --signal=KILL 30 systemctl stop "$1" 2>/dev/null && return 0
+  timeout --signal=KILL 5 systemctl kill --kill-whom=all --signal=KILL "$1" 2>/dev/null || true
+  timeout --signal=KILL 10 systemctl stop "$1" 2>/dev/null || true
+}
+
+vibepollo_capture_unit_list() {
+  local path=$1 pattern=$2 size
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  chmod 0600 "$path" || return 1
+  (
+    ulimit -f 128 || exit 1
+    timeout --signal=KILL 5 systemctl list-units --all --plain --no-legend \
+      --no-pager --full "$pattern" >"$path" 2>/dev/null
+  ) || return 1
+  size=$(stat -c '%s' -- "$path") || return 1
+  [[ "$size" =~ ^[0-9]+$ && "$size" -le 65536 ]]
+}
+
+vibepollo_stop_brokers() (
+  local list unit load state substate line dirty attempt=0 clean_passes=0
+  local -a fields=()
+  local -A seen=()
+  list=$(mktemp /run/vibepollo-broker-units.XXXXXX) || exit 1
+  trap 'rm -f -- "$list"' EXIT
+  trap 'exit 1' HUP INT TERM
+  while ((attempt < 20)); do
+    dirty=0
+    seen=()
+    vibepollo_capture_unit_list "$list" 'vibepollo-session-exec@*.service' || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" && "$line" != *$'\r'* ]] || { [[ -z "$line" ]] && continue; return 1; }
+      read -ra fields <<<"$line"
+      [[ ${fields[0]:-} == '●' ]] && fields=("${fields[@]:1}")
+      ((${#fields[@]} >= 4)) || return 1
+      unit=${fields[0]}; load=${fields[1]}; state=${fields[2]}; substate=${fields[3]}
+      vibepollo_broker_unit_is_safe "$unit" && [[ "$load" == loaded ]] || return 1
+      [[ "$state:$substate" =~ ^[a-z-]+:[a-z-]+$ && -z ${seen[$unit]:-} ]] || return 1
+      seen[$unit]=1
+      ((${#seen[@]} <= 256)) || return 1
+      if ! vibepollo_unit_is_quiescent "$unit"; then
+        dirty=1
+        vibepollo_stop_exact_unit "$unit"
+        vibepollo_unit_is_quiescent "$unit" || return 1
+      fi
+    done <"$list"
+    if ((dirty == 0)); then
+      ((clean_passes += 1))
+      ((clean_passes < 5)) || return 0
+    else
+      clean_passes=0
+    fi
+    ((attempt += 1))
+    sleep 0.1
+  done
+  return 1
+)
+
+vibepollo_stop_restore_instances() (
+  local list unit load state substate line
+  local -a fields=()
+  local -A seen=()
+  list=$(mktemp /run/vibepollo-restore-units.XXXXXX) || exit 1
+  trap 'rm -f -- "$list"' EXIT
+  trap 'exit 1' HUP INT TERM
+  vibepollo_capture_unit_list "$list" 'vibepollo-session-restore@*.service' || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != *$'\r'* ]] || { [[ -z "$line" ]] && continue; return 1; }
+    read -ra fields <<<"$line"
+    [[ ${fields[0]:-} == '●' ]] && fields=("${fields[@]:1}")
+    ((${#fields[@]} >= 4)) || return 1
+    unit=${fields[0]}; load=${fields[1]}; state=${fields[2]}; substate=${fields[3]}
+    vibepollo_restore_unit_is_safe "$unit" && [[ "$load" =~ ^(loaded|masked)$ ]] || return 1
+    [[ "$state:$substate" =~ ^[a-z-]+:[a-z-]+$ && -z ${seen[$unit]:-} ]] || return 1
+    seen[$unit]=1
+    ((${#seen[@]} <= 256)) || return 1
+    vibepollo_stop_exact_unit "$unit"
+    vibepollo_unit_is_quiescent "$unit" || return 1
+  done <"$list"
+)
+
+vibepollo_brokers_are_quiescent() {
+  vibepollo_stop_brokers
+}
+
+vibepollo_restore_instances_are_quiescent() (
+  local list unit load state substate line
+  local -a fields=()
+  local -A seen=()
+  list=$(mktemp /run/vibepollo-restore-units.XXXXXX) || exit 1
+  trap 'rm -f -- "$list"' EXIT
+  trap 'exit 1' HUP INT TERM
+  vibepollo_capture_unit_list "$list" 'vibepollo-session-restore@*.service' || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != *$'\r'* ]] || { [[ -z "$line" ]] && continue; return 1; }
+    read -ra fields <<<"$line"
+    [[ ${fields[0]:-} == '●' ]] && fields=("${fields[@]:1}")
+    ((${#fields[@]} >= 4)) || return 1
+    unit=${fields[0]}; load=${fields[1]}; state=${fields[2]}; substate=${fields[3]}
+    vibepollo_restore_unit_is_safe "$unit" && [[ "$load" =~ ^(loaded|masked)$ ]] || return 1
+    [[ "$state:$substate" =~ ^[a-z-]+:[a-z-]+$ && -z ${seen[$unit]:-} ]] || return 1
+    seen[$unit]=1
+    ((${#seen[@]} <= 256)) || return 1
+    vibepollo_unit_is_quiescent "$unit" || return 1
+  done <"$list"
+)
+
+vibepollo_privileged_helper_is_safe() {
+  [[ -f "$1" && ! -L "$1" && -x "$1" &&
+     $(stat -c '%u:%g:%a:%h:%F' -- "$1") == \
+       '0:0:755:1:regular file' ]]
+}
+
+vibepollo_run_optional_legacy_command() {
+  local status
+  if [[ ! -e "$vibepollo_legacy_host" && ! -L "$vibepollo_legacy_host" ]]; then
+    return 2
+  fi
+  vibepollo_privileged_helper_is_safe "$vibepollo_legacy_host" || return 1
+  timeout --signal=KILL 40 "$vibepollo_legacy_host" "$1" >/dev/null 2>&1
+  status=$?
+  ((status == 0)) && return 0
+  ((status == 2)) && return 2
+  return 1
+}
+
+vibepollo_runtime_root_is_safe_or_absent() {
+  if [[ ! -e "$vibepollo_runtime_root" && ! -L "$vibepollo_runtime_root" ]]; then
+    return 0
+  fi
+  [[ -d "$vibepollo_runtime_root" && ! -L "$vibepollo_runtime_root" &&
+     $(stat -c '%u:%g:%a:%F' -- "$vibepollo_runtime_root") == '0:0:755:directory' ]]
+}
+
+vibepollo_legacy_handoff_process_is_running() {
+  local proc
+  for proc in /proc/[0-9]*; do
+    [[ -d "$proc" ]] || continue
+    if grep -Fzxq -- "$vibepollo_legacy_handoff" "$proc/cmdline" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+vibepollo_wait_for_legacy_handoff() {
+  local attempt=0 clean_passes=0
+  while ((attempt < 400)); do
+    if vibepollo_legacy_handoff_process_is_running; then
+      clean_passes=0
+    else
+      ((clean_passes += 1))
+      ((clean_passes < 10)) || return 0
+    fi
+    ((attempt += 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+vibepollo_disable_legacy_handoff() {
+  local attributes identity
+  if [[ ! -e "$vibepollo_legacy_handoff" && ! -L "$vibepollo_legacy_handoff" ]]; then
+    return 0
+  fi
+  [[ -f "$vibepollo_legacy_handoff" && ! -L "$vibepollo_legacy_handoff" ]] || return 1
+  attributes=$(stat -c '%u:%g:%a:%h' -- "$vibepollo_legacy_handoff") || return 1
+  [[ "$attributes" =~ ^0:0:(755|0):1$ ]] || return 1
+  identity=$(stat -Lc '%d:%i' -- "$vibepollo_legacy_handoff") || return 1
+  chmod 000 -- "$vibepollo_legacy_handoff" || return 1
+  [[ $(stat -Lc '%d:%i:%u:%g:%a:%h' -- "$vibepollo_legacy_handoff") == \
+     "$identity:0:0:0:1" ]] || return 1
+  vibepollo_wait_for_legacy_handoff
+}
+
+vibepollo_legacy_state_file_is_safe() {
+  local path=$1 name=${1##*/} attributes size
+  local -a fields=()
+  [[ "$name" =~ ^[1-9][0-9]*$ && -f "$path" && ! -L "$path" ]] || return 1
+  attributes=$(stat -c '%u:%g:%a:%h:%s' -- "$path") || return 1
+  [[ "$attributes" =~ ^0:0:(600|644):1:[0-9]+$ ]] || return 1
+  size=${attributes##*:}
+  ((size <= 4096)) || return 1
+  mapfile -t fields <"$path" || return 1
+  ((${#fields[@]} == 3)) || return 1
+  [[ "${fields[0]}" =~ ^[a-z_][a-z0-9_-]*$ && "${fields[1]}" == "$name" &&
+     "${fields[2]}" =~ ^[0-9a-f]{32}$ ]]
+}
+
+vibepollo_remove_legacy_state_directory() {
+  local directory=$1 path nullglob_was_set=0 dotglob_was_set=0
+  local -a entries=()
+  if [[ ! -e "$directory" && ! -L "$directory" ]]; then
+    return 0
+  fi
+  [[ -d "$directory" && ! -L "$directory" &&
+     $(stat -c '%u:%g:%a' -- "$directory") =~ ^0:0:(700|755)$ ]] || return 1
+  shopt -q nullglob && nullglob_was_set=1
+  shopt -q dotglob && dotglob_was_set=1
+  shopt -s nullglob dotglob
+  entries=("$directory"/*)
+  ((nullglob_was_set)) || shopt -u nullglob
+  ((dotglob_was_set)) || shopt -u dotglob
+  for path in "${entries[@]}"; do
+    vibepollo_legacy_state_file_is_safe "$path" || return 1
+    rm -f -- "$path" || return 1
+  done
+  rmdir -- "$directory" || return 1
+  [[ ! -e "$directory" && ! -L "$directory" ]]
+}
+
+vibepollo_remove_legacy_prelogin_marker() {
+  local attributes size user extra
+  if [[ ! -e "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]]; then
+    return 0
+  fi
+  [[ -f "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]] || return 1
+  attributes=$(stat -c '%u:%g:%a:%h:%s' -- "$vibepollo_legacy_prelogin_marker") || return 1
+  [[ "$attributes" =~ ^0:0:644:1:[0-9]+$ ]] || return 1
+  size=${attributes##*:}
+  ((size <= 256)) || return 1
+  {
+    IFS= read -r user && ! IFS= read -r extra
+  } <"$vibepollo_legacy_prelogin_marker" || return 1
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || return 1
+  rm -f -- "$vibepollo_legacy_prelogin_marker" || return 1
+  [[ ! -e "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]]
+}
+
+vibepollo_cleanup_legacy_transition_state() {
+  (
+    vibepollo_runtime_root_is_safe_or_absent || exit 1
+    if [[ -e "$vibepollo_legacy_transition_lock" || -L "$vibepollo_legacy_transition_lock" ]]; then
+      [[ -f "$vibepollo_legacy_transition_lock" && ! -L "$vibepollo_legacy_transition_lock" &&
+         $(stat -c '%u:%g:%a:%h:%s' -- "$vibepollo_legacy_transition_lock") == \
+         '0:0:600:1:0' ]] || exit 1
+      exec 9<>"$vibepollo_legacy_transition_lock" || exit 1
+      timeout --signal=KILL 10 flock --exclusive 9 || exit 1
+    fi
+    vibepollo_wait_for_legacy_handoff || exit 1
+    vibepollo_remove_legacy_state_directory "$vibepollo_legacy_handoff_directory" || exit 1
+    vibepollo_remove_legacy_state_directory "$vibepollo_legacy_restore_directory" || exit 1
+    vibepollo_remove_legacy_prelogin_marker || exit 1
+    if [[ -e "$vibepollo_legacy_transition_lock" || -L "$vibepollo_legacy_transition_lock" ]]; then
+      rm -f -- "$vibepollo_legacy_transition_lock" || exit 1
+    fi
+    [[ ! -e "$vibepollo_legacy_transition_lock" && ! -L "$vibepollo_legacy_transition_lock" ]]
+  )
+}
+
+do_quiesce_machine_host() {
+  local unit legacy_status have_systemd=0
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    have_systemd=1
+    timeout --signal=KILL 15 systemctl mask --runtime \
+      'vibepollo-session-restore@.service' 2>/dev/null || return 1
+    vibepollo_restore_template_is_masked || return 1
+    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || return 1
+    vibepollo_host_unit_is_masked || return 1
+    vibepollo_disable_legacy_handoff || return 1
+    timeout --signal=KILL 15 systemctl mask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+    vibepollo_broker_socket_is_masked || return 1
+    vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vibepollo_stop_restore_instances || return 1
+    vibepollo_stop_brokers || return 1
+    vibepollo_stop_exact_unit vibepollo-session-controller.service
+    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_stop_exact_unit vibepollo-prelogin.service
+    vibepollo_stop_exact_unit vibepollo-machine-prepare.service
+    timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo-prelogin.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo-machine-prepare.service --now 2>/dev/null || true
+  fi
+
+  ((have_systemd)) || vibepollo_disable_legacy_handoff || return 1
+  vibepollo_runtime_root_is_safe_or_absent || return 1
+
+  if [[ -e "$vibepollo_controller" || -L "$vibepollo_controller" ]]; then
+    vibepollo_privileged_helper_is_safe "$vibepollo_controller" || return 1
+    ((have_systemd == 1)) || return 1
+    timeout --signal=KILL 40 "$vibepollo_controller" cleanup || return 1
+  else
+    vibepollo_run_optional_legacy_command cleanup
+    legacy_status=$?
+    ((legacy_status == 0 || legacy_status == 2)) || return 1
+  fi
+
+  vibepollo_run_optional_legacy_command remove-pam
+  legacy_status=$?
+  ((legacy_status == 0 || legacy_status == 2)) || return 1
+
+  if ((have_systemd)); then
+    vibepollo_restore_template_is_masked || return 1
+    vibepollo_host_unit_is_masked || return 1
+    vibepollo_broker_socket_is_masked || return 1
+    vibepollo_stop_restore_instances || return 1
+    vibepollo_stop_exact_unit vibepollo.service
+    vibepollo_unit_is_quiescent vibepollo.service || return 1
+    vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_stop_brokers || return 1
+    for unit in \
+      vibepollo-session-exec.socket \
+      vibepollo-session-controller.service \
+      vibepollo.service \
+      vibepollo-prelogin.service \
+      vibepollo-machine-prepare.service; do
+      vibepollo_stop_exact_unit "$unit"
+      vibepollo_unit_is_quiescent "$unit" && vibepollo_unit_is_disabled "$unit" || return 1
+    done
+    vibepollo_brokers_are_quiescent || return 1
+    vibepollo_restore_instances_are_quiescent || return 1
+  fi
+
+  vibepollo_cleanup_legacy_transition_state || return 1
+
+  if [[ -S "$vibepollo_broker_socket" && ! -L "$vibepollo_broker_socket" ]]; then
+    rm -f -- "$vibepollo_broker_socket" || return 1
+  fi
+  [[ ! -e "$vibepollo_broker_socket" && ! -L "$vibepollo_broker_socket" &&
+     ! -e "$vibepollo_session_record" && ! -L "$vibepollo_session_record" &&
+     ! -e "$vibepollo_legacy_acl" && ! -L "$vibepollo_legacy_acl" &&
+     ! -e "$vibepollo_legacy_handoff_directory" && ! -L "$vibepollo_legacy_handoff_directory" &&
+     ! -e "$vibepollo_legacy_restore_directory" && ! -L "$vibepollo_legacy_restore_directory" &&
+     ! -e "$vibepollo_legacy_transition_lock" && ! -L "$vibepollo_legacy_transition_lock" &&
+     ! -e "$vibepollo_legacy_prelogin_marker" && ! -L "$vibepollo_legacy_prelogin_marker" ]] || {
+    echo 'error: installed Vibepollo runtime state remains; replacement is blocked and admission stays disabled.' >&2
+    return 1
+  }
 }
 
 do_udev_reload() {
@@ -41,26 +521,61 @@ do_prepare_kwin() {
   "$helper" prepare || echo 'warning: could not prepare capability-free KWin for the Vibepollo GPU bridge.'
 }
 
+vibepollo_unmask_host_for_controller() {
+  local state load socket_state socket_load
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo.service 2>/dev/null || return 1
+  state=$(timeout --signal=KILL 5 systemctl is-enabled vibepollo.service 2>/dev/null || true)
+  load=$(timeout --signal=KILL 5 systemctl show vibepollo.service \
+    --property=LoadState 2>/dev/null) || return 1
+  socket_state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    vibepollo-session-exec.socket 2>/dev/null || true)
+  socket_load=$(timeout --signal=KILL 5 systemctl show vibepollo-session-exec.socket \
+    --property=LoadState 2>/dev/null) || return 1
+  [[ "$socket_state" =~ ^(disabled|static|indirect|generated|transient|linked|linked-runtime)$ &&
+     "$socket_load" == 'LoadState=loaded' ]] || return 1
+  [[ "$state" =~ ^(disabled|static|indirect|generated|transient|linked|linked-runtime)$ &&
+     "$load" == 'LoadState=loaded' ]]
+}
+
 do_install_prelogin() {
   local helper=/usr/libexec/vibeshine/vibepollo-machine-host
+  if [[ -x "$helper" ]]; then
+    "$helper" remove-pam || echo 'warning: could not remove the obsolete Plasma Login Manager handoff hook.'
+  fi
+  systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+  systemctl daemon-reload
   [[ -x "$helper" ]] || return 0
   if "$helper" configure-auto; then
-    if ! "$helper" install-pam; then
-      echo 'warning: could not install the Plasma Login Manager handoff hook.'
-      return 0
-    fi
-    systemctl daemon-reload
-    systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-    systemctl enable vibepollo.service || echo 'warning: could not enable the Vibepollo machine host.'
     systemctl enable --now vibepollo-kwin-capability.path || echo 'warning: could not enable the KWin capability watcher.'
+    if ! systemctl enable vibepollo-session-controller.service; then
+      do_quiesce_machine_host || true
+      echo 'error: could not enable the Vibepollo session controller safely.' >&2
+      return 1
+    fi
+    if ! vibepollo_unmask_host_for_controller ||
+       ! systemctl start vibepollo-session-controller.service; then
+      do_quiesce_machine_host || true
+      echo 'error: could not start the Vibepollo session controller safely.' >&2
+      return 1
+    fi
   else
     echo 'warning: Vibepollo needs an explicit machine profile owner.'
-    echo "         Run: sudo $helper configure USER CLIENT_UUID..."
+    echo "         Run: sudo $helper configure USER"
   fi
 }
 
+pre_install() {
+  do_quiesce_machine_host
+}
+
+pre_upgrade() {
+  do_quiesce_machine_host
+}
+
 post_install() {
-  do_setcap
+  do_quiesce_machine_host
+  do_secure_executables
   do_udev_reload
   modprobe uhid
   do_prepare_kwin
@@ -69,7 +584,8 @@ post_install() {
 }
 
 post_upgrade() {
-  do_setcap
+  do_quiesce_machine_host
+  do_secure_executables
   do_udev_reload
   modprobe uhid
   do_prepare_kwin
@@ -78,9 +594,9 @@ post_upgrade() {
 }
 
 pre_remove() {
-  systemctl disable --now vibepollo.service vibepollo-prelogin.service 2>/dev/null || true
+  do_quiesce_machine_host || return 1
+  systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
   systemctl disable --now vibepollo-kwin-capability.path 2>/dev/null || true
-  /usr/libexec/vibeshine/vibepollo-machine-host cleanup 2>/dev/null || true
   /usr/libexec/vibeshine/vibepollo-machine-host remove-pam 2>/dev/null || true
   systemctl stop vibeshine-vkms.service 2>/dev/null || true
   systemctl stop vibeshine-drm-setup.service 2>/dev/null || true

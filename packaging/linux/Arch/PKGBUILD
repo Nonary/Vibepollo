@@ -27,7 +27,6 @@ if [ "${_versioned_gcc}" == true ]; then
 fi
 
 depends=(
-  'acl'
   'avahi'
   'curl'
   'dkms'
@@ -55,13 +54,13 @@ depends=(
   'numactl'
   'openssl'
   'opus'
-  'pam'
   'python'
   'socat'
   'udev'
   'util-linux'
   'vulkan-icd-loader'
-  'which'
+  'wayland-utils'
+  'xorg-xdpyinfo'
 )
 
 makedepends=(

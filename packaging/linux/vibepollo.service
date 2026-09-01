@@ -1,28 +1,36 @@
 [Unit]
 Description=Vibepollo machine streaming host
 Documentation=https://github.com/Nonary/Vibepollo
-Requires=vibepollo-machine-prepare.service
+BindsTo=vibepollo-session-controller.service
+Requires=vibepollo-session-exec.socket
 Wants=vibeshine-vkms.service
-After=vibepollo-machine-prepare.service vibeshine-vkms.service display-manager.service
-ConditionPathExists=/etc/vibepollo/machine.conf
+After=vibepollo-session-controller.service vibepollo-session-exec.socket vibeshine-vkms.service
+ConditionPathExists=/run/vibepollo/session.env
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
 User=vibepollo
 Group=vibepollo
 SupplementaryGroups=video render input vibeshine-vkms
 StateDirectory=vibepollo
 StateDirectoryMode=0700
-CapabilityBoundingSet=CAP_SETGID CAP_SETUID CAP_SYS_ADMIN CAP_SYS_NICE
+RuntimeDirectory=vibepollo/host
+RuntimeDirectoryMode=0700
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_NICE
+AmbientCapabilities=
+# The capability-free supervisor must be able to exec the private +p host.
+# The host enters with E/I/A empty and sets NoNewPrivileges in the literal
+# first Linux statement of main(), before configuration or logging.
+NoNewPrivileges=no
 ExecStart=/usr/libexec/vibeshine/vibepollo-machine-host run
-ExecStopPost=+/usr/libexec/vibeshine/vibepollo-machine-host cleanup
-Restart=on-failure
-RestartSec=3
-RestartSteps=7
-RestartMaxDelaySec=5min
-TimeoutStartSec=infinity
+Restart=no
+KillMode=mixed
+TimeoutStartSec=45
 TimeoutStopSec=20
+MemoryMax=2G
+TasksMax=512
 UMask=0077
 DevicePolicy=closed
 DeviceAllow=char-drm rw
@@ -33,8 +41,8 @@ DeviceAllow=char-nvidia-caps r
 DeviceAllow=/dev/uinput rw
 DeviceAllow=/dev/uhid rw
 ProtectSystem=strict
-ProtectHome=no
-PrivateTmp=no
+ProtectHome=yes
+PrivateTmp=yes
 PrivateMounts=yes
 ProtectClock=yes
 ProtectControlGroups=yes
@@ -48,6 +56,3 @@ LockPersonality=yes
 SystemCallArchitectures=native
 SystemCallFilter=~@clock @debug @module @mount @reboot @swap
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-
-[Install]
-WantedBy=graphical.target

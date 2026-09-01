@@ -1,216 +1,216 @@
 #define _GNU_SOURCE
 
-#include <ctype.h>
+#include "vibepollo-session-protocol.h"
+
 #include <errno.h>
-#include <fcntl.h>
-#include <grp.h>
 #include <limits.h>
-#include <pwd.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/capability.h>
 #include <sys/prctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
-static const char session_path[] = "/run/vibepollo/session.env";
-static const char command_manifest_path[] = "/etc/vibepollo/session-commands";
-static const char service_name[] = "vibepollo";
-
-struct session_identity {
-  char user[64];
-  char home[PATH_MAX];
-  char runtime[PATH_MAX];
-  char wayland_display[64];
-  char x_display[64];
-  uid_t uid;
-  gid_t gid;
-  gid_t groups[128];
-  size_t group_count;
-};
-
-static bool parse_id(const char *value, unsigned long *result) {
-  char *end = NULL; errno = 0; const unsigned long parsed = strtoul(value, &end, 10);
-  if (errno || !value[0] || !end || *end || parsed == 0 || parsed > UINT_MAX) return false;
-  *result = parsed; return true;
+static bool drop_client_capabilities(void) {
+  if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0)) return false;
+  cap_t empty = cap_init();
+  if (!empty) return false;
+  const int result = cap_set_proc(empty);
+  cap_free(empty);
+  return !result && !prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 }
 
-static bool parse_groups(char *value, struct session_identity *identity) {
-  char *save = NULL;
-  for (char *field = strtok_r(value, ",", &save); field; field = strtok_r(NULL, ",", &save)) {
-    unsigned long parsed = 0;
-    if (identity->group_count == 128 || !parse_id(field, &parsed)) return false;
-    identity->groups[identity->group_count++] = (gid_t) parsed;
-  }
-  return identity->group_count > 0;
-}
-
-static bool copy_field(char *destination, size_t size, const char *value) {
-  const size_t length = strlen(value);
-  if (!length || length >= size || strchr(value, '\n') || strchr(value, '\r')) return false;
-  memcpy(destination, value, length + 1);
-  return true;
-}
-
-static bool numeric_suffix(const char *value, const char *prefix) {
-  const size_t prefix_length = strlen(prefix);
-  if (strncmp(value, prefix, prefix_length) || !value[prefix_length]) return false;
-  for (const unsigned char *cursor = (const unsigned char *) value + prefix_length; *cursor; ++cursor) {
-    if (!isdigit(*cursor)) return false;
-  }
-  return true;
-}
-
-static bool safe_argument(const char *value) {
-  if (!value || strlen(value) > 4096) return false;
+static bool parse_generation(const char *value, uint64_t *generation) {
+  if (!value || !value[0] || !generation) return false;
   for (const unsigned char *cursor = (const unsigned char *) value; *cursor; ++cursor) {
-    if (*cursor < 0x20 || *cursor == 0x7f) return false;
+    if (*cursor < '0' || *cursor > '9') return false;
   }
+  char *end = NULL;
+  errno = 0;
+  const unsigned long long parsed = strtoull(value, &end, 10);
+  if (errno || !end || *end || !parsed) return false;
+  *generation = (uint64_t) parsed;
   return true;
 }
 
-static bool load_identity(struct session_identity *identity, gid_t service_gid) {
-  const int fd = open(session_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (fd < 0) return false;
-  struct stat attributes;
-  if (fstat(fd, &attributes) || !S_ISREG(attributes.st_mode) || attributes.st_uid != 0 ||
-      attributes.st_gid != service_gid || (attributes.st_mode & 0777) != 0640 || attributes.st_size > 4096) {
-    close(fd); errno = EPERM; return false;
-  }
-  FILE *input = fdopen(fd, "r");
-  if (!input) { close(fd); return false; }
-  bool have_user = false, have_uid = false, have_gid = false, have_home = false;
-  bool have_runtime = false, have_wayland = false, have_groups = false;
-  char *line = NULL; size_t capacity = 0;
-  while (getline(&line, &capacity, input) >= 0) {
-    line[strcspn(line, "\r\n")] = 0; char *separator = strchr(line, '='); if (!separator) continue; *separator++ = 0;
-    unsigned long parsed = 0;
-    if (!strcmp(line, "user")) {
-      if (have_user || !copy_field(identity->user, sizeof(identity->user), separator)) goto invalid;
-      have_user = true;
-    } else if (!strcmp(line, "uid")) {
-      if (have_uid || !parse_id(separator, &parsed)) goto invalid;
-      identity->uid = (uid_t) parsed;
-      have_uid = true;
-    } else if (!strcmp(line, "gid")) {
-      if (have_gid || !parse_id(separator, &parsed)) goto invalid;
-      identity->gid = (gid_t) parsed;
-      have_gid = true;
-    } else if (!strcmp(line, "home")) {
-      if (have_home || !copy_field(identity->home, sizeof(identity->home), separator)) goto invalid;
-      have_home = true;
-    } else if (!strcmp(line, "runtime")) {
-      if (have_runtime || !copy_field(identity->runtime, sizeof(identity->runtime), separator)) goto invalid;
-      have_runtime = true;
-    } else if (!strcmp(line, "display")) {
-      if (have_wayland || !copy_field(identity->wayland_display, sizeof(identity->wayland_display), separator)) goto invalid;
-      have_wayland = true;
-    } else if (!strcmp(line, "xdisplay")) {
-      if (separator[0] && !copy_field(identity->x_display, sizeof(identity->x_display), separator)) goto invalid;
-    } else if (!strcmp(line, "groups")) {
-      if (have_groups || !parse_groups(separator, identity)) goto invalid;
-      have_groups = true;
+static int fail(const char *message) {
+  if (errno) fprintf(stderr, "vibepollo-session-exec: %s: %s\n", message, strerror(errno));
+  else fprintf(stderr, "vibepollo-session-exec: %s\n", message);
+  return 126;
+}
+
+static bool write_all(int fd, const void *buffer, size_t length) {
+  const unsigned char *cursor = buffer;
+  while (length) {
+    const ssize_t written = write(fd, cursor, length);
+    if (written > 0) {
+      cursor += (size_t) written;
+      length -= (size_t) written;
+    } else if (written < 0 && errno == EINTR) {
+      continue;
+    } else {
+      return false;
     }
   }
-  free(line); fclose(input);
-  if (!have_user || !have_uid || !have_gid || !have_home || !have_runtime || !have_wayland || !have_groups) { errno = EINVAL; return false; }
-  struct passwd *target = getpwuid(identity->uid);
-  char expected_runtime[PATH_MAX];
-  if (!target || strcmp(target->pw_name, identity->user) || target->pw_gid != identity->gid ||
-      strcmp(target->pw_dir, identity->home) ||
-      snprintf(expected_runtime, sizeof(expected_runtime), "/run/user/%u", identity->uid) >= (int) sizeof(expected_runtime) ||
-      strcmp(expected_runtime, identity->runtime) || !numeric_suffix(identity->wayland_display, "wayland-") ||
-      (identity->x_display[0] && !numeric_suffix(identity->x_display, ":"))) { errno = EPERM; return false; }
   return true;
-invalid:
-  free(line); fclose(input); errno = EINVAL; return false;
 }
 
-static bool command_is_authorized(const char *command, gid_t service_gid) {
-  if (!command || !command[0] || strlen(command) > 65535 || strchr(command, '\n') || strchr(command, '\r')) { errno = EINVAL; return false; }
-  const int fd = open(command_manifest_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (fd < 0) return false;
-  struct stat attributes;
-  if (fstat(fd, &attributes) || !S_ISREG(attributes.st_mode) || attributes.st_uid != 0 ||
-      attributes.st_gid != service_gid || (attributes.st_mode & 0777) != 0640 || attributes.st_size > 1048576) {
-    close(fd); errno = EPERM; return false;
+static bool peer_is_root_broker(int socket_fd) {
+  struct ucred peer = {0};
+  socklen_t peer_size = sizeof(peer);
+  return !getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_size) &&
+         peer_size == sizeof(peer) && peer.pid > 0 && peer.uid == 0 && peer.gid == 0;
+}
+
+static int connect_to_broker(void) {
+  const int socket_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+  if (socket_fd < 0) return -1;
+  struct sockaddr_un address = {.sun_family = AF_UNIX};
+  if (strlen(VIBEPOLLO_SESSION_BROKER_SOCKET) >= sizeof(address.sun_path)) {
+    close(socket_fd);
+    errno = ENAMETOOLONG;
+    return -1;
   }
-  FILE *input = fdopen(fd, "r");
-  if (!input) { close(fd); return false; }
-  bool authorized = false;
-  char *line = NULL; size_t capacity = 0;
-  while (getline(&line, &capacity, input) >= 0) {
-    line[strcspn(line, "\r\n")] = 0;
-    if (!strcmp(line, command)) { authorized = true; break; }
+  memcpy(address.sun_path, VIBEPOLLO_SESSION_BROKER_SOCKET,
+         sizeof(VIBEPOLLO_SESSION_BROKER_SOCKET));
+  if (connect(socket_fd, (const struct sockaddr *) &address, sizeof(address))) {
+    const int saved_errno = errno;
+    close(socket_fd);
+    errno = saved_errno;
+    return -1;
   }
-  free(line); fclose(input);
-  if (!authorized) errno = EPERM;
-  return authorized;
+  if (!peer_is_root_broker(socket_fd)) {
+    close(socket_fd);
+    errno = EPERM;
+    return -1;
+  }
+  return socket_fd;
 }
 
-static bool install_session_environment(const struct session_identity *identity) {
-  char data_home[PATH_MAX], bus[PATH_MAX];
-  if (snprintf(data_home, sizeof(data_home), "%s/.local/share", identity->home) >= (int) sizeof(data_home) ||
-      snprintf(bus, sizeof(bus), "unix:path=%s/bus", identity->runtime) >= (int) sizeof(bus)) return false;
-  if (clearenv()) return false;
-  return !setenv("HOME", identity->home, 1) && !setenv("USER", identity->user, 1) && !setenv("LOGNAME", identity->user, 1) &&
-         !setenv("PATH", "/usr/local/bin:/usr/bin:/bin", 1) && !setenv("LANG", "C.UTF-8", 1) && !setenv("SHELL", "/bin/sh", 1) &&
-         !setenv("XDG_DATA_HOME", data_home, 1) && !setenv("XDG_RUNTIME_DIR", identity->runtime, 1) &&
-         !setenv("PIPEWIRE_RUNTIME_DIR", identity->runtime, 1) && !setenv("XDG_SESSION_TYPE", "wayland", 1) &&
-         !setenv("WAYLAND_DISPLAY", identity->wayland_display, 1) && !setenv("DBUS_SESSION_BUS_ADDRESS", bus, 1) &&
-         (!identity->x_display[0] || !setenv("DISPLAY", identity->x_display, 1));
+static bool send_request(int socket_fd, int argc, char **argv, uint64_t generation) {
+  if (argc < 2 || (uint32_t) (argc - 1) > VIBEPOLLO_SESSION_PROTOCOL_MAX_ARGUMENTS) {
+    errno = E2BIG;
+    return false;
+  }
+  size_t payload_length = 0;
+  for (int index = 1; index < argc; ++index) {
+    const size_t length = strlen(argv[index]) + 1;
+    if (length > VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE ||
+        payload_length > VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE - length) {
+      errno = E2BIG;
+      return false;
+    }
+    payload_length += length;
+  }
+  const size_t message_length = sizeof(struct vibepollo_session_message) + payload_length;
+  if (message_length > VIBEPOLLO_SESSION_PROTOCOL_MAX_MESSAGE) {
+    errno = E2BIG;
+    return false;
+  }
+  unsigned char *message = calloc(1, message_length);
+  if (!message) return false;
+  struct vibepollo_session_message header = {
+    .magic = VIBEPOLLO_SESSION_PROTOCOL_MAGIC,
+    .version = VIBEPOLLO_SESSION_PROTOCOL_VERSION,
+    .type = VIBEPOLLO_SESSION_REQUEST,
+    .payload_length = (uint32_t) payload_length,
+    .argument_count = (uint32_t) (argc - 1),
+    .generation = generation,
+  };
+  memcpy(message, &header, sizeof(header));
+  size_t offset = sizeof(header);
+  for (int index = 1; index < argc; ++index) {
+    const size_t length = strlen(argv[index]) + 1;
+    memcpy(message + offset, argv[index], length);
+    offset += length;
+  }
+  ssize_t sent;
+  do {
+    sent = send(socket_fd, message, message_length, MSG_NOSIGNAL);
+  } while (sent < 0 && errno == EINTR);
+  free(message);
+  if (sent != (ssize_t) message_length) {
+    if (sent >= 0) errno = EIO;
+    return false;
+  }
+  return true;
 }
 
-static bool drop_to_session(const struct session_identity *identity) {
-  if (setgroups(identity->group_count, identity->groups) || setgid(identity->gid) || setuid(identity->uid)) return false;
-  cap_t empty = cap_init();
-  if (!empty || cap_set_proc(empty)) { if (empty) cap_free(empty); return false; }
-  cap_free(empty);
-  return !prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) && install_session_environment(identity);
-}
-
-static int exec_fixed(const char *path, int argc, char **argv) {
-  for (int index = 2; index < argc; ++index) if (!safe_argument(argv[index])) return 126;
-  argv[1] = (char *) path;
-  execv(path, &argv[1]);
-  return errno == ENOENT ? 127 : 126;
+static int relay_responses(int socket_fd, uint64_t generation) {
+  unsigned char packet[sizeof(struct vibepollo_session_message) +
+                       VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK];
+  for (;;) {
+    struct iovec vector = {.iov_base = packet, .iov_len = sizeof(packet)};
+    struct msghdr message = {.msg_iov = &vector, .msg_iovlen = 1};
+    ssize_t received;
+    do {
+      received = recvmsg(socket_fd, &message, 0);
+    } while (received < 0 && errno == EINTR);
+    if (!received) {
+      errno = ECONNRESET;
+      return fail("broker disconnected before reporting completion");
+    }
+    if (received < 0) return fail("could not receive broker response");
+    if ((message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
+        received < (ssize_t) sizeof(struct vibepollo_session_message)) {
+      errno = EPROTO;
+      return fail("invalid broker response");
+    }
+    struct vibepollo_session_message header;
+    memcpy(&header, packet, sizeof(header));
+    const size_t payload_length = (size_t) received - sizeof(header);
+    if (header.magic != VIBEPOLLO_SESSION_PROTOCOL_MAGIC ||
+        header.version != VIBEPOLLO_SESSION_PROTOCOL_VERSION ||
+        header.generation != generation || header.reserved ||
+        header.argument_count || header.payload_length != payload_length) {
+      errno = EPROTO;
+      return fail("invalid broker response");
+    }
+    if (header.type == VIBEPOLLO_SESSION_STDOUT ||
+        header.type == VIBEPOLLO_SESSION_STDERR) {
+      if (!payload_length || payload_length > VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK ||
+          header.status) {
+        errno = EPROTO;
+        return fail("invalid broker output frame");
+      }
+      if (!write_all(header.type == VIBEPOLLO_SESSION_STDOUT ? STDOUT_FILENO : STDERR_FILENO,
+                     packet + sizeof(header), payload_length)) {
+        return fail("could not forward broker output");
+      }
+    } else if (header.type == VIBEPOLLO_SESSION_EXIT) {
+      if (payload_length || header.status < 0 || header.status > 255) {
+        errno = EPROTO;
+        return fail("invalid broker exit frame");
+      }
+      return header.status;
+    } else {
+      errno = EPROTO;
+      return fail("unknown broker response");
+    }
+  }
 }
 
 int main(int argc, char **argv) {
+  uint64_t generation = 0;
+  if (!drop_client_capabilities()) return fail("could not discard inherited capabilities");
   if (argc < 2) return 2;
-  struct passwd *service = getpwnam(service_name);
-  if (!service || getuid() != service->pw_uid || geteuid() != service->pw_uid) return 126;
-
-  bool app_command = false;
-  const char *fixed_path = NULL;
-  char fixed_argument[128] = {0};
-  if (!strcmp(argv[1], "app")) {
-    if (argc != 4 || !safe_argument(argv[3]) || (argv[3][0] && argv[3][0] != '/') || !command_is_authorized(argv[2], service->pw_gid)) return 126;
-    app_command = true;
-  } else if (!strcmp(argv[1], "kscreen")) fixed_path = "/usr/bin/kscreen-doctor";
-  else if (!strcmp(argv[1], "pactl")) fixed_path = "/usr/bin/pactl";
-  else if (!strcmp(argv[1], "parec")) fixed_path = "/usr/bin/parec";
-  else if (!strcmp(argv[1], "steam")) {
-    if (argc != 3 || !numeric_suffix(argv[2], "")) return 126;
-    fixed_path = "/usr/bin/steam";
-  } else if (!strcmp(argv[1], "lutris")) {
-    if (argc != 3 || !numeric_suffix(argv[2], "")) return 126;
-    if (snprintf(fixed_argument, sizeof(fixed_argument), "lutris:rungameid/%s", argv[2]) >= (int) sizeof(fixed_argument)) return 126;
-    argv[2] = fixed_argument; fixed_path = "/usr/bin/lutris";
-  } else return 126;
-
-  struct session_identity identity = {0};
-  if (!load_identity(&identity, service->pw_gid)) { perror("vibepollo-session-exec"); return 126; }
-  if (!drop_to_session(&identity)) { perror("vibepollo-session-exec"); return 126; }
-  if (app_command) {
-    if (argv[3][0] && chdir(argv[3])) { perror("vibepollo-session-exec"); return 126; }
-    char *const shell_argv[] = {"/bin/sh", "-c", argv[2], "--", NULL};
-    execv(shell_argv[0], shell_argv);
-    perror("vibepollo-session-exec"); return errno == ENOENT ? 127 : 126;
+  if (!parse_generation(getenv("VIBEPOLLO_SESSION_GENERATION"), &generation)) {
+    errno = 0;
+    return fail("missing or invalid VIBEPOLLO_SESSION_GENERATION");
   }
-  const int result = exec_fixed(fixed_path, argc, argv);
-  perror("vibepollo-session-exec"); return result;
+  const int socket_fd = connect_to_broker();
+  if (socket_fd < 0) return fail("could not connect to the session broker");
+  if (!send_request(socket_fd, argc, argv, generation)) {
+    const int saved_errno = errno;
+    close(socket_fd);
+    errno = saved_errno;
+    return fail("could not send request to the session broker");
+  }
+  const int status = relay_responses(socket_fd, generation);
+  close(socket_fd);
+  return status;
 }

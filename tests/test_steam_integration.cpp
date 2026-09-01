@@ -1,9 +1,11 @@
 #include "src/steam_integration.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -11,6 +13,30 @@ namespace fs = std::filesystem;
 using namespace platf::steam;
 
 namespace {
+#if defined(__linux__)
+  class scoped_environment final {
+  public:
+    scoped_environment(const char *name, const std::string &value): name_ {name} {
+      if (const auto *current = std::getenv(name)) {
+        previous_ = current;
+      }
+      setenv(name, value.c_str(), 1);
+    }
+
+    ~scoped_environment() {
+      if (previous_) {
+        setenv(name_.c_str(), previous_->c_str(), 1);
+      } else {
+        unsetenv(name_.c_str());
+      }
+    }
+
+  private:
+    std::string name_;
+    std::optional<std::string> previous_;
+  };
+#endif
+
   void append_u32(std::vector<std::uint8_t> &data, std::uint32_t value) {
     for (unsigned shift = 0; shift < 32; shift += 8) {
       data.push_back(static_cast<std::uint8_t>(value >> shift));
@@ -92,6 +118,28 @@ namespace {
     output.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
   }
 }  // namespace
+
+#if defined(__linux__)
+TEST(SteamDiscovery, MachineHostDoesNotParseSessionHome) {
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibeshine-steam-session-home-test-" + std::to_string(nonce));
+  const auto session_home = base / "desktop";
+  const auto service_home = base / "machine";
+  std::error_code ec;
+  fs::create_directories(session_home / ".local/share/Steam", ec);
+  fs::create_directories(service_home / ".local/share/Steam", ec);
+  scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", "1"};
+  scoped_environment session {"VIBEPOLLO_SESSION_HOME", session_home.string()};
+  scoped_environment home {"HOME", service_home.string()};
+  scoped_environment xdg {"XDG_DATA_HOME", (service_home / ".local/share").string()};
+
+  const auto roots = default_library_roots();
+  EXPECT_EQ(std::find(roots.begin(), roots.end(), fs::weakly_canonical(session_home / ".local/share/Steam")), roots.end());
+  EXPECT_EQ(std::find(roots.begin(), roots.end(), fs::weakly_canonical(service_home / ".local/share/Steam")), roots.end());
+  EXPECT_TRUE(roots.empty());
+  fs::remove_all(base, ec);
+}
+#endif
 
 TEST(SteamDiscovery, CatalogIncludesPlayedUninstalledGamesWithNames) {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());

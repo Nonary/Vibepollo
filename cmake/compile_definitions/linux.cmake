@@ -55,16 +55,27 @@ if(LIBDRM_FOUND)
     list(APPEND PLATFORM_LIBRARIES ${LIBDRM_LIBRARIES})
 endif()
 
-# drm
-if(${SUNSHINE_ENABLE_DRM})
+# The Linux entry point always sanitizes its process capabilities before it
+# parses configuration or initializes logging.  Keep libcap available even in
+# portable/non-DRM Linux builds; only the KMS implementation itself is gated by
+# SUNSHINE_ENABLE_DRM.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ${SUNSHINE_ENABLE_DRM})
     find_package(LIBCAP REQUIRED)
 else()
     set(LIBCAP_FOUND OFF)
 endif()
-if(LIBDRM_FOUND AND LIBCAP_FOUND)
-    add_compile_definitions(SUNSHINE_BUILD_DRM)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND LIBCAP_FOUND)
     include_directories(SYSTEM ${LIBCAP_INCLUDE_DIRS})
     list(APPEND PLATFORM_LIBRARIES ${LIBCAP_LIBRARIES})
+endif()
+
+# drm
+if(${SUNSHINE_ENABLE_DRM} AND LIBDRM_FOUND AND LIBCAP_FOUND)
+    add_compile_definitions(SUNSHINE_BUILD_DRM)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        include_directories(SYSTEM ${LIBCAP_INCLUDE_DIRS})
+        list(APPEND PLATFORM_LIBRARIES ${LIBCAP_LIBRARIES})
+    endif()
     list(APPEND PLATFORM_TARGET_FILES
             "${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp")
     list(APPEND SUNSHINE_DEFINITIONS EGL_NO_X11=1)
@@ -325,6 +336,8 @@ if (${SUNSHINE_BUILD_FLATPAK})
 endif ()
 
 list(APPEND PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.h"
+        "${CMAKE_SOURCE_DIR}/src/provider_scan_protocol.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.cpp"

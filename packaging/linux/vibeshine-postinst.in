@@ -1,3 +1,5 @@
+#!/bin/sh
+
 if command -v systemd-sysusers >/dev/null 2>&1; then
   systemd-sysusers "@VIBESHINE_SYSUSERS_INSTALL_DIR@/vibeshine-vkms.conf" || \
     echo "warning: could not create the dedicated vibeshine-vkms control group."
@@ -5,25 +7,311 @@ if command -v systemd-sysusers >/dev/null 2>&1; then
     echo "warning: could not create the dedicated Vibepollo service account."
 fi
 
-if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec" ]; then
-  chown root:vibepollo "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
-  chmod 0750 "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
-  setcap cap_setgid,cap_setuid=ep "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
+vibepollo_controller="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-controller"
+vibepollo_privileged_helper_is_safe() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ] || return 1
+  [ "$(stat -c '%u:%g:%a:%h:%F' -- "$1")" = \
+    '0:0:755:1:regular file' ]
+}
+vibepollo_unmask_host_for_controller() {
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo-session-exec.socket 2>/dev/null || return 1
+  timeout --signal=KILL 15 systemctl unmask --runtime vibepollo.service 2>/dev/null || return 1
+  vibepollo_host_state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    vibepollo.service 2>/dev/null || true)
+  vibepollo_host_load=$(timeout --signal=KILL 5 systemctl show \
+    vibepollo.service --property=LoadState 2>/dev/null) || return 1
+  vibepollo_socket_state=$(timeout --signal=KILL 5 systemctl is-enabled \
+    vibepollo-session-exec.socket 2>/dev/null || true)
+  vibepollo_socket_load=$(timeout --signal=KILL 5 systemctl show \
+    vibepollo-session-exec.socket --property=LoadState 2>/dev/null) || return 1
+  case "$vibepollo_socket_state" in
+    disabled | static | indirect | generated | transient | linked | linked-runtime)
+      [ "$vibepollo_socket_load" = 'LoadState=loaded' ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "$vibepollo_host_state" in
+    disabled | static | indirect | generated | transient | linked | linked-runtime)
+      [ "$vibepollo_host_load" = 'LoadState=loaded' ] ;;
+    *) return 1 ;;
+  esac
+}
+
+vibepollo_cgroup_is_quiescent() {
+  vibepollo_control_group=$1
+  [ -n "$vibepollo_control_group" ] || return 0
+  case "$vibepollo_control_group" in /*) ;; *) return 1 ;; esac
+  case "$vibepollo_control_group" in */../* | */..) return 1 ;; esac
+  vibepollo_cgroup_path=/sys/fs/cgroup$vibepollo_control_group
+  if [ ! -e "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ]; then return 0; fi
+  [ -d "$vibepollo_cgroup_path" ] && [ ! -L "$vibepollo_cgroup_path" ] && \
+    [ -f "$vibepollo_cgroup_path/cgroup.events" ] && \
+    [ ! -L "$vibepollo_cgroup_path/cgroup.events" ] && \
+    grep -qx 'populated 0' "$vibepollo_cgroup_path/cgroup.events"
+}
+
+vibepollo_unit_is_quiescent() {
+  vibepollo_properties=$(timeout --signal=KILL 5 systemctl show "$1" \
+    --property=LoadState --property=ActiveState --property=SubState --property=MainPID \
+    --property=ControlGroup 2>/dev/null) || return 1
+  [ "$(printf '%s\n' "$vibepollo_properties" | wc -l | tr -d ' ')" = 5 ] || return 1
+  for vibepollo_property in LoadState ActiveState SubState MainPID ControlGroup; do
+    vibepollo_property_count=$(printf '%s\n' "$vibepollo_properties" | \
+      grep -c "^$vibepollo_property=" || true)
+    [ "$vibepollo_property_count" = 1 ] || return 1
+  done
+  vibepollo_load=$(printf '%s\n' "$vibepollo_properties" | sed -n 's/^LoadState=//p')
+  vibepollo_state=$(printf '%s\n' "$vibepollo_properties" | sed -n 's/^ActiveState=//p')
+  vibepollo_substate=$(printf '%s\n' "$vibepollo_properties" | sed -n 's/^SubState=//p')
+  vibepollo_pid=$(printf '%s\n' "$vibepollo_properties" | sed -n 's/^MainPID=//p')
+  vibepollo_control_group=$(printf '%s\n' "$vibepollo_properties" | sed -n 's/^ControlGroup=//p')
+  case "$vibepollo_load:$vibepollo_state:$vibepollo_substate" in
+    not-found:inactive:dead | \
+    loaded:inactive:dead | loaded:failed:failed | \
+    masked:inactive:dead | masked:failed:failed | \
+    masked-runtime:inactive:dead | masked-runtime:failed:failed) ;;
+    *) return 1 ;;
+  esac
+  [ "$vibepollo_pid" = 0 ] && vibepollo_cgroup_is_quiescent "$vibepollo_control_group"
+}
+
+vibepollo_unit_is_disabled() {
+  vibepollo_enabled=$(timeout --signal=KILL 5 systemctl is-enabled "$1" 2>/dev/null || true)
+  case "$vibepollo_enabled" in
+    disabled | masked | masked-runtime | static | indirect | generated | transient | linked | linked-runtime | not-found) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+vibepollo_unit_is_masked() {
+  vibepollo_enabled=$(timeout --signal=KILL 5 systemctl is-enabled "$1" 2>/dev/null || true)
+  vibepollo_load=$(timeout --signal=KILL 5 systemctl show "$1" \
+    --property=LoadState 2>/dev/null) || return 1
+  case "$vibepollo_enabled" in
+    masked | masked-runtime) [ "$vibepollo_load" = 'LoadState=masked' ] ;;
+    *) return 1 ;;
+  esac
+}
+
+vibepollo_broker_unit_is_safe() {
+  vibepollo_broker_unit=$1
+  case "$vibepollo_broker_unit" in vibepollo-session-exec@*.service) ;; *) return 1 ;; esac
+  vibepollo_broker_instance=${vibepollo_broker_unit#vibepollo-session-exec@}
+  vibepollo_broker_instance=${vibepollo_broker_instance%.service}
+  [ -n "$vibepollo_broker_instance" ] || return 1
+  case "$vibepollo_broker_instance" in *[!A-Za-z0-9_.:-]*) return 1 ;; esac
+}
+
+vibepollo_stop_exact_unit() {
+  timeout --signal=KILL 30 systemctl stop "$1" 2>/dev/null && return 0
+  timeout --signal=KILL 5 systemctl kill --kill-whom=all --signal=KILL "$1" 2>/dev/null || true
+  timeout --signal=KILL 10 systemctl stop "$1" 2>/dev/null || true
+}
+
+vibepollo_capture_broker_list() {
+  vibepollo_broker_list_path=$1
+  [ -f "$vibepollo_broker_list_path" ] && [ ! -L "$vibepollo_broker_list_path" ] || return 1
+  chmod 0600 "$vibepollo_broker_list_path" || return 1
+  (
+    ulimit -f 128 || exit 1
+    timeout --signal=KILL 5 systemctl list-units --all --plain \
+      --no-legend --no-pager --full 'vibepollo-session-exec@*.service' \
+      >"$vibepollo_broker_list_path" 2>/dev/null
+  ) || return 1
+  vibepollo_broker_list_size=$(stat -c '%s' -- "$vibepollo_broker_list_path") || return 1
+  case "$vibepollo_broker_list_size" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$vibepollo_broker_list_size" -le 65536 ]
+}
+
+vibepollo_stop_brokers() (
+  vibepollo_broker_list=$(mktemp /run/vibepollo-broker-units.XXXXXX) || exit 1
+  trap 'rm -f -- "$vibepollo_broker_list"' 0
+  trap 'exit 1' HUP INT TERM
+  vibepollo_broker_attempt=0
+  vibepollo_broker_clean_passes=0
+  while [ "$vibepollo_broker_attempt" -lt 20 ]; do
+    vibepollo_broker_dirty=0
+    vibepollo_capture_broker_list "$vibepollo_broker_list" || return 1
+    vibepollo_seen_units='
+'
+    vibepollo_seen_count=0
+    while IFS= read -r vibepollo_line || [ -n "$vibepollo_line" ]; do
+      [ -n "$vibepollo_line" ] || continue
+      case "$vibepollo_line" in *""*) return 1 ;; esac
+      set -f
+      set -- $vibepollo_line
+      [ "${1:-}" = '●' ] && shift
+      [ "$#" -ge 4 ] || return 1
+      vibepollo_unit=$1
+      vibepollo_load=$2
+      vibepollo_state=$3
+      vibepollo_substate=$4
+      vibepollo_broker_unit_is_safe "$vibepollo_unit" || return 1
+      [ "$vibepollo_load" = loaded ] || return 1
+      case "$vibepollo_state:$vibepollo_substate" in *[!a-z:-]*) return 1 ;; esac
+      case "$vibepollo_seen_units" in *"
+$vibepollo_unit
+"*) return 1 ;; esac
+      vibepollo_seen_units="$vibepollo_seen_units$vibepollo_unit
+"
+      vibepollo_seen_count=$((vibepollo_seen_count + 1))
+      [ "$vibepollo_seen_count" -le 256 ] || return 1
+      if ! vibepollo_unit_is_quiescent "$vibepollo_unit"; then
+        vibepollo_broker_dirty=1
+        vibepollo_stop_exact_unit "$vibepollo_unit"
+        vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
+      fi
+    done <"$vibepollo_broker_list"
+    if [ "$vibepollo_broker_dirty" -eq 0 ]; then
+      vibepollo_broker_clean_passes=$((vibepollo_broker_clean_passes + 1))
+      [ "$vibepollo_broker_clean_passes" -lt 5 ] || return 0
+    else
+      vibepollo_broker_clean_passes=0
+    fi
+    vibepollo_broker_attempt=$((vibepollo_broker_attempt + 1))
+    sleep 0.1
+  done
+  return 1
+)
+
+vibepollo_quiesce_machine_host() {
+  vibepollo_have_systemd=0
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    vibepollo_have_systemd=1
+    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service \
+      vibepollo-session-exec.socket 2>/dev/null || return 1
+    vibepollo_unit_is_masked vibepollo.service || return 1
+    vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
+    vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_unit_is_quiescent vibepollo-session-exec.socket || return 1
+    vibepollo_stop_brokers || return 1
+    for vibepollo_unit in vibepollo-session-controller.service vibepollo.service \
+      vibepollo-prelogin.service vibepollo-machine-prepare.service; do
+      vibepollo_stop_exact_unit "$vibepollo_unit"
+    done
+    timeout --signal=KILL 15 systemctl disable vibepollo-session-controller.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo-prelogin.service --now 2>/dev/null || true
+    timeout --signal=KILL 15 systemctl disable vibepollo-machine-prepare.service --now 2>/dev/null || true
+  fi
+
+  if [ -e "$vibepollo_controller" ] || [ -L "$vibepollo_controller" ]; then
+    vibepollo_privileged_helper_is_safe "$vibepollo_controller" || return 1
+    [ "$vibepollo_have_systemd" -eq 1 ] || return 1
+    timeout --signal=KILL 40 "$vibepollo_controller" cleanup || return 1
+  fi
+
+  if [ "$vibepollo_have_systemd" -eq 1 ]; then
+    vibepollo_unit_is_masked vibepollo.service || return 1
+    vibepollo_unit_is_masked vibepollo-session-exec.socket || return 1
+    vibepollo_stop_exact_unit vibepollo-session-exec.socket
+    vibepollo_stop_brokers || return 1
+    for vibepollo_unit in vibepollo-session-exec.socket vibepollo-session-controller.service \
+      vibepollo.service vibepollo-prelogin.service vibepollo-machine-prepare.service; do
+      vibepollo_stop_exact_unit "$vibepollo_unit"
+      vibepollo_unit_is_quiescent "$vibepollo_unit" || return 1
+      vibepollo_unit_is_disabled "$vibepollo_unit" || return 1
+    done
+    vibepollo_stop_brokers || return 1
+  fi
+  if [ -S /run/vibepollo/session-broker.sock ] && [ ! -L /run/vibepollo/session-broker.sock ]; then
+    rm -f -- /run/vibepollo/session-broker.sock || return 1
+  fi
+  [ ! -e /run/vibepollo/session-broker.sock ] && [ ! -L /run/vibepollo/session-broker.sock ] && \
+    [ ! -e /run/vibepollo/session.env ] && [ ! -L /run/vibepollo/session.env ]
+}
+
+if ! vibepollo_quiesce_machine_host; then
+  echo "error: could not quiesce the existing machine host; leaving Vibepollo disabled." >&2
+  exit 1
 fi
 
-if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" ]; then
-  if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" configure-auto; then
-    if "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host" install-pam; then
-      systemctl daemon-reload 2>/dev/null || true
-      systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
-      systemctl enable vibepollo.service || echo "warning: could not enable the Vibepollo machine host."
-      systemctl enable --now vibepollo-kwin-capability.path || echo "warning: could not enable the KWin capability watcher."
-    else
-      echo "warning: could not install the Plasma Login Manager handoff hook."
-    fi
-  else
-    echo "warning: configure a machine profile owner before enabling Vibepollo."
+# Upgrade away from the former capability-bearing main/client executables.
+# Native packages receive capture capabilities only from the machine unit;
+# only the socket-activated broker ever changes identity.
+vibepollo_main="@CMAKE_INSTALL_FULL_BINDIR@/vibepollo"
+vibepollo_session_client="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-exec"
+for vibepollo_executable in "$vibepollo_main" "$vibepollo_session_client"; do
+  if [ ! -f "$vibepollo_executable" ] || [ -L "$vibepollo_executable" ]; then
+    echo "error: native executable is missing or unsafe: $vibepollo_executable" >&2
+    exit 1
   fi
+  chown root:root "$vibepollo_executable" || exit 1
+  chmod 0755 "$vibepollo_executable" || exit 1
+  setcap -r "$vibepollo_executable" 2>/dev/null || true
+  if [ -n "$(getcap "$vibepollo_executable" 2>/dev/null)" ]; then
+    echo "error: unsafe capabilities remain on $vibepollo_executable." >&2
+    exit 1
+  fi
+done
+
+vibepollo_session_broker="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-session-broker"
+if [ ! -f "$vibepollo_session_broker" ] || [ -L "$vibepollo_session_broker" ]; then
+  echo "error: root-only session broker is missing or unsafe: $vibepollo_session_broker" >&2
+  exit 1
+fi
+chown root:root "$vibepollo_session_broker" || exit 1
+chmod 0700 "$vibepollo_session_broker" || exit 1
+setcap cap_kill,cap_setgid,cap_setuid=p "$vibepollo_session_broker" || exit 1
+if [ "$(stat -c '%U:%G:%a:%F' -- "$vibepollo_session_broker")" != \
+     'root:root:700:regular file' ] ||
+   [ "$(getcap "$vibepollo_session_broker" 2>/dev/null)" != \
+     "$vibepollo_session_broker cap_kill,cap_setgid,cap_setuid=p" ]; then
+  echo "error: root-only session broker permissions or capabilities are unsafe." >&2
+  exit 1
+fi
+
+vibepollo_private_host="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-host"
+if [ ! -f "$vibepollo_private_host" ] || [ -L "$vibepollo_private_host" ]; then
+  echo "error: private Vibepollo host is missing or unsafe: $vibepollo_private_host" >&2
+  exit 1
+fi
+vibepollo_public_identity=$(stat -Lc '%d:%i' -- "$vibepollo_main") || exit 1
+vibepollo_broker_identity=$(stat -Lc '%d:%i' -- "$vibepollo_session_broker") || exit 1
+vibepollo_private_identity=$(stat -Lc '%d:%i' -- "$vibepollo_private_host") || exit 1
+if [ "$vibepollo_public_identity" = "$vibepollo_private_identity" ] ||
+   [ "$vibepollo_broker_identity" = "$vibepollo_private_identity" ]; then
+  echo "error: privileged broker and private/public hosts must be distinct inodes." >&2
+  exit 1
+fi
+chown root:vibepollo "$vibepollo_private_host" || exit 1
+chmod 0750 "$vibepollo_private_host" || exit 1
+setcap cap_sys_admin,cap_sys_nice=p "$vibepollo_private_host" || exit 1
+if [ "$(stat -c '%U:%G:%a:%F' -- "$vibepollo_private_host")" != \
+     'root:vibepollo:750:regular file' ] ||
+   [ "$(getcap "$vibepollo_private_host" 2>/dev/null)" != \
+     "$vibepollo_private_host cap_sys_admin,cap_sys_nice=p" ]; then
+  echo "error: private Vibepollo host permissions or capabilities are unsafe." >&2
+  exit 1
+fi
+if [ "$(getcap "$vibepollo_session_broker" 2>/dev/null)" != \
+     "$vibepollo_session_broker cap_kill,cap_setgid,cap_setuid=p" ]; then
+  echo "error: private-host setup altered the session broker capabilities." >&2
+  exit 1
+fi
+for vibepollo_executable in "$vibepollo_main" "$vibepollo_session_client"; do
+  if [ -n "$(getcap "$vibepollo_executable" 2>/dev/null)" ]; then
+    echo "error: a public Vibepollo entrypoint gained file capabilities: $vibepollo_executable" >&2
+    exit 1
+  fi
+done
+
+vibepollo_machine_configured=0
+vibepollo_machine_host="@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibepollo-machine-host"
+if [ -e "$vibepollo_machine_host" ] || [ -L "$vibepollo_machine_host" ]; then
+  vibepollo_privileged_helper_is_safe "$vibepollo_machine_host" || {
+    echo "error: installed Vibepollo machine helper is unsafe." >&2
+    exit 1
+  }
+  "$vibepollo_machine_host" remove-pam || \
+    echo "warning: could not remove the obsolete Plasma Login Manager handoff hook."
+fi
+systemctl disable --now vibepollo-prelogin.service 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+if vibepollo_privileged_helper_is_safe "$vibepollo_machine_host" && \
+   "$vibepollo_machine_host" configure-auto; then
+  vibepollo_machine_configured=1
+else
+  echo "warning: configure a machine profile owner before enabling Vibepollo."
 fi
 
 if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]; then
@@ -31,6 +319,10 @@ if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-kwin-capability" ]
     echo "warning: could not prepare capability-free KWin for the Vibepollo GPU bridge."
 fi
 
+VIBESHINE_EXECUTABLE_PATH="@CMAKE_INSTALL_FULL_BINDIR@/vibepollo"
+VIBESHINE_EXECUTABLE_CAPABILITY_MODE=unit
+export VIBESHINE_EXECUTABLE_PATH
+export VIBESHINE_EXECUTABLE_CAPABILITY_MODE
 @VIBESHINE_BASE_POSTINST@
 
 # Build/register the managed virtual-display module. Package installation may
@@ -46,5 +338,23 @@ if [ -x "@VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR@/vibeshine-drm-install" ]; th
     else
       echo "warning: Vibepollo DRM installation failed; managed virtual displays are unavailable."
     fi
+  fi
+fi
+
+if [ "$vibepollo_machine_configured" -eq 1 ]; then
+  systemctl enable --now vibepollo-kwin-capability.path || echo "warning: could not enable the KWin capability watcher."
+  if ! systemctl enable vibepollo-session-controller.service; then
+    vibepollo_quiesce_machine_host || true
+    echo "error: could not enable the Vibepollo controller safely; all machine-host units remain off." >&2
+    exit 1
+  fi
+  # Keep the host masked until the new controller is the next component that
+  # can activate it; never expose it to an obsolete PAM/helper start request.
+  if ! vibepollo_unmask_host_for_controller ||
+     ! systemctl start vibepollo-session-controller.service; then
+    timeout --signal=KILL 15 systemctl mask --runtime vibepollo.service 2>/dev/null || true
+    vibepollo_quiesce_machine_host || true
+    echo "error: could not start the Vibepollo controller safely; all machine-host units remain off." >&2
+    exit 1
   fi
 fi

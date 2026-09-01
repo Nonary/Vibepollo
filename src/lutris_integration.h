@@ -32,6 +32,12 @@ namespace platf::lutris {
   };
 
   std::filesystem::path default_database_path();
+  // On the Linux machine host this is resolved by the dropped-UID scanner;
+  // the user's database path itself is never returned to the host.
+  bool database_available();
+  // Distinguishes a valid empty/missing user catalog from a broker or scanner
+  // failure. Non-machine discovery is always ready.
+  bool discovery_ready();
   std::vector<game_t> discover(const std::filesystem::path &database = {});
   std::uint64_t source_fingerprint(const std::vector<game_t> &games);
 

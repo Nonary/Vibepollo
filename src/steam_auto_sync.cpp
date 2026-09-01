@@ -76,9 +76,8 @@ namespace platf::steam::autosync {
 
           if (settings.enabled && settings.auto_sync) {
             try {
-              const auto roots = platf::steam::default_library_roots();
-              if (!roots.empty()) {
-                auto catalog = platf::steam::discover_catalog(roots);
+              if (platf::steam::available()) {
+                auto catalog = platf::steam::discover_catalog();
                 const auto fingerprint = source_fingerprint(catalog);
                 if (!have_fingerprint || fingerprint != previous_fingerprint) {
                   auto games = platf::steam::sync::policy::select_games(

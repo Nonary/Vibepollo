@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <bitset>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -136,9 +137,21 @@ namespace platf {
       return result;
     }
 
-    session_command_result_t run_pactl(std::vector<std::string> arguments) {
-      arguments.insert(arguments.begin(), "pactl");
-      return run_session_command(arguments);
+    std::optional<std::string> session_channel_mapping(const std::uint8_t *mapping, const int channels) {
+      if (!mapping || channels <= 0 || channels > static_cast<int>(std::size(position_mapping))) {
+        return std::nullopt;
+      }
+      std::string serialized;
+      for (int index = 0; index < channels; ++index) {
+        if (mapping[index] >= channels || mapping[index] >= std::size(position_mapping)) {
+          return std::nullopt;
+        }
+        if (index) {
+          serialized.push_back(',');
+        }
+        serialized += std::to_string(mapping[index]);
+      }
+      return serialized;
     }
 
     class session_mic_t final: public mic_t {
@@ -183,7 +196,7 @@ namespace platf {
     class session_audio_control_t final: public audio_control_t {
     public:
       int set_sink(const std::string &sink) override {
-        const auto result = run_pactl({"set-default-sink", sink});
+        const auto result = run_session_command({"audio-set-default", sink});
         if (!result.success) {
           BOOST_LOG(error) << "Couldn't set session default sink [" << sink << "]: " << result.stderr_text;
           return -1;
@@ -199,28 +212,18 @@ namespace platf {
         bool,
         bool
       ) override {
-        std::string channel_map;
-        for (int index = 0; index < channels; ++index) {
-          if (index) {
-            channel_map += ',';
-          }
-          channel_map += pa_channel_position_to_string(position_mapping[mapping[index]]);
+        const auto serialized_mapping = session_channel_mapping(mapping, channels);
+        if (!serialized_mapping) {
+          BOOST_LOG(error) << "Refusing invalid session audio channel mapping";
+          return nullptr;
         }
-        const auto process_bytes = frame_size * static_cast<std::uint32_t>(channels) * sizeof(float);
         std::vector<std::string> owned_argv {
           session_exec_path,
-          "parec",
-          "--record",
-          "--raw",
-          "--client-name=vibepollo",
-          "--stream-name=vibepollo-record",
-          "--device=@DEFAULT_MONITOR@",
-          "--format=float32le",
-          "--rate=" + std::to_string(sample_rate),
-          "--channels=" + std::to_string(channels),
-          "--channel-map=" + channel_map,
-          "--latency=" + std::to_string(process_bytes),
-          "--process-time=" + std::to_string(process_bytes),
+          "audio-capture",
+          std::to_string(sample_rate),
+          std::to_string(channels),
+          std::to_string(frame_size),
+          *serialized_mapping,
         };
         std::vector<const gchar *> argv;
         argv.reserve(owned_argv.size() + 1);
@@ -247,7 +250,7 @@ namespace platf {
       }
 
       bool is_sink_available(const std::string &sink) override {
-        const auto result = run_pactl({"list", "short", "sinks"});
+        const auto result = run_session_command({"audio-list-sinks"});
         if (!result.success) {
           return false;
         }
@@ -264,7 +267,7 @@ namespace platf {
       }
 
       std::optional<sink_t> sink_info() override {
-        const auto default_sink = run_pactl({"get-default-sink"});
+        const auto default_sink = run_session_command({"audio-get-default"});
         if (!default_sink.success) {
           BOOST_LOG(error) << "Couldn't read session default sink: " << default_sink.stderr_text;
           return std::nullopt;
@@ -313,23 +316,13 @@ namespace platf {
         if (is_sink_available(name)) {
           return true;
         }
-        std::string channel_map;
-        for (int index = 0; index < channels; ++index) {
-          if (index) {
-            channel_map += ',';
-          }
-          channel_map += pa_channel_position_to_string(position_mapping[mapping[index]]);
+        const auto serialized_mapping = session_channel_mapping(mapping, channels);
+        if (!serialized_mapping) {
+          BOOST_LOG(warning) << "Refusing invalid session null-sink channel mapping";
+          return false;
         }
-        const auto result = run_pactl({
-          "load-module",
-          "module-null-sink",
-          std::string {"sink_name="} + name,
-          "format=float32",
-          "rate=48000",
-          "channels=" + std::to_string(channels),
-          "channel_map=" + channel_map,
-          std::string {"sink_properties=device.description="} + name,
-        });
+        const std::string layout = channels == 2 ? "stereo" : channels == 6 ? "surround51" : "surround71";
+        const auto result = run_session_command({"audio-create-null", layout, *serialized_mapping});
         if (!result.success) {
           BOOST_LOG(warning) << "Couldn't create session virtual sink [" << name << "]: " << result.stderr_text;
           return false;
@@ -350,7 +343,7 @@ namespace platf {
         if (!index) {
           return;
         }
-        (void) run_pactl({"unload-module", std::to_string(*index)});
+        (void) run_session_command({"audio-remove-null", std::to_string(*index)});
       }
     };
   }  // namespace

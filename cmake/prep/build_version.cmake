@@ -48,11 +48,13 @@ if(DEFINED GITHUB_CLONE_URL AND (SUNSHINE_REPO_OWNER STREQUAL "Nonary" OR SUNSHI
     endif()
 endif()
 
-# BUILD_VERSION is the authoritative version input.  BRANCH is optional build
-# context and must not decide whether an explicit release version is honored.
-# In particular, later build targets may re-run CMake without inheriting a
-# step-local BRANCH value while retaining the job-wide BUILD_VERSION.
-if(DEFINED BUILD_VERSION AND NOT "${BUILD_VERSION}" STREQUAL "")  # cmake-lint: disable=W0106
+# BUILD_VERSION is the authoritative version input whether supplied as the
+# BUILD_VERSION environment variable or the normal -DBUILD_VERSION cache
+# option. BRANCH is optional build context and must not decide whether an
+# explicit release version is honored. In particular, later build targets may
+# re-run CMake without inheriting a step-local environment while retaining the
+# configured cache value.
+if(DEFINED BUILD_VERSION AND NOT "${BUILD_VERSION}" STREQUAL "")
     if(DEFINED ENV{BRANCH} AND NOT "$ENV{BRANCH}" STREQUAL "")
         message("Got explicit build version '${BUILD_VERSION}' for '$ENV{BRANCH}'")
     else()
@@ -172,6 +174,11 @@ endif()
 # PROJECT_VERSION_NUMERIC is stripped for CMake/WiX (e.g., 1.2.3)
 if(DEFINED PROJECT_VERSION)
     set(PROJECT_VERSION_FULL "${PROJECT_VERSION}")
+    if(NOT PROJECT_VERSION_FULL MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
+        message(FATAL_ERROR
+            "Invalid Vibeshine build version '${PROJECT_VERSION_FULL}'. Expected a numeric "
+            "major.minor.patch version with optional prerelease/build metadata.")
+    endif()
     string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION_NUMERIC "${PROJECT_VERSION}")
     # Extract prerelease suffix (e.g., "-beta.1" or "-alpha.2")
     string(REGEX MATCH "[-+].*$" PROJECT_VERSION_PRERELEASE "${PROJECT_VERSION}")
@@ -187,11 +194,11 @@ endif()
 # a released one as an MSI downgrade. That is the riskiest replacement path and
 # it should never be entered by accident, so say so loudly here rather than
 # leaving it to be discovered as a half-removed installation.
-if(PROJECT_VERSION_NUMERIC STREQUAL "0.0.0")
-    message(WARNING
-        "Version resolution produced 0.0.0. Any installer built from this tree will look "
-        "older than every release and will be treated as a downgrade. Check that this is a "
-        "git checkout with tags reachable from HEAD.")
+if(PROJECT_VERSION_NUMERIC STREQUAL "0.0.0" AND NOT VIBESHINE_ALLOW_ZERO_VERSION)
+    message(FATAL_ERROR
+        "Version resolution produced 0.0.0. Refusing to configure a release/package build "
+        "that would look older than every real release. Pass an explicit BUILD_VERSION; "
+        "developer-only probes may opt in with -DVIBESHINE_ALLOW_ZERO_VERSION=ON.")
 endif()
 
 # Propagate branch information as a compile definition if available.

@@ -1,0 +1,39 @@
+#!/bin/sh
+
+# Ordinary removal and upgrades deliberately preserve the administrator's
+# machine policy and the service-owned pairings/settings. Debian's explicit
+# purge operation revokes them. Other package formats expose the equivalent
+# deliberate operation through `vibepollo-machine-host reset` before removal.
+[ "${1:-}" = purge ] || exit 0
+
+for vibepollo_file in \
+  /etc/vibepollo/machine.conf \
+  /etc/vibepollo/prelogin.conf \
+  /etc/vibepollo/session-commands; do
+  rm -f -- "$vibepollo_file" || exit 1
+done
+rmdir -- /etc/vibepollo 2>/dev/null || true
+
+vibepollo_profile=/var/lib/vibepollo
+if [ -L "$vibepollo_profile" ]; then
+  rm -f -- "$vibepollo_profile" || exit 1
+elif [ -d "$vibepollo_profile" ]; then
+  if mountpoint -q -- "$vibepollo_profile"; then
+    echo "error: refusing to purge mounted machine state: $vibepollo_profile" >&2
+    exit 1
+  fi
+  if [ "$(stat -c '%U:%G:%a:%F' -- /var/lib 2>/dev/null)" != 'root:root:755:directory' ]; then
+    echo 'error: refusing to purge machine state beneath an unsafe /var/lib.' >&2
+    exit 1
+  fi
+  rm -rf --one-file-system -- "$vibepollo_profile" || exit 1
+elif [ -e "$vibepollo_profile" ]; then
+  rm -f -- "$vibepollo_profile" || exit 1
+fi
+
+if [ -e "$vibepollo_profile" ] || [ -L "$vibepollo_profile" ]; then
+  echo 'error: Vibepollo machine state remains after purge.' >&2
+  exit 1
+fi
+
+echo 'Removed Vibepollo machine policy, credentials, pairings, and shared settings.'
