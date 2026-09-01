@@ -1526,6 +1526,8 @@ namespace nvhttp {
 
     // uniqueID, session
     std::unordered_map<std::string, pair_session_t> map_id_sess;
+    std::mutex pairing_sessions_mutex;
+    constexpr auto pairing_session_expiry = std::chrono::minutes(10);
     client_t client_root;
     std::mutex client_mutex;
     std::atomic_bool authorization_state_ready {false};
@@ -2562,7 +2564,39 @@ namespace nvhttp {
     }
 
     void remove_session(const pair_session_t &sess) {
-      map_id_sess.erase(sess.client.uniqueID);
+      const std::string unique_id = sess.client.uniqueID;
+      map_id_sess.erase(unique_id);
+    }
+
+    void expire_pairing_sessions_locked(const std::chrono::steady_clock::time_point now) {
+      for (auto session = map_id_sess.begin(); session != map_id_sess.end();) {
+        if (now - session->second.created_at <= pairing_session_expiry) {
+          ++session;
+          continue;
+        }
+
+        pt::ptree tree;
+        tree.put("root.paired", 0);
+        tree.put("root.<xmlattr>.status_code", 408);
+        tree.put("root.<xmlattr>.status_message", "Pairing request expired");
+        std::ostringstream data;
+        pt::write_xml(data, tree);
+        auto &response = session->second.async_insert_pin.response;
+        try {
+          if (response.has_left() && response.left()) {
+            response.left()->close_connection_after_response = true;
+            response.left()->write(data.str());
+          } else if (response.has_right() && response.right()) {
+            response.right()->close_connection_after_response = true;
+            response.right()->write(data.str());
+          }
+        } catch (const std::exception &error) {
+          BOOST_LOG(debug) << "Closing an expired pairing response failed: " << error.what();
+        } catch (...) {
+          BOOST_LOG(debug) << "Closing an expired pairing response failed";
+        }
+        session = map_id_sess.erase(session);
+      }
     }
 
     void fail_pair(pair_session_t &sess, pt::ptree &tree, const std::string status_msg) {
@@ -2886,6 +2920,7 @@ namespace nvhttp {
     template<class T>
     void unpair(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
       print_req<T>(request);
+      std::lock_guard pairing_lock {pairing_sessions_mutex};
 
       pt::ptree tree;
 
@@ -2900,7 +2935,8 @@ namespace nvhttp {
       auto args = request->parse_query_string();
       auto unique_id = get_arg(args, "uniqueid", "");
 
-      const bool cleaned_pending_pair = !unique_id.empty() && map_id_sess.erase(unique_id) > 0;
+      // An unauthenticated unpair request cannot replace the PIN approval target.
+      const bool cleaned_pending_pair = false;
       bool removed = false;
 
       if constexpr (std::is_same_v<T, SunshineHTTPS>) {
@@ -2920,6 +2956,7 @@ namespace nvhttp {
     template<class T>
     void pair(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
       print_req<T>(request);
+      std::lock_guard pairing_lock {pairing_sessions_mutex};
 
       pt::ptree tree;
 
@@ -2947,10 +2984,25 @@ namespace nvhttp {
       }
 
       auto uniqID {get_arg(args, "uniqueid")};
+      if (!pairing_policy::valid_unique_id(uniqID)) {
+        tree.put("root.<xmlattr>.status_code", 400);
+        tree.put("root.<xmlattr>.status_message", "Invalid uniqueid");
+        return;
+      }
+      expire_pairing_sessions_locked(std::chrono::steady_clock::now());
 
       args_t::const_iterator it;
       if (it = args.find("phrase"); it != std::end(args)) {
         if (it->second == "getservercert"sv) {
+          const auto client_certificate = get_arg(args, "clientcert", "");
+          const auto salt = get_arg(args, "salt", "");
+          const bool replacing = map_id_sess.contains(uniqID);
+          const auto admission = pairing_policy::admit_pending_session(false, uniqID, client_certificate, salt, map_id_sess.size(), replacing);
+          if (!admission.accepted) {
+            tree.put("root.<xmlattr>.status_code", admission.failure_message == "Too many pending pairing sessions"sv ? 429 : 400);
+            tree.put("root.<xmlattr>.status_message", admission.failure_message);
+            return;
+          }
           pair_session_t sess;
 
           auto deviceName {get_arg(args, "devicename")};
@@ -2961,17 +3013,18 @@ namespace nvhttp {
 
           sess.client.uniqueID = std::move(uniqID);
           sess.client.name = std::move(deviceName);
-          sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
+          sess.client.cert = util::from_hex_vec(client_certificate, true);
 
           BOOST_LOG(verbose) << sess.client.cert;
           auto session_id = sess.client.uniqueID;
-          if (auto existing = map_id_sess.find(session_id); existing != map_id_sess.end()) {
-            BOOST_LOG(info) << "Replacing stale pending pairing session for uniqueid=" << session_id;
-            map_id_sess.erase(existing);
+          auto [ptr, inserted] = map_id_sess.emplace(std::move(session_id), std::move(sess));
+          if (!inserted) {
+            tree.put("root.<xmlattr>.status_code", 429);
+            tree.put("root.<xmlattr>.status_message", "Too many pending pairing sessions");
+            return;
           }
-          auto ptr = map_id_sess.emplace(std::move(session_id), std::move(sess)).first;
 
-          ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
+          ptr->second.async_insert_pin.salt = salt;
 
           auto it = args.find("otpauth");
           if (it != std::end(args)) {
@@ -3035,12 +3088,27 @@ namespace nvhttp {
 
 
       if (it = args.find("clientchallenge"); it != std::end(args)) {
+        if (!pairing_policy::valid_hex_field(it->second, 2)) {
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Invalid clientchallenge");
+          return;
+        }
         auto challenge = util::from_hex_vec(it->second, true);
         clientchallenge(sess_it->second, tree, challenge);
       } else if (it = args.find("serverchallengeresp"); it != std::end(args)) {
+        if (!pairing_policy::valid_hex_field(it->second, 2)) {
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Invalid serverchallengeresp");
+          return;
+        }
         auto encrypted_response = util::from_hex_vec(it->second, true);
         serverchallengeresp(sess_it->second, tree, encrypted_response);
       } else if (it = args.find("clientpairingsecret"); it != std::end(args)) {
+        if (!pairing_policy::valid_hex_field(it->second, 34)) {
+          tree.put("root.<xmlattr>.status_code", 400);
+          tree.put("root.<xmlattr>.status_message", "Invalid clientpairingsecret");
+          return;
+        }
         auto pairingsecret = util::from_hex_vec(it->second, true);
         clientpairingsecret(sess_it->second, tree, pairingsecret);
       } else {
@@ -3050,6 +3118,8 @@ namespace nvhttp {
     }
 
     bool pin(std::string pin, std::string name) {
+      std::lock_guard pairing_lock {pairing_sessions_mutex};
+      expire_pairing_sessions_locked(std::chrono::steady_clock::now());
       pt::ptree tree;
       if (map_id_sess.empty()) {
         BOOST_LOG(warning) << "PIN submitted but no pending pairing session exists";
@@ -3075,27 +3145,11 @@ namespace nvhttp {
         return false;
       }
 
-      const auto now = std::chrono::steady_clock::now();
-      constexpr auto pairing_session_expiry = std::chrono::minutes(10);
-      std::erase_if(map_id_sess, [now, pairing_session_expiry](const auto &entry) {
-        const auto &sess = entry.second;
-        return sess.last_phase == PAIR_PHASE::NONE && now - sess.created_at > pairing_session_expiry;
-      });
-
-      auto sess_it = map_id_sess.end();
-      for (auto it = map_id_sess.begin(); it != map_id_sess.end(); ++it) {
-        if (it->second.last_phase != PAIR_PHASE::NONE) {
-          continue;
-        }
-        if (sess_it == map_id_sess.end() || sess_it->second.created_at < it->second.created_at) {
-          sess_it = it;
-        }
-      }
-
-      if (sess_it == map_id_sess.end()) {
+      if (map_id_sess.size() != 1 || map_id_sess.begin()->second.last_phase != PAIR_PHASE::NONE) {
         BOOST_LOG(warning) << "PIN submitted but no active pending pairing session is ready";
         return false;
       }
+      auto sess_it = map_id_sess.begin();
 
       auto &sess = sess_it->second;
       if (sess.async_insert_pin.salt.size() < 32) {
@@ -5478,10 +5532,29 @@ namespace nvhttp {
     std::thread ssl {accept_and_run, &https_server};
     std::thread tcp {accept_and_run, &http_server};
 
+    std::jthread pairing_expiry_worker([](std::stop_token stop_token) {
+      platf::set_thread_name("pair_expiry");
+      while (!stop_token.stop_requested()) {
+        for (int interval = 0; interval < 10 && !stop_token.stop_requested(); ++interval) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (stop_token.stop_requested()) {
+          break;
+        }
+        std::lock_guard pairing_lock {pairing_sessions_mutex};
+        expire_pairing_sessions_locked(std::chrono::steady_clock::now());
+      }
+    });
+
     // Wait for any event
     shutdown_event->view();
+    pairing_expiry_worker.request_stop();
+    pairing_expiry_worker.join();
 
-    map_id_sess.clear();
+    {
+      std::lock_guard pairing_lock {pairing_sessions_mutex};
+      map_id_sess.clear();
+    }
 
     https_server.stop();
     http_server.stop();
