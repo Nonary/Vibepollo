@@ -64,6 +64,7 @@
   #include "src/platform/linux/private_display_capture_policy.h"
   #include "src/platform/linux/private_display.h"
   #include "src/platform/linux/scoped_capability.h"
+  #include "src/steam_integration.h"
 #endif
 #include "vaapi.h"
 
@@ -411,10 +412,17 @@ namespace platf {
         return bp::child();
       }
       exe_path = v2::filesystem::path("/usr/libexec/vibeshine/vibepollo-session-exec");
-      // The capability-bearing helper resolves the administrator-authorized
-      // working directory. The network host supplies only the exact command
-      // to match, never a caller-selected filesystem location.
-      args = {"app", cmd};
+      if (const auto semantic_steam = platf::steam::session_launch_arguments(cmd)) {
+        // Direct Steam launch is deliberately semantic: the capability-free
+        // client sends only validated policy values, and the broker resolves
+        // all user-owned metadata after entering the selected desktop UID.
+        args = *semantic_steam;
+      } else {
+        // The capability-bearing helper resolves the administrator-authorized
+        // working directory. The network host supplies only the exact command
+        // to match, never a caller-selected filesystem location.
+        args = {"app", cmd};
+      }
     } else {
       std::vector<std::string> parts;
       try {

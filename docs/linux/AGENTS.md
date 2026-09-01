@@ -70,6 +70,13 @@ runs as the selected unprivileged session user and returns a bounded, path-free
 description to the machine host. Linux always enables Steam and never launches
 the Windows-only Playnite integration.
 
+Stream-owned Steam launch policy uses the semantic `steam-direct` broker
+operation. The broker accepts only a catalog-authorized numeric AppID and
+bounded policy values, enters the selected desktop UID, then executes the
+capability-free `/usr/libexec/vibeshine/vibepollo-steam-launch`. Only that
+unprivileged helper reads Steam paths or launch options; incomplete metadata
+must fail instead of falling back to the already-running Steam process.
+
 ## Legacy profile migration
 
 Migration is one-time and fail-closed. Root creates a private staging parent,
@@ -90,8 +97,8 @@ does.
 ## Package lifecycle
 
 DEB, Arch, and RPM installations must contain the controller, socket, broker,
-application supervisor, profile importer, provider scanner, machine host, KWin
-session-environment helper and desktop drop-in, and system units. Before
+application supervisor, profile importer, provider scanner, Steam launcher,
+machine host, KWin session-environment helper and desktop drop-in, and system units. Before
 replacing files, lifecycle hooks close socket admission, stop all broker
 instances, stop the controller and host, perform controller cleanup, and prove
 that no worker, host cgroup, or trusted session record remains. First install

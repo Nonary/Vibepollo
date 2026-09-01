@@ -33,6 +33,8 @@ static const char service_name[] = "vibepollo";
 static const char fixed_path[] = "/usr/local/bin:/usr/bin:/bin";
 static const char application_supervisor_path[] =
   "/usr/libexec/vibeshine/vibepollo-app-supervisor";
+static const char steam_launch_path[] =
+  "/usr/libexec/vibeshine/vibepollo-steam-launch";
 
 static bool sanitize_startup_capabilities(void) {
   const int entry_errno = errno;
@@ -582,6 +584,34 @@ static bool sink_name_is_safe(const char *name) {
   return true;
 }
 
+static bool steam_direct_arguments_are_safe(int argc, char **argv) {
+  if (argc != 10 || !argv) return false;
+  unsigned long app_id = 0, limit_millihz = 0;
+  if (!parse_number(argv[2], 1, UINT32_MAX, &app_id) ||
+      !parse_number(argv[4], 0, 1000000, &limit_millihz)) return false;
+  (void) app_id;
+
+  const bool mangohud = !strcmp(argv[3], "mangohud");
+  const bool proton = !strcmp(argv[3], "proton");
+  const bool mangohud_proton = !strcmp(argv[3], "mangohud-proton");
+  const bool disabled = !strcmp(argv[3], "disabled");
+  const bool overlay = mangohud || mangohud_proton;
+  const bool limited = overlay || proton;
+  const bool preset = !strcmp(argv[5], "custom") || !strcmp(argv[5], "1") ||
+                      !strcmp(argv[5], "2") || !strcmp(argv[5], "3") ||
+                      !strcmp(argv[5], "4");
+  const bool graph = !strcmp(argv[6], "0") || !strcmp(argv[6], "1");
+  const bool method = !strcmp(argv[7], "early") || !strcmp(argv[7], "late");
+  const bool smooth = !strcmp(argv[8], "0") || !strcmp(argv[8], "1");
+  const bool queue = !strcmp(argv[9], "0") || !strcmp(argv[9], "1");
+  return (limited || disabled) && preset && graph && method && smooth && queue &&
+         ((limited && limit_millihz >= 1000) || (disabled && !limit_millihz)) &&
+         (overlay || (!strcmp(argv[5], "custom") && !strcmp(argv[6], "0"))) &&
+         (mangohud || !strcmp(argv[7], "late")) &&
+         (strcmp(argv[8], "0") || !strcmp(argv[9], "0")) &&
+         (limited || strcmp(argv[8], "0"));
+}
+
 static bool parse_channel_mapping(const char *value, size_t channels,
                                   unsigned char mapping[8]) {
   if (!value || !mapping || channels < 1 || channels > 8) return false;
@@ -1099,7 +1129,7 @@ static int execute_request(int argc, char **argv,
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
-    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, LUTRIS,
+    AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_DIRECT, LUTRIS,
     PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, APP
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
@@ -1125,6 +1155,9 @@ static int execute_request(int argc, char **argv,
            parse_number(argv[4], 1, 8192, &third_number) &&
            parse_channel_mapping(argv[5], second_number, channel_mapping)) operation = AUDIO_CAPTURE;
   else if (!strcmp(argv[1], "steam") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = STEAM;
+  else if (!strcmp(argv[1], "steam-direct") &&
+           steam_direct_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = STEAM_DIRECT;
   else if (!strcmp(argv[1], "lutris") && argc == 3 && numeric_suffix(argv[2], "") && !strcmp(identity->role, "desktop")) operation = LUTRIS;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
@@ -1202,6 +1235,13 @@ static int execute_request(int argc, char **argv,
       // transient unit.  That daemon and its external descendants are not
       // owned by this connection; cancellation covers only unit descendants.
       char *const arguments[] = {"/usr/bin/steam", "-applaunch", argv[2], NULL};
+      return exec_user_service(identity, NULL, arguments);
+    }
+    case STEAM_DIRECT: {
+      char *const arguments[] = {
+        (char *) steam_launch_path, argv[2], argv[3], argv[4], argv[5],
+        argv[6], argv[7], argv[8], argv[9], NULL
+      };
       return exec_user_service(identity, NULL, arguments);
     }
     case LUTRIS: {

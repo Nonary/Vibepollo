@@ -329,13 +329,15 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
   EXPECT_EQ(games[0].proton_path, proton);
   EXPECT_EQ(games[0].proton_runtime_path, runtime);
   EXPECT_EQ(games[0].steam_client_path, base);
-  EXPECT_NE(launch_command(games[0]).find("mangohud vibepollo-mangohud --appid 42 -- env"), std::string::npos);
+  EXPECT_NE(launch_command(games[0]).find("mangohud /usr/bin/vibepollo-mangohud --appid 42 -- env"), std::string::npos);
 
   // Custom compatibility tools live outside steamapps. Modern config_info
   // records the Steam client root explicitly, which must be used to resolve
   // the required pressure-vessel runtime.
-  const auto external_proton = base / "compatibilitytools.d/ExternalProton";
+  const auto client = base / "client";
+  const auto external_proton = client / "compatibilitytools.d/ExternalProton";
   fs::create_directories(external_proton / "files/share/fonts", ec);
+  fs::create_directories(client / "steamapps", ec);
   {
     std::ofstream output(external_proton / "toolmanifest.vdf");
     output << R"VDF("manifest" { "require_tool_appid" "99" })VDF";
@@ -345,12 +347,12 @@ TEST(SteamDiscovery, ResolvesDirectLaunchMetadataOptionsAndExistingProton) {
     output << "External Proton\n"
            << (external_proton / "files/share/fonts").string() << "/\n"
            << (external_proton / "files/lib").string() << "/\n"
-           << base.string() << "\n";
+           << client.string() << "\n";
   }
   const auto custom_tool_games = discover({base});
   ASSERT_GE(custom_tool_games.size(), 1U);
   EXPECT_EQ(custom_tool_games[0].proton_path, external_proton);
-  EXPECT_EQ(custom_tool_games[0].steam_client_path, base);
+  EXPECT_EQ(custom_tool_games[0].steam_client_path, client);
   EXPECT_EQ(custom_tool_games[0].proton_runtime_path, runtime);
   EXPECT_NE(launch_command(custom_tool_games[0]).find("ExternalProton/proton"), std::string::npos);
 
@@ -391,6 +393,41 @@ TEST(SteamLaunch, StreamOwnedEnvironmentFeaturesRequireDirectLaunch) {
 }
 
 #ifdef __linux__
+TEST(SteamLaunch, MachineSessionLaunchUsesCanonicalSemanticArguments) {
+  session_launch_policy_t policy {
+    .provider = "mangohud-proton",
+    .limit_millihz = 116000,
+    .preset = "3",
+    .always_show_graph = true,
+    .limiter_method = "late",
+    .smooth_motion = true,
+    .smooth_motion_graphics_queue = true,
+  };
+  const auto command = session_launch_command(1182900, policy);
+  EXPECT_EQ(
+    command,
+    "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
+    "1182900 mangohud-proton 116000 3 1 late 1 1"
+  );
+  const auto arguments = session_launch_arguments(command);
+  ASSERT_TRUE(arguments);
+  EXPECT_EQ(
+    *arguments,
+    (std::vector<std::string> {
+      "steam-direct", "1182900", "mangohud-proton", "116000", "3",
+      "1", "late", "1", "1"
+    })
+  );
+
+  policy.provider = "disabled";
+  EXPECT_TRUE(session_launch_command(1182900, policy).empty());
+  EXPECT_FALSE(session_launch_arguments(command + " trailing"));
+  EXPECT_FALSE(session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec steam-direct "
+    "1182900 proton 116000 custom 1 late 0 0"
+  ));
+}
+
 TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
   game_t game;
   game.app_id = 1182900;
@@ -407,7 +444,7 @@ TEST(SteamLaunch, DirectLaunchPlacesVibepolloInsideInheritedSteamOptions) {
 
   const auto command = launch_command(game);
   EXPECT_TRUE(command.starts_with("/bin/sh -c 'PROTON_DLSS_UPGRADE=3.7 mangohud "));
-  EXPECT_NE(command.find("vibepollo-mangohud --appid 1182900 -- env"), std::string::npos);
+  EXPECT_NE(command.find("/usr/bin/vibepollo-mangohud --appid 1182900 -- env"), std::string::npos);
   EXPECT_NE(command.find("STEAM_COMPAT_APP_ID=1182900"), std::string::npos);
   EXPECT_NE(command.find("STEAM_COMPAT_SHADER_PATH="), std::string::npos);
   EXPECT_NE(command.find("STEAM_COMPAT_MEDIA_PATH="), std::string::npos);
@@ -429,7 +466,7 @@ TEST(SteamLaunch, DirectNativeLaunchTreatsOptionsWithoutPlaceholderAsArguments) 
 
   EXPECT_EQ(
     launch_command(game),
-    "/bin/sh -c 'vibepollo-mangohud --appid 480 -- env SteamAppId=480 SteamGameId=480 "
+    "/bin/sh -c '/usr/bin/vibepollo-mangohud --appid 480 -- env SteamAppId=480 SteamGameId=480 "
     "'\\''/games/Spacewar/spacewar'\\'' -default -user-option'"
   );
 }
